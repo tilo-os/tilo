@@ -50,14 +50,24 @@ pub fn searchable_types() -> Vec<search_type::SearchableType> {
 }
 
 /// Build and return the app's root widget tree.
+///
+/// Starts with an empty catalogue. This is the conventional entry point for
+/// a host embedding Tube, and it used to hand back [`TubeApp::new`] — which
+/// carries the bundled `sample` catalogue of invented channels and view
+/// counts. A host that did not know to call `.online()` (which discards the
+/// sample) therefore showed fabricated videos as though they were real.
+/// The sample now has to be asked for by name, via `TubeApp::new` on a
+/// `--shots` path.
 pub fn app_root() -> Box<dyn Widget> {
-    Box::new(TubeApp::new())
+    Box::new(TubeApp::empty())
 }
 
 /// `--shots` variant for a NARROW viewport: the navigation rail is collapsed
 /// to an overlay flap and forced open so the still frame captures the
 /// summoned rail + dimming scrim. Pair with a sub-breakpoint `--viewport`
-/// width. Identical to [`app_root`] apart from that one shots-only flag.
+/// width. Unlike [`app_root`] this starts from `TubeApp::new`, so it carries
+/// the bundled sample catalogue — a shot of an empty grid would show nothing
+/// about the rail. Shots-only for that reason.
 pub fn app_root_narrow_shot() -> Box<dyn Widget> {
     Box::new(TubeApp::new().with_open_sidebar_shot())
 }
@@ -84,5 +94,31 @@ mod tests {
         assert!(ids.contains(&CHANNEL_TYPE_ID), "channel type registered: {ids:?}");
         // Both carry a thumbnail, so an OS palette reserves image space for them.
         assert!(types.iter().all(|t| t.has_thumbnail));
+    }
+
+    /// A host that embeds Tube the documented way must not be handed the
+    /// bundled sample catalogue. `app_root` used to return `TubeApp::new()`,
+    /// whose model is `sample::model()` — invented channels with invented
+    /// subscriber and view counts — and only `.online()` cleared it. Anyone
+    /// who embedded without calling `.online()` shipped that as real data.
+    #[test]
+    fn app_root_starts_with_no_catalogue() {
+        let app = TubeApp::empty();
+        let m = app.model_for_test();
+        assert!(
+            m.videos.is_empty(),
+            "app_root must not hand a host {} invented videos",
+            m.videos.len()
+        );
+        assert!(
+            m.channels.is_empty(),
+            "app_root must not hand a host {} invented channels",
+            m.channels.len()
+        );
+        assert!(
+            !m.feed_loading,
+            "with nothing fetching, Home must show its empty state rather \
+             than a skeleton that never resolves"
+        );
     }
 }

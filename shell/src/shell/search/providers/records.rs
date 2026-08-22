@@ -139,17 +139,17 @@ impl SearchProvider for RecordsProvider {
                 let index = Rc::clone(&self.index);
                 let id = record.id.clone();
                 let kind = record.kind.clone();
-                SearchResult {
-                    kind: ResourceKind::Record,
-                    provider_id: "records".to_string(),
-                    id: record.id.as_str().to_string(),
+                SearchResult::nullary(
+                    ResourceKind::Record,
+                    "records",
+                    record.id.as_str().to_string(),
                     title,
-                    subtitle: Some(subtitle),
+                    Some(subtitle),
                     score,
-                    on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
+                    move |_doc, _root, chrome: &Chrome| {
                         bring_into_this_room(&index, &id, &kind, chrome);
-                    }),
-                }
+                    },
+                )
             })
             .collect()
     }
@@ -385,7 +385,13 @@ mod tests {
         let out = query(&provider, "book", &chrome);
         let row = out.first().expect("the record is findable");
         let mut doc = automerge::AutoCommit::new();
-        (row.on_open)(&mut doc, &automerge::ROOT, &chrome);
+        (row.on_open)(
+            &mut doc,
+            &automerge::ROOT,
+            &chrome,
+            &crate::shell::search::action_api::ActionArgs::none(),
+        )
+        .expect("bringing a record here takes no arguments");
 
         let index = index.borrow();
         assert!(index.holds(here, &book), "activating brings it here");
@@ -419,7 +425,13 @@ mod tests {
 
         let out = query(&provider, "book", &chrome);
         let mut doc = automerge::AutoCommit::new();
-        (out[0].on_open)(&mut doc, &ROOT, &chrome);
+        (out[0].on_open)(
+            &mut doc,
+            &ROOT,
+            &chrome,
+            &crate::shell::search::action_api::ActionArgs::none(),
+        )
+        .expect("bringing a record here takes no arguments");
 
         // Open the record the way an app does, from each room's own list
         // of what it holds. One `RecordSet` stands for the one machine

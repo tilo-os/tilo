@@ -62,8 +62,19 @@ use std::os::unix::net::UnixStream;
 use std::os::fd::RawFd;
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::LocalSet;
+
+/// How long an app waits for the collaboration connect path to report
+/// before opening without it.
+///
+/// This is spent on the main thread ahead of the first frame, so it is
+/// the window's worst-case delay when something upstream is wedged. It
+/// is set far above the path's real cost — every step before the report
+/// is a local syscall — so reaching it means something is wrong, not
+/// that the machine is slow.
+const SHOVEL_INIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum CollabRequest {
@@ -707,20 +718,67 @@ impl CollaborationManager {
         let (inbound_tx, inbound_rx) = tokio_mpsc::unbounded_channel::<CollabEvent>();
         let (init_tx, init_rx) = mpsc::sync_channel::<InitStatus>(1);
 
-        // Extract the raw fd (if any) *before* moving the source into
-        // the closure — `SdkConnectSource::Fd` is `!Send` in principle
-        // (RawFd is Send, but this keeps the intent explicit).
-        let handle = thread::Builder::new()
+        // The source moves into the closure — `SdkConnectSource::Fd` is
+        // `!Send` in principle (RawFd is Send, but this keeps the
+        // intent explicit).
+        //
+        // A thread we cannot start is a service we cannot reach, which
+        // is a state this function already has a word for. It is not a
+        // reason to take the app down with us: `collab` is
+        // `optional@1`, and an app whose broker is unreachable has to
+        // open anyway.
+        let handle = match thread::Builder::new()
             .name("ui-collab-shovel".into())
             .spawn(move || run_shovel(source, identity_bytes, outbound_rx, inbound_tx, init_tx))
-            .expect("spawn ui-collab-shovel thread");
+        {
+            Ok(handle) => handle,
+            Err(e) => return Err(runtime_portal::NotAvailable::ConnectionFailed(e)),
+        };
 
-        // Wait for the shovel to report initial connect status. This
-        // is a bounded wait: `run_shovel` reports before entering its
-        // event loop.
-        let status = init_rx
-            .recv()
-            .expect("shovel thread must send an init status before its main loop");
+        // Wait for the shovel to report initial connect status.
+        //
+        // This runs on the app's main thread before its first frame, so
+        // whatever happens here happens instead of the window
+        // appearing. Two things therefore must not: waiting forever,
+        // and panicking.
+        //
+        // `run_shovel` reports before entering its event loop and every
+        // step to that point is local — no round trip to the broker —
+        // so the wait is short in every case we know how to produce.
+        // The deadline is for the ones we do not: a connect path that
+        // wedges costs a few seconds and a session without
+        // collaboration, never an app that will not open. Dropping the
+        // channels lets a thread that reports late exit on its own.
+        let status = match init_rx.recv_timeout(SHOVEL_INIT_TIMEOUT) {
+            Ok(status) => status,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                tracing::warn!(
+                    "collab: the connect path did not report within {SHOVEL_INIT_TIMEOUT:?}; \
+                     continuing without collaboration"
+                );
+                return Err(runtime_portal::NotAvailable::ConnectionFailed(
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "collab connect did not report in time",
+                    ),
+                ));
+            }
+            // The thread ended without reporting. There is nothing on
+            // the other end to hand out, so this is simply a service
+            // that is not available.
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                tracing::warn!(
+                    "collab: the connect path ended without reporting; \
+                     continuing without collaboration"
+                );
+                return Err(runtime_portal::NotAvailable::ConnectionFailed(
+                    std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "collab connect ended without reporting",
+                    ),
+                ));
+            }
+        };
 
         match status {
             InitStatus::Ready => Ok(SdkChannel {
@@ -924,6 +982,123 @@ pub fn presence_handle_env() -> Option<String> {
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))
 }
 
+/// The routing key one connection names on the capnp transport.
+///
+/// An app's traffic is addressed by the triple `(app_id, cluster_id,
+/// record_id)` (`plan/collaboration.md` §8), but capnp's
+/// `joinChannel(channelId, identity)` carries a single string. The
+/// triple therefore travels *inside* the channel id, and this pair of
+/// functions is the only place that encoding is written down — the SDK
+/// formats a key here and the shell parses one here, so the two
+/// halves cannot drift apart.
+///
+/// # Shape
+///
+/// ```text
+/// <cluster>[#app:<app_id>][#record:<record_id>]
+/// ```
+///
+/// A uuid contains no `#`, so the cluster is always the text before the
+/// first marker. `#record:` is stripped first and takes *everything*
+/// after it, which keeps a record id that itself contains a `#` (a file
+/// path may) intact.
+///
+/// Both suffixes are optional, and that is what makes the earlier
+/// two-field keys — `<cluster>` and `<cluster>#record:<id>` — parse
+/// unchanged: a missing `#app:` yields an empty app id, which is the
+/// cluster-scoped address chrome traffic already rides.
+///
+/// # Why the app id is in here at all
+///
+/// Because the alternative is that it is nowhere. The transport every
+/// packaged app uses would then publish document deltas with an empty
+/// app id, and an empty app id means *cluster-scoped* — one app's
+/// changes delivered to every app in the room. Carrying it costs one
+/// optional segment and keeps the two transports addressing traffic
+/// the same way.
+pub mod channel_key {
+    /// Encode a route triple into one channel id.
+    pub fn format(app_id: &str, cluster_id: &str, record_id: &str) -> String {
+        let mut key = String::from(cluster_id);
+        if !app_id.is_empty() {
+            key.push_str("#app:");
+            key.push_str(app_id);
+        }
+        if !record_id.is_empty() {
+            key.push_str("#record:");
+            key.push_str(record_id);
+        }
+        key
+    }
+
+    /// Decode a channel id into `(app_id, cluster_id, record_id)`.
+    ///
+    /// Total: every string decodes. One naming no marker is a bare
+    /// cluster, which is exactly the address a connection announcing
+    /// neither an app nor a record should get.
+    pub fn parse(key: &str) -> (String, String, String) {
+        let (head, record_id) = match key.split_once("#record:") {
+            Some((head, record)) => (head, record.to_string()),
+            None => (key, String::new()),
+        };
+        let (cluster, app_id) = match head.split_once("#app:") {
+            Some((cluster, app)) => (cluster, app.to_string()),
+            None => (head, String::new()),
+        };
+        (app_id, cluster.to_string(), record_id)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn round_trips_every_combination_of_present_fields() {
+            for (app, cluster, record) in [
+                ("", "c", ""),
+                ("app", "c", ""),
+                ("", "c", "rec"),
+                ("app", "c", "rec"),
+            ] {
+                let key = format(app, cluster, record);
+                assert_eq!(
+                    parse(&key),
+                    (app.to_string(), cluster.to_string(), record.to_string()),
+                    "key {key:?} did not round-trip",
+                );
+            }
+        }
+
+        #[test]
+        fn keys_written_before_the_app_segment_still_parse() {
+            // The two shapes that were on the wire before an app id
+            // was carried. Both must decode to a cluster-scoped
+            // address rather than to nothing, or an app that has not
+            // been rebuilt stops being routed at all.
+            assert_eq!(
+                parse("cluster-1"),
+                (String::new(), "cluster-1".into(), String::new()),
+            );
+            assert_eq!(
+                parse("cluster-1#record:/notes/a.md"),
+                (String::new(), "cluster-1".into(), "/notes/a.md".into()),
+            );
+        }
+
+        #[test]
+        fn a_record_id_containing_a_hash_survives() {
+            // Record ids are file paths and a path may contain `#`.
+            // Stripping `#record:` first and keeping the whole tail is
+            // what makes that safe.
+            let key = format("app", "c", "/notes/draft#2.md");
+            assert_eq!(
+                parse(&key),
+                ("app".into(), "c".into(), "/notes/draft#2.md".into()),
+            );
+        }
+    }
+}
+
 /// The `(app_id, cluster_id)` pair this process announces in its
 /// [`CollabRequest::Hello`] — its address on the broker's fan-out.
 ///
@@ -1119,7 +1294,7 @@ async fn drive_shovel(
 
     while let Some(req) = outbound_rx.recv().await {
         match req {
-            CollabRequest::Hello { app_id: _, cluster_id, record, .. } => {
+            CollabRequest::Hello { app_id, cluster_id, record, .. } => {
                 // Ride the identity blob captured at manager
                 // construction — the loaded runtime-identity's raw
                 // pubkey bytes when the on-disk record was reachable,
@@ -1127,21 +1302,33 @@ async fn drive_shovel(
                 // the "no identity" fallback (unchanged behaviour for
                 // apps outside a qOS session or missing an
                 // `QOS_USER_IDENTITY` env var).
+                //
                 // The capnp `joinChannel(channelId, identity)` surface
-                // carries no record field, so a record-scoped
-                // connection names its record *inside* the channel id.
-                // The shell parses it back out
-                // (`CrdtRoute::from_channel_key`), so one document's
-                // subscription never sees another's deltas on this
-                // transport either — and no schema change was needed to
-                // get there.
-                let channel_id = match record.as_deref() {
-                    Some(r) if !r.is_empty() => format!("{cluster_id}#record:{r}"),
-                    _ => cluster_id.to_string(),
-                };
+                // carries neither an app nor a record field, so the
+                // full address this connection announced travels
+                // *inside* the channel id. The shell parses it back out
+                // with the same codec (`CrdtRoute::from_channel_key`),
+                // so one document's subscription never sees another's
+                // deltas on this transport, and one app's deltas are
+                // not addressed to every app in the room.
+                let channel_id = channel_key::format(
+                    &app_id,
+                    &cluster_id.to_string(),
+                    record.as_deref().unwrap_or(""),
+                );
+                // Without a channel every later request falls through
+                // its `if let Some(ch)` and is dropped, while the app
+                // still reports itself connected — collaboration that
+                // is switched off and says nothing. Say something.
                 let ch = match client.join_channel(&channel_id, &identity_bytes).await {
                     Ok(ch) => ch,
-                    Err(_) => continue,
+                    Err(e) => {
+                        tracing::warn!(
+                            "collab: joining channel {channel_id} failed ({e}); \
+                             this app's edits and presence will not leave it"
+                        );
+                        continue;
+                    }
                 };
 
                 // subscribe(): forward signed op events.
@@ -1152,21 +1339,46 @@ async fn drive_shovel(
                             let Ok(evt) = sub.read().await else {
                                 break;
                             };
-                            // The SDK carries the postcard-encoded
-                            // SignedOp on the wire; decode into the
-                            // typed envelope callers already handle.
-                            let Ok(envelope) =
-                                postcard::from_bytes::<SignedOp>(&evt.op)
-                            else {
-                                continue;
+                            // Three kinds of frame share this stream
+                            // and only the broker knows which one it
+                            // just sent, so it says. Reading the bytes
+                            // as a signed envelope regardless is what
+                            // used to drop every unsigned frame here
+                            // without a word — presence crossed, the
+                            // document did not, and the page stayed
+                            // blank while the peer's caret moved over
+                            // it.
+                            let translated = match evt.kind {
+                                runtime_collab::OpKind::Signed => {
+                                    match postcard::from_bytes::<SignedOp>(&evt.op) {
+                                        Ok(envelope) => CollabEvent::SignedCRDTIncremental {
+                                            envelope: Box::new(envelope),
+                                            from_user_id: evt.from_user_id,
+                                        },
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "collab: op tagged signed but not a \
+                                                 postcard SignedOp ({e}); dropping"
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                }
+                                // A delta: applied on top of the
+                                // document this app already holds.
+                                runtime_collab::OpKind::UnsignedIncremental => {
+                                    CollabEvent::CRDTIncremental { data: evt.op }
+                                }
+                                // A whole document: merged, not
+                                // applied. This is the frame a late
+                                // arrival adopts the existing text
+                                // from, and applying it as a delta
+                                // would do nothing at all.
+                                runtime_collab::OpKind::UnsignedSnapshot => {
+                                    CollabEvent::CRDTUpdate { data: evt.op }
+                                }
                             };
-                            if itx
-                                .send(CollabEvent::SignedCRDTIncremental {
-                                    envelope: Box::new(envelope),
-                                    from_user_id: evt.from_user_id,
-                                })
-                                .is_err()
-                            {
+                            if itx.send(translated).is_err() {
                                 break;
                             }
                         }
@@ -2269,6 +2481,45 @@ mod tests {
     // --- tests -----------------------------------------------------------
 
     #[test]
+    #[serial_test::serial(qos_svc_collab_fd)]
+    fn a_broker_that_is_not_there_does_not_hold_the_app_up() {
+        // A connected socket whose far end is gone — the shape of a
+        // broker that died between the launcher's connect and the
+        // app's first call.
+        //
+        // `new()` runs on the main thread before the first frame, so
+        // whatever it does here it does instead of the window
+        // appearing. `collab` is `optional@1`: this has to come back,
+        // and the app has to keep working afterwards.
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+        drop(theirs);
+        let fd = ours.into_raw_fd();
+        // SAFETY: serialised on `qos_svc_collab_fd` against every other
+        // test that reads or writes these two variables.
+        unsafe {
+            std::env::set_var("QOS_SVC_COLLAB_FD", fd.to_string());
+            std::env::remove_var("QUICK_COLLAB_SOCK");
+        }
+
+        let started = Instant::now();
+        let mut mgr = CollaborationManager::new();
+        let took = started.elapsed();
+
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("QOS_SVC_COLLAB_FD") };
+
+        assert!(
+            took < SHOVEL_INIT_TIMEOUT * 2,
+            "constructing the manager must not stall the first frame (took {took:?})"
+        );
+        // Whichever backend it settled on, the app goes on calling these
+        // every frame. Neither may panic.
+        mgr.send(CollabRequest::SyncCRDT { data: b"after the broker died".to_vec() });
+        let _ = mgr.poll();
+    }
+
+    #[test]
+    #[serial_test::serial(qos_svc_collab_fd)]
     fn disconnected_manager_is_a_no_op() {
         // No SDK, no legacy socket set. `new` cannot reach anything —
         // falls through to `Backend::Disabled`.
@@ -2317,7 +2568,14 @@ mod tests {
         );
         let joined = captures.lock().unwrap().joined.clone();
         assert_eq!(joined.len(), 1);
-        assert_eq!(joined[0].0, cluster.to_string());
+        // The channel id is the whole address this connection
+        // announced, app id included. An id naming only the room would
+        // publish this app's document deltas cluster-scoped, and
+        // cluster-scoped means every app in the room receives them.
+        assert_eq!(
+            joined[0].0,
+            channel_key::format("alice", &cluster.to_string(), ""),
+        );
         assert!(joined[0].1.is_empty(), "identity blob must be empty when env unset");
     }
 
@@ -2413,7 +2671,14 @@ mod tests {
         );
         let joined = captures.lock().unwrap().joined.clone();
         assert_eq!(joined.len(), 1);
-        assert_eq!(joined[0].0, cluster.to_string());
+        // The channel id is the whole address this connection
+        // announced, app id included. An id naming only the room would
+        // publish this app's document deltas cluster-scoped, and
+        // cluster-scoped means every app in the room receives them.
+        assert_eq!(
+            joined[0].0,
+            channel_key::format("alice", &cluster.to_string(), ""),
+        );
 
         // Signed op forwarded.
         let mut op = SignedOp::new_unsigned(

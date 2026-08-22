@@ -29,17 +29,20 @@
 //!
 //! Scope follows the payload, not the transport:
 //!
-//! - **Documents** (CRDT increments, signed or not) publish on the
-//!   route verbatim, records and all. A document is what people share.
-//! - **Presence** is widened to the room by its callers before it ever
-//!   reaches this module ([`CrdtRoute::to_cluster_scope`]), because
-//!   "who else is here" is a fact about the room — a peer editing a
-//!   different document in the same room is still a legitimate
-//!   audience for it.
+//! - **Documents** — CRDT increments (signed or not) and whole-state
+//!   snapshots — publish on the route verbatim, records and all. A
+//!   document is what people share, and which document it is is part
+//!   of its address.
+//! - **Presence** reaches the room, not the record. Callers hand over
+//!   the same un-widened route, and the record is dropped here because
+//!   the presence frame on the wire has no record field: "who else is
+//!   here" is a fact about the room, so a peer editing a different
+//!   document in the same room is still a legitimate audience for it.
 //!
-//! This module never widens or narrows a route it is given. Handing it
-//! a cluster-scoped route publishes cluster-scoped; that decision
-//! belongs to the caller that knows what kind of payload it holds.
+//! Beyond that per-payload rule this module never widens or narrows a
+//! route it is given. Handing it a cluster-scoped route publishes
+//! cluster-scoped; that decision belongs to the caller that knows what
+//! kind of payload it holds.
 //!
 //! ## Refusals are loud
 //!
@@ -84,6 +87,21 @@ pub trait PeerPublishSink: Send + Sync {
         envelope: SignedOp,
     );
 
+    /// Republish one document's whole state to the peers in a room.
+    fn app_crdt_snapshot(
+        &self,
+        app_id: String,
+        cluster_id: String,
+        record_id: String,
+        data: Vec<u8>,
+    );
+
+    /// Republish a presence frame to the peers in a room. The frame is
+    /// a serialised `CollabRequest::Presence`, which is what the
+    /// receiving drain decodes — so a caret published over capnp and
+    /// one published over JSON are the same bytes on the wire.
+    fn app_presence(&self, app_id: String, cluster_id: String, frame: Vec<u8>);
+
     /// Ask the room whether anyone still holds a range of history.
     fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16);
 }
@@ -107,6 +125,20 @@ impl PeerPublishSink for ShellNetwork {
         envelope: SignedOp,
     ) {
         self.publish_app_crdt_signed(app_id, cluster_id, record_id, envelope);
+    }
+
+    fn app_crdt_snapshot(
+        &self,
+        app_id: String,
+        cluster_id: String,
+        record_id: String,
+        data: Vec<u8>,
+    ) {
+        self.publish_app_crdt_snapshot(app_id, cluster_id, record_id, data);
+    }
+
+    fn app_presence(&self, app_id: String, cluster_id: String, frame: Vec<u8>) {
+        self.publish_app_presence(app_id, cluster_id, frame);
     }
 
     fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16) {
@@ -239,6 +271,63 @@ impl PeerPublisher {
         true
     }
 
+    /// Republish one document's whole state on the route it was fanned
+    /// out locally.
+    ///
+    /// This is the frame that makes two *separately created* documents
+    /// one document. The toolkit sends it in reply to a peer's
+    /// `Arrived`, never on a commit, so publishing it answers a
+    /// question rather than announcing into the room — and
+    /// `ShellNetwork::publish_app_crdt_snapshot` is where that "is
+    /// anyone actually waiting" gate and the gossip size cap live, so
+    /// both transports are bounded by one rule rather than two.
+    ///
+    /// Without it the deltas cross correctly and refer to objects the
+    /// receiving document has never seen: the peer's caret moves over
+    /// a blank page.
+    pub fn document_snapshot(
+        &self,
+        route: &CrdtRoute,
+        transport: Transport,
+        data: Vec<u8>,
+    ) -> bool {
+        let Some(sink) = self.ready(route, transport, "document snapshot") else {
+            return false;
+        };
+        sink.app_crdt_snapshot(
+            route.app_id.clone(),
+            route.cluster_id.clone(),
+            route.record_id.clone(),
+            data,
+        );
+        true
+    }
+
+    /// Republish a presence frame — a caret, a selection, an arrival —
+    /// to the room the route names.
+    ///
+    /// Pass the route **un-widened**: the app id rides along so the
+    /// receiving side can attribute the caret, and the record is
+    /// dropped here rather than by the caller because the wire frame
+    /// (`NeighbourMsg::AppPresence`) has no record field at all. "Who
+    /// else is here" is a fact about the room, so a peer editing a
+    /// different document in the same room is still a legitimate
+    /// audience — the room scope is the payload's, not the caller's.
+    ///
+    /// `frame` is the serialised `CollabRequest::Presence` the
+    /// receiving drain decodes, so the two transports put identical
+    /// bytes on the wire.
+    ///
+    /// Without this a peer's caret stopped at the machine that produced
+    /// it, and every collaborator looked like they were doing nothing.
+    pub fn presence(&self, route: &CrdtRoute, transport: Transport, frame: Vec<u8>) -> bool {
+        let Some(sink) = self.ready_quietly(route, transport, "presence") else {
+            return false;
+        };
+        sink.app_presence(route.app_id.clone(), route.cluster_id.clone(), frame);
+        true
+    }
+
     /// Ask the room for a range of history the local op log no longer
     /// holds. Routed like any other outbound: a connection that never
     /// announced an address gets no cooperative fetch, because the
@@ -259,18 +348,45 @@ impl PeerPublisher {
     }
 
     /// The two refusals every publish shares: no network, or a route
-    /// that addresses nobody. Both are logged; the first is throttled
-    /// to once per publisher because it is a session-long state, the
-    /// second is not because it names a specific misbehaving
-    /// connection and repeats are the signal.
+    /// that addresses nobody. Both are logged; the "no network" line is
+    /// throttled to once per publisher because it is a session-long
+    /// state, the route refusal is not, because it names a specific
+    /// misbehaving connection and repeats are the signal.
+    ///
+    /// See [`Self::ready_quietly`] for the one payload that has to opt
+    /// out of the second half of that.
     fn ready(
         &self,
         route: &CrdtRoute,
         transport: Transport,
         what: &str,
     ) -> Option<&Arc<dyn PeerPublishSink>> {
+        self.ready_at(route, transport, what, true)
+    }
+
+    /// [`Self::ready`] for a payload that repeats. A pointer publishes
+    /// at cursor rate, so an unaddressable route would put a warning on
+    /// every frame and bury the one that matters; a lost caret is also
+    /// cosmetic where a lost edit is not. Same gate, same decision,
+    /// logged at `debug!`.
+    fn ready_quietly(
+        &self,
+        route: &CrdtRoute,
+        transport: Transport,
+        what: &str,
+    ) -> Option<&Arc<dyn PeerPublishSink>> {
+        self.ready_at(route, transport, what, false)
+    }
+
+    fn ready_at(
+        &self,
+        route: &CrdtRoute,
+        transport: Transport,
+        what: &str,
+        loud: bool,
+    ) -> Option<&Arc<dyn PeerPublishSink>> {
         let Some(sink) = self.sink.as_ref() else {
-            if !self.warned_no_network.swap(true, Ordering::Relaxed) {
+            if loud && !self.warned_no_network.swap(true, Ordering::Relaxed) {
                 tracing::warn!(
                     transport = transport.as_str(),
                     "collab outbound: dropping every outbound {what} — this \
@@ -286,14 +402,24 @@ impl PeerPublisher {
         // room that no receiver can place — the remote broker drops it
         // and neither side has a record of why.
         if !route.is_publishable() {
-            tracing::warn!(
-                transport = transport.as_str(),
-                app_id = %route.app_id,
-                cluster_id = %route.cluster_id,
-                "collab outbound: NOT publishing {what} — the sender's route \
-                 names no room, so it would reach nobody. An app in this state \
-                 is collaborating with itself.",
-            );
+            if loud {
+                tracing::warn!(
+                    transport = transport.as_str(),
+                    app_id = %route.app_id,
+                    cluster_id = %route.cluster_id,
+                    "collab outbound: NOT publishing {what} — the sender's \
+                     route names no room, so it would reach nobody. An app in \
+                     this state is collaborating with itself.",
+                );
+            } else {
+                tracing::debug!(
+                    transport = transport.as_str(),
+                    app_id = %route.app_id,
+                    cluster_id = %route.cluster_id,
+                    "collab outbound: not publishing {what} whose route names \
+                     no room",
+                );
+            }
             return None;
         }
         Some(sink)
@@ -327,6 +453,17 @@ pub mod recording {
             cluster_id: String,
             record_id: String,
             payload: Vec<u8>,
+        },
+        Snapshot {
+            app_id: String,
+            cluster_id: String,
+            record_id: String,
+            data: Vec<u8>,
+        },
+        Presence {
+            app_id: String,
+            cluster_id: String,
+            frame: Vec<u8>,
         },
         Scrollback {
             before_seq: u64,
@@ -379,6 +516,29 @@ pub mod recording {
                 cluster_id,
                 record_id,
                 payload: envelope.payload.clone(),
+            });
+        }
+
+        fn app_crdt_snapshot(
+            &self,
+            app_id: String,
+            cluster_id: String,
+            record_id: String,
+            data: Vec<u8>,
+        ) {
+            self.sent.lock().unwrap().push(Sent::Snapshot {
+                app_id,
+                cluster_id,
+                record_id,
+                data,
+            });
+        }
+
+        fn app_presence(&self, app_id: String, cluster_id: String, frame: Vec<u8>) {
+            self.sent.lock().unwrap().push(Sent::Presence {
+                app_id,
+                cluster_id,
+                frame,
             });
         }
 
@@ -465,9 +625,32 @@ mod tests {
             CrdtRoute::cluster("00000000-0000-0000-0000-000000000000"),
             CrdtRoute::record("notes", "", "doc"),
         ] {
+            // Every payload kind fails closed on the same test. A
+            // snapshot or a caret published into a room that does not
+            // exist is as undeliverable as a delta, and the nil-uuid
+            // case would put all of them in one room shared by every
+            // unminted workspace on every machine.
             assert!(
                 !pubr.document_incremental(&route, Transport::Json, vec![7]),
                 "route {route:?} addresses nobody and must not reach the wire",
+            );
+            assert!(
+                !pubr.document_snapshot(&route, Transport::Json, vec![7]),
+                "route {route:?} addresses nobody, so no snapshot either",
+            );
+            assert!(
+                !pubr.presence(&route, Transport::Json, vec![7]),
+                "route {route:?} addresses nobody, so no presence either",
+            );
+            assert!(
+                !pubr.scrollback_request(
+                    &route,
+                    Transport::Json,
+                    ArtifactId(uuid::Uuid::nil()),
+                    1,
+                    1
+                ),
+                "route {route:?} addresses nobody, so no history request either",
             );
         }
         assert!(sink.drain().is_empty());
@@ -479,6 +662,8 @@ mod tests {
         let route = CrdtRoute::record("notes", "44444444-4444-4444-8444-444444444444", "d");
         assert!(!pubr.is_wired());
         assert!(!pubr.document_incremental(&route, Transport::Capnp, vec![1]));
+        assert!(!pubr.document_snapshot(&route, Transport::Capnp, vec![1]));
+        assert!(!pubr.presence(&route, Transport::Capnp, vec![1]));
         assert!(!pubr.scrollback_request(&route, Transport::Capnp, ArtifactId(uuid::Uuid::nil()), 5, 3));
     }
 
@@ -499,6 +684,63 @@ mod tests {
                 before_seq: 42,
                 max: 9
             }],
+        );
+    }
+
+    #[test]
+    fn a_snapshot_carries_its_record_onto_the_wire() {
+        // A whole document merged into the wrong record cannot be taken
+        // back out, so the record matters more here than on a delta,
+        // not less.
+        let (pubr, sink) = wired();
+        let route = CrdtRoute::record("words", "66666666-6666-4666-8666-666666666666", "letter");
+        assert!(pubr.document_snapshot(&route, Transport::Capnp, vec![4, 2]));
+        assert_eq!(
+            sink.drain(),
+            vec![Sent::Snapshot {
+                app_id: "words".into(),
+                cluster_id: "66666666-6666-4666-8666-666666666666".into(),
+                record_id: "letter".into(),
+                data: vec![4, 2],
+            }],
+        );
+    }
+
+    #[test]
+    fn presence_reaches_the_room_and_leaves_the_record_behind() {
+        // The app id rides along so the far side can attribute the
+        // caret; the record does not, because a peer editing another
+        // document in this room is still someone you should be able to
+        // see.
+        let (pubr, sink) = wired();
+        let route = CrdtRoute::record("words", "77777777-7777-4777-8777-777777777777", "letter");
+        assert!(pubr.presence(&route, Transport::Capnp, vec![1, 2, 3]));
+        assert_eq!(
+            sink.drain(),
+            vec![Sent::Presence {
+                app_id: "words".into(),
+                cluster_id: "77777777-7777-4777-8777-777777777777".into(),
+                frame: vec![1, 2, 3],
+            }],
+        );
+    }
+
+    #[test]
+    fn both_transports_publish_through_one_instance() {
+        // The bug this module exists to close was two answers to "does
+        // a local edit leave this machine" — one per transport. The
+        // publisher does not branch on `Transport` for anything but the
+        // wording of a refusal, and this is the assertion that keeps it
+        // that way.
+        let (pubr, sink) = wired();
+        let route = CrdtRoute::record("notes", "88888888-8888-4888-8888-888888888888", "doc");
+        assert!(pubr.document_incremental(&route, Transport::Json, vec![5]));
+        assert!(pubr.document_incremental(&route, Transport::Capnp, vec![5]));
+        let sent = sink.drain();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(
+            sent[0], sent[1],
+            "the same route and payload must reach the wire identically              whichever socket the app dialled",
         );
     }
 }

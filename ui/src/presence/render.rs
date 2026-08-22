@@ -60,6 +60,40 @@ impl PresenceCtx {
     /// Draw an authorship "marker" highlight — a translucent underlay in
     /// the author's color behind the runs they wrote, like a highlighter
     /// pen. Lower alpha than a selection so the text stays readable.
+    ///
+    /// # This one is not fed by presence
+    ///
+    /// Every other method on this type draws something a peer *is doing* —
+    /// where their caret is, what they have selected — and that arrives as
+    /// a presence frame. Authorship is different: it is who wrote what,
+    /// and it has to survive both people closing the document, so it lives
+    /// **in the document** rather than on the presence channel.
+    ///
+    /// In the [`crate::widget::TextInput`] stack it is an Automerge mark:
+    /// every insert stamps `AUTHOR_MARK` with the widget's `local_author`,
+    /// and `RichTextLine::author_runs` reads the marks back on sync. Two
+    /// consequences worth knowing before you debug this:
+    ///
+    /// - It crosses machines wherever document deltas already cross. There
+    ///   is no presence payload to bridge and no wire format to add — if
+    ///   the text replicates, the authorship replicates with it.
+    /// - **It only exists if the app called `set_local_author`.** With no
+    ///   local author, inserts stamp no mark, `author_runs` stays empty,
+    ///   and this method is never reached — so the tint is missing while
+    ///   the caret and selection work perfectly. That looks exactly like a
+    ///   network fault and is not one. `apps/notes` and `apps/chat` set it;
+    ///   an app that forgets will spend a day in the wrong subsystem.
+    ///
+    /// A document model that records no per-run author cannot feed this at
+    /// all. The word processor is the live example: it is built on `qdoc`,
+    /// whose only author field is `CHANGE_AUTHOR` on a tracked `ins`/`del`
+    /// change, so ambient "she wrote this paragraph" tinting needs a new
+    /// per-run mark in that schema before there is anything to draw.
+    ///
+    /// The fading "just typed" swipe is the separate, genuinely ephemeral
+    /// half, and that one *is* presence — see
+    /// [`crate::presence::PresenceCtx::record_peer_typing`] and
+    /// [`Self::draw_peer_typing`].
     pub fn draw_peer_authorship(
         &self,
         scene: &mut Scene,
