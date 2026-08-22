@@ -205,6 +205,20 @@ impl AppKind {
 pub enum TileContent {
     App(Box<dyn AppWidget>),
     Stub { kind: AppKind, label: String },
+    /// A card that states something, rather than standing in for an app
+    /// that is not built yet.
+    ///
+    /// [`TileContent::Stub`] is the "coming soon" placeholder, and its
+    /// sub-line says so — which is a true thing to say about an app this
+    /// OS has not written and a false one about anything else. A tab whose
+    /// window has a reason for not being here needs to say *that* reason:
+    /// a peer's window whose app is not installed on this machine is not
+    /// coming soon, it is absent, and the two sentences send the reader to
+    /// different places.
+    ///
+    /// So: `title` names the thing, `detail` says what is actually the
+    /// case, and nothing is added to either.
+    Notice { title: String, detail: String },
     // reserved: Wayland(u64),
 }
 
@@ -326,7 +340,7 @@ impl TileHost {
     fn resolve_record(&mut self) -> Option<RecordId> {
         let want = match &self.content {
             TileContent::App(w) => w.record_intent(),
-            TileContent::Stub { .. } => None,
+            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
         };
         let live = self.binding.as_mut()?.follow(want);
         self.announce_scope();
@@ -350,6 +364,7 @@ impl TileHost {
         match &self.content {
             TileContent::App(_) => "App".into(),
             TileContent::Stub { kind, .. } => kind.as_str().into(),
+            TileContent::Notice { title, .. } => title.clone(),
         }
     }
     pub fn content_mut(&mut self) -> &mut TileContent { &mut self.content }
@@ -451,7 +466,7 @@ impl Widget for TileHost {
                 let child = w.build_layout(taffy, theme, node_map);
                 taffy.new_with_children(Style { size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) }, ..Default::default() }, &[child]).unwrap()
             }
-            TileContent::Stub { .. } => {
+            TileContent::Stub { .. } | TileContent::Notice { .. } => {
                 taffy.new_leaf(Style { size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) }, ..Default::default() }).unwrap()
             }
         };
@@ -623,7 +638,7 @@ impl Widget for TileHost {
         }
         match &self.content {
             TileContent::App(w) => w.needs_commit(),
-            TileContent::Stub { .. } => false,
+            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         }
     }
     fn on_commit(&mut self) {
@@ -653,7 +668,7 @@ impl Widget for TileHost {
         // signal still bubbles up through the tile to `App::run`.
         let inner = match &self.content {
             TileContent::App(w) => w.needs_animation_frame(),
-            TileContent::Stub { .. } => false,
+            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         };
         self.spawn_in_flight() || inner
     }
@@ -739,19 +754,11 @@ impl TileHost {
         match &mut self.content {
             TileContent::App(w) => w.draw(scene, transform, tr, theme, presence),
             TileContent::Stub { kind, label } => {
-                // Dark text on the white card.
-                let on_card = theme.tokens.colors.neutral[1]; // slate-900 in dark theme
-                let on_card_dim = theme.tokens.colors.neutral[4]; // slate-600
-                let text_size = theme.tokens.typography.scale.xl;
-                let (tw, _) = tr.measure(label, text_size, None);
-                let x = self.rect.center().x - tw as f64 / 2.0;
-                let y = self.rect.center().y - text_size as f64 / 2.0;
-                tr.draw_text(scene, label, text_size, on_card, transform * Affine::translate((x, y)), None);
-                let sm = theme.tokens.typography.scale.sm;
-                let s = format!("{} coming soon", kind.as_str());
-                let (sw, _) = tr.measure(&s, sm, None);
-                let sx = self.rect.center().x - sw as f64 / 2.0;
-                tr.draw_text(scene, &s, sm, on_card_dim, transform * Affine::translate((sx, y + text_size as f64 + 8.0)), None);
+                let detail = format!("{} coming soon", kind.as_str());
+                draw_card_text(scene, transform, tr, theme, self.rect, label, &detail);
+            }
+            TileContent::Notice { title, detail } => {
+                draw_card_text(scene, transform, tr, theme, self.rect, title, detail);
             }
         }
         scene.pop_layer();
@@ -767,6 +774,40 @@ impl TileHost {
             &shape,
         );
     }
+}
+
+/// Two centred lines on an otherwise empty window card: a name, and a
+/// sentence under it about why there is nothing else here.
+///
+/// One function because the two callers must not drift apart. A card is
+/// what the user sees when a tab has no app in it, and a tab that reads
+/// differently depending on which internal variant produced it teaches
+/// them that the difference is meaningful when it is not — the difference
+/// that *is* meaningful is the sentence, which the caller supplies.
+fn draw_card_text(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    title: &str,
+    detail: &str,
+) {
+    // Dark text on the white card.
+    let on_card = theme.tokens.colors.neutral[1]; // slate-900 in dark theme
+    let on_card_dim = theme.tokens.colors.neutral[4]; // slate-600
+    let text_size = theme.tokens.typography.scale.xl;
+    let (tw, _) = tr.measure(title, text_size, None);
+    let x = rect.center().x - tw as f64 / 2.0;
+    let y = rect.center().y - text_size as f64 / 2.0;
+    tr.draw_text(scene, title, text_size, on_card, transform * Affine::translate((x, y)), None);
+    if detail.is_empty() {
+        return;
+    }
+    let sm = theme.tokens.typography.scale.sm;
+    let (sw, _) = tr.measure(detail, sm, None);
+    let sx = rect.center().x - sw as f64 / 2.0;
+    tr.draw_text(scene, detail, sm, on_card_dim, transform * Affine::translate((sx, y + text_size as f64 + 8.0)), None);
 }
 
 #[cfg(test)]
