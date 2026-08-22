@@ -754,11 +754,6 @@ pub struct ServiceBind {
     pub child_fd: i32,
 }
 
-/// The path inside the sandbox that the service socket fd is mounted at.
-pub fn sandbox_service_path(name: &str) -> PathBuf {
-    PathBuf::from("/run/qos/services").join(format!("{name}.sock"))
-}
-
 /// The env var name the entrypoint reads to find an opened service fd.
 pub fn svc_env_var(name: &str) -> String {
     format!("QOS_SVC_{}_FD", name.to_uppercase())
