@@ -14,18 +14,35 @@ The demo's agent beat (plan/yc-demo.md, beat 6), driven end to end:
   4. Ctrl+S in the word processor, and the file on disk read back: a pipe
      table where the bullets were, the instruction gone.
 
+Which action the agent takes is chosen by a model, from the catalogue of
+things the word processor exports. That choice is the only scripted step
+this demo ever had, and the run asserts which path made it rather than
+assuming: `--no-model` pins the decision to the agent's keyword vocabulary
+and this script then requires the log to say so, so a run on the fallback
+can never be mistaken afterwards for a live one.
+
+For a live run the agent needs a key. It is read from `ANTHROPIC_API_KEY`,
+or from the `KEY=value` file named by `ANTHROPIC_ENV_FILE` — pass the file,
+not the value, so no credential reaches a command line or a process list.
+`HOME` is redirected here, so the agent's own home-directory fallback will
+not find anything; name the file explicitly.
+
 Snapshots land in /tmp/agent-demo-{01-before,02-during,03-after}.png; the
 middle one is taken while the agent is pacing its edits, so its caret pill
 ("Scribe") is on screen. Exits non-zero on any failed step.
 """
+import argparse
 import json
 import os
 import pathlib
+import re
 import signal
 import socket
 import subprocess
 import sys
 import time
+
+from reaper import die_with_parent, track
 
 REPO = pathlib.Path(__file__).resolve().parent.parent.parent
 BIN = REPO / "target" / "debug"
@@ -79,6 +96,19 @@ def wait_for(pred, timeout: float, what: str, *logs):
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--no-model",
+        action="store_true",
+        help="decide by keyword instead of asking a model, and require the log to say so",
+    )
+    ap.add_argument(
+        "--snapshot-prefix",
+        default="/tmp/agent-demo",
+        help="where the three snapshots go (default: /tmp/agent-demo)",
+    )
+    args = ap.parse_args()
+
     for b in ("shell", "word-processor", "qos-agent"):
         if not (BIN / b).exists():
             fail(f"build first: cargo build -p shell -p word-processor -p agent ({BIN / b} missing)")
@@ -110,8 +140,9 @@ def main() -> None:
         comp = subprocess.Popen(
             [str(BIN / "shell"), "--mode", "native", "--backend", "headless"],
             env=env, stdout=subprocess.DEVNULL, stderr=open(comp_log, "w"),
+            preexec_fn=die_with_parent(),
         )
-        procs.append(comp)
+        procs.append(track(comp))
         wait_for(lambda: ctl.exists(), 30, "the control socket", comp_log)
         display_file = run / "qos-session" / "wayland-display"
         wait_for(lambda: display_file.exists(), 30, "the Wayland display file", comp_log)
@@ -142,8 +173,9 @@ def main() -> None:
         wp = subprocess.Popen(
             [str(BIN / "word-processor"), str(brief)],
             env=wp_env, stdout=subprocess.DEVNULL, stderr=open(wp_log, "w"),
+            preexec_fn=die_with_parent(),
         )
-        procs.append(wp)
+        procs.append(track(wp))
 
         def tile():
             names = [t["name"] for t in control(ctl, {"op": "list_targets"})["targets"]]
@@ -151,19 +183,23 @@ def main() -> None:
 
         tile_name = wait_for(tile, 90, "the word processor's window", wp_log, comp_log)
         time.sleep(4.0)  # first frame + the app's record announcement
-        control(ctl, {"op": "snapshot", "path": "/tmp/agent-demo-01-before.png"})
+        control(ctl, {"op": "snapshot", "path": f"{args.snapshot_prefix}-01-before.png"})
         print("OK  word processor is up")
 
         # The agent: same room, same record, its own name.
         record = f"file:{brief.resolve()}"
+        argv = [str(BIN / "qos-agent"), "--socket", str(broker), "--workspace", room,
+                "--record", record, "--name", "Scribe", "--once", "--pace-ms", "600"]
+        if args.no_model:
+            argv.append("--no-model")
         agent = subprocess.Popen(
-            [str(BIN / "qos-agent"), "--socket", str(broker), "--workspace", room,
-             "--record", record, "--name", "Scribe", "--once", "--pace-ms", "600"],
+            argv,
             env={**env, "RUST_LOG": "info"}, stdout=subprocess.DEVNULL, stderr=open(agent_log, "w"),
+            preexec_fn=die_with_parent(),
         )
-        procs.append(agent)
+        procs.append(track(agent))
         time.sleep(2.0)
-        control(ctl, {"op": "snapshot", "path": "/tmp/agent-demo-02-during.png"})
+        control(ctl, {"op": "snapshot", "path": f"{args.snapshot_prefix}-02-during.png"})
         try:
             code = agent.wait(timeout=60)
         except subprocess.TimeoutExpired:
@@ -173,9 +209,29 @@ def main() -> None:
         log = agent_log.read_text(errors="replace")
         if "insert table" not in log:
             fail("the agent did not report inserting a table", agent_log, wp_log)
+
+        # Which path chose the action. The agent logs this per instruction;
+        # requiring it here is what keeps a fallback run from being written
+        # up as a live one.
+        decided = re.search(r"decided_by=(\w+).*?\blive=(\w+)", log)
+        if not decided:
+            fail("the agent did not report how it chose", agent_log)
+        route, live = decided.group(1), decided.group(2) == "true"
+        if args.no_model:
+            if route != "keywords" or live:
+                fail(f"--no-model, but the agent reported {route!r} (live={live})", agent_log)
+            print("OK  the keyword vocabulary chose, with no model and no network")
+        else:
+            if route != "model" or not live:
+                fail(
+                    f"expected a live model choice, got {route!r} (live={live}). "
+                    "Set ANTHROPIC_API_KEY or ANTHROPIC_ENV_FILE, or run with --no-model.",
+                    agent_log,
+                )
+            print("OK  a model chose the action, from the app's exported catalogue")
         print("OK  agent carried out the instruction")
         time.sleep(1.5)
-        control(ctl, {"op": "snapshot", "path": "/tmp/agent-demo-03-after.png"})
+        control(ctl, {"op": "snapshot", "path": f"{args.snapshot_prefix}-03-after.png"})
 
         # Save from the word processor and read the file back.
         rect = next(t["rect"] for t in control(ctl, {"op": "list_targets"})["targets"] if t["name"] == tile_name)
