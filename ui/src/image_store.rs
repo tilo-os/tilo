@@ -247,15 +247,30 @@ mod tests {
     #[test]
     fn get_returns_none_then_ready_after_async_decode() {
         let bytes = png_bytes(12, 8, [10, 200, 30]);
-        let fetch: Fetcher = Arc::new(move |_url: &str| Some(bytes.clone()));
+        // Count the fetches the store actually performs. Asserting
+        // `!is_idle()` right after the miss looks like the same check but
+        // is a race: the worker is free to finish this 12x8 decode before
+        // the assertion runs, and then the store is legitimately idle. The
+        // claim worth making is that the miss caused exactly one load, and
+        // this counter says so whoever wins that race.
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&fetches);
+        let fetch: Fetcher = Arc::new(move |_url: &str| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Some(bytes.clone())
+        });
         let store = ImageStore::new(fetch);
 
         // First look: not cached → placeholder (None) + a load is scheduled.
         assert!(store.get("http://example.test/cover.png").is_none());
-        assert!(!store.is_idle(), "a load is in flight");
 
         store.block_until_idle(Duration::from_secs(5));
         assert!(store.is_idle(), "load settled");
+        assert_eq!(
+            fetches.load(Ordering::SeqCst),
+            1,
+            "the cache miss scheduled exactly one load"
+        );
 
         let img = store
             .get("http://example.test/cover.png")
