@@ -2174,6 +2174,24 @@ impl VideoEditorApp {
         }
     }
 
+    /// Zoom so the whole project fits the lane area, and park the view at the
+    /// start. The answer to "I zoomed in and now I am lost", which the editor
+    /// previously had no button for at all.
+    fn zoom_to_fit(&mut self, r: &Regions) {
+        let dur = self.project.duration().max(0.01);
+        let w = r.lanes.width().max(1.0);
+        self.zoom = (w / dur).clamp(6.0, 220.0);
+        self.scroll = 0.0;
+        self.clamp_scroll(r);
+    }
+
+    /// The zoom-readout chip in the timeline's gutter footer — also the
+    /// fit-to-window button.
+    fn zoom_chip_rect(&self, r: &Regions) -> Rect {
+        let y = r.ruler.y0 + 4.0;
+        Rect::new(r.gutter.x0 + 8.0, y, r.gutter.x0 + 8.0 + 84.0, y + 22.0)
+    }
+
     fn zoom_by(&mut self, factor: f64) {
         self.zoom = (self.zoom * factor).clamp(6.0, 220.0);
         let r = self.regions();
@@ -2948,6 +2966,126 @@ impl Widget for VideoEditorApp {
         }
     }
 
+    /// What the pointer is over. The editor is a canvas, so without this every
+    /// region — a draggable bin row, a trim handle, a scrubber — looked
+    /// identical to dead space.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        use winit::window::CursorIcon;
+        let r = self.regions();
+        if self.show_export {
+            let l = self.export_layout(&r);
+            let over_btn = l.cancel.contains(point)
+                || l.confirm.contains(point)
+                || l.resolution.iter().any(|(_, rc)| rc.contains(point))
+                || l.container.iter().any(|(_, rc)| rc.contains(point))
+                || l.fps.iter().any(|(_, rc)| rc.contains(point));
+            return Some(if over_btn { CursorIcon::Pointer } else { CursorIcon::Default });
+        }
+        // A live drag owns the cursor for its whole duration.
+        match self.drag {
+            Some(Drag::ClipMove { .. }) => return Some(CursorIcon::Grabbing),
+            Some(Drag::TrimIn { .. }) | Some(Drag::TrimOut { .. }) => {
+                return Some(CursorIcon::EwResize)
+            }
+            Some(Drag::Playhead) | Some(Drag::Scrubber) => return Some(CursorIcon::ColResize),
+            Some(Drag::Marquee { .. }) => return Some(CursorIcon::Crosshair),
+            _ => {}
+        }
+        if self.bin_drag.map(|b| b.active).unwrap_or(false) {
+            return Some(CursorIcon::Grabbing);
+        }
+        // Scrollbars first — they float over their panes.
+        for pane in Self::SCROLL_PANES {
+            if let Some((track, m)) = self.scroll_pane(pane, &r) {
+                if self.scroll_bar(pane).thumb_rect(track, m).is_some_and(|t| t.contains(point)) {
+                    return Some(CursorIcon::Pointer);
+                }
+            }
+        }
+        // Topbar buttons.
+        if [r.import_btn, r.split_btn, r.export_btn, r.menu_btn].iter().any(|b| b.contains(point)) {
+            return Some(CursorIcon::Pointer);
+        }
+        // Bin rows can be dragged onto the timeline.
+        if self.bin_is_visible(&r) && r.bin.contains(point) {
+            if self.bin_item_rects(&r).iter().any(|(_, rect)| rect.contains(point)) {
+                return Some(CursorIcon::Grab);
+            }
+            return Some(CursorIcon::Default);
+        }
+        // Transport.
+        if self.transport_buttons(&r).iter().any(|(_, rect)| rect.contains(point)) {
+            return Some(CursorIcon::Pointer);
+        }
+        if self.has_scrubber(&r) {
+            let sc = self.scrubber_rect(&r);
+            if point.x >= sc.x0 && point.x <= sc.x1 && (point.y - sc.center().y).abs() < 14.0 {
+                return Some(CursorIcon::ColResize);
+            }
+        }
+        if r.ruler.contains(point) {
+            return Some(CursorIcon::ColResize);
+        }
+        // Track-header pills and the add-track buttons.
+        if r.gutter.contains(point) {
+            for (_, _, lane) in self.lane_rects(&r) {
+                let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+                if header.contains(point)
+                    && [
+                        self.mute_pill_rect(header),
+                        self.lock_pill_rect(header),
+                        self.solo_pill_rect(header),
+                    ]
+                    .iter()
+                    .any(|pill| pill.contains(point))
+                {
+                    return Some(CursorIcon::Pointer);
+                }
+            }
+            if self.add_track_buttons(&r).iter().any(|(_, rect)| rect.contains(point)) {
+                return Some(CursorIcon::Pointer);
+            }
+            return Some(CursorIcon::Default);
+        }
+        // Timeline clips: trim handles at the edges, grab in the body.
+        if r.lanes.contains(point) {
+            if let Some((cid, lane)) = self.clip_at(&r, point) {
+                if !self.project.clip_editable(cid) {
+                    return Some(CursorIcon::NotAllowed);
+                }
+                if let Some(clip) = self.project.clip(cid) {
+                    let cr = self.clip_rect(clip, &lane, &r);
+                    if (point.x - cr.x0).abs() <= TRIM_HIT || (point.x - cr.x1).abs() <= TRIM_HIT {
+                        return Some(CursorIcon::EwResize);
+                    }
+                }
+                return Some(CursorIcon::Grab);
+            }
+            return Some(CursorIcon::Crosshair);
+        }
+        // Inspector controls.
+        if r.inspector.contains(point) {
+            let l = self.inspector_layout(&r);
+            let sliders = [
+                l.opacity, l.volume, l.brightness, l.contrast, l.saturation, l.fade_in,
+                l.fade_out, l.transition_len,
+            ];
+            if sliders.iter().flatten().any(|t| hit_slider(*t, point)) {
+                return Some(CursorIcon::Pointer);
+            }
+            if l.valid
+                && (l.split.contains(point)
+                    || l.delete.contains(point)
+                    || l.add_effect.contains(point)
+                    || l.transitions.iter().any(|(_, rc)| rc.contains(point))
+                    || l.colors.iter().any(|(_, rc)| rc.contains(point)))
+            {
+                return Some(CursorIcon::Pointer);
+            }
+        }
+        Some(CursorIcon::Default)
+    }
+
     fn name(&self) -> &str {
         "VideoEditorApp"
     }
@@ -3124,6 +3262,11 @@ impl VideoEditorApp {
                 self.toggle_bin();
                 true
             }
+            // Shift+Z fits the whole project to the window, the NLE standard.
+            Key::Character(c) if c.eq_ignore_ascii_case("z") && !ctrl => {
+                self.zoom_to_fit(r);
+                true
+            }
             Key::Character(c) if c.as_str() == "+" || c.as_str() == "=" => {
                 self.zoom_by(1.25);
                 true
@@ -3265,6 +3408,11 @@ impl VideoEditorApp {
             self.drag = Some(Drag::Playhead);
             self.playhead = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps)
                 .clamp(0.0, self.project.duration());
+            return;
+        }
+        // Zoom readout / fit-to-window, in the gutter's ruler corner.
+        if self.zoom_chip_rect(r).contains(p) {
+            self.zoom_to_fit(r);
             return;
         }
         // Timeline gutter: add-track buttons and per-track mute pills.
@@ -3967,6 +4115,31 @@ impl VideoEditorApp {
                     _ => draw_flat_signal(scene, tf, inner, color),
                 }
             }
+            // A source whose picture or waveform has not landed yet says so,
+            // rather than looking identical to one that is simply blank.
+            let pending = if m.kind.is_visual() {
+                self.thumbnails.get(mid).is_none()
+            } else {
+                matches!(
+                    self.waveforms.state(m.id),
+                    crate::waveform::WaveformState::Pending
+                        | crate::waveform::WaveformState::Unrequested
+                )
+            };
+            if pending {
+                let dot_r = 2.5;
+                let cy = thumb.y1 - 8.0;
+                for i in 0..3 {
+                    let cx = thumb.x0 + 10.0 + i as f64 * 8.0;
+                    scene.fill(
+                        Fill::NonZero,
+                        tf,
+                        with_alpha(Color::WHITE, 0.35 + 0.2 * i as f64),
+                        None,
+                        &Circle::new(Point::new(cx, cy), dot_r),
+                    );
+                }
+            }
             // kind dot.
             let kc = match m.kind {
                 MediaKind::Video => c.semantic.info,
@@ -4640,6 +4813,35 @@ impl VideoEditorApp {
         fill_rrect(scene, tf, c.accent[5], tagrect, 3.0);
         text_w(scene, tr, tf, &tag, 10.0, on_fill(theme, c.accent[5]).1, tagx, r.ruler.y0 + 3.0, TextWeight::Bold);
 
+        // Zoom readout, doubling as fit-to-window. Without it there was no way
+        // to tell how far in you were, and no way back out but wheeling.
+        let chip = self.zoom_chip_rect(r);
+        let chip_hover = chip.contains(self.last_mouse);
+        fill_rrect(scene, tf, if chip_hover { c.overlay_medium } else { c.neutral[3] }, chip, 5.0);
+        stroke_rrect(scene, tf, c.border_standard, chip, 5.0, 1.0);
+        let zl = if self.zoom >= 100.0 {
+            format!("{:.0} px/s", self.zoom)
+        } else {
+            format!("{:.1} px/s", self.zoom)
+        };
+        let at = text_centre(chip, &zl, 10.0, TextWeight::Regular, tr);
+        text(scene, tr, tf, &zl, 10.0, c.text_dim, at.x, at.y);
+
+        // Empty timeline: say what to do, rather than showing bare lanes.
+        if self.project.clips.is_empty() {
+            let area = Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1);
+            let line = if self.project.media.is_empty() {
+                "Import media, then drag it here"
+            } else {
+                "Drag a clip from the media bin onto a track"
+            };
+            let (lw, _) = tr.measure(line, 12.5, None);
+            text(
+                scene, tr, tf, line, 12.5, c.text_dim,
+                area.center().x - lw as f64 / 2.0, area.center().y - 8.0,
+            );
+        }
+
         // Add-track buttons in the gutter footer.
         for (kind, rect) in self.add_track_buttons(r) {
             let hover = rect.contains(self.last_mouse);
@@ -4834,7 +5036,8 @@ impl VideoEditorApp {
                 text(scene, tr, tf, &format!("Done: {path}"), 11.0, c.semantic.success, x0, card.y1 - 68.0);
             }
             ExportStatus::Failed { reason } => {
-                text(scene, tr, tf, reason, 10.5, c.semantic.warning, x0, card.y1 - 68.0);
+                // Danger, not warning: the export did not happen.
+                text(scene, tr, tf, reason, 10.5, c.semantic.danger, x0, card.y1 - 68.0);
             }
             ExportStatus::Idle => {
                 // One source of truth for the availability copy — the export
@@ -6406,6 +6609,63 @@ mod tests {
             VideoDoc::load_project(&doc).track(tid).map(|t| t.locked).unwrap_or(false),
             "the menu entry locked the track in the CRDT",
         );
+    }
+
+    // ---- affordances ------------------------------------------------------
+
+    #[test]
+    fn the_zoom_chip_reports_the_zoom_and_fits_the_project_to_the_window() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        app.zoom = 180.0;
+        let dur = app.project.duration();
+        assert!(
+            app.time_to_x(dur, &r.lanes) > r.lanes.x1,
+            "zoomed right in, the end is off screen",
+        );
+        let chip = app.zoom_chip_rect(&r);
+        click(&mut app, &mut doc, chip.center().x, chip.center().y);
+        release(&mut app, &mut doc);
+        assert!(
+            app.time_to_x(dur, &r.lanes) <= r.lanes.x1 + 1.0,
+            "clicking the chip fitted the whole project into the lane area",
+        );
+        assert_eq!(app.scroll, 0.0, "and parked the view at the start");
+        // The keyboard route agrees.
+        app.zoom = 180.0;
+        assert!(key_press(&mut app, &mut doc, "z", false), "Z is handled");
+        assert!(app.time_to_x(dur, &r.lanes) <= r.lanes.x1 + 1.0);
+    }
+
+    #[test]
+    fn the_pointer_says_what_each_region_does() {
+        use winit::window::CursorIcon;
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        // A bin row can be dragged out.
+        let (_mid, row) = app.bin_item_rects(&r)[0];
+        assert_eq!(app.cursor_shape(row.center()), Some(CursorIcon::Grab));
+        // A clip body grabs; its edges resize.
+        let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let cid = app.project.clips_on(tid).first().map(|c| c.id).expect("a clip");
+        let cr = clip_screen_rect(&app, &r, cid);
+        assert_eq!(app.cursor_shape(cr.center()), Some(CursorIcon::Grab));
+        assert_eq!(app.cursor_shape(Point::new(cr.x0, cr.center().y)), Some(CursorIcon::EwResize));
+        // Empty lane space is where a marquee starts.
+        assert_eq!(
+            app.cursor_shape(Point::new(r.lanes.x1 - 4.0, cr.center().y)),
+            Some(CursorIcon::Crosshair),
+        );
+        // The ruler scrubs.
+        assert_eq!(app.cursor_shape(r.ruler.center()), Some(CursorIcon::ColResize));
+        // Buttons are buttons.
+        assert_eq!(app.cursor_shape(r.export_btn.center()), Some(CursorIcon::Pointer));
+        // A locked track refuses, and says so.
+        let lane = app.lane_rects(&r).into_iter().find(|(t, _, _)| *t == tid).unwrap().2;
+        let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+        let pill = app.lock_pill_rect(header);
+        click(&mut app, &mut doc, pill.center().x, pill.center().y);
+        assert_eq!(app.cursor_shape(cr.center()), Some(CursorIcon::NotAllowed));
     }
 
     // ---- responsive geometry ---------------------------------------------
