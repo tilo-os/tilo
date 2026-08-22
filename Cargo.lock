@@ -8391,6 +8391,7 @@ dependencies = [
  "gstreamer-video",
  "serde_json",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -15986,6 +15987,7 @@ dependencies = [
  "qos-actions",
  "serde",
  "serde_json",
+ "serial_test",
  "taffy",
  "tracing",
  "tracing-subscriber",
