@@ -17,6 +17,7 @@ pub mod text_layout;
 pub mod toolbar;
 pub mod views;
 pub mod search_provider;
+pub mod external_drag;
 pub mod files_app;
 
 pub use command::{FileCommand, CommandSink};

@@ -12,6 +12,7 @@
 
 use std::cell::RefCell;
 use std::path::PathBuf;
+use vello::kurbo::Point;
 use std::rc::Rc;
 
 use crate::model::{SortBy, SortOrder, ViewMode};
@@ -97,6 +98,12 @@ pub enum FileCommand {
     /// they are dropped: onto a folder (or the parent) they move there; a single
     /// folder dropped on the sidebar is pinned to Favourites. `is_dir` lets the
     /// app gate pinning to folders without a filesystem probe.
+    /// A plain press landed on a row: the app arms a drag of `path` from
+    /// `at` and starts it once the held pointer travels far enough. Armed
+    /// at the app level because the content pane — and the view that saw
+    /// the press — is rebuilt when the click changes the selection, so
+    /// state parked in the view would not survive to the first move.
+    ArmDrag { path: PathBuf, is_dir: bool, at: Point },
     BeginDrag { path: PathBuf, is_dir: bool },
     /// Add a folder to the favourites / places list.
     AddFavorite(PathBuf),
