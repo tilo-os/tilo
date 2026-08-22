@@ -121,7 +121,8 @@ DEFAULT_DWELL_S = 5.0
 # --------------------------------------------------------------------
 
 
-def private_session_bus(run_dir: str) -> tuple[str, subprocess.Popen] | None:
+def private_session_bus(run_dir: str,
+                        runtime_dir: str) -> tuple[str, subprocess.Popen] | None:
     """A D-Bus session bus of this run's own.
 
     Not a nicety. The compositor serves the file-chooser portal by taking
@@ -144,11 +145,36 @@ def private_session_bus(run_dir: str) -> tuple[str, subprocess.Popen] | None:
     desktop's bus, where it would otherwise be competing with GNOME for
     your notifications.
     """
+    # The bus must not inherit the real XDG_RUNTIME_DIR, and this is not a
+    # tidiness point — it destroys the desktop's file access.
+    #
+    # A session bus activates services on demand, and the portal frontend
+    # asks for `org.freedesktop.portal.Documents`. dbus-daemon starts
+    # `xdg-document-portal` with *its own* environment, and that program
+    # mounts a FUSE filesystem at `$XDG_RUNTIME_DIR/doc`. Inheriting
+    # /run/user/1000 therefore mounts over the one the real portal is
+    # already serving. When this run ends, its `fusermount3
+    # --auto-unmount` takes the mount away — including the desktop's.
+    #
+    # The real xdg-document-portal stays `active` and never notices its
+    # mount vanished, so it never rebuilds it. Every flatpak launch then
+    # fails, because flatpak binds `$XDG_RUNTIME_DIR/doc/by-app/<id>`
+    # into every sandbox:
+    #
+    #   bwrap: Can't find source path /run/user/1000/doc/by-app/... 
+    #
+    # and the person cannot start any application until they run
+    # `systemctl --user restart xdg-document-portal.service`. Observed on
+    # this machine after a filming run; only `doc` died while gvfs, in
+    # the same directory, survived — the signature of a targeted unmount
+    # rather than a recursive sweep.
+    env = dict(os.environ, XDG_RUNTIME_DIR=runtime_dir)
     for daemon in ("/usr/bin/dbus-daemon", shutil.which("dbus-daemon")):
         if not daemon or not os.path.exists(daemon):
             continue
         proc = subprocess.Popen(
             [daemon, "--session", "--print-address", "--nofork"],
+            env=env,
             stdout=subprocess.PIPE,
             stderr=open(os.path.join(run_dir, "dbus.log"), "w"),
             preexec_fn=yc.die_with_parent())
@@ -1014,7 +1040,7 @@ def main() -> int:
     try:
         # ---- stage ------------------------------------------------
         print("\nsetting up:")
-        raised = private_session_bus(run_dir)
+        raised = private_session_bus(run_dir, session.runtime_dir)
         if raised:
             session.bus_address, bus = raised
             print(f"  private session bus    pid {bus.pid} "
