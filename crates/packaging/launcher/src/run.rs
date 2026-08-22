@@ -791,8 +791,7 @@ pub fn run_with(
     let seccomp_fd: OwnedFd = stage_seccomp_blob(&seccomp_blob)?;
     const SECCOMP_CHILD_FD: i32 = 16;
 
-    // 2b. D-Bus proxy / direct-bind decision.
- Manifest asks for
+    // 2b. D-Bus proxy / direct-bind decision. Manifest asks for
     // portals? Try to spawn xdg-dbus-proxy; on failure fall back
     // to a raw-path bind. `_dbus_guard` stays alive until we finish
     // waiting on bwrap so Drop can SIGTERM the proxy.
@@ -1225,7 +1224,7 @@ pub fn run_with(
             if flags != -1 {
                 let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
             }
-            unsafe { place_service_fds(&mut service_fds)? };
+            place_service_fds(&mut service_fds)?;
             // Landlock is NOT installed here — bwrap needs broad FS
             // access to set up the namespace. It's installed by the
             // __sandbox-exec shim after bwrap's mount setup completes.
@@ -1376,7 +1375,7 @@ pub fn run_with_captured(
             if flags != -1 {
                 let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
             }
-            unsafe { place_service_fds(&mut service_fds)? };
+            place_service_fds(&mut service_fds)?;
             Ok(())
         });
     }
