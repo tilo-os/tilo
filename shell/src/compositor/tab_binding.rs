@@ -392,20 +392,31 @@ pub fn close_tab_for_destroyed_surface(
 
 /// Turn a wayland app-id into a tab-bar friendly label.
 ///
-/// If this session launched the package the client belongs to, the
-/// installed app's name wins — a tab for an app the user opened by name
-/// in the palette should carry that name. Otherwise we fall back to the
-/// trailing app-id component, which is what most apps would want shown
-/// anyway: `org.example.MyApp` → `MyApp`.
+/// The app's own name wins wherever one can be found — from this
+/// session's launches, from the installed package's manifest, or from a
+/// host `.desktop` entry. A tab is the app's name badge, and the one
+/// thing it must never show is a machine identifier the user did not
+/// choose and does not recognise.
+///
+/// When nothing names it, the trailing app-id component is humanised
+/// rather than printed raw: `dev.qos.word-processor` → `Word Processor`,
+/// not `word-processor`. This is the same transformation the package
+/// registry applies to a manifest with no declared name, so an app
+/// reaches the same label by either route.
 fn tab_label_for_foreign(app_id: &str) -> String {
     if let Some(name) = crate::shell::launcher::display_name_for_app_id(app_id) {
         return name;
     }
-    let trimmed = app_id.split('.').next_back().unwrap_or(app_id);
-    if trimmed.len() > 32 {
-        trimmed[..32].to_string()
+    let label = crate::shell::launcher::display_name_for_package_id(app_id);
+    let label = if label.trim().is_empty() {
+        app_id.to_string()
     } else {
-        trimmed.to_string()
+        label
+    };
+    if label.chars().count() > 32 {
+        label.chars().take(32).collect()
+    } else {
+        label
     }
 }
 
@@ -866,7 +877,95 @@ mod tests {
             }
             other => panic!("expected Foreign tile, got {:?}", other),
         }
-        assert_eq!(tab.title, "late", "title is the trailing app-id component");
+        // Humanised, not raw. A tab is a name badge; `late` is a
+        // fragment of an identifier and `Late` is a word.
+        assert_eq!(tab.title, "Late", "title is the humanised app-id component");
+    }
+
+    // -----------------------------------------------------------------
+    // A tab carries the app's name.
+    //
+    // The failure these exist to prevent is a tab reading `app` or
+    // `word-processor` — a machine identifier the user never chose,
+    // shown where the app's name belongs.
+    // -----------------------------------------------------------------
+
+    /// With nothing installed and nothing launched, the label is still
+    /// built out of words rather than out of an identifier.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_hyphenated_app_id_becomes_a_name_not_a_slug() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Point the launcher at an empty registry so the lookup misses
+        // and the fallback is what is under test.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        crate::shell::launcher::invalidate_app_cache();
+        crate::shell::launcher::clear_launched_for_test();
+
+        assert_eq!(tab_label_for_foreign("dev.qos.word-processor"), "Word Processor");
+        assert_eq!(tab_label_for_foreign("dev.qos.file-explorer"), "File Explorer");
+        // The documented behaviour for an already-camel-cased id is
+        // unchanged.
+        assert_eq!(tab_label_for_foreign("org.example.MyApp"), "MyApp");
+
+        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        crate::shell::launcher::invalidate_app_cache();
+    }
+
+    /// The package's manifest names the app, and that name is the app's
+    /// name whoever started the window. Previously only apps this
+    /// session had launched itself were resolvable, so a window that
+    /// arrived any other way fell through to the raw app-id.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_tab_takes_the_name_the_package_declares_even_without_a_launch() {
+        let tmp = tempfile::tempdir().unwrap();
+        install_named(tmp.path(), "dev.qos.file-explorer", "Files");
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        crate::shell::launcher::invalidate_app_cache();
+        crate::shell::launcher::clear_launched_for_test();
+
+        // Nothing was launched through this session — exactly the case
+        // that used to produce `file-explorer`.
+        assert_eq!(tab_label_for_foreign("dev.qos.file-explorer"), "Files");
+        // And by the trailing-component convention the app-id may use.
+        assert_eq!(tab_label_for_foreign("file-explorer"), "Files");
+
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let _ = adopt_toplevel(&mut tree, 4242, Some("dev.qos.file-explorer".to_string()));
+        assert_eq!(
+            tab_of(&tree, 4242).title,
+            "Files",
+            "the tab the compositor actually builds carries the real name"
+        );
+
+        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        crate::shell::launcher::invalidate_app_cache();
+    }
+
+    /// Minimal installed package: a manifest declaring a name, and a
+    /// registry entry pointing at it. Same shape `qos-install` writes.
+    fn install_named(dir: &std::path::Path, package_id: &str, name: &str) {
+        let payload = dir.join("payloads").join(package_id);
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        let manifest_path = payload.join("manifest.toml");
+        std::fs::write(
+            &manifest_path,
+            format!(
+                "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
+                 version = \"1.0.0\"\n[entrypoint]\nbin = \"bin/app\"\n\
+                 type = \"gui\"\n"
+            ),
+        )
+        .unwrap();
+        let registry = dir.join("registry.toml");
+        let mut existing = std::fs::read_to_string(&registry).unwrap_or_default();
+        existing.push_str(&format!(
+            "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            payload.display().to_string(),
+            manifest_path.display().to_string()
+        ));
+        std::fs::write(&registry, existing).unwrap();
     }
 
     #[test]
