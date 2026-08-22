@@ -4380,10 +4380,11 @@ impl ShellOverlayHost {
     /// and the scope switch sit on one baseline.
     const FILTER_CONTROL_HEIGHT_PX: f64 = 24.0;
 
-    /// Geometry of the overview's centered content column. Concept wraps
-    /// everything in a `max-w-5xl w-full` column with `p-12` outer padding,
-    /// horizontally centered by the outer `items-center` flex row. The
-    /// returned rect is the inner column after the padding is removed.
+    /// Geometry of the overview's centered content column — the band the
+    /// header and the workspace grid share, inset from the viewport by
+    /// [`OVERVIEW_OUTER_PADDING_PX`] and capped at
+    /// [`OVERVIEW_MAX_WIDTH_PX`] so the grid stays a readable measure on a
+    /// very wide output instead of stretching to the bezels.
     fn overview_column_rect(&self) -> Rect {
         let max_w = OVERVIEW_MAX_WIDTH_PX;
         let padding = OVERVIEW_OUTER_PADDING_PX;
@@ -4394,62 +4395,127 @@ impl ShellOverlayHost {
         Rect::new(x0, self.rect.y0 + padding, x1, self.rect.y1 - padding)
     }
 
-    /// Y-coordinate where the first workspace row card starts. Matches the
-    /// draw path so hit-test + draw stay in sync. The header sits above the
-    /// rail container; the rail container sits `mb-16` below the header.
-    /// `overview_scroll_y` shifts every row upward so the wheel handler
-    /// can pan beyond the visible band when the workspace list overflows.
-    fn overview_first_row_top(&self) -> f64 {
+    /// How many workspace cards sit side by side in the grid.
+    ///
+    /// Derived from the column's own width rather than fixed, so the same
+    /// draw path gives a phone-width output one column and a desktop four,
+    /// and every card keeps at least [`OVERVIEW_CARD_MIN_WIDTH_PX`] to
+    /// name what is in it. Capped at [`OVERVIEW_GRID_MAX_COLS`]: past
+    /// four across, cards get narrower without the screen getting more
+    /// legible.
+    fn overview_grid_cols(&self) -> usize {
+        let avail = self.overview_column_rect().width();
+        let gap = OVERVIEW_GRID_GAP_PX;
+        let fit = ((avail + gap) / (OVERVIEW_CARD_MIN_WIDTH_PX + gap)).floor();
+        (fit.max(1.0) as usize).min(OVERVIEW_GRID_MAX_COLS)
+    }
+
+    /// Width of one grid cell at the current column count.
+    fn overview_cell_width(&self) -> f64 {
+        let cols = self.overview_grid_cols();
+        let avail = self.overview_column_rect().width();
+        ((avail - OVERVIEW_GRID_GAP_PX * (cols as f64 - 1.0)) / cols as f64).max(1.0)
+    }
+
+    /// Y-coordinate where the header block starts.
+    ///
+    /// The header and the grid are composed as one block and centred in
+    /// the column while they fit, so a handful of workspaces reads as a
+    /// deliberate band across the screen rather than as content shoved
+    /// against the top edge with a screen's worth of void beneath it.
+    /// Once the grid is taller than the column the block pins to the top
+    /// and `overview_scroll_y` takes over.
+    fn overview_header_top(&self) -> f64 {
         let col = self.overview_column_rect();
-        col.y0 + OVERVIEW_HEADER_HEIGHT_PX + OVERVIEW_HEADER_MARGIN_BOTTOM_PX
+        let block = OVERVIEW_HEADER_HEIGHT_PX
+            + OVERVIEW_HEADER_MARGIN_BOTTOM_PX
+            + self.overview_content_height();
+        let slack = col.height() - block;
+        if slack > 0.0 {
+            // Slightly above the geometric centre: content placed dead
+            // centre reads as sitting low.
+            col.y0 + slack * 0.42
+        } else {
+            col.y0
+        }
+    }
+
+    /// Y-coordinate where the first grid row starts. Matches the draw path
+    /// so hit-test + draw stay in sync. `overview_scroll_y` shifts every
+    /// row upward so the wheel handler can pan beyond the visible band
+    /// when the workspace list overflows.
+    fn overview_first_row_top(&self) -> f64 {
+        self.overview_header_top()
+            + OVERVIEW_HEADER_HEIGHT_PX
+            + OVERVIEW_HEADER_MARGIN_BOTTOM_PX
             - self.overview_scroll_y
     }
 
-    /// Total scrollable content height in the overview (all workspace
-    /// rows + their gaps + the trailing "+ Add workspace" tile). Used by
-    /// the wheel handler to clamp `overview_scroll_y` so the user can't
-    /// pan past the last row.
+    /// Rect of grid slot `idx`, counting left-to-right then wrapping. Slot
+    /// `i` is workspace `i`; the slot one past the last workspace is the
+    /// "Add workspace" tile, so the create-affordance is a peer cell in
+    /// the same grid rather than a stray tile below it.
+    fn overview_cell_rect(&self, idx: usize) -> Rect {
+        let col = self.overview_column_rect();
+        let cols = self.overview_grid_cols();
+        let w = self.overview_cell_width();
+        let h = OVERVIEW_CARD_HEIGHT_PX;
+        let row = idx / cols;
+        let column = idx % cols;
+        let x0 = col.x0 + column as f64 * (w + OVERVIEW_GRID_GAP_PX);
+        let y0 = self.overview_first_row_top() + row as f64 * (h + OVERVIEW_GRID_GAP_PX);
+        Rect::new(x0, y0, x0 + w, y0 + h)
+    }
+
+    /// Number of grid rows the workspace cards plus the create tile need.
+    fn overview_grid_rows_for(&self, ws_count: usize) -> usize {
+        let cols = self.overview_grid_cols();
+        (ws_count + 1).div_ceil(cols).max(1)
+    }
+
+    /// Total scrollable content height in the overview (every grid row of
+    /// workspace cards, including the row the "Add workspace" tile lands
+    /// in). Used by the wheel handler to clamp `overview_scroll_y` so the
+    /// user can't pan past the last row.
     fn overview_content_height(&self) -> f64 {
         let chrome = match self.chrome.as_ref() {
             Some(c) => c,
             None => return 0.0,
         };
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let ws_count = tree.workspaces.len();
-        ws_count as f64 * (OVERVIEW_ROW_HEIGHT_PX + OVERVIEW_ROW_GAP_PX)
-            + OVERVIEW_ADD_ROW_HEIGHT_PX
+        let ws_count = {
+            let state = chrome.borrow();
+            state.tree().workspaces.len()
+        };
+        let rows = self.overview_grid_rows_for(ws_count);
+        rows as f64 * (OVERVIEW_CARD_HEIGHT_PX + OVERVIEW_GRID_GAP_PX) - OVERVIEW_GRID_GAP_PX
+    }
+
+    /// Height of the band the grid scrolls inside — the column below the
+    /// header block.
+    fn overview_viewport_height(&self) -> f64 {
+        let col = self.overview_column_rect();
+        let top = self.overview_header_top()
+            + OVERVIEW_HEADER_HEIGHT_PX
+            + OVERVIEW_HEADER_MARGIN_BOTTOM_PX;
+        (col.y1 - top).max(0.0)
     }
 
     /// Maximum legal `overview_scroll_y` — the content overflow below
-    /// the visible band, clamped to ≥ 0. Zero when the workspace list
+    /// the visible band, clamped to ≥ 0. Zero when the workspace grid
     /// fits inside the column.
     fn overview_max_scroll_y(&self) -> f64 {
-        let col = self.overview_column_rect();
-        let visible =
-            (col.y1 - col.y0 - OVERVIEW_HEADER_HEIGHT_PX - OVERVIEW_HEADER_MARGIN_BOTTOM_PX)
-                .max(0.0);
-        (self.overview_content_height() - visible).max(0.0)
+        (self.overview_content_height() - self.overview_viewport_height()).max(0.0)
     }
 
-    /// Rect of the workspace card at `idx` in the vertical list.
+    /// Rect of the workspace card at `idx` in the grid.
     fn overview_row_rect(&self, idx: usize) -> Rect {
-        let col = self.overview_column_rect();
-        let top = self.overview_first_row_top();
-        let y0 = top + idx as f64 * (OVERVIEW_ROW_HEIGHT_PX + OVERVIEW_ROW_GAP_PX);
-        Rect::new(col.x0, y0, col.x1, y0 + OVERVIEW_ROW_HEIGHT_PX)
+        self.overview_cell_rect(idx)
     }
 
-    /// Rect of the "+ Add workspace" affordance painted at the tail of
-    /// the overview's vertical workspace list. Concept reserves the
-    /// create-affordance as a light dashed-border tile below the last
-    /// workspace card; sharing the column width but a shorter row
-    /// height keeps it visually subordinate.
+    /// Rect of the "Add workspace" tile — the grid slot immediately after
+    /// the last workspace card.
     fn overview_add_workspace_rect_for(&self, ws_count: usize) -> Rect {
-        let col = self.overview_column_rect();
-        let top = self.overview_first_row_top();
-        let y0 = top + ws_count as f64 * (OVERVIEW_ROW_HEIGHT_PX + OVERVIEW_ROW_GAP_PX);
-        Rect::new(col.x0, y0, col.x1, y0 + OVERVIEW_ADD_ROW_HEIGHT_PX)
+        self.overview_cell_rect(ws_count)
     }
 
     /// Mirror of the geometry in `draw_overview`: return the index of the
@@ -4493,74 +4559,67 @@ impl ShellOverlayHost {
 // Overview layout constants
 // -----------------------------------------------------------------------------
 //
-// Concept source of truth: `nirios-concept/src/components/OverviewView.tsx`.
-// The values below map Tailwind utilities to pixel equivalents; keeping them
-// as module-level constants lets the draw path, `hit_test_overview`, and the
-// unit tests share one geometry oracle.
-//
-// * `max-w-5xl` → 1024 px content column.
-// * `p-12`      → 48 px outer padding (root is `flex-1 bg-slate-950 ...`).
-// * `space-y-8` → 32 px gap between workspace rows.
-// * `mb-16`     → 64 px gap under the header block.
-// * `border-2`  → 2 px card border.
-// * `rounded-3xl` → 24 px card radius.
-// * `p-6`       → 24 px inner padding on each workspace card.
-// * `gap-8`     → 32 px gap between sidebar column and mini-window row.
-// * `w-64`      → 256 px sidebar column.
-// * `h-20`      → 80 px mini-window card height.
+// The overview answers three questions at a glance — what workspaces exist,
+// what is in each one, and which one you are in — so the geometry is built
+// around a grid of equal cards rather than a tall column of near-empty rows.
+// Keeping the numbers as module-level constants lets the draw path,
+// `hit_test_overview`, and the unit tests share one geometry oracle.
 
-const OVERVIEW_MAX_WIDTH_PX: f64 = 1024.0;
+/// Widest the content column ever gets. Past this the grid would stretch to
+/// the bezels of a large output and leave the eye travelling further than
+/// the content is worth.
+const OVERVIEW_MAX_WIDTH_PX: f64 = 1440.0;
+/// Inset from the viewport edge to the content column.
 const OVERVIEW_OUTER_PADDING_PX: f64 = 48.0;
-const OVERVIEW_ROW_GAP_PX: f64 = 32.0;
-/// Row height = top/bottom padding (2×24) + sidebar column content stack
-/// (title ≈ 26, perms panel 60, collaborators header + avatars ≈ 48,
-/// footer ≈ 16) with a little breathing room. The concept uses
-/// `items-start` so the row sizes to content; we lock it to a stable
-/// value so the vertical list reads as even rows.
-const OVERVIEW_ROW_HEIGHT_PX: f64 = 240.0;
-/// Height of the "+ Add workspace" tile painted at the tail of the
-/// vertical workspace list. Shorter than a full workspace row so it
-/// reads as a secondary, lightweight create-affordance rather than a
-/// peer of the existing workspace cards.
-const OVERVIEW_ADD_ROW_HEIGHT_PX: f64 = 72.0;
-const OVERVIEW_ROW_RADIUS_PX: f64 = 24.0;
-const OVERVIEW_ROW_BORDER_PX: f64 = 2.0;
-const OVERVIEW_CARD_PADDING_PX: f64 = 24.0;
-const OVERVIEW_SIDEBAR_WIDTH_PX: f64 = 256.0;
-const OVERVIEW_SIDEBAR_GAP_PX: f64 = 32.0;
-const OVERVIEW_MINI_HEIGHT_PX: f64 = 80.0;
-const OVERVIEW_MINI_WIDTH_PX: f64 = 96.0;
-const OVERVIEW_MINI_GAP_PX: f64 = 16.0;
-/// Space reserved above the first row for the "Workspaces" header block.
-/// The concept's header is centered with an `h1 text-4xl` + body line; 72 px
-/// accommodates the two lines comfortably.
+/// Gutter between grid cells, horizontally and vertically.
+const OVERVIEW_GRID_GAP_PX: f64 = 24.0;
+/// Narrowest a workspace card may get before the grid drops a column. Below
+/// roughly this width a card can no longer name the windows inside it, which
+/// is the card's whole job.
+const OVERVIEW_CARD_MIN_WIDTH_PX: f64 = 300.0;
+/// Ceiling on columns. More than four across makes each card narrower
+/// without making the screen any easier to read.
+const OVERVIEW_GRID_MAX_COLS: usize = 4;
+/// Height of every workspace card. Uniform so the grid reads as a set of
+/// peers: a title row, the window strip, and a meta footer.
+const OVERVIEW_CARD_HEIGHT_PX: f64 = 284.0;
+const OVERVIEW_CARD_RADIUS_PX: f64 = 18.0;
+/// Border weight for a resting card. The current card strokes at twice this.
+const OVERVIEW_CARD_BORDER_PX: f64 = 1.0;
+/// Inner padding on each card.
+const OVERVIEW_CARD_PADDING_PX: f64 = 16.0;
+/// Height of the window-strip region inside a card — the part that shows
+/// what is actually open in that workspace. Roughly screen-shaped against
+/// the card's inner width, so the region reads as a workspace rather than
+/// as a bar of chips.
+const OVERVIEW_WINDOWS_HEIGHT_PX: f64 = 194.0;
+/// Corner radius of one window-group frame inside the strip.
+const OVERVIEW_GROUP_RADIUS_PX: f64 = 10.0;
+/// Gutter between adjacent window-group frames.
+const OVERVIEW_GROUP_GAP_PX: f64 = 8.0;
+/// Height of a tab chip inside a window-group frame.
+const OVERVIEW_TAB_CHIP_HEIGHT_PX: f64 = 24.0;
+/// Gutter between tab chips.
+const OVERVIEW_TAB_CHIP_GAP_PX: f64 = 6.0;
+/// Space reserved above the first grid row for the "Workspaces" header block
+/// (an `x4l` title over a one-line summary).
 const OVERVIEW_HEADER_HEIGHT_PX: f64 = 72.0;
-/// `mb-16` in the concept.
-const OVERVIEW_HEADER_MARGIN_BOTTOM_PX: f64 = 64.0;
-/// Active-indicator dot geometry. Concept draws a 16×16 px dot at
-/// `-left-[35px]` from the card's left edge, vertically centred.
-const OVERVIEW_DOT_SIZE_PX: f64 = 16.0;
-const OVERVIEW_DOT_OFFSET_PX: f64 = 35.0;
-/// Horizontal offset of the vertical rail line from the card's left edge
-/// (`left-8` - card offset). The rail sits behind the dot column.
-const OVERVIEW_RAIL_OFFSET_PX: f64 = 35.0;
-const OVERVIEW_RAIL_WIDTH_PX: f64 = 2.0;
-/// How far past the overview column the scroll viewport's clip reaches.
-/// Has to clear everything a row paints outside its own rect — the rail
-/// dot (`OVERVIEW_DOT_OFFSET_PX` out, half a dot wide) and the active
-/// card's accent glow ([`OVERVIEW_ROW_GLOW_SPREAD_PX`]) — or the clip
-/// crops the very indicators that say which workspace is current.
-const OVERVIEW_SCROLL_GUTTER_PX: f64 = {
-    let dot_reach = OVERVIEW_DOT_OFFSET_PX + OVERVIEW_DOT_SIZE_PX / 2.0;
-    if dot_reach > OVERVIEW_ROW_GLOW_SPREAD_PX {
-        dot_reach + 4.0
-    } else {
-        OVERVIEW_ROW_GLOW_SPREAD_PX + 4.0
-    }
-};
-/// Spread of the selected workspace card's accent glow. Concept
-/// `shadow-[0_0_40px_-10px_rgba(99,102,241,0.3)]`.
-const OVERVIEW_ROW_GLOW_SPREAD_PX: f64 = 40.0;
+/// Gap between the header block and the first grid row.
+const OVERVIEW_HEADER_MARGIN_BOTTOM_PX: f64 = 48.0;
+/// Height of the fade painted over the bottom of the scroll viewport when
+/// the grid overflows, so a clipped row reads as "there is more" rather than
+/// as a card someone forgot to finish.
+const OVERVIEW_SCROLL_FADE_PX: f64 = 56.0;
+/// How far past the overview column the scroll viewport's clip reaches — it
+/// has to clear the current card's accent glow, or the clip crops the very
+/// indicator that says which workspace is current.
+const OVERVIEW_SCROLL_GUTTER_PX: f64 = OVERVIEW_ROW_GLOW_SPREAD_PX + 4.0;
+/// Spread of the current card's accent glow. Deliberately modest: the glow
+/// is a whisper under a card that is *already* marked by an accent border
+/// and a "Current" chip, not the loudest thing on the screen.
+const OVERVIEW_ROW_GLOW_SPREAD_PX: f64 = 16.0;
+/// Alpha of that glow.
+const OVERVIEW_ROW_GLOW_ALPHA: f32 = 0.22;
 
 impl Widget for ShellOverlayHost {
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
@@ -6817,8 +6876,8 @@ impl Widget for ShellOverlayHost {
                 let dy: f64 = match *delta {
                     // 30 px per LineDelta matches the strip's wheel
                     // factor (`GroupRow::handle_event`), so a single
-                    // wheel detent reveals roughly a quarter of one
-                    // workspace row (`OVERVIEW_ROW_HEIGHT_PX ~ 160`).
+                    // wheel detent reveals roughly an eighth of one
+                    // grid row (`OVERVIEW_CARD_HEIGHT_PX`).
                     winit::event::MouseScrollDelta::LineDelta(_, y) => -(y as f64) * 30.0,
                     winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
                 };
@@ -7805,93 +7864,525 @@ fn windows_label(n: usize) -> String {
     }
 }
 
-/// Paint a single concept-parity MiniWindow inside `rect`.
+/// The overview header's one-line summary.
 ///
-/// Concept `OverviewView.tsx:6-32`:
-/// * Tab-dot row along the top: active tab is a 16×10 pill, inactive tabs
-///   are 10 px dots.
-/// * App-card body: `bg-slate-800 rounded-lg border border-slate-700` with
-///   a slightly brighter interior, filling the remainder of the height.
-fn draw_mini_window(
+/// It answers two of the three questions the screen exists to answer —
+/// how many workspaces there are, and which one you are in — from the
+/// tree itself, so it can never drift out of step with the cards below
+/// it the way a fixed tagline does.
+fn overview_summary_label(count: usize, current: Option<&str>) -> String {
+    let n = if count == 1 {
+        "1 workspace".to_string()
+    } else {
+        format!("{count} workspaces")
+    };
+    match current {
+        Some(name) if !name.is_empty() => format!("{n} · you are in {name}"),
+        _ => n,
+    }
+}
+
+/// The shared-table glyph that stands for an app kind.
+///
+/// The icon is derived from the kind the tile itself declares, so a card
+/// never claims an app it isn't hosting. An app kind the shell has no
+/// specific glyph for gets the neutral document mark rather than a
+/// guessed one — the chip's label carries the actual name beside it.
+fn app_kind_icon(kind: &crate::shell::state::AppKind) -> ui::icons::Icon {
+    use crate::shell::state::AppKind;
+    match kind {
+        AppKind::Terminal => ui::icons::Icon::Terminal,
+        AppKind::FileExplorer => ui::icons::Icon::Folder,
+        AppKind::Browser => ui::icons::Icon::Monitor,
+        AppKind::Settings => ui::icons::Icon::Settings,
+        AppKind::Other(_) => ui::icons::Icon::File,
+    }
+}
+
+/// The glyph for whatever a tab is hosting. A foreign Wayland client is
+/// an external window, so it gets the window mark.
+fn tile_icon(tile: &crate::shell::state::TileContent) -> ui::icons::Icon {
+    use crate::shell::state::TileContent;
+    match tile {
+        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
+            app_kind_icon(kind)
+        }
+        TileContent::Foreign { .. } => ui::icons::Icon::Monitor,
+    }
+}
+
+/// One tab, as the overview will show it: the tab's real title, the glyph
+/// for whatever it is hosting, and whether it is the tab in front.
+///
+/// Split out of the draw pass so the card's claims can be asserted
+/// directly. Everything here is read from the tab itself — the overview
+/// has no vocabulary for a window that is not in the tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowChipSpec {
+    pub label: String,
+    pub icon: ui::icons::Icon,
+    pub is_front: bool,
+}
+
+/// The chips a window group contributes, in tab order.
+pub fn window_chip_specs(group: &crate::shell::state::WindowGroup) -> Vec<WindowChipSpec> {
+    group
+        .tabs
+        .iter()
+        .map(|t| WindowChipSpec {
+            label: t.title.clone(),
+            icon: tile_icon(&t.tile),
+            is_front: t.id == group.active_tab,
+        })
+        .collect()
+}
+
+/// Every chip a workspace contributes, flattened across its strips in
+/// layout order. Empty for a workspace with nothing open — which is what
+/// the card then says, rather than drawing a window that isn't there.
+pub fn overview_workspace_chip_specs(
+    ws: &crate::shell::state::Workspace,
+) -> Vec<WindowChipSpec> {
+    ws.strips
+        .iter()
+        .flat_map(|s| s.window_groups.iter())
+        .flat_map(window_chip_specs)
+        .collect()
+}
+
+/// Paint one window group as a labelled frame inside the card's window
+/// strip.
+///
+/// # Why this is a labelled list and not a thumbnail
+///
+/// A picture of the workspace would be better, and it is not currently
+/// reachable. The compositor retains real pixels for exactly one class
+/// of window — a foreign Wayland client, whose latest frame lands in the
+/// `ForeignFrameStore` that `compositor::foreign` blits — and every
+/// built-in tile is an `AppWidget` drawn straight into this same scene
+/// with no per-tile texture to sample. An inactive workspace has no laid
+/// out widget tree at all, so there is nothing to snapshot even for the
+/// tiles that *are* on screen elsewhere. Drawing a generic grey rectangle
+/// to stand in for that is worse than useless: it looks like a window
+/// while telling you nothing about which window it is.
+///
+/// So the frame shows what the shell genuinely knows — the group's share
+/// of its strip, and the real title and app kind of every tab inside it —
+/// through the shared [`ui::widget::Chip`], which brings the theme's own
+/// pill treatment and ellipsis truncation with it.
+#[allow(clippy::too_many_arguments)]
+fn draw_window_group(
     scene: &mut Scene,
     transform: Affine,
+    text_renderer: &mut TextRenderer,
     theme: &Theme,
     rect: Rect,
-    tab_count: usize,
-    active_tab_idx: usize,
+    group: &crate::shell::state::WindowGroup,
+    is_current_workspace: bool,
 ) {
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
+    use ui::widget::{Chip, ChipLead, ChipStyle};
 
-    let tab_h = 10.0_f64;
-    let tab_gap = 4.0;
-    let tab_row_y0 = rect.y0;
-    let tab_row_y1 = rect.y0 + tab_h;
+    if rect.width() <= 2.0 || rect.height() <= 2.0 {
+        return;
+    }
+    let colors = &theme.tokens.colors;
+    let frame = RoundedRect::from_rect(rect, OVERVIEW_GROUP_RADIUS_PX);
 
-    // Tabs — draw left-aligned with `justify-start`.
-    let mut tx = rect.x0 + 4.0;
-    for i in 0..tab_count.max(1) {
-        let is_active = i == active_tab_idx;
-        let tab_w = if is_active { 16.0 } else { 10.0 };
-        if tx + tab_w > rect.x1 {
-            break;
-        }
-        let tab_rect = Rect::new(tx, tab_row_y0, tx + tab_w, tab_row_y1);
-        let tab_rr = RoundedRect::from_rect(tab_rect, tab_h / 2.0);
-        // Dot colour: active slate-600/80, inactive slate-700/50.
-        let slate_600 = colors.neutral[4];
-        let slate_700 = colors.neutral[3];
-        let dot_color = if is_active {
-            slate_600.with_alpha_factor(0.80)
-        } else {
-            slate_700.with_alpha_factor(0.50)
-        };
-        scene.fill(Fill::NonZero, transform, dot_color, None, &tab_rr);
-        let border = slate_600.with_alpha_factor(0.50);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(0.5),
-            transform,
-            border,
-            None,
-            &tab_rr,
-        );
-        tx += tab_w + tab_gap;
+    // The frame is the window; the chips inside it are its tabs. Both
+    // colours come from the theme's surface family, so the frame keeps a
+    // visible edge under high contrast (where every surface is black and
+    // the border is white) instead of dissolving into the card.
+    scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &frame);
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        colors.border_standard,
+        None,
+        &frame,
+    );
+
+    let pad = 8.0_f64;
+    let inner_w = rect.width() - pad * 2.0;
+    if inner_w <= 8.0 {
+        return;
     }
 
-    // App card body.
-    let body_rect = Rect::new(rect.x0, tab_row_y1 + 2.0, rect.x1, rect.y1);
-    let body_rr = RoundedRect::from_rect(body_rect, 6.0);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        colors.neutral[2], // slate-800
-        None,
-        &body_rr,
-    );
-    scene.stroke(
-        &vello::kurbo::Stroke::new(0.5),
-        transform,
-        colors.neutral[3], // slate-700
-        None,
-        &body_rr,
-    );
-    // Inset interior — slightly brighter so the card reads as a chrome
-    // frame around a distinct content pane.
-    let inset = 3.0;
-    let inner = Rect::new(
-        body_rect.x0 + inset,
-        body_rect.y0 + inset,
-        body_rect.x1 - inset,
-        body_rect.y1 - inset,
-    );
-    if inner.width() > 0.0 && inner.height() > 0.0 {
-        let inner_rr = RoundedRect::from_rect(inner, 4.0);
-        let inner_fill = colors.neutral[2].with_alpha_factor(0.5);
-        scene.fill(Fill::NonZero, transform, inner_fill, None, &inner_rr);
+    // Tabs, in order, with the active one carrying the accent. Chips wrap
+    // onto as many rows as the frame has height for; whatever does not fit
+    // collapses into a "+N" chip so the count stays honest rather than the
+    // overflow silently vanishing.
+    let chip_h = OVERVIEW_TAB_CHIP_HEIGHT_PX;
+    let gap = OVERVIEW_TAB_CHIP_GAP_PX;
+    let rows_available = (((rect.height() - pad * 2.0) + gap) / (chip_h + gap)).floor() as usize;
+    let rows_available = rows_available.max(1);
+
+    let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+    let mut x = rect.x0 + pad;
+    let mut y = rect.y0 + pad;
+    let mut row = 0_usize;
+    let mut drawn = 0_usize;
+
+    let specs = window_chip_specs(group);
+    for spec in &specs {
+        let lead = ChipLead::Glyph(spec.icon);
+        let natural =
+            Chip::natural_width_at(&spec.label, chip_h, lead, theme, text_renderer).min(inner_w);
+
+        // Wrap when this chip would overrun the frame.
+        if x + natural > rect.x1 - pad && drawn > 0 {
+            row += 1;
+            if row >= rows_available {
+                break;
+            }
+            x = rect.x0 + pad;
+            y += chip_h + gap;
+        }
+
+        let style = if spec.is_front && is_current_workspace {
+            ChipStyle::tinted(accent)
+        } else {
+            ChipStyle::quiet()
+        };
+        Chip::draw_at(
+            scene,
+            transform,
+            Rect::new(x, y, x + natural, y + chip_h),
+            &spec.label,
+            lead,
+            style,
+            theme,
+            text_renderer,
+        );
+        x += natural + gap;
+        drawn += 1;
+    }
+
+    // The body below the tab row is the window's content area, and the
+    // shell has no pixels for it (see this function's header). What it
+    // does know is which tab is in front, so the body carries that app's
+    // own mark, quietly and large — the honest answer to "what is this
+    // window showing" at a glance, where a blank panel answers nothing.
+    let body_top = y + chip_h + gap;
+    let body = Rect::new(rect.x0 + pad, body_top, rect.x1 - pad, rect.y1 - pad);
+    if body.width() > 16.0 && body.height() > 16.0 {
+        if let Some(active) = group
+            .tabs
+            .iter()
+            .find(|t| t.id == group.active_tab)
+            .or_else(|| group.tabs.first())
+        {
+            let d = (body.width().min(body.height()) * 0.55).min(80.0);
+            let c = body.center();
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(c.x - d / 2.0, c.y - d / 2.0, c.x + d / 2.0, c.y + d / 2.0),
+                tile_icon(&active.tile),
+                colors.text_tertiary.with_alpha_factor(0.5),
+                1.5,
+            );
+        }
+    }
+
+    let hidden = specs.len().saturating_sub(drawn);
+    if hidden > 0 {
+        let label = format!("+{hidden}");
+        let w = Chip::natural_width_at(&label, chip_h, ChipLead::None, theme, text_renderer);
+        // Park the overflow marker at the right edge of the last row that
+        // fit, replacing whatever tail was clipped.
+        let x0 = (rect.x1 - pad - w).max(rect.x0 + pad);
+        Chip::draw_at(
+            scene,
+            transform,
+            Rect::new(x0, y, x0 + w, y + chip_h),
+            &label,
+            ChipLead::None,
+            ChipStyle::quiet(),
+            theme,
+            text_renderer,
+        );
     }
 }
 
 impl ShellOverlayHost {
+    /// Paint one workspace card into its grid cell.
+    ///
+    /// Reading order top to bottom: whose workspace this is, what is in
+    /// it, and who is in it with you. The window strip gets the height
+    /// because "what is in it" is the question the overview is for.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_overview_card(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        ws: &crate::shell::state::Workspace,
+        tree: &crate::shell::state::WorkspaceTree,
+        is_active: bool,
+    ) {
+        use ui::widget::{Chip, ChipLead, ChipStyle};
+
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+
+        let is_hover = self.last_cursor.map(|c| rect.contains(c)).unwrap_or(false);
+        // Hover lifts the card a hair rather than resizing it, so a
+        // pointer sweeping the grid doesn't make neighbours jump.
+        let card_xform = if is_hover && !is_active {
+            let c = rect.center();
+            transform
+                * Affine::translate((c.x, c.y))
+                * Affine::scale(1.012)
+                * Affine::translate((-c.x, -c.y))
+        } else {
+            transform
+        };
+
+        let card = RoundedRect::from_rect(rect, OVERVIEW_CARD_RADIUS_PX);
+        if is_active {
+            ui::surface::soft_shadow(
+                scene,
+                card_xform,
+                rect,
+                accent,
+                OVERVIEW_ROW_GLOW_SPREAD_PX,
+                0.0,
+                OVERVIEW_ROW_GLOW_ALPHA,
+            );
+        }
+        // Card ground comes from the theme's base surface — one step up
+        // from the overview's scrim in dark, solid black under high
+        // contrast, where the border carries the edge instead.
+        scene.fill(
+            Fill::NonZero,
+            card_xform,
+            colors.surfaces.base,
+            None,
+            &card,
+        );
+        let (border_color, border_px) = if is_active {
+            (accent, OVERVIEW_CARD_BORDER_PX * 2.0)
+        } else if is_hover {
+            (colors.text_tertiary, OVERVIEW_CARD_BORDER_PX)
+        } else {
+            (colors.border_standard, OVERVIEW_CARD_BORDER_PX)
+        };
+        scene.stroke(
+            &vello::kurbo::Stroke::new(border_px),
+            card_xform,
+            border_color,
+            None,
+            &card,
+        );
+
+        let pad = OVERVIEW_CARD_PADDING_PX;
+        let content_x0 = rect.x0 + pad;
+        let content_x1 = rect.x1 - pad;
+        let content_w = content_x1 - content_x0;
+
+        // -- Title row: the workspace's name, and whether it is yours now.
+        let name_size = tokens.typography.scale.lg;
+        let (_, name_h) = text_renderer.measure_weighted(
+            &ws.name,
+            name_size,
+            None,
+            TextWeight::Semibold,
+        );
+        let title_y = rect.y0 + pad;
+
+        // The "Current" chip is the state marker; reserve its width first
+        // so a long workspace name truncates against it rather than
+        // running underneath it.
+        let mut name_avail = content_w;
+        if is_active {
+            let chip_h = 20.0_f64;
+            let chip_w = Chip::natural_width_at("Current", chip_h, ChipLead::None, theme, text_renderer);
+            let chip_x0 = content_x1 - chip_w;
+            Chip::draw_at(
+                scene,
+                card_xform,
+                Rect::new(chip_x0, title_y, content_x1, title_y + chip_h),
+                "Current",
+                ChipLead::None,
+                ChipStyle::tinted(accent),
+                theme,
+                text_renderer,
+            );
+            name_avail = (chip_x0 - content_x0 - 8.0).max(0.0);
+        }
+        let name = text_renderer.elide_to_width_weighted(
+            &ws.name,
+            name_size,
+            name_avail as f32,
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &name,
+            name_size,
+            colors.text_primary,
+            card_xform * Affine::translate((content_x0, title_y)),
+            None,
+            TextWeight::Semibold,
+        );
+
+        // -- Window strip: what is actually open here.
+        let strip_y0 = title_y + name_h as f64 + 12.0;
+        let strip = Rect::new(
+            content_x0,
+            strip_y0,
+            content_x1,
+            strip_y0 + OVERVIEW_WINDOWS_HEIGHT_PX,
+        );
+        let groups: Vec<&crate::shell::state::WindowGroup> = ws
+            .strips
+            .iter()
+            .flat_map(|s| s.window_groups.iter())
+            .collect();
+
+        if groups.is_empty() {
+            // A workspace with nothing in it says so, in the same chip
+            // language the populated cards use: the shared ghost style is
+            // exactly this — a slot where a value could be, rather than a
+            // value. Nothing is invented to fill the space, and the empty
+            // card stays quieter than its own title instead of shouting a
+            // banner across the grid.
+            let ghost = RoundedRect::from_rect(strip, OVERVIEW_GROUP_RADIUS_PX);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [5.0, 5.0]),
+                card_xform,
+                colors.border_standard,
+                None,
+                &ghost,
+            );
+            let label = "No windows";
+            let chip_h = OVERVIEW_TAB_CHIP_HEIGHT_PX;
+            let lead = ChipLead::Glyph(ui::icons::Icon::LayoutGrid);
+            let w = Chip::natural_width_at(label, chip_h, lead, theme, text_renderer)
+                .min(strip.width());
+            let cx = strip.center().x;
+            let cy = strip.center().y;
+            Chip::draw_at(
+                scene,
+                card_xform,
+                Rect::new(cx - w / 2.0, cy - chip_h / 2.0, cx + w / 2.0, cy + chip_h / 2.0),
+                label,
+                lead,
+                ChipStyle::ghost(),
+                theme,
+                text_renderer,
+            );
+        } else {
+            // Frames are sized by each group's share of the strip, so the
+            // card reflects the real layout: a hand-widened group reads
+            // wider here too.
+            let total: f64 = groups
+                .iter()
+                .map(|g| g.width.permille().max(1) as f64)
+                .sum();
+            let gaps = OVERVIEW_GROUP_GAP_PX * (groups.len() as f64 - 1.0);
+            let usable = (strip.width() - gaps).max(1.0);
+            let mut gx = strip.x0;
+            for (i, g) in groups.iter().enumerate() {
+                let share = g.width.permille().max(1) as f64 / total;
+                // Last frame absorbs the rounding remainder so the row
+                // ends flush with the card's padding.
+                let w = if i + 1 == groups.len() {
+                    strip.x1 - gx
+                } else {
+                    usable * share
+                };
+                draw_window_group(
+                    scene,
+                    card_xform,
+                    text_renderer,
+                    theme,
+                    Rect::new(gx, strip.y0, gx + w, strip.y1),
+                    g,
+                    is_active,
+                );
+                gx += w + OVERVIEW_GROUP_GAP_PX;
+            }
+        }
+
+        // -- Footer: the counts, and who else is here.
+        let footer_size = tokens.typography.scale.sm;
+        let tab_total: usize = groups.iter().map(|g| g.tabs.len()).sum();
+        let counts = if tab_total > groups.len() {
+            format!("{} · {} tabs", windows_label(groups.len()), tab_total)
+        } else {
+            windows_label(groups.len())
+        };
+        let (_, cf_h) = text_renderer.measure(&counts, footer_size, None);
+        let footer_y = rect.y1 - pad - cf_h as f64;
+        text_renderer.draw_text(
+            scene,
+            &counts,
+            footer_size,
+            colors.text_dim,
+            card_xform * Affine::translate((content_x0, footer_y)),
+            None,
+        );
+
+        // Faces only when there are faces. An empty avatar rail plus a
+        // "0 Members" badge was the old card's way of spending its best
+        // space on nothing.
+        let peers = overview_card_faces(ws, tree);
+        if !peers.is_empty() {
+            let r = 10.0_f64;
+            let step = 15.0_f64;
+            let max_shown = 3_usize.min(peers.len());
+            let overflow = peers.len().saturating_sub(max_shown);
+            let slots = max_shown + usize::from(overflow > 0);
+            let cy = footer_y + cf_h as f64 / 2.0;
+            let right = content_x1 - r;
+            for (idx, (user, known)) in peers.iter().take(max_shown).enumerate() {
+                let cx = right - (slots - 1 - idx) as f64 * step;
+                let avatar = Rect::new(cx - r, cy - r, cx + r, cy + r);
+                let initial = known
+                    .map(|c| c.name.as_str())
+                    .unwrap_or(user.as_str())
+                    .chars()
+                    .next()
+                    .unwrap_or('?')
+                    .to_ascii_uppercase()
+                    .to_string();
+                let (cr, cg, cb) = known
+                    .and_then(|c| c.cursor_color.as_deref())
+                    .and_then(ui::presence::parse_hex_color)
+                    .unwrap_or_else(|| ui::presence::user_color(user));
+                ui::widget::Avatar::draw_ringed_at(
+                    scene,
+                    card_xform,
+                    avatar,
+                    &initial,
+                    Color::from_rgb8(cr, cg, cb),
+                    colors.surfaces.base,
+                    2.0,
+                    theme,
+                    text_renderer,
+                );
+            }
+            if overflow > 0 {
+                let cx = right;
+                ui::widget::Avatar::draw_overflow_at(
+                    scene,
+                    card_xform,
+                    Rect::new(cx - r, cy - r, cx + r, cy + r),
+                    overflow,
+                    colors.surfaces.raised,
+                    colors.surfaces.base,
+                    2.0,
+                    colors.text_dim,
+                    text_renderer,
+                );
+            }
+        }
+    }
+
     fn draw_overview(
         &mut self,
         scene: &mut Scene,
@@ -7907,29 +8398,20 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
-        // NOTE: the slate-950 scrim fill is painted in the caller (the
-        // top-level `draw` method) at the *un*-scaled transform, so the
-        // desktop gradient can never bleed through around the edges of the
-        // scaled overview layer during the zoom-in animation. See visual
-        // gap #13 in `docs/nirios/visual-gaps.md`.
+        // NOTE: the scrim fill is painted in the caller (the top-level
+        // `draw` method) at the *un*-scaled transform, so the desktop
+        // gradient can never bleed through around the edges of the scaled
+        // overview layer during the zoom-in animation.
 
         let col = self.overview_column_rect();
 
-        // -- Header: "Workspaces" h1 + subtitle ---------------------------
-        // Concept `OverviewView.tsx`: `h1 text-4xl font-bold
-        // text-white mb-4 tracking-tight`. Tailwind `text-4xl` = 36 px;
-        // we pick the largest token step (`x4l` = 40 px) so the header
-        // reads as clearly "large / bold" at the default 1.0 scale factor
-        // the text renderer applies — visual gap #12.
+        // -- Header ------------------------------------------------------
         let title = "Workspaces";
         let title_size = Self::overview_header_font_size_for(tokens);
-        // Concept `text-4xl font-bold tracking-tight`: h1 sits at the Bold
-        // weight tier. Measure with the same weight so the centered header
-        // stays centered at Bold's wider advance — visual-gap #7.
         let title_weight = TextWeight::Bold;
         let (tw, th) = text_renderer.measure_weighted(title, title_size, None, title_weight);
         let tx = (col.x0 + col.x1) / 2.0 - tw as f64 / 2.0;
-        let ty = col.y0 + 8.0;
+        let ty = self.overview_header_top() + 4.0;
         text_renderer.draw_text_weighted(
             scene,
             title,
@@ -7939,64 +8421,37 @@ impl ShellOverlayHost {
             None,
             title_weight,
         );
-        let subtitle = "Your workspaces, side by side";
-        // Concept subtitle: `text-slate-400 text-lg` (~18 px). `lg` = 16 px
-        // is the closest existing token step and still clearly larger than
-        // the body `base` (14 px).
-        let sub_size = tokens.typography.scale.lg;
-        let (sw, _sh) = text_renderer.measure(subtitle, sub_size, None);
+        let current_name = tree.active_workspace().map(|w| w.name.as_str());
+        let subtitle = overview_summary_label(tree.workspaces.len(), current_name);
+        let sub_size = tokens.typography.scale.base;
+        let (sw, _sh) = text_renderer.measure(&subtitle, sub_size, None);
         let sx = (col.x0 + col.x1) / 2.0 - sw as f64 / 2.0;
-        let sy = ty + th as f64 + 8.0;
+        let sy = ty + th as f64 + 6.0;
         text_renderer.draw_text(
             scene,
-            subtitle,
+            &subtitle,
             sub_size,
             colors.text_dim,
             transform * Affine::translate((sx, sy)),
             None,
         );
 
-        // -- Vertical rail behind the indicator column --------------------
-        // Concept `:54` — rail line `absolute left-8 top-0 bottom-0 w-0.5
-        // bg-slate-800 -z-10` inside the rail container. We paint it
-        // behind the cards, spanning the first row's top to the last
-        // row's bottom so it tracks however many workspaces exist.
+        // -- Grid --------------------------------------------------------
         let n = tree.workspaces.len();
         let add_rect = self.overview_add_workspace_rect_for(n);
-        if n > 0 {
-            // Extend the rail past the last workspace card so it ties
-            // into the "+ Add workspace" tile at the tail — the
-            // add-affordance reads as part of the same vertical list.
-            let rail_x = col.x0 - OVERVIEW_RAIL_OFFSET_PX;
-            let first = self.overview_row_rect(0);
-            let last_y1 = self.overview_row_rect(n - 1).y1.max(add_rect.y1);
-            let rail = Rect::new(
-                rail_x - OVERVIEW_RAIL_WIDTH_PX / 2.0,
-                first.y0,
-                rail_x + OVERVIEW_RAIL_WIDTH_PX / 2.0,
-                last_y1,
-            );
-            scene.fill(Fill::NonZero, transform, colors.neutral[2], None, &rail);
-        }
 
-        // -- Workspace rows ----------------------------------------------
-        // Push a clip layer that bounds the scrollable card region to
-        // the space BELOW the header — so a row that's been scrolled
-        // upward past `overview_first_row_top()` doesn't bleed onto the
-        // "Workspaces" title. Top edge sits just above the first row's
-        // resting Y; the bottom is the viewport edge the list scrolls
-        // under.
-        //
-        // The horizontal edges are a *gutter*, not the column itself:
-        // the rail's active-indicator dot and the selected card's accent
-        // glow both paint outside a row's own rect, and a clip drawn at
-        // the column edge sliced the dots down to slivers — the overview
-        // lost the affordance that says which workspace you are in. The
-        // gutter is only ever cropping horizontally-static chrome, so
-        // widening it costs nothing the vertical clip was buying.
+        // Clip the grid to the band below the header so a row panned
+        // upward doesn't bleed onto the title. The horizontal edges are a
+        // gutter, not the column itself: the current card's glow paints
+        // outside its own rect, and clipping at the column edge would slice
+        // off the very indicator that says which workspace is current.
+        let viewport_top = self.overview_header_top()
+            + OVERVIEW_HEADER_HEIGHT_PX
+            + OVERVIEW_HEADER_MARGIN_BOTTOM_PX
+            - OVERVIEW_GRID_GAP_PX / 2.0;
         let scroll_clip = Rect::new(
             col.x0 - OVERVIEW_SCROLL_GUTTER_PX,
-            col.y0 + OVERVIEW_HEADER_HEIGHT_PX + OVERVIEW_HEADER_MARGIN_BOTTOM_PX - 8.0,
+            viewport_top,
             col.x1 + OVERVIEW_SCROLL_GUTTER_PX,
             col.y1,
         );
@@ -8007,529 +8462,78 @@ impl ShellOverlayHost {
             transform,
             &scroll_clip,
         );
+
         for (i, ws) in tree.workspaces.iter().enumerate() {
-            let rect = self.overview_row_rect(i);
+            let rect = self.overview_cell_rect(i);
+            // Skip cards panned entirely out of the viewport.
+            if rect.y1 < scroll_clip.y0 || rect.y0 > scroll_clip.y1 {
+                continue;
+            }
             let is_active = ws.id == tree.active;
-
-            // Concept `:66` — `whileHover={{ scale: 1.01 }}`. Skip the
-            // scale transform for the active row (it already has the
-            // indigo ring + glow marking it as selected).
-            let is_hover = self.last_cursor.map(|c| rect.contains(c)).unwrap_or(false);
-            let card_xform = if is_hover && !is_active {
-                let cx = rect.center().x;
-                let cy = rect.center().y;
-                transform
-                    * Affine::translate((cx, cy))
-                    * Affine::scale(1.01)
-                    * Affine::translate((-cx, -cy))
-            } else {
-                transform
-            };
-
-            // Active: `bg-slate-900` solid + indigo-500 ring + glow.
-            // Inactive: `bg-slate-900/50` translucent; on hover bumps to
-            // full opacity + slate-700 border. The concept's
-            // `shadow-[0_0_40px_-10px_rgba(99,102,241,0.3)]` accent glow
-            // is now the shared soft-shadow Gaussian (was a 4-ring
-            // concentric-rect stack that stair-stepped) — matching the
-            // wheel spoke + focused tile.
-            let card = RoundedRect::from_rect(rect, OVERVIEW_ROW_RADIUS_PX);
-            if is_active {
-                let indigo = colors.accent[5];
-                ui::surface::soft_shadow(
-                    scene,
-                    card_xform,
-                    rect,
-                    indigo,
-                    OVERVIEW_ROW_GLOW_SPREAD_PX,
-                    0.0,
-                    0.35,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    card_xform,
-                    colors.neutral[1], // slate-900
-                    None,
-                    &card,
-                );
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(OVERVIEW_ROW_BORDER_PX),
-                    card_xform,
-                    indigo,
-                    None,
-                    &card,
-                );
-            } else {
-                let slate_900 = colors.neutral[1];
-                // Both states use a solid slate-900 fill so the card chrome
-                // reads identical to the active card minus the indigo
-                // accent ring. The previous `rgba(slate_900.r() as f64,
-                // ...)` call passed channel u8s into a float-unit-range
-                // constructor and clamped to white, making inactive cards
-                // bright white instead of slate. Use the solid token; the
-                // visual differentiation from active comes from the
-                // accent ring + glow above, not from card-fill alpha.
-                let fill = if is_hover {
-                    slate_900
-                } else {
-                    slate_900.with_alpha_factor(0.5)
-                };
-                scene.fill(Fill::NonZero, card_xform, fill, None, &card);
-                // Always stroke inactive cards with slate-700 so the
-                // chrome matches the active card's accent ring weight
-                // (just a different colour). Without this the inactive
-                // cards have no chrome at all at rest, making them feel
-                // unfinished next to the bordered active card.
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(OVERVIEW_ROW_BORDER_PX),
-                    card_xform,
-                    if is_hover {
-                        colors.neutral[4] // slate-600 — bump on hover
-                    } else {
-                        colors.neutral[3] // slate-700
-                    },
-                    None,
-                    &card,
-                );
-            }
-
-            // Active-indicator dot on the rail.
-            let dot_cx = col.x0 - OVERVIEW_DOT_OFFSET_PX + OVERVIEW_DOT_SIZE_PX / 2.0
-                - OVERVIEW_DOT_SIZE_PX / 2.0;
-            let dot_center = Point::new(col.x0 - OVERVIEW_DOT_OFFSET_PX, rect.center().y);
-            let _ = dot_cx;
-            // Outer ring (slate-950 border-4 separating the dot from the rail).
-            scene.fill(
-                Fill::NonZero,
-                card_xform,
-                colors.neutral[0],
-                None,
-                &vello::kurbo::Circle::new(dot_center, OVERVIEW_DOT_SIZE_PX / 2.0),
-            );
-            let inner_color = if is_active {
-                colors.accent[5]
-            } else {
-                colors.neutral[3] // slate-700
-            };
-            scene.fill(
-                Fill::NonZero,
-                card_xform,
-                inner_color,
-                None,
-                &vello::kurbo::Circle::new(dot_center, OVERVIEW_DOT_SIZE_PX / 2.0 - 4.0),
-            );
-
-            // -- Sidebar column ------------------------------------------
-            let sidebar_x0 = rect.x0 + OVERVIEW_CARD_PADDING_PX;
-            let sidebar_y0 = rect.y0 + OVERVIEW_CARD_PADDING_PX;
-            let sidebar_w = OVERVIEW_SIDEBAR_WIDTH_PX;
-
-            // Title + WS-ID pill + (optional "Current" marker).
-            let name_size = tokens.typography.scale.xl; // h2 text-2xl
-            text_renderer.draw_text(
+            self.draw_overview_card(
                 scene,
-                &ws.name,
-                name_size,
-                colors.text_primary,
-                card_xform * Affine::translate((sidebar_x0, sidebar_y0)),
-                None,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                ws,
+                &tree,
+                is_active,
             );
-            let (name_w, name_h) = text_renderer.measure(&ws.name, name_size, None);
-            // Pill: WS-{idx+1}
-            let pill_label = format!("WS-{}", i + 1);
-            let pill_font = tokens.typography.scale.xs;
-            let (plw, plh) = text_renderer.measure(&pill_label, pill_font, None);
-            let pill_pad_x = 8.0;
-            let pill_pad_y = 2.0;
-            let pill_x0 = sidebar_x0 + name_w as f64 + 8.0;
-            let pill_cy = sidebar_y0 + name_h as f64 / 2.0;
-            let pill_h = plh as f64 + pill_pad_y * 2.0;
-            let pill_rect = Rect::new(
-                pill_x0,
-                pill_cy - pill_h / 2.0,
-                pill_x0 + plw as f64 + pill_pad_x * 2.0,
-                pill_cy + pill_h / 2.0,
-            );
-            let pill_rr = RoundedRect::from_rect(pill_rect, 4.0);
-            scene.fill(Fill::NonZero, card_xform, colors.neutral[2], None, &pill_rr);
-            text_renderer.draw_text(
-                scene,
-                &pill_label,
-                pill_font,
-                colors.neutral[7],
-                card_xform
-                    * Affine::translate((pill_rect.x0 + pill_pad_x, pill_rect.y0 + pill_pad_y)),
-                None,
-            );
-            if is_active {
-                let current_y = sidebar_y0 + name_h as f64 + 4.0;
-                text_renderer.draw_text(
-                    scene,
-                    "Current",
-                    tokens.typography.scale.sm,
-                    colors.accent[6], // indigo-400
-                    card_xform * Affine::translate((sidebar_x0, current_y)),
-                    None,
-                );
-            }
-
-            // Permissions panel: `bg-slate-950 rounded-xl p-3 border
-            // border-slate-800 space-y-2`. Badges: Roles (blue) + Files
-            // (purple). The concept shows a shield + "Permissions" label.
-            let perm_y0 = sidebar_y0 + name_h as f64 + 28.0;
-            let perm_h = 60.0_f64;
-            let perm_rect = Rect::new(
-                sidebar_x0,
-                perm_y0,
-                sidebar_x0 + sidebar_w,
-                perm_y0 + perm_h,
-            );
-            let perm_rr = RoundedRect::from_rect(perm_rect, 12.0);
-            scene.fill(Fill::NonZero, card_xform, colors.neutral[0], None, &perm_rr);
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                card_xform,
-                colors.neutral[2],
-                None,
-                &perm_rr,
-            );
-            // Shield glyph: lucide `Shield` via `ui::icons`
-            // (gap #5). The previous hand-traced BezPath was a
-            // close-enough imitation; routing through the shared icon
-            // table gets us the authoritative lucide path plus the
-            // correct rounded caps/joins. Colour flips from indigo to
-            // `semantic.success` (emerald-500) so the Permissions card
-            // reads as an "all good" affordance, matching the
-            // emerald-shield treatment in the concept mock.
-            let shield_rect = Rect::new(
-                perm_rect.x0 + 12.0,
-                perm_rect.y0 + 10.0,
-                perm_rect.x0 + 24.0,
-                perm_rect.y0 + 22.0,
-            );
-            ui::icons::draw_icon(
-                scene,
-                card_xform,
-                shield_rect,
-                ui::icons::Icon::Shield,
-                colors.semantic.success,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            text_renderer.draw_text(
-                scene,
-                "Permissions",
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                card_xform * Affine::translate((perm_rect.x0 + 28.0, perm_rect.y0 + 8.0)),
-                None,
-            );
-            // Badges row: how many people are in the workspace, and how
-            // many capabilities it has granted. Both counts come from
-            // the capability model itself, so the card can't claim
-            // something the enforcement path disagrees with.
-            let member_count = ws.roster().len();
-            let grant_count = ws
-                .capabilities
-                .iter()
-                .filter(|c| {
-                    c.effect == crate::shell::state::Effect::Grant && !c.is_room_membership()
-                })
-                .count();
-            let roles_label = match member_count {
-                1 => "1 Member".to_string(),
-                n => format!("{n} Members"),
-            };
-            let files_label = match grant_count {
-                1 => "1 Permission".to_string(),
-                n => format!("{n} Permissions"),
-            };
-            let badge_font = tokens.typography.scale.xs;
-            let badge_pad_x = 6.0;
-            let badge_pad_y = 3.0;
-            let badge_y = perm_rect.y0 + 30.0;
-            let (rlw, rlh) = text_renderer.measure(&roles_label, badge_font, None);
-            let roles_badge = Rect::new(
-                perm_rect.x0 + 12.0,
-                badge_y,
-                perm_rect.x0 + 12.0 + rlw as f64 + badge_pad_x * 2.0,
-                badge_y + rlh as f64 + badge_pad_y * 2.0,
-            );
-            // blue-500 @ 20%
-            let blue = colors.semantic.info;
-            let blue_bg = blue.with_alpha_factor(0.20);
-            scene.fill(
-                Fill::NonZero,
-                card_xform,
-                blue_bg,
-                None,
-                &RoundedRect::from_rect(roles_badge, 6.0),
-            );
-            text_renderer.draw_text(
-                scene,
-                &roles_label,
-                badge_font,
-                blue,
-                card_xform
-                    * Affine::translate((
-                        roles_badge.x0 + badge_pad_x,
-                        roles_badge.y0 + badge_pad_y,
-                    )),
-                None,
-            );
-            let (flw, flh) = text_renderer.measure(&files_label, badge_font, None);
-            let files_badge = Rect::new(
-                roles_badge.x1 + 6.0,
-                badge_y,
-                roles_badge.x1 + 6.0 + flw as f64 + badge_pad_x * 2.0,
-                badge_y + flh as f64 + badge_pad_y * 2.0,
-            );
-            // purple-500 @ 20% — approximate via indigo[4]+red shift.
-            let purple = Color::from_rgb8(168, 85, 247);
-            let purple_bg = purple.with_alpha_factor(0.20);
-            scene.fill(
-                Fill::NonZero,
-                card_xform,
-                purple_bg,
-                None,
-                &RoundedRect::from_rect(files_badge, 6.0),
-            );
-            text_renderer.draw_text(
-                scene,
-                &files_label,
-                badge_font,
-                purple,
-                card_xform
-                    * Affine::translate((
-                        files_badge.x0 + badge_pad_x,
-                        files_badge.y0 + badge_pad_y,
-                    )),
-                None,
-            );
-
-            // Collaborators block (header + avatar stack).
-            let collab_y0 = perm_rect.y1 + 12.0;
-            text_renderer.draw_text(
-                scene,
-                "Collaborators",
-                tokens.typography.scale.sm,
-                colors.text_dim,
-                card_xform * Affine::translate((sidebar_x0, collab_y0)),
-                None,
-            );
-            let peers = overview_card_faces(ws, &tree);
-            // Same colour authority as the top-bar stack and the peer
-            // cursors: the room settles it once.
-            let face_colors = crate::shell::state::roster_colors(&ws.collaborators);
-            let avatar_r = 12.0_f64;
-            let avatar_step = 22.0_f64; // 28 px avatar - 6 px overlap
-            let avatar_y = collab_y0 + 20.0;
-            let max_shown = 4_usize.min(peers.len());
-            for (idx, (user, known)) in peers.iter().take(max_shown).enumerate() {
-                let cx = sidebar_x0 + avatar_r + idx as f64 * avatar_step;
-                let cy = avatar_y + avatar_r;
-                let avatar_rect =
-                    Rect::new(cx - avatar_r, cy - avatar_r, cx + avatar_r, cy + avatar_r);
-                let initial = known
-                    .map(|c| c.name.as_str())
-                    .unwrap_or(user.as_str())
-                    .chars()
-                    .next()
-                    .unwrap_or('?')
-                    .to_ascii_uppercase()
-                    .to_string();
-                // Per-identity fill so the overview avatar matches the
-                // peer's cursor and the top-bar stack — not a single flat
-                // accent for everyone, and not the unsettled per-id hash
-                // either. Painted through the shared `ui::Avatar` with a
-                // slate ring, exactly like the top-bar cluster.
-                let (r, g, b) = face_colors
-                    .get(user.as_str())
-                    .copied()
-                    .unwrap_or_else(|| ui::presence::user_color(user));
-                ui::widget::Avatar::draw_ringed_at(
-                    scene,
-                    card_xform,
-                    avatar_rect,
-                    &initial,
-                    Color::from_rgb8(r, g, b),
-                    colors.neutral[1], // ring bg = slate-900
-                    2.0,
-                    theme,
-                    text_renderer,
-                );
-            }
-            // Plus button at the tail of the avatar stack — concept uses
-            // this as the invite affordance.
-            let plus_idx = max_shown;
-            let plus_cx = sidebar_x0 + avatar_r + plus_idx as f64 * avatar_step;
-            let plus_cy = avatar_y + avatar_r;
-            scene.fill(
-                Fill::NonZero,
-                card_xform,
-                colors.neutral[1],
-                None,
-                &vello::kurbo::Circle::new(Point::new(plus_cx, plus_cy), avatar_r + 2.0),
-            );
-            scene.fill(
-                Fill::NonZero,
-                card_xform,
-                colors.neutral[2],
-                None,
-                &vello::kurbo::Circle::new(Point::new(plus_cx, plus_cy), avatar_r),
-            );
-            // Plus glyph (two short strokes).
-            let plus_len = 6.0_f64;
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.5),
-                card_xform,
-                colors.text_dim,
-                None,
-                &vello::kurbo::Line::new(
-                    Point::new(plus_cx - plus_len / 2.0, plus_cy),
-                    Point::new(plus_cx + plus_len / 2.0, plus_cy),
-                ),
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.5),
-                card_xform,
-                colors.text_dim,
-                None,
-                &vello::kurbo::Line::new(
-                    Point::new(plus_cx, plus_cy - plus_len / 2.0),
-                    Point::new(plus_cx, plus_cy + plus_len / 2.0),
-                ),
-            );
-
-            // Footer: N windows counter.
-            let win_count: usize = ws.strips.iter().map(|s| s.window_groups.len()).sum();
-            let footer = windows_label(win_count);
-            let footer_y = rect.y1 - OVERVIEW_CARD_PADDING_PX - 14.0;
-            text_renderer.draw_text(
-                scene,
-                &footer,
-                tokens.typography.scale.xs,
-                colors.text_dim,
-                card_xform * Affine::translate((sidebar_x0, footer_y)),
-                None,
-            );
-
-            // -- Mini-window row (right column) --------------------------
-            let mini_x0 = sidebar_x0 + sidebar_w + OVERVIEW_SIDEBAR_GAP_PX;
-            let mini_x1 = rect.x1 - OVERVIEW_CARD_PADDING_PX;
-            let mini_cy = rect.center().y;
-            let mini_y0 = mini_cy - OVERVIEW_MINI_HEIGHT_PX / 2.0;
-            // One MiniWindow per window group in every strip. Concept
-            // flattens across strips; so do we.
-            let mut mx = mini_x0;
-            let mut drew_any = false;
-            'outer: for strip in &ws.strips {
-                for g in &strip.window_groups {
-                    // Scale the mini-window by the group's share of its
-                    // strip, so the overview reflects the real layout for
-                    // any width — a hand-resized group used to fall into
-                    // the same generic box as an untouched one.
-                    let mini_w = OVERVIEW_MINI_WIDTH_PX
-                        * (g.width.permille() as f64
-                            / ui::widget::WIDTH_NORMAL_PERMILLE as f64);
-                    if mx + mini_w > mini_x1 {
-                        break 'outer;
-                    }
-                    draw_mini_window(
-                        scene,
-                        card_xform,
-                        theme,
-                        Rect::new(mx, mini_y0, mx + mini_w, mini_y0 + OVERVIEW_MINI_HEIGHT_PX),
-                        g.tabs.len(),
-                        g.tabs
-                            .iter()
-                            .position(|t| t.id == g.active_tab)
-                            .unwrap_or(0),
-                    );
-                    mx += mini_w + OVERVIEW_MINI_GAP_PX;
-                    drew_any = true;
-                }
-            }
-            if !drew_any {
-                // Empty workspace placeholder — dashed frame spanning the
-                // mini-window region.
-                let empty_rect =
-                    Rect::new(mini_x0, mini_y0, mini_x1, mini_y0 + OVERVIEW_MINI_HEIGHT_PX);
-                let empty_rr = RoundedRect::from_rect(empty_rect, 12.0);
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [4.0, 4.0]),
-                    card_xform,
-                    colors.neutral[2],
-                    None,
-                    &empty_rr,
-                );
-                let empty_label = "No windows";
-                let (ew, eh) = text_renderer.measure(empty_label, sub_size, None);
-                let ex = (empty_rect.x0 + empty_rect.x1) / 2.0 - ew as f64 / 2.0;
-                let ey = (empty_rect.y0 + empty_rect.y1) / 2.0 - eh as f64 / 2.0;
-                text_renderer.draw_text(
-                    scene,
-                    empty_label,
-                    sub_size,
-                    colors.text_dim,
-                    card_xform * Affine::translate((ex, ey)),
-                    None,
-                );
-            }
         }
 
-        // -- "+ Add workspace" tile --------------------------------------
-        // Mirrors the wheel-disc plus slot's semantics
-        // (`sidebar_wheel_disc.rs::plus_rect`): clicking calls
-        // `chrome.add_workspace("Untitled")` and stays on the overview
-        // so the user sees the new card slide in. The wheel-disc plus is
-        // the spatial entry point; this tile is the in-overview entry
-        // point so reviewing-then-adding doesn't require bouncing back
-        // to the wheel.
+        // -- "Add workspace" tile ----------------------------------------
+        // A peer cell in the same grid, not a stray strip below it, so the
+        // create affordance is reachable without scrolling in the common
+        // case. Clicking it calls `chrome.add_workspace` and stays on the
+        // overview so the new card appears in place.
         let add_hover = self
             .last_cursor
             .map(|c| add_rect.contains(c))
             .unwrap_or(false);
-        let add_rr = RoundedRect::from_rect(add_rect, OVERVIEW_ROW_RADIUS_PX);
-        let slate_900 = colors.neutral[1];
-        let add_fill = if add_hover {
-            slate_900
-        } else {
-            slate_900.with_alpha_factor(0.30)
-        };
+        let add_rr = RoundedRect::from_rect(add_rect, OVERVIEW_CARD_RADIUS_PX);
         let accent_color = if add_hover {
-            colors.accent[5]
+            colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX]
         } else {
             colors.text_dim
         };
-        scene.fill(Fill::NonZero, transform, add_fill, None, &add_rr);
-        // Dashed stroke marks the tile as a create-affordance, matching
-        // the empty-windows placeholder treatment above.
+        if add_hover {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.surfaces.base,
+                None,
+                &add_rr,
+            );
+        }
+        // Dashed edge marks the tile as a create-affordance, matching the
+        // ghost treatment the shared chip uses for an empty slot.
         scene.stroke(
             &vello::kurbo::Stroke::new(1.5).with_dashes(0.0, [6.0, 6.0]),
             transform,
             if add_hover {
-                colors.accent[5]
+                accent_color
             } else {
-                colors.neutral[3]
+                colors.border_standard
             },
             None,
             &add_rr,
         );
-        // Plus glyph + label centered as a unit so they read as one
-        // button rather than two adjacent affordances.
         let label = "Add workspace";
-        let label_size = tokens.typography.scale.lg;
+        let label_size = tokens.typography.scale.base;
         let (lw, lh) = text_renderer.measure(label, label_size, None);
-        let icon_size = 20.0_f64;
-        let icon_label_gap = 10.0_f64;
-        let total_w = icon_size + icon_label_gap + lw as f64;
-        let unit_x0 = (add_rect.x0 + add_rect.x1) / 2.0 - total_w / 2.0;
+        let icon_size = 30.0_f64;
+        let icon_label_gap = 12.0_f64;
+        let unit_cx = (add_rect.x0 + add_rect.x1) / 2.0;
         let unit_cy = (add_rect.y0 + add_rect.y1) / 2.0;
+        // Icon over label, centred as a unit: at grid-cell proportions a
+        // stacked pair reads as one button where a wide row would drift
+        // toward the tile's edges.
         let icon_rect = Rect::new(
-            unit_x0,
-            unit_cy - icon_size / 2.0,
-            unit_x0 + icon_size,
-            unit_cy + icon_size / 2.0,
+            unit_cx - icon_size / 2.0,
+            unit_cy - icon_size - icon_label_gap / 2.0,
+            unit_cx + icon_size / 2.0,
+            unit_cy - icon_label_gap / 2.0,
         );
         ui::icons::draw_icon(
             scene,
@@ -8545,15 +8549,48 @@ impl ShellOverlayHost {
             label_size,
             accent_color,
             transform
-                * Affine::translate((
-                    unit_x0 + icon_size + icon_label_gap,
-                    unit_cy - lh as f64 / 2.0,
-                )),
+                * Affine::translate((unit_cx - lw as f64 / 2.0, unit_cy + icon_label_gap / 2.0)),
             None,
         );
+        let _ = lh;
         self.add_workspace_rect = add_rect;
-        // Close the scroll-clip layer that was pushed before the
-        // workspace-rows loop above.
+
+        // -- Overflow cue -------------------------------------------------
+        // When the grid is taller than the band it scrolls in, fade its
+        // bottom edge into the scrim. A card sliced off by a hard clip
+        // reads as a rendering fault; a card fading out reads as "there is
+        // more below", which is what is true.
+        if self.overview_max_scroll_y() > 0.5 {
+            let fade_y1 = scroll_clip.y1;
+            let fade_y0 = fade_y1 - OVERVIEW_SCROLL_FADE_PX;
+            let scrim = colors.surfaces.scrim;
+            let grad = vello::peniko::Gradient::new_linear(
+                Point::new(scroll_clip.x0, fade_y0),
+                Point::new(scroll_clip.x0, fade_y1),
+            )
+            .with_extend(vello::peniko::Extend::Pad)
+            .with_stops(
+                &[
+                    vello::peniko::ColorStop {
+                        offset: 0.0,
+                        color: scrim.with_alpha_factor(0.0).into(),
+                    },
+                    vello::peniko::ColorStop {
+                        offset: 1.0,
+                        color: scrim.into(),
+                    },
+                ][..],
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                &grad,
+                None,
+                &Rect::new(scroll_clip.x0, fade_y0, scroll_clip.x1, fade_y1),
+            );
+        }
+
+        // Close the scroll-clip layer pushed before the grid loop.
         scene.pop_layer();
     }
 
@@ -10780,6 +10817,339 @@ impl ShellOverlayHost {
         let row_y = r.y0 + 280.0;
         let row_h = 48.0;
         Rect::new(r.x0 + 16.0, row_y, r.x1 - 16.0, row_y + row_h)
+    }
+}
+
+#[cfg(test)]
+mod overview_grid_tests {
+    //! The overview answers three questions at a glance: what workspaces
+    //! exist, what is in each one, and which one you are in. These pin the
+    //! parts of that which are geometry or data rather than pixels.
+    //!
+    //! Every assertion runs against the same helpers `draw_overview` calls
+    //! — `overview_cell_rect` is the grid the cards are painted into and
+    //! the grid `hit_test_overview` clicks against, and
+    //! `window_chip_specs` is the list the tab chips are built from.
+
+    use super::*;
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::{AppKind, TileContent, WorkspaceTree};
+    use ui::widget::Container;
+
+    /// A host laid out over a desktop-sized viewport with the overview
+    /// settled open, matching what the shots harness and the live binary
+    /// both produce.
+    fn host_with(tree: WorkspaceTree) -> ShellOverlayHost {
+        let chrome = ChromeState::new(tree);
+        chrome.borrow_mut().overlays.overview = true;
+        let mut host = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome);
+        host.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
+        host.force_overview_settled(true);
+        host
+    }
+
+    fn host() -> ShellOverlayHost {
+        host_with(WorkspaceTree::bootstrap_default())
+    }
+
+    /// The header promised workspaces "side by side" while stacking them
+    /// down the screen. They are a grid now: neighbours in a row share a
+    /// baseline and advance along x.
+    #[test]
+    fn cards_in_a_row_share_a_baseline_and_advance_horizontally() {
+        let h = host();
+        assert!(
+            h.overview_grid_cols() >= 2,
+            "a 1600 px viewport has room for at least two columns; got {}",
+            h.overview_grid_cols()
+        );
+        let a = h.overview_cell_rect(0);
+        let b = h.overview_cell_rect(1);
+        assert!(
+            (a.y0 - b.y0).abs() < f64::EPSILON && (a.y1 - b.y1).abs() < f64::EPSILON,
+            "the first two cards must sit on one baseline; got {a:?} and {b:?}"
+        );
+        assert!(
+            b.x0 > a.x1,
+            "the second card must sit to the right of the first, not below it; \
+             got {a:?} then {b:?}"
+        );
+        assert!(
+            (b.x0 - a.x1 - OVERVIEW_GRID_GAP_PX).abs() < 0.5,
+            "cards in a row are separated by exactly one grid gap"
+        );
+    }
+
+    /// The grid fills the column exactly — no card overhangs the content
+    /// measure and no unexplained gutter is left at the right edge.
+    #[test]
+    fn a_full_row_spans_the_column_exactly() {
+        let h = host();
+        let col = h.overview_column_rect();
+        let cols = h.overview_grid_cols();
+        let first = h.overview_cell_rect(0);
+        let last = h.overview_cell_rect(cols - 1);
+        assert!(
+            (first.x0 - col.x0).abs() < 0.5,
+            "the row starts at the column's left edge"
+        );
+        assert!(
+            (last.x1 - col.x1).abs() < 0.5,
+            "the row ends at the column's right edge; got {} vs {}",
+            last.x1,
+            col.x1
+        );
+    }
+
+    /// Past the last column the grid wraps: back to the left edge, one
+    /// card height plus a gap further down.
+    #[test]
+    fn the_grid_wraps_after_the_last_column() {
+        let h = host();
+        let cols = h.overview_grid_cols();
+        let first = h.overview_cell_rect(0);
+        let wrapped = h.overview_cell_rect(cols);
+        assert!(
+            (wrapped.x0 - first.x0).abs() < 0.5,
+            "the wrapped card returns to the left edge"
+        );
+        assert!(
+            (wrapped.y0 - first.y0 - OVERVIEW_CARD_HEIGHT_PX - OVERVIEW_GRID_GAP_PX).abs() < 0.5,
+            "the wrapped card drops exactly one row"
+        );
+    }
+
+    /// The create affordance used to be a short strip below the list,
+    /// which on a full screen meant below the fold. It is a grid cell
+    /// like any other card, in the slot right after the last workspace.
+    #[test]
+    fn the_add_tile_is_a_peer_cell_in_the_grid() {
+        let h = host();
+        let n = h.chrome.as_ref().unwrap().borrow().tree().workspaces.len();
+        let add = h.overview_add_workspace_rect_for(n);
+        assert_eq!(
+            add,
+            h.overview_cell_rect(n),
+            "the add tile occupies the grid slot after the last workspace"
+        );
+        let card = h.overview_cell_rect(0);
+        assert!(
+            (add.height() - card.height()).abs() < f64::EPSILON
+                && (add.width() - card.width()).abs() < f64::EPSILON,
+            "the add tile is the same size as a workspace card, not a \
+             short strip: card {card:?} vs add {add:?}"
+        );
+    }
+
+    /// With three workspaces and a four-wide grid everything lands in one
+    /// row, so nothing is clipped and nothing scrolls. The old vertical
+    /// list needed three row-heights for the same tree and ran off the
+    /// bottom of a 900 px screen.
+    #[test]
+    fn three_workspaces_fit_one_row_with_nothing_to_scroll() {
+        let h = host();
+        assert_eq!(
+            h.overview_grid_rows_for(3),
+            1,
+            "three workspaces plus the add tile fit one row of a four-wide grid"
+        );
+        assert_eq!(
+            h.overview_max_scroll_y(),
+            0.0,
+            "a grid that fits its band has nothing to scroll"
+        );
+        let col = h.overview_column_rect();
+        let last = h.overview_cell_rect(3);
+        assert!(
+            last.y1 <= col.y1,
+            "no card may extend past the bottom of the content column: \
+             card ends at {} , column at {}",
+            last.y1,
+            col.y1
+        );
+    }
+
+    /// Enough workspaces to overflow the band do scroll, and the draw path
+    /// is told to paint the overflow cue.
+    #[test]
+    fn an_overflowing_grid_reports_scrollable_content() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        for i in 0..12 {
+            tree.append_empty_workspace(&format!("Extra {i}"));
+        }
+        let h = host_with(tree);
+        assert!(
+            h.overview_content_height() > h.overview_viewport_height(),
+            "fifteen workspaces overflow the band"
+        );
+        assert!(
+            h.overview_max_scroll_y() > 0.0,
+            "an overflowing grid must be scrollable, and paints the bottom fade"
+        );
+    }
+
+    /// A click lands on the card the grid drew there. `hit_test_overview`
+    /// and the draw pass share one geometry oracle, so this catches a
+    /// draw/hit-test drift that a pixel diff would not.
+    #[test]
+    fn hit_test_agrees_with_the_grid_the_cards_are_drawn_into() {
+        let h = host();
+        for i in 0..3 {
+            let r = h.overview_cell_rect(i);
+            assert_eq!(
+                h.hit_test_overview(r.center()),
+                Some(i),
+                "clicking the centre of card {i} must select card {i}"
+            );
+        }
+        // A point in the gutter between two cards belongs to neither.
+        let a = h.overview_cell_rect(0);
+        let gutter = Point::new(a.x1 + OVERVIEW_GRID_GAP_PX / 2.0, a.center().y);
+        assert_eq!(
+            h.hit_test_overview(gutter),
+            None,
+            "the gap between cards is not a card"
+        );
+    }
+
+    /// The header line is derived from the tree, so it cannot claim a
+    /// layout or a count the cards below it contradict. The old subtitle
+    /// was the fixed string "Your workspaces, side by side" over a
+    /// vertical stack.
+    #[test]
+    fn the_header_summary_counts_and_names_the_current_workspace() {
+        assert_eq!(
+            overview_summary_label(3, Some("Home")),
+            "3 workspaces · you are in Home"
+        );
+        assert_eq!(
+            overview_summary_label(1, Some("Home")),
+            "1 workspace · you are in Home"
+        );
+        // No current workspace: say what is known and stop.
+        assert_eq!(overview_summary_label(2, None), "2 workspaces");
+        assert_eq!(overview_summary_label(2, Some("")), "2 workspaces");
+    }
+
+    /// The summary the draw path actually renders is the tree's own
+    /// count and active workspace, not a hardcoded one.
+    #[test]
+    fn the_rendered_summary_tracks_the_tree() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let n = tree.workspaces.len();
+        let active = tree.active_workspace().map(|w| w.name.clone()).unwrap();
+        let label = overview_summary_label(n, Some(active.as_str()));
+        assert!(
+            label.starts_with(&format!("{n} workspace")),
+            "summary must lead with the real workspace count; got {label:?}"
+        );
+        assert!(
+            label.ends_with(&active),
+            "summary must name the workspace the tree says is active; got {label:?}"
+        );
+    }
+
+    /// Each card names the windows in it, from the tabs themselves. The
+    /// old card drew one grey rectangle with four dots for exactly this
+    /// data.
+    #[test]
+    fn a_populated_card_names_every_window_in_tab_order() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let home = tree.active_workspace().expect("bootstrap seeds an active workspace");
+        let specs = overview_workspace_chip_specs(home);
+        let labels: Vec<&str> = specs.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["Notes", "Files", "Terminal", "Document"],
+            "the card must name the real tabs, in the order the group holds them"
+        );
+        let front: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.is_front)
+            .map(|s| s.label.as_str())
+            .collect();
+        assert_eq!(
+            front,
+            vec!["Notes"],
+            "exactly the group's active tab is marked as the one in front"
+        );
+    }
+
+    /// A workspace with nothing open contributes nothing. No placeholder
+    /// window is invented to make the card look occupied.
+    #[test]
+    fn an_empty_workspace_contributes_no_windows() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let empty = tree
+            .workspaces
+            .iter()
+            .find(|w| w.strips.iter().all(|s| s.window_groups.is_empty()))
+            .expect("bootstrap seeds an empty workspace");
+        assert!(
+            overview_workspace_chip_specs(empty).is_empty(),
+            "an empty workspace must produce no window chips"
+        );
+    }
+
+    /// The glyph on a chip comes from the kind the tile declares, so a
+    /// card cannot show an app it is not hosting.
+    #[test]
+    fn a_chip_glyph_follows_the_kind_the_tile_declares() {
+        assert_eq!(app_kind_icon(&AppKind::Terminal), ui::icons::Icon::Terminal);
+        assert_eq!(app_kind_icon(&AppKind::FileExplorer), ui::icons::Icon::Folder);
+        assert_eq!(app_kind_icon(&AppKind::Browser), ui::icons::Icon::Monitor);
+        assert_eq!(app_kind_icon(&AppKind::Settings), ui::icons::Icon::Settings);
+        assert_eq!(
+            app_kind_icon(&AppKind::Other("Notes".into())),
+            ui::icons::Icon::File,
+            "an app the shell has no glyph for gets the neutral mark, not a guess"
+        );
+        // A foreign Wayland client is an external window.
+        assert_eq!(
+            tile_icon(&TileContent::Foreign {
+                app_id: "org.gimp.GIMP".into(),
+                surface_id: 7,
+            }),
+            ui::icons::Icon::Monitor
+        );
+        // Stub and placeholder tiles resolve through their kind.
+        assert_eq!(
+            tile_icon(&TileContent::Stub {
+                kind: AppKind::Terminal,
+                label: "Terminal".into(),
+            }),
+            ui::icons::Icon::Terminal
+        );
+    }
+
+    /// A narrow output drops to one column rather than shrinking cards
+    /// below the width at which they can name anything.
+    #[test]
+    fn a_narrow_viewport_drops_to_a_single_column() {
+        let mut h = host();
+        h.rect = Rect::new(0.0, 0.0, 420.0, 900.0);
+        assert_eq!(
+            h.overview_grid_cols(),
+            1,
+            "a 420 px viewport has room for one card, not two slivers"
+        );
+        assert!(
+            h.overview_cell_width() >= 1.0,
+            "the single column still has a positive width"
+        );
+    }
+
+    /// The column count is capped, so a very wide output gets bigger
+    /// gutters rather than a row of ever-thinner cards.
+    #[test]
+    fn a_very_wide_viewport_caps_the_column_count() {
+        let mut h = host();
+        h.rect = Rect::new(0.0, 0.0, 5120.0, 1440.0);
+        assert_eq!(h.overview_grid_cols(), OVERVIEW_GRID_MAX_COLS);
+        assert!(
+            h.overview_column_rect().width() <= OVERVIEW_MAX_WIDTH_PX + 0.5,
+            "the content column stays within its maximum measure"
+        );
     }
 }
 
