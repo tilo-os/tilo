@@ -287,7 +287,14 @@ pub fn face_colors(
             } else {
                 theme.accent_primary
             };
-            (bg, None, Color::WHITE)
+            // A white label on a saturated accent is the fleet's language, but
+            // it is only legible on some accents: 3.17:1 on the dark default's
+            // blue, 2.00:1 on Nord's frost, 1.70:1 on Gruvbox's yellow. Route
+            // the pair through `legible_fill`, which deepens the fill to keep
+            // the white label where it can and re-picks the label only for the
+            // pale accents that would go muddy if deepened.
+            let (bg, fg) = theme.tokens.colors.legible_fill(bg, Color::WHITE);
+            (bg, None, fg)
         }
         ButtonStyle::Danger => {
             use crate::color_compat::ColorCompat;
@@ -300,7 +307,8 @@ pub fn face_colors(
             } else {
                 d
             };
-            (bg, None, Color::WHITE)
+            let (bg, fg) = theme.tokens.colors.legible_fill(bg, Color::WHITE);
+            (bg, None, fg)
         }
         ButtonStyle::Ghost => {
             // Transparent + borderless at rest; a themed surface tint only
@@ -908,12 +916,25 @@ mod tests {
         let rest = ButtonInteract::default();
         let hover = ButtonInteract { hovered: true, ..Default::default() };
         let (bg, border, fg) = face_colors(&theme, ButtonStyle::Primary, rest);
-        assert_eq!(bg, theme.accent_primary, "primary rest = accent fill");
+        let (want_bg, want_fg) =
+            theme.tokens.colors.legible_fill(theme.accent_primary, vello::peniko::Color::WHITE);
+        assert_eq!(bg, want_bg, "primary rest = the accent, deepened enough to host its label");
         assert_eq!(border, None, "accent fill is self-defining — no border");
-        assert_eq!(fg, vello::peniko::Color::WHITE, "accent-filled label is white");
+        assert_eq!(fg, want_fg, "accent-filled label is white");
+        assert_eq!(fg, vello::peniko::Color::WHITE, "the dark default keeps a white label");
+        // The fill is still the theme's accent, only deepened — a white label
+        // on the raw accent measures 3.17:1 here, below AA for body text.
+        assert!(
+            crate::a11y::contrast_ratio(fg, bg) >= 4.5,
+            "the label must clear AA on the fill",
+        );
+        assert!(
+            crate::a11y::relative_luminance(bg) < crate::a11y::relative_luminance(theme.accent_primary),
+            "deepened, not repainted",
+        );
         assert_eq!(
             face_colors(&theme, ButtonStyle::Primary, hover).0,
-            theme.accent_hover,
+            theme.tokens.colors.legible_fill(theme.accent_hover, vello::peniko::Color::WHITE).0,
             "primary hover darkens to the accent-hover token",
         );
     }
@@ -924,9 +945,18 @@ mod tests {
         let rest = ButtonInteract::default();
         let hover = ButtonInteract { hovered: true, ..Default::default() };
         let (bg, border, fg) = face_colors(&theme, ButtonStyle::Danger, rest);
-        assert_eq!(bg, theme.tokens.colors.semantic.danger, "danger rest = solid danger");
+        let (want_bg, want_fg) = theme
+            .tokens
+            .colors
+            .legible_fill(theme.tokens.colors.semantic.danger, vello::peniko::Color::WHITE);
+        assert_eq!(bg, want_bg, "danger rest = solid danger, deepened to host its label");
         assert_eq!(border, None);
-        assert_eq!(fg, vello::peniko::Color::WHITE);
+        assert_eq!(fg, want_fg);
+        assert_eq!(fg, vello::peniko::Color::WHITE, "the dark default keeps a white label");
+        assert!(
+            crate::a11y::contrast_ratio(fg, bg) >= 4.5,
+            "the label must clear AA on the fill",
+        );
         assert_ne!(
             face_colors(&theme, ButtonStyle::Danger, hover).0,
             theme.tokens.colors.semantic.danger,
@@ -943,9 +973,15 @@ mod tests {
             .text_size(13.0);
         let theme = Theme::dark();
         let (bg, border, fg) = f.colors(&theme);
-        assert_eq!(bg, theme.accent_hover);
+        let (want_bg, want_fg) =
+            theme.tokens.colors.legible_fill(theme.accent_hover, vello::peniko::Color::WHITE);
+        assert_eq!(bg, want_bg, "hovered primary takes the accent-hover fill");
         assert_eq!(border, None);
-        assert_eq!(fg, vello::peniko::Color::WHITE);
+        assert_eq!(fg, want_fg);
+        assert!(
+            crate::a11y::contrast_ratio(fg, bg) >= 4.5,
+            "a hovered primary's label must clear AA too",
+        );
         assert_eq!(f.spoken_name(), "Send", "visible label is the spoken name");
     }
 

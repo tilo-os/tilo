@@ -225,7 +225,8 @@ pub fn segment_colors(
     match style {
         SegmentedStyle::Solid => {
             if selected {
-                (Some(theme.accent_primary), Color::WHITE)
+                let (fill, label) = colors.legible_fill(theme.accent_primary, Color::WHITE);
+                (Some(fill), label)
             } else {
                 let fill = colors.surfaces.raised;
                 (Some(fill), colors.readable_on(fill, colors.text_primary))
@@ -233,7 +234,8 @@ pub fn segment_colors(
         }
         SegmentedStyle::Pill => {
             if selected {
-                (Some(theme.accent_primary), Color::WHITE)
+                let (fill, label) = colors.legible_fill(theme.accent_primary, Color::WHITE);
+                (Some(fill), label)
             } else if hovered {
                 let fill = theme.bg_hover;
                 (Some(fill), colors.readable_on(fill, colors.text_dim))
@@ -948,8 +950,14 @@ mod tests {
     fn segment_colors_solid_selected_is_accent_white() {
         let theme = Theme::dark();
         let (fill, fg) = segment_colors(&theme, SegmentedStyle::Solid, true, false);
-        assert_eq!(fill, Some(theme.accent_primary));
-        assert_eq!(fg, Color::WHITE);
+        let (want_fill, want_fg) =
+            theme.tokens.colors.legible_fill(theme.accent_primary, Color::WHITE);
+        // The selected segment is the accent, deepened just enough to host its
+        // white label — on the raw accent that pairing is 3.17:1 here.
+        assert_eq!(fill, Some(want_fill));
+        assert_eq!(fg, want_fg);
+        assert_eq!(fg, Color::WHITE, "the dark default keeps a white label");
+        assert!(crate::a11y::contrast_ratio(fg, want_fill) >= 4.5, "and it clears AA");
         let (ufill, ufg) = segment_colors(&theme, SegmentedStyle::Solid, false, false);
         assert_eq!(ufill, Some(theme.tokens.colors.surfaces.raised), "unselected solid is a raised fill");
         assert_eq!(ufg, theme.tokens.colors.text_primary);
@@ -967,8 +975,16 @@ mod tests {
         assert_eq!(hfill, Some(theme.bg_hover));
         // Selected pill is the accent + white, same as solid.
         let (sfill, sfg) = segment_colors(&theme, SegmentedStyle::Pill, true, false);
-        assert_eq!(sfill, Some(theme.accent_primary));
-        assert_eq!(sfg, Color::WHITE);
+        let (want_fill, want_fg) =
+            theme.tokens.colors.legible_fill(theme.accent_primary, Color::WHITE);
+        assert_eq!(sfill, Some(want_fill));
+        assert_eq!(sfg, want_fg);
+        assert_eq!(sfg, Color::WHITE, "the dark default keeps a white label");
+        assert_eq!(
+            segment_colors(&theme, SegmentedStyle::Solid, true, false),
+            (sfill, sfg),
+            "pill and solid resolve the selected chip identically",
+        );
     }
 
     #[test]
