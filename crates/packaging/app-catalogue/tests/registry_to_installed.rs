@@ -22,6 +22,12 @@ use pkg::pack::{SigningIdentity, pack};
 use pkg::{Manifest, MemoryBlobStore};
 use registry_types::{RegistryEntry, RegistryVersion, sign_entry};
 
+/// The `.qpkg`-authoring the local test registry does, shared verbatim
+/// so the tests below hold the *served* package to its contract rather
+/// than a re-implementation of it.
+#[path = "../examples/support/authoring.rs"]
+mod authoring;
+
 /// Every test in this file repoints process-global environment
 /// variables, so they cannot run concurrently.
 fn env_lock() -> MutexGuard<'static, ()> {
@@ -393,4 +399,200 @@ fn a_corrupted_download_never_becomes_an_installed_app() {
         launcher::registry::list_installed().unwrap().is_empty(),
         "nothing may be registered after a refused install"
     );
+}
+
+// ---------------------------------------------------------------------
+// Installing an app and opening it is the ordinary path.
+// ---------------------------------------------------------------------
+
+/// A payload root shaped exactly like one `qos-install` leaves behind:
+/// a `manifest.toml` beside a `bin/` holding the app. This is what
+/// every harness points a local registry's `--payload` at.
+fn packaged_payload_root(dir: &Path, package_id: &str) -> PathBuf {
+    let root = dir.join("payload-root");
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    std::fs::write(root.join("bin").join("word-processor"), b"#!/bin/true\n").unwrap();
+    std::fs::write(
+        root.join("manifest.toml"),
+        format!(
+            r#"
+[package]
+id = "{package_id}"
+version = "0.9.0"
+kind = "app"
+name = "Word Processor"
+category = "Office"
+
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp = "qos-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.services]
+collab = "optional@1"
+qos-fs = "optional@1"
+
+[entrypoint]
+bin = "bin/word-processor"
+type = "gui"
+"#,
+            hex::encode([7u8; 32])
+        ),
+    )
+    .unwrap();
+    root
+}
+
+/// Serve `qpkg` under `package_id` and install it with the real
+/// installer, returning what the desktop's own reader then sees.
+fn publish_and_install(
+    package_id: &str,
+    qpkg: Vec<u8>,
+    version: &str,
+    apps_dir: &Path,
+    runtime_dir: &Path,
+) -> launcher::registry::InstalledPackage {
+    let registry = Registry::start(String::new(), qpkg.clone());
+    let url = format!("http://127.0.0.1:{}/app.qpkg", registry.port);
+    let mut entry = signed_entry(package_id, &url, &qpkg);
+    entry.versions[0].version = version.to_string();
+    let key = SigningKey::from_bytes(&[11u8; 32]);
+    entry.signature_hex = String::new();
+    sign_entry(&mut entry, &key);
+    let registry = Registry::start(serde_json::to_string(&vec![entry]).unwrap(), qpkg.clone());
+
+    let config_dir = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_dir.path().join("registries.toml"),
+        format!(
+            "[[registry]]\nname = \"local\"\nbase_url = \"{}\"\n",
+            registry.base_url()
+        ),
+    )
+    .unwrap();
+
+    let installer = qos_install_bin();
+    let _env = Env::set(&[
+        ("QOS_STORE_CONFIG_DIR", config_dir.path()),
+        ("QOS_STORE_CACHE_DIR", cache_dir.path()),
+        ("QOS_APPS_DATA_DIR", apps_dir),
+        ("QOS_INSTALL_BIN", &installer),
+        ("XDG_RUNTIME_DIR", runtime_dir),
+    ]);
+
+    app_catalogue::install::install(package_id)
+        .unwrap_or_else(|e| panic!("install must succeed: {}", e.user_message()));
+    launcher::registry::list_installed()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.id == package_id)
+        .unwrap_or_else(|| panic!("the desktop must see {package_id} after installing it"))
+}
+
+/// Installing an app and then opening it is what a person does the
+/// first time they use anything, and it has to reach the launcher with
+/// the services its publisher declared.
+///
+/// It once did not. The registry published a manifest it made up
+/// instead of the one the payload was built with, so `[sandbox.services]`
+/// arrived empty: the launcher opened no collab socket, the app was
+/// handed no `QOS_SVC_COLLAB_FD`, and it started with collaboration
+/// switched off. Nothing said so. Every declared service is optional,
+/// an *absent* declaration is not even a warning, and presence rides a
+/// different path — so the room looked alive while nothing was shared.
+/// The same app opened from the palette, already installed with its
+/// real manifest, collaborated fine, which is what made this read as a
+/// document-sync problem instead of a connection one.
+///
+/// The assertion is therefore on the difference between the two launch
+/// paths: what a *newly installed* app reaches the launcher with must
+/// equal what the package declared, service for service.
+#[test]
+fn an_app_installed_from_a_registry_keeps_the_services_it_declared() {
+    const PKG: &str = "dev.qos.catalogue-collab";
+    let scratch = tempfile::tempdir().unwrap();
+    let root = packaged_payload_root(scratch.path(), PKG);
+
+    // What the publisher declared — read with the launcher's own
+    // reader, so "declared" means what the launcher would act on.
+    let declared = launcher::manifest::read_manifest(&root.join("manifest.toml"))
+        .expect("the fixture manifest parses");
+    assert!(
+        declared.sandbox.services.contains_key("collab"),
+        "the fixture has to declare collab or this test proves nothing"
+    );
+
+    let publisher = SigningIdentity::generate();
+    let authored = authoring::author(
+        PKG,
+        "Word Processor",
+        &root.join("bin/word-processor"),
+        None,
+        &publisher,
+    );
+    assert_eq!(
+        authored.source,
+        authoring::ManifestSource::Package(root.join("manifest.toml")),
+        "the payload's own manifest is what gets published"
+    );
+
+    let apps_dir = tempfile::tempdir().unwrap();
+    let runtime_dir = tempfile::tempdir().unwrap();
+    let installed = publish_and_install(
+        PKG,
+        authored.qpkg,
+        &authored.version,
+        apps_dir.path(),
+        runtime_dir.path(),
+    );
+
+    let reached = launcher::manifest::read_manifest(&installed.manifest_path)
+        .expect("the installed manifest parses");
+    assert_eq!(
+        reached.sandbox.services, declared.sandbox.services,
+        "an installed app must reach the launcher with the services its \
+         package declared; it arrived with {:?} instead of {:?}",
+        reached.sandbox.services, declared.sandbox.services
+    );
+
+    // And that declaration is what actually produces the descriptor.
+    // Assert on the launcher's own resolution against a live socket,
+    // not on the map: a manifest that parses but resolves to nothing
+    // is the same silent failure wearing a different hat.
+    let _env = Env::set(&[("XDG_RUNTIME_DIR", runtime_dir.path())]);
+    let services_root =
+        launcher::services::ensure_services_root().expect("create the services dir");
+    let _listener = std::os::unix::net::UnixListener::bind(services_root.join("collab.sock"))
+        .expect("bind a collab socket for the launcher to dial");
+    let binds = launcher::services::resolve_service_binds(&reached.sandbox.services, false)
+        .expect("resolution must not fail on optional services");
+    assert!(
+        binds.iter().any(|b| b.name == "collab"),
+        "the installed app must be handed a collab descriptor; \
+         the launcher resolved {:?}",
+        binds.iter().map(|b| &b.name).collect::<Vec<_>>()
+    );
+}
+
+/// A payload that is not part of a package still installs — the local
+/// registry has always accepted `--payload /bin/true` — but it is
+/// published as declaring no services, and it says so rather than
+/// passing for a real package that happens not to collaborate.
+#[test]
+fn a_payload_with_no_manifest_is_published_as_declaring_no_services() {
+    let bare = tempfile::tempdir().unwrap();
+    let bin = bare.path().join("true");
+    std::fs::write(&bin, b"#!/bin/true\n").unwrap();
+
+    let publisher = SigningIdentity::generate();
+    let authored = authoring::author("dev.qos.bare", "Bare", &bin, None, &publisher);
+    assert_eq!(authored.source, authoring::ManifestSource::Synthesised);
 }
