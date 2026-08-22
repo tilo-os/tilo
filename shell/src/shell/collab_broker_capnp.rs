@@ -69,12 +69,13 @@ use runtime_collab::raw::{
     channel_handle, collab_service, context_stream, cursor_stream, presence_event, presence_handle,
     presence_payload, presence_stream, scrollback_batch, stream,
 };
-use ui::collaboration::{CollabEvent, PresencePayload};
+use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::presence::PresenceKey;
 
 use crate::shell::collab_broker::{
     AuditEntry, BrokerChannels, CrdtRoute, PeerTable, apply_redaction_from_envelope,
 };
+use crate::shell::network::ShellNetwork;
 
 /// Envelope pushed onto an [`OpStreamServer`]'s queue.
 #[derive(Clone, Debug)]
@@ -168,6 +169,17 @@ pub struct CapnpBrokerState {
     /// the legacy path validates against; a signed op that comes in
     /// via capnp mutates the exact same `ChannelState`.
     broker_channels: Arc<Mutex<BrokerChannels>>,
+    /// The libp2p bridge, when the session has one.
+    ///
+    /// Without it a capnp-connected app could *receive* from the peer
+    /// network — the drain thread's fan-out reaches capnp subscribers
+    /// like any other — but nothing it sent ever left the machine.
+    /// Every packaged qOS app speaks capnp, so two people editing one
+    /// document each saw their own typing and none of the other's.
+    /// `None` in a session with no network (unit tests, a shell
+    /// started without peer sync), where the local fan-out is the
+    /// whole story and publishing is skipped.
+    peer_sync: Option<Arc<ShellNetwork>>,
 }
 
 impl CapnpBrokerState {
@@ -178,12 +190,69 @@ impl CapnpBrokerState {
         Arc::clone(&self.broker_channels)
     }
 
-    fn new(peer_table: &Arc<PeerTable>, broker_channels: Arc<Mutex<BrokerChannels>>) -> Arc<Self> {
+    fn new(
+        peer_table: &Arc<PeerTable>,
+        broker_channels: Arc<Mutex<BrokerChannels>>,
+        peer_sync: Option<Arc<ShellNetwork>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             channels: Mutex::new(HashMap::new()),
             peer_table: Arc::downgrade(peer_table),
             broker_channels,
+            peer_sync,
         })
+    }
+
+    /// Publish a document delta to the peers in `route`'s room.
+    ///
+    /// The capnp counterpart of the republish the JSON reader loop
+    /// performs for `SyncIncremental`, and it applies the same gate: a
+    /// frame whose route names no room is not published, because there
+    /// is no room it is addressed to. The payload crosses as it
+    /// arrived — the shell interprets a change blob no more here than
+    /// it does on the other transport.
+    fn publish_incremental(&self, route: &CrdtRoute, data: &[u8]) {
+        let Some(net) = self.peer_sync.as_ref() else {
+            return;
+        };
+        if !route.addresses_a_room() {
+            tracing::debug!(
+                channel = %route.channel_key(),
+                "capnp broker: not republishing a document delta whose channel names no room",
+            );
+            return;
+        }
+        net.publish_app_crdt_incremental(
+            route.app_id.clone(),
+            route.cluster_id.clone(),
+            route.record_id.clone(),
+            data.to_vec(),
+        );
+    }
+
+    /// Publish a presence frame to the peers in `route`'s room.
+    ///
+    /// `route` is the channel's **un-widened** address: the room is
+    /// what the frame is delivered by, and the app id rides along for
+    /// symmetry with the JSON bridge. The frame is the serialised
+    /// `CollabRequest::Presence` the receiving drain expects, so a
+    /// caret published over capnp and one published over JSON are the
+    /// same bytes on the wire.
+    fn publish_presence(&self, route: &CrdtRoute, key: PresenceKey, payload: PresencePayload) {
+        let Some(net) = self.peer_sync.as_ref() else {
+            return;
+        };
+        if !route.addresses_a_room() {
+            tracing::debug!(
+                channel = %route.channel_key(),
+                "capnp broker: not republishing presence whose channel names no room",
+            );
+            return;
+        }
+        let Ok(frame) = serde_json::to_vec(&CollabRequest::Presence { key, payload }) else {
+            return;
+        };
+        net.publish_app_presence(route.app_id.clone(), route.cluster_id.clone(), frame);
     }
 
     /// Mint the next unified peer id. Delegates to the shared
@@ -222,11 +291,18 @@ impl CapnpBrokerState {
         };
         let addressed = route.channel_key();
         let room_wide = route.record_id.is_empty();
-        let record_prefix = format!("{}#record:", route.cluster_id);
         let channels = all_channels
             .iter_mut()
             .filter(|(k, _)| {
-                k.as_str() == addressed || (room_wide && k.starts_with(&record_prefix))
+                if k.as_str() == addressed {
+                    return true;
+                }
+                // The room-wide widening, decided by parsing the
+                // subscriber's key rather than by matching a prefix of
+                // it. A prefix test had to spell out the key's shape a
+                // second time, and stopped recognising a room's
+                // channels the moment the shape grew an app segment.
+                room_wide && CrdtRoute::from_channel_key(k).cluster_id == route.cluster_id
             })
             .map(|(_, subs)| subs);
         // Materialise each event into the transport-native envelope
@@ -598,6 +674,11 @@ impl channel_handle::Server for CapnpChannelHandle {
         let route = self.route();
         Promise::from_future(async move {
             let data = params.get()?.get_data()?.to_vec();
+            // Out to the room first, then to this host's own apps.
+            // Both are needed and neither implies the other: the local
+            // fan-out is what a second app on this machine sees, and
+            // the publish is what everyone else sees.
+            state.publish_incremental(&route, &data);
             if let Some(t) = state.peer_table.upgrade() {
                 t.fanout_to_route(&CollabEvent::CRDTIncremental { data }, peer_id, &route);
             }
@@ -808,7 +889,16 @@ impl CapnpPresenceHandle {
     /// this room is still a legitimate audience for "who else is
     /// here". Only document payloads are confined to one record.
     fn route(&self) -> CrdtRoute {
-        CrdtRoute::from_channel_key(&self.channel_id).to_cluster_scope()
+        self.full_route().to_cluster_scope()
+    }
+
+    /// The channel's address as announced, app id and record intact.
+    ///
+    /// The peer publish takes this rather than the widened form so the
+    /// frame carries the same `(app, cluster)` pair the JSON bridge
+    /// stamps on presence.
+    fn full_route(&self) -> CrdtRoute {
+        CrdtRoute::from_channel_key(&self.channel_id)
     }
 }
 
@@ -821,6 +911,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
         let state = self.state.clone();
         let peer_id = self.peer_id;
         let route = self.route();
+        let full_route = self.full_route();
         Promise::from_future(async move {
             let r = params.get()?;
             let (x, y) = (r.get_x(), r.get_y());
@@ -835,6 +926,16 @@ impl presence_handle::Server for CapnpPresenceHandle {
                 x,
                 y,
             };
+            // On the peer wire a pointer is a keyed presence frame
+            // like any other, which is what the receiving drain
+            // decodes. The key is the one the local fan-out below
+            // synthesises, so a pointer looks the same to an app on
+            // this host and to an app on another.
+            state.publish_presence(
+                &full_route,
+                PresenceKey::pointer_default(),
+                PresencePayload::Pointer { x, y },
+            );
             if let Some(t) = state.peer_table.upgrade() {
                 t.fanout_to_route(&event, peer_id, &route);
             }
@@ -864,6 +965,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
         let state = self.state.clone();
         let peer_id = self.peer_id;
         let route = self.route();
+        let full_route = self.full_route();
         Promise::from_future(async move {
             let r = params.get()?;
             let key_bytes = r.get_key_bytes()?.to_vec();
@@ -872,6 +974,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
                 &state,
                 peer_id,
                 &route,
+                &full_route,
                 key_bytes,
                 PresencePayload::Caret { pos: pos as usize },
             );
@@ -887,6 +990,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
         let state = self.state.clone();
         let peer_id = self.peer_id;
         let route = self.route();
+        let full_route = self.full_route();
         Promise::from_future(async move {
             let r = params.get()?;
             let key_bytes = r.get_key_bytes()?.to_vec();
@@ -896,6 +1000,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
                 &state,
                 peer_id,
                 &route,
+                &full_route,
                 key_bytes,
                 PresencePayload::Selection {
                     start: start as usize,
@@ -914,10 +1019,18 @@ impl presence_handle::Server for CapnpPresenceHandle {
         let state = self.state.clone();
         let peer_id = self.peer_id;
         let route = self.route();
+        let full_route = self.full_route();
         Promise::from_future(async move {
             let r = params.get()?;
             let key_bytes = r.get_key_bytes()?.to_vec();
-            publish_keyed_presence(&state, peer_id, &route, key_bytes, PresencePayload::Arrived);
+            publish_keyed_presence(
+                &state,
+                peer_id,
+                &route,
+                &full_route,
+                key_bytes,
+                PresencePayload::Arrived,
+            );
             Ok(())
         })
     }
@@ -930,10 +1043,18 @@ impl presence_handle::Server for CapnpPresenceHandle {
         let state = self.state.clone();
         let peer_id = self.peer_id;
         let route = self.route();
+        let full_route = self.full_route();
         Promise::from_future(async move {
             let r = params.get()?;
             let key_bytes = r.get_key_bytes()?.to_vec();
-            publish_keyed_presence(&state, peer_id, &route, key_bytes, PresencePayload::Left);
+            publish_keyed_presence(
+                &state,
+                peer_id,
+                &route,
+                &full_route,
+                key_bytes,
+                PresencePayload::Left,
+            );
             Ok(())
         })
     }
@@ -964,6 +1085,7 @@ fn publish_keyed_presence(
     state: &Arc<CapnpBrokerState>,
     peer_id: u64,
     route: &CrdtRoute,
+    full_route: &CrdtRoute,
     key_bytes: Vec<u8>,
     payload: PresencePayload,
 ) {
@@ -974,6 +1096,7 @@ fn publish_keyed_presence(
         );
         return;
     };
+    state.publish_presence(full_route, key.clone(), payload.clone());
     let event = CollabEvent::RemotePresenceUpdate {
         user_id: format!("peer-{peer_id}"),
         key,
@@ -1161,6 +1284,12 @@ fn pack_color(rgb: [f32; 3]) -> u32 {
 /// created [`CapnpBrokerState`] to `peer_table` so every event that
 /// flows through the legacy fanout ALSO lands on capnp subscribers.
 ///
+/// `peer_sync` is the other direction, and the two are not the same
+/// wiring: attaching to the peer table is what lets a capnp app
+/// *receive* from the peer network, while `peer_sync` is what lets it
+/// *send*. A session given only the first has apps that read the room
+/// and cannot write to it.
+///
 /// The accept thread runs a `current_thread` tokio runtime + a
 /// `LocalSet` (capnp-rpc futures are `!Send`). It polls `quit` on a
 /// 100 ms cadence between blocking accepts so a broker shutdown is
@@ -1169,10 +1298,11 @@ pub fn spawn(
     socket_path: PathBuf,
     peer_table: Arc<PeerTable>,
     broker_channels: Arc<Mutex<BrokerChannels>>,
+    peer_sync: Option<Arc<ShellNetwork>>,
     quit: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
     let _ = std::fs::remove_file(&socket_path);
-    let state = CapnpBrokerState::new(&peer_table, broker_channels);
+    let state = CapnpBrokerState::new(&peer_table, broker_channels, peer_sync);
     peer_table.attach_capnp(Arc::clone(&state));
 
     // Bind on the caller's thread, before anything is detached.
@@ -1851,6 +1981,168 @@ mod tests {
         }
 
         drop(legacy);
+        drop(handle);
+    }
+
+    /// A capnp app's document delta reaches the peer network.
+    ///
+    /// This is the half of the bridge that did not exist. Attaching
+    /// the capnp state to the peer table made a capnp app a legitimate
+    /// *audience* for what arrived from other hosts, and every packaged
+    /// qOS app speaks capnp — so two people in one room could each
+    /// watch the other's session receive nothing, both of them
+    /// correctly reporting themselves connected.
+    ///
+    /// The assertion is on the `NetCmd` the broker hands the network
+    /// actor, which is the last thing that happens on this machine
+    /// before the frame is gossipsub's problem.
+    #[test]
+    fn a_capnp_apps_delta_is_published_to_the_room() {
+        let (json_path, capnp_path) = unique_paths("capnp-outbound");
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
+        let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
+        let handle = spawn_full(
+            json_path.clone(),
+            Some(capnp_path.clone()),
+            Some(Arc::new(net)),
+        )
+        .expect("spawn broker");
+
+        // The address a record-scoped app announces. The SDK encodes
+        // the whole triple into the channel id, so joining this key is
+        // exactly what the word processor does when it checks out a
+        // document.
+        let cluster = uuid::Uuid::new_v4();
+        let channel_id = CrdtRoute::record("dev.qos.words", cluster.to_string(), "/notes/a.md")
+            .channel_key();
+
+        let capnp_path_clone = capnp_path.clone();
+        let joined = channel_id.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&rt, async move {
+                let (client, _driver) = dial_capnp_for_test(capnp_path_clone)
+                    .await
+                    .expect("dial capnp");
+                let sdk = runtime_collab::CollabClient::from_raw(client);
+                let channel = sdk.join_channel(&joined, b"identity").await.expect("join");
+                channel
+                    .send_unsigned_incremental(b"a-change-blob")
+                    .await
+                    .expect("send unsigned incremental");
+                // Hold the connection open long enough for the call to
+                // be serviced; dropping the RPC system here would race
+                // the broker's handler.
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            });
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let published = loop {
+            match cmd_rx.try_recv() {
+                Ok(crate::network::actor::NetCmd::Publish { msg, .. }) => break Some(msg),
+                Ok(_) => continue,
+                Err(_) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(_) => break None,
+            }
+        };
+
+        match published {
+            Some(crate::network::protocol::NeighbourMsg::AppCrdtIncremental {
+                app_id,
+                cluster_id,
+                record_id,
+                data,
+                ..
+            }) => {
+                assert_eq!(data, b"a-change-blob".to_vec(), "the payload crosses verbatim");
+                assert_eq!(
+                    cluster_id,
+                    cluster.to_string(),
+                    "the room is what the far side gates admission on; \
+                     a delta published without it is refused there",
+                );
+                assert_eq!(
+                    app_id, "dev.qos.words",
+                    "an empty app id means cluster-scoped, which would hand \
+                     one app's document to every app in the room",
+                );
+                assert_eq!(
+                    record_id, "/notes/a.md",
+                    "the record is which document this change belongs to",
+                );
+            }
+            Some(other) => panic!("expected AppCrdtIncremental, got {other:?}"),
+            None => panic!(
+                "a capnp app sent a document delta and nothing was published; \
+                 the outbound half of the bridge is not connected",
+            ),
+        }
+
+        drop(handle);
+    }
+
+    /// A channel that names no room publishes nothing.
+    ///
+    /// The capnp counterpart of the JSON reader loop refusing to
+    /// republish a frame from a peer that never said `Hello`. A capnp
+    /// handle always *has* a route because the channel id is one, so
+    /// the equivalent gate is whether that route names an addressable
+    /// room — and the nil uuid is the case that matters, because it is
+    /// not empty and every workspace still carrying the sentinel would
+    /// otherwise share one room across every machine at once.
+    #[test]
+    fn a_channel_naming_no_room_publishes_nothing() {
+        let (json_path, capnp_path) = unique_paths("capnp-unaddressed");
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
+        let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
+        let handle = spawn_full(
+            json_path.clone(),
+            Some(capnp_path.clone()),
+            Some(Arc::new(net)),
+        )
+        .expect("spawn broker");
+
+        let channel_id =
+            CrdtRoute::record("dev.qos.words", uuid::Uuid::nil().to_string(), "/notes/a.md")
+                .channel_key();
+
+        let capnp_path_clone = capnp_path.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&rt, async move {
+                let (client, _driver) = dial_capnp_for_test(capnp_path_clone)
+                    .await
+                    .expect("dial capnp");
+                let sdk = runtime_collab::CollabClient::from_raw(client);
+                let channel = sdk
+                    .join_channel(&channel_id, b"identity")
+                    .await
+                    .expect("join");
+                channel
+                    .send_unsigned_incremental(b"a-change-blob")
+                    .await
+                    .expect("send unsigned incremental");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            });
+        });
+
+        std::thread::sleep(Duration::from_millis(1200));
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "a delta whose channel names no room must not reach the network",
+        );
+
         drop(handle);
     }
 }
