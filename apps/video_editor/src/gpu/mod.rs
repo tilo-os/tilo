@@ -233,7 +233,7 @@ mod tests {
             kind: TrackKind::Video,
             index,
             muted: false,
-            locked: false,
+            locked: false, solo: false,
         });
         id
     }
@@ -708,7 +708,7 @@ mod tests {
             kind: TrackKind::Video,
             index: 1,
             muted: false,
-            locked: false,
+            locked: false, solo: false,
         });
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 57.0;
