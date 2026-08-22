@@ -443,6 +443,31 @@ impl ShellNetwork {
     /// only joins the default workspace at startup; per-workspace
     /// routing arrives alongside the workspace-id resolver in a Phase
     /// 3 follow-up.
+    /// What the peers in `cluster_id` are called, keyed by the peer
+    /// handle presence frames carry.
+    ///
+    /// `cluster_id` is a room id, so this is the room document's answer
+    /// and nobody else's: names are written there by the room's
+    /// authority and refused from anyone else
+    /// ([`crate::shell::state::WorkspaceTree::apply_room_changes`]).
+    /// Empty for a cluster that is not a room this machine is in, and
+    /// for a room in which nobody has been named -- both of which leave
+    /// every peer labelled with its own handle.
+    pub fn peer_labels(&self, cluster_id: &str) -> std::collections::BTreeMap<u64, String> {
+        let empty = std::collections::BTreeMap::new();
+        let Some(room) = crate::shell::state::RoomId::parse(cluster_id) else {
+            return empty;
+        };
+        if room.is_nil() {
+            return empty;
+        }
+        let Ok(replica) = self.replica.lock() else {
+            return empty;
+        };
+        let labels = replica.tree.read().room_peer_labels(room);
+        labels
+    }
+
     pub fn active_ws_for_publish(&self) -> u64 {
         DEFAULT_WS_TOPIC
     }
