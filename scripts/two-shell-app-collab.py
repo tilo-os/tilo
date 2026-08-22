@@ -241,13 +241,17 @@ class Session:
                                     "active": grp["active_tab"] == tab["id"]})
         return out
 
-    def frames(self) -> dict:
-        """Per-surface frame counters. 0 means the placeholder, not the app."""
-        return ok(call(self.sock, {"op": "foreign_frames"}))
-
     def surfaces(self) -> list[dict]:
-        fr = self.frames()
-        return fr.get("surfaces", fr.get("frames", [])) or []
+        """Per-surface frame counters + layout rects.
+
+        The response envelope is externally tagged, so the payload sits
+        under the command name. Reading the wrong key here returned an
+        empty list forever, which looks exactly like an app that never
+        painted — and made every wait on a frame a 120s timeout that
+        reported failure whatever the app did.
+        """
+        resp = ok(call(self.sock, {"op": "foreign_frames"}))
+        return (resp.get("foreign_frames") or {}).get("frames") or []
 
     def window_centre(self, app_id: str) -> tuple[float, float] | None:
         """Middle of the tab `app_id` was laid out into, in scene space."""
@@ -276,8 +280,7 @@ class Session:
 
     def peers(self) -> list[dict]:
         """Peers this session would paint, off the overlay's own presence."""
-        resp = ok(call(self.sock, {"op": "state_dump"}))
-        return (resp.get("peers") or {}).get("pointers", [])
+        return (self.state().get("peers") or {}).get("pointers") or []
 
     def place_next_in_new_group(self, app_id: str) -> None:
         """Put the next window from `app_id` beside the current one."""
@@ -362,13 +365,15 @@ class Session:
         photographing it looks like success. In a debug build the shader
         compile alone is tens of seconds.
         """
+        return self.wait_for_painted(1, timeout)
+
+    def wait_for_painted(self, n: int, timeout: float = 120.0) -> bool:
+        """Wait until at least `n` foreign surfaces have really painted."""
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                fr = self.frames()
-                seqs = [s.get("frame_seq", 0)
-                        for s in fr.get("surfaces", fr.get("frames", []))]
-                if seqs and max(seqs) > 0:
+                if len([s for s in self.surfaces()
+                        if s.get("frame_seq", 0) > 0]) >= n:
                     return True
             except Exception:
                 pass
@@ -508,16 +513,9 @@ def main() -> int:
             for s, who in targets:
                 s.place_next_in_new_group(APPS[second]["package"])
                 s.launch_app(second, f"{who}-2", room, second_doc, out)
-            deadline = time.time() + 180
-            while time.time() < deadline:
-                if all(len([x for x in s.surfaces()
-                            if x.get("frame_seq", 0) > 0]) >= 2
-                       for s, _ in targets):
-                    break
-                time.sleep(1.0)
             for s, _ in targets:
-                painted = [x for x in s.surfaces() if x.get("frame_seq", 0) > 0]
-                claim(f"{s.name} has two windows painting", len(painted) >= 2, True)
+                claim(f"{s.name} has two windows painting",
+                      s.wait_for_painted(2, 180.0), True)
 
         step("4", "type into one window")
         writer, writer_id = targets[0]
@@ -559,6 +557,11 @@ def main() -> int:
             if not (a and b):
                 raise RuntimeError("no window rects; see foreign_frames")
             note(f"{args.app} centre={a}  {second} centre={b}")
+            # The invite panel is still up on the host from step 2, and
+            # it covers the windows the peer's cursor crosses.
+            for s, _ in targets:
+                s.key("Escape")
+            time.sleep(0.5)
             # Aim at the mover's own copy of the same two windows: it is
             # the mover's pointer that has to be inside an app for the
             # app to publish at all.
