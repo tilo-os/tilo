@@ -282,6 +282,48 @@ class Session:
         """Peers this session would paint, off the overlay's own presence."""
         return (self.state().get("peers") or {}).get("pointers") or []
 
+    def scroll(self, dx: float, dy: float = 0.0) -> None:
+        ok(call(self.sock, {"op": "scroll", "dx": dx, "dy": dy}))
+
+    def window_span(self) -> tuple[float, float] | None:
+        """Left and right edge of everything laid out, in scene space."""
+        rects = [s["rect"] for s in self.surfaces() if s.get("rect")]
+        if not rects:
+            return None
+        return (min(r["x"] for r in rects),
+                max(r["x"] + r["w"] for r in rects))
+
+    def scroll_windows_into_view(self, width: float, tries: int = 60) -> bool:
+        """Scroll the strip until every window is on screen.
+
+        Resizing the groups does not re-clamp the strip's scroll: the
+        offset was computed when the groups were three times wider, so
+        narrowing them leaves the strip parked where it was and the
+        first window half off the left edge. The direction of a wheel
+        step is settled by taking one and looking, rather than assumed.
+        """
+        step = 3.0
+        for _ in range(tries):
+            span = self.window_span()
+            if span is None:
+                return False
+            left, right = span
+            if left >= 0 and right <= width:
+                return True
+            before = left
+            self.scroll(step)
+            self.settle(0.25)
+            after = self.window_span()
+            if after is None:
+                return False
+            if abs(after[0] - before) < 0.5:
+                return False          # the strip will not move any further
+            # Did that step help? If the edge we were chasing moved the
+            # wrong way, reverse and keep going.
+            if (before < 0 and after[0] < before) or (right > width and after[0] > before):
+                step = -step
+        return False
+
     def set_group_width(self, permille: int) -> None:
         """Give every group in the active strip the same share of it."""
         ok(call(self.sock, {"op": "set_group_width", "permille": permille}))
@@ -541,9 +583,13 @@ def main() -> int:
             # them never fit and the second is scrolled off screen — and
             # a cursor the overlay clips away is a cursor nobody can see
             # cross. Give each group a share that leaves both on screen.
+            width = float(args.size.split("x")[0])
             for s, _ in targets:
                 s.set_group_width(args.group_width)
             time.sleep(1.0)
+            for s, _ in targets:
+                claim(f"{s.name} has both windows on screen",
+                      s.scroll_windows_into_view(width), True)
 
         step("4", "type into one window")
         writer, writer_id = targets[0]
