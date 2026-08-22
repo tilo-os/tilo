@@ -199,6 +199,23 @@ pub enum SegmentedStyle {
 /// its selected / hovered state. `fill == None` means "paint no background"
 /// (a transparent, unselected pill). Single source of truth for both the
 /// retained draw's palette intent and [`ToggleGroup::paint`].
+/// Unselected fills run their label through [`Colors::readable_on`], so the
+/// text is guaranteed to clear WCAG AA (4.5:1) against the fill the same call
+/// returns. The hovered pill needed it: `text_dim` on the hover surface
+/// measures between 2.96:1 (Catppuccin Latte) and 3.65:1 (Gruvbox Light) —
+/// below AA in *every* theme, which is why no single-theme check caught it.
+/// Where the preferred tier already passes it is returned untouched.
+///
+/// The **selected** segment deliberately keeps its hardcoded white label
+/// rather than being routed through the same helper. White on `accent_primary`
+/// is below AA in 11 of the 14 presets (1.69:1 on Rosé Pine, 1.70:1 on
+/// Gruvbox, 2.00:1 on Nord, 3.17:1 on the dark default) and no correction is
+/// possible without repainting the selected chip in the shipped dark theme —
+/// either its label flips to black or its accent fill darkens. That is a
+/// design decision, not a mechanical fix, so it is left as-is and recorded
+/// here rather than changed silently.
+///
+/// [`Colors::readable_on`]: crate::tokens::Colors::readable_on
 pub fn segment_colors(
     theme: &Theme,
     style: SegmentedStyle,
@@ -211,15 +228,19 @@ pub fn segment_colors(
             if selected {
                 (Some(theme.accent_primary), Color::WHITE)
             } else {
-                (Some(colors.surfaces.raised), colors.text_primary)
+                let fill = colors.surfaces.raised;
+                (Some(fill), colors.readable_on(fill, colors.text_primary))
             }
         }
         SegmentedStyle::Pill => {
             if selected {
                 (Some(theme.accent_primary), Color::WHITE)
             } else if hovered {
-                (Some(theme.bg_hover), colors.text_dim)
+                let fill = theme.bg_hover;
+                (Some(fill), colors.readable_on(fill, colors.text_dim))
             } else {
+                // Transparent: the label lands on the host's own ground, which
+                // the theme already guarantees `text_dim` is legible against.
                 (None, colors.text_dim)
             }
         }
@@ -481,11 +502,10 @@ impl Widget for ToggleGroup {
             &outer_shape,
         );
         for (i, seg_rect) in self.segment_rects.iter().enumerate() {
-            let fill = if i == self.selected {
-                colors.accent[ACCENT_PRIMARY_IDX]
-            } else {
-                colors.surfaces.raised
-            };
+            // Through `segment_colors` rather than re-deriving the palette, so
+            // the retained control and `paint` cannot drift apart.
+            let (fill, _) = segment_colors(theme, SegmentedStyle::Solid, i == self.selected, false);
+            let Some(fill) = fill else { continue };
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -543,11 +563,8 @@ impl Widget for ToggleGroup {
         let text_size = theme.tokens.typography.scale.sm;
         for (i, seg_rect) in self.segment_rects.iter().enumerate() {
             let label = &self.segments[i].label;
-            let text_color = if i == self.selected {
-                Color::WHITE
-            } else {
-                colors.text_primary
-            };
+            let (_, text_color) =
+                segment_colors(theme, SegmentedStyle::Solid, i == self.selected, false);
             let (tw, th) = text_renderer.measure(label, text_size, None);
             let text_x = seg_rect.center().x - (tw as f64 / 2.0);
             let text_y = seg_rect.y0 + (seg_rect.height() - th as f64) / 2.0;
@@ -690,6 +707,68 @@ mod tests {
     use std::rc::Rc;
     use taffy::prelude::TaffyMaxContent;
     use vello_encoding::DrawTag;
+
+    /// An **inactive** segment that carries a fill must put a label on it that
+    /// clears WCAG AA for body text, in every theme.
+    ///
+    /// The hovered pill did not: `text_dim` on the hover surface measures
+    /// 2.96:1 in Catppuccin Latte, 3.11:1 in Beige, 3.46:1 in the dark
+    /// default and 3.49:1 in the light one — below AA in all 14 presets. The
+    /// closely-related `neutral[3]` fill tier under the same label measures
+    /// 4.26:1 in Light against 4.69:1 in Dark, which is the shape of the
+    /// problem: a pairing that scrapes past the bar in the theme it was
+    /// authored in and fails in the others.
+    ///
+    /// Sweeping every theme is the point. A check against the default alone
+    /// cannot see a defect whose whole nature is that it is theme-dependent.
+    #[test]
+    fn inactive_segment_labels_clear_aa_in_every_theme() {
+        use crate::a11y::contrast_ratio;
+        use crate::color_compat::ColorCompat;
+
+        let mut checked = 0;
+        for name in Theme::ALL {
+            let theme = Theme::named(name).unwrap();
+            for style in [SegmentedStyle::Solid, SegmentedStyle::Pill, SegmentedStyle::Underline] {
+                for hovered in [false, true] {
+                    let (fill, label) = segment_colors(&theme, style, false, hovered);
+                    // A transparent segment's label lands on the host's ground,
+                    // which the theme's own text-tier invariants already cover.
+                    let Some(fill) = fill else { continue };
+                    assert_eq!(fill.a(), 255, "{name}/{style:?}: segment fills are opaque");
+                    let r = contrast_ratio(label, fill);
+                    assert!(
+                        r >= 4.5,
+                        "{name} {style:?} (hovered={hovered}): label on fill is \
+                         {r:.2}:1, below AA",
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        // Solid unselected (×2 hover states) + Pill hovered, per theme. Pinned
+        // so a style that stops returning a fill silently empties this sweep.
+        assert_eq!(checked, Theme::ALL.len() * 3, "every themed fill was measured");
+    }
+
+    /// The correction must be inert wherever the pairing already passed, so a
+    /// theme that was designed correctly is not repainted. The dark default's
+    /// unselected solid segment keeps primary text on the raised card, and its
+    /// `neutral[3]`/`text_dim` pairing — 4.69:1, just over the bar — keeps the
+    /// dim tier the design chose.
+    #[test]
+    fn themes_that_already_passed_are_left_alone() {
+        use crate::a11y::contrast_ratio;
+
+        let t = Theme::dark();
+        let c = &t.tokens.colors;
+        let (fill, label) = segment_colors(&t, SegmentedStyle::Solid, false, false);
+        assert_eq!(fill, Some(c.surfaces.raised));
+        assert_eq!(label, c.text_primary);
+
+        assert!(contrast_ratio(c.text_dim, c.neutral[3]) >= 4.5, "precondition: dark passes");
+        assert_eq!(c.readable_on(c.neutral[3], c.text_dim), c.text_dim);
+    }
 
     /// Build a `ToggleGroup` with a fixed rect so tests can simulate
     /// clicks without running a full taffy pass.
