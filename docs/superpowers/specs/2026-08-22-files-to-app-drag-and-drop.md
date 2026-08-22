@@ -1,5 +1,8 @@
 # Files → app drag-and-drop (Wayland)
 
+**Status: implemented 2026-08-22** on branch `files-to-app-dnd`. Parts A, B, C landed as
+designed; see "What changed in practice" at the end for the two things the tree taught us.
+
 **Goal.** In the native compositor, a file dragged out of the built-in Files app and
 released over a sandboxed `ui` app's window is delivered to that app as a drop, and the
 word processor inserts a dropped image at the drop point. This is the demo beat
@@ -181,3 +184,23 @@ name yours so they can be run alone.
 2. The cross-process e2e above passes and is not `#[ignore]`d.
 3. Existing Files drag-to-folder and drag-to-Favourites tests still pass.
 4. Commit per part (A, B, C + e2e), messages in the repo's `area: what` style.
+
+---
+
+## What changed in practice
+
+- **Files' press had to be armed at the app level.** The content pane (and the `FileView`
+  that saw the press) is rebuilt when the click changes the selection, so a press parked in
+  the view never survived to the first move. `FileCommand::ArmDrag` now arms the drag in
+  `FileExplorerWidget`, which crosses the threshold and issues `BeginDrag` itself
+  (`files_app.rs`, test `a_row_press_still_becomes_a_drag_after_the_view_is_rebuilt`).
+- **`ui::Button` consumed the move that left it** (`handled = true` on any hover change),
+  and Files' `if !handled` chain then dropped that move before the list saw it. A hover
+  change is a repaint, not consumed input; fixed in `ui/src/widget/button.rs`.
+- Automation targets added for the e2e: `tab:<title>`, `group_resize_handle[i]`, and every
+  named rect inside the active tile of each group (`file_view`, `file_row:<name>`, …) via
+  `GroupRow::test_rects`.
+- A group laid out at the full output width (the first-boot demo group) slides its neighbour
+  off screen when focused, so the e2e narrows it with the real seam-handle gesture first.
+- The client must have flushed its `accept` before the button is released, or the drop is
+  refused as unaccepted — protocol behaviour, and why the e2e roundtrips after the enter.
