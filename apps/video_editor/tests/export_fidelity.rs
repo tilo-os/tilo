@@ -78,6 +78,7 @@ fn project_over(path: &std::path::Path, len: f64, name: &str) -> Project {
         index: 1,
         muted: false,
         locked: false,
+        solo: false,
     });
     let cid = p.add_clip(tid, mid, 0.0).unwrap();
     p.clip_mut(cid).unwrap().in_point = 0.0;
@@ -296,4 +297,78 @@ fn the_colour_grade_reaches_the_encoded_pixels() {
 
     tidy(&plain);
     tidy(&lifted);
+}
+
+/// A wipe has to reach the encoded file as *geometry*: halfway across,
+/// one side of the frame is the incoming clip and the other is still the
+/// outgoing one.
+///
+/// The transition this replaced was a flat full-frame flash that rendered
+/// identically for a dissolve, a fade and a wipe. Comparing whole-frame
+/// averages cannot tell those apart, so this asserts on the split between
+/// the two halves — which is the thing a wipe has and a dissolve does not.
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn a_wipe_reaches_the_encoded_file_as_geometry() {
+    use video_editor::model::{ClipEffect, EffectKind, Transition};
+
+    let clip = demo_clip();
+    let pid = std::process::id();
+    // Both clips come off one source. The bundled demo is a screen
+    // recording that barely moves, so two instants of it are the same
+    // picture — invert the incoming clip and the two sides of the wipe
+    // become unmistakable.
+    let build = |kind: Transition, name: String| {
+        let mut p = project_over(&clip, 1.0, &name);
+        let track = p.tracks[0].id;
+        let media = p.media[0].id;
+        let second = p.add_clip(track, media, 1.0).unwrap();
+        let c = p.clip_mut(second).unwrap();
+        c.in_point = 20.0;
+        c.out_point = 21.0;
+        c.transition = kind;
+        c.effects = vec![ClipEffect { kind: EffectKind::Invert, amount: 1.0 }];
+        p
+    };
+
+    let wipe = export(&build(Transition::Wipe, format!("ve wipe {pid}")));
+    let dissolve = export(&build(
+        Transition::CrossDissolve,
+        format!("ve dissolve {pid}"),
+    ));
+
+    // Halfway through the transition on the incoming clip, which starts at
+    // 1.0s on the timeline.
+    let at = 1.0 + video_editor::preview::TRANSITION_SECS * 0.5;
+    let luma = |p: [u8; 3]| 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64;
+    let half_split = |px: &[[u8; 3]]| {
+        let mean_of = |cols: std::ops::Range<usize>| {
+            let mut sum = 0.0;
+            let mut n = 0.0;
+            for row in 0..GRID_H {
+                for col in cols.clone() {
+                    sum += luma(px[row * GRID_W + col]);
+                    n += 1.0;
+                }
+            }
+            sum / n
+        };
+        // Skip the feathered middle so the measurement is of the two sides.
+        (mean_of(0..GRID_W / 3), mean_of(GRID_W * 2 / 3..GRID_W))
+    };
+
+    let (wl, wr) = half_split(&decode_frame(&wipe, at));
+    let (dl, dr) = half_split(&decode_frame(&dissolve, at));
+    println!("wipe halves L={wl:.1} R={wr:.1}   dissolve halves L={dl:.1} R={dr:.1}");
+
+    assert!(
+        (wl - wr).abs() > (dl - dr).abs() + 10.0,
+        "the encoded wipe must split the frame left/right ({:.1}) far more than an even \
+         dissolve does ({:.1})",
+        (wl - wr).abs(),
+        (dl - dr).abs(),
+    );
+
+    tidy(&wipe);
+    tidy(&dissolve);
 }
