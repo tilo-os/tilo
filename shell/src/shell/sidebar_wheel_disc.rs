@@ -1114,9 +1114,14 @@ impl Widget for SidebarWheelDisc {
         // affordance twice before.
         let add_cy = cy + half_h * ADD_BAND_FRACTION;
         let add_dy = add_cy - cy;
+        // Tucked against the band's INNER arc rather than floating in the
+        // middle of it. Labels run the band's full radial depth, so a
+        // button parked mid-band sits squarely in the path of whichever
+        // one sweeps over it, and the sector that loses its name is the
+        // one thing a switcher cannot afford to drop. At the inner edge
+        // the two rarely meet at all.
         let add_span_in = (r_in * r_in - add_dy * add_dy).max(0.0).sqrt();
-        let add_span_out = (r_out * r_out - add_dy * add_dy).max(0.0).sqrt();
-        let add_cx = cx + (add_span_in + add_span_out) / 2.0;
+        let add_cx = cx + add_span_in + ADD_BUTTON_D / 2.0 + 8.0;
         self.plus_rect = Rect::from_center_size(
             Point::new(add_cx, add_cy),
             (ADD_BUTTON_D, ADD_BUTTON_D),
@@ -1280,12 +1285,23 @@ impl Widget for SidebarWheelDisc {
                 // Where the chip actually lands once rotated. Used for the
                 // click target and to keep labels off the add button.
                 let placed = rotate.transform_rect_bbox(chip);
-                // `Rect::intersect` hands back an INVERTED rect when the
-                // two are disjoint, and a rect with a negative width and a
-                // negative height has a positive `area()` — so testing the
-                // area alone reports every miss as a hit.
-                let clash = placed.intersect(self.plus_rect);
-                if clash.width() > 0.0 && clash.height() > 0.0 {
+                // Does this label actually run into the add button?
+                //
+                // Answered in the label's OWN frame — the button's centre
+                // rotated back onto the due-east radius, tested against
+                // the unrotated chip grown by the button's radius. The
+                // axis-aligned bounding box of a rotated chip is far
+                // bigger than the chip: at 15° a 160-px label's box picks
+                // up 30 px of empty corner at each end, which was enough
+                // to report a clash with a button the label passes 30 px
+                // clear of, and cost the bottom sector its name.
+                let local = rotate.inverse() * self.plus_rect.center();
+                let reach = ADD_BUTTON_D / 2.0 + 4.0;
+                let clash = local.x >= chip.x0 - reach
+                    && local.x <= chip.x1 + reach
+                    && local.y >= chip.y0 - reach
+                    && local.y <= chip.y1 + reach;
+                if clash {
                     continue;
                 }
 
@@ -1797,11 +1813,15 @@ impl SidebarWheelDisc {
         }
     }
 
-    /// Test helper: the band's inner and outer radii, computed by the
-    /// same expressions `draw` paints them from. Lets a test check where
-    /// something landed relative to the band without reading pixels.
-    #[cfg(test)]
-    pub(crate) fn band_radii_for_tests(&self) -> (f64, f64) {
+    /// The band the disc paints, as `(inner_radius, outer_radius)` about
+    /// [`SidebarWheelDisc::disc_centre`].
+    ///
+    /// The visible object is a constant-depth ring, not a whole disc, and
+    /// the inner radius is derived rather than configured — see
+    /// [`BAND_TANGENT_FRACTION`]. Exposed so callers that need to know
+    /// where the surface actually is (the snapshot tests sample it) do not
+    /// have to re-derive the expression and drift out of step with it.
+    pub fn band_radii(&self) -> (f64, f64) {
         let radius = self.diameter_px / 2.0;
         let c = self.center();
         let half_h = self.rect.height() / 2.0;
@@ -1813,9 +1833,10 @@ impl SidebarWheelDisc {
         (r_in, radius)
     }
 
-    /// Test helper: the disc's off-screen centre.
-    #[cfg(test)]
-    pub(crate) fn center_for_tests(&self) -> Point {
+    /// The disc's logical centre. It sits well off-screen to the left of
+    /// the footprint — that is what makes the visible arc a slice of
+    /// something large rather than a small circle in a column.
+    pub fn disc_centre(&self) -> Point {
         self.center()
     }
 
@@ -2028,15 +2049,24 @@ mod tests {
         );
     }
 
-    /// The add-workspace button does not rotate, so a sector label can
-    /// sweep onto it. Nothing may ever land on top of it — a label
-    /// crowding it is what drove this affordance off the rim and then off
-    /// the disc entirely. Sweeping the rotation covers the positions
-    /// labels pass through between detents, not just the ones they rest
-    /// at.
+    /// The add-workspace button does not rotate, so a sector label sweeps
+    /// past it on every turn of the wheel. The button has to stay usable
+    /// throughout — a control the wheel can bury is what drove this
+    /// affordance off the rim and then off the disc entirely.
+    ///
+    /// Drives the real press path at every position a label passes
+    /// through between detents, rather than comparing rectangles: the
+    /// press handler resolves the button before it resolves a sector, and
+    /// that ordering is the thing that has to hold.
     #[test]
-    fn the_add_button_is_never_covered_by_a_sector_label() {
-        let mut d = mk(&["Home", "Research", "Design", "Marketing", "Analytics"]);
+    fn the_add_button_stays_pressable_at_every_rotation() {
+        use crate::shell::chrome_state::ChromeState;
+        use crate::shell::state::WorkspaceTree;
+
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let before = chrome.borrow().tree().workspaces.len();
+        let mut d = mk(&["Home", "Research", "Design", "Marketing", "Analytics"])
+            .with_chrome(chrome.clone());
         layout_into_slot(&mut d, live_slot());
 
         for step in 0..72 {
@@ -2044,47 +2074,82 @@ mod tests {
             paint(&mut d);
             assert!(
                 d.plus_rect.area() > 0.0,
-                "the add button is placed at every rotation"
+                "the add button is placed at {}°",
+                d.rotation_deg
             );
-            for (i, row) in d.spoke_hit_rects.iter().enumerate() {
-                if row.area() <= 0.0 {
-                    continue;
-                }
-                let hit = row.intersect(d.plus_rect);
-                assert!(
-                    hit.width() <= 0.0 || hit.height() <= 0.0,
-                    "sector label {i} covers the add button at {}°: label {row:?} button {:?}",
-                    d.rotation_deg,
-                    d.plus_rect
-                );
-            }
+
+            let expected = before + step + 1;
+            let p = d.plus_rect.center();
+            pump(&mut d, cursor_event(p.x, p.y));
+            assert!(
+                pump(&mut d, press_event()),
+                "a press on the add button at {}° was not handled — a label \
+                 sweeping over it has taken the press",
+                d.rotation_deg
+            );
+            assert_eq!(
+                chrome.borrow().tree().workspaces.len(),
+                expected,
+                "the press at {}° did not create a workspace",
+                d.rotation_deg
+            );
+            pump(&mut d, release_event());
         }
     }
 
-    /// The add button has to sit ON the band. Pinned to the footprint's
-    /// floor it hung underneath, on bare wallpaper, which is what moved
-    /// this affordance twice before — the fix was a surface to sit on, not
-    /// another spot to float in.
+    /// The add button has to sit ON the band, at every rotation. Pinned to
+    /// the footprint's floor it hung underneath, on bare wallpaper, which
+    /// is what moved this affordance twice before — the fix was a surface
+    /// to sit on, not another spot to float in.
     #[test]
     fn the_add_button_sits_on_the_band() {
         let mut d = mk(&["Home", "Research", "Design"]);
         layout_into_slot(&mut d, live_slot());
+
+        for step in 0..24 {
+            d.rotation_deg = step as f32 * 15.0;
+            paint(&mut d);
+            let (r_in, r_out) = d.band_radii();
+            let c = d.disc_centre();
+            let p = d.plus_rect.center();
+            let dist = ((p.x - c.x).powi(2) + (p.y - c.y).powi(2)).sqrt();
+            assert!(
+                dist > r_in && dist < r_out,
+                "the add button is off the band at {}°: {dist:.0} px from the centre, \
+                 band runs {r_in:.0}..{r_out:.0}",
+                d.rotation_deg
+            );
+            assert!(
+                d.rect.contains(p),
+                "the add button left the footprint at {}°: {:?} not in {:?}",
+                d.rotation_deg,
+                p,
+                d.rect
+            );
+        }
+    }
+
+    /// A label may only be withheld when it genuinely has nowhere to go.
+    /// The collision test used to run on the axis-aligned bounding box of
+    /// the rotated label, which at 15° picks up 30 px of empty corner at
+    /// each end — enough to report a clash with a button the label passes
+    /// well clear of, so the bottom sector silently lost its name.
+    #[test]
+    fn a_sector_keeps_its_name_when_it_only_passes_near_the_add_button() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        layout_into_slot(&mut d, live_slot());
         paint(&mut d);
 
-        let (r_in, r_out) = d.band_radii_for_tests();
-        let c = d.center_for_tests();
-        let p = d.plus_rect.center();
-        let dist = ((p.x - c.x).powi(2) + (p.y - c.y).powi(2)).sqrt();
-        assert!(
-            dist > r_in && dist < r_out,
-            "the add button is off the band: {dist:.0} px from the centre, \
-             band runs {r_in:.0}..{r_out:.0}"
-        );
-        assert!(
-            d.rect.contains(p),
-            "the add button left the footprint: {:?} not in {:?}",
-            p,
-            d.rect
+        let named = d
+            .spoke_hit_rects
+            .iter()
+            .filter(|r| r.area() > 0.0)
+            .count();
+        assert_eq!(
+            named,
+            d.spokes.len(),
+            "a workspace lost its label with the wheel at rest: {:?}",
+            d.spoke_hit_rects
         );
     }
 
@@ -2188,11 +2253,16 @@ mod tests {
     #[test]
     fn panning_the_strip_reports_dirty_and_moves_the_click_targets() {
         let mut d = mk(&["Home", "Research", "Design"]);
+        // Click targets are grown from the labels, and a label only paints
+        // where the band is deep enough to hold one — so this has to run
+        // on the slot the live shell hands the disc, not on the
+        // full-diameter rect `mk` pins for the pure-geometry tests.
+        layout_into_slot(&mut d, live_slot());
         paint(&mut d);
         let before: Vec<Rect> = d.spoke_hit_rects.clone();
         assert!(
             before.iter().any(|r| r.area() > 0.0),
-            "the paint populated at least one marker hit rect"
+            "the paint populated at least one label hit rect"
         );
 
         // What the host does on a pan: same slot, shifted origin.
@@ -2210,7 +2280,7 @@ mod tests {
             }
             assert!(
                 (now.x0 - (was.x0 + shift)).abs() < 1.5,
-                "marker {i} click target must travel with the disc: was x0={}, now x0={}, \
+                "label {i} click target must travel with the disc: was x0={}, now x0={}, \
                  expected ~{}",
                 was.x0,
                 now.x0,
