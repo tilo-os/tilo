@@ -64,6 +64,7 @@ use collab_types::{
 use ui::collaboration::{CollabEvent, CollabRequest};
 
 use crate::shell::collab_broker_capnp::CapnpBrokerState;
+use crate::shell::collab_outbound::{PeerPublisher, Transport};
 use crate::shell::network::ShellNetwork;
 
 /// Maximum number of audit-log entries retained per channel before
@@ -1081,15 +1082,15 @@ fn translate(
 /// pipe, then evicts the peer from the table so concurrent writers
 /// stop targeting a dead stream.
 ///
-/// When `peer_sync` is `Some`, every `SyncIncremental` is also
-/// republished over libp2p as a `NeighbourMsg::AppCrdtIncremental`
-/// so remote hosts running the same broker can fan it out to their
-/// own local apps.
+/// Reaching other machines is [`PeerPublisher`]'s job — the same
+/// instance the capnp transport holds, so an edit typed in a
+/// sandboxed app and one typed in a JSON-dialect app take the identical
+/// route out of this host.
 fn reader_loop(
     peer: Arc<Peer>,
     mut stream: UnixStream,
     table: Arc<PeerTable>,
-    peer_sync: Option<Arc<ShellNetwork>>,
+    publisher: Arc<PeerPublisher>,
     channels: Arc<Mutex<BrokerChannels>>,
     pending_scrollback: Arc<Mutex<HashMap<ArtifactId, Vec<CrdtRoute>>>>,
 ) {
@@ -1122,29 +1123,36 @@ fn reader_loop(
             }
         }
         let src_route = peer.route();
-        // Phase 2 outbound bridge: send the raw incremental over
-        // libp2p before we fan it to local peers. Cloning the data
-        // here is unavoidable because we still need the original
-        // payload for the local `translate` path. A peer that never
-        // said hello has no route to stamp, so its frame is not
-        // republished either — the same fail-closed rule the local
-        // fan-out applies.
-        if let (Some(net), CollabRequest::SyncIncremental { data }) = (peer_sync.as_ref(), &req) {
-            match &src_route {
-                Some(route) => net.publish_app_crdt_incremental(
-                    route.app_id.clone(),
-                    route.cluster_id.clone(),
-                    route.record_id.clone(),
-                    data.clone(),
-                ),
-                None => {
-                    tracing::debug!(
-                        "collab_broker: not republishing SyncIncremental from \
-                         peer-{}: no Hello, so the frame has no route",
-                        peer.id,
-                    );
-                }
+        // Outbound bridge: send the payload to the room before we fan
+        // it to local peers. Cloning the data here is unavoidable
+        // because we still need the original payload for the local
+        // `translate` path. A peer that never said hello has no route
+        // to stamp, so its frame is not republished either — the same
+        // fail-closed rule the local fan-out applies.
+        match (&src_route, &req) {
+            (Some(route), CollabRequest::SyncIncremental { data }) => {
+                publisher.document_incremental(route, Transport::Json, data.clone());
             }
+            (Some(route), CollabRequest::SignedSyncIncremental { envelope }) => {
+                // Validation happens on the receiving side, against
+                // that host's own channel state — publishing an
+                // envelope is not vouching for it, and a peer that
+                // has not been told the artifact's role table will
+                // reject it exactly as this host would.
+                publisher.signed_document(route, Transport::Json, (**envelope).clone());
+            }
+            (
+                None,
+                CollabRequest::SyncIncremental { .. } | CollabRequest::SignedSyncIncremental { .. },
+            ) => {
+                tracing::warn!(
+                    "collab_broker: peer-{} sent a CRDT payload before saying \
+                     Hello — it has no route, so nothing it types reaches \
+                     another machine",
+                    peer.id,
+                );
+            }
+            _ => {}
         }
         // Phase 6 cooperative-fetch outbound bridge: a local
         // `FetchScrollback` always replies first from the local op
@@ -1182,9 +1190,7 @@ fn reader_loop(
                 // via `ScrollbackResponse`, which the broker drain
                 // thread then fans into a follow-up `ScrollbackBatch`
                 // for the locally-connected app.
-                if let (Some(net), Some((art, before_seq, max))) =
-                    (peer_sync.as_ref(), cooperative_fetch)
-                {
+                if let Some((art, before_seq, max)) = cooperative_fetch {
                     let is_empty = matches!(
                         &event,
                         CollabEvent::ScrollbackBatch { ops, .. } if ops.is_empty()
@@ -1202,9 +1208,15 @@ fn reader_loop(
                                     waiting.push(route.clone());
                                 }
                             }
-                            net.publish_scrollback_request(art, before_seq, max);
+                            publisher.scrollback_request(
+                                route,
+                                Transport::Json,
+                                art,
+                                before_seq,
+                                max,
+                            );
                         } else {
-                            tracing::debug!(
+                            tracing::warn!(
                                 "collab_broker: not publishing a cooperative \
                                  scrollback request for peer-{}: no Hello, so \
                                  the answer would have nowhere to go",
@@ -1448,6 +1460,37 @@ pub fn spawn_full(
     capnp_socket_path: Option<PathBuf>,
     peer_sync: Option<Arc<ShellNetwork>>,
 ) -> std::io::Result<BrokerHandle> {
+    // The outbound half, built once and shared by both transports.
+    // One instance is the whole point: when the capnp server held no
+    // network handle and the JSON reader loop held one, "does a local
+    // edit leave this machine" had two answers, and the one sandboxed
+    // apps got was "no".
+    let publisher = PeerPublisher::from_network(peer_sync.clone());
+    spawn_inner(socket_path, capnp_socket_path, peer_sync, publisher)
+}
+
+/// Same broker, with the outbound half supplied by the caller.
+///
+/// The seam exists so a test can watch what actually reaches the wire
+/// from the real server methods — the alternative is standing up
+/// libp2p, which would prove the transport works and say nothing about
+/// whether the broker handed it anything. `peer_sync` stays `None`
+/// here: the inbound drain is a separate concern and has its own
+/// coverage.
+pub fn spawn_with_publisher(
+    socket_path: PathBuf,
+    capnp_socket_path: Option<PathBuf>,
+    publisher: Arc<PeerPublisher>,
+) -> std::io::Result<BrokerHandle> {
+    spawn_inner(socket_path, capnp_socket_path, None, publisher)
+}
+
+fn spawn_inner(
+    socket_path: PathBuf,
+    capnp_socket_path: Option<PathBuf>,
+    peer_sync: Option<Arc<ShellNetwork>>,
+    publisher: Arc<PeerPublisher>,
+) -> std::io::Result<BrokerHandle> {
     // Best-effort unlink: a previous shell instance may have left a
     // stale inode behind. Ignore the result — if the file doesn't
     // exist (the common case) the `unlink` errors and we continue;
@@ -1471,7 +1514,7 @@ pub fn spawn_full(
         Arc::new(Mutex::new(HashMap::new()));
 
     let listener_table = Arc::clone(&table);
-    let listener_peer_sync = peer_sync.clone();
+    let listener_publisher = Arc::clone(&publisher);
     let listener_channels = Arc::clone(&channels);
     let listener_pending = Arc::clone(&pending_scrollback);
     let listener_thread = std::thread::Builder::new()
@@ -1503,7 +1546,7 @@ pub fn spawn_full(
                         );
                         let reader_table = Arc::clone(&listener_table);
                         let reader_peer = Arc::clone(&peer);
-                        let reader_peer_sync = listener_peer_sync.clone();
+                        let reader_publisher = Arc::clone(&listener_publisher);
                         let reader_channels = Arc::clone(&listener_channels);
                         let reader_pending = Arc::clone(&listener_pending);
                         if let Err(e) = std::thread::Builder::new()
@@ -1513,7 +1556,7 @@ pub fn spawn_full(
                                     reader_peer,
                                     stream,
                                     reader_table,
-                                    reader_peer_sync,
+                                    reader_publisher,
                                     reader_channels,
                                     reader_pending,
                                 );
@@ -1787,6 +1830,7 @@ pub fn spawn_full(
             path.clone(),
             Arc::clone(&table),
             Arc::clone(&channels),
+            Arc::clone(&publisher),
             Arc::clone(&capnp_quit),
         ) {
             Ok(handle) => (Some(handle), true),
