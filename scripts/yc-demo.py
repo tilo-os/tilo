@@ -1797,46 +1797,89 @@ def beat_four(quinten: Session, xaver: Session, agent: Session,
     claim("the agent's own copy carries it too",
           agent.active_workspace()["name"], host_ws["name"])
 
-    step("and the cursors")
+    step("and the cursors — on a desktop with nothing open on it")
     # `peers` is read from the same PresenceCtx the overlay draws from,
     # which is the only way to tell "no peer arrived" from "a peer
     # arrived and was not drawn" — those make the same picture.
+    #
+    # This beat is deliberately shot on an empty desktop, and that used
+    # to be exactly the case that could not work: a session only put its
+    # cursor on the wire as a side effect of some local app publishing
+    # one, so two people looking at empty desktops published nothing
+    # between them. It is level-triggered from the frame loop now, and a
+    # pointer that has stopped is restated about once a second — so a
+    # peer who joins in the middle of this beat arrives to find the
+    # others already on screen, without anyone having to waggle a mouse
+    # to announce themselves.
+    WHERE_Q = (880.0, 520.0)
+    WHERE_X = (640.0, 610.0)
     cut("quinten")
-    quinten.pointer_move(880.0, 520.0)
+    quinten.pointer_move(*WHERE_Q)
     quinten.settle(0.6)
     cut("xaver")
-    xaver.pointer_move(640.0, 610.0)
+    xaver.pointer_move(*WHERE_X)
     xaver.settle(0.6)
 
     def seen_by(watcher: Session, who: str):
         rows = (watcher.peers() or {}).get("pointers") or []
         return [r for r in rows if r.get("user") == who] or None
 
+    def at_the_origin(row: dict) -> bool:
+        """A pointer painted where nobody is.
+
+        A roster entry that conjures a cursor at (0, 0) has been fixed
+        once already. It is worth failing on rather than shooting around,
+        because on screen it is indistinguishable from a peer who happens
+        to have parked in the corner — and it is only wrong when the peer
+        is demonstrably somewhere else, which is the one thing a harness
+        can check and an eye cannot.
+        """
+        return abs(float(row.get("x", 0.0))) < 1.0 and \
+            abs(float(row.get("y", 0.0))) < 1.0
+
     on_xaver = wait_for(lambda: seen_by(xaver, quinten.user), timeout=SYNC_TIMEOUT_S)
+    claim("xaver's session paints quinten's cursor on an empty desktop",
+          bool(on_xaver), True)
     if on_xaver:
-        note(f"xaver's screen holds {json.dumps(on_xaver[0])}")
-        claim("xaver's session paints quinten's cursor, under his user id",
-              bool(on_xaver), True)
-    else:
-        gap("no cursor is painted for a peer at the desktop level, and "
-            "none is expected to be: `RemoteCursorOverlay` "
-            "(shell/src/shell/remote_cursors.rs) is mounted in tests and "
-            "nowhere in the native compositor. Presence is a property of a "
-            "shared *app*, not of the strip — so the cursors this "
-            "storyboard promises are filmed in beat 7, inside the document "
-            "both of them have open, and this beat shows only that the "
-            "room itself crossed")
+        row = on_xaver[0]
+        note(f"xaver's screen holds {json.dumps(row)}")
+        # The name is the other half of the beat, and it is a different
+        # fact from the id: the id is the identity and is never blank,
+        # the name is what the *room* calls that identity, and the pill
+        # over the cursor draws the name. A cursor reading `peer-1` is a
+        # cursor nobody can attribute to a person.
+        claim("and labels it with quinten's own id, not a synthetic one",
+              row.get("user"), quinten.user)
+        claim("and the pill over it reads his name, resolved from the room",
+              row.get("name"), quinten.user)
+        claim(f"and puts it where he actually is, not at the origin",
+              at_the_origin(row), False)
+        if at_the_origin(row):
+            note(f"quinten's pointer is at {WHERE_Q} and his peer row on "
+                 f"xaver's screen is at the origin — a cursor is being "
+                 f"painted where he is not")
     xaver.snapshot(os.path.join(shots, "03-xaver-joined.png"))
 
     cut("quinten")
-    on_quinten = wait_for(lambda: seen_by(quinten, xaver.user), timeout=10.0)
+    on_quinten = wait_for(lambda: seen_by(quinten, xaver.user), timeout=SYNC_TIMEOUT_S)
+    claim("and quinten's paints xaver's, the other way", bool(on_quinten), True)
     if on_quinten:
-        claim("and quinten's paints xaver's, the other way",
-              bool(on_quinten), True)
-    else:
-        gap("the same in the other direction, for the same reason — a "
-            "desktop-level cursor overlay is not part of the native "
-            "compositor")
+        claim("also at a real position", at_the_origin(on_quinten[0]), False)
+
+    step("and they stay there without anyone moving")
+    # The property that makes this beat filmable, asserted rather than
+    # assumed. An edge-triggered cursor is published when it moves and
+    # then forgotten, which looks identical to this one for a second and
+    # then leaves an empty desktop behind — and means a peer arriving
+    # later sees nobody until somebody jiggles a mouse. Nothing is moved
+    # here on purpose: both pointers have been still since above.
+    quinten.settle(3.0)
+    still_there = seen_by(quinten, xaver.user)
+    claim("xaver's cursor is still on quinten's screen 3s after it stopped",
+          bool(still_there), True)
+    if not still_there:
+        note("a stopped pointer is no longer being restated, so a peer who "
+             "joins after the last mouse movement arrives to an empty room")
 
 
 def beat_five(quinten: Session, registry, shots: str) -> dict | None:
@@ -1927,6 +1970,13 @@ def beat_six(quinten: Session, xaver: Session, baseline: dict,
     note(f"quinten holds {len(q_tabs)} tab(s); xaver holds "
          f"{len(xaver.tabs_here())}; {len(fresh)} opened since the baseline")
 
+    # Keep this beat on one of qOS's own apps. Those replicate through
+    # the room document and are drawn from it on the far side, which is
+    # what makes a real window appear there. A foreign Wayland surface
+    # has no such description to replicate and degrades to a card
+    # reading "coming soon" — true to what the system can do today, and
+    # the wrong thing to put in a shot whose whole claim is that the
+    # window opened over there.
     step("the tab quinten's word processor opened, read out of xaver's tree")
     if not fresh:
         gap("beat 5 opened no window on quinten's session, so there was "
