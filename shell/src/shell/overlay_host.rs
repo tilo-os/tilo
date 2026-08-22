@@ -224,6 +224,15 @@ pub struct ShellOverlayHost {
     /// the content for the rest of the process lifetime, so the pointer
     /// remains valid as long as `&mut self` does.
     group_row_ptrs: HashMap<StripId, *mut GroupRow>,
+    /// Raw id of the workspace the current `content` was built for.
+    /// [`Self::resync_workspace_content`] compares it against
+    /// `tree.active` each frame and rebuilds the content when they
+    /// disagree — the strip widgets are a projection of ONE workspace,
+    /// and without the swap the screen keeps showing the boot
+    /// workspace forever. `None` means "unbuilt / test stub": the
+    /// reconciler then only latches the current id without rebuilding,
+    /// so hosts constructed around hand-made content keep it.
+    content_built_for_ws: Option<u64>,
     /// Per-strip record of the last active-group id that
     /// [`Self::scroll_active_group_into_view`] scrolled into view. Lets the
     /// focus-follow scroll stay edge-triggered: it only re-centres the
@@ -924,6 +933,7 @@ impl ShellOverlayHost {
             palette_was_visible: false,
             palette_transition: ui::Transition::closed(),
             group_row_ptrs: HashMap::new(),
+            content_built_for_ws: None,
             last_scrolled_active_group: HashMap::new(),
             add_workspace_rect: Rect::ZERO,
             ws_settings_tab_pill_rects: [Rect::ZERO; 3],
@@ -1671,6 +1681,67 @@ impl ShellOverlayHost {
     pub fn with_group_row_ptrs(mut self, ptrs: HashMap<StripId, *mut GroupRow>) -> Self {
         self.group_row_ptrs = ptrs;
         self
+    }
+
+    /// Record which workspace the injected content was built for, so
+    /// [`Self::resync_workspace_content`] can detect the first switch
+    /// away from it. The production builder always sets this.
+    pub fn with_content_workspace(mut self, ws_raw: u64) -> Self {
+        self.content_built_for_ws = Some(ws_raw);
+        self
+    }
+
+    /// Swap the workspace-scoped content when the active workspace
+    /// changes. Edge-triggered on `tree.active` against
+    /// [`Self::content_built_for_ws`]; on a change the content root and
+    /// the strip pointer map are rebuilt TOGETHER via
+    /// [`crate::shell::build_workspace_root`], so no reconciler can
+    /// ever observe pointers into freed rows. Returns `true` when a
+    /// swap happened (the caller must treat the widget structure as
+    /// dirty — every row is new).
+    ///
+    /// Runs at the top of both [`Widget::update`] and
+    /// [`Widget::take_structure_dirty`], BEFORE
+    /// [`Self::resync_strips_from_tree`] and every other
+    /// `group_row_ptrs` consumer, for the same reason the resync does:
+    /// the shots driver's relayout-only path skips `update` entirely.
+    fn resync_workspace_content(&mut self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let snapshot = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            let active_raw = tree.active.raw();
+            match self.content_built_for_ws {
+                // Hand-made test content: latch, never rebuild over it.
+                None => {
+                    drop(tree);
+                    self.content_built_for_ws = Some(active_raw);
+                    return false;
+                }
+                Some(cur) if cur == active_raw => return false,
+                Some(_) => {}
+            }
+            tree.clone()
+        };
+        let records = chrome.borrow().records().clone();
+        let (root, ptrs) = crate::shell::build_workspace_root(&snapshot, &records, &chrome);
+        // Replace content and pointer map in one step: dropping the old
+        // root frees every old GroupRow, and the map must never outlive
+        // the rows it points into.
+        self.content = root;
+        self.group_row_ptrs = ptrs;
+        self.content_built_for_ws = Some(snapshot.active.raw());
+        // Per-strip memos of the old workspace die with its rows.
+        self.last_scrolled_active_group.clear();
+        true
+    }
+
+    /// Test hook for the workspace-content reconcile — mirrors the
+    /// per-frame call the update/layout paths make.
+    pub fn tick_workspace_content_for_tests(&mut self) -> bool {
+        self.resync_workspace_content()
     }
 
     /// On-screen rectangle of the tile hosting the foreign wayland
@@ -2474,7 +2545,11 @@ impl ShellOverlayHost {
                 if !row.group_is_laid_out(group_id) {
                     continue;
                 }
-                row.scroll_group_into_view(group_id);
+                // Eased, not teleported: a focus change (click, Alt+Shift
+                // wheel jump, keyboard) slides the strip to the group on
+                // the snap curve, the way Niri's focus-column-left/right
+                // slides the view.
+                row.scroll_group_into_view_animated(group_id, Instant::now());
             }
             self.last_scrolled_active_group.insert(strip_id, group_id);
         }
@@ -3078,6 +3153,21 @@ impl ShellOverlayHost {
         let &ptr = self.group_row_ptrs.get(&strip_id)?;
         // SAFETY: see field doc on `group_row_ptrs`.
         Some(unsafe { &mut *ptr })
+    }
+
+    /// Select `tab` inside `group` on the live widget tree — the
+    /// authoritative side for the active tab (the per-frame
+    /// `harvest_active_tab_writeback` mirrors widgets into the tree, so
+    /// a tree-only write is overwritten one frame later). Used by the
+    /// compositor's Alt+Shift wheel window jump. Returns `true` when
+    /// the widget-side active tab changed.
+    pub fn focus_window_widget(&mut self, strip_id: StripId, group: GroupId, tab: u64) -> bool {
+        let Some(&ptr) = self.group_row_ptrs.get(&strip_id) else {
+            return false;
+        };
+        // SAFETY: see field doc on `group_row_ptrs`.
+        let row: &mut GroupRow = unsafe { &mut *ptr };
+        row.set_group_active_tab(group, tab)
     }
 
     /// Read-only accessor for the cached "+ Add workspace" tile rect.
@@ -4448,7 +4538,10 @@ impl Widget for ShellOverlayHost {
         // ones) so the painted strip matches state. Runs BEFORE the
         // children's own `update` calls so the freshly-spliced
         // groups participate in the same frame's sync pass.
-        let chrome_dirty = self.resync_strips_from_tree();
+        // Workspace switch first: everything below walks
+        // `group_row_ptrs`, and a switch replaces the whole row set.
+        let ws_swapped = self.resync_workspace_content();
+        let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Mirror the compositor's live fullscreen state onto the strip rows
         // before the children update, so a promotion/restore is reflected in
         // the same frame it changes.
@@ -6995,8 +7088,11 @@ impl Widget for ShellOverlayHost {
         // A resync that spliced a group or a tab into a live `GroupRow`
         // has changed the widget structure, so it must force the taffy
         // rebuild in its own right — the children it just inserted have
-        // no layout node yet.
-        let resynced = self.resync_strips_from_tree();
+        // no layout node yet. The workspace-content swap runs first for
+        // the same reason at a larger scale: it replaces the whole row
+        // set, and everything after it walks `group_row_ptrs`.
+        let ws_swapped = self.resync_workspace_content();
+        let resynced = self.resync_strips_from_tree() | ws_swapped;
         let content = self.content.take_structure_dirty();
         let sidebar = self
             .sidebar

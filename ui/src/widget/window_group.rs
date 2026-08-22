@@ -812,6 +812,19 @@ impl WindowGroup {
     /// widget-tree sync gap (`WorkspaceTree::set_active_tab` mutates
     /// the persisted state, but the `Tabs` widget keeps its own
     /// `active_id` and doesn't re-read from the tree each frame).
+    /// Select `id` as the active tab, widget-side. The bar's `active_id`
+    /// is the authoritative copy (the shell's per-frame harvest mirrors
+    /// it into the persisted tree), so a programmatic focus jump — the
+    /// Alt+Shift wheel gesture — must land here, not only in the tree.
+    /// Returns `true` if the active tab changed; unknown ids are a no-op.
+    pub fn set_active_tab(&mut self, id: u64) -> bool {
+        if self.bar.active_id() == id || !self.bar.tabs().iter().any(|t| t.id == id) {
+            return false;
+        }
+        self.bar.set_active(id);
+        true
+    }
+
     pub fn cycle_active_tab(&mut self, dir: i32) -> bool {
         let n = self.bar.tabs().len();
         if n < 2 || dir.signum() == 0 {

@@ -159,6 +159,14 @@ impl Widget for Container {
         }
     }
 
+    /// Forward the per-frame update pass to the wrapped child.
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        match &mut self.child {
+            Some(child) => child.update(state, path),
+            None => false,
+        }
+    }
+
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
         let child_node = self.child.as_mut().map(|c| c.build_layout(taffy, theme, node_map));
 

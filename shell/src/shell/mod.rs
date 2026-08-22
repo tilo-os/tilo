@@ -1254,30 +1254,23 @@ pub fn session_record_store() -> ui::record::RecordStore {
     ui::record::RecordStore::open(SHELL_RECORDS_PACKAGE)
 }
 
-/// As [`build_nirios_overlay_host_with_handle`], but with the store the
-/// open tabs' documents live in named by the caller.
-pub fn build_nirios_overlay_host_with_records(
-    tree_handle: state::WorkspaceTreeHandle,
-    enable_peer_sync: bool,
-    records: ui::record::RecordStore,
-) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
-    let chrome = chrome_state::ChromeState::new_with_handle(tree_handle.clone());
-    chrome.borrow_mut().set_records(records);
-    let records = chrome.borrow().records().clone();
-    // Point every hosted file explorer at the desktop's one open path, so
-    // activating a row there resolves the owning app, grants the read and
-    // focuses an already-open document exactly as a palette hit does. The
-    // route is installed once, on the frame thread, and is picked up by
-    // explorers this host creates later (a tab hydrated on focus, a
-    // group re-materialised on a chrome bump) without threading a handle
-    // through each constructor.
-    install_document_opener(&chrome);
-    // Snapshot the tree to walk it without holding the read lock across
-    // widget construction (which involves Box-allocs, taffy fills,
-    // etc.). The snapshot only feeds the *initial* layout — the live
-    // chrome handle drives subsequent updates.
-    let tree: WorkspaceTree = tree_handle.read().clone();
-
+/// Build the workspace-scoped widget root — backdrop, topbar, and one
+/// [`GroupRow`] per strip of the tree's ACTIVE workspace — plus the
+/// per-strip raw pointer map the host's reconcilers harvest through.
+///
+/// Extracted from [`build_nirios_overlay_host_with_records`] so the host
+/// can rebuild the content when the active workspace changes: the strip
+/// widgets are a projection of ONE workspace, and switching workspaces
+/// must swap that projection or the screen keeps showing the boot
+/// workspace forever (the "jump only works in Home" bug, 2026-08-22).
+pub fn build_workspace_root(
+    tree: &WorkspaceTree,
+    records: &ui::record::RecordStore,
+    chrome: &chrome_state::Chrome,
+) -> (
+    Box<dyn Widget>,
+    std::collections::HashMap<state::StripId, *mut GroupRow>,
+) {
     let strips_for_view: Vec<String> = tree
         .active_workspace()
         .map(|w| w.strips.iter().map(|s| s.name.clone()).collect())
@@ -1373,6 +1366,41 @@ pub fn build_nirios_overlay_host_with_records(
         .push(Box::new(content_col));
     let stack = Stack::new().push(backdrop).push(Box::new(foreground_col));
 
+
+    let root: Box<dyn Widget> = Box::new(
+        Container::new()
+            .with_no_padding()
+            .with_child(Box::new(stack))
+            .filling(),
+    );
+    (root, group_row_ptrs)
+}
+
+/// As [`build_nirios_overlay_host_with_handle`], but with the store the
+/// open tabs' documents live in named by the caller.
+pub fn build_nirios_overlay_host_with_records(
+    tree_handle: state::WorkspaceTreeHandle,
+    enable_peer_sync: bool,
+    records: ui::record::RecordStore,
+) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
+    let chrome = chrome_state::ChromeState::new_with_handle(tree_handle.clone());
+    chrome.borrow_mut().set_records(records);
+    let records = chrome.borrow().records().clone();
+    // Point every hosted file explorer at the desktop's one open path, so
+    // activating a row there resolves the owning app, grants the read and
+    // focuses an already-open document exactly as a palette hit does. The
+    // route is installed once, on the frame thread, and is picked up by
+    // explorers this host creates later (a tab hydrated on focus, a
+    // group re-materialised on a chrome bump) without threading a handle
+    // through each constructor.
+    install_document_opener(&chrome);
+    // Snapshot the tree to walk it without holding the read lock across
+    // widget construction (which involves Box-allocs, taffy fills,
+    // etc.). The snapshot only feeds the *initial* layout — the live
+    // chrome handle drives subsequent updates.
+    let tree: WorkspaceTree = tree_handle.read().clone();
+
+    let (root, group_row_ptrs) = build_workspace_root(&tree, &records, &chrome);
     // Wheel disc is the only sidebar — each workspace is a spoke. Dragging
     // rotates spokes; releasing snaps to the nearest workspace. Per user
     // spec 2026-04-21: "No permanent sidebar, but workspaces appear as
@@ -1397,12 +1425,6 @@ pub fn build_nirios_overlay_host_with_records(
             .with_chrome(chrome.clone()),
     );
 
-    let root: Box<dyn Widget> = Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_child(Box::new(stack))
-            .filling(),
-    );
     // The disc is vertically centred within its absolute-positioned
     // sidebar slot (see `ShellOverlayHost::build_layout`, which sets
     // `top: sidebar_top_y, bottom: 0` and relies on `align_self: Center`
@@ -1417,6 +1439,7 @@ pub fn build_nirios_overlay_host_with_records(
         .with_sidebar(sidebar)
         .with_sidebar_top(sidebar_top)
         .with_group_row_ptrs(group_row_ptrs)
+        .with_content_workspace(tree.active.raw())
         .with_peer_sync_enabled(enable_peer_sync);
     (host, chrome)
 }
