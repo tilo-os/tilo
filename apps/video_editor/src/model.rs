@@ -544,6 +544,70 @@ impl Project {
         }
     }
 
+    /// Move a clip to `track` *and* `new_start` in one step — a vertical drag
+    /// across lanes. Rejected (leaving the clip untouched) when the target
+    /// track doesn't exist, is locked, or carries the wrong kind for the
+    /// clip's media: a video clip only ever lands on a video track, audio on
+    /// audio. Returns whether the move happened.
+    pub fn move_clip_to(&mut self, id: ClipId, track: TrackId, new_start: f64) -> bool {
+        if !self.can_place(id, track) {
+            return false;
+        }
+        if let Some(c) = self.clip_mut(id) {
+            c.track = track;
+            c.start = new_start.max(0.0);
+            return true;
+        }
+        false
+    }
+
+    /// The lane kind a clip belongs on, from the kind of media it references.
+    /// Falls back to video for a dangling media reference so a broken clip
+    /// still has a home rather than silently migrating to audio.
+    pub fn clip_kind(&self, id: ClipId) -> TrackKind {
+        self.clip(id)
+            .and_then(|c| self.media(c.media))
+            .map(|m| if m.kind.is_visual() { TrackKind::Video } else { TrackKind::Audio })
+            .unwrap_or(TrackKind::Video)
+    }
+
+    /// Whether `track` refuses edits. A missing track counts as locked: there
+    /// is nothing there to edit.
+    pub fn track_locked(&self, track: TrackId) -> bool {
+        self.track(track).map(|t| t.locked).unwrap_or(true)
+    }
+
+    /// Whether the clip that owns `id` may currently be edited — false when
+    /// its own track is locked.
+    pub fn clip_editable(&self, id: ClipId) -> bool {
+        self.clip(id).map(|c| !self.track_locked(c.track)).unwrap_or(false)
+    }
+
+    /// Whether clip `id` may be placed on `track`: the track must exist, be
+    /// unlocked, match the clip's kind, and the clip must not already be
+    /// pinned to a locked track of its own.
+    pub fn can_place(&self, id: ClipId, track: TrackId) -> bool {
+        if !self.clip_editable(id) {
+            return false;
+        }
+        let Some(t) = self.track(track) else { return false };
+        !t.locked && t.kind == self.clip_kind(id)
+    }
+
+    /// The first unlocked track of `kind`, preferring `near` when it already
+    /// qualifies — the "sensible track" a paste or a duplicate lands on.
+    pub fn placement_track(&self, kind: TrackKind, near: Option<TrackId>) -> Option<TrackId> {
+        if let Some(t) = near.and_then(|id| self.track(id)) {
+            if t.kind == kind && !t.locked {
+                return Some(t.id);
+            }
+        }
+        self.display_tracks()
+            .into_iter()
+            .find(|t| t.kind == kind && !t.locked)
+            .map(|t| t.id)
+    }
+
     /// Drag the left (in) handle by `delta` seconds. Positive `delta`
     /// trims later into the source (clip shrinks from the left and its
     /// timeline start moves right); negative reveals earlier source.
@@ -882,5 +946,99 @@ mod tests {
         assert!((Filters::gain(0.5) - 1.0).abs() < 1e-9, "0.5 slider = unity gain");
         assert!(Filters::gain(0.0) < 1e-9);
         assert!((Filters::gain(1.0) - 2.0).abs() < 1e-9);
+    }
+
+    /// A second video track and an audio track alongside the fixture's V1.
+    fn extra_tracks(p: &mut Project) -> (TrackId, TrackId) {
+        let v2 = Track {
+            id: Uuid::new_v4(),
+            name: "V2".into(),
+            kind: TrackKind::Video,
+            index: 2,
+            muted: false,
+            locked: false,
+        };
+        let a1 = Track {
+            id: Uuid::new_v4(),
+            name: "A1".into(),
+            kind: TrackKind::Audio,
+            index: 1,
+            muted: false,
+            locked: false,
+        };
+        let (v, a) = (v2.id, a1.id);
+        p.tracks.push(v2);
+        p.tracks.push(a1);
+        (v, a)
+    }
+
+    #[test]
+    fn move_clip_to_relocates_across_video_tracks() {
+        let (mut p, _m, v1, cid) = project_with_clip();
+        let (v2, _a1) = extra_tracks(&mut p);
+        assert!(p.move_clip_to(cid, v2, 3.5), "a video clip lands on another video track");
+        let c = p.clip(cid).unwrap();
+        assert_eq!(c.track, v2, "the clip now belongs to the target track");
+        assert!((c.start - 3.5).abs() < 1e-9, "and moved to the drop time");
+        assert!(p.clips_on(v1).is_empty(), "it left the source track");
+        assert_eq!(p.clips_on(v2).len(), 1);
+    }
+
+    #[test]
+    fn move_clip_to_refuses_a_kind_mismatch() {
+        let (mut p, _m, v1, cid) = project_with_clip();
+        let (_v2, a1) = extra_tracks(&mut p);
+        assert!(!p.move_clip_to(cid, a1, 2.0), "a video clip cannot land on an audio track");
+        let c = p.clip(cid).unwrap();
+        assert_eq!(c.track, v1, "the clip stayed where it was");
+        assert!((c.start - 0.0).abs() < 1e-9, "and did not move in time either");
+    }
+
+    #[test]
+    fn move_clip_to_refuses_a_locked_destination_and_a_locked_source() {
+        let (mut p, _m, v1, cid) = project_with_clip();
+        let (v2, _a1) = extra_tracks(&mut p);
+        // Locked destination.
+        p.tracks.iter_mut().find(|t| t.id == v2).unwrap().locked = true;
+        assert!(!p.move_clip_to(cid, v2, 4.0), "a locked track refuses a drop");
+        assert_eq!(p.clip(cid).unwrap().track, v1);
+        // Locked source: even an unlocked destination refuses.
+        p.tracks.iter_mut().find(|t| t.id == v2).unwrap().locked = false;
+        p.tracks.iter_mut().find(|t| t.id == v1).unwrap().locked = true;
+        assert!(!p.move_clip_to(cid, v2, 4.0), "a clip on a locked track cannot be moved off it");
+        assert_eq!(p.clip(cid).unwrap().track, v1);
+    }
+
+    #[test]
+    fn clip_editable_follows_its_track_lock() {
+        let (mut p, _m, v1, cid) = project_with_clip();
+        assert!(p.clip_editable(cid));
+        p.tracks.iter_mut().find(|t| t.id == v1).unwrap().locked = true;
+        assert!(!p.clip_editable(cid), "a clip on a locked track is not editable");
+        assert!(p.track_locked(v1));
+        assert!(p.track_locked(Uuid::new_v4()), "a missing track is treated as locked");
+    }
+
+    #[test]
+    fn placement_track_prefers_the_hint_then_falls_back_by_kind() {
+        let (mut p, _m, v1, _cid) = project_with_clip();
+        let (v2, a1) = extra_tracks(&mut p);
+        assert_eq!(p.placement_track(TrackKind::Video, Some(v2)), Some(v2), "an eligible hint wins");
+        assert_eq!(
+            p.placement_track(TrackKind::Audio, Some(v2)),
+            Some(a1),
+            "a kind-mismatched hint falls back to a track of the right kind",
+        );
+        // Locking every video track leaves nowhere to place a video clip.
+        for t in p.tracks.iter_mut().filter(|t| t.kind == TrackKind::Video) {
+            t.locked = true;
+        }
+        assert_eq!(p.placement_track(TrackKind::Video, Some(v1)), None);
+    }
+
+    #[test]
+    fn clip_kind_reads_through_to_the_media() {
+        let (p, _m, _v1, cid) = project_with_clip();
+        assert_eq!(p.clip_kind(cid), TrackKind::Video);
     }
 }
