@@ -204,6 +204,11 @@ fn non_media_signature(d: &[u8]) -> Option<&'static str> {
             return Some(name);
         }
     }
+    // YUV4MPEG2 is the one media container that opens with a line of ASCII;
+    // the text sniff below would otherwise call it a text file.
+    if d.starts_with(b"YUV4MPEG2") {
+        return None;
+    }
     textual_kind(d)
 }
 
@@ -1152,8 +1157,11 @@ mod tests {
         // container, and the old extension fallback turned it into a
         // MediaKind::Video with 0x0 dimensions and 0:00 duration — a dead bin
         // item that could never play.
-        let html = b"<!DOCTYPE html>\n<html lang=\"en\"><head><title>reddit</title>\
-</head><body><div id=\"app\">Everything wrong with the world</div></body></html>";
+        // Byte-for-byte shape of the real file: two blank lines, then the
+        // doctype. The leading whitespace is why a naive prefix check misses it.
+        let html = b"\n\n<!DOCTYPE html>\n<html lang=\"en\" class=\"fixed_navbar\">\n\t<head>\n\
+\t\t<title>\n\t\tEverything wrong with the world is in this video\n\t\t</title>\n\
+\t</head>\n\t<body></body>\n</html>";
         let err = probe_bytes(
             html,
             Path::new("redlib_everything_wrong_with_the_world_CMAF_480.mp4"),
@@ -1230,6 +1238,11 @@ mod tests {
             .expect("a FLAC is still importable");
         assert_eq!(flac.kind, MediaKind::Audio);
         assert_eq!(flac.duration, 0.0);
+
+        // YUV4MPEG2 opens with a line of ASCII and is still real video.
+        let y4m = probe_bytes(b"YUV4MPEG2 W640 H480 F30:1 Ip A1:1\nFRAME\n", Path::new("raw.y4m"))
+            .expect("a y4m header is not a text file");
+        assert_eq!(y4m.kind, MediaKind::Video);
     }
 
     // ---- EBML (Matroska / WebM) test builders --------------------------

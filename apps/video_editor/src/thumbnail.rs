@@ -75,6 +75,13 @@ const FRAME_TIMEOUT: Duration = Duration::from_secs(6);
 #[cfg_attr(not(feature = "decode"), allow(dead_code))]
 const WORKER_IDLE: Duration = Duration::from_secs(20);
 
+/// How far [`ThumbnailCache::frame_at`] will reach for an already-decoded
+/// neighbour while the exact bucket is still in flight. Two seconds of source
+/// time: close enough that the stand-in is the same shot, near enough in time
+/// that the strip fills in smoothly instead of jumping to a frame from
+/// somewhere else in the clip.
+const NEAR_BUCKETS: u32 = (2.0 / STRIP_BUCKET_SECS) as u32;
+
 /// The source-time bucket `t` (seconds) falls in.
 pub fn bucket_of(t: f64) -> u32 {
     (t.max(0.0) / STRIP_BUCKET_SECS).floor().min(u32::MAX as f64) as u32
@@ -452,35 +459,41 @@ impl ThumbnailCache {
         if self.undecodable.contains(&id) || !source.is_decodable() {
             return;
         }
-        if bucket != SWATCH_BUCKET {
-            let known = self
-                .frames
-                .get(&id)
-                .and_then(|f| f.slots.get(&bucket))
-                .is_some();
-            if known {
+        // Already answered, already failed, or already in flight.
+        if bucket == SWATCH_BUCKET {
+            if self.swatch_pending.contains(&id) {
                 return;
             }
-            self.frames.entry(id).or_default().slots.insert(bucket, Slot::Pending);
-        } else if self.swatch_pending.contains(&id) {
+        } else if self.frames.get(&id).is_some_and(|f| f.slots.contains_key(&bucket)) {
             return;
-        } else {
-            self.swatch_pending.insert(id);
         }
-        let job = Job { id, path: source.abs_path.clone(), bucket, at };
-        let mut q = self.pool.queue.lock().unwrap();
-        if q.jobs.len() >= MAX_QUEUED {
-            q.jobs.pop_front();
+
+        // Enqueue *first*. A backlogged queue means this request is simply not
+        // taken this frame; the slot must not be left marked pending for a job
+        // that was never queued, or it would never reach a terminal state and
+        // `has_pending` would stay true forever — the very loop this cache
+        // exists to avoid. Other queued work keeps the app syncing, so the
+        // renderer's next `ensure_strip` asks again.
+        {
+            let mut q = self.pool.queue.lock().unwrap();
+            if q.jobs.len() >= MAX_QUEUED {
+                return;
+            }
+            q.jobs.push_back(Job { id, path: source.abs_path.clone(), bucket, at });
+            if q.live_workers < MAX_WORKERS {
+                q.live_workers += 1;
+                let pool = self.pool.clone();
+                let tx = self.tx.clone();
+                std::thread::spawn(move || run_worker(pool, tx));
+            }
         }
-        q.jobs.push_back(job);
-        if q.live_workers < MAX_WORKERS {
-            q.live_workers += 1;
-            let pool = self.pool.clone();
-            let tx = self.tx.clone();
-            std::thread::spawn(move || run_worker(pool, tx));
-        }
-        drop(q);
         self.pool.wake.notify_one();
+
+        if bucket == SWATCH_BUCKET {
+            self.swatch_pending.insert(id);
+        } else {
+            self.frames.entry(id).or_default().slots.insert(bucket, Slot::Pending);
+        }
     }
 
     /// The bin swatch for `id`, if one has been generated.
@@ -490,27 +503,29 @@ impl ThumbnailCache {
 
     /// The filmstrip frame to draw for source time `t` (seconds).
     ///
-    /// Exact bucket when it has been decoded; otherwise the nearest decoded
-    /// frame from the same source (a real frame a fraction of a second away,
+    /// Exact bucket when it has been decoded; otherwise a decoded frame from
+    /// the same source within [`NEAR_BUCKETS`] (a real frame a moment away,
     /// while the exact one is still decoding); otherwise the generated
-    /// representative. Never a frame from a different source, and never
-    /// invented pixels dressed as a decode — [`Thumb::real`] always tells the
-    /// truth about which of the three it is.
+    /// representative. Never a frame from elsewhere in the clip, never one
+    /// from a different source, and never invented pixels dressed as a decode
+    /// — [`Thumb::real`] always tells the truth about which of the three it is.
     pub fn frame_at(&self, id: MediaId, t: f64) -> Option<&Arc<Thumb>> {
         let want = bucket_of(t);
         if let Some(f) = self.frames.get(&id) {
             if let Some(Slot::Ready(th)) = f.slots.get(&want) {
                 return Some(th);
             }
+            let lo = want.saturating_sub(NEAR_BUCKETS);
+            let hi = want.saturating_add(NEAR_BUCKETS);
             let below = f
                 .slots
-                .range(..want)
+                .range(lo..want)
                 .rev()
                 .find_map(|(b, s)| match s {
                     Slot::Ready(th) => Some((want - b, th)),
                     _ => None,
                 });
-            let above = f.slots.range(want..).find_map(|(b, s)| match s {
+            let above = f.slots.range(want..=hi).find_map(|(b, s)| match s {
                 Slot::Ready(th) => Some((b - want, th)),
                 _ => None,
             });
@@ -542,24 +557,31 @@ impl ThumbnailCache {
                 .any(|f| f.slots.values().any(|s| matches!(s, Slot::Pending)))
     }
 
-    /// Drop the least-recently-looked-at frames of `id` past the per-source cap.
+    /// Bound what one source keeps: drop the least-recently-looked-at settled
+    /// frames past the cap, and forget LRU stamps for buckets that hold
+    /// nothing. Scrubbing a long clip visits unboundedly many buckets, so both
+    /// halves have to be pruned, not just the pixels.
     fn evict(&mut self, id: MediaId) {
-        let clock_of = |f: &SourceFrames, b: &u32| f.touched.get(b).copied().unwrap_or(0);
         let Some(f) = self.frames.get_mut(&id) else { return };
-        let ready: Vec<u32> = f
+        // A pending slot is in flight and must survive; anything settled is
+        // fair game.
+        let mut settled: Vec<u32> = f
             .slots
             .iter()
-            .filter(|(_, s)| matches!(s, Slot::Ready(_)))
+            .filter(|(_, s)| !matches!(s, Slot::Pending))
             .map(|(b, _)| *b)
             .collect();
-        if ready.len() <= MAX_FRAMES_PER_SOURCE {
-            return;
+        if settled.len() > MAX_FRAMES_PER_SOURCE {
+            let touched = &f.touched;
+            settled.sort_by_key(|b| touched.get(b).copied().unwrap_or(0));
+            let drop_n = settled.len() - MAX_FRAMES_PER_SOURCE;
+            for b in settled.iter().take(drop_n) {
+                f.slots.remove(b);
+            }
         }
-        let mut by_age = ready;
-        by_age.sort_by_key(|b| clock_of(f, b));
-        for b in by_age.iter().take(by_age.len() - MAX_FRAMES_PER_SOURCE) {
-            f.slots.remove(b);
-            f.touched.remove(b);
+        if f.touched.len() > MAX_FRAMES_PER_SOURCE * 4 {
+            let slots = &f.slots;
+            f.touched.retain(|b, _| slots.contains_key(b));
         }
     }
 }
@@ -764,33 +786,56 @@ mod tests {
 
     #[test]
     fn a_failed_decode_is_terminal_and_stops_the_wake_loop() {
-        // Drive the production path: mark a bucket pending exactly as `request`
-        // does, then deliver the failure the worker reports when a source
-        // yields no frame. `has_pending` must go quiet and stay quiet.
+        // The reported bug: `ensure` asks for the bin swatch, the decode
+        // yields nothing, and the old code both dropped the result and left
+        // the id in the in-flight set — so `has_pending` stayed true forever
+        // and the app never went idle. Drive exactly that: mark the requests
+        // as `request` does, then deliver the worker's empty answer.
         let mut cache = ThumbnailCache::new();
         let id = uuid::Uuid::new_v4();
-        cache.ensure(id, 0, &projected("/not/decodable.mp4"), 0.5);
-        cache.frames.entry(id).or_default().slots.insert(7, Slot::Pending);
+        let src = projected("/not/decodable.mp4");
+        cache.ensure(id, 0, &src, 0.5);
         cache.swatch_pending.insert(id);
-        assert!(cache.has_pending(), "a requested frame is pending");
+        cache.frames.entry(id).or_default().slots.insert(7, Slot::Pending);
+        assert!(cache.has_pending(), "the requested frames are in flight");
 
-        cache.tx.send(Outcome { id, bucket: 7, thumb: None }).unwrap();
+        cache.tx.send(Outcome { id, bucket: SWATCH_BUCKET, thumb: None }).unwrap();
         cache.drain();
         assert!(
             !cache.has_pending(),
             "a failed decode is a terminal state, not an endless request"
         );
         assert!(cache.is_undecodable(id), "the source is written off, not retried");
+        assert!(
+            matches!(cache.frames[&id].slots[&7], Slot::Failed),
+            "outstanding strip requests settle too, rather than hanging"
+        );
 
         // Re-running the app's per-frame `ensure`/`ensure_strip` must not
         // resurrect the request — that is the loop that burned CPU.
-        cache.ensure(id, 0, &projected("/not/decodable.mp4"), 0.5);
-        cache.ensure_strip(id, 0, &projected("/not/decodable.mp4"), 0.0, 4.0, 12);
+        cache.ensure(id, 0, &src, 0.5);
+        cache.ensure_strip(id, 0, &src, 0.0, 4.0, 12);
         assert!(!cache.has_pending(), "a written-off source is never re-requested");
 
         // And the bin still shows the representative frame, permanently.
         let t = cache.get(id).expect("the representative frame survives");
         assert!(!t.real);
+    }
+
+    #[test]
+    fn a_source_that_answers_nothing_anywhere_is_given_up_on() {
+        // Repeated per-bucket failures also have to terminate, or a clip whose
+        // every cell fails would keep the app awake one bucket at a time.
+        let mut cache = ThumbnailCache::new();
+        let id = uuid::Uuid::new_v4();
+        cache.ensure(id, 0, &projected("/broken.mp4"), 0.5);
+        for b in 0..FAILURES_BEFORE_GIVING_UP {
+            cache.frames.entry(id).or_default().slots.insert(b, Slot::Pending);
+            cache.tx.send(Outcome { id, bucket: b, thumb: None }).unwrap();
+            cache.drain();
+        }
+        assert!(cache.is_undecodable(id), "a source that never answers is given up on");
+        assert!(!cache.has_pending());
     }
 
     #[test]
@@ -878,6 +923,75 @@ mod tests {
         let near = cache.frame_at(id, 12.1).expect("nearest real frame");
         assert!(near.real);
         assert_eq!(near.rgba[0], 9);
+
+        // Far away in the clip, though, that frame says nothing — the strip
+        // falls back to the representative rather than showing the wrong shot.
+        let far = cache.frame_at(id, 90.0).expect("something to draw");
+        assert!(!far.real, "a distant cell must not borrow an unrelated frame");
+    }
+
+    #[test]
+    fn a_request_that_cannot_be_queued_is_not_left_pending() {
+        // Fill the pool queue, then ask for one more frame. The refused
+        // request must leave no pending slot behind — a slot marked pending
+        // for a job nobody holds never reaches a terminal state, and
+        // `has_pending` would stay true for the rest of the session.
+        let cache = ThumbnailCache::new();
+        let id = uuid::Uuid::new_v4();
+        {
+            let mut q = cache.pool.queue.lock().unwrap();
+            for _ in 0..MAX_QUEUED {
+                q.jobs.push_back(Job {
+                    id: uuid::Uuid::new_v4(),
+                    path: "/other.mp4".into(),
+                    bucket: 0,
+                    at: 0.0,
+                });
+            }
+        }
+        let mut cache = cache;
+        let local = MediaSource {
+            abs_path: std::env::temp_dir(),
+            hydration: crate::media::Hydration::Local,
+        };
+        cache.ensure_strip(id, 0, &local, 0.0, 10.0, 8);
+        let stuck = cache
+            .frames
+            .get(&id)
+            .map(|f| f.slots.values().filter(|s| matches!(s, Slot::Pending)).count())
+            .unwrap_or(0);
+        assert_eq!(stuck, 0, "a refused request leaves nothing pending");
+        // Draining the backlog and asking again does queue the work. One cell
+        // only: each request stands up a real pipeline, and this test is about
+        // the bookkeeping, not the decode.
+        cache.pool.queue.lock().unwrap().jobs.clear();
+        cache.ensure_strip(id, 0, &local, 0.0, 10.0, 1);
+        #[cfg(feature = "decode")]
+        assert!(cache.has_pending(), "with room in the queue the work is taken");
+    }
+
+    #[test]
+    fn lru_stamps_do_not_grow_without_bound() {
+        // Scrubbing visits far more buckets than are ever decoded; the
+        // bookkeeping for them must be pruned too, not just the pixels.
+        let mut cache = ThumbnailCache::new();
+        let id = uuid::Uuid::new_v4();
+        for b in 0..(MAX_FRAMES_PER_SOURCE as u32 * 6) {
+            cache.touch(id, b);
+        }
+        cache
+            .tx
+            .send(Outcome {
+                id,
+                bucket: 0,
+                thumb: Some(Thumb::new(1, 1, Arc::new(vec![0u8; 4]), true)),
+            })
+            .unwrap();
+        cache.drain();
+        assert!(
+            cache.frames[&id].touched.len() <= MAX_FRAMES_PER_SOURCE * 4,
+            "stamps for buckets holding nothing are forgotten"
+        );
     }
 
     #[test]
