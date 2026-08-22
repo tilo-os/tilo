@@ -771,6 +771,98 @@ fn tab_drag_reorders_tabs_within_group_in_tree() {
 // -----------------------------------------------------------------------
 
 #[test]
+fn switching_workspace_swaps_the_rendered_strips() {
+    // Two workspaces: A (boot) with groups [100, 200]; B with groups
+    // [300, 400], group 300 carrying two tabs. The rendered strip must
+    // follow `tree.active`: after a switch the host's live rows are
+    // B's — this is what makes every window gesture (the Alt+Shift
+    // jump, clicks, focus-follow) act on the workspace the user is
+    // looking at, instead of the boot workspace forever (the
+    // "jump only works in Home" bug, 2026-08-22).
+    let (mut tree, strip_a, _) = single_strip_tree(&[100, 200]);
+    let ws_b_id = WorkspaceId::new();
+    let strip_b = StripId::new();
+    let mk_tab = |tid: u64, label: &str| Tab {
+        id: tid,
+        title: label.into(),
+        tile: TileContent::Stub {
+            kind: AppKind::Other(label.into()),
+            label: label.into(),
+        },
+    };
+    let group_300 = WindowGroup {
+        id: 300,
+        tabs: vec![mk_tab(3001, "B-first"), mk_tab(3002, "B-second")],
+        active_tab: 3001,
+        width: WindowWidth::Normal,
+        maximized: false,
+    };
+    let group_400 = WindowGroup {
+        id: 400,
+        tabs: vec![mk_tab(4001, "B-third")],
+        active_tab: 4001,
+        width: WindowWidth::Normal,
+        maximized: false,
+    };
+    let ws_b = Workspace {
+        strips: vec![Strip {
+            id: strip_b,
+            name: "Main".into(),
+            window_groups: vec![group_300, group_400],
+        }],
+        ..Workspace::test_default(ws_b_id, "Second")
+    };
+    tree.workspaces.push(ws_b);
+    tree.active_strip.insert(ws_b_id, strip_b);
+
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    assert!(host.group_row_mut_for_tests(strip_a).is_some());
+    assert!(
+        host.group_row_mut_for_tests(strip_b).is_none(),
+        "precondition: only the active workspace's strips are rendered"
+    );
+
+    // Switch the active workspace the way every switch path does (tree
+    // mutation + chrome bump), then run the per-frame reconcile.
+    {
+        let st = chrome.borrow();
+        st.tree_mut().set_active(ws_b_id);
+    }
+    chrome.borrow_mut().bump();
+    assert!(
+        host.tick_workspace_content_for_tests(),
+        "an active-workspace change must rebuild the content"
+    );
+    let _layout = lay_out_host(&mut host);
+
+    let row_b = host
+        .group_row_mut_for_tests(strip_b)
+        .expect("workspace B's strip must now be the rendered one");
+    assert_eq!(row_b.group_ids(), vec![300, 400]);
+    assert!(
+        host.group_row_mut_for_tests(strip_a).is_none(),
+        "the old workspace's rows must be gone"
+    );
+    // The jump's widget-side focus write lands on the new rows.
+    assert!(
+        host.focus_window_widget(strip_b, 300, 3002),
+        "focus_window_widget must reach workspace B's rendered rows"
+    );
+    // And switching back re-renders A without leaking B's rows.
+    {
+        let st = chrome.borrow();
+        let home = st.tree().workspaces[0].id;
+        st.tree_mut().set_active(home);
+    }
+    chrome.borrow_mut().bump();
+    assert!(host.tick_workspace_content_for_tests());
+    let _layout = lay_out_host(&mut host);
+    assert!(host.group_row_mut_for_tests(strip_a).is_some());
+    assert!(host.group_row_mut_for_tests(strip_b).is_none());
+}
+
+#[test]
 fn wheel_over_strip_does_not_move_it() {
     // Hard boundary (2026-08-22): a bare wheel never moves the strip —
     // scrolling is for content inside a window. The view travels only
