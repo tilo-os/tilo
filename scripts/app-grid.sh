@@ -31,16 +31,31 @@ OUT=target/app-grid.png
 THEME=dark
 BUILD=1
 SHOT_TIMEOUT=60
+# `set -u` turns a value-less flag into a raw bash error about $2, which tells
+# the reader nothing about which flag they got wrong.
+need_value() {
+  [ $# -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
+}
 while [ $# -gt 0 ]; do
   case "$1" in
-    --out) OUT="$2"; shift 2 ;;
-    --theme) THEME="$2"; shift 2 ;;
+    --out) need_value "$@"; OUT="$2"; shift 2 ;;
+    --theme) need_value "$@"; THEME="$2"; shift 2 ;;
     --no-build) BUILD=0; shift ;;
-    --shot-timeout) SHOT_TIMEOUT="$2"; shift 2 ;;
+    --shot-timeout) need_value "$@"; SHOT_TIMEOUT="$2"; shift 2 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+case "$THEME" in
+  dark|light) ;;
+  # Silently shooting an unknown theme yields a grid that looks fine and is not
+  # what was asked for.
+  *) echo "unknown theme '$THEME' (expected dark or light)" >&2; exit 2 ;;
+esac
+case "$SHOT_TIMEOUT" in
+  ''|*[!0-9]*) echo "--shot-timeout wants whole seconds, got '$SHOT_TIMEOUT'" >&2; exit 2 ;;
+esac
 
 for tool in magick montage; do
   command -v "$tool" >/dev/null || { echo "need ImageMagick ($tool not on PATH)" >&2; exit 1; }
