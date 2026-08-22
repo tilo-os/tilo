@@ -82,12 +82,22 @@ failure the whole verification pass exists to catch — an assertion that goes
 green while the screen stays blank is worse than one that fails, because it
 reads as proof.
 
-## 7 · Quinten's writing appears on Xaver's screen ⏳
+## 7 · Quinten's writing appears on Xaver's screen ✅
 
-The last piece. Deltas and presence cross, but two independently created
-documents had no way to learn of each other: the only full-state frame was
-fanned out locally and never republished. A snapshot path to the room closes
-it. Proof in flight.
+Two real packaged word processors converge. Proven from the receiving side:
+`/tmp/qs-gpxaor_7/shots/bob-received.png` shows bob's page reading text he
+never typed, with alice's caret and pointer labelled by her peer id.
+
+The cause was not routing, which is why it survived so long. The op stream
+carries three kinds of frame — a signed envelope, a delta, a whole document —
+and nothing on the wire said which, so the reader guessed by trying to decode
+each one as a signed envelope and skipping what failed. That discarded every
+unsigned frame there is, including the full-state snapshot by which two
+independently created documents learn of each other. Presence rides a separate
+stream and was never affected — which is precisely why presence crossed while
+the page stayed blank, and why this read as a routing bug for days.
+
+Frames now carry a kind tag.
 
 ## 8 · An image into the document ✅ — but mind which Files
 
