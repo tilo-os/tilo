@@ -382,6 +382,86 @@ impl ShellDriver {
         }
     }
 
+    /// Put the rooms in the state a real machine's are in.
+    ///
+    /// Production adopts every ownerless workspace at boot
+    /// (`adopt_ownerless_workspaces`), so on a live system a room you
+    /// made is a room you own — which is what makes "Private to you"
+    /// the true default rather than "No members". A scene that skipped
+    /// the adoption rendered a state no user ever sees.
+    ///
+    /// With `shared`, it goes on to record what an accepted invite and
+    /// a couple of shares would have recorded: memberships in this room
+    /// and in Research (whose peers are already present, so their faces
+    /// are backed by a capability rather than by hearsay), and two
+    /// resources handed to named people.
+    fn seed_rooms(&mut self, shared: bool) {
+        use shell::shell::state::{CapOverride, Scope, Subject, Verb};
+        let handle = self.chrome_handle();
+        let owner = handle.borrow().local_user_id.clone();
+        {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            tree.adopt_ownerless_workspaces(&owner);
+            if !shared {
+                return;
+            }
+            let ws_id = tree.active;
+            let room = ws_id.raw().to_string();
+            for (member, verb) in [("ada", Verb::Write), ("bo", Verb::Read)] {
+                tree.grant_in_workspace(
+                    ws_id,
+                    &owner,
+                    CapOverride::membership(Subject::person(member), room.clone(), verb),
+                );
+            }
+            // Both members are at their desks. A room only carries a
+            // person's display name while a session of theirs is in it,
+            // so a member with nobody home shows as the principal the
+            // capability names — true, and the seam a room document
+            // grows names through.
+            if let Some(ws) = tree.active_workspace_mut() {
+                ws.collaborators
+                    .push(shell::shell::state::Collaborator::new("ada", "Ada"));
+                ws.collaborators
+                    .push(shell::shell::state::Collaborator::new("bo", "Bo"));
+            }
+            for (path, who, verb) in [
+                ("/var/workspace/design", "ada", Verb::Write),
+                ("/var/workspace/brief.pdf", "bo", Verb::Read),
+            ] {
+                tree.grant_in_workspace(
+                    ws_id,
+                    &owner,
+                    CapOverride::grant(
+                        Subject::person(who),
+                        Scope::FsPath(path.to_string()),
+                        verb,
+                    ),
+                );
+            }
+            // Research already has two people present. Give them the
+            // membership their presence implies, so the row shows the
+            // faces of people who can actually reach it.
+            let research: Vec<_> = tree
+                .workspaces
+                .iter()
+                .filter(|w| w.name == "Research")
+                .map(|w| (w.id, w.id.raw().to_string()))
+                .collect();
+            for (id, room) in research {
+                for (member, verb) in [("alice", Verb::Write), ("bob", Verb::Read)] {
+                    tree.grant_in_workspace(
+                        id,
+                        &owner,
+                        CapOverride::membership(Subject::person(member), room.clone(), verb),
+                    );
+                }
+            }
+        }
+        self.with_chrome(|_| {});
+    }
+
     fn seed_workspace_permissions(&mut self) {
         use shell::shell::state::{CapOverride, Expiry, Scope, Subject, Verb};
         let handle = self.chrome_handle();
@@ -442,6 +522,14 @@ impl ShellDriver {
         match name {
             "desktop" => {}
             "overview" => {
+                self.seed_rooms(false);
+                self.with_chrome(|st| st.overlays.overview = true);
+                self.fb.host_mut().force_overview_settled(true);
+            }
+            // The same panel with the room actually shared: members on
+            // this room and on Research, and two resources handed out.
+            "overview-shared" => {
+                self.seed_rooms(true);
                 self.with_chrome(|st| st.overlays.overview = true);
                 self.fb.host_mut().force_overview_settled(true);
             }
@@ -850,6 +938,7 @@ impl ShellDriver {
         "desktop",
         "multi-group",
         "overview",
+        "overview-shared",
         "palette",
         "palette_typed",
         "palette_in_app_query",
