@@ -33,6 +33,9 @@
 //! [`crate::shell::overlay_host::ShellOverlayHost::active_tile_rect`].
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
+
+use ui::widget::{WheelJumpAccum, wheel_jump_detents};
 
 use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
 use smithay::input::keyboard::FilterResult;
@@ -141,6 +144,63 @@ pub struct ClientInput {
     /// pressed with a client focused and released after an overlay took
     /// the keyboard).
     forwarded_keys: HashSet<u32>,
+    /// Accumulator for the Alt+Shift wheel group-jump gesture, so a
+    /// touchpad's stream of small pixel deltas fires one discrete jump
+    /// per [`JUMP_PX_PER_DETENT`] of travel while a clicky wheel fires
+    /// one per detent. See [`WheelJumpAccum`].
+    jump_wheel: WheelJumpAccum,
+}
+
+/// Resolve where an Alt+Shift wheel jump of `steps` windows lands. A
+/// "window" is a tab: the walk flattens the active strip's groups into
+/// their tabs in strip order, so from the boot state's single
+/// four-tab group (Notes, Files, Terminal, Browser) one step right of
+/// Notes is Files, and past a group's last tab the walk continues into
+/// the next group. Clamped at the strip's ends. `None` when there is
+/// nothing to do — no workspace, no windows, or the walk is already
+/// clamped at the edge it is pushing against.
+///
+/// Pure tree walk, split from the event plumbing so tests can pin the
+/// navigation against a bare [`WorkspaceTree`].
+pub(crate) fn step_active_window(
+    tree: &WorkspaceTree,
+    steps: i32,
+) -> Option<(StripId, GroupId, u64)> {
+    let ws = tree.active_workspace()?;
+    // Focused strip, else the first — the same fallback `place_tab`
+    // applies when a recorded pointer has gone stale.
+    let strip = tree
+        .active_strip
+        .get(&ws.id)
+        .copied()
+        .and_then(|id| ws.strips.iter().find(|s| s.id == id))
+        .or_else(|| ws.strips.first())?;
+    // Every window along the strip, flattened in visual order.
+    let windows: Vec<(GroupId, u64)> = strip
+        .window_groups
+        .iter()
+        .flat_map(|g| g.tabs.iter().map(|t| (g.id, t.id)))
+        .collect();
+    if windows.is_empty() {
+        return None;
+    }
+    // Current position: the focused group's active tab (with the same
+    // first-group fallback focus resolution uses everywhere else).
+    let cur_group = tree
+        .active_group_for(strip.id)
+        .and_then(|g| strip.window_groups.iter().find(|wg| wg.id == g))
+        .or_else(|| strip.window_groups.first())?;
+    let cur = windows
+        .iter()
+        .position(|&(g, t)| g == cur_group.id && t == cur_group.active_tab)
+        .unwrap_or(0);
+    let last = windows.len() as i64 - 1;
+    let idx = (cur as i64 + steps as i64).clamp(0, last) as usize;
+    if idx == cur {
+        return None;
+    }
+    let (group, tab) = windows[idx];
+    Some((strip.id, group, tab))
 }
 
 impl ClientInput {
@@ -1586,6 +1646,66 @@ pub fn route_input(
             consumed
         }
         WindowEvent::MouseWheel { delta, .. } => {
+            // Niri parity: an Alt-modified wheel is a compositor
+            // navigation gesture, grabbed before client forwarding like
+            // every shell chord, so it works with the cursor over a
+            // client window too — and reported as consumed either way
+            // so the chrome never double-handles the same event.
+            //
+            //   Alt+wheel        → switch workspace (Niri's
+            //                      `Mod+WheelScrollDown → focus-workspace-down`)
+            //   Alt+Shift+wheel  → jump focus to the neighbouring group
+            //                      of the active strip (Niri's
+            //                      `Mod+Shift+WheelScrollDown → focus-column-right`)
+            let mods = modifiers.state();
+            if mods.alt_key() && !mods.control_key() && !mods.super_key() {
+                let detents = wheel_jump_detents(delta);
+                let steps = state.client_input.jump_wheel.push(detents, Instant::now());
+                // Diagnostic for gesture-feel reports: shows exactly what
+                // the host session delivers per wheel event (LineDelta
+                // notches vs touchpad/hi-res pixel fractions) and how
+                // many jumps it produced. `RUST_LOG=shell=debug`.
+                tracing::debug!(
+                    target: "shell::wheel_jump",
+                    ?delta,
+                    detents,
+                    steps,
+                    shift = mods.shift_key(),
+                    "alt-wheel jump gesture"
+                );
+                if steps != 0 {
+                    if mods.shift_key() {
+                        let target = {
+                            let chrome = fb.chrome();
+                            let tree = chrome.tree();
+                            step_active_window(&tree, steps)
+                        };
+                        if let Some((strip, group, tab)) = target {
+                            // Select the window (its tab) and focus its
+                            // group — the same state a click on the tab
+                            // pill produces — then hand the keyboard to
+                            // whatever the tab hosts. The per-tick
+                            // reconciler slides the strip to the group.
+                            focus_window(fb, strip, group, tab);
+                            sync_keyboard_focus(state, fb);
+                        }
+                    } else {
+                        // Wheel-down (positive detents) rotates DOWN the
+                        // workspace wheel, one workspace per detent.
+                        // `switch_workspace` stops at the wheel's end,
+                        // so the loop breaks rather than spinning.
+                        let dir = steps.signum();
+                        fb.with_chrome(|chrome| {
+                            for _ in 0..steps.unsigned_abs().min(4) {
+                                if !chrome.switch_workspace(dir) {
+                                    break;
+                                }
+                            }
+                        });
+                    }
+                }
+                return true;
+            }
             if state.client_input.pointer_focus.is_some() {
                 state.forward_client_pointer_axis(*delta)
             } else {
@@ -1684,6 +1804,43 @@ fn deliver_pointer(state: &mut State, hit: Option<TileHit>) {
     state.forward_client_pointer_motion(global, target);
 }
 
+/// Focus one window: select `tab` inside `group` and make `group` the
+/// active group of `strip` — the same state a click on the tab's pill
+/// produces, so `sync_keyboard_focus` and the focus-follow reconciler
+/// behave identically to a click.
+///
+/// The tab is selected on the WIDGET side first: the bar's `active_id`
+/// is authoritative, and the per-frame `harvest_active_tab_writeback`
+/// mirrors widgets into the tree — so a tree-only write would be
+/// overwritten one frame later. The tree is then stamped too, so
+/// keyboard focus and `state_dump` are correct within this same event.
+fn focus_window(fb: &mut FrameBuilder, strip: StripId, group: GroupId, tab: u64) {
+    fb.host_mut().focus_window_widget(strip, group, tab);
+    let mut changed = false;
+    fb.with_chrome(|chrome| {
+        {
+            let mut tree = chrome.tree_mut();
+            if let Some(g) = tree
+                .active_workspace_mut()
+                .and_then(|ws| ws.strips.iter_mut().find(|s| s.id == strip))
+                .and_then(|s| s.window_groups.iter_mut().find(|g| g.id == group))
+            {
+                if g.active_tab != tab {
+                    g.active_tab = tab;
+                    changed = true;
+                }
+            }
+            if tree.active_group_for(strip) != Some(group) {
+                tree.set_active_group(strip, group);
+                changed = true;
+            }
+        }
+        if changed {
+            chrome.bump();
+        }
+    });
+}
+
 /// Make `group` the active group of `strip` in the chrome's tree so the
 /// shell's focus rules (and therefore `sync_keyboard_focus`) agree with
 /// what the user just clicked.
@@ -1707,6 +1864,7 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) {
 mod tests {
     use super::*;
     use crate::shell::state::{AppKind, Strip, Workspace, WorkspaceId};
+    use std::time::Duration;
     use winit::event::{DeviceId, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey, SmolStr};
 
@@ -1799,6 +1957,125 @@ mod tests {
         // Switching the active group onto the foreign one moves focus.
         tree.set_active_group(strip, foreign_group);
         assert_eq!(active_foreign_surface(&tree), Some(4242));
+    }
+
+    #[test]
+    fn step_active_window_walks_tabs_within_a_group() {
+        // The boot-state shape: ONE group holding several windows as
+        // tabs. One step right of the first window is the second — the
+        // "Notes → Files" case the gesture is for.
+        let tabs: Vec<Tab> = ["Notes", "Files", "Terminal"]
+            .iter()
+            .map(|name| Tab {
+                id: next_id(),
+                title: (*name).into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other((*name).into()),
+                    label: (*name).into(),
+                },
+            })
+            .collect();
+        let ids: Vec<u64> = tabs.iter().map(|t| t.id).collect();
+        let group = WindowGroup {
+            id: next_id(),
+            active_tab: ids[0],
+            tabs,
+            width: WindowWidth::Normal,
+            maximized: false,
+        };
+        let group_id = group.id;
+        let strip_id = StripId::from(next_id());
+        let mut strip = Strip::new(strip_id, "main");
+        strip.window_groups = vec![group];
+        let ws_id = WorkspaceId::from(next_id());
+        let mut ws = Workspace::new(ws_id, "Home");
+        ws.strips = vec![strip];
+        let mut tree = WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            ..Default::default()
+        };
+        tree.active_strip.insert(ws_id, strip_id);
+
+        // Notes is active → one step right is Files.
+        assert_eq!(
+            step_active_window(&tree, 1),
+            Some((strip_id, group_id, ids[1])),
+            "one step right of the first tab must be the second"
+        );
+        // Apply it, step again → Terminal; then the right edge clamps.
+        tree.workspaces[0].strips[0].window_groups[0].active_tab = ids[1];
+        assert_eq!(step_active_window(&tree, 1), Some((strip_id, group_id, ids[2])));
+        tree.workspaces[0].strips[0].window_groups[0].active_tab = ids[2];
+        assert_eq!(step_active_window(&tree, 1), None, "right edge clamps");
+        assert_eq!(step_active_window(&tree, 5), None, "overshoot clamps too");
+        // And back left, two at once, lands on Notes; the left edge clamps.
+        assert_eq!(step_active_window(&tree, -2), Some((strip_id, group_id, ids[0])));
+        tree.workspaces[0].strips[0].window_groups[0].active_tab = ids[0];
+        assert_eq!(step_active_window(&tree, -1), None, "left edge clamps");
+    }
+
+    #[test]
+    fn step_active_window_continues_into_the_next_group() {
+        let (mut tree, strip, foreign_group) = tree_with_foreign(1);
+        // No explicit active pointer yet: the walk starts at the first
+        // group's tab; one step right crosses into the foreign group.
+        let (s, g, _t) = step_active_window(&tree, 1).expect("step into the next group");
+        assert_eq!((s, g), (strip, foreign_group));
+        tree.set_active_group(strip, foreign_group);
+        // At the strip's last window the jump clamps.
+        assert_eq!(step_active_window(&tree, 1), None);
+        // Stepping back crosses into the first group again.
+        let (s2, first, _t) = step_active_window(&tree, -1).expect("step back left");
+        assert_eq!(s2, strip);
+        assert_ne!(first, foreign_group);
+    }
+
+    #[test]
+    fn wheel_jump_detents_map_wheel_down_to_a_rightward_jump() {
+        use winit::dpi::PhysicalPosition;
+        // Winit: positive y = wheel up. Niri: WheelScrollDown →
+        // focus-column-right — so wheel-down must be a positive detent.
+        assert_eq!(wheel_jump_detents(&MouseScrollDelta::LineDelta(0.0, -1.0)), 1.0);
+        assert_eq!(wheel_jump_detents(&MouseScrollDelta::LineDelta(0.0, 1.0)), -1.0);
+        // Touchpad pixels are fractional: one detent per JUMP_PX_PER_DETENT.
+        assert_eq!(
+            wheel_jump_detents(&MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -25.0))),
+            0.5
+        );
+    }
+
+    #[test]
+    fn wheel_jump_accum_fires_whole_detents_and_survives_slow_scrolling() {
+        let t0 = Instant::now();
+        let mut acc = WheelJumpAccum::default();
+        // A clicky wheel fires one step per notch, immediately.
+        assert_eq!(acc.push(1.0, t0), 1);
+        assert_eq!(acc.push(1.0, t0), 1);
+        // Touchpad travel accumulates until a whole detent is reached...
+        let mut acc = WheelJumpAccum::default();
+        assert_eq!(acc.push(0.4, t0), 0);
+        assert_eq!(acc.push(0.4, t0 + Duration::from_millis(50)), 0);
+        assert_eq!(acc.push(0.4, t0 + Duration::from_millis(100)), 1);
+        // ...and the remainder carries forward, not doubled.
+        assert_eq!(acc.push(0.4, t0 + Duration::from_millis(150)), 0);
+        // Reversing direction drops the partial balance outright.
+        let mut acc = WheelJumpAccum::default();
+        assert_eq!(acc.push(0.9, t0), 0);
+        assert_eq!(acc.push(-0.9, t0 + Duration::from_millis(50)), 0);
+        // SLOW deliberate scrolling still gets there: fractional detents
+        // separated by long pauses must keep accumulating — a hi-res
+        // wheel notching at 1 Hz is not a new gesture each notch. This
+        // was the live "jump works once, then I can not scroll further"
+        // bug: a quiet-time decay wiped the balance between notches.
+        let mut acc = WheelJumpAccum::default();
+        assert_eq!(acc.push(0.4, t0), 0);
+        assert_eq!(acc.push(0.4, t0 + Duration::from_secs(1)), 0);
+        assert_eq!(
+            acc.push(0.4, t0 + Duration::from_secs(2)),
+            1,
+            "slow same-direction scrolling must still reach a whole detent"
+        );
     }
 
     #[test]

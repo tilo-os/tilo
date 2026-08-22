@@ -29,6 +29,7 @@
 pub mod action_api;
 pub mod files_index;
 pub mod providers;
+pub mod visibility;
 
 use std::cmp::Ordering;
 use std::collections::HashMap;

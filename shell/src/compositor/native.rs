@@ -26,6 +26,35 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
+
+use crate::shell::search::action_api::{ActionVisibility, ResourceRef};
+use crate::shell::search::visibility::CapabilityVisibility;
+
+/// Run `f` against the live chrome with a capability gate built from the
+/// active workspace.
+///
+/// The gate is what makes the action API answer *for a caller* rather
+/// than in the abstract: a resource the workspace's capability model
+/// will not let this user act on is absent from enumeration and from
+/// selection alike, so it cannot be invoked by an address the caller was
+/// never given.
+///
+/// Failing to resolve a workspace is an error rather than a fallback to
+/// "show everything". A gate that opens when it cannot find its policy
+/// is not a gate.
+fn with_action_gate<R>(
+    chrome_handle: &crate::shell::chrome_state::Chrome,
+    f: impl FnOnce(&crate::shell::chrome_state::ChromeState, &dyn ActionVisibility) -> R,
+) -> Result<R, String> {
+    let chrome = chrome_handle.borrow();
+    let tree = chrome.tree();
+    let workspace = tree
+        .active_workspace()
+        .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?;
+    let actor = workspace.actor_for_person(&chrome.local_user_id);
+    let gate = CapabilityVisibility::new(workspace, actor);
+    Ok(f(&chrome, &gate))
+}
 use smithay::reexports::calloop::{self, EventLoop};
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
@@ -275,6 +304,13 @@ impl TestControlConn {
 /// the live tree (no caching).
 struct FrameBuilderControlState<'a> {
     fb: &'a FrameBuilder,
+    /// The live CRDT the search providers read, plus its root object.
+    ///
+    /// `None` for the construction sites that only exercise layout and
+    /// chrome (the unit tests below), which is why the action methods
+    /// refuse rather than answer when it is absent: a fixture that
+    /// cannot enumerate must not be able to report an empty surface.
+    doc: Option<(&'a AutoCommit, &'a ObjId)>,
 }
 
 impl<'a> ControlState for FrameBuilderControlState<'a> {
@@ -479,6 +515,73 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
             "permitted": outcome.is_permitted(),
             "workspace": ws.id.raw(),
             "room": ws.room.to_string(),
+        }))
+    }
+
+    /// Enumerate the exported action surface through the *same*
+    /// provider registry that feeds the Ctrl+K palette.
+    ///
+    /// The palette renders these providers as rows; this renders
+    /// nothing. No scene is built, no widget is touched, no synthetic
+    /// input is generated — which is the entire claim: an action is not
+    /// a pixel, so driving the shell does not require seeing it.
+    fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {
+        let (doc, root) = self
+            .doc
+            .ok_or_else(|| "control state has no live document".to_string())?;
+        let chrome_handle = self.fb.chrome_handle();
+        // The borrow lives only for the closure. `ActionCatalog` owns its
+        // results outright (no borrow of `doc` is retained), so the
+        // catalogue outlives the guards it was built through.
+        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
+            self.fb.host().action_catalog(query, chrome, doc, root, gate)
+        })?;
+        let actions: Vec<serde_json::Value> = catalog
+            .enumerate()
+            .into_iter()
+            .map(|a| {
+                serde_json::json!({
+                    "provider": a.resource.provider,
+                    "id": a.resource.id,
+                    "kind": a.kind.label(),
+                    "title": a.title,
+                    "subtitle": a.subtitle,
+                    "score": a.score,
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "query": query,
+            "count": actions.len(),
+            "actions": actions,
+        }))
+    }
+
+    /// Resolve one `(provider, id)` address against a freshly built
+    /// catalogue, reporting what it names without running it.
+    ///
+    /// Selection and invocation are deliberately separate steps: a
+    /// caller can inspect what an address resolves to before committing
+    /// to the side-effect, and an address that is unknown — or hidden by
+    /// the visibility gate — fails here, loudly, instead of becoming an
+    /// invocation that does nothing.
+    fn resolve_action(&self, provider: &str, id: &str) -> Result<serde_json::Value, String> {
+        let (doc, root) = self
+            .doc
+            .ok_or_else(|| "control state has no live document".to_string())?;
+        let chrome_handle = self.fb.chrome_handle();
+        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
+            self.fb.host().action_catalog("", chrome, doc, root, gate)
+        })?;
+        let resource = ResourceRef::new(provider, id);
+        let selected = catalog.select(&resource).ok_or_else(|| {
+            format!("no visible action addressed by ({provider}, {id}) in the current catalogue")
+        })?;
+        Ok(serde_json::json!({
+            "provider": provider,
+            "id": id,
+            "kind": selected.kind().label(),
+            "title": selected.title(),
         }))
     }
 
@@ -856,6 +959,39 @@ fn execute_planned_action(
             // these into structured wire responses.
             write_snapshot_png(fb, path);
         }
+        PlannedAction::InvokeAction { provider, id } => {
+            // Re-resolve rather than carrying a handle over from
+            // dispatch: the document is mutable between planning and
+            // execution, so the catalogue the caller was shown may no
+            // longer be the catalogue that exists now. Resolving here
+            // means we either run the action the address currently
+            // names, or nothing at all.
+            let chrome_handle = fb.chrome_handle();
+            // Built through the same gate the dispatcher resolved
+            // against. Re-resolving without it would make the gate
+            // advisory: a caller who got past `resolve_action` once
+            // could keep invoking after their capability was revoked.
+            let catalog = match with_action_gate(&chrome_handle, |chrome, gate| {
+                fb.host()
+                    .action_catalog("", chrome, &ctx.doc, &ctx.root_obj, gate)
+            }) {
+                Ok(catalog) => catalog,
+                Err(why) => {
+                    eprintln!("nirios compositor: cannot invoke ({provider}, {id}): {why}");
+                    return;
+                }
+            };
+            match catalog.select(&ResourceRef::new(provider.as_str(), id.as_str())) {
+                // The `Ref` above is dropped with the block, so the
+                // provider's callback is free to borrow the chrome cell
+                // mutably — which most of them do.
+                Some(selected) => selected.invoke(&mut ctx.doc, &ctx.root_obj, &chrome_handle),
+                None => eprintln!(
+                    "nirios compositor: action ({provider}, {id}) vanished between \
+                     resolve and invoke; nothing was run"
+                ),
+            }
+        }
     }
 }
 
@@ -875,14 +1011,22 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
             let event = keyboard_input_event(winit_key, *pressed);
             lock.handle_key(winit_event_to_lock_key(&event));
         }
-        // Pointer moves/clicks, modifier sets, and snapshots: swallowed while
-        // locked. Input goes only to the lock surface.
+        // Pointer moves/clicks, modifier sets, snapshots, and action
+        // invocations: swallowed while locked. Input goes only to the lock
+        // surface.
+        //
+        // `InvokeAction` belongs in this list for the same reason a
+        // click does, and more sharply: the action API reaches chrome
+        // side-effects without needing a visible surface, so letting one
+        // through here would make the lock screen bypassable by a socket
+        // client that never has to render anything.
         PlannedAction::CursorMoved { .. }
         | PlannedAction::MouseLeftButton { .. }
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
         | PlannedAction::Snapshot { .. }
-        | PlannedAction::SetGroupWidth { .. } => {}
+        | PlannedAction::SetGroupWidth { .. }
+        | PlannedAction::InvokeAction { .. } => {}
     }
 }
 
@@ -1076,7 +1220,10 @@ fn pump_test_control_conn(
             Ok(Some(())) => {
                 let (resp, actions) = match parse_command(&line) {
                     Ok(cmd) => {
-                        let state = FrameBuilderControlState { fb: frame_builder };
+                        let state = FrameBuilderControlState {
+                            fb: frame_builder,
+                            doc: Some((&ctx.doc, &ctx.root_obj)),
+                        };
                         test_control::dispatch_command(&cmd, &state)
                     }
                     Err(err_resp) => (err_resp, Vec::new()),
@@ -3591,7 +3738,7 @@ mod tests {
     #[test]
     fn state_dump_chrome_includes_overlays_field() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb };
+        let state = FrameBuilderControlState { fb: &fb, doc: None };
         let chrome = state.chrome_state_json();
         let overlays = chrome
             .get("overlays")
@@ -3615,7 +3762,7 @@ mod tests {
     #[test]
     fn state_dump_workspace_tree_includes_workspaces_array() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb };
+        let state = FrameBuilderControlState { fb: &fb, doc: None };
         let tree = state.workspace_tree_json();
         let workspaces = tree
             .get("workspaces")
@@ -3638,7 +3785,7 @@ mod tests {
     #[test]
     fn dispatch_state_dump_against_frame_builder_returns_state() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb };
+        let state = FrameBuilderControlState { fb: &fb, doc: None };
         let (resp, actions) =
             test_control::dispatch_command(&test_control::Command::StateDump, &state);
         assert!(actions.is_empty());

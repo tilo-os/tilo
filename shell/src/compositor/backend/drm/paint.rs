@@ -315,8 +315,20 @@ impl VelloDrmBridge {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             tx.send(r).ok();
         });
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        rx.recv()
+        // Bounded, not indefinite: a fence in flight across a system
+        // suspend/resume can never signal, and an unbounded wait would
+        // wedge the paint path forever — the same freeze the winit
+        // presenter's post-present poll had (see `backend/winit.rs`).
+        // A second covers any real readback; a timeout drops this frame
+        // through the existing error path and the next one retries.
+        let waited = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(1)),
+        });
+        if let Err(e) = waited {
+            return Err(BridgeError::Map(format!("fence wait: {e:?}")));
+        }
+        rx.recv_timeout(std::time::Duration::from_secs(1))
             .map_err(|e| BridgeError::Map(format!("map_async channel: {e}")))?
             .map_err(|e| BridgeError::Map(format!("{e:?}")))?;
         Ok(slice.get_mapped_range())
