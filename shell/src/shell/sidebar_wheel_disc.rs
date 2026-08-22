@@ -95,7 +95,7 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use taffy::{AlignItems, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, ColorStop, Compose, Extend, Fill, Gradient, Mix};
 use winit::event::WindowEvent;
 
@@ -896,8 +896,18 @@ impl Widget for SidebarWheelDisc {
         // as curving away from the light rather than as a flat ramp. Nine
         // stops of a smooth curve: a gradient interpolates continuously
         // between them, so there is no seam to see at any step.
-        let mut body_stops: Vec<ColorStop> = Vec::with_capacity(9);
-        for i in 0..=8 {
+        //
+        // The ramp is anchored with an explicit transparent stop at offset
+        // 0 rather than relying on `Extend::Pad` to hold everything inside
+        // the first stop at zero. Left to the pad, the falloff spread over
+        // the whole radius instead of the band near the rim, so the body
+        // still had visible alpha at the footprint's left edge — the exact
+        // hard cut the depth is chosen to avoid.
+        let transparent = Color::from_rgba8(body_hue.r(), body_hue.g(), body_hue.b(), 0);
+        let mut body_stops: Vec<ColorStop> = Vec::with_capacity(11);
+        body_stops.push(ColorStop { offset: 0.0, color: transparent.into() });
+        body_stops.push(ColorStop { offset: inner, color: transparent.into() });
+        for i in 1..=8 {
             let f = i as f32 / 8.0;
             let a = (BODY_PEAK_ALPHA * f.powf(2.4)) as u8;
             body_stops.push(ColorStop {
@@ -911,15 +921,13 @@ impl Widget for SidebarWheelDisc {
 
         // A brighter lip just inside the rim — light catching the edge.
         let lip_inner = ((radius - 46.0).max(1.0) / radius) as f32;
+        let edge_clear = Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), 0);
         let lip_grad = Gradient::new_radial((cx, cy), radius as f32)
             .with_extend(Extend::Pad)
             .with_stops(
                 &[
-                    ColorStop {
-                        offset: lip_inner,
-                        color: Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), 0)
-                            .into(),
-                    },
+                    ColorStop { offset: 0.0, color: edge_clear.into() },
+                    ColorStop { offset: lip_inner, color: edge_clear.into() },
                     ColorStop {
                         offset: 1.0,
                         color: Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), 24)
@@ -1035,8 +1043,20 @@ impl Widget for SidebarWheelDisc {
 
         let half_h = self.rect.height() / 2.0;
         let rail_x = self.rect.x0 + RAIL_INSET;
-        // Rows stay out of the band the tail row closes the rail with.
-        let chip_band = (half_h - RAIL_TAIL_BAND).max(0.0);
+        // The tail row's box is fixed, and settled before any workspace row
+        // is placed, so rows can be kept out of it. Reserving the band on
+        // one side only made the rail lopsided: a row above the middle got
+        // a name where its mirror below did not.
+        let plus_h = RAIL_ROW_H;
+        let plus_cy = (cy + (half_h - RAIL_TAIL_BAND).max(0.0) + RAIL_TAIL_BAND / 2.0)
+            .min(self.rect.y1 - plus_h / 2.0 - 6.0);
+        let plus_w = plus_h * 1.85;
+        self.plus_rect = Rect::new(
+            rail_x,
+            plus_cy - plus_h / 2.0,
+            rail_x + plus_w,
+            plus_cy + plus_h / 2.0,
+        );
         // The same curve the disc's surface is masked with, so a row
         // dissolves exactly where the body beneath it does instead of
         // out-living it and ending up a crisp pill on bare wallpaper.
@@ -1053,6 +1073,24 @@ impl Widget for SidebarWheelDisc {
             } else {
                 1.0
             }
+        };
+        // Plate under a rail row, in the chrome's own popover surface. See
+        // the call site for why the rows cannot rely on the disc body
+        // behind them for contrast.
+        let seat_hue = colors.surfaces.overlay;
+        let seat_row = |scene: &mut Scene, transform: Affine, r: Rect, fade: f32| {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                Color::from_rgba8(
+                    seat_hue.r(),
+                    seat_hue.g(),
+                    seat_hue.b(),
+                    (214.0 * fade.clamp(0.0, 1.0)) as u8,
+                ),
+                None,
+                &RoundedRect::from_rect(r, r.height() / 2.0),
+            );
         };
 
         if !self.spokes.is_empty() {
@@ -1093,6 +1131,13 @@ impl Widget for SidebarWheelDisc {
                 let marker_p = Point::new(marker_x, marker_y);
                 let fade_a = row_fade(marker_y);
                 if fade_a <= 0.02 {
+                    continue;
+                }
+                // The rim leaves the footprint through the left edge at
+                // steep angles. Markers ride the rim and are painted
+                // outside the body's clip, so without this a tall-and-thin
+                // slot would drop marker dots onto the open desktop.
+                if marker_x < self.rect.x0 {
                     continue;
                 }
                 let base = self.spoke_color(i);
@@ -1159,33 +1204,37 @@ impl Widget for SidebarWheelDisc {
                     marker_y + hit_half,
                 );
 
-                // The row's chip, where the rail is wide enough here for a
-                // name to be worth more than the marker alone.
+                // The row's chip. It runs from the rail's left edge to just
+                // short of its own marker, so the column is flush on the
+                // left and its right edge traces the rim — the rail bends
+                // with the wheel it belongs to.
+                //
+                // Sizing the chip to the name instead left a long bare
+                // leader line between a short name and its marker, which
+                // read as a rule ruled across the disc rather than as a
+                // tie between two things.
                 let row_h = if is_active { RAIL_ROW_H_ACTIVE } else { RAIL_ROW_H };
-                let max_right = marker_x - marker_r - RAIL_LEADER_GAP;
-                let avail = max_right - rail_x;
-                if marker_y <= cy + chip_band && avail >= RAIL_MIN_CHIP_W {
+                let chip = Rect::new(
+                    rail_x,
+                    marker_y - row_h / 2.0,
+                    marker_x - marker_r - RAIL_LEADER_GAP,
+                    marker_y + row_h / 2.0,
+                );
+                let clears_tail = chip.y0 > self.plus_rect.y1 + 8.0
+                    || chip.y1 < self.plus_rect.y0 - 8.0
+                    || chip.x0 > self.plus_rect.x1;
+                if chip.width() >= RAIL_MIN_CHIP_W && clears_tail {
+                    // The row brings its own surface. A chip's own fill is
+                    // a translucent veneer meant to sit on a themed panel,
+                    // and the rail's inner end is exactly where the body
+                    // has faded to nothing — so when the disc is summoned
+                    // over a bright app, the rows would be near-white text
+                    // on a near-white document. Seating each row on the
+                    // chrome's own popover surface makes the contrast a
+                    // property of the theme rather than of whatever the
+                    // wheel happens to be floating over.
+                    seat_row(scene, transform, chip, fade_a);
                     let lead = ChipLead::Glyph(icon);
-                    let natural =
-                        Chip::natural_width_at(&label, row_h, lead, theme, text_renderer);
-                    let chip = Rect::new(
-                        rail_x,
-                        marker_y - row_h / 2.0,
-                        rail_x + natural.min(avail),
-                        marker_y + row_h / 2.0,
-                    );
-                    // Leader: the row's own colour, so which dot a name
-                    // belongs to survives the curve between them.
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        dim(base, 0.5),
-                        None,
-                        &Line::new(
-                            Point::new(chip.x1 + 4.0, marker_y),
-                            Point::new(marker_x - marker_r - 4.0, marker_y),
-                        ),
-                    );
                     let style = if is_active {
                         ChipStyle::tinted(base)
                     } else {
@@ -1266,32 +1315,24 @@ impl Widget for SidebarWheelDisc {
         // row at the tail belongs without moving, and no workspace row
         // paints a chip in the band it occupies, so nothing ever collides
         // with it however far the wheel has been turned.
-        let plus_h = RAIL_ROW_H;
-        let plus_cy =
-            (cy + chip_band + RAIL_TAIL_BAND / 2.0).min(self.rect.y1 - plus_h / 2.0 - 6.0);
-        let plus_w = plus_h * 1.85;
-        self.plus_rect = Rect::new(
-            rail_x,
-            plus_cy - plus_h / 2.0,
-            rail_x + plus_w,
-            plus_cy + plus_h / 2.0,
-        );
         // A dashed stem down from the band the rows occupy, so the gap
         // between the last name and the tail still reads as one column
         // rather than as two unrelated things.
         let stem_x = rail_x + plus_w / 2.0;
-        if self.plus_rect.y0 - (cy + chip_band) > 2.0 {
+        let stem_top = cy + (half_h - RAIL_TAIL_BAND).max(0.0);
+        if self.plus_rect.y0 - stem_top > 2.0 {
             scene.stroke(
                 &Stroke::new(1.0).with_dashes(0.0, [3.0, 4.0]),
                 transform,
                 colors.text_tertiary.with_alpha_factor(0.5),
                 None,
                 &Line::new(
-                    Point::new(stem_x, cy + chip_band),
+                    Point::new(stem_x, stem_top),
                     Point::new(stem_x, self.plus_rect.y0),
                 ),
             );
         }
+        seat_row(scene, transform, self.plus_rect, 1.0);
         Chip::draw_at(
             scene,
             transform,
@@ -1854,6 +1895,100 @@ mod tests {
         d.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
+    /// The slot the live shell gives the disc: narrow, and much taller
+    /// than it is wide. The ratio is what decides how much rim is on
+    /// screen, so a test that cares about which rows are visible has to
+    /// use something close to it rather than the square-ish rect `mk`
+    /// pins for the pure-geometry tests.
+    fn live_slot() -> Rect {
+        Rect::new(0.0, 40.0, 234.0, 830.0)
+    }
+
+    /// A switcher exists to say what you would be switching TO. Neighbours
+    /// were unlabelled specks, so you could see that other workspaces
+    /// existed but not which ones — and the click target proves the row is
+    /// really there, because it is grown from the painted chip.
+    #[test]
+    fn visible_neighbours_carry_a_name_not_just_a_speck() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        layout_into_slot(&mut d, live_slot());
+        paint(&mut d);
+
+        // A bare marker's hit box is 28 px square; a row's spans the rail.
+        let bare_marker_w = 28.0;
+        let named: Vec<usize> = (0..d.spokes.len())
+            .filter(|i| {
+                *i != d.active_idx && d.spoke_hit_rects[*i].width() > bare_marker_w * 1.5
+            })
+            .collect();
+        assert!(
+            !named.is_empty(),
+            "no neighbour got a named row: hit rects {:?}",
+            d.spoke_hit_rects
+        );
+    }
+
+    /// The wheel is a ring, so the rail has to be balanced around the
+    /// workspace you are on. Offsetting by the raw index difference put
+    /// every other workspace on ONE side: with three workspaces and the
+    /// first one active, the whole upper arc was empty and the other two
+    /// stacked below it.
+    #[test]
+    fn the_rail_wraps_around_the_active_workspace() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        layout_into_slot(&mut d, live_slot());
+        paint(&mut d);
+
+        let cy = (d.rect.y0 + d.rect.y1) / 2.0;
+        let placed: Vec<Rect> = d
+            .spoke_hit_rects
+            .iter()
+            .copied()
+            .filter(|r| r.area() > 0.0)
+            .collect();
+        assert_eq!(placed.len(), 3, "all three workspaces are on screen");
+        assert!(
+            placed.iter().any(|r| r.center().y < cy - 1.0),
+            "a workspace has to sit above the active one: {placed:?}"
+        );
+        assert!(
+            placed.iter().any(|r| r.center().y > cy + 1.0),
+            "a workspace has to sit below the active one: {placed:?}"
+        );
+    }
+
+    /// The add-workspace row closes the rail, so nothing may ever land on
+    /// top of it — a marker crowding it is what drove the affordance off
+    /// the rim and then off the disc entirely. Sweeping the rotation
+    /// covers the positions rows pass through between detents, not just
+    /// the ones they rest at.
+    #[test]
+    fn the_add_row_is_never_covered_by_a_workspace_row() {
+        let mut d = mk(&["Home", "Research", "Design", "Marketing", "Analytics"]);
+        layout_into_slot(&mut d, live_slot());
+
+        for step in 0..72 {
+            d.rotation_deg = step as f32 * 5.0;
+            paint(&mut d);
+            assert!(
+                d.plus_rect.area() > 0.0,
+                "the tail row is placed at every rotation"
+            );
+            for (i, row) in d.spoke_hit_rects.iter().enumerate() {
+                if row.area() <= 0.0 {
+                    continue;
+                }
+                let hit = row.intersect(d.plus_rect);
+                assert!(
+                    hit.width() <= 0.0 || hit.height() <= 0.0,
+                    "workspace row {i} covers the add row at {}°: row {row:?} tail {:?}",
+                    d.rotation_deg,
+                    d.plus_rect
+                );
+            }
+        }
+    }
+
     /// Dragging the rim has to keep asking for frames. The rotation is
     /// mutated from inside a `CursorMoved`, and the host skips the
     /// repaint on a pointer move unless the tree reports dirty — so a
@@ -2399,33 +2534,33 @@ mod tests {
         let initial_active = tree.active;
         let chrome = ChromeState::new(tree);
 
-        // Manually populate the disc's geometry so we can hit-test without
-        // running a full draw pass (there's no wgpu in unit tests — the
-        // snapshot harness gates on an offscreen renderer). The new
-        // `draw` implementation sets `plus_rect` to a 28 px disc centred
-        // on the visible footprint's horizontal midpoint and 8 px below
-        // the bottom-most visible-arc tip; we synthesise the same rect
-        // here to decouple from the exact draw-time arithmetic.
+        // Lay out and paint for real, then click whatever the paint pass
+        // decided the add row's box is. Synthesising the rect here instead
+        // — which this test used to do, to "decouple from the draw-time
+        // arithmetic" — meant it went on passing while the production
+        // geometry moved underneath it, so it proved the press handler
+        // works and nothing at all about the affordance being reachable.
+        // `draw` needs no GPU: it encodes into a `Scene`.
         let mut d = SidebarWheelDisc::new(vec![SpokeLabel {
             text: "Home".into(),
             workspace_id: None,
         }])
         .with_chrome(chrome.clone());
-        let visible_w = d.visible_width_px();
-        d.rect = Rect::new(0.0, 0.0, visible_w, d.diameter_px);
-        let radius = d.diameter_px / 2.0;
-        let cy = d.diameter_px / 2.0;
-        let arc_half = (1.0 - VISIBLE_RADIUS_FRACTION).acos();
-        let slot_radius = 14.0_f64;
-        let slot_cx = (d.rect.x0 + d.rect.x1) / 2.0;
-        let slot_cy =
-            (cy + radius * arc_half.sin() + slot_radius + 8.0).min(d.rect.y1 - slot_radius - 4.0);
-        d.plus_rect = Rect::new(
-            slot_cx - slot_radius,
-            slot_cy - slot_radius,
-            slot_cx + slot_radius,
-            slot_cy + slot_radius,
+        layout_into_slot(&mut d, live_slot());
+        paint(&mut d);
+        assert!(
+            d.plus_rect.area() > 0.0,
+            "the paint pass must place the add row before it can be clicked"
         );
+        assert!(
+            d.rect.contains(d.plus_rect.center()),
+            "the add row must sit inside the disc's own footprint, not beside it: \
+             tail {:?} footprint {:?}",
+            d.plus_rect,
+            d.rect
+        );
+        let slot_cx = d.plus_rect.center().x;
+        let slot_cy = d.plus_rect.center().y;
 
         // Move the cursor to the slot's centre so `last_cursor_pos` picks
         // it up — the press handler consults that cache (not the event,
