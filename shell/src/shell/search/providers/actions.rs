@@ -21,6 +21,22 @@ use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchRe
 
 mod text_insert;
 
+/// What `record.bring` must be told. Named rather than written inline so
+/// it is one `&'static [ActionParam]` the catalogue can hand out, the
+/// same shape `text_insert::PARAMS` has.
+const RECORD_BRING_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "id",
+        ParamType::Text,
+        "The record's id — `file:<absolute path>`, `tab:<id>`, or a minted id.",
+    ),
+    ActionParam::optional(
+        "kind",
+        ParamType::Text,
+        "The record's type, in the owning app's vocabulary. Defaults to `document`.",
+    ),
+];
+
 /// One action row. `id` is the palette command id (`overview.toggle`,
 /// `settings.open`, …); `apply` performs the action when the user picks
 /// the row (or an agent invokes its address).
@@ -201,20 +217,7 @@ impl Action {
             id: "record.bring",
             label: "Bring a record into this room",
             subtitle: "Add a reference to this room's index. Moves no bytes.",
-            params: &[
-                ActionParam::required(
-                    "id",
-                    ParamType::Text,
-                    "The record's id — `file:<absolute path>`, `tab:<id>`, or a \
-                     minted id.",
-                ),
-                ActionParam::optional(
-                    "kind",
-                    ParamType::Text,
-                    "The record's type, in the owning app's vocabulary. Defaults \
-                     to `document`.",
-                ),
-            ],
+            params: RECORD_BRING_PARAMS,
             apply: |st, args| {
                 let id = args.text("id").unwrap_or_default();
                 if id.trim().is_empty() {
