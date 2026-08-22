@@ -12,6 +12,8 @@
 //!                   from clip metadata, or (behind the `decode` feature) a
 //!                   real decoded frame via `ui::VideoPlayer` / GStreamer.
 //!   * [`timecode`]— wall-clock ↔ frame conversions and formatting.
+//!   * [`gpu`]     — the wgpu compositor both the preview canvas and the
+//!                   export render through, so they cannot disagree.
 //!   * [`export`]  — export presets + the (GStreamer-gated) render pipeline.
 //!   * [`app`]     — the root [`app::VideoEditorApp`] widget: media bin,
 //!                   preview + transport, multi-track timeline, inspector,
@@ -24,6 +26,7 @@ pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod export;
+pub mod gpu;
 pub mod media;
 pub mod model;
 pub mod portal;
