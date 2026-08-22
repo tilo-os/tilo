@@ -1583,6 +1583,14 @@ pub struct WorkspaceTree {
     /// this build is allowed to touch the file at all.
     #[serde(default = "state_schema_version_of_a_file_without_one")]
     pub schema_version: u32,
+    /// Counts the rounds in which a peer's changes landed in this
+    /// tree. Bumped by [`Self::apply_room_changes`], read through
+    /// [`Self::room_epoch`]. `#[serde(skip)]`: it is a within-session
+    /// "has anything arrived since you last looked", so a value
+    /// restored from disk would be meaningless and, worse, could match
+    /// a live reader's cached one and suppress the first resync.
+    #[serde(skip)]
+    pub room_epoch: u64,
     pub workspaces: Vec<Workspace>,
     #[serde(default)]
     pub active: WorkspaceId,
@@ -1739,6 +1747,7 @@ impl Default for WorkspaceTree {
     fn default() -> Self {
         Self {
             schema_version: STATE_SCHEMA_VERSION,
+            room_epoch: 0,
             workspaces: Vec::new(),
             active: WorkspaceId::default(),
             active_strip: HashMap::new(),
@@ -3501,7 +3510,33 @@ impl WorkspaceTree {
             self.seed_doc_from_cache();
             self.flush_to_disk();
         }
-        Ok(changed || records_changed)
+        let landed = changed || records_changed;
+        if landed {
+            // Leave a mark the frame loop can see.
+            //
+            // A peer's window is in the tree at this point and reads
+            // back correctly, which is not the same as being on
+            // screen: the shell only splices its widget tree when the
+            // chrome revision moves, and nothing here can move it —
+            // this runs on the network thread, and the chrome is the
+            // frame thread's. Every sibling ingest bumps the revision
+            // from the frame loop after the fact; room contents had no
+            // equivalent, so a replicated window sat in the tree with
+            // no widget ever built for it. Counting arrivals here is
+            // what the frame loop compares against to know to bump.
+            self.room_epoch = self.room_epoch.wrapping_add(1);
+        }
+        Ok(landed)
+    }
+
+    /// How many times a peer's changes have landed in this tree.
+    ///
+    /// Monotonic per session and not persisted: it means "something
+    /// arrived since you last looked", which is only a question about
+    /// a running session. Read by the frame loop, which bumps the
+    /// chrome revision when it moves so the widget tree resyncs.
+    pub fn room_epoch(&self) -> u64 {
+        self.room_epoch
     }
 
     /// Seed the automerge doc from the cache. Idempotent: a second call
