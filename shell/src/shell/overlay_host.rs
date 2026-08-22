@@ -2796,13 +2796,23 @@ impl ShellOverlayHost {
         use crate::shell::launcher::LaunchEventKind;
         let mut posted = false;
         for event in events {
-            // An open that had to fetch the app first raised a notice
-            // saying so. Every one of these events settles that open —
-            // it started, or it did not — so the notice is retired by
-            // what actually happened rather than by its timer running
-            // out. `Exited` is not a settlement: by then the app has
-            // already started, and the notice is long gone.
-            if !matches!(event.kind, LaunchEventKind::Exited) {
+            // An open that had to load the app first raised a notice
+            // saying so, and it stands until the user can see how the
+            // open ended.
+            //
+            // Only a *failure* settles it here. `Started` does not: it
+            // means the launcher process forked, which is several
+            // seconds before the app has a window — retiring on it left
+            // exactly the silence the notice exists to prevent, with
+            // the user watching an empty desktop after the one piece of
+            // feedback had already gone. The success settlement is the
+            // window appearing, and that is
+            // [`Self::retire_notices_for_opened_windows`]. `Exited` is
+            // not a settlement either: by then the app has run.
+            if matches!(
+                event.kind,
+                LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. }
+            ) {
                 if let Some(notice) = crate::shell::catalogue::take_pending_notice(&event.package_id)
                 {
                     let mut st = chrome_handle.borrow_mut();
@@ -2842,6 +2852,65 @@ impl ShellOverlayHost {
             posted = true;
         }
         posted
+    }
+
+    /// Retire the "Opening …" notice of any app whose window has now
+    /// appeared.
+    ///
+    /// This is the success half of an open's settlement, and it is
+    /// deliberately keyed on the thing the user is actually waiting for.
+    /// A launch reports `Started` when the launcher forks, which on a
+    /// cold open is seconds before there is anything on screen; settling
+    /// on that put the desktop back to silence while the user was still
+    /// waiting. A tab holding the app's surface is the first moment the
+    /// answer is visible, so that is the moment the standing indication
+    /// has done its job.
+    ///
+    /// Returns whether anything was retired, so the caller can mark the
+    /// frame dirty.
+    pub(crate) fn retire_notices_for_opened_windows(&mut self) -> bool {
+        let pending = crate::shell::catalogue::pending_notices();
+        if pending.is_empty() {
+            return false;
+        }
+        let Some(chrome_handle) = self.chrome.clone() else {
+            return false;
+        };
+        let open_app_ids: Vec<String> = {
+            let st = chrome_handle.borrow();
+            st.tree()
+                .workspaces
+                .iter()
+                .flat_map(|w| w.strips.iter())
+                .flat_map(|s| s.window_groups.iter())
+                .flat_map(|g| g.tabs.iter())
+                .filter_map(|t| match &t.tile {
+                    crate::shell::state::TileContent::Foreign { app_id, .. } => {
+                        Some(app_id.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        if open_app_ids.is_empty() {
+            return false;
+        }
+        let mut retired = false;
+        for (package_id, notice) in pending {
+            let showing = open_app_ids
+                .iter()
+                .any(|id| crate::shell::launcher::app_id_matches_package(id, &package_id));
+            if !showing {
+                continue;
+            }
+            if crate::shell::catalogue::take_pending_notice(&package_id).is_some() {
+                let mut st = chrome_handle.borrow_mut();
+                st.dismiss_notification(notice);
+                st.bump();
+                retired = true;
+            }
+        }
+        retired
     }
 
     pub fn pump_permission_prompt(&mut self) {
@@ -4706,7 +4775,7 @@ impl Widget for ShellOverlayHost {
         // here is what turns "the sandbox refused to start" into
         // something the user can see; the frame thread only ever takes
         // a mutex and moves a Vec out.
-        let launch_dirty = self.drain_launch_events();
+        let launch_dirty = self.drain_launch_events() | self.retire_notices_for_opened_windows();
         // Notification lifecycle: drop expired toasts so the stack
         // shrinks even on frames where the user does nothing. The
         // widget's own `update` also drives this, but routing it
