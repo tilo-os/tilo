@@ -16,6 +16,9 @@
 //! rules, expressed for sound. A track that is muted contributes nothing; a
 //! soloed track silences its unsoloed siblings.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
 use crate::model::{ClipId, MediaId, Project, TrackKind};
 
 /// Everything mixes at one rate, so summing never has to resample.
@@ -318,6 +321,238 @@ fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
     (!out.is_empty()).then_some(out)
 }
 
+
+// ---------------------------------------------------------------------------
+// Monitoring — hearing the timeline while it plays.
+// ---------------------------------------------------------------------------
+
+/// How much audio the monitor mixes per step. Small enough that a pause or a
+/// scrub is acted on promptly, large enough that the mixing thread is not
+/// waking thousands of times a second.
+pub const MONITOR_BLOCK: usize = 1024;
+
+/// Where monitored audio goes. Abstracted so the transport logic — what plays,
+/// from where, and what happens on a seek — is testable without an audio
+/// device, which no CI box has.
+pub trait MonitorSink: Send {
+    /// Push one block of interleaved `f32`. Returning `false` stops the
+    /// monitor (the device went away).
+    fn push(&mut self, block: &[f32]) -> bool;
+}
+
+/// A sink that throws audio away. What the editor uses when the machine has
+/// no audio output — playback still runs, it is simply silent, which beats
+/// refusing to play.
+pub struct NullSink;
+
+impl MonitorSink for NullSink {
+    fn push(&mut self, _block: &[f32]) -> bool {
+        true
+    }
+}
+
+/// What the monitor thread reads and the UI writes.
+struct MonitorState {
+    project: Mutex<Project>,
+    /// Where the next block is mixed from, in timeline seconds.
+    position: Mutex<f64>,
+    playing: AtomicBool,
+    stop: AtomicBool,
+}
+
+/// Plays the mixed timeline while the transport runs.
+///
+/// The editor used to advance a UI clock and nothing else — there was no
+/// audio output at all, so `Clip::volume` and `Track::muted` were settings
+/// with nothing on the other end of them.
+///
+/// Monitoring here is deliberate rather than incidental: one pipeline that
+/// runs only while the transport is playing. The preview's per-frame
+/// seek-play-pause pattern used to fire the real audio sink for a few
+/// milliseconds every frame, which is audible as a stutter — a monitor must
+/// never be built out of that.
+pub struct AudioMonitor {
+    shared: Arc<MonitorState>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl AudioMonitor {
+    /// Start a monitor feeding `sink`, initially paused.
+    ///
+    /// `source` supplies the samples; it lives on the monitor thread, so a
+    /// decode it does cannot stall the UI.
+    pub fn new(
+        project: &Project,
+        mut sink: Box<dyn MonitorSink>,
+        mut source: Box<dyn PcmSource + Send>,
+    ) -> Self {
+        let shared = Arc::new(MonitorState {
+            project: Mutex::new(project.clone()),
+            position: Mutex::new(0.0),
+            playing: AtomicBool::new(false),
+            stop: AtomicBool::new(false),
+        });
+        let state = shared.clone();
+        let handle = std::thread::Builder::new()
+            .name("video-editor-monitor".into())
+            .spawn(move || {
+                let block_secs = MONITOR_BLOCK as f64 / SAMPLE_RATE as f64;
+                while !state.stop.load(Ordering::Relaxed) {
+                    if !state.playing.load(Ordering::Relaxed) {
+                        // Idle cheaply. Nothing is pushed while paused, so a
+                        // paused editor makes no sound at all.
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    let at = *state.position.lock().unwrap();
+                    let block = {
+                        let project = state.project.lock().unwrap();
+                        mix_block(&project, at, MONITOR_BLOCK, source.as_mut())
+                    };
+                    if !sink.push(&block) {
+                        break;
+                    }
+                    // Advance by exactly what was mixed, so the audio clock
+                    // is the sample count rather than wall time and cannot
+                    // drift away from the picture.
+                    *state.position.lock().unwrap() = at + block_secs;
+                }
+            })
+            .ok();
+        Self { shared, handle }
+    }
+
+    /// Replace the timeline being monitored. Call it when the project changes
+    /// so an edit is heard on the next block rather than the next play.
+    pub fn set_project(&self, project: &Project) {
+        if let Ok(mut p) = self.shared.project.lock() {
+            *p = project.clone();
+        }
+    }
+
+    /// Start playing from `secs`.
+    pub fn play(&self, secs: f64) {
+        self.seek(secs);
+        self.shared.playing.store(true, Ordering::Relaxed);
+    }
+
+    /// Stop playing, leaving the position where it is.
+    pub fn pause(&self) {
+        self.shared.playing.store(false, Ordering::Relaxed);
+    }
+
+    /// Move the playhead. Safe while playing — the next block comes from the
+    /// new position.
+    pub fn seek(&self, secs: f64) {
+        if let Ok(mut p) = self.shared.position.lock() {
+            *p = secs.max(0.0);
+        }
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.shared.playing.load(Ordering::Relaxed)
+    }
+
+    /// Where the monitor has mixed up to, in timeline seconds.
+    pub fn position(&self) -> f64 {
+        self.shared.position.lock().map(|p| *p).unwrap_or(0.0)
+    }
+}
+
+impl Drop for AudioMonitor {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::Relaxed);
+        self.shared.playing.store(false, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// A [`MonitorSink`] that plays through the system's audio output.
+///
+/// `autoaudiosink` picks whatever the host offers (PipeWire here). A machine
+/// with no output at all yields `None`, and the editor falls back to
+/// [`NullSink`] — silent playback rather than no playback.
+#[cfg(feature = "gst")]
+pub struct SystemSink {
+    pipeline: media::gst::Pipeline,
+    src: gstreamer_app::AppSrc,
+    pushed: u64,
+}
+
+#[cfg(feature = "gst")]
+impl SystemSink {
+    pub fn open() -> Option<Self> {
+        use media::gst;
+        use media::gst::prelude::*;
+
+        gst::init().ok()?;
+        let pipeline = gst::Pipeline::new();
+        let src = gstreamer_app::AppSrc::builder()
+            .caps(
+                &gst::Caps::builder("audio/x-raw")
+                    .field("format", "F32LE")
+                    .field("channels", CHANNELS as i32)
+                    .field("rate", SAMPLE_RATE as i32)
+                    .field("layout", "interleaved")
+                    .build(),
+            )
+            // The sink's own clock paces playback; the monitor pushes ahead
+            // of it and blocks when the queue is full, which is what keeps
+            // the mixing thread in step without a timer of its own.
+            .is_live(true)
+            .format(gst::Format::Time)
+            .build();
+        src.set_property("block", true);
+        let convert = gst::ElementFactory::make("audioconvert").build().ok()?;
+        let resample = gst::ElementFactory::make("audioresample").build().ok()?;
+        let out = gst::ElementFactory::make("autoaudiosink").build().ok()?;
+        pipeline
+            .add_many([src.upcast_ref(), &convert, &resample, &out])
+            .ok()?;
+        gst::Element::link_many([src.upcast_ref(), &convert, &resample, &out]).ok()?;
+        pipeline.set_state(gst::State::Playing).ok()?;
+        Some(Self { pipeline, src, pushed: 0 })
+    }
+}
+
+#[cfg(feature = "gst")]
+impl MonitorSink for SystemSink {
+    fn push(&mut self, block: &[f32]) -> bool {
+        use media::gst;
+        use media::gst::prelude::*;
+
+        let mut bytes = Vec::with_capacity(block.len() * 4);
+        for s in block {
+            bytes.extend_from_slice(&s.to_le_bytes());
+        }
+        let Ok(mut buffer) = gst::Buffer::with_size(bytes.len()) else {
+            return false;
+        };
+        {
+            let Some(bref) = buffer.get_mut() else { return false };
+            let frames = (block.len() / CHANNELS) as u64;
+            let ns = |f: u64| f * 1_000_000_000 / SAMPLE_RATE as u64;
+            bref.set_pts(gst::ClockTime::from_nseconds(ns(self.pushed)));
+            bref.set_duration(gst::ClockTime::from_nseconds(ns(frames)));
+            let Ok(mut map) = bref.map_writable() else { return false };
+            map.copy_from_slice(&bytes);
+            self.pushed += frames;
+        }
+        self.src.push_buffer(buffer).is_ok()
+    }
+}
+
+#[cfg(feature = "gst")]
+impl Drop for SystemSink {
+    fn drop(&mut self) {
+        use media::gst;
+        use media::gst::prelude::*;
+        let _ = self.pipeline.set_state(gst::State::Null);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,6 +614,198 @@ mod tests {
 
     fn constant(pairs: &[(MediaId, f32)]) -> Constant {
         Constant(pairs.iter().copied().collect())
+    }
+
+
+    // --- monitoring -------------------------------------------------------
+
+    /// Records what the monitor pushed, so the transport can be asserted on
+    /// without an audio device.
+    #[derive(Clone, Default)]
+    struct Recorder(Arc<Mutex<Vec<f32>>>);
+
+    impl MonitorSink for Recorder {
+        fn push(&mut self, block: &[f32]) -> bool {
+            self.0.lock().unwrap().extend_from_slice(block);
+            true
+        }
+    }
+
+    /// Waits for `cond`, or gives up. Polling beats a fixed sleep: the
+    /// monitor runs on its own thread and the box is shared.
+    fn eventually(mut cond: impl FnMut() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if cond() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
+    }
+
+    #[test]
+    fn a_paused_monitor_makes_no_sound_and_playing_starts_it() {
+        let (p, _, _, _) = project_with_audio();
+        let (m1, m2) = (p.media[0].id, p.media[1].id);
+        let rec = Recorder::default();
+        let tap = rec.0.clone();
+        let monitor = AudioMonitor::new(
+            &p,
+            Box::new(rec),
+            Box::new(constant(&[(m1, 0.3), (m2, 0.0)])),
+        );
+
+        assert!(!monitor.is_playing());
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        assert!(
+            tap.lock().unwrap().is_empty(),
+            "a paused editor pushes nothing at all — this is the stutter that comes \
+             from firing the sink when the transport is not running",
+        );
+
+        monitor.play(1.0);
+        assert!(
+            eventually(|| !tap.lock().unwrap().is_empty()),
+            "playing starts feeding the sink",
+        );
+        assert!(
+            eventually(|| tap.lock().unwrap().iter().any(|s| (*s - 0.3).abs() < 1e-6)),
+            "and what it feeds is the mixed timeline",
+        );
+
+        monitor.pause();
+        // Let any block already in flight land, then prove it has stopped.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let settled = tap.lock().unwrap().len();
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        assert_eq!(
+            tap.lock().unwrap().len(),
+            settled,
+            "pausing stops the monitor rather than letting it run on",
+        );
+    }
+
+    #[test]
+    fn the_monitor_advances_by_what_it_mixed() {
+        // The audio clock is the sample count, not wall time, so it cannot
+        // drift away from the picture.
+        let (p, _, _, _) = project_with_audio();
+        let (m1, m2) = (p.media[0].id, p.media[1].id);
+        let monitor = AudioMonitor::new(
+            &p,
+            Box::new(Recorder::default()),
+            Box::new(constant(&[(m1, 0.1), (m2, 0.1)])),
+        );
+        monitor.play(2.0);
+        let block_secs = MONITOR_BLOCK as f64 / SAMPLE_RATE as f64;
+        assert!(
+            eventually(|| monitor.position() >= 2.0 + block_secs * 3.0),
+            "the position advances as blocks are mixed, got {}",
+            monitor.position(),
+        );
+        monitor.pause();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        let held = monitor.position();
+        // A whole number of blocks past where it started.
+        let blocks = (held - 2.0) / block_secs;
+        assert!(
+            (blocks - blocks.round()).abs() < 1e-6,
+            "the position is an exact number of mixed blocks past the start: {blocks}",
+        );
+    }
+
+    #[test]
+    fn seeking_moves_what_is_heard_next() {
+        let (mut p, _, _, _) = project_with_audio();
+        // A clip only in the second half of the timeline, so where the
+        // monitor is reading from is audible in what it pushes.
+        let c2 = p.clips[1].id;
+        {
+            let c = p.clip_mut(c2).unwrap();
+            c.start = 20.0;
+            c.out_point = 10.0;
+        }
+        let (m1, m2) = (p.media[0].id, p.media[1].id);
+        let rec = Recorder::default();
+        let tap = rec.0.clone();
+        let monitor = AudioMonitor::new(
+            &p,
+            Box::new(rec),
+            Box::new(constant(&[(m1, 0.2), (m2, 0.9)])),
+        );
+
+        monitor.play(1.0);
+        assert!(eventually(|| !tap.lock().unwrap().is_empty()));
+        assert!(
+            tap.lock().unwrap().iter().all(|s| *s < 0.5),
+            "before the second clip, only the first is heard",
+        );
+
+        tap.lock().unwrap().clear();
+        monitor.seek(21.0);
+        assert!(
+            eventually(|| tap.lock().unwrap().iter().any(|s| *s > 0.5)),
+            "after seeking into the second clip, it is what plays",
+        );
+        monitor.pause();
+    }
+
+    #[test]
+    fn an_edit_is_heard_without_restarting_playback() {
+        let (p, _, _, _) = project_with_audio();
+        let (m1, m2) = (p.media[0].id, p.media[1].id);
+        let rec = Recorder::default();
+        let tap = rec.0.clone();
+        let monitor = AudioMonitor::new(
+            &p,
+            Box::new(rec),
+            Box::new(constant(&[(m1, 0.4), (m2, 0.0)])),
+        );
+        monitor.play(1.0);
+        assert!(eventually(|| tap.lock().unwrap().iter().any(|s| *s > 0.3)));
+
+        // Mute the track mid-playback: the very setting that reached no
+        // audio path before.
+        let mut muted = p.clone();
+        muted.tracks[0].muted = true;
+        muted.tracks[1].muted = true;
+        monitor.set_project(&muted);
+        tap.lock().unwrap().clear();
+        assert!(
+            eventually(|| {
+                let got = tap.lock().unwrap();
+                !got.is_empty() && got.iter().all(|s| *s == 0.0)
+            }),
+            "muting is heard on the next block, without stopping playback",
+        );
+        assert!(monitor.is_playing(), "and playback is still running");
+        monitor.pause();
+    }
+
+    #[test]
+    fn dropping_the_monitor_stops_its_thread() {
+        let (p, _, _, _) = project_with_audio();
+        let (m1, m2) = (p.media[0].id, p.media[1].id);
+        let rec = Recorder::default();
+        let tap = rec.0.clone();
+        {
+            let monitor = AudioMonitor::new(
+                &p,
+                Box::new(rec),
+                Box::new(constant(&[(m1, 0.5), (m2, 0.0)])),
+            );
+            monitor.play(1.0);
+            assert!(eventually(|| !tap.lock().unwrap().is_empty()));
+        }
+        // The drop joins the thread, so nothing can arrive after it returns.
+        let after = tap.lock().unwrap().len();
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        assert_eq!(
+            tap.lock().unwrap().len(),
+            after,
+            "a dropped monitor leaves no thread still feeding a sink",
+        );
     }
 
     #[test]
