@@ -8,7 +8,7 @@ use qos_agent::{Config, Session};
 
 /// A participant without a window: joins a word-processor document through
 /// the session's collaboration broker and carries out instructions written
-/// to it ("Scribe: turn the bullets into a table").
+/// to it ("Claude: turn the bullets into a table").
 #[derive(Parser, Debug)]
 #[command(name = "qos-agent")]
 struct Cli {
@@ -25,7 +25,7 @@ struct Cli {
     app: String,
     /// The agent's name: its caret pill, its history author, and the word
     /// an instruction starts with.
-    #[arg(long, default_value = "Scribe")]
+    #[arg(long, default_value = "Claude")]
     name: String,
     /// The broker socket. Defaults to the session's `collab-json.sock`
     /// (or `$QUICK_COLLAB_SOCK`).
@@ -44,7 +44,7 @@ struct Cli {
     /// How long a model may take to choose before the keyword vocabulary
     /// decides instead. Short on purpose: an instruction must never wait on
     /// the network.
-    #[arg(long, default_value_t = 6000)]
+    #[arg(long, default_value_t = 9000)]
     model_timeout_ms: u64,
 }
 
