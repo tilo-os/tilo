@@ -13,8 +13,8 @@ use capnp::capability::Promise;
 use futures::FutureExt;
 
 use runtime_collab::raw::{
-    channel_handle, collab_service, context_stream, cursor_stream, presence_event, presence_handle,
-    presence_payload, presence_stream, scrollback_batch, stream,
+    OpKind, channel_handle, collab_service, context_stream, cursor_stream, presence_event,
+    presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
 };
 
 use crate::translate::{hello_from_join, presence_request};
@@ -319,6 +319,14 @@ impl stream::Server for BridgeOpStream {
             let mut r = results.get();
             r.set_op(&ev.op_bytes);
             r.set_from_user_id(&ev.from_user_id);
+            // Say which of the three frame kinds these bytes are; a
+            // reader cannot tell from the bytes, and guessing costs
+            // it every unsigned frame.
+            r.set_kind(match ev.kind {
+                crate::upstream::OpKind::Signed => OpKind::Signed,
+                crate::upstream::OpKind::UnsignedIncremental => OpKind::UnsignedIncremental,
+                crate::upstream::OpKind::UnsignedSnapshot => OpKind::UnsignedSnapshot,
+            });
             Ok(())
         })
     }

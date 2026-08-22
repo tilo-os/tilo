@@ -138,11 +138,31 @@ pub enum PresenceEnvelope {
     },
 }
 
-/// Envelope for a signed CRDT op delivered on the op stream.
+/// What an [`OpEnvelope`]'s bytes are.
+///
+/// The op stream carries three kinds of frame and they are not
+/// interchangeable — a delta is applied incrementally, a whole
+/// document is merged, a signed envelope is decoded before either.
+/// Mirrors the wire's `OpKind`; see `schema/collab.capnp`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OpKind {
+    /// A postcard-encoded `SignedOp`.
+    #[default]
+    Signed,
+    /// A raw Automerge change delta.
+    UnsignedIncremental,
+    /// A whole Automerge document, for a peer with no history.
+    UnsignedSnapshot,
+}
+
+/// Envelope for a CRDT op delivered on the op stream.
 #[derive(Debug, Clone)]
 pub struct OpEnvelope {
     pub op_bytes: Vec<u8>,
     pub from_user_id: String,
+    /// What `op_bytes` are. A reader that ignores this and assumes
+    /// a signed envelope drops every unsigned frame silently.
+    pub kind: OpKind,
 }
 
 /// Full roster / context snapshot delivered by the upstream broker.
@@ -270,24 +290,33 @@ pub async fn connect(path: PathBuf) -> std::io::Result<UpstreamHandle> {
                             continue;
                         }
                     };
-                    let _ = op_tx.send(OpEnvelope { op_bytes, from_user_id });
+                    let _ = op_tx.send(OpEnvelope {
+                        op_bytes,
+                        from_user_id,
+                        kind: OpKind::Signed,
+                    });
                 }
                 CollabEvent::CRDTIncremental { data } => {
-                    // Legacy unsigned frames still ride the op
-                    // stream so an SDK app that hasn't migrated to
-                    // signed ops keeps seeing peer changes. The
-                    // `from_user_id` is unknown at this hop; the
-                    // shell broker didn't tag it, so we ship the
-                    // conventional empty attribution.
+                    // Unsigned frames ride the op stream so an SDK app
+                    // that hasn't migrated to signed ops keeps seeing
+                    // peer changes — tagged, so the reader applies a
+                    // delta as a delta. The `from_user_id` is unknown
+                    // at this hop; the shell broker didn't tag it, so
+                    // we ship the conventional empty attribution.
                     let _ = op_tx.send(OpEnvelope {
                         op_bytes: data,
                         from_user_id: String::new(),
+                        kind: OpKind::UnsignedIncremental,
                     });
                 }
                 CollabEvent::CRDTUpdate { data } => {
+                    // A whole document, not a delta. Merging it is the
+                    // only way a late arrival adopts what is already
+                    // there, and applying it as a delta does nothing.
                     let _ = op_tx.send(OpEnvelope {
                         op_bytes: data,
                         from_user_id: String::new(),
+                        kind: OpKind::UnsignedSnapshot,
                     });
                 }
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {

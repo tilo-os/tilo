@@ -484,6 +484,14 @@ pub struct ChromeState {
     /// carried out. Written by the palette's action rows, drained once
     /// per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
+    /// Records an exported action asked to be brought into the room the
+    /// user is in, as `(record id, record kind)`.
+    ///
+    /// Queued rather than performed for the same reason the peer-sync
+    /// requests above are: the room's index lives on the overlay host,
+    /// which the chrome cannot reach from inside an action's `apply`.
+    /// The frame pump drains this where it holds both.
+    record_requests: Vec<(String, String)>,
     /// Where the active strip's window groups sit, and which part of
     /// that the displays are showing, as of the last layout pass.
     ///
@@ -555,6 +563,7 @@ impl ChromeState {
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
             wheel_summon: None,
+            record_requests: Vec::new(),
             strip_viewport: None,
             records: RecordStore::in_memory(),
         }))
@@ -601,6 +610,19 @@ impl ChromeState {
         &mut self,
     ) -> Vec<crate::shell::overlay_host::PeerSyncAction> {
         std::mem::take(&mut self.peer_sync_requests)
+    }
+
+    /// Ask for a record to be brought into the room the user is in.
+    ///
+    /// The same effect as activating that record's row in search — a
+    /// reference is added to this room's index, and no bytes move.
+    pub fn push_record_request(&mut self, id: impl Into<String>, kind: impl Into<String>) {
+        self.record_requests.push((id.into(), kind.into()));
+    }
+
+    /// Take everything queued since the last call.
+    pub fn take_record_requests(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.record_requests)
     }
 
     /// The window group currently promoted to full-output (a surface that

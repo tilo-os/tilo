@@ -874,9 +874,10 @@ pub fn axis_values(delta: MouseScrollDelta) -> ((f64, f64), Option<(i32, i32)>) 
 }
 
 /// Whether the shell chrome is currently claiming all input: an overlay or
-/// the command palette is open, the workspace-name editor has a buffer in
-/// flight, or a permission prompt is pending. In any of those states a
-/// client must neither receive keys nor hold pointer focus.
+/// the command palette is open, the peer-sync card is up, the
+/// workspace-name editor has a buffer in flight, or a permission prompt is
+/// pending. In any of those states a client must neither receive keys nor
+/// hold pointer focus.
 pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().palette_visible() {
         return true;
@@ -887,6 +888,18 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
         || chrome.overlays.ws_settings
         || chrome.overlays.collaborators
         || chrome.overlays.room_activity
+        // The peer-sync card, on the same two fields the overlay host
+        // paints it from. Its handler runs before every other overlay
+        // and its doc comment says every key belongs to it while it is
+        // up — but that only holds for events that reach the overlay
+        // host at all, and this predicate is what decides whether they
+        // do. Without it a card raised over a focused client sent its
+        // Escape to the client instead, so the card could not be
+        // dismissed: it sat over the middle of the screen for the rest
+        // of the session with a live invite token legible on it, and
+        // every later window opened behind it.
+        || chrome.peer_sync_invite_token.is_some()
+        || chrome.peer_sync_connect_input.is_some()
         || chrome.editing_workspace_name.is_some()
         || !chrome.pending_grants.is_empty()
 }
@@ -2472,6 +2485,50 @@ mod tests {
     /// group whose *tile* rect is laid out, hit-testable, and translates
     /// a global cursor into surface-local coordinates. Runs against the
     /// real `FrameBuilder` (the same one the compositor paints with), so
+    /// The peer-sync card must take the keyboard away from a focused
+    /// client, or it cannot be dismissed.
+    ///
+    /// Its handler runs before every other overlay and claims that while
+    /// it is up every key belongs to it — but a key only reaches the
+    /// overlay host when this predicate says the chrome has taken input.
+    /// It did not name the card, so a card raised over a focused client
+    /// delivered its Escape to the client: the card stayed on screen for
+    /// the rest of the session, showing a live invite token, with every
+    /// window that opened afterwards drawn behind it.
+    ///
+    /// Asserted on `chrome_captures_input` itself — the function the
+    /// delivery path actually consults — for both fields the card is
+    /// painted from, since the connect prompt sets the other one.
+    #[test]
+    fn the_peer_sync_card_takes_input_from_a_focused_client() {
+        for field in ["invite_token", "connect_input"] {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            assert!(
+                !chrome_captures_input(&fb),
+                "nothing is up yet, so a client should still own the keyboard"
+            );
+
+            fb.with_chrome(|chrome| {
+                match field {
+                    "invite_token" => {
+                        chrome.peer_sync_invite_token = Some("a-signed-blob".into())
+                    }
+                    _ => chrome.peer_sync_connect_input = Some(String::new()),
+                }
+                chrome.bump();
+            });
+            let _ = fb.paint_settled();
+
+            assert!(
+                chrome_captures_input(&fb),
+                "with peer_sync_{field} set the card is painted, so the chrome \
+                 must hold the keyboard — otherwise Escape goes to the client \
+                 and the card can never be dismissed"
+            );
+        }
+    }
+
     /// a regression in the tree→widget resync or in
     /// `ShellOverlayHost::active_tile_rect` fails here.
     #[test]

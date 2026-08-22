@@ -107,11 +107,33 @@ fn chrome_action_verb(id: &str) -> Option<Verb> {
         | "collaborators.open"
         | "room.activity.open" => None,
 
-        // Membership: admitting a peer, or joining someone else's room.
-        "peer.invite" | "peer.connect" => Some(Verb::Invite),
+        // Membership: admitting a peer, joining someone else's room, or
+        // admitting an agent. The third is the same act as the first —
+        // it decides who is in this room — so it is gated on the same
+        // verb. That an agent is not a person changes what the row
+        // writes, not who is allowed to write it.
+        "peer.invite" | "peer.invite.named" | "peer.connect" | "agent.invite" => {
+            Some(Verb::Invite)
+        }
 
         // Acts on the room's contents.
         "tab.new.terminal.here" | "window.new.terminal" | "tab.duplicate" => Some(Verb::Write),
+
+        // Bringing a record into the room changes what the room holds,
+        // and what a room holds is what its members can reach — so this
+        // is `Write` for the same reason spawning a tab is, and it is
+        // classified here rather than left to the fail-closed default so
+        // the choice is a choice. Note the asymmetry the rest of this
+        // module states: *seeing* which records a room holds is showing
+        // and is never gated; putting one there is an act.
+        "record.bring" => Some(Verb::Write),
+
+        // Writing into a document is the plainest case of the rule this
+        // module states: reading the note is showing and is free, and
+        // changing what it says is an act. It is `Write` on the shell's
+        // own action namespace for the same reason spawning a tab is —
+        // the actor is editing the room's contents.
+        "text.insert" => Some(Verb::Write),
 
         // Changes a session-wide setting.
         "notifications.dnd.toggle" => Some(Verb::Write),
@@ -215,11 +237,77 @@ mod tests {
             assert_eq!(verb, Verb::Write, "{id}");
         }
 
-        for id in ["peer.invite", "peer.connect"] {
+        for id in ["peer.invite", "peer.invite.named", "peer.connect", "agent.invite"] {
             let (_, verb) = required_capability(&resource("actions", id), &ResourceKind::Action)
                 .unwrap_or_else(|| panic!("{id} must be gated"));
             assert_eq!(verb, Verb::Invite, "{id}");
         }
+    }
+
+    /// Editing a document is an act, so it is gated — and gated on
+    /// `Write`, the same verb spawning a tab needs. The rule this module
+    /// states does not bend for the fact that a document looks like
+    /// content: *reading* it is showing, *changing* it is acting.
+    #[test]
+    fn writing_into_a_document_requires_write() {
+        let (cap, verb) = required_capability(
+            &resource("actions", "text.insert"),
+            &ResourceKind::Action,
+        )
+        .expect("writing into a document must be gated");
+        assert_eq!(verb, Verb::Write);
+        assert_eq!(
+            cap,
+            CapResource::Action {
+                app: SHELL_APP_ID.to_string(),
+                action: "text.insert".to_string(),
+            }
+        );
+    }
+
+    /// …and the gate actually hides it from someone holding nothing,
+    /// while still showing them the document itself. Asserted against a
+    /// real `Workspace`, because this is the property `actions_invoke`
+    /// relies on to refuse an unauthorised edit: a hidden action is
+    /// absent from the catalogue, so `select` finds nothing and the
+    /// invocation is refused rather than performed.
+    #[test]
+    fn an_unauthorised_caller_cannot_see_the_document_edit() {
+        let owner: UserId = "owner".to_string();
+        let stranger: UserId = "stranger".to_string();
+        let mut ws = Workspace::new(WorkspaceId::new(), "edit-gate");
+        ws.owner = Some(owner.clone());
+
+        let edit = resource("actions", "text.insert");
+        let note = resource("notes", "15");
+
+        let stranger_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));
+        assert!(
+            !stranger_view.can_see(&edit, &ResourceKind::Action),
+            "someone holding no capability must not be offered the edit"
+        );
+        assert!(
+            stranger_view.can_see(&note, &ResourceKind::Note),
+            "…but the document itself stays visible: showing is free"
+        );
+
+        let owner_view = CapabilityVisibility::new(&ws, ws.actor_for_person(&owner));
+        assert!(
+            owner_view.can_see(&edit, &ResourceKind::Action),
+            "the room's owner may edit its documents"
+        );
+
+        // A grant makes exactly that act appear.
+        let _ = ws.grant_capability(CapOverride::grant(
+            Subject::Principal(Principal::Person(stranger.clone())),
+            Scope::Workspace,
+            Verb::Write,
+        ));
+        let granted = CapabilityVisibility::new(&ws, ws.actor_for_person(&stranger));
+        assert!(
+            granted.can_see(&edit, &ResourceKind::Action),
+            "granting Write must make the edit reachable"
+        );
     }
 
     /// An action nobody classified must not be reachable by a caller who
