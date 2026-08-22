@@ -319,6 +319,14 @@ impl stream::Server for BridgeOpStream {
             let mut r = results.get();
             r.set_op(&ev.op_bytes);
             r.set_from_user_id(&ev.from_user_id);
+            // Say which of the three frame kinds these bytes are; a
+            // reader cannot tell from the bytes, and guessing costs
+            // it every unsigned frame.
+            r.set_kind(match ev.kind {
+                crate::upstream::OpKind::Signed => OpKind::Signed,
+                crate::upstream::OpKind::UnsignedIncremental => OpKind::UnsignedIncremental,
+                crate::upstream::OpKind::UnsignedSnapshot => OpKind::UnsignedSnapshot,
+            });
             Ok(())
         })
     }
