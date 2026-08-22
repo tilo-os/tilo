@@ -130,6 +130,229 @@ impl Chip {
     }
 }
 
+/// What sits in a chip's leading slot when it is painted immediately by
+/// [`Chip::draw_at`].
+#[derive(Clone, Copy, Debug, Default)]
+pub enum ChipLead {
+    /// Label only.
+    #[default]
+    None,
+    /// A colour-coded dot — the same affordance [`Chip::with_dot`] paints.
+    Dot(Color),
+    /// A stroked glyph, for chips that name an action rather than a value.
+    Glyph(Icon),
+}
+
+/// Paint-time variant of an immediate-mode chip. Mirrors the states the
+/// [`Chip`] widget itself has — quiet by default, tinted when it is the
+/// selected one of a set — plus a `ghost` slot-shape for "there could be
+/// another one here" affordances.
+#[derive(Clone, Copy, Debug)]
+pub struct ChipStyle {
+    /// Accent for this chip. `Some` paints the selected treatment (tinted
+    /// fill, tinted border, tinted label); `None` the quiet one.
+    pub tint: Option<Color>,
+    /// Dashed border and dimmed label — an empty slot, not a value.
+    pub ghost: bool,
+    /// Multiplies every painted alpha. Lets a caller fade a whole chip
+    /// without recolouring it stop by stop.
+    pub alpha: f32,
+}
+
+impl Default for ChipStyle {
+    fn default() -> Self {
+        Self { tint: None, ghost: false, alpha: 1.0 }
+    }
+}
+
+impl ChipStyle {
+    /// Quiet chip — theme surface, standard border, primary label.
+    pub fn quiet() -> Self {
+        Self::default()
+    }
+
+    /// Selected chip — `tint` carries the fill, border and label colour.
+    pub fn tinted(tint: Color) -> Self {
+        Self { tint: Some(tint), ..Self::default() }
+    }
+
+    /// Empty-slot chip — dashed border, dimmed contents.
+    pub fn ghost() -> Self {
+        Self { ghost: true, ..Self::default() }
+    }
+
+    /// Fade the whole chip by `alpha` (clamped to `0.0..=1.0`).
+    pub fn with_alpha(mut self, alpha: f32) -> Self {
+        self.alpha = alpha.clamp(0.0, 1.0);
+        self
+    }
+}
+
+impl Chip {
+    /// Text size a chip of `height` px paints its label at. The widget's
+    /// own [`HEIGHT`] maps to `typography.scale.sm`, and anything taller or
+    /// shorter scales with it, so a caller that wants a bigger pill gets
+    /// proportionally bigger type instead of a lonely small label floating
+    /// in a tall capsule.
+    pub fn label_size_for_height(height: f64, theme: &Theme) -> f32 {
+        theme.tokens.typography.scale.sm * (height / HEIGHT).clamp(0.75, 1.6) as f32
+    }
+
+    /// Intrinsic width of an immediate-mode chip — what [`Chip::draw_at`]
+    /// needs to paint `label` and `lead` at `height` without truncating.
+    pub fn natural_width_at(
+        label: &str,
+        height: f64,
+        lead: ChipLead,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) -> f64 {
+        let size = Self::label_size_for_height(height, theme);
+        let (w, _) = text_renderer.measure(label, size, None);
+        let lead_w = match lead {
+            ChipLead::None => 0.0,
+            ChipLead::Dot(_) => DOT_D + GAP,
+            ChipLead::Glyph(_) => height * 0.44 + GAP,
+        };
+        PAD_X * 2.0 + lead_w + w as f64
+    }
+
+    /// Immediate-mode chip — paint a pill with an optional leading dot or
+    /// glyph and a label directly into `scene` at `rect`, with no layout
+    /// node, caching, or widget instance.
+    ///
+    /// This is the helper a list that lays out its own rows reaches for
+    /// (the sibling of [`Avatar::draw_at`](super::Avatar::draw_at)): rows
+    /// placed on a curve, in a rail, or at any computed position that
+    /// taffy is not going to hand back. Every colour comes from `theme` or
+    /// from `style.tint`, so the pill tracks light / dark / high-contrast
+    /// the same way the widget does.
+    ///
+    /// The label is **truncated with an ellipsis** to whatever width `rect`
+    /// allows — callers on a narrowing rail can hand over the space they
+    /// actually have and get a legible chip rather than an overrun one.
+    /// Use [`Chip::natural_width_at`] to size `rect` when the space is
+    /// free.
+    pub fn draw_at(
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        label: &str,
+        lead: ChipLead,
+        style: ChipStyle,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        if rect.width() <= 1.0 || rect.height() <= 1.0 {
+            return;
+        }
+        let a = style.alpha.clamp(0.0, 1.0);
+        if a <= 0.0 {
+            return;
+        }
+        let fade = |c: Color, f: f32| c.with_alpha_factor(f * a);
+
+        let colors = &theme.tokens.colors;
+        let pill = RoundedRect::from_rect(rect, theme.tokens.radii.full as f64);
+
+        // Surface + border. A tinted chip carries its accent at the same
+        // 0.18 fill / full-strength border the selected widget state uses,
+        // so a rail of these reads identically to a row of real Chips.
+        let (bg, border) = match (style.tint, style.ghost) {
+            (_, true) => (colors.surface_white_5, colors.border_standard),
+            (Some(t), _) => (t.with_alpha_factor(0.18), t),
+            (None, _) => (colors.surface_white_5, colors.border_standard),
+        };
+        scene.fill(Fill::NonZero, transform, fade(bg, 1.0), None, &pill);
+        let stroke = if style.ghost {
+            Stroke::new(1.0).with_dashes(0.0, [4.0, 4.0])
+        } else {
+            Stroke::new(1.0)
+        };
+        scene.stroke(&stroke, transform, fade(border, 1.0), None, &pill);
+
+        let cy = rect.center().y;
+        let mut x = rect.x0 + PAD_X;
+        let lead_col = match style.tint {
+            Some(t) => t,
+            None => colors.text_dim,
+        };
+        match lead {
+            ChipLead::None => {}
+            ChipLead::Dot(c) => {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    fade(c, 1.0),
+                    None,
+                    &Circle::new(Point::new(x + DOT_D / 2.0, cy), DOT_D / 2.0),
+                );
+                x += DOT_D + GAP;
+            }
+            ChipLead::Glyph(icon) => {
+                let d = rect.height() * 0.44;
+                let gr = Rect::from_center_size(Point::new(x + d / 2.0, cy), (d, d));
+                icon.draw_with_stroke(scene, transform, gr, fade(lead_col, 1.0), 1.6);
+                x += d + GAP;
+            }
+        }
+
+        // Label, truncated to the space actually left inside the pill.
+        let size = Self::label_size_for_height(rect.height(), theme);
+        let avail = rect.x1 - PAD_X - x;
+        if avail <= 1.0 {
+            return;
+        }
+        let shown = truncate_to_width(label, size, avail, text_renderer);
+        if shown.is_empty() {
+            return;
+        }
+        let (_, lh) = text_renderer.measure(&shown, size, None);
+        let label_col = match (style.tint, style.ghost) {
+            (_, true) => colors.text_dim,
+            (Some(t), _) => t,
+            (None, _) => colors.text_primary,
+        };
+        text_renderer.draw_text(
+            scene,
+            &shown,
+            size,
+            fade(label_col, 1.0),
+            transform * Affine::translate((x, cy - lh as f64 / 2.0)),
+            None,
+        );
+    }
+}
+
+/// Longest prefix of `label` that fits `avail` px at `size`, with an
+/// ellipsis appended when anything was dropped. Returns an empty string
+/// when not even one character plus the ellipsis fits — callers treat that
+/// as "no room for a label here" rather than painting a lone `…`.
+fn truncate_to_width(
+    label: &str,
+    size: f32,
+    avail: f64,
+    text_renderer: &mut TextRenderer,
+) -> String {
+    let (full, _) = text_renderer.measure(label, size, None);
+    if (full as f64) <= avail {
+        return label.to_string();
+    }
+    let chars: Vec<char> = label.chars().collect();
+    // Walk down from the full string; the first prefix that fits wins.
+    // Labels here are workspace names — short enough that a linear scan
+    // costs less than the branchy binary search it would replace.
+    for take in (1..chars.len()).rev() {
+        let mut cand: String = chars[..take].iter().collect();
+        cand.push('…');
+        let (w, _) = text_renderer.measure(&cand, size, None);
+        if (w as f64) <= avail {
+            return cand;
+        }
+    }
+    String::new()
+}
+
 impl Widget for Chip {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
