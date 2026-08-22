@@ -128,12 +128,13 @@ impl PeerPresence {
     }
 
     /// Fold everything that arrived from other hosts into `presence`.
-    /// Returns whether anything did, so the frame loop can treat a
-    /// peer moving as a reason to repaint.
-    pub fn pump(&self, presence: &mut PresenceCtx) -> bool {
+    /// Returns who was seen and where, so the frame loop can treat a
+    /// peer moving as a reason to repaint *and* put the people it just
+    /// heard from on the room's roster.
+    pub fn pump(&self, presence: &mut PresenceCtx) -> Vec<PeerSighting> {
         let drained: Vec<_> = {
             let Ok(mut buf) = self.inbound.lock() else {
-                return false;
+                return Vec::new();
             };
             std::mem::take(&mut *buf)
         };
@@ -141,14 +142,41 @@ impl PeerPresence {
     }
 }
 
-/// Fold inbound presence into `presence`, returning whether anything
+/// One peer, heard from in one room.
+///
+/// A presence frame is the only unforced evidence the compositor gets
+/// that a particular person is in a particular room right now: it came
+/// off the wire from another host, addressed to a room this session is
+/// in, carrying the id that host says is sitting at it. The roster is
+/// built out of exactly these, which is why the chrome can only ever
+/// show someone who really arrived.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerSighting {
+    /// The room the frame was addressed to — a `RoomId` rendered as a
+    /// uuid string, which is what apps publish under and what the
+    /// workspace carries.
+    pub room: String,
+    /// The publishing session's libp2p handle. Stable across the
+    /// session's lifetime and identical on every host that hears it.
+    pub peer: u64,
+    /// Who that session says is at it, or empty when it said nothing.
+    pub user: String,
+}
+
+/// Fold inbound presence into `presence`, returning every peer that
 /// landed. Split out from [`PeerPresence::pump`] so the fold can be
 /// driven without standing a network up; `pump` does nothing else.
+///
+/// The returned sightings are the roster's evidence. Each entry already
+/// carried who the publishing session says is at it, and that was
+/// previously used to label a cursor and then dropped — so the
+/// compositor knew a named person was in the room at the moment it drew
+/// their pointer, and still had nobody to put in the avatar stack.
 pub fn fold_inbound(
     entries: Vec<crate::shell::network::InboundPresence>,
     presence: &mut PresenceCtx,
-) -> bool {
-    let mut any = false;
+) -> Vec<PeerSighting> {
+    let mut seen: Vec<PeerSighting> = Vec::new();
     for entry in entries {
         let Ok(key) = serde_json::from_str::<PresenceKey>(&entry.key) else {
             continue;
@@ -158,10 +186,24 @@ pub fn fold_inbound(
         // rather than inventing a name — an unlabelled peer is honest,
         // a wrong label is not.
         let user = if entry.user.is_empty() {
-            format!("p{:016x}", entry.peer)
+            crate::shell::state::session_handle(entry.peer)
         } else {
             entry.user.clone()
         };
+        // Only a workspace-scoped frame names a room. A peer pointing
+        // inside a document publishes under that document's key, which
+        // says where in the text they are and nothing about which room
+        // they are in.
+        if let PresenceKey::Workspace { id } = &key {
+            let sighting = PeerSighting {
+                room: id.clone(),
+                peer: entry.peer,
+                user: user.clone(),
+            };
+            if !seen.contains(&sighting) {
+                seen.push(sighting);
+            }
+        }
         presence.apply_remote_presence(
             user,
             key,
@@ -170,9 +212,8 @@ pub fn fold_inbound(
                 y: entry.point.1 as f32,
             },
         );
-        any = true;
     }
-    any
+    seen
 }
 
 #[cfg(test)]
@@ -199,10 +240,13 @@ mod tests {
         // else would be held and never drawn.
         let room = "3f2b1c00-0000-4000-8000-000000000001";
         let mut presence = PresenceCtx::default();
-        assert!(fold_inbound(
-            vec![arrived("bob", 7, room, (120.0, 240.0))],
-            &mut presence
-        ));
+        assert!(
+            !fold_inbound(
+                vec![arrived("bob", 7, room, (120.0, 240.0))],
+                &mut presence
+            )
+            .is_empty()
+        );
 
         let key = PresenceKey::Workspace { id: room.into() };
         let peers = presence
@@ -262,6 +306,44 @@ mod tests {
             .expect("a pointer in this room");
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].0, UserId("bob".into()));
+    }
+
+    /// The fold has to hand back the room and the person, not just the
+    /// fact that something moved. The roster is built from these, and a
+    /// `bool` was exactly enough to draw a cursor and not enough to say
+    /// who was in the room — which is how the avatar stack stayed empty
+    /// through a session with two real peers pointing at each other.
+    #[test]
+    fn a_folded_frame_reports_the_room_and_the_person_it_came_from() {
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let mut presence = PresenceCtx::default();
+        let seen = fold_inbound(vec![arrived("bob", 7, room, (1.0, 2.0))], &mut presence);
+        assert_eq!(
+            seen,
+            vec![PeerSighting {
+                room: room.into(),
+                peer: 7,
+                user: "bob".into(),
+            }],
+        );
+    }
+
+    /// A pointer scoped to a tab says which tab someone is over. It does
+    /// not name a room, so it must not put anybody on a room's roster —
+    /// a roster built from unscoped frames would file peers under
+    /// whichever room happened to be active.
+    #[test]
+    fn a_frame_that_names_no_room_yields_no_sighting() {
+        let mut presence = PresenceCtx::default();
+        let entry = InboundPresence {
+            peer: 9,
+            user: "carol".into(),
+            key: serde_json::to_string(&PresenceKey::Tab { id: "2a".into() })
+                .expect("a tab key serialises"),
+            point: (3.0, 4.0),
+            ts: 0,
+        };
+        assert!(fold_inbound(vec![entry], &mut presence).is_empty());
     }
 
     #[test]

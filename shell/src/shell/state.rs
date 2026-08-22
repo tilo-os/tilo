@@ -801,6 +801,21 @@ pub fn local_user_id() -> UserId {
     std::env::var("USER").unwrap_or_else(|_| "local".to_string())
 }
 
+/// The name a session goes by before it says who is sitting at it.
+///
+/// Derived from the session's libp2p peer handle, so the same session is
+/// the same string on every host that hears it — which is what lets a
+/// roster row created by an accepted invite and a presence frame from
+/// that same session be recognised as one peer rather than two.
+///
+/// Must match the fallback label
+/// [`crate::shell::peer_presence::fold_inbound`] gives an unnamed
+/// publisher; a peer whose cursor said `p00…2a` and whose avatar said
+/// something else would be two people on screen.
+pub fn session_handle(peer: u64) -> String {
+    format!("p{peer:016x}")
+}
+
 /// Seconds since the Unix epoch, for capability expiry.
 ///
 /// A clock that has not been set yet reads as 0, which makes every
@@ -1911,6 +1926,131 @@ impl WorkspaceTree {
         self.room_authority
             .insert(room, RoomAuthority::Peer(peer));
         self.flush_to_disk();
+        true
+    }
+
+    /// Put `who` on the roster of the workspace that addresses `room`.
+    ///
+    /// The roster is what the top-bar avatar stack, the wheel-disc
+    /// presence dots and the collaborators overlay all render, so
+    /// everything that reaches it has to be someone who is really there.
+    /// There are exactly two things that can say so, and both call this:
+    /// an invite this machine verified and accepted
+    /// ([`crate::network::invite::accept_invite_into`]), and a presence
+    /// frame that arrived from another host in this room
+    /// ([`crate::shell::peer_presence`]).
+    ///
+    /// Idempotent, and an **upsert** rather than a push: the same person
+    /// arriving twice is one avatar. Re-admitting an id that is already
+    /// on the roster refreshes what the newcomer knows and keeps what it
+    /// does not — a later frame that carries no explicit colour must not
+    /// erase a colour the roster already had.
+    ///
+    /// Returns whether the roster changed, so a caller driving this from
+    /// the frame loop can treat "someone arrived" as a reason to repaint
+    /// and otherwise do nothing.
+    pub fn admit_collaborator_in_room(&mut self, room: RoomId, who: Collaborator) -> bool {
+        if room.is_nil() {
+            return false;
+        }
+        let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
+            return false;
+        };
+        Self::admit_into(&mut ws.collaborators, who)
+    }
+
+    /// [`Self::admit_collaborator_in_room`] addressed by this machine's
+    /// local workspace handle instead of the room's durable identity.
+    pub fn admit_collaborator(&mut self, workspace_id: WorkspaceId, who: Collaborator) -> bool {
+        let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) else {
+            return false;
+        };
+        Self::admit_into(&mut ws.collaborators, who)
+    }
+
+    /// Take `who` off the roster of the workspace addressing `room`.
+    ///
+    /// The other direction has to exist for the roster to mean anything.
+    /// A list that only ever grows says "five people are here" of a room
+    /// four of them left, which is the same class of untruth as seeding
+    /// it with people who never arrived.
+    pub fn retire_collaborator_in_room(&mut self, room: RoomId, id: &str) -> bool {
+        if room.is_nil() {
+            return false;
+        }
+        let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
+            return false;
+        };
+        let before = ws.collaborators.len();
+        ws.collaborators.retain(|c| c.id != id);
+        before != ws.collaborators.len()
+    }
+
+    /// Learn that the session `peer` is in `room` and that `user` is the
+    /// person sitting at it.
+    ///
+    /// A session announces itself before it can say who is at it: an
+    /// accepted invite establishes the far end cryptographically (its
+    /// libp2p key signed the token) and gives no name at all, while the
+    /// name arrives later, on the first presence frame the session
+    /// publishes. Both describe the same peer, so this replaces the
+    /// session-handle row rather than adding a second avatar beside it.
+    ///
+    /// A publisher that names nobody stays under its handle — an
+    /// unlabelled peer is honest, an invented name is not.
+    pub fn note_peer_present(&mut self, room: RoomId, peer: u64, user: &str) -> bool {
+        if room.is_nil() {
+            return false;
+        }
+        let handle = session_handle(peer);
+        let named = !user.is_empty() && user != handle;
+        let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
+            return false;
+        };
+        let mut changed = false;
+        if named {
+            // The same session, previously known only by its handle.
+            // Carry its colour across so a peer does not change hue at
+            // the moment it acquires a name.
+            if let Some(i) = ws.collaborators.iter().position(|c| c.id == handle) {
+                let old = ws.collaborators.remove(i);
+                changed = true;
+                let mut upgraded = Collaborator::new(user, user);
+                upgraded.cursor_color = old.cursor_color;
+                upgraded.role_id = old.role_id;
+                let _ = Self::admit_into(&mut ws.collaborators, upgraded);
+                return changed;
+            }
+        }
+        let entry = if named {
+            Collaborator::new(user, user)
+        } else {
+            Collaborator::new(handle.clone(), handle)
+        };
+        changed |= Self::admit_into(&mut ws.collaborators, entry);
+        changed
+    }
+
+    /// Upsert one roster row. Split out so the room-addressed and
+    /// handle-addressed entry points cannot drift apart.
+    fn admit_into(roster: &mut Vec<Collaborator>, who: Collaborator) -> bool {
+        if let Some(existing) = roster.iter_mut().find(|c| c.id == who.id) {
+            let mut changed = false;
+            if !who.name.is_empty() && existing.name != who.name {
+                existing.name = who.name;
+                changed = true;
+            }
+            if who.cursor_color.is_some() && existing.cursor_color != who.cursor_color {
+                existing.cursor_color = who.cursor_color;
+                changed = true;
+            }
+            if who.role_id.is_some() && existing.role_id != who.role_id {
+                existing.role_id = who.role_id;
+                changed = true;
+            }
+            return changed;
+        }
+        roster.push(who);
         true
     }
 
@@ -3827,22 +3967,19 @@ impl WorkspaceTree {
                     maximized: false,
                 }],
             }],
-            // Home is active on first boot; seed one demo peer so
-            // the top-bar avatar stack paints immediately.
-            // `TopBarChrome::sync_from_tree` prefers the active
-            // workspace's roster (with a tree-level fallback), so
-            // without this seed the right cluster would be empty
-            // until the user navigates to Research. The local user
-            // ("me") is deliberately not seeded here so
-            // `draw_ws_settings` synthesizes its "You" tile from the
-            // fallback path — keeping the General-tab fill count
-            // stable for the Roles-tab parity-spec contract. Hex
-            // matches `nirios-concept/src/data.ts`'s `cursorColor`.
-            collaborators: vec![
-                Collaborator::new("alice", "Alice")
-                    .with_cursor_color("#ec4899")
-                    .with_role("editor"),
-            ],
+            // Nobody is in this room yet, so the roster is empty.
+            //
+            // It used to seed a peer named Alice, so that the top-bar
+            // avatar stack would have something to paint on first boot.
+            // What that painted was a person who does not exist, in a
+            // stack whose entire job is to say who is here — and it was
+            // pixel-identical to a real participant, so there was no way
+            // for anyone looking at the screen to tell the difference.
+            // An empty stack on a machine nobody has joined is the
+            // truthful render; the roster fills when someone actually
+            // arrives (`WorkspaceTree::admit_collaborator_in_room`,
+            // driven by an accepted invite and by presence off the wire).
+            collaborators: vec![],
             owner: None,
             capabilities: Vec::new(),
             shared_surfaces: HashMap::new(),
@@ -3862,24 +3999,11 @@ impl WorkspaceTree {
         };
 
         // Research and Design seed empty strips so the overview overlay
-        // paints a meaningful 3-card grid on first run, matching the
-        // committed `e2e-open-close-overview-settled.png` golden. Research
-        // also seeds two demo collaborators so the top-bar avatar stack +
-        // per-tab presence dots have something to render — the canonical
-        // hex colours mirror `nirios-concept/src/data.ts`'s `cursorColor`.
-        let research_id = tree.append_empty_workspace("Research");
-        if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == research_id) {
-            ws.collaborators.push(
-                Collaborator::new("alice", "Alice")
-                    .with_cursor_color("#ec4899")
-                    .with_role("editor"),
-            );
-            ws.collaborators.push(
-                Collaborator::new("bob", "Bob")
-                    .with_cursor_color("#f97316")
-                    .with_role("viewer"),
-            );
-        }
+        // paints a meaningful 3-card grid on first run. Their rosters are
+        // empty for the same reason Home's is: a workspace nobody has
+        // joined has nobody in it, and the presence dots on its card have
+        // to be able to mean that.
+        tree.append_empty_workspace("Research");
         tree.append_empty_workspace("Design");
 
         // Home stays active — `append_empty_workspace` doesn't change
@@ -4371,6 +4495,49 @@ impl WorkspaceTree {
     }
 }
 
+/// What colour each person on `roster` is drawn in.
+///
+/// One function because there is one answer. A peer's cursor is coloured
+/// by [`ui::presence::assign_peer_colors`], which settles the whole room
+/// at once so two people whose ids hash onto the same palette entry do
+/// not end up the same colour; the avatars used to be coloured by
+/// [`ui::presence::user_color`] directly, which is the unsettled hash the
+/// room assignment exists to correct. That gap is visible on screen and
+/// it is worse than either half alone: someone whose cursor is orange and
+/// whose avatar is pink reads as two participants.
+///
+/// An explicit [`Collaborator::cursor_color`] is a decision a person made
+/// and outranks anything computed — the same precedence
+/// `OverlayHost::visible_peers` applies — so those colours are held back
+/// from the assignment rather than competing with it.
+///
+/// The local user is included in the set the room settles over even
+/// though they are never in the avatar stack: every host in a room sees
+/// the same membership that way (the others, plus itself), so every host
+/// computes the same assignment and a person is one colour on every
+/// screen.
+pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
+    let mut explicit: HashMap<String, (u8, u8, u8)> = HashMap::new();
+    for c in roster {
+        if let Some(rgb) = c.cursor_color.as_deref().and_then(ui::presence::parse_hex_color) {
+            explicit.insert(c.id.clone(), rgb);
+        }
+    }
+    let local = local_user_id();
+    let mut ids: Vec<&str> = roster
+        .iter()
+        .filter(|c| !explicit.contains_key(&c.id))
+        .map(|c| c.id.as_str())
+        .collect();
+    if !explicit.contains_key(&local) {
+        ids.push(local.as_str());
+    }
+    let reserved: Vec<(u8, u8, u8)> = explicit.values().copied().collect();
+    let mut assigned = ui::presence::assign_peer_colors(&ids, &reserved);
+    assigned.extend(explicit);
+    assigned
+}
+
 /// Shared peer-count helper for the active workspace.
 ///
 /// Counts collaborators on the active workspace excluding the local user
@@ -4406,8 +4573,9 @@ mod bootstrap_default_tests {
     //!   - At least three workspaces (Home / Research / Design) so the
     //!     overview overlay paints a meaningful grid rather than a single
     //!     lonely card.
-    //!   - At least one workspace seeded with collaborators so the top-bar
-    //!     avatar stack and per-tab presence dots have data to render.
+    //!   - No workspace seeds a collaborator. Nobody has joined a machine
+    //!     that has just been installed, and the avatar stack has to be
+    //!     able to say so.
     //!   - The first group's [`WindowWidth`] is `Wide` (or wider) so the
     //!     default tile fills more than half the viewport — matching
     //!     `WindowFrame.tsx`'s "fill the container" behaviour.
@@ -4428,11 +4596,39 @@ mod bootstrap_default_tests {
              Design) so the overview has meaningful content; got {}",
             tree.workspaces.len()
         );
-        // At least one workspace should have collaborators so the top-bar
-        // avatar stack has something to render.
+    }
+
+    /// A machine that has just been installed has had nobody join it, so
+    /// every roster the first-boot tree hands the chrome is empty.
+    ///
+    /// This used to assert the opposite — that some workspace seeded a
+    /// collaborator, so the avatar stack would have something to paint.
+    /// The something it painted was a person who did not exist, drawn
+    /// exactly like one who did.
+    #[test]
+    fn bootstrap_default_seeds_nobody_into_any_roster() {
+        let tree = WorkspaceTree::bootstrap_default();
+        for ws in &tree.workspaces {
+            assert!(
+                ws.collaborators.is_empty(),
+                "workspace {:?} boots with {} collaborator(s) nobody invited: \
+                 {:?}. The avatar stack is a claim about who is present; \
+                 seeding it fabricates participants.",
+                ws.name,
+                ws.collaborators.len(),
+                ws.collaborators.iter().map(|c| &c.name).collect::<Vec<_>>(),
+            );
+        }
         assert!(
-            tree.workspaces.iter().any(|w| !w.collaborators.is_empty()),
-            "at least one default workspace should seed >=1 collaborator"
+            tree.collaborators.is_empty(),
+            "the tree-level roster fallback boots non-empty: {:?}",
+            tree.collaborators.iter().map(|c| &c.name).collect::<Vec<_>>(),
+        );
+        // And the chrome's own arithmetic agrees: no peers to count.
+        assert_eq!(
+            active_workspace_peer_count(&tree),
+            0,
+            "a fresh boot must count zero peers in the active workspace"
         );
     }
 
