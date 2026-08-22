@@ -138,6 +138,10 @@ pub struct TrackData {
     pub index: u32,
     pub muted: bool,
     pub locked: bool,
+    /// Absent on the wire for a peer that predates solo; `serde(default)`
+    /// makes that read as "not soloed" rather than failing the decode.
+    #[serde(default)]
+    pub solo: bool,
 }
 
 impl TrackData {
@@ -149,6 +153,7 @@ impl TrackData {
             index: t.index,
             muted: t.muted,
             locked: t.locked,
+            solo: t.solo,
         }
     }
 
@@ -160,6 +165,7 @@ impl TrackData {
             index: self.index,
             muted: self.muted,
             locked: self.locked,
+            solo: self.solo,
         })
     }
 }
@@ -480,7 +486,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
     for kind in [TrackKind::Video, TrackKind::Audio] {
         let index = p.tracks.iter().filter(|t| t.kind == kind).map(|t| t.index).max().unwrap_or(0) + 1;
         let name = format!("{}{index}", if kind == TrackKind::Video { "V" } else { "A" });
-        let track = Track { id: Uuid::new_v4(), name, kind, index, muted: false, locked: false };
+        let track = Track { id: Uuid::new_v4(), name, kind, index, muted: false, locked: false, solo: false };
         let (id, label) = if kind == TrackKind::Video {
             ("add-video-track", "Add video track")
         } else {
