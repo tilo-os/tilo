@@ -5481,8 +5481,31 @@ mod tests {
         for width in [300.0_f64, 380.0, 460.0, 620.0] {
             let mut b = four_tab_bar();
             lay_out_at_width_with(&mut b, width, &theme);
+            let idle: Vec<Rect> = b.tab_rects().to_vec();
             for idx in 0..4 {
                 hover_pill(&mut b, idx, width, &theme);
+                // The anchoring invariant has to hold at the widths the
+                // demo actually renders, not only where there is slack:
+                // a squeezed row is exactly where a re-fit under the
+                // pointer would be tempting.
+                for i in 0..=idx {
+                    assert!(
+                        (b.tab_rects()[i].x0 - idle[i].x0).abs() < 0.01,
+                        "at {width} px with pill {idx} open, pill {i}'s leading edge \
+                         moved from {} to {}",
+                        idle[i].x0,
+                        b.tab_rects()[i].x0,
+                    );
+                }
+                for i in 0..idx {
+                    assert!(
+                        (b.tab_rects()[i].width() - idle[i].width()).abs() < 0.01,
+                        "at {width} px, pill {i} was re-sized ({} -> {}) because the \
+                         pointer moved onto pill {idx}",
+                        idle[i].width(),
+                        b.tab_rects()[i].width(),
+                    );
+                }
                 let bar = b.bar_rect();
                 for (i, r) in b.tab_rects().iter().enumerate() {
                     assert!(
