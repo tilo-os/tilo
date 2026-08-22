@@ -252,11 +252,20 @@ recipient and would buy nothing but a narrower path to the same state.
 **Bounded, and honest about the bound.** A document has no upper size
 and a gossipsub RPC has one — 64 KiB, the libp2p default this shell does
 not raise. `publish_app_crdt_snapshot` refuses above
-`MAX_APP_SNAPSHOT_BYTES` (48 KiB, leaving the envelope and gossipsub's
-own framing room under that ceiling) rather than handing the transport a
-message it would reject. A document past the cap does not converge, in a
-`warn` line naming the size; it does not half-converge, and it does not
-fail somewhere unattributable.
+`MAX_APP_SNAPSHOT_BYTES` rather than handing the transport a message it
+would reject. A document past the cap does not converge, in a `warn`
+line naming the size; it does not half-converge, and it does not fail
+somewhere unattributable.
+
+The cap is 14 KiB, which is much smaller than the ceiling suggests, and
+the reason is the encoding rather than the transport: the actor
+publishes a `NeighbourMsg` with `serde_json`, and serde_json writes a
+`Vec<u8>` as an array of decimal numbers — up to four characters per
+byte. A snapshot costs up to 4x its size on the wire. Moving the publish
+path to the `postcard` encoding the protocol module's own round-trip
+tests already use would make it roughly 1:1 and raise the cap to
+~60 KiB; that is a wire-format change every peer must agree on, so it is
+a decision to take rather than a constant to edit.
 
 **Adoption is one-directional, and that is a real limit.** The arrival
 arms the room on the host that was *already there*, so its document
