@@ -974,7 +974,23 @@ impl FileExplorerWidget {
                 // Tell the host what is being carried: if the pointer
                 // reaches another application's window, the host turns
                 // this into a real drag-and-drop for that client.
+                //
+                // That is the path when Files is a widget inside the
+                // compositor. When it is a packaged app — its own
+                // process, its own sandbox, a Wayland client like any
+                // other — there is no host holding the gesture, so it
+                // opens the drag itself. Only one of the two can be
+                // true in a given process, and each reports whether it
+                // applied, so both are offered the gesture and at most
+                // one takes it.
                 crate::external_drag::begin(self.drag_paths.clone());
+                if ui::dnd::start_file_drag(&self.drag_paths) {
+                    tracing::debug!(
+                        target: "file_explorer::drag",
+                        paths = ?self.drag_paths,
+                        "carrying the drag out of this app as a client drag"
+                    );
+                }
                 true
             }
             FileCommand::AddFavorite(path) => {
