@@ -227,6 +227,206 @@ pub fn begin_export(project: &Project, settings: &ExportSettings) -> ExportStatu
 }
 
 #[cfg(feature = "gst")]
+mod gst_decode {
+    //! Sequential decode of the project's real media, feeding the export
+    //! compositor.
+    //!
+    //! An export walks the timeline forward, so every clip's source time
+    //! walks forward too: one `uridecodebin → videoconvert → appsink`
+    //! pipeline per media, pulled in order, is all it takes. Seeking is
+    //! reserved for the cases that genuinely go backwards (a second clip
+    //! cut from an earlier part of the same source).
+
+    use std::collections::HashMap;
+
+    use gstreamer as gst;
+    use gstreamer::prelude::*;
+    use gstreamer_app as gst_app;
+
+    use crate::gpu::CpuFrame;
+    use crate::model::{MediaId, Project};
+
+    /// One media's decoder, holding the last picture it pulled.
+    struct ClipDecoder {
+        pipeline: gst::Pipeline,
+        sink: gst_app::AppSink,
+        current: Option<CpuFrame>,
+        drained: bool,
+    }
+
+    impl ClipDecoder {
+        fn open(uri: &str) -> Result<Self, String> {
+            let pipeline = gst::Pipeline::new();
+            let src = gst::ElementFactory::make("uridecodebin")
+                .property("uri", uri)
+                .build()
+                .map_err(|e| format!("uridecodebin: {e}"))?;
+            let convert = gst::ElementFactory::make("videoconvert")
+                .build()
+                .map_err(|e| format!("videoconvert: {e}"))?;
+            let sink = gst_app::AppSink::builder()
+                .caps(
+                    &gst::Caps::builder("video/x-raw")
+                        .field("format", "RGBA")
+                        .build(),
+                )
+                // The editor's own clock owns the playhead; the decoder
+                // must run flat out, not in real time.
+                .sync(false)
+                .max_buffers(4)
+                .build();
+            pipeline
+                .add_many([&src, &convert, sink.upcast_ref()])
+                .map_err(|e| format!("assemble decode pipeline: {e}"))?;
+            gst::Element::link_many([&convert, sink.upcast_ref()])
+                .map_err(|e| format!("link decode pipeline: {e}"))?;
+
+            // `uridecodebin` exposes its pads once it knows the streams;
+            // take the video one and ignore audio.
+            let convert_weak = convert.downgrade();
+            src.connect_pad_added(move |_, pad| {
+                let is_video = pad
+                    .current_caps()
+                    .and_then(|c| c.structure(0).map(|s| s.name().starts_with("video/")))
+                    .unwrap_or(false);
+                if !is_video {
+                    return;
+                }
+                let Some(convert) = convert_weak.upgrade() else { return };
+                let Some(target) = convert.static_pad("sink") else { return };
+                if target.is_linked() {
+                    return;
+                }
+                let _ = pad.link(&target);
+            });
+
+            pipeline
+                .set_state(gst::State::Playing)
+                .map_err(|e| format!("start decode pipeline: {e}"))?;
+            Ok(Self { pipeline, sink, current: None, drained: false })
+        }
+
+        fn pull_one(&mut self) -> bool {
+            let Ok(sample) = self.sink.pull_sample() else {
+                self.drained = true;
+                return false;
+            };
+            let Some(buffer) = sample.buffer() else { return false };
+            let Some(caps) = sample.caps() else { return false };
+            let Some(s) = caps.structure(0) else { return false };
+            let (Ok(width), Ok(height)) = (s.get::<i32>("width"), s.get::<i32>("height")) else {
+                return false;
+            };
+            let Ok(map) = buffer.map_readable() else { return false };
+            let (w, h) = (width.max(0) as u32, height.max(0) as u32);
+            let want = w as usize * h as usize * 4;
+            if map.len() < want {
+                return false;
+            }
+            let pts_ms = buffer.pts().map(|p| p.mseconds()).unwrap_or(0);
+            self.current = Some(CpuFrame {
+                width: w,
+                height: h,
+                rgba: std::sync::Arc::new(map[..want].to_vec()),
+                identity: pts_ms,
+            });
+            true
+        }
+
+        /// The picture on screen at `target_ms` of this source.
+        ///
+        /// Pulls forward until the decoded timestamp reaches the target,
+        /// which is exact when the export rate matches the source rate and
+        /// lands within one source frame otherwise. Once the stream is
+        /// drained the last picture is held — a clip that outruns its
+        /// media freezes on its final frame rather than going black.
+        fn frame_at(&mut self, target_ms: u64) -> Option<&CpuFrame> {
+            // Going backwards (a later clip cut from earlier in the same
+            // source) is the only case that needs a real seek.
+            let behind = self
+                .current
+                .as_ref()
+                .is_some_and(|f| f.identity > target_ms + 1);
+            if behind {
+                let pos = gst::ClockTime::from_mseconds(target_ms);
+                if self
+                    .pipeline
+                    .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, pos)
+                    .is_ok()
+                {
+                    self.current = None;
+                    self.drained = false;
+                }
+            }
+            while !self.drained
+                && self.current.as_ref().is_none_or(|f| f.identity < target_ms)
+                && self.pull_one()
+            {}
+            self.current.as_ref()
+        }
+    }
+
+    impl Drop for ClipDecoder {
+        fn drop(&mut self) {
+            let _ = self.pipeline.set_state(gst::State::Null);
+        }
+    }
+
+    /// Every decodable media in the project, opened lazily.
+    pub struct MediaDecoders {
+        uris: HashMap<MediaId, String>,
+        open: HashMap<MediaId, Option<ClipDecoder>>,
+    }
+
+    impl MediaDecoders {
+        /// Index the project's media by the URI its bytes resolve to.
+        /// References whose bytes have not hydrated are simply absent, so
+        /// their clips fall back to the representative fill instead of
+        /// failing the export.
+        pub fn new(project: &Project) -> Self {
+            let mut uris = HashMap::new();
+            for item in &project.media {
+                if !item.kind.is_visual() {
+                    continue;
+                }
+                let source = item.source();
+                if !source.is_decodable() {
+                    continue;
+                }
+                uris.insert(
+                    item.id,
+                    crate::media::engine_source(&source.abs_path).to_uri(),
+                );
+            }
+            Self { uris, open: HashMap::new() }
+        }
+
+        /// How many of the project's media this export can actually decode.
+        pub fn decodable(&self) -> usize {
+            self.uris.len()
+        }
+
+        /// The decoded picture for `media` at `source_time` seconds.
+        pub fn frame(&mut self, media: MediaId, source_time: f64) -> Option<CpuFrame> {
+            let uri = self.uris.get(&media)?.clone();
+            let slot = self.open.entry(media).or_insert_with(|| {
+                ClipDecoder::open(&uri)
+                    .map_err(|e| tracing::warn!("export decode {uri}: {e}"))
+                    .ok()
+            });
+            let decoder = slot.as_mut()?;
+            let target_ms = (source_time.max(0.0) * 1000.0) as u64;
+            decoder.frame_at(target_ms).map(|f| CpuFrame {
+                width: f.width,
+                height: f.height,
+                rgba: f.rgba.clone(),
+                identity: f.identity,
+            })
+        }
+    }
+}
+
+#[cfg(feature = "gst")]
 mod gst_pipeline {
     use super::*;
     use gstreamer as gst;
@@ -265,6 +465,17 @@ mod gst_pipeline {
             .set_state(gst::State::Playing)
             .map_err(|e| format!("start export pipeline: {e}"))?;
 
+        // The frames come off the very same GPU compositor the preview
+        // canvas draws through — layer stack, grade, effect chain,
+        // envelope and transitions — fed by a real sequential decode of
+        // the project's media. What lands in the file is what was on
+        // screen; media that has not hydrated falls back to its
+        // representative fill rather than failing the render.
+        let mut compositor = crate::gpu::HeadlessCompositor::new()
+            .map_err(|e| format!("export compositor: {e}"))?;
+        let mut decoders = super::gst_decode::MediaDecoders::new(project);
+        let mut sources = crate::gpu::CpuFrames::new(|media, t| decoders.frame(media, t));
+
         // Total frames across the timeline duration at the target rate.
         let duration = project.duration().max(1.0 / fps);
         let total = (duration * fps).ceil().max(1.0) as u64;
@@ -274,7 +485,7 @@ mod gst_pipeline {
 
         for i in 0..total {
             let t = i as f64 / fps;
-            let rgba = crate::preview::render_rgba(project, t, w, h);
+            let rgba = compositor.frame(project, t, w, h, &mut sources);
             debug_assert_eq!(rgba.len(), frame_bytes);
             let mut buffer = gst::Buffer::with_size(frame_bytes)
                 .map_err(|_| "allocate export frame buffer".to_string())?;
