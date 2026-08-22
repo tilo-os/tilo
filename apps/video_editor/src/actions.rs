@@ -74,6 +74,11 @@ pub struct ClipData {
     pub saturation: f64,
     pub fade_in: f64,
     pub fade_out: f64,
+    /// Incoming-transition length, seconds. Absent on the wire for a peer that
+    /// predates the field; `serde(default)` reads that as 0.0, which
+    /// [`Clip::transition_len`] resolves to the default.
+    #[serde(default)]
+    pub transition_duration: f64,
     /// The ordered effects stack, carried verbatim so a whole-clip write
     /// (add / remove / reorder an effect) replays byte-identically.
     #[serde(default)]
@@ -98,6 +103,7 @@ impl ClipData {
             saturation: c.filters.saturation,
             fade_in: c.fade_in,
             fade_out: c.fade_out,
+            transition_duration: 0.0,
             effects: c.effects.clone(),
         }
     }
@@ -124,6 +130,7 @@ impl ClipData {
             },
             fade_in: self.fade_in,
             fade_out: self.fade_out,
+            transition_duration: 0.0,
             effects: self.effects.clone(),
         })
     }

@@ -139,6 +139,8 @@ enum Drag {
     Saturation,
     FadeIn,
     FadeOut,
+    /// Dragging the incoming transition's length.
+    TransitionLen,
     /// Dragging the intensity slider of the effect at `idx` on the selected clip.
     EffectAmount { idx: usize },
 }
@@ -382,6 +384,17 @@ pub struct VideoEditorApp {
     /// decodes the true frame of the clip under the playhead through GStreamer.
     #[cfg(feature = "decode")]
     preview_decoder: preview::PreviewDecoder,
+    /// The GPU compositor that produces the preview picture — the *same*
+    /// renderer the export runs, so what you see is byte-for-byte what you
+    /// get. Built once and reused; `None` on a box with no usable adapter,
+    /// where the preview falls back to the representative fill rather than
+    /// pretending it composited anything.
+    compositor: Option<crate::gpu::HeadlessCompositor>,
+    /// Set once we have tried to build the compositor, so a box that cannot
+    /// have one does not retry every frame.
+    compositor_tried: bool,
+    /// Scratch RGBA readback from the compositor, reused between frames.
+    composited: Option<(u32, u32, std::sync::Arc<Vec<u8>>)>,
     drag: Option<Drag>,
     /// Live rubber-band rect while a [`Drag::Marquee`] is past its threshold,
     /// so `draw` can paint it. `None` until the press actually becomes a drag.
@@ -529,6 +542,9 @@ impl VideoEditorApp {
             auto_place_imports: false,
             #[cfg(feature = "decode")]
             preview_decoder: preview::PreviewDecoder::new(),
+            compositor: None,
+            compositor_tried: false,
+            composited: None,
             drag: None,
             marquee: None,
             chase_playhead: false,
@@ -1435,6 +1451,16 @@ impl VideoEditorApp {
         }
     }
 
+    /// Longest transition the selected clip can carry: its own length, since
+    /// a ramp cannot outlast the footage it ramps into.
+    fn transition_len_max(&self) -> f64 {
+        self.selected()
+            .and_then(|id| self.project.clip(id))
+            .map(|c| c.duration())
+            .unwrap_or(0.0)
+            .max(0.01)
+    }
+
     fn set_filter(&mut self, doc: &mut AutoCommit, field: FilterField, v: f64) {
         let v = v.clamp(0.0, 1.0);
         self.edit_selected(doc, move |c| match field {
@@ -2087,6 +2113,67 @@ impl VideoEditorApp {
         self.preview_decoder.update(&self.project, self.playhead);
     }
 
+    /// Composite the preview picture for the current playhead, into
+    /// `self.composited`.
+    ///
+    /// Runs the shared GPU compositor at the canvas's own pixel size (capped,
+    /// so a huge window does not read back a huge buffer every frame) and
+    /// keeps the RGBA for `draw_preview` to blit. Under `--features decode`
+    /// the compositor's layers are filled with really-decoded pictures; with
+    /// no decoder — the hermetic `--shots` path — it gets `NoSources` and each
+    /// layer draws its representative fill, which keeps a capture
+    /// deterministic and free of any media pipeline.
+    fn pump_compositor(&mut self, r: &Regions) {
+        if !self.compositor_tried {
+            self.compositor_tried = true;
+            match crate::gpu::HeadlessCompositor::new() {
+                Ok(c) => self.compositor = Some(c),
+                Err(e) => tracing::warn!(error = %e, "no GPU compositor for the preview"),
+            }
+        }
+        let Some(compositor) = self.compositor.as_mut() else { return };
+        if self.project.clips.is_empty() || r.canvas.width() < 1.0 {
+            self.composited = None;
+            return;
+        }
+        // Match the canvas's aspect at a sane readback size.
+        const MAX_W: f64 = 960.0;
+        let scale = (MAX_W / r.canvas.width()).min(1.0);
+        let w = (r.canvas.width() * scale).round().max(2.0) as u32;
+        let h = (r.canvas.height() * scale).round().max(2.0) as u32;
+
+        #[cfg(feature = "decode")]
+        let rgba = {
+            // Hand the compositor the decoder's picture for the clip it is
+            // resolving, when the decoder has one for that media.
+            let decoder = &self.preview_decoder;
+            let mut sources = crate::gpu::CpuFrames::new(|media, _t| {
+                if decoder.frame_media() != Some(media) {
+                    return None;
+                }
+                let f = decoder.frame()?;
+                Some(crate::gpu::CpuFrame {
+                    width: f.width,
+                    height: f.height,
+                    rgba: f.rgba.clone(),
+                    identity: f.pts_ms,
+                })
+            });
+            compositor.frame(&self.project, self.playhead, w, h, &mut sources)
+        };
+        #[cfg(not(feature = "decode"))]
+        let rgba = {
+            let mut sources = crate::gpu::NoSources;
+            compositor.frame(&self.project, self.playhead, w, h, &mut sources)
+        };
+
+        if rgba.len() == (w as usize) * (h as usize) * 4 {
+            self.composited = Some((w, h, std::sync::Arc::new(rgba)));
+        } else {
+            self.composited = None;
+        }
+    }
+
     fn zoom_by(&mut self, factor: f64) {
         self.zoom = (self.zoom * factor).clamp(6.0, 220.0);
         let r = self.regions();
@@ -2150,6 +2237,11 @@ impl VideoEditorApp {
             l.transitions.push((*t, Rect::new(sx0, y + 15.0, sx0 + seg_w - 3.0, y + 37.0)));
         }
         y += 48.0;
+        // Transition length, only when there is a transition to size.
+        if clip.transition != Transition::None {
+            l.transition_len = Some(Rect::new(x0, y + 19.0, x1, y + 28.0));
+            y += row;
+        }
         // Label color swatches.
         l.colors_y = y + 15.0;
         let sw = 24.0;
@@ -2427,6 +2519,9 @@ struct InspectorLayout {
     fade_out: Option<Rect>,
     transition_y: f64,
     transitions: Vec<(Transition, Rect)>,
+    /// Length slider for the incoming transition. `None` when the clip's
+    /// transition is `None` — there is no ramp to size.
+    transition_len: Option<Rect>,
     colors_y: f64,
     colors: Vec<(u8, Rect)>,
     /// y of the "EFFECTS" label; each row rect is a full-width effect row.
@@ -2632,6 +2727,9 @@ impl Widget for VideoEditorApp {
         // Request the filmstrip frames the timeline is about to draw, now that
         // the scroll is settled and we know which clips are on screen.
         self.request_filmstrips(&r);
+        // Composite this frame's preview picture before anything paints, so
+        // `draw_preview` only has to blit it.
+        self.pump_compositor(&r);
         self.draw_chrome(scene, transform, tr, theme, &r);
         // Editor body. When the bin is docked it draws in its column; when
         // it's an overlay flap it is drawn LAST so it floats over the body
@@ -3375,6 +3473,15 @@ impl VideoEditorApp {
                 return;
             }
         }
+        if let Some(track) = l.transition_len {
+            if hit_slider(track, p) {
+                self.drag = Some(Drag::TransitionLen);
+                let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                let max = self.transition_len_max();
+                self.preview_edit(move |c| c.transition_duration = (frac * max).max(0.01));
+                return;
+            }
+        }
         for (t, rect) in &l.transitions {
             if rect.contains(p) {
                 self.set_transition(state, *t);
@@ -3594,6 +3701,13 @@ impl VideoEditorApp {
                     self.preview_edit(move |c| c.fade_in = (frac * max).clamp(0.0, c.duration()));
                 }
             }
+            Drag::TransitionLen => {
+                if let Some(track) = self.inspector_layout(r).transition_len {
+                    let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    let max = self.transition_len_max();
+                    self.preview_edit(move |c| c.transition_duration = (frac * max).max(0.01));
+                }
+            }
             Drag::FadeOut => {
                 if let Some(track) = self.inspector_layout(r).fade_out {
                     let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
@@ -3643,6 +3757,7 @@ impl VideoEditorApp {
             | Drag::Saturation
             | Drag::FadeIn
             | Drag::FadeOut
+            | Drag::TransitionLen
             | Drag::EffectAmount { .. } => {
                 if let Some(id) = self.selected() {
                     self.dispatch_clip(doc, id);
@@ -3668,6 +3783,7 @@ impl VideoEditorApp {
                     | Drag::Saturation
                     | Drag::FadeIn
                     | Drag::FadeOut
+                    | Drag::TransitionLen
                     | Drag::EffectAmount { .. }
             )
         )
@@ -4012,57 +4128,35 @@ impl VideoEditorApp {
         );
         // Canvas backdrop (letterbox black).
         fill_rect(scene, tf, Color::BLACK, canvas);
-        // The composited frame is computed once, here, by the preview module —
-        // the same colour-grade + fade math the (gated) decode path and export
-        // use. The representative frame is a graded gradient; with --features
-        // decode and hydrated bytes the canvas instead blits a real frame.
-        let frame = preview::composite(&self.project, self.playhead);
-        // Did the real decoder land a frame for the clip under the playhead?
-        // Only true under `--features decode` with hydrated bytes.
-        #[allow(unused_mut)]
-        let mut showed_real = false;
-        match frame {
-            CompositedFrame::Clip { media, base, envelope, flash, decoded } => {
-                let _ = decoded;
-                // Blit the real decoded frame when the decode pipeline has one
-                // for this clip; otherwise the representative two-band gradient.
-                #[cfg(feature = "decode")]
-                {
-                    if self.preview_decoder.frame_media() == Some(media) {
-                        if let Some(f) = self.preview_decoder.frame() {
-                            blit_frame(scene, tf, f, canvas);
-                            showed_real = true;
-                        }
-                    }
-                }
-                if !showed_real {
-                    // `base` is already graded + faded; build a representative
-                    // two-band gradient from it so grading is visibly reflected.
-                    let col = rgb_to_color(base);
-                    fill_rect(scene, tf, darken(col, 0.18), canvas);
-                    let upper = Rect::new(canvas.x0, canvas.y0, canvas.x1, canvas.center().y);
-                    fill_rect(scene, tf, with_alpha(lighten(col, 0.18), 0.55), upper);
-                    let band = Rect::new(canvas.x0, canvas.y0 + canvas.height() * 0.62, canvas.x1, canvas.y0 + canvas.height() * 0.72);
-                    fill_rect(scene, tf, with_alpha(darken(col, 0.15), 0.6), band);
-                    stroke_rrect(scene, tf, with_alpha(Color::BLACK, 0.5), canvas.inset(2.0), 2.0, 18.0);
-                    if let Some(m) = self.project.media(media) {
-                        let (nw, _) = tr.measure_weighted(&m.name, 22.0, None, TextWeight::Semibold);
-                        text_w(scene, tr, tf, &m.name, 22.0, with_alpha(Color::WHITE, 0.92), canvas.center().x - nw as f64 / 2.0, canvas.center().y - 16.0, TextWeight::Semibold);
-                    }
-                }
-                // The fade/opacity envelope dims the whole frame toward black.
-                if envelope < 0.999 {
-                    fill_rect(scene, tf, with_alpha(Color::BLACK, 1.0 - envelope), canvas);
-                }
-                // Transition flash on the clip head.
-                if let Some(f) = flash {
-                    let col = if f.white { Color::WHITE } else { Color::BLACK };
-                    fill_rect(scene, tf, with_alpha(col, f.alpha), canvas);
-                }
+        // One picture, produced by the GPU compositor in `crate::gpu` — the
+        // *same* renderer the export runs, so the preview is byte-for-byte
+        // what the export writes. It resolves every layer, grade, fade,
+        // transition and effect itself; nothing here re-implements any of it.
+        // The HUD below still draws on top, which is why this reads the frame
+        // back and blits it rather than hooking the render target.
+        let showed_real = match &self.composited {
+            Some((w, h, rgba)) if *w > 0 && *h > 0 => {
+                let frame = ::media::VideoFrame {
+                    width: *w,
+                    height: *h,
+                    rgba: rgba.clone(),
+                    pts_ms: 0,
+                };
+                blit_frame(scene, tf, &frame, canvas);
+                true
             }
-            CompositedFrame::Empty => {
+            _ => false,
+        };
+        if !showed_real {
+            // No compositor on this box (no usable adapter). Say so rather
+            // than inventing a picture.
+            if self.project.top_video_clip_at(self.playhead).is_none() {
                 let (tw, _) = tr.measure("No clip at playhead", 14.0, None);
                 text(scene, tr, tf, "No clip at playhead", 14.0, c.text_dim, canvas.center().x - tw as f64 / 2.0, canvas.center().y - 8.0);
+            } else {
+                let msg = "Preview needs a GPU adapter";
+                let (tw, _) = tr.measure(msg, 13.0, None);
+                text(scene, tr, tf, msg, 13.0, c.text_dim, canvas.center().x - tw as f64 / 2.0, canvas.center().y - 7.0);
             }
         }
         // HUD overlays.
@@ -4334,6 +4428,16 @@ impl VideoEditorApp {
                 .position(|(t, _)| *t == clip.transition)
                 .unwrap_or(0);
             draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+        }
+        // Transition length.
+        if let Some(track) = l.transition_len {
+            let max = clip.duration().max(0.01);
+            row(
+                scene, tr, Some(track), "Transition length",
+                format!("{:.2}s", clip.transition_len()),
+                (clip.transition_len() / max).clamp(0.0, 1.0), 11.0,
+                self.drag == Some(Drag::TransitionLen),
+            );
         }
         // Colour swatches.
         if !l.colors.is_empty() {
@@ -4733,7 +4837,11 @@ impl VideoEditorApp {
                 text(scene, tr, tf, reason, 10.5, c.semantic.warning, x0, card.y1 - 68.0);
             }
             ExportStatus::Idle => {
-                text(scene, tr, tf, "Export isn't available yet — video encoding is coming soon.", 10.5, c.text_dim, x0, card.y1 - 68.0);
+                // One source of truth for the availability copy — the export
+                // module knows what it can actually do, this dialog does not.
+                if let Some(reason) = crate::export::unavailable_reason() {
+                    text(scene, tr, tf, reason, 10.5, c.text_dim, x0, card.y1 - 68.0);
+                }
             }
         }
         draw_button(scene, tf, tr, theme, l.cancel, "Close", false, l.cancel.contains(self.last_mouse));
@@ -4807,10 +4915,10 @@ fn import_summary(added: usize, total: usize) -> String {
     }
 }
 
-/// Blit a decoded RGBA frame into `canvas`, scaled to fit (letterboxed),
-/// centred. Only used under `--features decode` where the preview shows the
-/// clip's real picture.
-#[cfg(feature = "decode")]
+/// Blit an RGBA frame into `canvas`, scaled to fit (letterboxed), centred.
+/// Carries the preview's composited picture in every build — the compositor
+/// runs with or without a decoder, drawing real footage when it has any and
+/// representative fills when it does not.
 fn blit_frame(scene: &mut Scene, tf: Affine, frame: &::media::VideoFrame, canvas: Rect) {
     use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
     let iw = frame.width as f64;
