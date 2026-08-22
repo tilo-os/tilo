@@ -1627,6 +1627,18 @@ pub fn spawn_full(
                     // not on every frame.
                     let mut announced: std::collections::HashMap<(String, u64), String> =
                         std::collections::HashMap::new();
+                    // And what the room said, the last time it was
+                    // asked. Reading it means taking the replica's lock
+                    // and parsing every peer id the room document holds,
+                    // which is not a thing to do thirty times a second
+                    // per peer on the path the sync round also needs
+                    // that lock for. Re-asked on a cadence instead, so a
+                    // name that changes still lands promptly.
+                    let mut labels: std::collections::HashMap<
+                        String,
+                        (std::time::Instant, std::collections::BTreeMap<u64, String>),
+                    > = std::collections::HashMap::new();
+                    const LABEL_TTL: std::time::Duration = std::time::Duration::from_secs(2);
                     while !quit.load(Ordering::Relaxed) {
                         // Drain inbound unsigned CRDT increments.
                         let drained: Vec<_> = {
@@ -1754,29 +1766,41 @@ pub fn spawn_full(
                             // is coloured by, and a peer that gains a
                             // name must not change colour in front of
                             // the people watching it.
-                            let name = drain_net
-                                .peer_labels(&entry.cluster_id)
-                                .get(&entry.peer)
-                                .cloned();
+                            let now = std::time::Instant::now();
+                            let fresh = labels
+                                .get(&entry.cluster_id)
+                                .is_some_and(|(at, _)| now.duration_since(*at) < LABEL_TTL);
+                            if !fresh {
+                                labels.insert(
+                                    entry.cluster_id.clone(),
+                                    (now, drain_net.peer_labels(&entry.cluster_id)),
+                                );
+                            }
                             let route = CrdtRoute::cluster(entry.cluster_id.clone());
-                            if let Some(name) = name {
-                                let slot = (entry.cluster_id.clone(), entry.peer);
-                                if announced.get(&slot) != Some(&name) {
-                                    announced.insert(slot, name.clone());
-                                    let roster = CollabEvent::Context {
-                                        collaborators: vec![ui::collaboration::Collaborator {
-                                            id: user_id.clone(),
-                                            name,
-                                            // The palette colour the id
-                                            // already resolves to. A
-                                            // roster entry names a peer;
-                                            // it does not recolour one.
-                                            color: [0.0, 0.0, 0.0],
-                                        }],
-                                        permissions: Vec::new(),
-                                    };
-                                    drain_table.fanout_to_route(&roster, u64::MAX, &route);
-                                }
+                            let slot = (entry.cluster_id.clone(), entry.peer);
+                            let say = roster_announcement(
+                                announced.get(&slot).map(String::as_str),
+                                labels
+                                    .get(&entry.cluster_id)
+                                    .and_then(|(_, m)| m.get(&entry.peer))
+                                    .map(String::as_str),
+                                &user_id,
+                            );
+                            if let Some(name) = say {
+                                announced.insert(slot, name.clone());
+                                let roster = CollabEvent::Context {
+                                    collaborators: vec![ui::collaboration::Collaborator {
+                                        id: user_id.clone(),
+                                        name,
+                                        // The palette colour the id
+                                        // already resolves to. A roster
+                                        // entry names a peer; it does
+                                        // not recolour one.
+                                        color: [0.0, 0.0, 0.0],
+                                    }],
+                                    permissions: Vec::new(),
+                                };
+                                drain_table.fanout_to_route(&roster, u64::MAX, &route);
                             }
                             let event = CollabEvent::RemotePresenceUpdate {
                                 user_id,
@@ -2013,8 +2037,82 @@ pub fn spawn_full(
     })
 }
 
+/// What, if anything, to tell local apps this peer is called.
+///
+/// `said` is the name last announced for the peer, `known` what the room
+/// says now, and `id` the `peer@<handle>` the presence frames carry.
+///
+/// Three cases, and the last two are the ones worth spelling out:
+///
+/// - The room names the peer and that is not what was last said: say it.
+/// - The room has **stopped** naming a peer that was named: say the id.
+///   An app told a name once holds it until told otherwise, so a label
+///   taken back in the room would otherwise stay on screen for the rest
+///   of the session — and it would be a name over a caret that nobody
+///   is entitled to any more.
+/// - The room has never named the peer and still does not: say nothing.
+///   The id is already what an app that was told nothing shows, so an
+///   announcement would be a frame per presence frame saying so.
+fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Option<String> {
+    let now = known.unwrap_or(id);
+    match said {
+        Some(before) if before == now => None,
+        Some(_) => Some(now.to_string()),
+        None if now == id => None,
+        None => Some(now.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// The peer id a presence frame carries. A digest, which is why a
+    /// name is worth attaching to it and why it is not one.
+    const PEER: &str = "peer@5537458103208628978";
+
+    /// The demo beat: a peer the room has named is announced under that
+    /// name, once.
+    #[test]
+    fn a_named_peer_is_announced_and_then_left_alone() {
+        assert_eq!(
+            super::roster_announcement(None, Some("Xaver"), PEER),
+            Some("Xaver".to_string()),
+        );
+        // Presence arrives at pointer rate. Saying it again every frame
+        // would be a roster update per pointer move.
+        assert_eq!(super::roster_announcement(Some("Xaver"), Some("Xaver"), PEER), None);
+    }
+
+    /// A peer nobody has named produces no announcement at all. The id
+    /// is already what an app that was told nothing shows.
+    #[test]
+    fn an_unnamed_peer_is_not_announced() {
+        assert_eq!(super::roster_announcement(None, None, PEER), None);
+    }
+
+    /// And a name taken back has to be taken back on screen. An app
+    /// holds a name until it is told otherwise, so a label the room has
+    /// revoked would otherwise sit over that peer's caret for the rest
+    /// of the session.
+    #[test]
+    fn a_revoked_name_reverts_the_peer_to_its_id() {
+        assert_eq!(
+            super::roster_announcement(Some("Xaver"), None, PEER),
+            Some(PEER.to_string()),
+        );
+        // …and once said, not repeated.
+        assert_eq!(super::roster_announcement(Some(PEER), None, PEER), None);
+    }
+
+    /// A rename reaches the people watching, rather than the first name
+    /// standing for the session.
+    #[test]
+    fn a_renamed_peer_is_announced_again() {
+        assert_eq!(
+            super::roster_announcement(Some("Xaver"), Some("Xaver Peeters"), PEER),
+            Some("Xaver Peeters".to_string()),
+        );
+    }
+
     use super::*;
     use std::path::Path;
     use std::time::Duration;
