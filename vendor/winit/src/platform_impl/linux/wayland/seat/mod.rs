@@ -20,6 +20,7 @@ use crate::event::WindowEvent;
 use crate::keyboard::ModifiersState;
 use crate::platform_impl::wayland::state::WinitState;
 
+pub mod data_device;
 mod keyboard;
 mod pointer;
 mod text_input;
@@ -28,6 +29,7 @@ mod touch;
 pub use pointer::gestures::{GesturePinchData, PointerGesturesState};
 pub use pointer::relative_pointer::RelativePointerState;
 pub use pointer::{PointerConstraintsState, WinitPointerData, WinitPointerDataExt};
+pub use data_device::DndState;
 pub use text_input::{TextInputState, ZwpTextInputV3Ext};
 
 use keyboard::{KeyboardData, KeyboardState};
@@ -56,6 +58,9 @@ pub struct WinitSeatState {
 
     /// The keyboard bound on the seat.
     keyboard_state: Option<KeyboardState>,
+
+    /// The data device bound on the seat, receiving drag-and-drop.
+    data_device: Option<sctk::data_device_manager::data_device::DataDevice>,
 
     /// The current modifiers state on the seat.
     modifiers: ModifiersState,
@@ -142,6 +147,14 @@ impl SeatHandler for WinitState {
                 self.pointer_surfaces.insert(surface_id, themed_pointer.clone());
 
                 seat_state.pointer = Some(themed_pointer);
+
+                // A drag-and-drop arrives on the seat's data device; bind
+                // one alongside the pointer that will carry the drag.
+                if seat_state.data_device.is_none() {
+                    if let Some(dnd) = self.dnd.as_ref() {
+                        seat_state.data_device = Some(dnd.get_data_device(queue_handle, &seat));
+                    }
+                }
             },
             _ => (),
         }
@@ -185,6 +198,9 @@ impl SeatHandler for WinitState {
                 }
             },
             SeatCapability::Pointer => {
+                // `DataDevice`'s own `Drop` releases the protocol object.
+                seat_state.data_device = None;
+
                 if let Some(relative_pointer) = seat_state.relative_pointer.take() {
                     relative_pointer.destroy();
                 }
