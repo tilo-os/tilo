@@ -40,6 +40,7 @@ use crate::shell::chrome_state::{Chrome, OpenTarget};
 use crate::shell::launcher::{self, InstalledApp};
 use crate::shell::notification::{Notification, NotificationSeverity};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
+use crate::shell::search::action_api::{ActionArgs, ActionError};
 
 /// Chip label / group header for launchable apps. Mirrors
 /// [`ResourceKind::Application`]'s label; kept as a constant because
@@ -193,7 +194,7 @@ impl ApplicationsProvider {
                 title: format!("Open {}", app.display_name),
                 subtitle: Some(subtitle),
                 score: score - NOT_INSTALLED_TIEBREAK,
-                on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
+                on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
                     // Everything decided on the frame thread is decided
                     // *now*, while the user's selection and the layout
                     // they were looking at are both still true. The
@@ -230,7 +231,7 @@ impl ApplicationsProvider {
                             .with_app_name("Applications"),
                         );
                         st.bump();
-                        return;
+                        return Ok(());
                     };
                     // The palette closes the instant this returns, so
                     // this notification is the only thing standing
@@ -258,6 +259,7 @@ impl ApplicationsProvider {
                         room,
                         capabilities,
                     );
+                    Ok(())
                 }),
                 params: Vec::new(),
             });
@@ -843,7 +845,7 @@ mod tests {
         );
         let row = out.first().expect("a row for the offered app");
         assert!(c.borrow().notifications().is_empty());
-        (row.on_open)(&mut doc, &automerge::ROOT, &c);
+        let _ = (row.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none());
         let st = c.borrow();
         let n = st
             .notifications()
