@@ -257,6 +257,24 @@ message it would reject. A document past the cap does not converge, in a
 `warn` line naming the size; it does not half-converge, and it does not
 fail somewhere unattributable.
 
+**Adoption is one-directional, and that is a real limit.** The arrival
+arms the room on the host that was *already there*, so its document
+crosses to the joiner and the joiner adopts it. Nothing arms the
+reverse: the joiner's own document — the one it created before it met
+anybody — never crosses, so the host has no history for it and parks the
+joiner's deltas. Two people converge on the document that was open
+first, and edits made by the second before it adopted are not merged in.
+
+That is enough for someone joining a document another person is already
+editing, which is the common case and the one the demo shows. It is not
+enough for two people who both typed before meeting. Closing it means
+the toolkit sending its own state once upon adopting a foreign document
+— a decision about the app protocol, where the two documents actually
+are, rather than about routing. Arming the reverse direction here
+instead would look equivalent and is not: with both sides armed, every
+commit re-arms the other, and the room is back to a whole document per
+commit.
+
 Raising the ceiling would move that failure rather than remove it, and
 would do it on a medium where every peer in the room pays for every
 byte. Past the cap the right carrier is a direct peer-to-peer stream —
