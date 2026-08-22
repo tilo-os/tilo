@@ -237,9 +237,11 @@ fn topbar_falls_back_to_tree_collaborators_when_active_workspace_empty() {
 
 #[test]
 fn sidebar_active_card_inherits_tree_collaborator_count() {
-    // The default tree seeds Home with one demo collaborator (so the
-    // top-bar avatar stack lights up on first boot); strip it before
-    // exercising the tree-level fallback path.
+    // The fallback under test only fires when the active workspace has
+    // no roster of its own. A freshly bootstrapped tree already has
+    // none — nobody has joined it — but clear every workspace anyway so
+    // the precondition is stated here rather than borrowed from what
+    // `bootstrap_default` happens to do.
     let mut tree = WorkspaceTree::bootstrap_default();
     for ws in tree.workspaces.iter_mut() {
         ws.collaborators.clear();
@@ -297,11 +299,9 @@ fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
     let mut tree = WorkspaceTree::bootstrap_default();
     let w0 = tree.workspaces[0].id;
     tree.append_empty_workspace("Second");
-    // `bootstrap_default` now seeds demo collaborators on Home (alice)
-    // and on Research (alice + bob) so the top-bar avatar stack has
-    // data on first run; the fallback contract under test here is
-    // per-workspace emptiness, so explicitly clear every workspace's
-    // own roster (including the active one).
+    // The contract under test is per-workspace emptiness, so clear
+    // every workspace's own roster (including the active one) rather
+    // than relying on `bootstrap_default` leaving them empty.
     for ws in tree.workspaces.iter_mut() {
         ws.collaborators.clear();
     }
