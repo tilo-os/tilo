@@ -3580,6 +3580,23 @@ impl ShellOverlayHost {
         )
     }
 
+    /// The rows on offer, with the subtitle each one renders under its
+    /// label.
+    ///
+    /// [`Self::palette_snapshot`] carries labels only, which is enough
+    /// to say *which* row Enter takes but not enough to say what the
+    /// row tells the user. The subtitle is where a badge, a source
+    /// marker or the word "install" would appear, so a harness
+    /// checking that an app the machine has to fetch is offered
+    /// indistinguishably from one it already has needs to read it.
+    pub fn palette_rows_detailed(&self) -> Vec<(String, String, Option<String>)> {
+        self.palette
+            .visible_entries()
+            .into_iter()
+            .map(|e| (e.id.clone(), e.label.clone(), e.description.clone()))
+            .collect()
+    }
+
     /// Focus the palette's query field. The live open path
     /// ([`Self::open_palette_with_scope`]) does this; screenshot
     /// harnesses that force `palette_visible` need it too or they
