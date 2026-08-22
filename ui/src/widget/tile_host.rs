@@ -739,9 +739,13 @@ impl TileHost {
         match &mut self.content {
             TileContent::App(w) => w.draw(scene, transform, tr, theme, presence),
             TileContent::Stub { kind, label } => {
-                // Dark text on the white card.
-                let on_card = theme.tokens.colors.neutral[1]; // slate-900 in dark theme
-                let on_card_dim = theme.tokens.colors.neutral[4]; // slate-600
+                // Ink derived from the card's own luminance — the card is a
+                // black surface under the high-contrast preset and a white
+                // one on the preserved concept palette, so a fixed ramp slot
+                // is legible on only one of them.
+                let ink = theme.on_card();
+                let on_card = ink.ink;
+                let on_card_dim = ink.ink_dim;
                 let text_size = theme.tokens.typography.scale.xl;
                 let (tw, _) = tr.measure(label, text_size, None);
                 let x = self.rect.center().x - tw as f64 / 2.0;

@@ -131,6 +131,35 @@ impl Theme {
     /// A clean, faintly-warm neutral light theme.
     pub fn light() -> Self { Self::from_tokens("Light", Tokens::light()) }
 
+    /// Ink tiers for content painted directly on the window card. Thin
+    /// forwarder to [`crate::tokens::Colors::on_card`] so a widget that
+    /// already holds a `&Theme` does not have to reach through `tokens`.
+    pub fn on_card(&self) -> crate::tokens::colors::OnCard {
+        self.tokens.colors.on_card()
+    }
+
+    /// This theme with its three text tiers re-pointed at the ink the
+    /// **window card** takes ([`Theme::on_card`]).
+    ///
+    /// Shared widgets read every colour off the theme they are handed, so a
+    /// hosted app that paints no background of its own — and therefore
+    /// renders straight onto the card — hands them this instead of the
+    /// ambient theme. That keeps `EmptyState`, `Button` and friends legible
+    /// on the card without every widget growing an on-card colour parameter
+    /// for one caller.
+    ///
+    /// On a theme whose card already matches its chrome this is a no-op
+    /// clone, which is the common case; it earns its keep on the presets
+    /// where the card sits on the other side of the light/dark line.
+    pub fn on_window_card(&self) -> Self {
+        let on = self.on_card();
+        let mut card = self.clone();
+        card.text_primary = on.ink;
+        card.text_dim = on.ink_dim;
+        card.text_tertiary = on.ink_tertiary;
+        card
+    }
+
     /// Build a theme from a compact [`PaletteSpec`]. The default typography /
     /// spacing / motion tokens come from the matching (dark or light) base;
     /// the whole colour set is expanded by [`Colors::themed`].
@@ -597,6 +626,27 @@ mod tests {
     //! blue accent); the preserved concept look lives in `qos_blue`.
     use super::*;
     use crate::color_compat::ColorCompat;
+
+    /// Every shipped palette, including the two accessibility tracks.
+    /// Anything asserted about "a theme's surfaces" is asserted about all of
+    /// them, so a new preset cannot quietly ship a card its text cannot be
+    /// read on.
+    const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
+        Theme::dark,
+        Theme::light,
+        Theme::qos_blue,
+        Theme::dracula,
+        Theme::nord,
+        Theme::gruvbox,
+        Theme::gruvbox_light,
+        Theme::catppuccin_mocha,
+        Theme::catppuccin_latte,
+        Theme::solarized,
+        Theme::oled,
+        Theme::warm_light,
+        Theme::rose_pine,
+        Theme::high_contrast,
+    ];
     use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
 
     fn rgb(c: Color) -> [u8; 3] { [c.r(), c.g(), c.b()] }
@@ -689,6 +739,115 @@ mod tests {
         ] {
             let r = contrast_ratio(t.text_primary, t.bg_app);
             assert!(r >= 4.5, "{} primary text on ground = {r:.2}:1 (< AA)", t.name);
+        }
+    }
+
+    /// Every preset, including the accessibility ones.
+    ///
+    /// `high_contrast` and `oled` are the whole point of the list: their
+    /// window card is black / `#0A0A0A`, and the three call sites that
+    /// paint on it used to take ink from `neutral[1]` — the *dark* end of a
+    /// dark theme's ramp — so a stub tile's label, a foreign surface's
+    /// "waiting for first frame", and a blank note's zero-state were dark
+    /// on dark and simply could not be read. The light presets had the
+    /// mirror bug: `neutral[1]` there is near-white, on a white card.
+    #[test]
+    fn on_card_ink_clears_aa_on_every_preset_card() {
+        use crate::a11y::contrast_ratio;
+        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            let card = t.tokens.colors.surfaces.window_card;
+            let on = t.on_card();
+            let r = contrast_ratio(on.ink, card);
+            assert!(r >= 4.5, "{} on-card ink = {r:.2}:1 (< AA)", t.name);
+            let rd = contrast_ratio(on.ink_dim, card);
+            assert!(rd >= 4.5, "{} on-card dim ink = {rd:.2}:1 (< AA)", t.name);
+            // The tertiary tier is the deliberately quiet one — hints,
+            // comments, a gutter's line numbers — and how quiet it is, is a
+            // property of the palette's authorship, not of this derivation.
+            // (Solarized's runs at 2.8:1 on its own ground on purpose; the
+            // documented target for the token is large-text AA, 3:1.) So the
+            // bar here is: clear 3:1, or at minimum be no worse on the card
+            // than that palette already manages against its own ground.
+            // Either way it stays a readable tier, which is the thing the
+            // old fixed ramp slot lost entirely on the high-contrast and
+            // OLED cards.
+            let rt = contrast_ratio(on.ink_tertiary, card);
+            let floor = contrast_ratio(t.text_tertiary, t.bg_app).min(3.0) - 0.01;
+            assert!(
+                rt >= floor,
+                "{} on-card tertiary ink = {rt:.2}:1, below the {floor:.2}:1 \
+                 this palette manages on its own ground",
+                t.name
+            );
+        }
+    }
+
+    /// `Theme::on_window_card` is what shared widgets are handed when they
+    /// draw onto the card, so its three text tiers have to be the on-card
+    /// ink — not the chrome's.
+    #[test]
+    fn on_window_card_repoints_the_three_text_tiers() {
+        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            let on = t.on_card();
+            let card_theme = t.on_window_card();
+            assert_eq!(card_theme.text_primary, on.ink, "{}", t.name);
+            assert_eq!(card_theme.text_dim, on.ink_dim, "{}", t.name);
+            assert_eq!(card_theme.text_tertiary, on.ink_tertiary, "{}", t.name);
+            // Everything else is the ambient theme, untouched.
+            assert_eq!(card_theme.accent_primary, t.accent_primary, "{}", t.name);
+            assert_eq!(card_theme.bg_app, t.bg_app, "{}", t.name);
+        }
+    }
+
+    /// The tint is a whisper on the card (a gutter strip, a zebra row), not
+    /// a second surface: it must stay far closer to the card than the ink
+    /// is, in either direction.
+    #[test]
+    fn on_card_tint_reads_as_a_tint_not_a_panel() {
+        use crate::a11y::contrast_ratio;
+        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            let card = t.tokens.colors.surfaces.window_card;
+            let on = t.on_card();
+            let r = contrast_ratio(on.tint, card);
+            assert!(
+                r < 1.6,
+                "{} on-card tint is {r:.2}:1 from the card — that reads as a \
+                 panel, not a tint",
+                t.name
+            );
+        }
+    }
+
+    /// The window card and the ground apps fill are the same colour family,
+    /// so a window whose app painted nothing does not read as a different
+    /// kind of surface from the window beside it.
+    ///
+    /// This is what stops the desktop flipping between a light and a dark
+    /// window as the user moves across tabs: Notes paints no background and
+    /// shows the card, while Files and the word processor fill
+    /// `surfaces.base` and the terminal fills its own deep ground.
+    ///
+    /// `qos_blue` is deliberately not in the list. It is the first design
+    /// preserved verbatim — its white card is Tailwind ground truth, pinned
+    /// by `qos_blue_surfaces_match_concept_layered_palette` — and in the
+    /// concept the hosted content was light too, so the card is consistent
+    /// within that palette's own world.
+    #[test]
+    fn window_card_shares_the_ground_s_colour_family() {
+        use crate::a11y::contrast_ratio;
+        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            if t.name == "qOS Blue" {
+                continue;
+            }
+            let card = t.tokens.colors.surfaces.window_card;
+            let r = contrast_ratio(card, t.bg_app);
+            assert!(
+                r < 3.0,
+                "{}: window card is {r:.2}:1 from the app ground — an empty \
+                 window would flip the frame's colour family against a \
+                 window that fills its own background",
+                t.name
+            );
         }
     }
 
