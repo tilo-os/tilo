@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import base64
 import json
 import os
 import re
@@ -602,11 +603,15 @@ class Session:
         """The exported action surface. Read-only by construction."""
         return ok(call(self.sock, {"op": "actions_enumerate", "query": query}))["answer"]
 
-    def invoke_action(self, provider: str, action_id: str) -> dict:
+    def invoke_action(self, provider: str, action_id: str,
+                      args: dict | None = None) -> dict:
         """Invoke one action by its stable address. Raw response, so a
         refusal is a result rather than an exception."""
-        return call(self.sock, {"op": "actions_invoke",
-                                "provider": provider, "id": action_id})
+        payload = {"op": "actions_invoke", "provider": provider,
+                   "id": action_id}
+        if args is not None:
+            payload["args"] = args
+        return call(self.sock, payload)
 
     # -- synthetic input (counted) -----------------------------------
 
@@ -1310,6 +1315,55 @@ def mint_invite(host: Session) -> str | None:
     return token
 
 
+def peer_id_of(token: str) -> str | None:
+    """The peer id inside a session's own invite.
+
+    A token names the machine that issued it, so a session's own invite
+    is also how that session says who it is. That is what lets one
+    person hand another the identity they are about to be invited
+    under, without anything new on the wire.
+    """
+    try:
+        pad = "=" * (-len(token) % 4)
+        blob = json.loads(base64.urlsafe_b64decode(token + pad).decode())
+        return blob.get("owner_peer_id") or None
+    except Exception:
+        return None
+
+
+def mint_named_invite(host: Session, peer: str, name: str) -> str | None:
+    """Invite a *named* peer, rather than whoever redeems the token.
+
+    A plain `peer.invite` says nothing about who its token is for, and
+    the host records only his own name at mint time — so naming resolved
+    in one direction only: a guest saw `ada` while ada saw
+    `peer@…`, and a cursor nobody can attribute to a person is the thing
+    beat 4 exists to disprove.
+    """
+    resp = host.invoke_action(AGENT_PROVIDER, "peer.invite.named",
+                              {"peer": peer, "name": name})
+    if "err" in resp:
+        note(f"peer.invite.named refused: {json.dumps(resp['err'])[:120]}")
+        return None
+    token = wait_for(lambda: host.chrome()["peer_sync"]["invite_token"],
+                     timeout=20)
+    dismiss_peer_sync_card(host, "invite")
+    return token
+
+
+def introduce(guest: Session) -> str | None:
+    """Have `guest` say who it is, by minting its own invite.
+
+    Off camera on purpose: it is a card on the guest's screen carrying a
+    token nobody redeems, and the beat it serves is the host's.
+    """
+    guest.run_palette_command("invite peer", expect_id="result:0")
+    token = wait_for(lambda: guest.chrome()["peer_sync"]["invite_token"],
+                     timeout=20)
+    dismiss_peer_sync_card(guest, "invite")
+    return peer_id_of(token or "")
+
+
 def join_room(guest: Session, token: str, by_action_api: bool) -> bool:
     """Put `guest` into the room `token` names.
 
@@ -1698,15 +1752,23 @@ def beat_two(ada: Session, bob: Session, host_ws: dict) -> None:
     banner("2.  ada invites bob")
     cut("ada")
 
-    step("he mints an invite")
+    # bob says who he is first, off camera: his own invite names his
+    # peer id, and that is what lets ada invite *him* rather than
+    # whoever redeems the token.
+    bob_peer = introduce(bob)
+    claim("bob's peer id is known", bool(bob_peer), True)
+
+    step(f"he invites bob by name")
     # Minting is his: the palette opens on his screen and the card with
     # the token comes up there.
-    token = mint_invite(ada)
+    cut("ada")
+    token = mint_named_invite(ada, bob_peer or "", bob.user)
     claim("ada minted an invite token", bool(token), True)
     if not token:
         raise SystemExit("no invite token: the rest cannot run")
     note("the token is a signed blob carrying the room id, the owner's "
-         "address and an expiry")
+         "address, an expiry — and now the name the guest is invited "
+         "under, so both machines can attribute a cursor to a person")
 
     # Redeeming is bob's, and it is his screen that changes.
     cut("bob")
@@ -1722,8 +1784,12 @@ def beat_three(ada: Session, agent: Session, host_ws: dict) -> None:
     banner("3.  ada invites the agent")
     cut("ada")
 
+    agent_peer = introduce(agent)
+    claim("the agent's peer id is known", bool(agent_peer), True)
+
     step("a second token — but an agent is not a peer")
-    token = mint_invite(ada)
+    cut("ada")
+    token = mint_named_invite(ada, agent_peer or "", agent.user)
     claim("ada minted a second token", bool(token), True)
     if not token:
         raise SystemExit("no second token: the agent cannot join")
@@ -2405,6 +2471,10 @@ def main() -> int:
                          "still honours QOS_TEST_CONTROL (any profile with "
                          "debug-assertions on — `demo` or `dev`, never "
                          "`--release`)")
+    ap.add_argument("--allow-stale-shell", action="store_true",
+                    help="record even if the compositor binary is older than "
+                         "the sources under test (default: refuse, because a "
+                         "frame cannot tell you which build it came from)")
     ap.add_argument("--size", default=None, metavar="WxH",
                     help="headless viewport (default 1280x800, or "
                          f"{RECORD_SIZE} under --record)")
@@ -2481,6 +2551,49 @@ def main() -> int:
     shutil.rmtree(args.out, ignore_errors=True)
     shots = os.path.join(args.out, "shots")
     os.makedirs(shots, exist_ok=True)
+
+    # Refuse to film a binary older than the code it is meant to show.
+    #
+    # This rig has silently recorded a stale compositor more than once:
+    # the run is green, the frames are of last night's build, and the
+    # fix everyone is waiting to see is simply not in the picture. A
+    # screenshot cannot tell you which build it came from, so the check
+    # has to happen here, before anything is recorded.
+    #
+    # Sources are compared against the binary's own mtime. Newer source
+    # is refused rather than warned about: a warning in a 300-line
+    # transcript is a warning nobody reads.
+    if not args.allow_stale_shell:
+        newer = []
+        try:
+            built = os.path.getmtime(args.shell)
+            for root in (os.path.join(REPO, "shell", "src"),
+                         os.path.join(REPO, "ui", "src")):
+                for dirpath, _dirs, files in os.walk(root):
+                    for f in files:
+                        if not f.endswith(".rs"):
+                            continue
+                        fp = os.path.join(dirpath, f)
+                        try:
+                            if os.path.getmtime(fp) > built:
+                                newer.append(os.path.relpath(fp, REPO))
+                        except OSError:
+                            pass
+        except OSError as e:
+            print(f"cannot stat {args.shell}: {e}")
+            return 2
+        if newer:
+            newer.sort()
+            print(f"\nrefusing to record: {os.path.relpath(args.shell, REPO)} "
+                  f"is older than {len(newer)} source file(s) under test")
+            for f in newer[:8]:
+                print(f"    {f}")
+            if len(newer) > 8:
+                print(f"    ... and {len(newer) - 8} more")
+            print("\n  cargo build --profile demo -p shell --bin shell "
+                  "--bin qos-control")
+            print("  (or --allow-stale-shell to film it anyway)")
+            return 2
 
     # Unix socket paths are capped near 108 bytes, so they go in the
     # runtime dir rather than next to the rest of the run.
