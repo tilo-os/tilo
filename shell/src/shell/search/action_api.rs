@@ -49,125 +49,31 @@
 //! argument **before** the action runs, so a bad call is a refusal and
 //! never a partial mutation.
 
-use std::collections::BTreeMap;
-
 use automerge::{AutoCommit, ObjId};
 
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 
 use super::{ResourceKind, SearchRegistry, SearchResult};
 
-/// The type of one action parameter. Deliberately small: these are
-/// values a caller with no screen can produce from a descriptor alone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ParamType {
-    Text,
-    Integer,
-    Boolean,
-}
-
-impl ParamType {
-    /// Wire spelling, and what an enumeration descriptor carries.
-    pub fn label(self) -> &'static str {
-        match self {
-            ParamType::Text => "text",
-            ParamType::Integer => "integer",
-            ParamType::Boolean => "boolean",
-        }
-    }
-}
-
-/// One typed parameter an action declares.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ActionParam {
-    pub name: &'static str,
-    pub ty: ParamType,
-    /// Whether an invocation must supply it. An optional parameter's
-    /// default belongs to the action, and is stated in `description` —
-    /// the catalogue does not invent one.
-    pub required: bool,
-    pub description: &'static str,
-}
-
-impl ActionParam {
-    pub const fn required(name: &'static str, ty: ParamType, description: &'static str) -> Self {
-        Self {
-            name,
-            ty,
-            required: true,
-            description,
-        }
-    }
-
-    pub const fn optional(name: &'static str, ty: ParamType, description: &'static str) -> Self {
-        Self {
-            name,
-            ty,
-            required: false,
-            description,
-        }
-    }
-}
-
-/// One bound argument value.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ArgValue {
-    Text(String),
-    Integer(i64),
-    Boolean(bool),
-}
-
-impl ArgValue {
-    fn ty(&self) -> ParamType {
-        match self {
-            ArgValue::Text(_) => ParamType::Text,
-            ArgValue::Integer(_) => ParamType::Integer,
-            ArgValue::Boolean(_) => ParamType::Boolean,
-        }
-    }
-}
-
-/// Why a set of arguments does not satisfy an action's parameters.
+/// The parameter vocabulary, defined once in [`qos_actions::params`] and
+/// re-exported here.
 ///
-/// Each variant names the parameter, because a caller that cannot see
-/// the screen has nothing else to correct against.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ArgError {
-    Missing {
-        name: String,
-    },
-    Unknown {
-        name: String,
-    },
-    WrongType {
-        name: String,
-        expected: ParamType,
-        got: ParamType,
-    },
-}
-
-impl std::fmt::Display for ArgError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ArgError::Missing { name } => {
-                write!(f, "required argument `{name}` was not supplied")
-            }
-            ArgError::Unknown { name } => {
-                write!(f, "`{name}` is not a parameter of this action")
-            }
-            ArgError::WrongType {
-                name,
-                expected,
-                got,
-            } => write!(
-                f,
-                "argument `{name}` must be {}, got {}",
-                expected.label(),
-                got.label()
-            ),
-        }
-    }
-}
+/// These types used to be declared in this module *and* again on the app
+/// side, which meant the headless surface and an app's own actions agreed
+/// only for as long as someone kept them in step by hand. Two spellings of
+/// the same argument is precisely how an external caller ends up supplying
+/// a value the app parses differently — a class of bug that no amount of
+/// testing removes, because the two definitions are each internally
+/// consistent. One definition removes it instead.
+///
+/// Nothing about this surface moves: `text` / `integer` / `boolean` are the
+/// same wire spellings, and [`ActionArgs::bind`] keeps the same strictness —
+/// an unknown argument is refused rather than dropped, the first failure
+/// wins, and nothing partial reaches an action. The shared definition adds
+/// [`ParamType::Number`] and [`ActionParam::choices`] on top; no action in
+/// this crate declares either yet, so the compositor's exported descriptors
+/// are byte-for-byte what they were.
+pub use qos_actions::params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 
 /// Why an invocation did not happen, or did not complete.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -197,92 +103,6 @@ impl std::fmt::Display for ActionError {
             ActionError::Arguments(e) => write!(f, "{e}"),
             ActionError::Refused(why) => write!(f, "{why}"),
         }
-    }
-}
-
-/// Arguments for one invocation, already checked against the action's
-/// declared parameters.
-///
-/// There is no way to build one except through [`ActionArgs::bind`] or
-/// [`ActionArgs::none`], so an action's body never has to re-validate:
-/// if it holds an `ActionArgs`, every required parameter is present and
-/// every value has the declared type. That is what keeps a bad call
-/// from becoming a half-applied edit.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ActionArgs {
-    values: BTreeMap<String, ArgValue>,
-}
-
-impl ActionArgs {
-    /// The empty argument set — what a nullary action is invoked with.
-    pub fn none() -> Self {
-        Self::default()
-    }
-
-    /// Check `supplied` against `params` and bind it.
-    ///
-    /// Fails on the first problem rather than accumulating: the caller
-    /// has to fix them one at a time anyway, and a partial bind must
-    /// never reach an action.
-    pub fn bind(
-        params: &[ActionParam],
-        supplied: impl IntoIterator<Item = (String, ArgValue)>,
-    ) -> Result<Self, ArgError> {
-        let mut values: BTreeMap<String, ArgValue> = BTreeMap::new();
-        for (name, value) in supplied {
-            let Some(param) = params.iter().find(|p| p.name == name) else {
-                // An unknown argument is refused rather than dropped. A
-                // silently ignored argument is the failure mode this
-                // whole surface exists to remove: the caller believes it
-                // asked for something it did not get.
-                return Err(ArgError::Unknown { name });
-            };
-            if value.ty() != param.ty {
-                return Err(ArgError::WrongType {
-                    name,
-                    expected: param.ty,
-                    got: value.ty(),
-                });
-            }
-            values.insert(name, value);
-        }
-        for param in params.iter().filter(|p| p.required) {
-            if !values.contains_key(param.name) {
-                return Err(ArgError::Missing {
-                    name: param.name.to_string(),
-                });
-            }
-        }
-        Ok(Self { values })
-    }
-
-    /// The text bound to `name`, if any.
-    pub fn text(&self, name: &str) -> Option<&str> {
-        match self.values.get(name) {
-            Some(ArgValue::Text(s)) => Some(s.as_str()),
-            _ => None,
-        }
-    }
-
-    /// The integer bound to `name`, if any.
-    pub fn integer(&self, name: &str) -> Option<i64> {
-        match self.values.get(name) {
-            Some(ArgValue::Integer(i)) => Some(*i),
-            _ => None,
-        }
-    }
-
-    /// The boolean bound to `name`, if any.
-    pub fn boolean(&self, name: &str) -> Option<bool> {
-        match self.values.get(name) {
-            Some(ArgValue::Boolean(b)) => Some(*b),
-            _ => None,
-        }
-    }
-
-    /// Whether anything is bound.
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
     }
 }
 
@@ -526,6 +346,31 @@ impl SelectedAction<'_> {
     ) -> Result<(), ActionError> {
         let bound =
             ActionArgs::bind(&self.result.params, args).map_err(ActionError::Arguments)?;
+        (self.result.on_open)(doc, root, chrome, &bound)
+    }
+
+    /// Invoke the action with arguments that arrived as a JSON object —
+    /// the shape a control socket delivers.
+    ///
+    /// The JSON→[`ArgValue`] conversion lives in the shared vocabulary
+    /// ([`ActionArgs::bind_json`]) rather than in the transport, so the
+    /// compositor's socket and an app's own out-of-process surface read a
+    /// wire argument the same way. A transport that kept its own table
+    /// would be a second definition of the thing this vocabulary exists to
+    /// have exactly one of.
+    ///
+    /// Binding happens **before** the action runs, and every argument is
+    /// converted before any is bound, so a request carrying one bad value
+    /// leaves the document untouched rather than half-applied.
+    pub fn invoke_json(
+        &self,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        chrome: &Chrome,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), ActionError> {
+        let bound =
+            ActionArgs::bind_json(&self.result.params, args).map_err(ActionError::Arguments)?;
         (self.result.on_open)(doc, root, chrome, &bound)
     }
 
