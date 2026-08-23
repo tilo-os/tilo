@@ -233,6 +233,7 @@ mod tests {
             palette,
             path: crate::media::workspace_path("m.mp4"),
             hydration: crate::media::Hydration::Projected,
+            ..Default::default()
         });
         id
     }
@@ -712,6 +713,7 @@ mod tests {
             palette: 0,
             path: path.to_string_lossy().into_owned(),
             hydration: crate::media::Hydration::Local,
+            ..Default::default()
         });
         let tid = Uuid::new_v4();
         p.tracks.push(Track {
@@ -817,6 +819,7 @@ mod tests {
             palette: 0,
             path: path.to_string_lossy().into_owned(),
             hydration: crate::media::Hydration::Local,
+            ..Default::default()
         });
         let tid = Uuid::new_v4();
         p.tracks.push(Track {
@@ -918,6 +921,7 @@ mod tests {
             palette: 0,
             path: path.to_string_lossy().into_owned(),
             hydration: crate::media::Hydration::Local,
+            ..Default::default()
         });
         let mut track = |index: u32| {
             let id = Uuid::new_v4();

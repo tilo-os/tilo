@@ -2051,6 +2051,13 @@ impl VideoEditorApp {
         self.selection.remove_all(&clip_ids);
         self.actions
             .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &remove_media_action(&mid, &clip_ids));
+        // Mirror the action in memory, the way the import path does. The
+        // document is the truth and `sync` will reload it, but the model
+        // must not disagree with it in between — a caller that deletes and
+        // then reads back its own project would otherwise still be handed
+        // the source it just removed.
+        self.project.media.retain(|m| m.id != mid);
+        self.project.clips.retain(|c| c.media != mid);
         if self.selected_media == Some(mid) {
             self.selected_media = None;
         }
@@ -7926,6 +7933,7 @@ mod tests {
             palette: 5,
             path: f.to_string_lossy().into_owned(),
             hydration: crate::media::Hydration::Local,
+            ..Default::default()
         };
         let mid = m.id;
         VideoDoc::upsert_media(&mut doc, &m);
