@@ -948,6 +948,21 @@ impl ForeignSurfaceWidget {
     /// nothing when the sizes match (the centring term is zero) and keeps
     /// paint and input on one origin when they don't, so a press always
     /// lands on the row it appears to land on.
+    /// Whether this surface's window is still being held back, and so
+    /// the shell has to keep asking.
+    ///
+    /// The frame counter alone cannot carry this. A client that has
+    /// committed nothing leaves it at zero, matching the cache, so the
+    /// strip is judged unchanged and never re-recorded — and the ten
+    /// second backstop in [`ForeignFrameStore::mark_presented`] is only
+    /// ever read from a draw. The window would sit invisible until some
+    /// unrelated repaint happened to come along, which is not something
+    /// to leave to chance for the case whose whole purpose is to make
+    /// sure a window cannot be stranded.
+    fn awaiting_first_paint(&self) -> bool {
+        !store().is_presented(self.surface_id)
+    }
+
     fn fit_rect(&self, img_w: u32, img_h: u32) -> Option<Rect> {
         if img_w == 0 || img_h == 0 || self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return None;
@@ -1129,11 +1144,11 @@ impl Widget for ForeignSurfaceWidget {
     /// `false` whenever the client is idle, so the paint-gating budget is
     /// unaffected by a foreign tab that isn't rendering.
     fn needs_animation_frame(&self) -> bool {
-        store().frame_seq(self.surface_id) != self.cached_seq
+        self.awaiting_first_paint() || store().frame_seq(self.surface_id) != self.cached_seq
     }
 
     fn needs_redraw(&self) -> bool {
-        store().frame_seq(self.surface_id) != self.cached_seq
+        self.awaiting_first_paint() || store().frame_seq(self.surface_id) != self.cached_seq
     }
 }
 
