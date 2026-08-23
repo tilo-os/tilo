@@ -1703,23 +1703,68 @@ def windows_off_screen(s: Session, viewport: tuple[int, int]) -> list[str]:
     return out
 
 
+#: Height of the compositor's own top bar, in the same coordinates
+#: `foreign_frames` reports tiles in. A click above this line reaches the
+#: shell's chrome rather than any window, so it is the floor for anything
+#: this file aims at a tab pill.
+TOPBAR_H = 44.0
+
+
+def windows_overlapping(s: Session) -> list[str]:
+    """Which client windows are drawn on top of each other.
+
+    The other half of "is this scene filmable", and the half nothing was
+    checking. `windows_off_screen`'s own docstring says that "the left
+    window is cut in half" and "the left window is behind the right one"
+    look similar in a still and are different faults — and then it only
+    detects the first. So a session painting one window full-screen
+    across another passed "both windows are wholly on screen before the
+    gesture", and the drag that followed was aimed into a stack: both
+    tiles were inside the viewport, and one was underneath the other.
+
+    A one-pixel seam between neighbouring tiles is not an overlap, so
+    this is measured as a share of the smaller window's area rather than
+    as any intersection at all.
+    """
+    tiles = [(str(t["app_id"]), t["rect"]) for t in painted_tiles(s).values()]
+    out = []
+    for i in range(len(tiles)):
+        for j in range(i + 1, len(tiles)):
+            (a_id, (ax, ay, aw, ah)) = tiles[i]
+            (b_id, (bx, by, bw, bh)) = tiles[j]
+            ox = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
+            oy = max(0.0, min(ay + ah, by + bh) - max(ay, by))
+            area = ox * oy
+            smaller = min(aw * ah, bw * bh)
+            if smaller > 0 and area / smaller > 0.05:
+                out.append(f"{a_id} and {b_id} overlap by "
+                           f"{100.0 * area / smaller:.0f}% of the smaller")
+    return out
+
+
 def frame_both_windows(s: Session, viewport: tuple[int, int] | None = None) -> None:
     """Put the whole strip in frame: even shares, and scrolled back.
 
-    Two separate things go wrong, and only the first was being handled.
+    Two separate things go wrong, and each has to be checked rather than
+    performed and assumed.
 
     A group takes about three quarters of the strip by default, which is
     right for reading one window and wrong for filming two — so every
-    group is given an even share.
+    group is given an even share. Even means *even between however many
+    groups there are*, which is the half that was wrong: a fixed half
+    each is a strip one and a half screens wide the moment a third group
+    exists, and the window on the end then hangs off by most of its own
+    width. That is what `788px past the right` was, printed underneath a
+    claim that both windows were whole.
 
     The second is the strip's scroll offset. Opening a window in a new
     group scrolls the strip to bring *that* group up, and it does not
     come back when the content would fit whole: measured at 1920 wide,
     two even groups land at `-222 … 578` and `586 … 1386`, so the first
     window is cut by 222px on the left while 534px of empty backdrop
-    sits on the right. Narrowing the groups does not help — the offset
-    stays at -222 and only the windows get smaller — and scrolling the
-    backdrop does not move it either.
+    sits on the right. Narrowing the groups does not help on its own —
+    the offset stays at -222 and only the windows get smaller — and
+    scrolling the backdrop does not move it either.
 
     Focusing the leftmost group does move it: the same two windows then
     sit at `291 … 1091` and `1099 … 1899`, both whole, filling the strip
@@ -1727,56 +1772,109 @@ def frame_both_windows(s: Session, viewport: tuple[int, int] | None = None) -> N
     window you have just opened something next to, which is what a
     person does anyway.
 
-    It is aimed at the tab pill rather than into the window's body: a
-    click in the body reaches the client and selects whatever is under
-    it, and a file row highlighted by the camera is the camera making
-    the picture rather than the demo.
+    Then it is measured, and narrowed and re-framed until it holds or the
+    attempts run out. A beat that needs two windows in one shot cannot
+    take "the gesture was performed" for an answer.
     """
-    resp = s.set_group_width(500)
-    if "err" in resp:
-        note(f"{s.name}: could not even out the strip — "
-             f"{json.dumps(resp['err'])[:120]}")
-    s.settle(0.6)
-
-    # The leftmost client tile, by where it is drawn rather than by the
-    # order the tree lists it in.
-    tiles = []
-    for name in s.target_names():
-        if not name.startswith("foreign-surface-"):
-            continue
-        rect = s.named_rect(name)
-        if rect:
-            tiles.append((rect[0], name, rect))
-    if len(tiles) > 1:
-        tiles.sort()
-        _x, name, rect = tiles[0]
-        x, y, w, _h = rect
-        # The pill sits above the tile's top edge; 18px up lands on it
-        # and stays clear of the client's own first row.
-        s.click_at(max(4.0, x + min(90.0, w / 2.0)), max(4.0, y - 18.0))
-        s.settle(0.8)
-        note(f"{s.name}: focused the left group ({name}) so the strip "
-             f"scrolls back and both windows are in frame")
+    groups = max(1, len(s.groups_here()))
+    attempts = [1000 // groups, 900 // groups, 800 // groups]
+    for share in attempts:
+        share = max(120, min(1000, share))
+        resp = s.set_group_width(share)
+        if "err" in resp:
+            note(f"{s.name}: could not even out the strip — "
+                 f"{json.dumps(resp['err'])[:120]}")
+            break
+        s.settle(0.6)
+        focus_leftmost_group(s)
+        if not viewport:
+            return
+        wrong = windows_off_screen(s, viewport) + windows_overlapping(s)
+        if not wrong:
+            note(f"{s.name}: {groups} group(s) at {share} permille of the "
+                 f"strip — every window is wholly on screen and none is "
+                 f"behind another")
+            return
+        note(f"{s.name}: not framed yet at {share} permille "
+             f"({'; '.join(wrong)}) — narrowing and re-framing")
 
     if viewport:
-        clipped = windows_off_screen(s, viewport)
-        if clipped:
-            gap(f"{s.name}: a window is not wholly on screen — "
-                + "; ".join(clipped))
+        wrong = windows_off_screen(s, viewport) + windows_overlapping(s)
+        if wrong:
+            gap(f"{s.name}: the strip is not filmable after "
+                f"{len(attempts)} attempt(s) at framing it — "
+                + "; ".join(wrong))
         else:
-            note(f"{s.name}: every window is wholly on screen")
+            note(f"{s.name}: every window is wholly on screen and none is "
+                 f"behind another")
+
+
+def focus_leftmost_group(s: Session) -> None:
+    """Click the leftmost client tile's tab pill, which scrolls the strip
+    back to it.
+
+    Aimed at the pill rather than into the window's body: a click in the
+    body reaches the client and selects whatever is under it, and a file
+    row highlighted by the camera is the camera making the picture rather
+    than the demo.
+
+    A single tile is already the whole strip, so there is nothing to
+    scroll back to and the click is skipped — it would only take focus
+    off whatever the beat had just put it on.
+
+    The tiles come from `painted_tiles`, not from the widget registry.
+    The registry names the same tile two ways (`foreign-surface-<id>` and
+    `foreign-surface-<id>[<tab>]`) and does not always carry it the
+    instant the window is laid out — so a lookup by name could report one
+    tile while two were on screen, conclude there was nothing to scroll
+    back to, and leave the second window hanging off the right edge.
+    `foreign_frames` reports the rect the widget tree laid each tab into
+    and has no names in it to get wrong.
+    """
+    tiles = [(t["rect"][0], str(t["app_id"]), t["rect"])
+             for t in painted_tiles(s).values()]
+    if len(tiles) < 2:
+        return
+    tiles.sort()
+    _x, name, rect = tiles[0]
+    x, y, w, _h = rect
+    # The pill sits above the tile's top edge; 18px up lands on it and
+    # stays clear of the client's own first row.
+    #
+    # Unless the tile starts at the top of the screen, which is a window
+    # occupying the whole strip and wearing no pill at all — 18px above
+    # *that* is the compositor's own top bar, and the click lands on the
+    # workspace switcher. A gesture meant to scroll a strip must never be
+    # able to change which workspace is on camera, so it is skipped and
+    # said out loud rather than aimed anyway.
+    py = y - 18.0
+    if py < TOPBAR_H:
+        note(f"{s.name}: the leftmost window ({name}) starts at y={y:.0f}, "
+             f"so it wears no tab pill to click — the strip is not scrolled "
+             f"back")
+        return
+    s.click_at(max(4.0, x + min(90.0, w / 2.0)), py)
+    s.settle(0.8)
+    note(f"{s.name}: focused the left group ({name}) so the strip scrolls "
+         f"back and both windows are in frame")
 
 
 def peer_sync_card_up(s: Session) -> bool:
     """Whether the peer-sync card is being painted over the middle of the
     screen.
 
-    The compositor paints it whenever either field is set
-    (`overlay_host.rs:9104`), so both have to be clear before it is gone —
-    checking only the token left the connect prompt on screen.
+    All three fields, because the compositor paints the card whenever any
+    one of them is set (`overlay_host.rs`: the draw returns early only
+    when `input`, `token` *and* `invite_name` are all `None`). Checking
+    two of them made an open invite composer read as no card at all, so
+    `dismiss_peer_sync_card` returned without dismissing it and the
+    question "who are you inviting?" stayed on screen over the beat after
+    it.
     """
     ps = s.chrome()["peer_sync"]
-    return ps["invite_token"] is not None or ps["connect_input"] is not None
+    return (ps["invite_token"] is not None
+            or ps["connect_input"] is not None
+            or ps.get("invite_name") is not None)
 
 
 def dismiss_peer_sync_card(s: Session, what: str) -> None:
@@ -1804,65 +1902,37 @@ def dismiss_peer_sync_card(s: Session, what: str) -> None:
           peer_sync_card_up(s), False)
 
 
-def mint_invite(host: Session) -> str | None:
-    host.run_palette_command("invite peer", expect_id="result:0")
-    token = wait_for(lambda: host.chrome()["peer_sync"]["invite_token"], timeout=20)
-    # The moment it has been read, and not one beat later: it is a modal
-    # over the middle of the screen and it is showing a live token.
-    dismiss_peer_sync_card(host, "invite")
-    return token
-
-
-def peer_id_in_token(token: str) -> str | None:
-    """The peer id inside a session's own invite.
-
-    Named for the token rather than for the peer, because a
-    `peer_id_of(session)` already exists a few dozen lines up and reads
-    the same id out of a session log. Two functions with one name is a
-    collision Python resolves silently in favour of whichever is defined
-    last — here that handed a `Session` to a base64 decoder, which
-    raised, which the `except` turned into `None` for all three
-    sessions, which read as "three sessions share one identity". The
-    shell was fine.
-
-    A token names the machine that issued it, so a session's own invite
-    is also how that session says who it is. That is what lets one
-    person hand another the identity they are about to be invited
-    under, without anything new on the wire.
-    """
-    try:
-        pad = "=" * (-len(token) % 4)
-        blob = json.loads(base64.urlsafe_b64decode(token + pad).decode())
-        return blob.get("owner_peer_id") or None
-    except Exception:
-        return None
-
-
 def show_collaborators(s: Session) -> str:
-    """Open the room's people from whatever affordance is on screen.
+    """Open the room's people from the affordance on screen.
 
-    The top bar's avatar stack is the affordance
-    (`topbar_chrome.rs:1736` toggles `overlays.collaborators`), and it is
-    the one a person reaches for. It is only *there* once somebody is in
-    the room: with an empty roster the stack is `Rect::ZERO`
-    (`topbar_chrome.rs:1611`), so it is not drawn and cannot be clicked —
-    which is exactly the moment the host wants to invite the first
-    person. Until that is fixed the panel is opened by its address for
-    the first invite, and the route taken is named out loud, because
-    "clicked the top bar" and "opened it by address" are different
-    claims about what a viewer is being shown.
+    The top bar's avatar stack is the affordance (`topbar_chrome.rs`
+    toggles `overlays.collaborators`), and it is the one a person reaches
+    for. It used to be *there* only once somebody was in the room: an
+    empty roster published `Rect::ZERO`, so at the one moment a host
+    wants to invite the *first* person there was nothing to click, and
+    the panel could only be reached by its address — which is not a
+    gesture and is not what a viewer is being shown.
+
+    It keeps its geometry now and reads `Invite`, so this is a click on
+    every run and the address below is a diagnosis rather than a route:
+    taking it is a GAP, because a beat whose subject is the chrome has
+    then not shown the chrome. The route is returned and printed either
+    way.
     """
     if s.named_rect("topbar_avatar_stack"):
         s.click_named("topbar_avatar_stack")
         s.settle(1.0)
         return "the avatar stack in the top bar"
+    gap(f"{s.name}: the top bar published no avatar stack to click, so the "
+        f"room's people had to be opened by address rather than by the "
+        f"gesture this beat is about")
     resp = s.invoke_action(AGENT_PROVIDER, "collaborators.open")
     if "err" in resp:
         note(f"{s.name}: collaborators.open refused — "
              f"{json.dumps(resp['err'])[:120]}")
         return "nothing - the panel could not be opened"
     s.settle(1.0)
-    return "its address (the avatar stack is not drawn on an empty room)"
+    return "its address (the avatar stack was not on screen)"
 
 
 def close_collaborators(s: Session) -> None:
@@ -1871,78 +1941,110 @@ def close_collaborators(s: Session) -> None:
         s.settle(0.4)
 
 
-def mint_named_invite(host: Session, peer: str, name: str,
-                      shots: str | None = None,
-                      tag: str | None = None) -> str | None:
-    """Invite a *named* peer, and get the token onto the clipboard.
+def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
+                          tag: str | None = None) -> str | None:
+    """Invite somebody from the panel a person opened, with the mouse.
 
-    A plain `peer.invite` says nothing about who its token is for, and
-    the host records only his own name at mint time — so naming resolved
-    in one direction only: a guest saw `quinten` while quinten saw
-    `peer@…`, and a cursor nobody can attribute to a person is the thing
-    beat 4 exists to disprove.
+    Assumes the collaborators panel is already up — clicking `Invite`
+    closes it, because the card carries the question and then the token
+    and a menu over that is a menu over the thing the click was for.
 
-    The copy is a **click on the card's own Copy button**, not a chord
-    and not a read of chrome state. That matters twice over: it is the
-    gesture a person makes, and what leaves here is what the button
-    actually produced — a copy that truncated fails at the assertion
-    below rather than being papered over by a token the harness already
-    had in a variable.
+    Every step is a click on a painted control, so a control that is not
+    drawn, not hit-testable or not wired fails here instead of being
+    routed around: `collab_invite` opens a composer that asks *who*,
+    `peer_sync_create` mints against that answer and puts the token on
+    the system clipboard, and the card says so where the host is looking.
+    Raising the same card by its address would have proved only the last
+    of those.
+
+    The only thing typed is a person's name. It is what the room will
+    call whoever redeems this token, it is held on this machine until
+    they do, and it never crosses the wire — a guest who could announce
+    its own name could announce anybody's.
     """
-    resp = host.invoke_action(AGENT_PROVIDER, "peer.invite.named",
-                              {"peer": peer, "name": name})
-    if "err" in resp:
-        note(f"peer.invite.named refused: {json.dumps(resp['err'])[:120]}")
+    invite = host.named_rect("collab_invite")
+    claim("the panel offers a way to invite somebody", invite is not None, True)
+    if invite is None:
+        gap("the collaborators panel painted no Invite button, so the "
+            "invite cannot be raised from the panel a person opened")
         return None
-    token = wait_for(lambda: host.chrome()["peer_sync"]["invite_token"],
-                     timeout=20)
-    if not token:
+    note(f"Invite at {[round(v) for v in invite]}, Join beside it at "
+         f"{[round(v) for v in (host.named_rect('collab_join') or [])]}")
+
+    step("he presses Invite")
+    clicked = host.click_named("collab_invite")
+    if "err" in clicked:
+        gap("the panel's Invite button would not take a click - "
+            f"{json.dumps(clicked['err'])[:120]}")
         return None
-    # Long enough to read: this is the card the beat is about, and it is
-    # the only place the token is ever visible.
+    host.settle(0.8)
+
+    step("and it asks who, before it mints anything")
+    # The whole reason the composer exists. A button that minted an
+    # anonymous token left the host's own roster reading
+    # `peer@12191268537764683811` once the guest arrived, because nothing
+    # in the flow had ever been told a name — and a name is governance
+    # here, so it cannot be supplied by the person arriving.
+    asked = wait_for(
+        lambda: host.chrome()["peer_sync"]["invite_name"] is not None,
+        timeout=15)
+    claim("the card asks who the invitation is for", bool(asked), True)
+    if not asked:
+        gap("Invite opened no composer, so there was nobody to name and "
+            "nothing to mint against")
+        dismiss_peer_sync_card(host, "invite")
+        return None
+    claim("and nothing was minted before it was answered",
+          host.chrome()["peer_sync"]["invite_token"], None)
+    host.type_text(name)
+    host.settle(0.5)
+    claim(f"the field took the name {name!r}",
+          host.chrome()["peer_sync"]["invite_name"], name)
     if RECORDER:
         RECORDER.dwell()
-        RECORDER.dwell()
     if shots and tag:
-        host.snapshot(os.path.join(shots, f"{tag}-invite-card.png"))
+        host.snapshot(os.path.join(shots, f"{tag}-naming.png"))
 
-    step("he presses Copy on the card")
-    clicked = host.click_named("peer_sync_copy")
-    if "err" in clicked:
-        gap("the card's Copy button was not addressable - "
-            f"{json.dumps(clicked['err'])[:120]}")
+    step("and presses Create invite")
+    created = host.click_named("peer_sync_create")
+    if "err" in created:
+        gap("the composer's Create invite button would not take a click - "
+            f"{json.dumps(created['err'])[:120]}")
         dismiss_peer_sync_card(host, "invite")
-        return token
+        return None
+    token = wait_for(lambda: host.chrome()["peer_sync"]["invite_token"],
+                     timeout=30)
+    claim("a token was minted", bool(token), True)
+    if not token:
+        dismiss_peer_sync_card(host, "invite")
+        return None
+    claim(f"and the card says whose it is — {name!r}",
+          host.chrome()["peer_sync"]["invite_for"], name)
+    status = host.chrome()["peer_sync"]["status"] or ""
+    claim("and that it was copied, where he is looking",
+          "copied" in status.lower(), True)
+    note(f"the card reads {status!r}")
+    # What leaves here is what the button produced, not a value the
+    # harness already had in a variable: a copy that silently truncated
+    # fails the join on the other machine rather than being papered over.
     copied = wait_for(lambda: host.clipboard_read(), timeout=10)
-    claim("the token is on his clipboard, put there by the button",
-          copied == token, True)
+    claim("the token really is on his system clipboard, put there by the "
+          "button", copied == token, True)
     if copied != token:
         note(f"the card shows {len(token)} characters; the clipboard holds "
              f"{len(copied or '')}")
-    claim("and the card says so, where he is looking",
-          "Copied" in (host.chrome()["peer_sync"].get("status") or ""), True)
     if RECORDER:
+        RECORDER.dwell()
         RECORDER.dwell()
     if shots and tag:
         host.snapshot(os.path.join(shots, f"{tag}-copied.png"))
+    # The moment it has been read, and not one beat later: it is a modal
+    # over the middle of the screen and it is showing a live token.
     dismiss_peer_sync_card(host, "invite")
     return copied or token
 
 
-def introduce(guest: Session) -> str | None:
-    """Have `guest` say who it is, by minting its own invite.
-
-    Off camera on purpose: it is a card on the guest's screen carrying a
-    token nobody redeems, and the beat it serves is the host's.
-    """
-    guest.run_palette_command("invite peer", expect_id="result:0")
-    token = wait_for(lambda: guest.chrome()["peer_sync"]["invite_token"],
-                     timeout=20)
-    dismiss_peer_sync_card(guest, "invite")
-    return peer_id_in_token(token or "")
-
-
-def join_room(guest: Session, token: str, by_action_api: bool,
+def join_room(guest: Session, token: str, via: str,
               shots: str | None = None, tag: str | None = None) -> bool:
     """Put `guest` into the room `token` names, by pasting and pressing Join.
 
@@ -1956,18 +2058,52 @@ def join_room(guest: Session, token: str, by_action_api: bool,
     to typing a string the harness already had. Nobody types three
     hundred characters of base64 correctly, twice, on a stage.
 
-    `by_action_api` opens the prompt by invoking its stable address
-    rather than by driving the palette.
+    `via` says how the prompt is raised, and the two routes are different
+    claims about the same card:
+
+      `panel`    the top bar, then **Join** in the collaborators panel.
+                 The gesture a person makes, and it fails here when
+                 either control is unpainted or unwired.
+      `action`   the prompt's stable address, `peer.connect`. What a
+                 participant with no screen has instead of a mouse.
     """
     guest.clipboard_write(token)
-    if by_action_api:
+    if via == "panel":
+        step("he opens the room's people on his own machine")
+        opened = show_collaborators(guest)
+        note(f"{guest.name} opened it from {opened}")
+        claim(f"{guest.name}'s collaborators panel is up",
+              guest.overlays()["collaborators"], True)
+        if shots and tag:
+            guest.snapshot(os.path.join(shots, f"{tag}-panel.png"))
+        if RECORDER:
+            RECORDER.dwell()
+
+        step("and presses Join")
+        seat = guest.named_rect("collab_join")
+        claim("the panel offers a way into somebody else's room",
+              seat is not None, True)
+        if seat is None:
+            gap("the collaborators panel painted no Join button, so a room "
+                "cannot be entered from the panel a person opened")
+            return False
+        clicked = guest.click_named("collab_join")
+        if "err" in clicked:
+            gap("the panel's Join button would not take a click - "
+                f"{json.dumps(clicked['err'])[:120]}")
+            return False
+        guest.settle(0.8)
+    elif via == "action":
         resp = guest.invoke_action(AGENT_PROVIDER, "peer.connect")
         if "err" in resp:
             raise RuntimeError(f"{guest.name}: peer.connect refused: {resp['err']}")
     else:
-        guest.run_palette_command("connect to peer", expect_id="result:0")
+        raise ValueError(f"unknown join route {via!r}")
+
     if not wait_for(lambda: guest.chrome()["peer_sync"]["connect_input"] is not None,
                     timeout=15):
+        gap(f"{guest.name}: nothing opened a connect prompt, so there was "
+            f"nowhere to put the token")
         return False
     if RECORDER:
         RECORDER.dwell()
@@ -2674,49 +2810,43 @@ def beat_two(quinten: Session, xaver: Session, host_ws: dict,
     banner("2.  quinten invites xaver")
     cut("quinten")
 
-    # Xaver says who he is first, off camera: his own invite names his
-    # peer id, and that is what lets quinten invite *him* rather than
-    # whoever redeems the token.
-    xaver_peer = introduce(xaver)
-    claim("xaver's peer id is known", bool(xaver_peer), True)
-
     step("he opens the room's people")
-    # Through the chrome, at a pace a viewer can follow. This whole beat
-    # used to pass in under a second because it was invoked as an action:
-    # every claim held and the collaboration UI never appeared, which is
-    # the one thing the beat exists to put on screen.
-    cut("quinten")
+    # Through the chrome, at a pace a viewer can follow, and every step of
+    # it a click on something painted. This whole beat used to pass in
+    # under a second because it was invoked as an action: every claim held
+    # and the collaboration UI never appeared, which is the one thing the
+    # beat exists to put on screen.
     via = show_collaborators(quinten)
     note(f"opened from {via}")
     claim("the collaborators panel is up", quinten.overlays()["collaborators"],
           True)
+    here = quinten.active_workspace().get("collaborators") or []
+    note(f"the room holds {len(here)} collaborator(s) — an empty roster is "
+         f"exactly when the way in matters most, and it is the case that "
+         f"used to paint nothing at all")
     if RECORDER:
         RECORDER.dwell()
     quinten.snapshot(os.path.join(shots, "02a-collaborators-empty.png"))
-    gap("the panel lists who is here and offers no way to invite anybody: "
-        "there is no Invite row in it, so the invite itself is still "
-        "raised by address rather than from the panel a person opened")
-    close_collaborators(quinten)
 
-    step("he invites xaver by name")
-    token = mint_named_invite(quinten, xaver_peer or "", xaver.user,
-                              shots, "02b")
-    claim("quinten minted an invite token", bool(token), True)
+    token = invite_from_the_panel(quinten, xaver.user, shots, "02b")
+    claim("quinten raised an invite from the panel he opened", bool(token),
+          True)
     if not token:
         raise SystemExit("no invite token: the rest cannot run")
     note("the token is a signed blob carrying the room id, the owner's "
-         "address, an expiry — and now the name the guest is invited "
-         "under, so both machines can attribute a cursor to a person")
+         "address and an expiry. The name is not in it: it waits on this "
+         "machine until somebody redeems the token and is written into the "
+         "room document then, by the room's own authority, so both "
+         "machines can attribute a cursor to a person nobody self-declared")
 
     # Redeeming is xaver's, and it is his screen that changes. The cut
-    # lands on the prompt rather than on his empty desktop: a held shot
+    # lands on his top bar rather than on his empty desktop: a held shot
     # of a bare backdrop under a band reading "joined by invite" shows
     # nothing that supports what the band says.
     step("the token travels — by hand, off quinten's clipboard")
     cut("xaver")
     claim("xaver joined",
-          join_room(xaver, token, by_action_api=False, shots=shots, tag="02c"),
-          True)
+          join_room(xaver, token, via="panel", shots=shots, tag="02c"), True)
     claim("xaver's own state holds quinten's room",
           xaver.active_workspace()["room"], host_ws["room"])
     claim("and his own copy names quinten as owner",
@@ -2728,14 +2858,19 @@ def beat_three(quinten: Session, agent: Session, host_ws: dict,
     banner("3.  quinten invites the agent")
     cut("quinten")
 
-    agent_peer = introduce(agent)
-    claim("the agent's peer id is known", bool(agent_peer), True)
+    step("he opens the room's people again — xaver is in it now")
+    via = show_collaborators(quinten)
+    note(f"opened from {via}")
+    claim("the collaborators panel is up", quinten.overlays()["collaborators"],
+          True)
+    if RECORDER:
+        RECORDER.dwell()
+    quinten.snapshot(os.path.join(shots, "03a-collaborators-xaver.png"))
 
-    step("a second token — but an agent is not a peer")
-    cut("quinten")
-    token = mint_named_invite(quinten, agent_peer or "", agent.user,
-                              shots, "03a")
-    claim("quinten minted a second token", bool(token), True)
+    step("a second invitation — but an agent is not a peer")
+    token = invite_from_the_panel(quinten, agent.user, shots, "03b")
+    claim("quinten raised a second invite from the same panel", bool(token),
+          True)
     if not token:
         raise SystemExit("no second token: the agent cannot join")
 
@@ -2743,14 +2878,18 @@ def beat_three(quinten: Session, agent: Session, host_ws: dict,
     # inverts the claim: it is a participant in somebody else's room, so
     # it appears as a row in a roster, a caret in a document and a name
     # in a history — never as a desktop of its own.
-    claim("the agent joined the room", join_room(agent, token, by_action_api=True),
+    claim("the agent joined the room", join_room(agent, token, via="action"),
           True)
     claim("the agent's own state holds quinten's room",
           agent.active_workspace()["room"], host_ws["room"])
-    # The connect *prompt* was opened by address; the token itself had to
-    # be typed, because the control socket has no semantic join op.
-    gap("joining has no semantic op — the invite token had to be typed "
-        "(only the prompt was opened by address)")
+    # Where the two routes differ, said plainly. The agent has no mouse
+    # to reach a top bar with, so it raises the same card by its stable
+    # address — `peer.connect`, one of the actions beat 9 enumerates —
+    # and redeems with the card's own Paste and Join. The token is not
+    # typed on either machine, and there is no route here that types it.
+    note("the agent reached the same prompt by address rather than by "
+         "opening a panel; the token was pasted and redeemed with the "
+         "card's own buttons, never typed")
 
     step("what the agent is allowed to do, before quinten says so")
     # The more interesting half, and the one that makes an agent a
@@ -3052,6 +3191,11 @@ def beat_five(quinten: Session, registry, shots: str) -> dict | None:
     # off screen while it does. Give every group an even share, so the
     # window this beat just opened is actually in the frame that shows it.
     frame_both_windows(quinten, VIEWPORT)
+    # A beat later than the first frame. `painted` means the app has
+    # presented *something*, and what a `ui` app presents first is its
+    # splash — so the shot that is supposed to show a word processor
+    # arriving on a machine that lacked it was a title and a spinner.
+    quinten.settle(2.5)
     quinten.snapshot(os.path.join(shots, "05-word-processor.png"))
     return painted
 
@@ -3143,7 +3287,10 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
         gap("xaver has no word processor open, so there is no far screen "
             "to read a document back off")
         return
-    frame_both_windows(xaver)
+    # With the viewport, so the framing is measured rather than performed
+    # and assumed: this beat's shot is the far screen, and a far screen
+    # that is half off the frame shows nothing about what it holds.
+    frame_both_windows(xaver, VIEWPORT)
     # Both apps have to have attached to their broker and announced their
     # address before either types, or the first keystrokes go out to
     # nobody and it reads as a transport failure.
@@ -3485,6 +3632,20 @@ def beat_eight(quinten: Session, files: dict | None, wp: dict | None,
 
     files_tile = tile_for(FILES_APP, files)
     wp_tile = tile_for(WORD_PROCESSOR, wp)
+    # And that they are not the same window seen twice, nor two windows
+    # stacked. `tile_for` falls back to matching on app id when the
+    # surface an earlier beat opened is no longer laid out, which is how
+    # this beat once aimed a drag between a full-screen file manager and
+    # a word processor drawn underneath it, having just asserted that
+    # both were wholly on screen.
+    stacked = windows_overlapping(quinten)
+    claim("and neither window is drawn on top of the other", stacked, [])
+    if stacked:
+        gap("the two windows this gesture goes between are stacked, so a "
+            "drag across them is not a gesture the camera can show — "
+            + "; ".join(stacked))
+        quinten.snapshot(os.path.join(shots, "09-not-in-frame.png"))
+        return
     claim("Files is on screen to drag out of", files_tile is not None, True)
     claim("the word processor is on screen to drop into",
           wp_tile is not None, True)
@@ -3702,19 +3863,23 @@ def beat_nine(quinten: Session, xaver: Session, agent: Session,
           agent.input_ops, baseline)
     note("the address (provider, id) is the entire input to the invocation")
 
-    # What an agent cannot do here, said plainly rather than shot around.
-    # The action model reaches the shell's own text tiles (`text.insert`
-    # writes into a focused Notes or Editor tab) and stops at the edge of
-    # a packaged app: the word processor is a foreign Wayland client, its
-    # widgets are not addressable, and no exported action writes into its
-    # document. The mechanism that *can* is `qos-agent`, which joins the
-    # document through the collaboration broker and carries out an
-    # instruction written to it — a participant with a caret and no
-    # window. That is the beat this one should become.
-    gap("the agent cannot change the shared document by address: no "
-        "exported action reaches a packaged app's document, so what it "
-        "does here opens a window rather than writing in the file the "
-        "other two are looking at (see apps/agent, which does)")
+    # The action above was a shell action, so it changed the shell: it
+    # opened a panel on the agent's own session. The document is reached
+    # the other way round, and the next step is that — not a lesser
+    # substitute for it.
+    #
+    # `qos-agent` joins the room's collaboration broker as an ordinary
+    # CRDT peer and applies `WordProcessorAction` — the same variants the
+    # word processor's own toolbar dispatches — under its own `ActorId`,
+    # then broadcasts the result. So the exported action is the
+    # *vocabulary* and the CRDT is the *transport*: what arrives on the
+    # other two screens is the app's own operation, attributable to the
+    # participant that made it. And it holds no screen while it does —
+    # there is no winit, wgpu or vello anywhere in `apps/agent`.
+    note("what it just invoked was a shell action, so it moved the shell. "
+         "The document is reached as a participant: apps/agent applies "
+         "the word processor's own actions under its own actor and "
+         "broadcasts them, with no window of its own")
 
     # A terminal used to be opened here, because opening a window was
     # the only visible thing an agent could do by address. It ended the
