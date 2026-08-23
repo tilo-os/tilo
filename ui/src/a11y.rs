@@ -332,6 +332,29 @@ pub struct AccessNode {
     /// Hierarchy depth, 1-based (a top-level tree row is `1`). Read out as
     /// "level N" for nested structures. `None` for flat elements.
     pub level: Option<usize>,
+    /// Stable identity of THIS node within its parent's
+    /// [`children`](Self::children) list, for nodes that are **synthetic** (no
+    /// backing [`Widget`](crate::widget::Widget)).
+    ///
+    /// The export layer derives a synthetic node's assistive-technology id by
+    /// chaining these keys from the owning widget downwards, so an AT that
+    /// holds a reference to "the clip named `intro`" keeps pointing at that
+    /// clip across repaints — and the same key path is what comes back on
+    /// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at)
+    /// when the AT operates the node.
+    ///
+    /// `None` (the default) means "key me by my ordinal position among my
+    /// siblings". That is the right choice for **position-addressed**
+    /// structures — a table's rows and cells, where "row 3" is the identity the
+    /// user means even after a re-sort. Set an explicit key for
+    /// **identity-addressed** structures — a clip on a timeline, a layer, a
+    /// note — whose position moves but which stay the same object; use
+    /// [`with_hashed_key`](Self::with_hashed_key) to derive one from a string
+    /// id.
+    ///
+    /// Do not mix keyed and unkeyed siblings in one list: an explicit key of
+    /// `3` and an ordinal of `3` are indistinguishable downstream.
+    pub key: Option<u64>,
     /// Synthetic accessible children that have no backing
     /// [`Widget`](crate::widget::Widget) of their own. A widget that owns a
     /// structure too fine-grained to model as separate widgets — a table's
@@ -356,6 +379,7 @@ impl AccessNode {
             set_size: None,
             pos_in_set: None,
             level: None,
+            key: None,
             children: Vec::new(),
         }
     }
@@ -421,12 +445,79 @@ impl AccessNode {
         self
     }
 
+    /// Set this node's stable [`key`](Self::key) within its sibling list.
+    ///
+    /// Use this for a synthetic node whose *identity* outlives its *position* —
+    /// a clip that can be dragged along a track, a layer that can be
+    /// reordered. The key must be unique among the node's siblings and stable
+    /// for as long as the element it describes exists.
+    pub fn with_key(mut self, key: u64) -> Self {
+        self.key = Some(key);
+        self
+    }
+
+    /// Set this node's stable [`key`](Self::key) by hashing any hashable value
+    /// — the ergonomic form of [`with_key`](Self::with_key) for elements
+    /// identified by a string (`clip.id`), a tuple (`(track, clip)`), or a
+    /// UUID.
+    ///
+    /// ```
+    /// # use ui::a11y::{AccessNode, Role};
+    /// let clip = AccessNode::new(Role::ListItem).with_hashed_key("clip-intro");
+    /// assert_eq!(clip.key, Some(ui::a11y::hash_key(&"clip-intro")));
+    /// ```
+    pub fn with_hashed_key(mut self, key: impl std::hash::Hash) -> Self {
+        self.key = Some(hash_key(&key));
+        self
+    }
+
     /// Attach synthetic [`children`](Self::children) — accessible elements
     /// with no backing widget (a table's rows/cells). The export layer
     /// emits them as this node's subtree.
     pub fn with_children(mut self, children: Vec<AccessNode>) -> Self {
         self.children = children;
         self
+    }
+}
+
+/// Hash any hashable value into the `u64` key space used by
+/// [`AccessNode::key`].
+///
+/// This is the *inverse-less* half of the key contract: a widget hashes its
+/// element ids on the way out, and compares an incoming key path element back
+/// against `hash_key(&id)` on the way in (see
+/// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at)).
+/// The hash is a plain FNV-1a with a fixed basis, so it is deterministic within
+/// and across processes — unlike [`std::collections::hash_map::RandomState`],
+/// which would hand an assistive technology a different id every launch.
+pub fn hash_key(value: &impl std::hash::Hash) -> u64 {
+    let mut h = FnvHasher::new();
+    std::hash::Hash::hash(value, &mut h);
+    std::hash::Hasher::finish(&h)
+}
+
+/// FNV-1a, 64-bit. Small, dependency-free and — the part that matters here —
+/// **fixed-seed**, so an id derived from it is reproducible.
+#[derive(Clone, Copy)]
+pub(crate) struct FnvHasher(u64);
+
+impl FnvHasher {
+    pub(crate) const fn new() -> Self {
+        // FNV offset basis.
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl std::hash::Hasher for FnvHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 ^= u64::from(*b);
+            // FNV prime.
+            self.0 = self.0.wrapping_mul(0x100_0000_01b3);
+        }
     }
 }
 
