@@ -464,11 +464,24 @@ pub trait Widget {
     /// — applied through the executor so it replays byte-identically on peers —
     /// and reports the document heads captured **just before** that action here.
     ///
-    /// The host ([`crate::app::App`]) drains this after each event and records
-    /// exactly one undo boundary bracketing `[before, current]`, the same
-    /// `record_committed_action` path a palette dispatch takes. So an app's own
-    /// buttons and its Ctrl+K entries share one dispatch + undo path, and the
-    /// user's Ctrl+Z reverts a button-driven action just like a palette one.
+    /// The host drains this after each event and records exactly one undo
+    /// boundary bracketing `[before, current]`, attributed to the local user —
+    /// the same [`undo::record_dispatched_action`](crate::undo::record_dispatched_action)
+    /// a Ctrl+K palette dispatch takes. So an app's own buttons and its Ctrl+K
+    /// entries share one dispatch + undo path, and the user's Ctrl+Z reverts a
+    /// button-driven action just like a palette one.
+    ///
+    /// Both hosts drain it: the live [`App`](crate::app::App) from its idle
+    /// tick, and the headless [`Driver`](crate::headless::Driver) after every
+    /// event and every accessibility verb. An app driven by a scenario
+    /// therefore builds the same undo history it builds in front of a user,
+    /// which is what makes undo behaviour testable at all for an app whose
+    /// edits are all dispatched actions.
+    ///
+    /// Like [`set_undo_status`](Widget::set_undo_status) and
+    /// [`take_undo_request`](Widget::take_undo_request), the host reaches this
+    /// by sweeping its `node_map` — so a widget is drained at any depth and no
+    /// container has to forward it.
     ///
     /// Rising-edge: reading MUST clear it (return `Some` once per dispatched
     /// batch, then `None`). Default: nothing to record.

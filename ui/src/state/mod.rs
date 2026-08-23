@@ -194,12 +194,38 @@ impl UndoLog {
     /// Record an action already committed into `doc` out-of-band, bracketed
     /// by the caller-supplied `before` heads. See
     /// [`State::record_committed_action`].
+    ///
+    /// Anonymous — and therefore invisible to author-scoped undo. Kept for
+    /// callers that genuinely have no identity to attribute; a host that knows
+    /// who acted must use
+    /// [`record_committed_action_authored`](Self::record_committed_action_authored)
+    /// instead, or the entry it pushes is one its own Ctrl+Z will skip.
     pub fn record_committed_action(
         &mut self,
         doc: &mut AutoCommit,
         before: Vec<ChangeHash>,
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
+    ) {
+        self.record_committed_action_authored(doc, before, focused_node_idx, metadata, None)
+    }
+
+    /// [`record_committed_action`](Self::record_committed_action), attributed to
+    /// `author`.
+    ///
+    /// Authorship is not decoration here: [`undo_index_for`](Self::undo_index_for)
+    /// matches an entry only when its author *equals* the one asking, so an
+    /// anonymous entry can never be undone by a Ctrl+Z scoped to a user — and,
+    /// worse, undo steps straight past it to an older entry that *is* theirs,
+    /// reverting the wrong edit. Every host recording a dispatched action knows
+    /// its local user, so every host passes it.
+    pub fn record_committed_action_authored(
+        &mut self,
+        doc: &mut AutoCommit,
+        before: Vec<ChangeHash>,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
     ) {
         let after = doc.get_heads();
         if after == before {
@@ -210,7 +236,7 @@ impl UndoLog {
             after: after.clone(),
             focused_node_idx,
             widget_metadata: metadata,
-            author: None,
+            author,
         });
         self.redo_stack.clear();
         self.last_heads = after;
@@ -510,6 +536,28 @@ impl State {
     ) {
         self.undo
             .record_committed_action(&mut self.doc, before, focused_node_idx, metadata);
+    }
+
+    /// [`record_committed_action`](Self::record_committed_action), attributed to
+    /// `author` so the local user's own Ctrl+Z can reach it. See
+    /// [`UndoLog::record_committed_action_authored`].
+    ///
+    /// This is what a host calls; the unattributed form exists only for callers
+    /// with no identity at all.
+    pub fn record_committed_action_authored(
+        &mut self,
+        before: Vec<ChangeHash>,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+    ) {
+        self.undo.record_committed_action_authored(
+            &mut self.doc,
+            before,
+            focused_node_idx,
+            metadata,
+            author,
+        );
     }
 
     /// Rewrite the document to the content it had at `target_heads`, as a NEW
