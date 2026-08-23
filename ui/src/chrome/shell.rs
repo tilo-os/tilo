@@ -25,7 +25,7 @@
 //! is: one selection model, reachable from both crates.
 
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Rect, RoundedRect, Shape};
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Shape};
 use vello::peniko::{BlendMode, Color, Fill};
 
 use crate::color_compat::ColorCompat;
@@ -209,6 +209,293 @@ pub fn selection_tier(theme: &Theme, state: SelectionState) -> SelectionTier {
     }
 }
 
+// ---------- glass ----------
+//
+// What a selector *is made of*, as opposed to `selection_tier` above, which
+// says how far each state is pushed. The two are separate on purpose: the
+// tier table is the semantics ("active is further out than hover") and this
+// is the material ("and both are the same substance").
+//
+// The tab strip is the surface that made the split necessary. Its three
+// states were, in practice, three unrelated recipes: an idle pill painted
+// nothing, a hovered pill painted a flat wash of literal white at 5 %, and
+// an active pill painted an **opaque** body ringed by two white strokes.
+// Opaque is the important word — a body you cannot see through is not a
+// window onto the desktop, it is a slab sitting on it, and the one light
+// cue the hovered pill had (a faint top-down alpha ramp) is silently a
+// no-op on it, because scaling the alpha of an already-opaque colour does
+// nothing. So the state the strip most needed to look deliberate was the
+// only one with no light on it at all.
+//
+// A surface reads as glass when four things are true at once, and the old
+// hover had exactly one of them:
+//
+//   1. it is translucent, so its colour is partly the ground's,
+//   2. its fill is tinted from that ground rather than washed with white,
+//   3. there is a light direction — one end of it is lit, the other seated,
+//   4. it has an edge, slightly stronger than its fill, that holds the
+//      silhouette.
+//
+// All four are derived per theme here, so the same material survives a
+// paper-white desktop, where "brighter" points the other way.
+
+/// Film alpha of a hovered selector.
+///
+/// Chosen so the composite over the default dark ground lands where the
+/// old literal-white hover landed: hover was the one state that read
+/// acceptably, and it should not move while the material under it is
+/// replaced. On a light theme it now lands somewhere *visible*, which the
+/// literal never did.
+pub const GLASS_HOVER_ALPHA: u8 = 44;
+
+/// Film alpha of an active or pressed selector.
+///
+/// Well past hover so the two never read as the same tier, and well short
+/// of opaque so the pill keeps the property that makes it glass. Glass is
+/// the reason this is a fraction rather than a full body: the ground has
+/// to come through, or the material is over.
+pub const GLASS_ACTIVE_ALPHA: u8 = 132;
+
+/// Film density at the lit end of a selector, relative to its own alpha.
+pub const GLASS_LIT_GAIN: f32 = 1.9;
+
+/// Film density at the seated end, relative to its own alpha.
+pub const GLASS_SEAT_FALLOFF: f32 = 0.68;
+
+/// How far down a selector the lit end's extra density has decayed to the
+/// body's own value.
+///
+/// This is what separates a highlight from a wash. Spread over half the
+/// pill, the extra film reads as "this pill is a lighter grey"; concentrated
+/// near the edge it reads as light landing on a surface, and the rest of the
+/// body stays dark enough to keep looking like something you can see through.
+pub const GLASS_LIT_SPAN: f32 = 0.2;
+
+/// Edge alpha of a hovered selector. Below [`HAIRLINE_ALPHA`] — a hovered
+/// pill is being pointed at, not chosen, and a full hairline on it reads
+/// as a second active tab.
+///
+/// It carries more of the state than it looks like it should, and that is
+/// deliberate. A translucent body can only move the ground as far as the
+/// palette leaves room for: on the light preset the bar sits about 19
+/// levels below white, so a hover film lands about 3 levels off its ground
+/// no matter how the film is derived, while the same film moves a graphite
+/// ground by twelve. The edge does not have that problem, because
+/// [`Colors::hairline_on`] picks whichever polarity moves the ground it is
+/// actually drawn on — the same division of labour a floating panel already
+/// makes, where a stark palette leaves nearly all the work to its border.
+pub const GLASS_EDGE_HOVER_ALPHA: u8 = 28;
+
+/// Edge alpha of an active selector, at the lit end. Runs down to
+/// [`GLASS_EDGE_SEAT_SCALE`] of itself at the seated end, which is what
+/// makes the edge a light rather than a halo.
+pub const GLASS_EDGE_ACTIVE_ALPHA: u8 = 40;
+
+/// How much of its lit-end strength a selector's edge keeps at the seated
+/// end.
+pub const GLASS_EDGE_SEAT_SCALE: f32 = 0.34;
+
+/// Fraction of a selector's height over which its inner glow survives.
+///
+/// The glow is a lit *rim*, not a ring: it belongs where the light lands
+/// and has no business tracing the bottom of the pill, which is the part
+/// in shadow. Stroked all the way round at a constant alpha — which is
+/// what an inset stroke in a flat colour does — it is exactly the milky
+/// halo that made the active pill look cheap.
+pub const GLASS_GLOW_SPAN: f64 = 0.55;
+
+/// How one selector paints, as a material rather than as a tier.
+///
+/// Same three states and the same ordering as [`selection_tier`] — this is
+/// deliberately not a second opinion about what "active" means — but the
+/// bodies are films rather than washes, and they carry the light direction
+/// the tier table has no field for.
+///
+/// Kept beside [`selection_tier`] rather than replacing it because the two
+/// have different call sites and only one of them paints through
+/// [`paint_glass_body`]. A translucent fill handed to a caller that fills
+/// it flat is *weaker* than the opaque wash it replaced, so the swap has to
+/// happen per surface, together with its painter. The tab strip is the
+/// first; the bar's own selectors are the obvious next.
+pub fn glass_selector(theme: &Theme, state: SelectionState) -> SelectionTier {
+    let colors = &theme.tokens.colors;
+    let ground = colors.surfaces.base;
+    let lifted = state.active || state.pressed;
+    let film = colors.glass_film();
+    let alpha = if lifted {
+        GLASS_ACTIVE_ALPHA
+    } else if state.hover {
+        GLASS_HOVER_ALPHA
+    } else {
+        0
+    };
+    let edge_alpha = if lifted {
+        GLASS_EDGE_ACTIVE_ALPHA
+    } else {
+        GLASS_EDGE_HOVER_ALPHA
+    };
+    SelectionTier {
+        fill: if alpha == 0 {
+            Color::TRANSPARENT
+        } else {
+            Color::from_rgba8(film.r(), film.g(), film.b(), alpha)
+        },
+        border: (alpha > 0).then(|| Colors::hairline_on(ground, edge_alpha)),
+        inner_glow: lifted.then(|| Colors::hairline_on(ground, GLOW_ALPHA)),
+        scale: if state.pressed { PRESS_SCALE } else { 1.0 },
+    }
+}
+
+/// Where the light falls on a selector, as a gradient offset pair.
+///
+/// `(lit, seated)` in the 0..1 range down the surface. Light comes from
+/// above, so on a palette whose surfaces lift by getting brighter the lit
+/// end is the top. On a paper-white palette a film can only ever make the
+/// surface *darker*, so the same physical story — top catches the light —
+/// is told by thinning the film at the top instead, and the ends swap.
+/// Getting this wrong does not merely look flat; it looks lit from below.
+fn light_ends(theme: &Theme) -> (f64, f64) {
+    if theme.tokens.colors.lifts_bright() {
+        (0.0, 1.0)
+    } else {
+        (1.0, 0.0)
+    }
+}
+
+/// `base` with its alpha scaled by `gain`, saturating at opaque.
+///
+/// The clamp is not decoration. Scaling a colour's alpha past 1.0 is not a
+/// no-op in a renderer that premultiplies — the components come out
+/// multiplied too, so an out-of-range gain silently *brightens* rather than
+/// doing nothing, and the amount depends on how close to opaque the input
+/// already was. The strip's old body gradient depended on exactly that
+/// accident for its highlight. A material should not be built on a
+/// library's saturation behaviour.
+fn scaled(base: Color, gain: f32) -> Color {
+    let a = (base.a() as f32 * gain).clamp(0.0, 255.0).round() as u8;
+    Color::from_rgba8(base.r(), base.g(), base.b(), a)
+}
+
+/// A vertical gradient over `rect` running from its dense end to its thin
+/// one, with `(offset, gain)` stops measured along that run.
+fn vertical(
+    rect: Rect,
+    ends: (f64, f64),
+    color: Color,
+    stops: [(f32, f32); 3],
+) -> vello::peniko::Gradient {
+    let y = |t: f64| Point::new(rect.x0, rect.y0 + rect.height() * t);
+    let (dense, thin) = ends;
+    vello::peniko::Gradient::new_linear(y(dense), y(thin))
+        .with_extend(vello::peniko::Extend::Pad)
+        .with_stops(
+            &stops
+                .map(|(offset, gain)| vello::peniko::ColorStop {
+                    offset,
+                    color: scaled(color, gain).into(),
+                })[..],
+        )
+}
+
+/// Paint one selector's body in the glass material: film, edge, and — for
+/// a lifted one — a lit inner rim.
+///
+/// `opacity` scales the whole material, for a caller animating a body in
+/// or out. It multiplies rather than replaces so a half-revealed pill is
+/// half of *this* material, not a different one.
+///
+/// Deliberately lays down **no shadow**. Elevation and selection are
+/// separate vocabularies (see [`selection_tier`]), and a row of pills each
+/// casting its own soft rings is what made this strip read as muddy in the
+/// first place. What replaces it is the edge: a surface that reports its
+/// own light does not need a shadow to say it is a surface.
+pub fn paint_glass_body(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    radius: f64,
+    theme: &Theme,
+    tier: &SelectionTier,
+    opacity: f32,
+) {
+    if opacity <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let shape = RoundedRect::from_rect(rect, radius);
+    let ends = light_ends(theme);
+
+    if tier.fill.a() > 0 {
+        let film = tier.fill.with_alpha_factor(opacity);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            &vertical(
+                rect,
+                ends,
+                film,
+                [
+                    (0.0, GLASS_LIT_GAIN),
+                    (GLASS_LIT_SPAN, 1.0),
+                    (1.0, GLASS_SEAT_FALLOFF),
+                ],
+            ),
+            None,
+            &shape,
+        );
+    }
+
+    if let Some(edge) = tier.border {
+        let edge = edge.with_alpha_factor(opacity);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            &vertical(
+                rect,
+                ends,
+                edge,
+                [
+                    (0.0, 1.0),
+                    (0.5, (1.0 + GLASS_EDGE_SEAT_SCALE) / 2.0),
+                    (1.0, GLASS_EDGE_SEAT_SCALE),
+                ],
+            ),
+            None,
+            &shape,
+        );
+    }
+
+    // Lit inner rim. One pixel in from the edge, and gone by
+    // `GLASS_GLOW_SPAN` down the surface, so it reads as the light
+    // catching the inside of the top curve rather than as a ring.
+    if let Some(glow) = tier.inner_glow {
+        let inset = Rect::new(rect.x0 + 1.0, rect.y0 + 1.0, rect.x1 - 1.0, rect.y1 - 1.0);
+        if inset.width() <= 0.0 || inset.height() <= 0.0 {
+            return; // a pill this narrow has no inside to light
+        }
+        let glow = scaled(glow, opacity);
+        let (lit, seated) = ends;
+        let y = |t: f64| Point::new(inset.x0, inset.y0 + inset.height() * t);
+        let grad = vello::peniko::Gradient::new_linear(y(lit), y(seated))
+            .with_extend(vello::peniko::Extend::Pad)
+            .with_stops(
+                &[
+                    vello::peniko::ColorStop { offset: 0.0, color: glow.into() },
+                    vello::peniko::ColorStop {
+                        offset: GLASS_GLOW_SPAN as f32,
+                        color: glow.with_alpha_factor(0.0).into(),
+                    },
+                ][..],
+            );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            &grad,
+            None,
+            &RoundedRect::from_rect(inset, (radius - 1.0).max(0.0)),
+        );
+    }
+}
+
 /// The opaque colour a floating chrome surface is built from, guaranteed
 /// to register against the desktop behind it.
 ///
@@ -320,6 +607,206 @@ mod tests {
             ("light", Theme::light()),
             ("high_contrast", Theme::high_contrast()),
         ]
+    }
+
+    /// How many paint operations the material emits for one selector, by
+    /// state, counted off the real encoding.
+    fn glass_fill_count(theme: &Theme, state: SelectionState) -> usize {
+        let rect = Rect::new(0.0, 0.0, 120.0, 28.0);
+        let mut scene = Scene::new();
+        paint_glass_body(
+            &mut scene,
+            Affine::IDENTITY,
+            rect,
+            rect.height() / 2.0,
+            theme,
+            &glass_selector(theme, state),
+            1.0,
+        );
+        // Every paint, not only the flat ones: the material's body and
+        // edge are gradient brushes, and a shadow ring would be a plain
+        // fill, so counting one kind would miss whichever kind came back.
+        scene.encoding().draw_tags.len()
+    }
+
+    /// The material paints a body, an edge and (when lifted) a rim — and
+    /// nothing else.
+    ///
+    /// Pinned against the encoding rather than against a predicate,
+    /// because the thing worth forbidding is a *paint*, and a helper that
+    /// returns `false` is only ever a restatement of itself. The strip used
+    /// to lay four stacked black rings under every pill with a body; if
+    /// they ever come back here the count moves and this fails, on the dark
+    /// theme where the rings are almost invisible as well as on the light
+    /// one where they are a grey slab.
+    ///
+    /// Elevation and selection are different vocabularies. A chosen tab is
+    /// picked on the bar, not floating above it, so what reports that a
+    /// pill is a surface is its own lit edge.
+    #[test]
+    fn the_material_paints_a_body_an_edge_and_a_rim_and_nothing_else() {
+        for (name, theme) in themes() {
+            assert_eq!(
+                glass_fill_count(&theme, SelectionState::default()),
+                0,
+                "{name}: an idle selector has no body, so it must paint nothing \
+                 at all — not an edge, and certainly not a shadow of nothing",
+            );
+            assert_eq!(
+                glass_fill_count(&theme, SelectionState::new(false, true, false)),
+                2,
+                "{name}: a hovered selector is exactly a film and its edge",
+            );
+            assert_eq!(
+                glass_fill_count(&theme, SelectionState::active(true)),
+                3,
+                "{name}: a lifted selector is exactly a film, its edge and its \
+                 lit rim — anything more is elevation smuggled into selection",
+            );
+        }
+    }
+
+    /// Every state a glass selector paints has to keep the ground
+    /// visible through it.
+    ///
+    /// This is the failure the material was built to fix, and it is worth
+    /// stating as a property rather than a look: the old active pill was
+    /// **opaque**. That is not a matter of taste — it silently disabled
+    /// the one light cue the strip had, because the painter expressed
+    /// "brighter at the lit end" by scaling the fill's alpha, and scaling
+    /// the alpha of an opaque colour is a no-op. So the state that most
+    /// needed to look deliberate was the only one rendered flat, and
+    /// nothing in the code said so.
+    #[test]
+    fn a_glass_body_is_never_opaque_and_always_has_somewhere_to_lighten() {
+        for (name, theme) in themes() {
+            for (state_name, state) in [
+                ("hover", SelectionState::new(false, true, false)),
+                ("active", SelectionState::active(true)),
+                ("pressed", SelectionState::new(false, false, true)),
+            ] {
+                let tier = glass_selector(&theme, state);
+                assert!(
+                    tier.fill.a() > 0,
+                    "{name}/{state_name}: a state with a body must paint one",
+                );
+                assert!(
+                    tier.fill.a() < u8::MAX,
+                    "{name}/{state_name}: an opaque body is not glass — the \
+                     desktop has to come through it, and an opaque fill also \
+                     makes the lit-end alpha ramp a silent no-op",
+                );
+                let lit = tier.fill.with_alpha_factor(GLASS_LIT_GAIN);
+                assert!(
+                    lit.a() > tier.fill.a(),
+                    "{name}/{state_name}: the lit end of the film ({}) is no \
+                     denser than its middle ({}), so the body paints flat and \
+                     has no light direction at all",
+                    lit.a(),
+                    tier.fill.a(),
+                );
+                let seated = tier.fill.with_alpha_factor(GLASS_SEAT_FALLOFF);
+                assert!(
+                    seated.a() < tier.fill.a(),
+                    "{name}/{state_name}: the seated end is no thinner than \
+                     the middle — a surface lit from above is darker where \
+                     the light does not reach",
+                );
+            }
+        }
+    }
+
+    /// A body and its edge arrive and leave together.
+    ///
+    /// An edge without a body is a loose outline on the bar; a body
+    /// without an edge is a smudge with no silhouette. Tying them to the
+    /// same condition is what lets the strip's reveal animation fade one
+    /// material rather than two things that happen to agree.
+    #[test]
+    fn a_glass_body_and_its_edge_are_the_same_decision() {
+        for (name, theme) in themes() {
+            for (state_name, state) in [
+                ("idle", SelectionState::default()),
+                ("hover", SelectionState::new(false, true, false)),
+                ("active", SelectionState::active(true)),
+                ("pressed", SelectionState::new(false, false, true)),
+            ] {
+                let tier = glass_selector(&theme, state);
+                assert_eq!(
+                    tier.fill.a() > 0,
+                    tier.border.is_some(),
+                    "{name}/{state_name}: body and edge disagree — one paints \
+                     and the other does not",
+                );
+            }
+        }
+    }
+
+    /// The film is made of the theme's own surface family, and it moves
+    /// the ground the same way a flat lift does.
+    ///
+    /// `surface_white_*` is this idea written as a literal, and it is why
+    /// the old hover was invisible on a light theme: white over paper is
+    /// paper. Deriving the film instead means the only thing that changes
+    /// across the light/dark line is which way "away from the ground"
+    /// points — and this asserts the material and [`Colors::lift`] agree
+    /// on that, because a strip whose glass lifts one way and whose flat
+    /// chrome lifts the other is worse than either.
+    #[test]
+    fn the_film_lifts_the_same_way_a_flat_lift_does_on_every_preset() {
+        for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            let colors = &theme.tokens.colors;
+            let ground = relative_luminance(colors.surfaces.base);
+            let film = relative_luminance(colors.glass_film());
+            let flat = relative_luminance(colors.lift(1.0));
+            assert!(
+                (film - ground).abs() > f64::EPSILON,
+                "{}: the film does not move the ground at all",
+                theme.name,
+            );
+            assert_eq!(
+                film > ground,
+                flat > ground,
+                "{}: the glass film lifts {} while a flat lift goes {} — \
+                 chrome painted in the two materials would move in opposite \
+                 directions on the same desktop",
+                theme.name,
+                if film > ground { "brighter" } else { "darker" },
+                if flat > ground { "brighter" } else { "darker" },
+            );
+            assert_eq!(
+                colors.lifts_bright(),
+                flat > ground,
+                "{}: `lifts_bright` disagrees with where a lift actually \
+                 goes, so the material would be lit from the wrong end",
+                theme.name,
+            );
+        }
+    }
+
+    /// Light comes from above on every palette.
+    ///
+    /// On a graphite desktop the film brightens, so its dense end is the
+    /// top. On a paper desktop a film can only darken, so the same story —
+    /// the top catches the light — is told by thinning the film there
+    /// instead, and the gradient's ends swap. Painted with a single fixed
+    /// orientation, one of the two themes gets a pill lit from below,
+    /// which reads as broken rather than as subtle.
+    #[test]
+    fn the_lit_end_of_a_selector_is_its_top_on_every_preset() {
+        for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            let (lit, seated) = light_ends(&theme);
+            let brightens = theme.tokens.colors.lifts_bright();
+            let dense_end_is_top = lit < seated;
+            assert_eq!(
+                dense_end_is_top, brightens,
+                "{}: the film is densest at the {} on a palette whose \
+                 surfaces lift {} — that is a pill lit from below",
+                theme.name,
+                if dense_end_is_top { "top" } else { "bottom" },
+                if brightens { "brighter" } else { "darker" },
+            );
+        }
     }
 
     /// The tiers are ordered: an active control is further from the

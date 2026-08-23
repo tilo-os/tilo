@@ -1414,7 +1414,18 @@ mod tests {
                 package_id: "dev.qos.nope".into()
             }
         );
-        assert!(err.user_message().contains("not installed"));
+        let message = err.user_message();
+        assert!(
+            message.contains("dev.qos.nope"),
+            "the message must name the id it could not find: {message}"
+        );
+        // "installed" is not a word this desktop says to a user — nobody
+        // asked to install anything. The message was moved off it and
+        // this assertion had kept asserting the old wording.
+        assert!(
+            !message.contains("install"),
+            "user-facing text must not talk about installing: {message}"
+        );
     }
 
     #[test]
