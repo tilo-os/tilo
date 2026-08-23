@@ -77,6 +77,10 @@ pub struct MediaFrameSource {
     /// The instant each source was last asked for, so a forward step can be
     /// told from a jump.
     served: HashMap<MediaId, u64>,
+    /// Did the composite currently being resolved put a decoded picture on at
+    /// least one layer? Reset by `begin_frame`, so it describes this frame and
+    /// not a frame from a minute ago.
+    served_real: bool,
     /// Sources currently running forward under an `Exact` fetch.
     rolling: HashSet<MediaId>,
     fetch: Fetch,
@@ -106,6 +110,7 @@ impl MediaFrameSource {
             slot: 0,
             last: HashMap::new(),
             served: HashMap::new(),
+            served_real: false,
             rolling: HashSet::new(),
             fetch,
             timeout: media::DEFAULT_FRAME_TIMEOUT,
@@ -174,6 +179,19 @@ impl MediaFrameSource {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
+    }
+
+    /// Whether the last composite this source served actually resolved a
+    /// decoded picture, rather than leaving every layer to its representative
+    /// fill.
+    ///
+    /// This exists because "the preview has a real frame" must be answered by
+    /// the renderer that *draws the canvas*. It used to be answered by the
+    /// legacy `PreviewDecoder`, which the compositor replaced — so the
+    /// screenshot path waited on a decoder that no longer fed the picture and
+    /// captured the representative fill while believing it had the footage.
+    pub fn served_real_picture(&self) -> bool {
+        self.served_real
     }
 
     /// How many of the project's media this source can decode.
@@ -255,6 +273,7 @@ impl MediaFrameSource {
 impl FrameSource for MediaFrameSource {
     fn begin_frame(&mut self) {
         self.slot = 0;
+        self.served_real = false;
     }
 
     fn resolve(
@@ -338,10 +357,13 @@ impl FrameSource for MediaFrameSource {
                     if last.pts_ms == f.pts_ms {
                         let texture = last.texture.clone();
                         self.slot += 1;
+                        self.served_real = true;
                         return Some(texture);
                     }
                 }
-                self.paint(device, queue, media, &f)
+                let painted = self.paint(device, queue, media, &f);
+                self.served_real |= painted.is_some();
+                painted
             }
             // Nothing decoded yet. Hold the last picture this source produced
             // so a scrub does not flash the representative fill between
