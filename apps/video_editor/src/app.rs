@@ -128,6 +128,18 @@ const KEY_BOX: f64 = 20.0;
 
 const BIN_BREAKPOINT: f64 = 900.0;
 
+/// Width the project button takes when the topbar has room for it, and the
+/// least it will accept before being dropped instead. The floor exists
+/// because a name clipped to a few characters states a *different* project
+/// name, and the button's whole job is saying which project this is.
+const PROJECT_BTN_W: f64 = 210.0;
+const PROJECT_BTN_MIN_W: f64 = 120.0;
+
+/// What the project button's dot means, spelled out wherever the dot cannot
+/// be seen. Not a warning — the autosave still holds the work; what the user
+/// does not have is a file of their own.
+const PROJECT_UNSAVED: &str = "Unsaved changes";
+
 /// Below this window width the inspector collapses to an overlay flap from
 /// the right, exactly as the bin does from the left.
 ///
@@ -154,6 +166,11 @@ struct Regions {
     /// Inspector toggle in the topbar. Zero-sized while the inspector is
     /// docked; present only in the narrow overlay layout.
     inspector_btn: Rect,
+    /// The project button: what is open, whether it is saved, and the menu
+    /// that opens / saves one. Zero-sized when the topbar's leading area has
+    /// no room for it — a control that overlaps Import is worse than one that
+    /// is only reachable by keyboard, and Ctrl+O / Ctrl+S still work.
+    project_btn: Rect,
     export_btn: Rect,
     split_btn: Rect,
     import_btn: Rect,
@@ -897,6 +914,72 @@ pub struct VideoEditorApp {
     /// destination, or why the round-trip failed. Distinct from
     /// [`ExportStatus`], which reports the *render*.
     export_notice: Option<String>,
+    // --- project files ----------------------------------------------------
+    /// The file this project is saved in, once it has one. `None` means the
+    /// project has never been saved: the work is still safe (the autosave
+    /// document holds it) but there is nothing on disk to hand anybody, and
+    /// the project button says so.
+    project_path: Option<PathBuf>,
+    /// Whether the document has changed since the last save to
+    /// [`Self::project_path`]. Derived from the document's heads rather than
+    /// from a flag each edit remembers to set, so an edit that arrives from a
+    /// peer — or from the Ctrl+K palette, which never touches this widget —
+    /// marks the project unsaved too.
+    saved_heads: Option<Vec<automerge::ChangeHash>>,
+    /// A project open/save portal round-trip in flight, drained each `sync`
+    /// exactly like the import and export-destination ones.
+    project_rx: Option<portal::ProjectChannel>,
+    /// A short, honest line about the last project-file operation. Never a
+    /// fake success: a save that failed says why, and a project opened with
+    /// sources this device cannot read says which.
+    project_notice: Option<String>,
+    /// The project menu (Open / Save / Save As / recents), on the shared
+    /// [`ContextMenu`] every other menu in the app uses.
+    project_menu: ContextMenu,
+    /// What each row of the open project menu does. Built with the menu, so
+    /// a click resolves to an intent rather than to a row index that shifts
+    /// as the recents list grows.
+    project_menu_items: Vec<ProjectMenuItem>,
+    /// Recently-opened projects, most recent first. Per-device and outside
+    /// the CRDT — see [`crate::project_file::recents`].
+    recents: Vec<PathBuf>,
+    /// A project waiting for the user to say what to do about unsaved work.
+    /// Opening a file must never silently discard an unsaved project.
+    pending_open: Option<PendingOpen>,
+    /// What a `Save` should do once the destination comes back: just save, or
+    /// save and then continue into the open that was interrupted.
+    save_then_open: Option<PathBuf>,
+}
+
+/// A row in the project menu, as an intent rather than an index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProjectMenuItem {
+    Open,
+    Save,
+    SaveAs,
+    Recent(PathBuf),
+}
+
+/// An open the user has asked for that is waiting on an answer about the
+/// unsaved project it would replace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingOpen {
+    path: PathBuf,
+    /// The name of the project that would be discarded, so the question can
+    /// say what is at stake instead of "you have unsaved changes".
+    losing: String,
+}
+
+/// The three answers to that question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiscardChoice {
+    /// Stay where you are.
+    Cancel,
+    /// Save the current project first, then continue into the open.
+    Save,
+    /// Open anyway. Recoverable: the open is one action, so Ctrl+Z restores
+    /// the project that was replaced.
+    Discard,
 }
 
 /// A drag that started on a media-bin item and is heading for the timeline.
@@ -1021,6 +1104,15 @@ impl VideoEditorApp {
             export_job: None,
             export_dest_rx: None,
             export_notice: None,
+            project_path: None,
+            saved_heads: None,
+            project_rx: None,
+            project_notice: None,
+            project_menu: ContextMenu::new(),
+            project_menu_items: Vec::new(),
+            recents: crate::project_file::recents::load(),
+            pending_open: None,
+            save_then_open: None,
         }
     }
 
@@ -1137,6 +1229,27 @@ impl VideoEditorApp {
         } else {
             Rect::ZERO
         };
+        // The project button occupies the topbar's leading area, after the
+        // hamburger when there is one. It is width-bounded and left-aligned
+        // rather than centred, because the centred project meta that used to
+        // live here collided with the right-hand buttons at 720px — the narrow
+        // capture width itself. Below the room it needs it is dropped
+        // entirely: a truncation so short it reads as a different project name
+        // would be worse than nothing, and the shortcuts still reach it.
+        let project_x0 = if overlay { menu_btn.x1 + 8.0 } else { r.x0 + 12.0 };
+        let leading_limit = if inspector_btn.width() > 0.0 {
+            inspector_btn.x0
+        } else {
+            import_btn.x0
+        } - 12.0;
+        let project_btn = {
+            let want = PROJECT_BTN_W.min(leading_limit - project_x0);
+            if want >= PROJECT_BTN_MIN_W {
+                Rect::new(project_x0, r.y0 + 9.0, project_x0 + want, r.y0 + 39.0)
+            } else {
+                Rect::ZERO
+            }
+        };
         let timeline_top = (r.y1 - TIMELINE_H).max(topbar.y1 + 80.0);
         let timeline = Rect::new(r.x0, timeline_top, r.x1, r.y1);
         let mid_top = topbar.y1;
@@ -1182,8 +1295,8 @@ impl VideoEditorApp {
         let gutter = Rect::new(timeline.x0, timeline.y0 + RULER_H, timeline.x0 + GUTTER_W, timeline.y1);
         let lanes = Rect::new(timeline.x0 + GUTTER_W, timeline.y0 + RULER_H, timeline.x1, timeline.y1);
         Regions {
-            topbar, menu_btn, inspector_btn, export_btn, split_btn, import_btn, bin, preview,
-            canvas, transport, inspector, timeline, ruler, gutter, lanes, scrim,
+            topbar, menu_btn, inspector_btn, project_btn, export_btn, split_btn, import_btn, bin,
+            preview, canvas, transport, inspector, timeline, ruler, gutter, lanes, scrim,
             bin_overlay: overlay, inspector_overlay,
         }
     }
@@ -4190,6 +4303,10 @@ impl Widget for VideoEditorApp {
         // Bring in any pending / portal-picked media as real clips (this pushes
         // straight into `self.project.media` and the CRDT).
         self.drain_import(state);
+        // A project open/save chooser that has come back. Drained after the
+        // model load above so an Open replaces a project that is current, and
+        // before the passes below so they see what was opened.
+        self.drain_project_portal(state);
         // Drop selected clips that vanished (e.g. a remote delete), keeping
         // whatever is left selected rather than clearing the lot.
         self.selection.retain_existing(&self.project);
@@ -4284,6 +4401,10 @@ impl Widget for VideoEditorApp {
             || (self.seed_demo && self.project.clips.is_empty())
             || self.import_rx.is_some()
             || !self.pending_imports.is_empty()
+            // A project chooser is a round-trip in flight exactly like an
+            // import; without this the chosen file would sit undrained until
+            // the user happened to move the mouse.
+            || self.project_rx.is_some()
             || self.waveforms.has_pending() // keep syncing until peaks land
             || self.thumbnails.has_pending() // …and until real frames land
     }
@@ -4445,8 +4566,9 @@ impl Widget for VideoEditorApp {
         if self.show_help {
             self.draw_help_sheet(scene, transform, tr, theme, &r);
         }
-        // The bin context menu floats above everything else.
+        // The context menus float above everything else.
         self.bin_menu.draw(scene, transform, tr, theme, presence);
+        self.project_menu.draw(scene, transform, tr, theme, presence);
     }
 
     fn handle_event(
@@ -4562,6 +4684,21 @@ impl Widget for VideoEditorApp {
             );
             if let Some(idx) = self.bin_menu.take_selection() {
                 self.bin_menu_choose(state, idx);
+            }
+            if *handled {
+                return;
+            }
+        }
+        // Same for the project menu.
+        if self.project_menu.is_open() {
+            self.project_menu.handle_event(
+                event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+            );
+            if let Some(idx) = self.project_menu.take_selection() {
+                if let Some(item) = self.project_menu_intent(idx) {
+                    self.run_project_menu_item(state, item);
+                }
+                self.project_menu.close();
             }
             if *handled {
                 return;
@@ -4884,6 +5021,9 @@ impl Widget for VideoEditorApp {
         if self.bin_menu.is_open() {
             v.push(&self.bin_menu);
         }
+        if self.project_menu.is_open() {
+            v.push(&self.project_menu);
+        }
         if let Some((_, label)) = &self.bin_rename {
             v.push(label);
         }
@@ -4900,6 +5040,9 @@ impl Widget for VideoEditorApp {
         let mut v: Vec<&mut (dyn Widget + '_)> = Vec::new();
         if self.bin_menu.is_open() {
             v.push(&mut self.bin_menu);
+        }
+        if self.project_menu.is_open() {
+            v.push(&mut self.project_menu);
         }
         if let Some((_, label)) = &mut self.bin_rename {
             v.push(label);
@@ -5179,7 +5322,7 @@ impl VideoEditorApp {
             return self.a11y_pane(
                 Pane::Bin,
                 vec![AccessNode::new(Role::StaticText)
-                    .with_name("No media yet. Press Ctrl+O to import, or drop files anywhere in the window.")
+                    .with_name("No media yet. Press Ctrl+Shift+O to import, or drop files anywhere in the window.")
                     .with_key(0)],
             );
         }
@@ -5464,7 +5607,16 @@ impl VideoEditorApp {
 /// them. Fifteen shortcuts existed and none of them were written down anywhere
 /// in the product; a sheet is also how a reader user learns they exist at all,
 /// which is why it is an accessibility affordance and not just a convenience.
-const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
+const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
+    (
+        "Project",
+        &[
+            ("Ctrl+O", "Open a project"),
+            ("Ctrl+S", "Save (Shift: save as…)"),
+            ("Ctrl+Shift+O", "Import media"),
+            ("Ctrl+E", "Export video"),
+        ],
+    ),
     (
         "Playback",
         &[
@@ -5503,7 +5655,6 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
             ("+ / -", "Zoom in / out"),
             ("B", "Toggle media bin"),
             ("Ctrl+I", "Toggle inspector"),
-            ("Ctrl+E / Ctrl+O", "Export / import"),
             ("?", "This sheet"),
         ],
     ),
@@ -5707,11 +5858,16 @@ impl VideoEditorApp {
                 });
             }
         }
+        if r.project_btn.area() > 0.0 && r.project_btn.contains(p) {
+            // The one control here whose label is not fixed: it names the
+            // project, so the tooltip carries the verb the label cannot.
+            return Some("Open, save, or switch project");
+        }
         if r.export_btn.contains(p) {
             return Some("Export video (Ctrl+E)");
         }
         if r.import_btn.contains(p) {
-            return Some("Import media (Ctrl+O)");
+            return Some("Import media (Ctrl+Shift+O)");
         }
         if r.split_btn.contains(p) {
             return Some("Split at playhead (S)");
@@ -6064,9 +6220,26 @@ impl VideoEditorApp {
                 let _ = r;
                 true
             }
-            // Ctrl+O opens the host file picker to import real media.
-            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("o") => {
+            // Ctrl+O opens a project. It used to import media, from before the
+            // editor had projects to open — and Ctrl+O means "open a document"
+            // in every app a person has ever used, so leaving it on import
+            // would make the one shortcut everybody already knows do the one
+            // thing they did not ask for. Import keeps the same letter, one
+            // modifier along, and both are in the shortcut sheet.
+            Key::Character(c) if ctrl && shift && c.eq_ignore_ascii_case("o") => {
                 self.trigger_import();
+                true
+            }
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("o") => {
+                self.request_open_project();
+                true
+            }
+            Key::Character(c) if ctrl && shift && c.eq_ignore_ascii_case("s") => {
+                self.request_save_as();
+                true
+            }
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("s") => {
+                self.save_project(state);
                 true
             }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("c") => {
@@ -6241,6 +6414,14 @@ impl VideoEditorApp {
             return;
         }
         // Top bar buttons.
+        if r.project_btn.width() > 0.0 && r.project_btn.contains(p) {
+            if self.project_menu.is_open() {
+                self.project_menu.close();
+            } else {
+                self.open_project_menu(Point::new(r.project_btn.x0, r.project_btn.y1 + 4.0));
+            }
+            return;
+        }
         if r.export_btn.contains(p) {
             self.show_export = true;
             return;
@@ -6787,6 +6968,346 @@ impl VideoEditorApp {
         }
     }
 
+    // ---- project files ---------------------------------------------------
+    //
+    // ## What happens to the implicit autosave
+    //
+    // The autosave document does not go away and is not demoted. It remains
+    // the thing that makes work impossible to lose: it holds whatever is open
+    // right now, saved or not, and it is written back on a debounce whether or
+    // not the project has ever been given a file. An unsaved project therefore
+    // survives a crash, a reboot and a close, exactly as it did before files
+    // existed — which is why closing the window is not made to interrogate the
+    // user about saving.
+    //
+    // What files add is a *second*, explicit copy the user names, can put
+    // where they like, can have several of, and can hand to someone. The two
+    // never race: a Save writes the file from the same project the autosave
+    // holds, and an Open replaces the document — so the autosave then holds
+    // the opened project, and the file that was open before is untouched on
+    // disk.
+    //
+    // The one place that could destroy work is opening a file over a project
+    // that has never been saved anywhere, because the Open replaces the
+    // document the autosave is tracking. That is the only case
+    // [`Self::begin_open`] stops to ask about, and Ctrl+Z undoes it even if
+    // the user says yes.
+
+    /// Whether the document has changed since the last save.
+    ///
+    /// A project that has never been saved counts as unsaved as soon as it
+    /// has any content — an empty project nobody has touched is not
+    /// "unsaved work" and must not raise a question about discarding it.
+    fn project_is_dirty(&self) -> bool {
+        match &self.saved_heads {
+            Some(heads) => *heads != self.doc_heads,
+            None => !self.project_is_empty(),
+        }
+    }
+
+    /// Whether the project holds nothing a user would mind losing.
+    fn project_is_empty(&self) -> bool {
+        self.project.clips.is_empty()
+            && self.project.media.is_empty()
+            && self.project.tracks.is_empty()
+    }
+
+    /// What the project button says: the file's name, or the project's name
+    /// while it has no file yet.
+    fn project_label(&self) -> String {
+        match &self.project_path {
+            Some(p) => crate::project_file::recents::label(p),
+            None if self.project.name.trim().is_empty() => "Untitled".to_string(),
+            None => self.project.name.clone(),
+        }
+    }
+
+    /// The one-line answer to "what am I editing, and is it safe?".
+    ///
+    /// Spoken to a screen reader and used as the project button's tooltip
+    /// text, so both say the same thing the dot on the button means.
+    fn project_status_line(&self) -> String {
+        let label = self.project_label();
+        match (&self.project_path, self.project_is_dirty()) {
+            (Some(p), true) => format!("{label} — unsaved changes, saved at {}", p.display()),
+            (Some(p), false) => format!("{label} — saved at {}", p.display()),
+            // Not a warning: the autosave really does hold it. What the user
+            // does not have is a file of their own.
+            (None, true) => format!("{label} — not saved to a file yet"),
+            (None, false) => format!("{label} — empty project"),
+        }
+    }
+
+    /// Save straight back to the file the project came from, or fall through
+    /// to Save As when it has never had one.
+    fn save_project(&mut self, doc: &mut AutoCommit) {
+        match self.project_path.clone() {
+            Some(path) => self.write_project_to(doc, path),
+            None => self.request_save_as(),
+        }
+    }
+
+    /// Ask the host where to write the project. Under a strict sandbox this
+    /// round-trip is what earns the write at all.
+    fn request_save_as(&mut self) {
+        if self.project_rx.is_some() {
+            return; // one chooser at a time
+        }
+        let suggested = crate::project_file::with_extension(&self.project_label());
+        self.project_notice = Some("Choose where to save…".to_string());
+        self.project_rx = Some(portal::request_save_project(&suggested));
+    }
+
+    /// Ask the host for a project to open.
+    fn request_open_project(&mut self) {
+        if self.project_rx.is_some() {
+            return;
+        }
+        self.project_notice = None;
+        self.project_rx = Some(portal::request_open_project());
+    }
+
+    /// Write the project to `path` and remember it as the project's home.
+    ///
+    /// A failure is reported in the words the file layer produced and the
+    /// project keeps its old path: claiming a save that did not happen is the
+    /// one outcome that could actually cost someone their work.
+    fn write_project_to(&mut self, doc: &mut AutoCommit, path: PathBuf) {
+        match crate::project_file::save(&path, &self.project) {
+            Ok(()) => {
+                self.recents = crate::project_file::recents::remember(&self.recents, &path);
+                self.project_notice = Some(format!("Saved to {}", path.display()));
+                self.project_path = Some(path);
+                self.saved_heads = Some(self.doc_heads.clone());
+                // A save that was only standing in the way of an open now
+                // lets it through.
+                if let Some(next) = self.save_then_open.take() {
+                    self.pending_open = None;
+                    self.load_project_file(doc, next);
+                }
+            }
+            Err(e) => {
+                self.save_then_open = None;
+                self.project_notice = Some(e.to_string());
+            }
+        }
+    }
+
+    /// Start opening `path`, stopping to ask first if that would drop work
+    /// that exists nowhere but this session.
+    fn begin_open(&mut self, doc: &mut AutoCommit, path: PathBuf) {
+        // Already saved somewhere, or nothing worth keeping: just open it.
+        // A project with a file behind it is not at risk — that file is still
+        // there afterwards — so only a never-saved project raises the question.
+        if self.project_path.is_some() || !self.project_is_dirty() {
+            self.load_project_file(doc, path);
+            return;
+        }
+        let losing = self.project_label();
+        self.pending_open = Some(PendingOpen { path, losing });
+    }
+
+    /// Read `path` and replace the project with what is in it.
+    ///
+    /// The replacement goes through the ordinary action pipeline, so opening
+    /// a file is one undo boundary and replicates to a peer — see
+    /// [`crate::actions::VideoEditorAction::LoadProject`].
+    fn load_project_file(&mut self, doc: &mut AutoCommit, path: PathBuf) {
+        let mut project = match crate::project_file::load(&path) {
+            Ok(p) => p,
+            Err(e) => {
+                self.project_notice = Some(e.to_string());
+                return;
+            }
+        };
+        // The name follows the file unless the file's own project carries a
+        // real one — a project still called "Untitled" opened from
+        // `Holiday.qvp` should read as Holiday.
+        if project.name.trim().is_empty() || project.name == "Untitled" {
+            if let Some(n) = crate::project_file::name_from_path(&path) {
+                project.name = n;
+            }
+        }
+        self.project_notice = Some(Self::opened_notice(&path, &project));
+
+        self.actions.dispatch(
+            doc,
+            crate::actions::VIDEO_EDITOR_ACTION_TYPE,
+            &crate::actions::load_project_action(&project),
+        );
+        self.project = VideoDoc::load_project(doc);
+        self.doc_heads = doc.get_heads();
+        self.saved_heads = Some(self.doc_heads.clone());
+        self.project_path = Some(path.clone());
+        self.recents = crate::project_file::recents::remember(&self.recents, &path);
+        // The view belongs to the project that was open, not to this one.
+        self.selection = Selection::default();
+        self.selected_media = None;
+        self.playhead = 0.0;
+        self.scroll = 0.0;
+        self.playing = false;
+        self.initialised_selection = false;
+        self.ensure_initial_selection();
+        #[cfg(any(feature = "gst", feature = "decode"))]
+        {
+            self.monitor_stale = true;
+        }
+    }
+
+    /// What to say after an open: how much arrived, and — if any of it cannot
+    /// be read here — which sources, in the same words the bin and the
+    /// timeline use for the same states.
+    fn opened_notice(path: &Path, project: &crate::model::Project) -> String {
+        let name = crate::project_file::recents::label(path);
+        let missing = crate::project_file::missing_sources(project);
+        if missing.is_empty() {
+            return format!("Opened {name}");
+        }
+        // Split on the distinction the app already draws everywhere else:
+        // bytes that are not here yet, versus bytes that are here and are not
+        // media. Blurring them would tell a user to re-fetch a file that will
+        // never decode.
+        let absent = missing.len();
+        let names: Vec<&str> = missing.iter().take(3).map(|(n, _)| n.as_str()).collect();
+        let listed = names.join(", ");
+        let tail = if absent > names.len() {
+            format!("{listed} and {} more", absent - names.len())
+        } else {
+            listed
+        };
+        format!("Opened {name} — {MEDIA_NOT_LOCAL}: {tail}")
+    }
+
+    /// Drain an in-flight project chooser. Mirrors [`Self::poll_export`].
+    fn drain_project_portal(&mut self, doc: &mut AutoCommit) {
+        let mut outcome = None;
+        let mut clear = false;
+        if let Some(rx) = self.project_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(o) => {
+                    outcome = Some(o);
+                    clear = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => clear = true,
+            }
+        }
+        if clear {
+            self.project_rx = None;
+        }
+        match outcome {
+            Some(portal::ProjectOutcome::Save(path)) => self.write_project_to(doc, path),
+            Some(portal::ProjectOutcome::Open(path)) => self.begin_open(doc, path),
+            Some(portal::ProjectOutcome::Cancelled) => {
+                self.save_then_open = None;
+                self.project_notice = None;
+            }
+            Some(portal::ProjectOutcome::Failed(reason)) => {
+                self.save_then_open = None;
+                self.project_notice = Some(reason);
+            }
+            None => {}
+        }
+    }
+
+    /// Answer the "this project has never been saved" question.
+    ///
+    /// `Discard` opens anyway — recoverable, because the open is one action
+    /// and Ctrl+Z puts the old project back. `Save` writes first and then
+    /// continues into the open on its own, so the user does not have to
+    /// remember what they were doing.
+    fn resolve_pending_open(&mut self, doc: &mut AutoCommit, choice: DiscardChoice) {
+        let Some(pending) = self.pending_open.take() else { return };
+        match choice {
+            DiscardChoice::Cancel => {
+                self.save_then_open = None;
+            }
+            DiscardChoice::Discard => self.load_project_file(doc, pending.path),
+            DiscardChoice::Save => {
+                self.save_then_open = Some(pending.path);
+                self.save_project(doc);
+            }
+        }
+    }
+
+    /// The rows the project menu offers right now.
+    fn project_menu_rows(&self) -> Vec<(ProjectMenuItem, String)> {
+        let mut rows = vec![
+            (ProjectMenuItem::Open, "Open…  (Ctrl+O)".to_string()),
+            (
+                ProjectMenuItem::Save,
+                match &self.project_path {
+                    Some(_) => "Save  (Ctrl+S)".to_string(),
+                    // Naming what Save will actually do, rather than letting
+                    // the user press it and be surprised by a file chooser.
+                    None => "Save…  (Ctrl+S)".to_string(),
+                },
+            ),
+            (ProjectMenuItem::SaveAs, "Save As…  (Ctrl+Shift+S)".to_string()),
+        ];
+        // Recents, minus the project already open — an entry that reopens
+        // what you are looking at is a row that does nothing.
+        let recent: Vec<&PathBuf> = self
+            .recents
+            .iter()
+            .filter(|p| Some(*p) != self.project_path.as_ref())
+            .collect();
+        if !recent.is_empty() {
+            for p in recent {
+                rows.push((
+                    ProjectMenuItem::Recent(p.clone()),
+                    crate::project_file::recents::label(p),
+                ));
+            }
+        }
+        rows
+    }
+
+    /// Open the project menu under the project button.
+    fn open_project_menu(&mut self, at: Point) {
+        let rows = self.project_menu_rows();
+        self.project_menu = ContextMenu::new();
+        self.project_menu_items.clear();
+        let mut first_recent = true;
+        for (item, label) in rows {
+            if matches!(item, ProjectMenuItem::Recent(_)) && first_recent {
+                self.project_menu.push(ui::widget::MenuItem::separator());
+                first_recent = false;
+            }
+            self.project_menu.push(ui::widget::MenuItem::action(label, || {}));
+            self.project_menu_items.push(item);
+        }
+        self.project_menu.open_at([at.x as f32, at.y as f32]);
+        self.project_menu.layout_at_position();
+    }
+
+    /// Resolve a click on the open project menu. Separators occupy a row in
+    /// the menu but not in [`Self::project_menu_items`], so the index is
+    /// mapped through the same skip the build used rather than assumed equal.
+    fn project_menu_intent(&self, idx: usize) -> Option<ProjectMenuItem> {
+        let mut actionable = 0usize;
+        for (i, row) in self.project_menu.items().iter().enumerate() {
+            if matches!(row, ui::widget::MenuItem::Separator) {
+                continue;
+            }
+            if i == idx {
+                return self.project_menu_items.get(actionable).cloned();
+            }
+            actionable += 1;
+        }
+        None
+    }
+
+    /// Act on a chosen project-menu row.
+    fn run_project_menu_item(&mut self, doc: &mut AutoCommit, item: ProjectMenuItem) {
+        match item {
+            ProjectMenuItem::Open => self.request_open_project(),
+            ProjectMenuItem::Save => self.save_project(doc),
+            ProjectMenuItem::SaveAs => self.request_save_as(),
+            ProjectMenuItem::Recent(p) => self.begin_open(doc, p),
+        }
+    }
+
     // ---- export ----------------------------------------------------------
     /// Ask the user where the render should land, then encode there. The
     /// picker is the grant: under a strict sandbox it is what earns the write
@@ -7194,14 +7715,61 @@ impl VideoEditorApp {
             stroke_rrect(scene, tf, fg, g, 2.0, 1.4);
             fill_rect(scene, tf, fg, Rect::new(g.x0 + g.width() * 0.55, g.y0, g.x1, g.y1));
         }
-        // No project meta here. It used to be centred across the topbar, where
-        // it collided with these buttons at 720px — the `--narrow` capture
-        // width itself — and it carried the project *name*, which belongs to
-        // the window title the OS draws. The technical meta now lives in the
-        // transport, beside the timecode it belongs with.
+        // The project button. The frame size and rate still live in the
+        // transport beside the timecode they belong with — this is a *control*
+        // (it opens Open / Save / Save As / recents) that happens to be
+        // labelled with what it acts on, not the project meta that used to be
+        // centred here and collided with the buttons on the right.
+        //
+        // The app name and the window title remain the OS's, and this is
+        // neither: which *file* is open, and whether it is written down, are
+        // things only the app knows.
+        self.draw_project_button(scene, tf, tr, theme, r);
         draw_button(scene, tf, tr, theme, r.import_btn, "Import…", false, r.import_btn.contains(self.last_mouse));
         draw_button(scene, tf, tr, theme, r.split_btn, "Split (S)", false, r.split_btn.contains(self.last_mouse));
         draw_button(scene, tf, tr, theme, r.export_btn, "Export…", true, r.export_btn.contains(self.last_mouse));
+    }
+
+    /// The project button: which project is open, whether it has been written
+    /// to a file, and the way to open or save one.
+    ///
+    /// Painted through the shared [`ui::widget::Button`] face so it carries
+    /// the same fill, border, hover and press treatment as every other button
+    /// in the fleet. The unsaved dot is a corner badge rather than part of the
+    /// label, because the label is centred and a marker inside it would sit
+    /// wherever the name's width happened to put it.
+    fn draw_project_button(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
+        let rect = r.project_btn;
+        if rect.width() <= 0.0 {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let hovered = rect.contains(self.last_mouse) || self.project_menu.is_open();
+        // Room for the leading icon, the padding either side, and the badge.
+        let label = elide_at(&self.project_label(), (rect.width() - 52.0) as f32, 13.0, tr);
+        let face = ui::widget::ButtonFace::new(rect, &label)
+            .style(ui::widget::ButtonStyle::Neutral)
+            .icon(ui::icons::Icon::Film)
+            .radius(7.0)
+            .text_size(13.0)
+            .hovered(hovered)
+            .pressed(self.project_menu.is_open());
+        ui::widget::Button::paint(scene, tf, tr, theme, &face);
+
+        if self.project_is_dirty() {
+            // A filled dot on the corner, ringed in the topbar's own colour so
+            // it reads as a badge on the button rather than a speck in it.
+            let ctr = Point::new(rect.x1 - 7.0, rect.y0 + 7.0);
+            scene.fill(Fill::NonZero, tf, c.surfaces.raised, None, &Circle::new(ctr, 5.0));
+            scene.fill(Fill::NonZero, tf, c.accent[5], None, &Circle::new(ctr, 3.5));
+        }
     }
 
     /// Three-bar hamburger that summons the collapsed media bin. Highlights
@@ -9375,7 +9943,14 @@ fn fit_aspect(area: Rect, w: f64, h: f64) -> Rect {
 }
 
 fn elide_w(s: &str, max_px: f32, tr: &mut TextRenderer) -> String {
-    let (w, _) = tr.measure(s, 11.0, None);
+    elide_at(s, max_px, 11.0, tr)
+}
+
+/// [`elide_w`] at an explicit text size. The size matters: measuring at 11px
+/// and drawing at 13px under-elides, and the overflow lands wherever the
+/// caller's clip happens to be.
+fn elide_at(s: &str, max_px: f32, size: f32, tr: &mut TextRenderer) -> String {
+    let (w, _) = tr.measure(s, size, None);
     if w <= max_px {
         return s.to_string();
     }
@@ -9383,7 +9958,7 @@ fn elide_w(s: &str, max_px: f32, tr: &mut TextRenderer) -> String {
     while chars.len() > 1 {
         chars.pop();
         let candidate: String = chars.iter().collect::<String>() + "…";
-        let (cw, _) = tr.measure(&candidate, 11.0, None);
+        let (cw, _) = tr.measure(&candidate, size, None);
         if cw <= max_px {
             return candidate;
         }
