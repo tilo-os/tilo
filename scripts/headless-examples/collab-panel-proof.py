@@ -604,7 +604,9 @@ def main() -> int:
 
         step("the negative claims")
         check("no token was ever typed — only copied and pasted", True,
-              "this script issues no `type` op at all")
+              "the one `type` op in this script carries a person's name "
+              "into the composer; the token crossed by clipboard or the "
+              "join above failed")
         check("no invite was made through the action API", True,
               "every step above is `click_named`, so an unpainted or "
               "unwired control fails the run")

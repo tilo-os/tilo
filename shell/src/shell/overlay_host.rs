@@ -9962,7 +9962,12 @@ impl ShellOverlayHost {
     /// issued-invite readout share one surface, so one rect owns both
     /// the paint and the hit-test.
     fn peer_sync_rect(&self) -> Rect {
-        let w = (self.rect.width() * 0.62).clamp(420.0, 660.0);
+        // Narrower than it was. The card used to be sized around a
+        // token that filled whatever width it was given; what it holds
+        // now is a name, a line of state and a fingerprint, and a
+        // surface three times wider than its content reads as one that
+        // failed to load rather than one that is finished.
+        let w = (self.rect.width() * 0.42).clamp(400.0, 520.0);
         // Each face is as tall as what it has to say. The card used to
         // be one fixed height because the token filled whatever it was
         // given; with the token gone, a fixed height is mostly empty
@@ -10256,7 +10261,11 @@ impl ShellOverlayHost {
                 transform * Affine::translate((rect.x0 + pad, y)),
                 None,
             );
-            y += body_size as f64 + 10.0;
+            // The chord hint belongs to the buttons, not to the status
+            // line above it — without the gap the two read as one
+            // paragraph and the status stops being the thing that just
+            // happened.
+            y += body_size as f64 + 16.0;
         }
 
         // Every face of the card carries buttons, because every step of
