@@ -12,7 +12,7 @@ So this drives the two halves that make the crossing possible, on two
 real compositors with separate identities, separate homes and separate
 device keys:
 
-  ada   /invite  →  card shows the token  →  **Ctrl+C**
+  ada   /invite  →  the invite card  →  **Ctrl+C**
             his clipboard now holds the token
 
   (the hop between the two machines is the person's — a chat message,
