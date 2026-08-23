@@ -28,6 +28,7 @@ pub mod compositor;
 /// Decoded pictures from the real media engine — the source the editor uses.
 #[cfg(feature = "decode")]
 pub mod media_source;
+pub mod title;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -39,6 +40,7 @@ use crate::model::MediaId;
 pub use compositor::{MAX_SHADER_EFFECTS, VideoCompositor, Viewport, upload_rgba};
 #[cfg(feature = "decode")]
 pub use media_source::{Fetch, MediaFrameSource};
+pub use title::TitleRaster;
 
 /// A picture the compositor can sample, plus the size it was decoded at
 /// (which drives the aspect fit into the project frame).
@@ -510,23 +512,23 @@ mod tests {
 
     #[test]
     fn a_source_with_alpha_is_cut_by_it_and_video_never_is() {
-        // A title's transparent margin must let the layer beneath through;
+        // An image's transparent margin must let the layer beneath through;
         // a decoded video frame that happens to carry zero alpha must not
-        // vanish.
+        // vanish. (A title is not used here: its picture is rasterised by
+        // the compositor, so it never reaches the frame source at all.)
         let mut p = Project::new("t");
         let mid = Uuid::new_v4();
         p.media.push(MediaItem {
             id: mid,
-            name: "title".into(),
-            kind: MediaKind::Text,
+            name: "logo.png".into(),
+            kind: MediaKind::Image,
             duration: 10.0,
             width: 32,
             height: 32,
             fps: 30.0,
             palette: 1,
-            path: String::new(),
+            path: crate::media::workspace_path("logo.png"),
             hydration: crate::media::Hydration::Local,
-            text: Some(crate::model::TextSource::new("hi")),
             ..Default::default()
         });
         let t = track(&mut p, 1);
@@ -549,12 +551,153 @@ mod tests {
         // The same picture on a video source keeps its transparent half,
         // because video alpha is not honoured.
         p.media[0].kind = MediaKind::Video;
-        p.media[0].text = None;
         let buf = c.frame(&p, 1.0, 64, 64, &mut src);
         assert!(
             is_green(px(&buf, 64, 48, 32)),
             "a video frame is opaque whatever its alpha channel says; got {:?}",
             px(&buf, 64, 48, 32),
+        );
+    }
+
+    /// Place a title over `p` on track index `index`, returning its clip.
+    fn title_clip(p: &mut Project, index: u32, text: crate::model::TextSource) -> Uuid {
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "Title".into(),
+            kind: MediaKind::Text,
+            duration: 6.0,
+            width: 0,
+            height: 0,
+            fps: 30.0,
+            palette: 4,
+            // A title has no bytes: nothing to hydrate, nothing to decode.
+            path: String::new(),
+            hydration: crate::media::Hydration::Local,
+            text: Some(text),
+            ..Default::default()
+        });
+        let t = track(p, index);
+        let cid = p.add_clip(t, mid, 0.0).unwrap();
+        p.clip_mut(cid).unwrap().out_point = 6.0;
+        cid
+    }
+
+    #[test]
+    fn a_title_draws_its_glyphs_over_the_clip_beneath_it() {
+        let mut p = Project::new("t");
+        // A video bed on V1 …
+        let bed = media(&mut p, 0);
+        let v1 = track(&mut p, 1);
+        let under = p.add_clip(v1, bed, 0.0).unwrap();
+        p.clip_mut(under).unwrap().out_point = 6.0;
+        // … and a big white title over it on V2.
+        title_clip(
+            &mut p,
+            2,
+            crate::model::TextSource {
+                content: "IIIIIIII".into(),
+                size: 0.7,
+                color: [1.0, 1.0, 1.0, 1.0],
+                ..crate::model::TextSource::default()
+            },
+        );
+
+        let mut c = compositor();
+        let buf = c.frame(&p, 1.0, 96, 96, &mut green());
+        let white = buf
+            .chunks_exact(4)
+            .filter(|q| q[0] > 235 && q[1] > 235 && q[2] > 235)
+            .count();
+        assert!(
+            white > 40,
+            "the title's glyphs reach the composite as white pixels, got {white}",
+        );
+        // And the bed is still visible where the glyphs are not: a title is
+        // a layer with alpha, not an opaque card.
+        let bed_px = buf
+            .chunks_exact(4)
+            .filter(|q| is_green(Rgb::new(
+                q[0] as f64 / 255.0,
+                q[1] as f64 / 255.0,
+                q[2] as f64 / 255.0,
+            )))
+            .count();
+        assert!(
+            bed_px > 3000,
+            "the clip beneath shows through the title's transparent field, got {bed_px}",
+        );
+    }
+
+    #[test]
+    fn a_title_needs_no_frame_source_at_all() {
+        // The hermetic path: with `NoSources` every other layer falls back
+        // to a stand-in fill, but a title's picture comes from the document
+        // and must be really drawn.
+        let mut p = Project::new("t");
+        title_clip(
+            &mut p,
+            1,
+            crate::model::TextSource {
+                content: "HELLO".into(),
+                size: 0.5,
+                color: [1.0, 0.2, 0.2, 1.0],
+                ..crate::model::TextSource::default()
+            },
+        );
+        let mut c = compositor();
+        let buf = c.frame(&p, 1.0, 96, 96, &mut NoSources);
+        let red = buf
+            .chunks_exact(4)
+            .filter(|q| q[0] > 200 && q[1] < 110 && q[2] < 110)
+            .count();
+        assert!(red > 30, "the title renders with no decoder, got {red} red pixels");
+        // Nothing else is on the timeline, so the rest is letterbox black —
+        // not the two-band stand-in a source-less clip would otherwise draw.
+        let black = buf.chunks_exact(4).filter(|q| q[0] < 12 && q[1] < 12 && q[2] < 12).count();
+        assert!(black > 5000, "the field around the glyphs stays black, got {black}");
+    }
+
+    #[test]
+    fn a_title_can_be_placed_and_scaled_like_any_other_layer() {
+        // Geometry composes with titles: this is how a lower third is made.
+        let mut p = Project::new("t");
+        let cid = title_clip(
+            &mut p,
+            1,
+            crate::model::TextSource {
+                content: "IIII".into(),
+                size: 0.5,
+                ..crate::model::TextSource::default()
+            },
+        );
+        let mut c = compositor();
+        let centred = c.frame(&p, 1.0, 96, 96, &mut NoSources);
+        let rows_lit = |buf: &[u8]| {
+            let mut top = 0usize;
+            let mut bottom = 0usize;
+            for (i, q) in buf.chunks_exact(4).enumerate() {
+                if q[3] == 255 && q[0] > 200 {
+                    if i / 96 < 48 { top += 1 } else { bottom += 1 }
+                }
+            }
+            (top, bottom)
+        };
+        let (t0, b0) = rows_lit(&centred);
+        assert!(t0 + b0 > 20, "the centred title is on screen: {t0}/{b0}");
+
+        // Push it into the lower third.
+        p.clip_mut(cid).unwrap().transform = Transform {
+            scale_x: 0.5,
+            scale_y: 0.5,
+            pos_y: 0.3,
+            ..Transform::default()
+        };
+        let lower = c.frame(&p, 1.0, 96, 96, &mut NoSources);
+        let (t1, b1) = rows_lit(&lower);
+        assert!(
+            b1 > t1 && t1 == 0,
+            "a transformed title moves to the lower third: {t1} above, {b1} below",
         );
     }
 

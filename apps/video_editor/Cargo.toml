@@ -48,6 +48,9 @@ gstreamer-app = { version = "0.24", optional = true }
 # rather than relying on the caller passing --test-threads=1.
 [dev-dependencies]
 serial_test.workspace = true
+# The compose probe example writes the frames it renders, so a person can
+# look at what the compositor produced rather than only at pixel asserts.
+png.workspace = true
 
 [features]
 # The preview canvas decoding real frames is the editor's core, so `decode`
