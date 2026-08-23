@@ -279,6 +279,14 @@ def ok(resp: dict) -> dict:
 class Session:
     """One running compositor, addressed by its control socket."""
 
+    #: Whether this session gossips its presence to peers on the network.
+    #: On for the nine-beat film, whose whole subject is other people;
+    #: worth turning off for a single-session take, because mdns finds
+    #: every other qOS session on the machine — another agent's harness,
+    #: a demo somebody left running — and paints a cursor and a name pill
+    #: for it, over the document, on camera.
+    peer_sync: bool = True
+
     def __init__(self, name: str, user: str, run_dir: str, sock: str, binary: str,
                  size: str, runtime_dir: str, home: str, apps_dir: str,
                  tools: dict[str, str] | None = None):
@@ -427,9 +435,11 @@ class Session:
         os.makedirs(os.path.join(self.dir, "store-config"), exist_ok=True)
         os.makedirs(os.path.join(self.dir, "store-cache"), exist_ok=True)
         self._log = open(self.log_path, "w")
+        argv = [self.binary, "--mode", "native", "--backend", "headless"]
+        if self.peer_sync:
+            argv.append("--enable-peer-sync")
         self.proc = subprocess.Popen(
-            [self.binary, "--mode", "native", "--backend", "headless",
-             "--enable-peer-sync"],
+            argv,
             cwd=REPO, env=env, stdout=self._log, stderr=subprocess.STDOUT,
             # `--keep` genuinely keeps: without a session of its own a
             # child dies with this process's group the moment the script
@@ -1610,6 +1620,32 @@ class LogTail:
                 return True
             time.sleep(0.1)
         return False
+
+
+def wait_until_painted(s: Session, timeout: float = 45.0) -> list[str]:
+    """Wait until the shell is compositing every client window it holds.
+
+    `frame_seq > 0` says the client produced a frame; `presented` says
+    the *shell* is painting it. The two are seconds apart on a loaded
+    machine, and in between the compositor answers `list_targets` and
+    `foreign_frames` with laid-out rects for windows that do not appear
+    in a snapshot at all — so a rig that trusts the rects stages a scene,
+    photographs an empty desktop, and reports success. Seen twice.
+
+    Returns the app ids still unpainted, so a caller can say which one
+    rather than only that something was.
+    """
+    def unpainted() -> list[str]:
+        return [str(f.get("app_id")) for f in s.foreign_frames()
+                if not f.get("presented")]
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        missing = unpainted()
+        if not missing:
+            return []
+        time.sleep(0.5)
+    return unpainted()
 
 
 def painted_tiles(s: Session) -> dict[int, dict]:
@@ -3409,6 +3445,10 @@ def beat_eight(ada: Session, files: dict | None, wp: dict | None,
     # Both windows whole, before anything is aimed at either of them. A
     # drag that starts or ends off the edge of the screen is not a drag
     # anybody can see.
+    unpainted = wait_until_painted(ada)
+    if unpainted:
+        gap(f"the shell is not painting {unpainted} yet, so this would be "
+            f"filmed against an empty desktop")
     frame_both_windows(ada, VIEWPORT)
     ada.settle(0.5)
     tiles = painted_tiles(ada)
@@ -3449,6 +3489,24 @@ def beat_eight(ada: Session, files: dict | None, wp: dict | None,
 
     log = LogTail(ada.log_path)
     log.catch_up()
+
+    # A blank line at the end of the document for the photograph to land
+    # on. Without one it goes in wherever along the existing text the
+    # pointer happens to be over, which is the middle of a word about as
+    # often as not.
+    #
+    # Aimed at 30% down, not 20%: the top band of the page is the header
+    # zone, and a click there opens header editing — which paints a
+    # labelled dashed box across the top of the document and stays on
+    # screen for the rest of the beat.
+    wx0, wy0, ww0, wh0 = wp_tile
+    ada.click_at(wx0 + ww0 * 0.30, wy0 + wh0 * 0.30)
+    ada.settle(0.8)
+    ada.key_down("Control")
+    ada.key("End")
+    ada.key_up("Control")
+    ada.key("Enter")
+    ada.settle(0.6)
 
     step(f"he presses on {PHOTO_NAME}")
     # A click first, so the press that starts the drag is not the one
@@ -3494,13 +3552,18 @@ def beat_eight(ada: Session, files: dict | None, wp: dict | None,
     #
     # Where it is released matters more than it looks. The word
     # processor moves its caret to the drop point before inserting
-    # (`widget.rs:5792`), mapping the pointer to a position in the text —
-    # so a drop in the middle of the page lands the photograph in the
-    # middle of a *word*. The first take of this beat cut "and" in half
-    # and left a spell-check squiggle on screen. Released to the right of
-    # where the line of text ends, it goes in after the sentence.
+    # (`widget.rs:5792`), clamping the pointer to the nearest line and
+    # then picking a character position along it — so a drop over the
+    # middle of the page lands the photograph in the middle of a *word*.
+    # The first take of this beat cut "and" in half and left a
+    # spell-check squiggle on screen.
+    #
+    # An empty last line was opened above, so releasing *below* all the
+    # text clamps to that line, where there is no character to land in
+    # the middle of. Left of centre keeps it off the styles panel, which
+    # the drop handler ignores entirely.
     wx, wy, ww, wh = wp_tile
-    drop = (wx + ww * 0.62, wy + wh * 0.30)
+    drop = (wx + ww * 0.30, wy + wh * 0.55)
     x0, y0 = hx + 30, hy - 12
     frames = 26
     for i in range(1, frames + 1):
