@@ -1065,9 +1065,15 @@ mod tests {
         muted.tracks[0].muted = true;
         muted.tracks[1].muted = true;
         monitor.set_project(&muted);
-        tap.lock().unwrap().clear();
         assert!(
             eventually(|| {
+                // Clear, then look at what arrives *after* the clear. A
+                // single clear before looking would race a block that was
+                // already mixed when the mute landed: one pre-mute sample
+                // in the tap and no later silence could ever clear it,
+                // which is a flake rather than a finding.
+                tap.lock().unwrap().clear();
+                std::thread::sleep(std::time::Duration::from_millis(30));
                 let got = tap.lock().unwrap();
                 !got.is_empty() && got.iter().all(|s| *s == 0.0)
             }),
