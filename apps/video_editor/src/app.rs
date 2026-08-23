@@ -4566,6 +4566,10 @@ impl Widget for VideoEditorApp {
         if self.show_help {
             self.draw_help_sheet(scene, transform, tr, theme, &r);
         }
+        self.draw_project_notice(scene, transform, tr, theme, &r);
+        if self.pending_open.is_some() {
+            self.draw_discard_dialog(scene, transform, tr, theme);
+        }
         // The context menus float above everything else.
         self.bin_menu.draw(scene, transform, tr, theme, presence);
         self.project_menu.draw(scene, transform, tr, theme, presence);
@@ -5066,6 +5070,7 @@ impl Widget for VideoEditorApp {
     /// the user is on rather than on "video editor, canvas".
     fn accessibility(&self) -> Option<AccessNode> {
         let mut kids = vec![
+            self.a11y_project(),
             self.a11y_bin(),
             self.a11y_transport(),
             self.a11y_timeline(),
@@ -5073,6 +5078,9 @@ impl Widget for VideoEditorApp {
         ];
         if self.show_export {
             kids.push(self.a11y_export_dialog());
+        }
+        if self.pending_open.is_some() {
+            kids.push(self.a11y_discard_dialog());
         }
         if self.show_help {
             kids.push(self.a11y_help_sheet());
@@ -5082,7 +5090,11 @@ impl Widget for VideoEditorApp {
                 .with_name("Video editor")
                 .with_value(format!(
                     "{}, {} in {} pane",
-                    self.project.name,
+                    // The same line the project button's dot and tooltip
+                    // carry, so a reader is told which project is open AND
+                    // whether it is written down. A bare name would say only
+                    // the first, which is the tidier and less true story.
+                    self.project_status_line(),
                     crate::timecode::timecode(self.playhead, self.project.fps),
                     self.focus.pane.label()
                 ))
@@ -5118,6 +5130,34 @@ impl Widget for VideoEditorApp {
             // Not a pane: the export dialog or the help sheet.
             if pane_key == hash_key(&"export") {
                 return self.a11y_export_action(action, &key_path[1..]);
+            }
+            if pane_key == hash_key(&"project") {
+                // Activating it does what clicking it does: opens the menu.
+                // Whether the menu is reachable this way is exactly whether
+                // the button is painted, so the node's focusable flag and this
+                // cannot disagree.
+                if matches!(action, Action::Activate) {
+                    let btn = self.regions().project_btn;
+                    if btn.width() > 0.0 {
+                        self.open_project_menu(Point::new(btn.x0, btn.y1 + 4.0));
+                        return true;
+                    }
+                }
+                return false;
+            }
+            if pane_key == hash_key(&"discard") {
+                let Some(&which) = key_path.get(1) else { return false };
+                if !matches!(action, Action::Activate) {
+                    return false;
+                }
+                let choice = match which {
+                    1 => DiscardChoice::Cancel,
+                    2 => DiscardChoice::Discard,
+                    3 => DiscardChoice::Save,
+                    _ => return false,
+                };
+                self.resolve_pending_open(state, choice);
+                return true;
             }
             if pane_key == hash_key(&"help") {
                 if matches!(action, Action::Activate) {
@@ -5555,6 +5595,66 @@ impl VideoEditorApp {
 
     /// The export dialog as a real dialog: modal, named, and reporting its own
     /// progress. It traps focus while open (see `Widget::traps_focus`).
+    /// The project button, as a reader meets it.
+    ///
+    /// The dot on the button and this node say the same thing: a sighted user
+    /// sees a badge, a reader hears [`PROJECT_UNSAVED`]. Neither is given the
+    /// tidier story — and when the topbar is too narrow to paint the control
+    /// at all, the node says that instead of offering a button nobody can
+    /// press.
+    fn a11y_project(&self) -> AccessNode {
+        let visible = self.regions().project_btn.width() > 0.0;
+        let mut node = AccessNode::new(Role::Button)
+            .with_name(self.project_label())
+            .with_value(self.project_status_line())
+            .with_key(ui::a11y::hash_key(&"project"))
+            .with_state(AccessState { focusable: visible, ..Default::default() });
+        node = if !visible {
+            node.with_description("Not shown at this width — use Ctrl+O to open, Ctrl+S to save")
+        } else if self.project_is_dirty() {
+            node.with_description(PROJECT_UNSAVED)
+        } else {
+            node
+        };
+        node
+    }
+
+    /// The unsaved-work question, carrying the same three answers the card
+    /// paints and the same account of what each one costs.
+    fn a11y_discard_dialog(&self) -> AccessNode {
+        let Some(pending) = &self.pending_open else {
+            return AccessNode::new(Role::Dialog).with_name("Save first?");
+        };
+        let opening = crate::project_file::recents::label(&pending.path);
+        let kids = vec![
+            AccessNode::new(Role::StaticText)
+                .with_name("What happens")
+                .with_value(format!(
+                    "{} has never been saved to a file. Opening {opening} replaces it. \
+                     Ctrl+Z brings it back.",
+                    pending.losing,
+                ))
+                .with_key(0),
+            AccessNode::new(Role::Button)
+                .with_name("Cancel")
+                .with_key(1)
+                .with_state(AccessState { focusable: true, ..Default::default() }),
+            AccessNode::new(Role::Button)
+                .with_name("Open anyway")
+                .with_key(2)
+                .with_state(AccessState { focusable: true, ..Default::default() }),
+            AccessNode::new(Role::Button)
+                .with_name("Save…")
+                .with_key(3)
+                .with_state(AccessState { focusable: true, ..Default::default() }),
+        ];
+        AccessNode::new(Role::Dialog)
+            .with_name(format!("Save {} first?", pending.losing))
+            .with_key(ui::a11y::hash_key(&"discard"))
+            .with_state(AccessState { modal: true, ..Default::default() })
+            .with_children(kids)
+    }
+
     fn a11y_export_dialog(&self) -> AccessNode {
         let mut kids = vec![
             // The same honest size line the dialog paints. On a box whose
@@ -6110,6 +6210,22 @@ impl VideoEditorApp {
     ) -> bool {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
         let shift = modifiers.state().shift_key();
+        // The unsaved-work question owns the keyboard: Esc stays put, Enter
+        // takes the safe answer. Nothing else fires meanwhile, so a stray key
+        // cannot edit the project that is being asked about.
+        if self.pending_open.is_some() {
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    self.resolve_pending_open(state, DiscardChoice::Cancel);
+                    return true;
+                }
+                Key::Named(NamedKey::Enter) => {
+                    self.resolve_pending_open(state, DiscardChoice::Save);
+                    return true;
+                }
+                _ => return false,
+            }
+        }
         if self.show_export {
             if matches!(key, Key::Named(NamedKey::Escape)) {
                 self.show_export = false;
@@ -6387,7 +6503,19 @@ impl VideoEditorApp {
     fn handle_press(&mut self, state: &mut AutoCommit, r: &Regions, shift: bool) {
         let p = self.last_mouse;
 
-        // Modal owns all clicks.
+        // Modals own all clicks. The unsaved-work question is asked over the
+        // export dialog too (Ctrl+O works while it is up), so it is first.
+        if self.pending_open.is_some() {
+            let (_, cancel, discard, save) = self.discard_layout();
+            if cancel.contains(p) {
+                self.resolve_pending_open(state, DiscardChoice::Cancel);
+            } else if discard.contains(p) {
+                self.resolve_pending_open(state, DiscardChoice::Discard);
+            } else if save.contains(p) {
+                self.resolve_pending_open(state, DiscardChoice::Save);
+            }
+            return;
+        }
         if self.show_export {
             self.press_export(state, r, p);
             return;
@@ -7770,6 +7898,123 @@ impl VideoEditorApp {
             scene.fill(Fill::NonZero, tf, c.surfaces.raised, None, &Circle::new(ctr, 5.0));
             scene.fill(Fill::NonZero, tf, c.accent[5], None, &Circle::new(ctr, 3.5));
         }
+    }
+
+    /// The last thing that happened to the project file, on a strip under the
+    /// topbar. Full width and above the panes, because it is not about the bin
+    /// or the timeline — and because a save that failed must not be findable
+    /// only by opening a panel.
+    fn draw_project_notice(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
+        let Some(notice) = &self.project_notice else { return };
+        let c = &theme.tokens.colors;
+        let strip = Rect::new(r.topbar.x0, r.topbar.y1, r.topbar.x1, r.topbar.y1 + 26.0);
+        let tint = if self.project_notice_is_error() {
+            c.semantic.danger
+        } else if notice.contains(MEDIA_NOT_LOCAL) {
+            // Opened, but not everything came with it. Neither a success nor a
+            // failure, and it must not be dressed as either.
+            c.semantic.warning
+        } else {
+            c.accent[5]
+        };
+        fill_rect(scene, tf, with_alpha(tint, 0.16), strip);
+        stroke_line(scene, tf, with_alpha(tint, 0.5), strip.x0, strip.y1, strip.x1, strip.y1, 1.0);
+        let shown = elide_w(notice, (strip.width() - 28.0) as f32, tr);
+        let baseline = text_baseline(strip, 11.5, tr);
+        text(scene, tr, tf, &shown, 11.5, c.text_primary, strip.x0 + 14.0, baseline);
+    }
+
+    /// Whether the standing project notice reports a failure, so it is tinted
+    /// as one. Every failure path here goes through
+    /// [`crate::project_file::ProjectFileError`]'s wording, so the test is
+    /// against that vocabulary rather than against arbitrary prose.
+    fn project_notice_is_error(&self) -> bool {
+        self.project_notice
+            .as_deref()
+            .map(|n| {
+                n.starts_with("Not a video project")
+                    || n.starts_with("Project file is")
+                    || n.starts_with("Project needs")
+                    || n.starts_with("Could not")
+            })
+            .unwrap_or(false)
+    }
+
+    /// Card and buttons for the unsaved-work question.
+    fn discard_layout(&self) -> (Rect, Rect, Rect, Rect) {
+        let w = 420.0_f64.min(self.rect.width() - 48.0).max(240.0);
+        let h = 172.0;
+        let ctr = self.rect.center();
+        let card = Rect::new(ctr.x - w / 2.0, ctr.y - h / 2.0, ctr.x + w / 2.0, ctr.y + h / 2.0);
+        let by1 = card.y1 - 20.0;
+        let by0 = by1 - 32.0;
+        let save = Rect::new(card.x1 - 20.0 - 110.0, by0, card.x1 - 20.0, by1);
+        let discard = Rect::new(save.x0 - 10.0 - 104.0, by0, save.x0 - 10.0, by1);
+        let cancel = Rect::new(discard.x0 - 10.0 - 84.0, by0, discard.x0 - 10.0, by1);
+        (card, cancel, discard, save)
+    }
+
+    /// Ask before an Open replaces a project that exists nowhere else.
+    fn draw_discard_dialog(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(pending) = &self.pending_open else { return };
+        let c = &theme.tokens.colors;
+        fill_rect(scene, tf, with_alpha(c.surfaces.scrim, MODAL_SCRIM_ALPHA), self.rect);
+        let (card, cancel, discard, save) = self.discard_layout();
+        fill_rrect(scene, tf, c.surfaces.raised, card, 14.0);
+        stroke_rrect(scene, tf, c.border_standard, card, 14.0, 1.0);
+        let x0 = card.x0 + 24.0;
+        text_w(
+            scene,
+            tr,
+            tf,
+            &format!("Save “{}” first?", pending.losing),
+            17.0,
+            c.text_primary,
+            x0,
+            card.y0 + 22.0,
+            TextWeight::Bold,
+        );
+        // Say what is true: the work is not gone if they open anyway, because
+        // the open is undoable. A dialog that overstates the danger trains
+        // people to click through it.
+        for (i, line) in [
+            "It has never been saved to a file.".to_string(),
+            format!(
+                "Opening {} replaces it. Ctrl+Z brings it back.",
+                crate::project_file::recents::label(&pending.path)
+            ),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let shown = elide_at(line, (card.width() - 48.0) as f32, 12.5, tr);
+            text(scene, tr, tf, &shown, 12.5, c.text_dim, x0, card.y0 + 56.0 + i as f64 * 20.0);
+        }
+        draw_button(scene, tf, tr, theme, cancel, "Cancel", false, cancel.contains(self.last_mouse));
+        draw_button(
+            scene,
+            tf,
+            tr,
+            theme,
+            discard,
+            "Open anyway",
+            false,
+            discard.contains(self.last_mouse),
+        );
+        draw_button(scene, tf, tr, theme, save, "Save…", true, save.contains(self.last_mouse));
     }
 
     /// Three-bar hamburger that summons the collapsed media bin. Highlights
