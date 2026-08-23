@@ -1713,18 +1713,13 @@ pub fn route_input(
                 );
                 if steps != 0 {
                     if mods.shift_key() {
-                        let target = {
-                            let chrome = fb.chrome();
-                            let tree = chrome.tree();
-                            step_active_window(&tree, steps)
-                        };
-                        if let Some((strip, group, tab)) = target {
-                            // Select the window (its tab) and focus its
-                            // group — the same state a click on the tab
-                            // pill produces — then hand the keyboard to
-                            // whatever the tab hosts. The per-tick
-                            // reconciler slides the strip to the group.
-                            focus_window(fb, strip, group, tab);
+                        // Same primitive Super+Left/Right and a
+                        // horizontal scroll run — one implementation of
+                        // "next window along the strip", so the three
+                        // cannot disagree about where the next one is.
+                        // The per-tick reconciler slides the strip to
+                        // whatever it lands on.
+                        if fb.host_mut().step_focus_along_strip(steps) {
                             sync_keyboard_focus(state, fb);
                         }
                     } else {
@@ -1937,43 +1932,6 @@ fn deliver_pointer(state: &mut State, hit: Option<TileHit>) {
         );
     }
     state.forward_client_pointer_motion(global, target);
-}
-
-/// Focus one window: select `tab` inside `group` and make `group` the
-/// active group of `strip` — the same state a click on the tab's pill
-/// produces, so `sync_keyboard_focus` and the focus-follow reconciler
-/// behave identically to a click.
-///
-/// The tab is selected on the WIDGET side first: the bar's `active_id`
-/// is authoritative, and the per-frame `harvest_active_tab_writeback`
-/// mirrors widgets into the tree — so a tree-only write would be
-/// overwritten one frame later. The tree is then stamped too, so
-/// keyboard focus and `state_dump` are correct within this same event.
-fn focus_window(fb: &mut FrameBuilder, strip: StripId, group: GroupId, tab: u64) {
-    fb.host_mut().focus_window_widget(strip, group, tab);
-    let mut changed = false;
-    fb.with_chrome(|chrome| {
-        {
-            let mut tree = chrome.tree_mut();
-            if let Some(g) = tree
-                .active_workspace_mut()
-                .and_then(|ws| ws.strips.iter_mut().find(|s| s.id == strip))
-                .and_then(|s| s.window_groups.iter_mut().find(|g| g.id == group))
-            {
-                if g.active_tab != tab {
-                    g.active_tab = tab;
-                    changed = true;
-                }
-            }
-            if tree.active_group_for(strip) != Some(group) {
-                tree.set_active_group(strip, group);
-                changed = true;
-            }
-        }
-        if changed {
-            chrome.bump();
-        }
-    });
 }
 
 /// Make `group` the active group of `strip` in the chrome's tree so the
