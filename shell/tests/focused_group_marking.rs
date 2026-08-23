@@ -18,6 +18,9 @@
 //!      lit window can never appear.
 //!   3. Moving the pointer moves the light, including across strips —
 //!      focus is a pure function of the tree, never a latch.
+//!   4. A strip whose pointer was never seeded still lights a window.
+//!      "No window is lit" is the state the signal exists to abolish, so
+//!      an unset pointer must not be able to reproduce it.
 
 use std::collections::HashMap;
 
@@ -164,5 +167,23 @@ fn moving_the_pointer_to_another_strip_moves_the_light() {
         lit(&mut host, [s_a, s_b]),
         vec![(s_b, G_B1)],
         "a strip focus change moves the light across strips; strip A goes dark",
+    );
+}
+
+#[test]
+fn a_strip_with_no_recorded_pointer_still_lights_a_window() {
+    let (mut t, s_a, s_b) = tree();
+    // A workspace can reach a frame with no active_group recorded for a
+    // strip: a fresh boot, or a strip the user has never clicked into.
+    // Resolution has to fall back rather than leave the strip dark.
+    t.active_group.remove(&s_a);
+    let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&t);
+    tick(&mut host);
+
+    assert_eq!(
+        lit(&mut host, [s_a, s_b]),
+        vec![(s_a, G_A1)],
+        "an unseeded strip falls back to its leftmost group; leaving every \
+         window unlit is the state this signal exists to abolish",
     );
 }
