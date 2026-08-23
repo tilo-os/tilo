@@ -88,7 +88,67 @@ fn ws_topic(ws: WorkspaceId) -> gossipsub::IdentTopic {
     gossipsub::IdentTopic::new(format!("nirios/ws/{ws}"))
 }
 
-
+/// Say what just failed to go out, at a level that matches what it costs.
+///
+/// # Why this exists
+///
+/// This publish used to be `let _ = ...publish(topic, bytes)`. A 14 KiB
+/// constant guarding one path became a product-wide defect nobody noticed for
+/// months precisely because the other paths dropped frames and returned without
+/// a word: a session put a photograph into a shared document, gossipsub refused
+/// the oversized RPC, and every peer's copy froze at the line before the image
+/// while both ends still reported themselves connected.
+///
+/// The levels are graded by consequence rather than by how unusual the error
+/// is. Having no peers is the ordinary state of a session nobody has joined
+/// yet, and a lost caret is corrected by the next one — those are noise at
+/// `warn`. A lost CRDT frame is not recoverable by repetition: Automerge queues
+/// every later change naming it as an ancestor, so one loss silently freezes
+/// the document for good. That is an `error`, and it names the size, because
+/// size is nearly always why.
+fn report_publish_failure(
+    ws: WorkspaceId,
+    kind: &'static str,
+    loss_is_permanent: bool,
+    bytes: usize,
+    err: &gossipsub::PublishError,
+) {
+    use gossipsub::PublishError as P;
+    match err {
+        // Nobody to send to yet. Expected while a room is still assembling,
+        // and the sync kick re-offers state once a peer appears.
+        P::NoPeersSubscribedToTopic | P::Duplicate => {
+            tracing::trace!(ws, kind, bytes, error = %err, "peer-sync: publish skipped");
+        }
+        P::MessageTooLarge if loss_is_permanent => {
+            tracing::error!(
+                ws, kind, bytes,
+                limit = gossipsub::Config::default_max_transmit_size(),
+                "peer-sync: a document frame exceeded the gossip limit and was dropped. \
+                 This document will NOT converge for peers that lack this change: every \
+                 later change naming it as an ancestor stays queued and unapplied, and \
+                 the document simply stops at the point before it",
+            );
+        }
+        P::MessageTooLarge => {
+            tracing::warn!(
+                ws, kind, bytes,
+                limit = gossipsub::Config::default_max_transmit_size(),
+                "peer-sync: message exceeded the gossip limit and was dropped",
+            );
+        }
+        _ if loss_is_permanent => {
+            tracing::error!(
+                ws, kind, bytes, error = %err,
+                "peer-sync: a document frame could not be published and is lost; this \
+                 document will not converge for peers that lack this change",
+            );
+        }
+        _ => {
+            tracing::warn!(ws, kind, bytes, error = %err, "peer-sync: publish failed");
+        }
+    }
+}
 
 /// Returns peers in `peers` whose last-seen timestamp is older than
 /// `now - threshold`. Pure function so the eviction policy is unit-
@@ -237,11 +297,22 @@ impl Actor {
             }
             NetCmd::Publish { ws, msg } => {
                 let topic = ws_topic(ws);
+                let kind = msg.kind();
+                let permanent = msg.loss_is_permanent();
                 let bytes = match serde_json::to_vec(&msg) {
                     Ok(b) => b,
-                    Err(_) => return,
+                    Err(e) => {
+                        tracing::error!(
+                            ws, kind, error = %e,
+                            "peer-sync: a message could not be encoded and is lost",
+                        );
+                        return;
+                    }
                 };
-                let _ = self.swarm.behaviour_mut().gossipsub.publish(topic, bytes);
+                let len = bytes.len();
+                if let Err(e) = self.swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
+                    report_publish_failure(ws, kind, permanent, len, &e);
+                }
             }
             NetCmd::Connect { addr } => {
                 let _ = self.swarm.dial(addr);
