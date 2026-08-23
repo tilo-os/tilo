@@ -72,17 +72,11 @@ const CLOSE_SCALE_END: f64 = 0.95;
 const CLOSE_Y_OFFSET_END: f64 = -20.0;
 
 
-/// How far a hovered-but-inactive pill travels from the chrome's ground
-/// toward the raised tier. Half a step: hover is a promise of the active
-/// state, not the state itself, so it has to be clearly less than a full
-/// lift while still being unmistakably more than nothing.
-const HOVER_LIFT_T: f32 = crate::chrome::shell::HOVER_LIFT_T;
-
-/// Alpha of a raised pill's outer hairline, and of its inset inner glow.
-/// Aliases of the shell-wide chrome weights so the tab strip and the rest
-/// of the chrome cannot drift apart — see `ui/HIG.md` §9.5.
+/// Alpha of the dotted outline the idle "+" slot is drawn with. An alias
+/// of the shell-wide hairline weight so the tab strip and the rest of the
+/// chrome cannot drift apart — see `ui/HIG.md` §9.5. The pills' own edges
+/// come from the glass material rather than from a local constant.
 const PILL_BORDER_ALPHA: u8 = crate::chrome::shell::HAIRLINE_ALPHA;
-const PILL_GLOW_ALPHA: u8 = crate::chrome::shell::GLOW_ALPHA;
 
 /// Resolved per-pill appearance for a single draw frame.
 ///
@@ -106,7 +100,7 @@ pub(crate) fn pill_appearance(
     is_hover: bool,
     is_pressed: bool,
 ) -> PillAppearance {
-    crate::chrome::shell::selection_tier(
+    crate::chrome::shell::glass_selector(
         theme,
         crate::chrome::shell::SelectionState::new(is_active, is_hover, is_pressed),
     )
@@ -149,24 +143,15 @@ struct RevealAnim {
     started: Instant,
 }
 
-/// Whether a pill casts a drop shadow this frame.
-///
-/// A shadow is cast *by* something: it is how a surface reports that it stands
-/// off the one behind it. An idle inactive pill has no body — the tier table
-/// above gives it a transparent fill and no border — so a shadow under it is a
-/// shadow of nothing, and it is gated on the same [`PillAppearance::fill`]
-/// alpha its `×` already is.
-///
-/// Left ungated, the four stacked rings composite to roughly a third of black
-/// under *every* pill in the row. Over a dark desktop that is nearly
-/// invisible, which is why it survived; over a light one it painted a solid
-/// mid-grey slab beneath each inactive pill, dropping the ground under the
-/// label from the bar's own value to a shade that left `text_dim` at under
-/// 2:1 — well beneath the 4.5:1 floor for body text, and unreadable in
-/// practice.
-pub(crate) fn shadow_visible(look: &PillAppearance) -> bool {
-    look.fill.a() > 0
-}
+
+/// A tab pill casts no shadow, and there is no predicate here deciding that
+/// per frame any more. Selection is a lift, not an elevation — a chosen tab
+/// is picked on the bar, not floating above it — so the absence is a
+/// property of the material, and it is asserted where the material is
+/// painted: see `chrome::shell`'s
+/// `the_material_paints_a_body_an_edge_and_a_rim_and_nothing_else`, which
+/// counts the strip's actual paint operations. A predicate returning
+/// `false` would only have restated itself.
 
 /// A tab whose close button was clicked and is now fading out. Kept
 /// in `TabBar::closing_tabs` alongside the still-live `tabs` vec so the
@@ -529,103 +514,23 @@ impl TabBar {
         } else {
             transform
         };
-        // Per-pill drop shadow, approximating the concept's
-        // `shadow-[0_8px_32px_rgba(0,0,0,0.2)]`.
-        //
-        // Cast in proportion to how much body there is to cast it. Every
-        // pill used to lay one down whether it painted anything or not,
-        // so each idle tab sat on a dark rounded smear with no surface
-        // on top of it — four soft black rings over the backdrop, which
-        // is a large part of why the row read as muddy rather than as
-        // chrome. Riding the reveal curve also means the shadow arrives
-        // and leaves with the surface instead of switching underneath it.
-        // The drag-ghost is a lifted pill by definition and keeps a full
-        // shadow regardless of the source's hover state.
-        let shadow_strength = if is_active || look.scale < 1.0 || suppress_hover {
-            1.0
-        } else {
-            self.reveal_fade(i)
-        };
-        let shadow_y_offset = 6.0_f64;
-        let shadow_rings: [(f64, u8); 4] = [
-            (2.0, 51), // ~0.20
-            (5.0, 30), // ~0.12
-            (9.0, 15), // ~0.06
-            (14.0, 5), // ~0.02
-        ];
-        for (spread, alpha) in shadow_rings.into_iter().filter(|_| shadow_visible(&look)) {
-            let alpha = (alpha as f64 * shadow_strength).round() as u8;
-            if alpha == 0 {
-                continue;
-            }
-            let shadow_rect = Rect::new(
-                r.x0 - spread,
-                r.y0 - spread + shadow_y_offset,
-                r.x1 + spread,
-                r.y1 + spread + shadow_y_offset,
-            );
-            let shadow_shape = RoundedRect::from_rect(shadow_rect, radius + spread);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                pill_transform,
-                vello::peniko::Color::from_rgba8(0, 0, 0, alpha),
-                None,
-                &shadow_shape,
-            );
-        }
-        // Pill body. Concept's Tailwind tiers (WindowFrame.tsx):
-        //   idle   → transparent (no fill, no border)
-        //   hover  → a half lift + text brighten
-        //   active → a full lift + hairline border + inner glow
-        // The washes are derived per theme by `Colors::lift` /
-        // `Colors::hairline_on` rather than fixed at white, so the tiers
-        // read the same way on either side of the light/dark line.
+        // Pill body, in the shared glass material — film, lit edge, and
+        // for the active pill a lit inner rim. The three states are one
+        // substance at three commitments rather than three recipes; what
+        // each state *is* lives in `chrome::shell::glass_selector`, and
+        // how the substance paints lives in `paint_glass_body`, so the
+        // strip cannot drift from the rest of the chrome by editing a
+        // gradient here.
         let shape = RoundedRect::from_rect(r, radius);
-        if look.fill.a() > 0 {
-            // Light from above rather than a single flat wash: the fill
-            // is brightest along the pill's top edge and settles to the
-            // token value by its middle. One gradient is what separates
-            // "a rectangle of slightly lighter grey" from a surface that
-            // sits above the backdrop, and it is derived from the same
-            // `surface_white_*` token the tier table names rather than
-            // introducing a colour of its own.
-            let top = look.fill.with_alpha_factor(1.9);
-            let grad = vello::peniko::Gradient::new_linear(
-                Point::new(r.x0, r.y0),
-                Point::new(r.x0, r.y0 + r.height() * 0.8),
-            )
-            .with_extend(vello::peniko::Extend::Pad)
-            .with_stops(
-                &[
-                    vello::peniko::ColorStop { offset: 0.0, color: top.into() },
-                    vello::peniko::ColorStop { offset: 1.0, color: look.fill.into() },
-                ][..],
-            );
-            scene.fill(vello::peniko::Fill::NonZero, pill_transform, &grad, None, &shape);
-        }
-        if let Some(border) = look.border {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                pill_transform,
-                border,
-                None,
-                &shape,
-            );
-        }
-        // Active-only inner glow: a 1-px-inset stroke at border_white_20
-        // sits just inside the outer border, giving the active pill a
-        // subtle "lit edge" that pops against the dotted-grid backdrop.
-        if let Some(glow_color) = look.inner_glow {
-            let inset = Rect::new(r.x0 + 1.0, r.y0 + 1.0, r.x1 - 1.0, r.y1 - 1.0);
-            let inset_shape = RoundedRect::from_rect(inset, (radius - 1.0).max(0.0));
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                pill_transform,
-                glow_color,
-                None,
-                &inset_shape,
-            );
-        }
+        crate::chrome::shell::paint_glass_body(
+            scene,
+            pill_transform,
+            r,
+            radius,
+            theme,
+            &look,
+            1.0,
+        );
         // From here on the rest of the pill chrome paints under
         // `pill_transform` so it compresses with the body when pressed.
         let transform = pill_transform;
@@ -876,42 +781,22 @@ impl TabBar {
         let pill_height = (r.height()).max(0.0);
         let radius = pill_height / 2.0;
         let text_dim = theme.tokens.colors.text_dim;
-        // Per-pill drop shadow — same rings as `draw_pill_inner` so
-        // the fade-out feels continuous with the pill chrome the user
-        // was just looking at.
-        let shadow_y_offset = 6.0_f64;
-        let shadow_rings: [(f64, u8); 4] = [
-            (2.0, 51),
-            (5.0, 30),
-            (9.0, 15),
-            (14.0, 5),
-        ];
-        for (spread, alpha) in shadow_rings {
-            let shadow_rect = Rect::new(
-                r.x0 - spread,
-                r.y0 - spread + shadow_y_offset,
-                r.x1 + spread,
-                r.y1 + spread + shadow_y_offset,
-            );
-            let shadow_shape = RoundedRect::from_rect(shadow_rect, radius + spread);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                vello::peniko::Color::from_rgba8(0, 0, 0, alpha),
-                None,
-                &shadow_shape,
-            );
-        }
-        // Pill body: use the "inactive" tier — the closing pill is no
-        // longer the active tab (active-id shifted at close-start). With
-        // the new contrast pass an inactive pill is fully transparent;
-        // the closing pill keeps a faint half-lift fill so the user can
-        // still read the title + close glyph clearly during the
-        // fade-out. Same derivation as a hovered pill, so it stays
-        // visible on a light theme too.
-        let shape = RoundedRect::from_rect(r, radius);
-        let fill = theme.tokens.colors.lift(HOVER_LIFT_T);
-        scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+        // Pill body: the hovered tier — the closing pill is no longer the
+        // active tab (active-id shifted at close-start), and an inactive
+        // pill is fully transparent, which would leave the title and the
+        // × the user just clicked floating on the bar for the length of
+        // the fade. Painted through the shared material so the pill the
+        // user is watching leave is made of the same glass it was made of
+        // a frame ago.
+        crate::chrome::shell::paint_glass_body(
+            scene,
+            transform,
+            r,
+            radius,
+            theme,
+            &pill_appearance(theme, false, true, false),
+            1.0,
+        );
         let text_size = theme.tokens.typography.scale.sm;
         let title_weight = TextWeight::Semibold;
         let (_tw, th) = tr.measure_weighted(&c.desc.title, text_size, None, title_weight);
@@ -1593,26 +1478,33 @@ impl TabBar {
         let is_pressed =
             !suppress_hover && self.press_origin.is_some_and(|(j, _)| j == idx);
         let mut look = pill_appearance(theme, is_active, is_hover, is_pressed);
-        // An inactive pill's body wash rides its reveal curve instead of
-        // switching on and off with the pointer, so the fill fades out
-        // over exactly the frames its chips are sliding back under its
-        // right edge. Without it the body would vanish on the first
-        // un-hovered frame and the chips would spend the rest of the
-        // shrink painting against nothing — the "loose × marks with no
-        // pill around them" shape [`close_affordance_visible`] exists to
-        // prevent. Fully hovered the factor is 1, so a settled pill is
-        // the same `surface_white_5` the tier table specifies.
+        // An inactive pill's body rides its reveal curve instead of
+        // switching on and off with the pointer, so it fades out over
+        // exactly the frames its chips are sliding back under its right
+        // edge. Without it the body would vanish on the first un-hovered
+        // frame and the chips would spend the rest of the shrink painting
+        // against nothing — the "loose × marks with no pill around them"
+        // shape [`close_affordance_visible`] exists to prevent.
+        //
+        // The whole material fades, edge included. Fading only the film
+        // left the hairline switching off a frame later than the body it
+        // was drawn around, which is visible as a flicker of bare outline
+        // at the end of the shrink. Fully hovered the factor is 1, so a
+        // settled pill is exactly the hovered tier.
         if !is_active && !is_pressed {
             let fade = if suppress_hover {
                 0.0
             } else {
                 self.reveal_fade(idx)
             };
-            look.fill = if fade > 0.0 {
-                theme.tokens.colors.surface_white_5.with_alpha_factor(fade as f32)
+            if fade > 0.0 {
+                let hovered = pill_appearance(theme, false, true, false);
+                look.fill = hovered.fill.with_alpha_factor(fade as f32);
+                look.border = hovered.border.map(|c| c.with_alpha_factor(fade as f32));
             } else {
-                vello::peniko::Color::TRANSPARENT
-            };
+                look.fill = vello::peniko::Color::TRANSPARENT;
+                look.border = None;
+            }
         }
         look
     }
@@ -2281,19 +2173,17 @@ impl Widget for TabBar {
             // derived against the ground the way a pill's are, so the row
             // keeps one hover language in every theme.
             if self.hover_new_tab {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+                // The same glass a hovered pill is made of. It stands in
+                // the row with them, so an opaque body here would read as
+                // a different substance parked at the end of the strip.
+                crate::chrome::shell::paint_glass_body(
+                    scene,
                     transform,
-                    colors.lift(1.0),
-                    None,
-                    &shape,
-                );
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    Colors::hairline_on(colors.surfaces.base, PILL_GLOW_ALPHA),
-                    None,
-                    &shape,
+                    r,
+                    radius,
+                    theme,
+                    &pill_appearance(theme, false, true, false),
+                    1.0,
                 );
             } else {
                 scene.stroke(
@@ -4094,44 +3984,6 @@ mod tests {
         }
     }
 
-    /// A pill with no body casts no shadow.
-    ///
-    /// The four stacked shadow rings composite to roughly a third of black.
-    /// Painted under an idle inactive pill — which has no body at all — that
-    /// is a shadow of nothing, invisible over a dark desktop and a solid grey
-    /// slab over a light one. The slab is what dropped the ground under an
-    /// inactive tab's label far enough to make it unreadable, so the gate is
-    /// asserted directly rather than left to the render.
-    #[test]
-    fn only_a_pill_with_a_body_casts_a_shadow() {
-        for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            let idle = pill_appearance(&theme, false, false, false);
-            assert!(
-                !shadow_visible(&idle),
-                "{}: an idle inactive pill has no body, so it must cast no \
-                 shadow — the rings darken the bar under its label instead",
-                theme.name,
-            );
-            for (name, look) in [
-                ("hovered", pill_appearance(&theme, false, true, false)),
-                ("active", pill_appearance(&theme, true, false, false)),
-                ("pressed", pill_appearance(&theme, false, false, true)),
-            ] {
-                assert!(
-                    shadow_visible(&look),
-                    "{}: a {name} pill has a body and must keep its shadow — \
-                     that is what makes it read as standing off the bar",
-                    theme.name,
-                );
-            }
-        }
-    }
-
-    /// Pressed (mouse down on a pill) must visibly compress the pill
-    /// chrome with a subtle scale-down so the click reads as tactile
-    /// feedback. The press also raises the pill into the active visual
-    /// tier (fill + border + glow) so the user sees instant
-    /// "you clicked here" feedback before the activation propagates.
     #[test]
     fn pressed_pill_uses_active_visuals_and_scales_down() {
         let theme = Theme::dark();
