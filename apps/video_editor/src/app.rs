@@ -974,15 +974,41 @@ pub struct VideoEditorApp {
     /// Inspector sections the reader has folded away. Presentation, never in
     /// the document — see [`Section`]. Empty means everything is open.
     collapsed: HashSet<Section>,
+    /// The installed font families, read from the text renderer the first
+    /// time the title section is drawn. Enumerating them needs a renderer,
+    /// which the press path has none of, so the list is cached here and the
+    /// picker is built from the cache.
+    system_fonts: Vec<String>,
+    /// The open font picker: which title it is choosing for, the shared
+    /// dropdown, and the throwaway document it writes its choice into.
+    ///
+    /// The dropdown commits into a CRDT `Text` at a path, and the editor's
+    /// document is the *collaborative* one — a scratch key written there
+    /// would replicate to everyone sharing the project. So it is handed a
+    /// local document of its own, and the real write goes out as the same
+    /// media action every other title property uses.
+    font_picker: Option<(MediaId, Box<ui::widget::Dropdown>, AutoCommit)>,
     /// Which channel the curve editor is showing. Presentation, like
     /// `collapsed`: the curve itself carries all four channels whatever is on
     /// screen, so this never reaches the document.
     curve_channel: crate::curve::Channel,
-    /// In-flight inline edit of the selected title's words, through the same
-    /// shared `EditableLabel` the bin rename uses.
-    title_edit: Option<(MediaId, EditableLabel)>,
-    /// In-flight inline rename of a marker in the inspector's list.
+    /// In-flight inline edit of the selected title's words, through the
+    /// shared [`ui::widget::TextInput`] in **multiline** mode.
+    ///
+    /// A title is two or three lines as often as it is one, and the single
+    /// line `EditableLabel` the bin rename uses could not carry a break: the
+    /// field rendered an embedded newline as a glyph, which was honest about
+    /// the content and useless for authoring it. The field owns its own
+    /// string (`TextInput::local`) rather than binding to the document,
+    /// because the words are committed through the media action like every
+    /// other title property.
+    title_edit: Option<(MediaId, ui::widget::TextInput)>,
+    /// In-flight inline edit of a marker in the inspector's list.
     marker_rename: Option<(MarkerRef, EditableLabel)>,
+    /// Which of the marker's two texts that editor is on. A marker carries a
+    /// name and a free-text note; one inline editor serves both, because the
+    /// row has room for one field at a time and the gesture is the same.
+    marker_field: MarkerField,
     /// Open keyframe menu: which parameter it belongs to, so choosing an item
     /// knows what to key. The menu itself is the shared `ContextMenu`.
     key_menu_param: Option<Param>,
@@ -1218,8 +1244,11 @@ impl VideoEditorApp {
             menu_target: None,
             collapsed: HashSet::new(),
             curve_channel: crate::curve::Channel::Master,
+            system_fonts: Vec::new(),
+            font_picker: None,
             title_edit: None,
             marker_rename: None,
+            marker_field: MarkerField::Name,
             key_menu_param: None,
             bin_rename: None,
             bin_drag: None,
@@ -2688,47 +2717,152 @@ impl VideoEditorApp {
     }
 
     fn begin_marker_rename(&mut self, m: MarkerRef) {
-        let name = self
+        self.begin_marker_edit(m, MarkerField::Name);
+    }
+
+    /// The label for "no family chosen" — the system's default sans, which
+    /// is a real answer and the one a box with no fonts installed can honour.
+    const DEFAULT_FONT_LABEL: &'static str = "System sans";
+
+    /// Open the family chooser for the selected title.
+    ///
+    /// The list is whatever is installed, with the default at the head so
+    /// there is always a way back to it. It is empty only before the first
+    /// draw has filled the cache, and then the picker is not opened at all
+    /// rather than opened over nothing.
+    fn open_font_picker(&mut self) {
+        let Some(m) = self.selected_media_item() else { return };
+        let (mid, current) = (m.id, m.text.as_ref().map(|t| t.font.clone()).unwrap_or_default());
+        if self.system_fonts.is_empty() {
+            return;
+        }
+        let mut options = vec![Self::DEFAULT_FONT_LABEL.to_string()];
+        options.extend(self.system_fonts.iter().cloned());
+        let shown = if current.trim().is_empty() {
+            Self::DEFAULT_FONT_LABEL.to_string()
+        } else {
+            current
+        };
+        // The dropdown reads its current value out of the document it is
+        // given, so the family in force is seeded there and synced in —
+        // which is also what lands the highlight on it when the list opens.
+        let mut doc = AutoCommit::new();
+        let _ = automerge::transaction::Transactable::put(
+            &mut doc,
+            &automerge::ROOT,
+            "font",
+            shown.as_str(),
+        );
+        let mut dd = ui::widget::Dropdown::new(options, "font").with_id("title_font").open();
+        dd.sync(&mut doc, &automerge::ROOT);
+        self.font_picker = Some((mid, Box::new(dd), doc));
+    }
+
+    /// Take whatever the open picker settled on, if it has closed.
+    ///
+    /// Returns the family to write — an empty string for the default — so
+    /// the caller commits it through the ordinary media action.
+    fn take_font_choice(&mut self) -> Option<(MediaId, String)> {
+        let (mid, dd, _) = self.font_picker.as_ref()?;
+        if dd.is_open() {
+            return None;
+        }
+        let chosen = dd.selected().to_string();
+        let mid = *mid;
+        self.font_picker = None;
+        let family = if chosen == Self::DEFAULT_FONT_LABEL { String::new() } else { chosen };
+        Some((mid, family))
+    }
+
+    /// Where the marker row's inline editor is placed: over the name on the
+    /// first line, or over the note's line beneath it.
+    ///
+    /// A note edited in the name's box would look like a rename, and a row
+    /// with no note yet has no second line — so the box is opened there,
+    /// which is also where the note will be once it exists.
+    fn marker_edit_rect(&self, row: Rect) -> Rect {
+        let (name, _, _, _) = marker_row_parts(row);
+        match self.marker_field {
+            MarkerField::Name => name,
+            MarkerField::Note => Rect::new(row.x0 + 16.0, row.y0 + 24.0, name.x1, row.y0 + 44.0),
+        }
+    }
+
+    /// Open the inline editor on one of a marker's two texts.
+    fn begin_marker_edit(&mut self, m: MarkerRef, field: MarkerField) {
+        let current = self
             .project
             .all_markers()
             .into_iter()
             .find(|(_, mk, _)| mk.id == m.id)
-            .map(|(_, mk, _)| mk.name.clone())
+            .map(|(_, mk, _)| match field {
+                MarkerField::Name => mk.name.clone(),
+                MarkerField::Note => mk.note.clone(),
+            })
             .unwrap_or_default();
-        let mut label = EditableLabel::new(&name).with_font_size(12.0).with_id("marker_rename");
+        let mut label = EditableLabel::new(&current).with_font_size(12.0).with_id("marker_rename");
         label.begin_edit();
+        self.marker_field = field;
         self.marker_rename = Some((m, label));
     }
 
     /// Commit a marker rename through whichever action owns that marker: a
     /// project-meta write for a timeline marker, a whole-clip write for one
     /// pinned to a clip.
-    fn commit_marker_rename(&mut self, doc: &mut AutoCommit, m: MarkerRef, name: &str) {
-        let name = name.trim().to_string();
-        if name.is_empty() {
+    fn commit_marker_rename(&mut self, doc: &mut AutoCommit, m: MarkerRef, text: &str) {
+        let field = self.marker_field;
+        self.commit_marker_text(doc, m, field, text);
+    }
+
+    /// Write one of a marker's texts through whichever action owns that
+    /// marker: a project-meta write for a timeline marker, a whole-clip write
+    /// for one pinned to a clip.
+    ///
+    /// An empty **name** is refused — a marker with no name is a dot nobody
+    /// can find in the list — while an empty **note** is accepted, because
+    /// clearing a note is the only way to take one back off.
+    fn commit_marker_text(
+        &mut self,
+        doc: &mut AutoCommit,
+        m: MarkerRef,
+        field: MarkerField,
+        text: &str,
+    ) {
+        let text = text.trim().to_string();
+        if field == MarkerField::Name && text.is_empty() {
             return;
         }
+        let write = |mk: &mut crate::model::Marker| -> bool {
+            let slot = match field {
+                MarkerField::Name => &mut mk.name,
+                MarkerField::Note => &mut mk.note,
+            };
+            if *slot == text {
+                return false;
+            }
+            *slot = text.clone();
+            true
+        };
         match m.clip {
             None => {
                 let mut next = self.project.clone();
                 let Some(mk) = next.marker_mut(m.id) else { return };
-                if mk.name == name {
+                if !write(mk) {
                     return;
                 }
-                mk.name = name;
                 self.project = next.clone();
                 self.actions
                     .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &set_project_meta_action(&next));
             }
             Some(cid) => {
-                if let Some(c) = self.project.clip_mut(cid) {
-                    let Some(mk) = c.markers.iter_mut().find(|mk| mk.id == m.id) else { return };
-                    if mk.name == name {
-                        return;
-                    }
-                    mk.name = name;
+                let changed = self
+                    .project
+                    .clip_mut(cid)
+                    .and_then(|c| c.markers.iter_mut().find(|mk| mk.id == m.id).map(write))
+                    .unwrap_or(false);
+                if changed {
+                    self.dispatch_clip(doc, cid);
                 }
-                self.dispatch_clip(doc, cid);
             }
         }
     }
@@ -2842,9 +2976,13 @@ impl VideoEditorApp {
             .and_then(|m| m.text.as_ref())
             .map(|t| t.content.clone())
             .unwrap_or_default();
-        let mut label = EditableLabel::new(&content).with_font_size(13.0).with_id("title_text");
-        label.begin_edit();
-        self.title_edit = Some((mid, label));
+        let mut field = ui::widget::TextInput::local()
+            .multiline(true)
+            .with_initial_value(&content)
+            .with_font_size(13.0)
+            .with_id("title_text");
+        field.set_focus(true);
+        self.title_edit = Some((mid, field));
     }
 
     /// Longest transition the selected clip can carry: its own length, since
@@ -3782,6 +3920,22 @@ impl VideoEditorApp {
                 l.nums.push((pair[1], Rect::new(x1 - half, y + 19.0, x1, y + 28.0)));
                 y += row;
             }
+            // Anchor: the point scale and rotation turn about. Nine presets
+            // as three segmented rows rather than a free pair of sliders —
+            // an anchor is chosen, not dialled, and every value anyone wants
+            // is a corner, an edge or the middle.
+            y += 12.0;
+            l.anchor_label_y = y;
+            y += 20.0;
+            let cell = (x1 - x0) / 3.0;
+            for ay in ANCHOR_STOPS {
+                for (col, ax) in ANCHOR_STOPS.iter().enumerate() {
+                    let cx = x0 + col as f64 * cell;
+                    l.anchor.push(((*ax, ay), Rect::new(cx, y, cx + cell - 3.0, y + 22.0)));
+                }
+                y += 25.0;
+            }
+            y += 6.0;
             // Picture-in-picture, as the four corners it is actually used for.
             y += 16.0;
             let bw = (x1 - x0 - 18.0) / 4.0;
@@ -3896,8 +4050,10 @@ impl VideoEditorApp {
             // Captioned controls need the caption's line above them; without
             // it the caption lands on the section header it sits under.
             y += 16.0;
-            l.title_text = Some(Rect::new(x0, y, x1, y + 30.0));
-            y += 40.0;
+            // Three lines' worth: a title is two or three lines as often as
+            // it is one, and a one-line box could not show what was typed.
+            l.title_text = Some(Rect::new(x0, y, x1, y + 66.0));
+            y += 92.0;
             l.nums.push((NumField::TitleSize, track_at(y)));
             y += row;
             let aw = (x1 - x0) / TextAlign::ALL.len() as f64;
@@ -3905,7 +4061,11 @@ impl VideoEditorApp {
                 let ax = x0 + i as f64 * aw;
                 l.title_align.push((*a, Rect::new(ax, y, ax + aw - 3.0, y + 24.0)));
             }
-            y += 32.0 + 16.0;
+            // The caption above the chooser needs its own line: at the
+            // ordinary 16px gap it landed on the alignment row's buttons.
+            y += 32.0 + 22.0;
+            l.title_font = Some(Rect::new(x0, y, x1, y + 28.0));
+            y += 36.0 + 16.0;
             let sw = 24.0;
             for (i, col) in TITLE_COLORS.iter().enumerate() {
                 let sx = x0 + i as f64 * (sw + 4.0);
@@ -3928,8 +4088,14 @@ impl VideoEditorApp {
             let open = header(&mut l, &mut y, Section::Effects);
             l.effects_label_y = y;
             if open {
-                for _ in 0..clip.effects.len() {
-                    l.effect_rows.push(Rect::new(x0, y, x1, y + 24.0));
+                for i in 0..clip.effects.len() {
+                    let row = Rect::new(x0, y, x1, y + 24.0);
+                    l.effect_rows.push(row);
+                    // The row's key control joins the panel's one list of
+                    // them, so drawing, hit-testing and the keyframe menu all
+                    // reach it without a second code path.
+                    l.keys
+                        .push((Param::EffectAmount(i as u32), Self::effect_row_parts(row).0));
                     y += 28.0;
                 }
                 l.add_effect = Rect::new(x0, y, x0 + 132.0, y + 24.0);
@@ -4062,7 +4228,7 @@ impl VideoEditorApp {
     ) {
         let c = &theme.tokens.colors;
         for (m, row) in &l.marker_rows {
-            let (name_rect, rename, del) = marker_row_parts(*row);
+            let (name_rect, note_btn, rename, del) = marker_row_parts(*row);
             let hovered = row.contains(self.last_mouse);
             if hovered {
                 fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
@@ -4075,13 +4241,14 @@ impl VideoEditorApp {
             let col = clip_color(theme, mk.palette);
             scene.fill(
                 Fill::NonZero, tf, col, None,
-                &Circle::new(Point::new(row.x0 + 7.0, row.center().y), 4.0),
+                &Circle::new(Point::new(row.x0 + 7.0, row.y0 + 13.0), 4.0),
             );
-            let renaming = self.marker_rename.as_ref().map(|(r, _)| r.id) == Some(m.id);
+            let editing = self.marker_rename.as_ref().map(|(r, _)| r.id) == Some(m.id);
+            let renaming = editing && self.marker_field == MarkerField::Name;
             if !renaming {
                 let name = if mk.name.trim().is_empty() { "Marker" } else { mk.name.as_str() };
                 let shown = elide_w(name, name_rect.width() as f32, tr);
-                let baseline = text_baseline(*row, 12.0, tr);
+                let baseline = text_baseline(name_rect, 12.0, tr);
                 text(scene, tr, tf, &shown, 12.0, c.text_primary, name_rect.x0, baseline);
                 // A clip marker says which clip it travels with, because
                 // moving that clip moves the marker and nothing else would
@@ -4089,12 +4256,22 @@ impl VideoEditorApp {
                 let stamp = timecode(m.at, self.project.fps);
                 let (sw2, _) = tr.measure(&stamp, 11.0, None);
                 let stamp_col = if m.clip.is_some() { c.text_tertiary } else { c.text_dim };
-                text(scene, tr, tf, &stamp, 11.0, stamp_col, rename.x0 - 8.0 - sw2 as f64, baseline);
+                text(scene, tr, tf, &stamp, 11.0, stamp_col, note_btn.x0 - 8.0 - sw2 as f64, baseline);
+            }
+            // The note, on its own line under the name. Present only when
+            // there is one, so an unannotated list stays a list of names.
+            let editing_note = editing && self.marker_field == MarkerField::Note;
+            if !mk.note.trim().is_empty() && !editing_note {
+                let shown = elide_w(mk.note.trim(), (row.width() - 34.0) as f32, tr);
+                let line = Rect::new(row.x0 + 16.0, row.y0 + 26.0, row.x1, row.y0 + 44.0);
+                let base = text_baseline(line, 11.0, tr);
+                text(scene, tr, tf, &shown, 11.0, c.text_tertiary, line.x0, base);
             }
             // Rename and delete only appear under the pointer, so a resting
             // list reads as names and times rather than as a wall of icons.
             if hovered {
                 for (rect, icon, tint) in [
+                    (note_btn, ui::icons::Icon::FileText, c.text_primary),
                     (rename, ui::icons::Icon::Pencil, c.text_primary),
                     (del, ui::icons::Icon::X, c.semantic.danger),
                 ] {
@@ -4142,28 +4319,42 @@ impl VideoEditorApp {
             *y += 18.0;
         }
         for (at, m, on_clip) in markers {
+            // A row grows for a note it has — and for one being typed into it
+            // for the first time, or the editor would open over the row below.
+            let writing_note = self.marker_field == MarkerField::Note
+                && self.marker_rename.as_ref().map(|(r, _)| r.id) == Some(m.id);
+            let h = marker_row_height(!m.note.trim().is_empty() || writing_note);
             l.marker_rows.push((
                 MarkerRef { id: m.id, clip: on_clip, at },
-                Rect::new(x0, *y, x1, *y + 26.0),
+                Rect::new(x0, *y, x1, *y + h),
             ));
-            *y += 30.0;
+            *y += h + 4.0;
         }
         l.add_marker = Some(Rect::new(x0, *y, x1, *y + 26.0));
         *y += 34.0;
     }
 
-    /// Sub-rects of one effect row: `(reorder-up, reorder-down, slider, remove)`.
-    fn effect_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect) {
+    /// Sub-rects of one effect row:
+    /// `(key, reorder-up, reorder-down, slider, remove)`.
+    ///
+    /// The key control leads the row, exactly as it leads every other
+    /// animatable row in the panel. An effect's intensity is as animatable as
+    /// a scale or a mask edge, and it was the one such control with no
+    /// diamond — so it was keyframable only from the command palette, which
+    /// is not somewhere a user looking at the slider would think to go. What
+    /// it costs is width off the effect's name, and the names are one word.
+    fn effect_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
         let cy = row.center().y;
         // 22px tall targets — the row is 24px, so this is as close to the
         // toolkit's minimum as the row allows, and a real improvement on the
         // 16x18 boxes these were.
         let h = 11.0;
-        let up = Rect::new(row.x0, cy - h, row.x0 + 22.0, cy + h);
-        let down = Rect::new(row.x0 + 23.0, cy - h, row.x0 + 45.0, cy + h);
+        let key = Rect::new(row.x0, cy - 9.0, row.x0 + KEY_BOX, cy + 9.0);
+        let up = Rect::new(key.x1 + 4.0, cy - h, key.x1 + 26.0, cy + h);
+        let down = Rect::new(up.x1 + 1.0, cy - h, up.x1 + 23.0, cy + h);
         let remove = Rect::new(row.x1 - 22.0, cy - h, row.x1, cy + h);
         let slider = Rect::new(row.x1 - 96.0, cy - 4.0, row.x1 - 30.0, cy + 4.0);
-        (up, down, slider, remove)
+        (key, up, down, slider, remove)
     }
 
     /// The maximum inspector scroll offset for the current selection.
@@ -4552,9 +4743,25 @@ impl VideoEditorApp {
                 }
                 self.project.add_marker(9.0, "act two", 1);
                 self.project.add_marker(18.5, "sunset", 3);
+                self.collapsed.insert(Section::Curves);
                 self.collapsed.insert(Section::Transform);
                 self.collapsed.insert(Section::Speed);
-                self.inspector_scroll = self.inspector_max_scroll(r) * 0.5;
+                // Land the section's own header near the top of the panel
+                // rather than at a fraction of the scroll: the panel's height
+                // moves whenever a section is added, and a fraction that once
+                // framed the title would then frame whatever had taken its
+                // place.
+                self.inspector_scroll = 0.0;
+                let head = self
+                    .inspector_layout(r)
+                    .sections
+                    .iter()
+                    .find(|(s, _)| *s == Section::Title)
+                    .map(|(_, rect)| rect.y0);
+                if let Some(y) = head {
+                    let want = y - r.inspector.y0 - 22.0;
+                    self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
+                }
             }
             ShotScenario::Keyframes => {
                 self.playhead = 6.0;
@@ -4600,8 +4807,14 @@ impl VideoEditorApp {
             ShotScenario::Markers => {
                 self.playhead = 14.0;
                 self.project.add_marker(4.0, "cold open", 1);
-                self.project.add_marker(9.5, "act two", 3);
+                let act_two = self.project.add_marker(9.5, "act two", 3);
                 self.project.add_marker(21.0, "sunset", 5);
+                // One marker carries a note, so the list shows both shapes a
+                // row takes: a name on its own, and a name with what it means
+                // under it.
+                if let Some(m) = self.project.marker_mut(act_two) {
+                    m.note = "hold on the wide before the cut".into();
+                }
                 if let Some(c) = self.project.top_video_clip_at(23.0) {
                     let cid = c.id;
                     let start = c.start;
@@ -4760,6 +4973,10 @@ struct InspectorLayout {
     reset_transform: Option<Rect>,
     /// Baseline y of the "Crop" caption above the two crop rows.
     crop_label_y: f64,
+    /// Baseline y of the "Anchor" caption above the 3×3 grid.
+    anchor_label_y: f64,
+    /// The nine anchor presets: the point in source uv, and its cell.
+    anchor: Vec<((f64, f64), Rect)>,
     /// Rate presets (`0.5×`, `1×`, …) as a segmented row.
     speed_presets: Vec<(f64, Rect)>,
     /// The reverse toggle.
@@ -4785,6 +5002,8 @@ struct InspectorLayout {
     /// The words, edited inline through the shared editable label.
     title_text: Option<Rect>,
     title_align: Vec<(TextAlign, Rect)>,
+    /// The font-family chooser: a button that opens the shared dropdown.
+    title_font: Option<Rect>,
     /// Preset colours for the title's own (authored, non-palette) colour.
     title_colors: Vec<([f64; 4], Rect)>,
     title_bold: Option<Rect>,
@@ -4824,18 +5043,36 @@ enum KeyState {
     OnKey,
 }
 
-/// Sub-rects of a marker row: `(name, rename, delete)`.
+/// Which of a marker's two texts an inline edit is on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum MarkerField {
+    #[default]
+    Name,
+    /// Free text hanging off the marker — why this instant matters, which a
+    /// name of a few words cannot carry.
+    Note,
+}
+
+/// Sub-rects of a marker row: `(name, note, rename, delete)`.
 ///
 /// Renaming gets its own target rather than living on the name text, because
 /// the row's main job is navigation: a marker exists to be jumped to, and
 /// that has to be what clicking it does. `name` is where the label is drawn
 /// and where the inline editor is placed, not a hit target.
-fn marker_row_parts(row: Rect) -> (Rect, Rect, Rect) {
-    let cy = row.center().y;
+fn marker_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect) {
+    // The icons sit on the row's first line, so a row grown to carry a note
+    // keeps them beside the name rather than floating down beside the note.
+    let cy = row.y0 + 13.0;
     let del = Rect::new(row.x1 - 22.0, cy - 11.0, row.x1, cy + 11.0);
     let rename = Rect::new(del.x0 - 24.0, cy - 11.0, del.x0 - 2.0, cy + 11.0);
-    let name = Rect::new(row.x0 + 16.0, row.y0, rename.x0 - 60.0, row.y1);
-    (name, rename, del)
+    let note = Rect::new(rename.x0 - 24.0, cy - 11.0, rename.x0 - 2.0, cy + 11.0);
+    let name = Rect::new(row.x0 + 16.0, row.y0, note.x0 - 60.0, row.y0 + 26.0);
+    (name, note, rename, del)
+}
+
+/// How tall a marker's row is: one line, or two when it carries a note.
+fn marker_row_height(has_note: bool) -> f64 {
+    if has_note { 44.0 } else { 26.0 }
 }
 
 /// The colours a title can be set to from the inspector.
@@ -5142,15 +5379,27 @@ impl Widget for VideoEditorApp {
         // marker's name. Drawn after the panel so the caret is on top of it.
         if self.inspector_is_visible(&r) {
             let l = self.inspector_layout(&r);
-            if let (Some((_, label)), Some(rect)) = (self.title_edit.as_mut(), l.title_text) {
-                label.apply_layout_external(rect.inset(-4.0));
-                label.draw(scene, transform, tr, theme, presence);
+            // Enumerating installed families needs the renderer, and this is
+            // the only draw path that has one — so the cache is filled here
+            // and the picker is built from it on press.
+            if l.title_font.is_some() && self.system_fonts.is_empty() {
+                self.system_fonts = tr.system_families();
+            }
+            // The open family list floats over the panel, so it is drawn
+            // with the inline editors rather than inside the panel body.
+            if let (Some((_, dd, _)), Some(rect)) = (self.font_picker.as_mut(), l.title_font) {
+                dd.apply_layout_external(rect);
+                dd.draw(scene, transform, tr, theme, presence);
+            }
+            if let (Some((_, field)), Some(rect)) = (self.title_edit.as_mut(), l.title_text) {
+                field.apply_layout_external(rect.inset(-4.0));
+                field.draw(scene, transform, tr, theme, presence);
             }
             let row = self
                 .marker_rename
                 .as_ref()
                 .and_then(|(m, _)| l.marker_rows.iter().find(|(r, _)| r.id == m.id))
-                .map(|(_, row)| marker_row_parts(*row).0);
+                .map(|(_, row)| self.marker_edit_rect(*row));
             if let (Some((_, label)), Some(rect)) = (self.marker_rename.as_mut(), row) {
                 label.apply_layout_external(rect);
                 label.draw(scene, transform, tr, theme, presence);
@@ -5221,30 +5470,81 @@ impl Widget for VideoEditorApp {
                 return;
             }
         }
-        // The title's words, edited in place in the inspector through the
-        // same shared label. Committing writes the media item, so the title's
-        // picture, its bin row and every clip that placed it all update from
-        // one action.
-        if self.title_edit.is_some() {
+        // The font chooser, while it is open, gets the event first — it is a
+        // list floating over the panel, so a click in it must not also reach
+        // whatever it is covering.
+        if self.font_picker.is_some() {
             let l = self.inspector_layout(&r);
-            let (mid, outcome) = {
-                let (mid, label) = self.title_edit.as_mut().unwrap();
-                if let Some(rect) = l.title_text {
-                    label.apply_layout_external(rect.inset(-4.0));
+            if let Some((_, dd, local)) = self.font_picker.as_mut() {
+                if let Some(rect) = l.title_font {
+                    dd.apply_layout_external(rect);
                 }
-                label.handle_event(
+                let root = automerge::ROOT;
+                dd.handle_event(
+                    event, scale_factor, modifiers, local, &root, handled, focus_target, node_id,
+                    taffy,
+                );
+            }
+            if let Some((mid, family)) = self.take_font_choice() {
+                let same = self
+                    .project
+                    .media(mid)
+                    .and_then(|m| m.text.as_ref())
+                    .is_some_and(|t| t.font == family);
+                if !same {
+                    self.edit_title(state, move |t| t.font = family);
+                }
+            }
+            if *handled {
+                return;
+            }
+        }
+        // The title's words, edited in place in the inspector through the
+        // shared multiline field. Committing writes the media item, so the
+        // title's picture, its bin row and every clip that placed it all
+        // update from one action.
+        //
+        // Enter is a line break here, so it cannot also be Accept. Ctrl+Enter
+        // accepts, Escape cancels, and a click anywhere else accepts what was
+        // typed — losing a title to a stray click would be the worse
+        // outcome, and the field says which keys do what under the box.
+        if self.title_edit.is_some() {
+            if let Some(done) = title_edit_verdict(event, modifiers) {
+                let (mid, words) = {
+                    let (mid, field) = self.title_edit.as_ref().unwrap();
+                    (*mid, field.value().to_string())
+                };
+                if done {
+                    self.commit_title_text(state, mid, &words);
+                }
+                self.title_edit = None;
+                *handled = true;
+                return;
+            }
+            let l = self.inspector_layout(&r);
+            let outside_press = matches!(
+                event,
+                WindowEvent::MouseInput { state: ElementState::Pressed, .. }
+            ) && l.title_text.is_none_or(|rect| !rect.inset(-4.0).contains(self.last_mouse));
+            if outside_press {
+                let (mid, words) = {
+                    let (mid, field) = self.title_edit.as_ref().unwrap();
+                    (*mid, field.value().to_string())
+                };
+                self.commit_title_text(state, mid, &words);
+                self.title_edit = None;
+                // Not marked handled: the click still lands on whatever it
+                // was aimed at, which is what makes accepting-on-click-away
+                // feel like nothing happened rather than like a lost click.
+            }
+            if let Some((_, field)) = self.title_edit.as_mut() {
+                if let Some(rect) = l.title_text {
+                    field.apply_layout_external(rect.inset(-4.0));
+                }
+                field.handle_event(
                     event, scale_factor, modifiers, state, path, handled, focus_target, node_id,
                     taffy,
                 );
-                (*mid, label.take_outcome())
-            };
-            match outcome {
-                EditOutcome::Committed(words) => {
-                    self.commit_title_text(state, mid, &words);
-                    self.title_edit = None;
-                }
-                EditOutcome::Cancelled => self.title_edit = None,
-                EditOutcome::None => {}
             }
             if *handled {
                 return;
@@ -5257,7 +5557,7 @@ impl Widget for VideoEditorApp {
                 .marker_rename
                 .as_ref()
                 .and_then(|(m, _)| l.marker_rows.iter().find(|(r, _)| r.id == m.id))
-                .map(|(_, row)| marker_row_parts(*row).0);
+                .map(|(_, row)| self.marker_edit_rect(*row));
             let (target, outcome) = {
                 let (target, label) = self.marker_rename.as_mut().unwrap();
                 if let Some(rect) = row {
@@ -7630,9 +7930,11 @@ impl VideoEditorApp {
             if !row.contains(p) {
                 continue;
             }
-            let (_, rename, del) = marker_row_parts(row);
+            let (_, note_btn, rename, del) = marker_row_parts(row);
             if del.contains(p) {
                 self.delete_marker(state, m);
+            } else if note_btn.contains(p) {
+                self.begin_marker_edit(m, MarkerField::Note);
             } else if rename.contains(p) {
                 self.begin_marker_rename(m);
             } else {
@@ -7712,7 +8014,7 @@ impl VideoEditorApp {
         }
         // Effect rows: reorder / intensity slider / remove.
         for (i, row) in l.effect_rows.iter().enumerate() {
-            let (up, down, slider, remove) = Self::effect_row_parts(*row);
+            let (_key, up, down, slider, remove) = Self::effect_row_parts(*row);
             if up.contains(p) {
                 self.move_effect_selected(state, i, true);
                 return;
@@ -7791,6 +8093,15 @@ impl VideoEditorApp {
             if rect.contains(p) {
                 self.edit_selected(state, move |c| {
                     c.transform = crate::model::Transform::pip(PIP_SCALE, corner, PIP_INSET);
+                });
+                return;
+            }
+        }
+        for (anchor, rect) in l.anchor.clone() {
+            if rect.contains(p) {
+                self.edit_selected(state, move |c| {
+                    c.transform.anchor_x = anchor.0;
+                    c.transform.anchor_y = anchor.1;
                 });
                 return;
             }
@@ -7905,6 +8216,12 @@ impl VideoEditorApp {
         for (align, rect) in l.title_align.clone() {
             if rect.contains(p) {
                 self.edit_title(state, move |t| t.align = align);
+                return;
+            }
+        }
+        if let Some(rect) = l.title_font {
+            if rect.contains(p) && self.font_picker.is_none() {
+                self.open_font_picker();
                 return;
             }
         }
@@ -8620,7 +8937,7 @@ impl VideoEditorApp {
                 }
             }
             Drag::EffectAmount { idx } => {
-                if let Some(slider) = self.inspector_layout(r).effect_rows.get(idx).map(|row| Self::effect_row_parts(*row).2) {
+                if let Some(slider) = self.inspector_layout(r).effect_rows.get(idx).map(|row| Self::effect_row_parts(*row).3) {
                     let v = ((p.x - slider.x0) / slider.width()).clamp(0.0, 1.0);
                     self.preview_edit(move |c| {
                         if let Some(e) = c.effects.get_mut(idx) {
@@ -9956,6 +10273,30 @@ impl VideoEditorApp {
         if l.crop_label_y > 0.0 {
             text(scene, tr, tf, "Crop", 11.5, c.text_dim, x0, l.crop_label_y);
         }
+        if l.anchor_label_y > 0.0 {
+            text(scene, tr, tf, "Anchor", 11.5, c.text_dim, x0, l.anchor_label_y);
+        }
+        // Three segmented rows make the 3×3 grid, so each row is a real
+        // shared toggle group rather than nine hand-drawn cells.
+        for band in l.anchor.chunks(3) {
+            let rects: Vec<Rect> = band.iter().map(|(_, r)| *r).collect();
+            let labels: Vec<&str> = band
+                .iter()
+                .map(|(a, _)| {
+                    let col = ANCHOR_STOPS.iter().position(|s| *s == a.0).unwrap_or(1);
+                    let row = ANCHOR_STOPS.iter().position(|s| *s == a.1).unwrap_or(1);
+                    ANCHOR_GLYPHS[row * 3 + col]
+                })
+                .collect();
+            let sel = band
+                .iter()
+                .position(|(a, _)| {
+                    (clip.transform.anchor_x - a.0).abs() < 1e-6
+                        && (clip.transform.anchor_y - a.1).abs() < 1e-6
+                })
+                .unwrap_or(usize::MAX);
+            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+        }
         if let Some(rect) = l.reset_transform {
             let plain = clip.transform.is_identity();
             draw_button_enabled(
@@ -10099,14 +10440,38 @@ impl VideoEditorApp {
             // (with a caret); otherwise show them, or say plainly that there
             // are none rather than leaving an empty box that looks broken.
             if editing != Some(true) {
-                let shown = text_src.content.replace('\n', " ⏎ ");
-                let (shown, col) = if shown.trim().is_empty() {
-                    ("Click to type a title".to_string(), c.text_dim)
+                if text_src.content.trim().is_empty() {
+                    let baseline = text_baseline(rect, 13.0, tr);
+                    text(
+                        scene, tr, tf, "Click to type a title", 13.0, c.text_dim,
+                        rect.x0 + 10.0, baseline,
+                    );
                 } else {
-                    (elide_w(&shown, (rect.width() - 20.0) as f32, tr), c.text_primary)
-                };
-                let baseline = text_baseline(rect, 13.0, tr);
-                text(scene, tr, tf, &shown, 13.0, col, rect.x0 + 10.0, baseline);
+                    // Real line breaks, on their own lines. The field used to
+                    // fold them into a `⏎` glyph because it could not carry
+                    // one; it can now, so showing the words as written is
+                    // both honest and what the frame will look like.
+                    for (i, line) in text_src.content.lines().take(3).enumerate() {
+                        let shown = elide_w(line, (rect.width() - 20.0) as f32, tr);
+                        text(
+                            scene, tr, tf, &shown, 13.0, c.text_primary,
+                            rect.x0 + 10.0, rect.y0 + 18.0 + i as f64 * 18.0,
+                        );
+                    }
+                    if text_src.content.lines().count() > 3 {
+                        text(
+                            scene, tr, tf, "…", 13.0, c.text_dim,
+                            rect.x0 + 10.0, rect.y0 + 18.0 + 3.0 * 18.0,
+                        );
+                    }
+                }
+            } else {
+                // While the field is open, say what ends the edit — Enter is
+                // a line break here, so it cannot also be Accept.
+                text(
+                    scene, tr, tf, "Ctrl+Enter to accept · Esc to cancel", 10.5,
+                    c.text_dim, rect.x0, rect.y1 + 14.0,
+                );
             }
         }
         if !l.title_align.is_empty() {
@@ -10115,6 +10480,30 @@ impl VideoEditorApp {
             let labels: Vec<&str> = l.title_align.iter().map(|(a, _)| a.label()).collect();
             let sel = l.title_align.iter().position(|(a, _)| *a == cur).unwrap_or(0);
             draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+        }
+        if let Some(rect) = l.title_font {
+            let current = media
+                .as_ref()
+                .and_then(|m| m.text.as_ref())
+                .map(|t| t.font.clone())
+                .unwrap_or_default();
+            text(scene, tr, tf, "Font", 11.5, c.text_dim, rect.x0, rect.y0 - 16.0);
+            // The open list is drawn later, over the panel, because it floats
+            // above everything under it. Here is the resting control: a
+            // button naming the family in force. "The system's default sans"
+            // is a real answer, not a missing one, so it is named rather than
+            // left as an empty field.
+            if self.font_picker.is_none() {
+                let label = if current.trim().is_empty() {
+                    Self::DEFAULT_FONT_LABEL.to_string()
+                } else {
+                    current
+                };
+                draw_button(
+                    scene, tf, tr, theme, rect, &label, false,
+                    rect.contains(self.last_mouse),
+                );
+            }
         }
         if !l.title_colors.is_empty() {
             let cur = media.as_ref().and_then(|m| m.text.as_ref()).map(|t| t.color).unwrap_or([1.0; 4]);
@@ -10152,7 +10541,7 @@ impl VideoEditorApp {
         if is_video {
         for (i, row) in l.effect_rows.iter().enumerate() {
             let Some(e) = clip.effects.get(i) else { continue };
-            let (up, down, slider, remove) = Self::effect_row_parts(*row);
+            let (_key, up, down, slider, remove) = Self::effect_row_parts(*row);
             fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
             // Reorder / remove: real icons on hover-lit hit targets, sized to
             // the pointer rather than to the glyph. These were raw Unicode
@@ -11298,6 +11687,35 @@ fn draw_key_control(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect, st
         scene.stroke(&Stroke::new(1.4), tf, col, None, &d);
     }
 }
+
+/// Whether this event ends a title edit, and whether it accepts.
+///
+/// `Some(true)` accepts, `Some(false)` cancels, `None` leaves the field to
+/// handle the event itself. Kept out of the handler so the key contract is
+/// one readable thing that a test can drive directly.
+fn title_edit_verdict(event: &WindowEvent, modifiers: &winit::event::Modifiers) -> Option<bool> {
+    let WindowEvent::KeyboardInput { event: key, .. } = event else { return None };
+    if key.state != ElementState::Pressed {
+        return None;
+    }
+    match &key.logical_key {
+        Key::Named(NamedKey::Escape) => Some(false),
+        // Enter alone is a line break; with Ctrl (or Cmd) it accepts.
+        Key::Named(NamedKey::Enter)
+            if modifiers.state().control_key() || modifiers.state().super_key() =>
+        {
+            Some(true)
+        }
+        _ => None,
+    }
+}
+
+/// The three positions each anchor axis can take, in source uv.
+const ANCHOR_STOPS: [f64; 3] = [0.0, 0.5, 1.0];
+
+/// The glyph for each anchor cell, reading left to right, top to bottom —
+/// the direction the picture stays put in while the rest of it moves.
+const ANCHOR_GLYPHS: [&str; 9] = ["↖", "↑", "↗", "←", "•", "→", "↙", "↓", "↘"];
 
 /// What a clip's tone curves amount to, in one line — or `None` when they
 /// amount to nothing.
@@ -15414,7 +15832,7 @@ mod tests {
         click(&mut app, &mut doc, row.center().x, row.center().y);
         assert!((app.playhead - 8.0).abs() < 1e-6, "the row navigated");
         let row = reveal(&mut app, |l| l.marker_rows.first().map(|(_, r)| *r));
-        let (_, _, del) = marker_row_parts(row);
+        let (_, _, _, del) = marker_row_parts(row);
         click(&mut app, &mut doc, del.center().x, del.center().y);
         let p = VideoDoc::load_project(&doc);
         assert_eq!(p.markers.len(), 1, "the cross deleted one");
@@ -15476,7 +15894,7 @@ mod tests {
         // And the row it produced can be deleted from the same state.
         let l = app.inspector_layout(&app.regions());
         let row = l.marker_rows.first().expect("the marker is listed").1;
-        let (_, _, del) = marker_row_parts(row);
+        let (_, _, _, del) = marker_row_parts(row);
         click(&mut app, &mut doc, del.center().x, del.center().y);
         assert!(VideoDoc::load_project(&doc).markers.is_empty(), "and removed");
     }
@@ -15993,7 +16411,7 @@ mod tests {
         app.inspector_scroll = app.inspector_max_scroll(&r);
         let l = app.inspector_layout(&r);
         // Move the second effect up via its ▲.
-        let (up, _d, _s, _x) = VideoEditorApp::effect_row_parts(l.effect_rows[1]);
+        let (_k, up, _d, _s, _x) = VideoEditorApp::effect_row_parts(l.effect_rows[1]);
         assert!(r.inspector.contains(up.center()), "the reorder control is visible");
         click(&mut app, &mut doc, up.center().x, up.center().y);
         let kinds1: Vec<_> = VideoDoc::load_project(&doc)
@@ -16007,7 +16425,7 @@ mod tests {
         assert_eq!(kinds1[1], kinds0[0]);
         // Remove the head via its ✕.
         let l = app.inspector_layout(&r);
-        let (_u, _dn, _sl, remove) = VideoEditorApp::effect_row_parts(l.effect_rows[0]);
+        let (_k, _u, _dn, _sl, remove) = VideoEditorApp::effect_row_parts(l.effect_rows[0]);
         click(&mut app, &mut doc, remove.center().x, remove.center().y);
         let after = VideoDoc::load_project(&doc).clip(id).unwrap().effects.len();
         assert_eq!(after, kinds0.len() - 1, "the ✕ removed one effect from the CRDT");
@@ -16416,6 +16834,288 @@ mod tests {
             "one click plants a key at the playhead",
         );
         assert!(app.project.clip(cid).unwrap().anim.is_animated(Param::CurveMix));
+    }
+
+
+    // ---- the rest of the inspector's animatable / authored controls -------
+
+    #[test]
+    fn an_effects_intensity_can_be_keyed_from_its_own_row() {
+        // Every other animatable control carries a diamond; the effect row
+        // was the one that did not, so an intensity could only be keyed from
+        // the command palette — not somewhere a user looking at the slider
+        // would think to go.
+        let (mut app, mut doc) = app_and_doc();
+        let cid = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(cid);
+        app.playhead = 23.0;
+        app.edit_selected(&mut doc, |c| c.add_effect(EffectKind::Sepia));
+        app.collapsed.remove(&Section::Effects);
+
+        let r = app.regions();
+        let l = app.inspector_layout(&r);
+        let row = *l.effect_rows.first().expect("the effect has a row");
+        let (key, up, down, slider, remove) = VideoEditorApp::effect_row_parts(row);
+        // The key control leads the row and touches nothing else on it.
+        for other in [up, down, slider, remove] {
+            assert!(
+                key.x1 <= other.x0 + 1.0,
+                "the key control sits clear of {other:?}, got {key:?}",
+            );
+        }
+        assert!(
+            l.keys.iter().any(|(p, rect)| *p == Param::EffectAmount(0) && *rect == key),
+            "and it is in the panel's own list of key controls",
+        );
+
+        assert_eq!(app.key_state(Param::EffectAmount(0)), KeyState::Off);
+        app.press_inspector(&mut doc, &r, key.center());
+        assert_eq!(
+            app.key_state(Param::EffectAmount(0)),
+            KeyState::OnKey,
+            "one click plants a key on the intensity",
+        );
+        // And the curve really drives the effect the compositor is handed.
+        app.edit_selected(&mut doc, |c| {
+            c.set_key_at(Param::EffectAmount(0), 23.0, 0.1, Interp::Linear);
+            c.set_key_at(Param::EffectAmount(0), 25.0, 0.9, Interp::Linear);
+        });
+        let clip = app.project.clip(cid).unwrap();
+        let early = clip.effects_at(23.0)[0].amount;
+        let late = clip.effects_at(25.0)[0].amount;
+        assert!(late > early + 0.5, "the keyed intensity moves: {early} -> {late}");
+    }
+
+    #[test]
+    fn the_anchor_grid_moves_the_point_the_picture_turns_about() {
+        let (mut app, mut doc) = app_and_doc();
+        let cid = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(cid);
+        app.collapsed.remove(&Section::Transform);
+        let r = app.regions();
+        let l = app.inspector_layout(&r);
+        assert_eq!(l.anchor.len(), 9, "three by three, no more and no fewer");
+        // The default is the middle, which is what an untouched clip has.
+        assert_eq!(app.project.clip(cid).unwrap().transform.anchor_x, 0.5);
+
+        let top_left = l
+            .anchor
+            .iter()
+            .find(|(a, _)| *a == (0.0, 0.0))
+            .map(|(_, rect)| *rect)
+            .expect("a top-left cell");
+        app.press_inspector(&mut doc, &r, top_left.center());
+        let t = app.project.clip(cid).unwrap().transform;
+        assert_eq!((t.anchor_x, t.anchor_y), (0.0, 0.0));
+
+        // And it survives the document, which is what makes it a real edit
+        // rather than a widget field.
+        let back = VideoDoc::load_project(&mut doc);
+        let t = back.clip(cid).unwrap().transform;
+        assert_eq!((t.anchor_x, t.anchor_y), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_marker_can_be_given_a_note_and_the_row_makes_room_for_it() {
+        let (mut app, mut doc) = app_and_doc();
+        app.collapsed.remove(&Section::Markers);
+        app.playhead = 12.0;
+        app.add_marker_here(&mut doc);
+        // `add_marker_here` opens the rename; take that off so the row is at
+        // rest before the note is asked for.
+        app.marker_rename = None;
+
+        let r = app.regions();
+        let l = app.inspector_layout(&r);
+        let (m, row) = *l.marker_rows.first().expect("the marker has a row");
+        let plain_h = row.height();
+        let (_, note_btn, rename, del) = marker_row_parts(row);
+        for other in [rename, del] {
+            assert!(note_btn.x1 <= other.x0 + 1.0, "the note control has its own target");
+        }
+
+        app.press_inspector(&mut doc, &r, note_btn.center());
+        assert_eq!(app.marker_field, MarkerField::Note, "the editor opened on the note");
+        // The row grew for the note being typed into it, or the field would
+        // open over the row beneath.
+        let grown = app
+            .inspector_layout(&app.regions())
+            .marker_rows
+            .first()
+            .map(|(_, rect)| rect.height())
+            .expect("still there");
+        assert!(grown > plain_h, "{plain_h} -> {grown}");
+
+        app.commit_marker_rename(&mut doc, m, "check the horizon line");
+        let back = VideoDoc::load_project(&mut doc);
+        let note = back
+            .markers
+            .iter()
+            .find(|k| k.id == m.id)
+            .map(|k| k.note.clone())
+            .expect("the marker survived");
+        assert_eq!(note, "check the horizon line", "the note reached the document");
+        // The name is untouched — the two fields are not one field.
+        assert_eq!(
+            back.markers.iter().find(|k| k.id == m.id).map(|k| k.name.as_str()),
+            Some("Marker"),
+        );
+    }
+
+    #[test]
+    fn clearing_a_note_is_allowed_but_clearing_a_name_is_not() {
+        let (mut app, mut doc) = app_and_doc();
+        app.playhead = 12.0;
+        app.add_marker_here(&mut doc);
+        app.marker_rename = None;
+        let m = app
+            .project
+            .markers
+            .first()
+            .map(|k| MarkerRef { id: k.id, clip: None, at: k.t })
+            .expect("a marker");
+
+        app.commit_marker_text(&mut doc, m, MarkerField::Note, "a note");
+        app.commit_marker_text(&mut doc, m, MarkerField::Note, "");
+        assert_eq!(
+            app.project.markers.iter().find(|k| k.id == m.id).map(|k| k.note.as_str()),
+            Some(""),
+            "an empty note is how a note is taken back off",
+        );
+        app.commit_marker_text(&mut doc, m, MarkerField::Name, "   ");
+        assert_eq!(
+            app.project.markers.iter().find(|k| k.id == m.id).map(|k| k.name.as_str()),
+            Some("Marker"),
+            "an empty name is refused — a nameless marker is a dot nobody can find",
+        );
+    }
+
+    #[test]
+    fn a_title_can_be_written_on_more_than_one_line() {
+        let (mut app, mut doc) = app_and_doc();
+        let mid = app
+            .project
+            .media
+            .iter()
+            .find(|m| m.kind == MediaKind::Text)
+            .map(|m| m.id)
+            .unwrap_or_else(|| {
+                let item = MediaItem {
+                    id: Uuid::new_v4(),
+                    name: "T".into(),
+                    kind: MediaKind::Text,
+                    duration: 4.0,
+                    text: Some(TextSource::new("ONE")),
+                    ..Default::default()
+                };
+                let id = item.id;
+                app.project.media.push(item);
+                id
+            });
+        app.commit_title_text(&mut doc, mid, "COASTLINE\nepisode two");
+        let words = VideoDoc::load_project(&mut doc)
+            .media
+            .iter()
+            .find(|m| m.id == mid)
+            .and_then(|m| m.text.as_ref())
+            .map(|t| t.content.clone())
+            .expect("the title survived");
+        assert_eq!(words, "COASTLINE\nepisode two", "the break is real, not a glyph");
+        // The bin row takes the first line, which is what a one-line list can
+        // honestly show of a two-line title.
+        let name = VideoDoc::load_project(&mut doc)
+            .media
+            .iter()
+            .find(|m| m.id == mid)
+            .map(|m| m.name.clone())
+            .expect("the item survived");
+        assert_eq!(name, "COASTLINE");
+    }
+
+    #[test]
+    fn enter_breaks_a_title_line_and_only_ctrl_enter_accepts_it() {
+        // Built with the suite's own synthetic-key helper so the shapes match
+        // what the live loop delivers.
+        let released = |k: NamedKey| -> WindowEvent {
+            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+            ev.logical_key = WKey::Named(k);
+            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                winit::keyboard::NativeKeyCode::Unidentified,
+            );
+            ev.location = winit::keyboard::KeyLocation::Standard;
+            ev.state = ElementState::Released;
+            ev.repeat = false;
+            ev.text = None;
+            WindowEvent::KeyboardInput {
+                device_id: fake_device_id(),
+                event: ev,
+                is_synthetic: false,
+            }
+        };
+        let plain = winit::event::Modifiers::default();
+        let ctrl = winit::event::Modifiers::from(ModifiersState::CONTROL);
+
+        // Enter on its own is a line break, so the field keeps the event.
+        assert_eq!(title_edit_verdict(&named_ev(NamedKey::Enter), &plain), None);
+        // With Ctrl it accepts, and Escape cancels.
+        assert_eq!(title_edit_verdict(&named_ev(NamedKey::Enter), &ctrl), Some(true));
+        assert_eq!(title_edit_verdict(&named_ev(NamedKey::Escape), &plain), Some(false));
+        // A key going up ends nothing — otherwise the release of the very
+        // chord that accepted would immediately re-fire.
+        assert_eq!(title_edit_verdict(&released(NamedKey::Enter), &ctrl), None);
+    }
+
+    #[test]
+    fn the_font_picker_offers_the_installed_families_and_a_way_back_to_the_default() {
+        let (mut app, mut doc) = app_and_doc();
+        let item = MediaItem {
+            id: Uuid::new_v4(),
+            name: "T".into(),
+            kind: MediaKind::Text,
+            duration: 4.0,
+            text: Some(TextSource::new("HELLO")),
+            ..Default::default()
+        };
+        let mid = item.id;
+        app.project.media.push(item);
+        let track = app
+            .project
+            .display_tracks()
+            .into_iter()
+            .find(|t| t.kind == TrackKind::Video)
+            .map(|t| t.id)
+            .expect("a video track");
+        let cid = app.project.add_clip(track, mid, 0.0).expect("media exists");
+        app.selection.select_only(cid);
+        app.collapsed.remove(&Section::Title);
+
+        // Before a draw has read the renderer there are no families, and the
+        // picker refuses to open over an empty list rather than showing one.
+        app.open_font_picker();
+        assert!(app.font_picker.is_none(), "no list yet, so no picker");
+
+        app.system_fonts = vec!["Alpha Sans".into(), "Beta Serif".into()];
+        app.open_font_picker();
+        let (_, dd, _) = app.font_picker.as_ref().expect("the picker opened");
+        assert!(dd.is_open());
+        assert_eq!(
+            dd.selected(),
+            VideoEditorApp::DEFAULT_FONT_LABEL,
+            "an unset family reads as the system default, not as blank",
+        );
+
+        // Choosing a family writes it to the media item through the ordinary
+        // title action, so every clip placing this title follows.
+        app.font_picker = None;
+        app.edit_title(&mut doc, |t| t.font = "Beta Serif".into());
+        let font = VideoDoc::load_project(&mut doc)
+            .media
+            .iter()
+            .find(|m| m.id == mid)
+            .and_then(|m| m.text.as_ref())
+            .map(|t| t.font.clone())
+            .expect("the title survived");
+        assert_eq!(font, "Beta Serif");
     }
 
 }
