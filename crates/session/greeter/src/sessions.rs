@@ -5,6 +5,11 @@
 //! and the `Exec=` command line. `Exec` is split on ASCII whitespace into
 //! an argv vector suitable for greetd's `StartSession { cmd, env }`.
 //!
+//! `Name` is the label the greeter shows. The internal `DesktopNames=` id
+//! is deliberately not read for display: it is a machine-facing contract
+//! with the portal (`UseIn=nirios`), not something to put in front of
+//! someone logging in.
+//!
 //! This is deliberately a *minimal* desktop-entry parser: we only need
 //! `Name` and `Exec` from the `[Desktop Entry]` group, and the session
 //! files we ship are simple (no `%`-field codes, no quoting). It ignores
@@ -102,8 +107,8 @@ mod tests {
     // The two real entries shipped in os/usr/share/wayland-sessions/.
     const NIRIOS: &str = "\
 [Desktop Entry]
-Name=nirios
-GenericName=qOS
+Name=qOS
+GenericName=Desktop
 Comment=Collaborative spatial desktop environment
 Exec=/usr/bin/shell --backend drm
 Type=Application
@@ -112,8 +117,8 @@ DesktopNames=nirios
 
     const NIRIOS_PEER_SYNC: &str = "\
 [Desktop Entry]
-Name=nirios (peer-sync)
-GenericName=qOS with peer-sync
+Name=qOS with peer sync
+GenericName=Desktop
 Comment=Collaborative session with libp2p peer discovery enabled
 Exec=/usr/bin/shell --backend drm --enable-peer-sync
 Type=Application
@@ -123,14 +128,14 @@ DesktopNames=nirios
     #[test]
     fn parses_default_nirios_session() {
         let s = parse_desktop_entry(NIRIOS).expect("should parse");
-        assert_eq!(s.name, "nirios");
+        assert_eq!(s.name, "qOS");
         assert_eq!(s.argv, vec!["/usr/bin/shell", "--backend", "drm"]);
     }
 
     #[test]
     fn parses_peer_sync_session() {
         let s = parse_desktop_entry(NIRIOS_PEER_SYNC).expect("should parse");
-        assert_eq!(s.name, "nirios (peer-sync)");
+        assert_eq!(s.name, "qOS with peer sync");
         assert_eq!(
             s.argv,
             vec!["/usr/bin/shell", "--backend", "drm", "--enable-peer-sync"]
@@ -170,9 +175,9 @@ Exec=/usr/bin/foo --bar
         let _ = std::fs::remove_dir_all(&dir);
 
         assert_eq!(sessions.len(), 2);
-        // Sorted by name: "nirios" before "nirios (peer-sync)".
-        assert_eq!(sessions[0].name, "nirios");
-        assert_eq!(sessions[1].name, "nirios (peer-sync)");
+        // Sorted by name: "qOS" before "qOS with peer sync".
+        assert_eq!(sessions[0].name, "qOS");
+        assert_eq!(sessions[1].name, "qOS with peer sync");
     }
 
     #[test]
