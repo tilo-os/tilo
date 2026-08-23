@@ -233,11 +233,41 @@ fn transport_cell() -> &'static RwLock<Option<Arc<dyn BlobTransport>>> {
     TRANSPORT.get_or_init(|| RwLock::new(None))
 }
 
-/// Install the process-wide transport. Without one, this process can only ever
-/// read what it stored itself.
+/// Content stored before a transport existed, waiting to be offered.
+///
+/// A document is opened — and its images stored — while the app is starting,
+/// which is before anything has had a chance to install a transport. Dropping
+/// those offers meant the one case that matters most, a picture that was in
+/// the document from the moment it opened, was the one case that never
+/// travelled: the reference reached every peer and the bytes reached none.
+///
+/// Bounded, because this holds real content in memory. A document opening with
+/// more images than this offers the first few immediately and the rest when a
+/// peer asks for them, which is the same path a late joiner uses anyway.
+static PENDING_OFFERS: OnceLock<RwLock<Vec<(String, Vec<u8>)>>> = OnceLock::new();
+
+const MAX_PENDING_OFFERS: usize = 8;
+
+fn pending_offers() -> &'static RwLock<Vec<(String, Vec<u8>)>> {
+    PENDING_OFFERS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Install the process-wide transport, and hand it anything stored before it
+/// existed.
 pub fn set_transport(t: Arc<dyn BlobTransport>) {
     if let Ok(mut s) = transport_cell().write() {
-        *s = Some(t);
+        *s = Some(Arc::clone(&t));
+    }
+    let queued = match pending_offers().write() {
+        Ok(mut q) => std::mem::take(&mut *q),
+        Err(_) => Vec::new(),
+    };
+    for (hash, bytes) in queued {
+        tracing::debug!(
+            hash = %hash, bytes = bytes.len(),
+            "blobstore: offering content that was stored before there was anywhere to offer it",
+        );
+        t.offer(&hash, &bytes);
     }
 }
 
@@ -313,8 +343,19 @@ pub fn put(bytes: &[u8]) -> String {
         );
         return hash;
     }
-    if let Some(t) = transport() {
-        t.offer(&hash, bytes);
+    match transport() {
+        Some(t) => t.offer(&hash, bytes),
+        // Nothing to offer to *yet*. A document's images are stored while the
+        // app is still starting, so this is the common case rather than the
+        // odd one, and dropping it here left the picture stranded in the
+        // process that made it. `set_transport` flushes these.
+        None => {
+            if let Ok(mut q) = pending_offers().write() {
+                if q.len() < MAX_PENDING_OFFERS && !q.iter().any(|(h, _)| h == &hash) {
+                    q.push((hash.clone(), bytes.to_vec()));
+                }
+            }
+        }
     }
     hash
 }
