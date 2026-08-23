@@ -56,6 +56,20 @@ const AGENT_INVITE_PARAMS: &[ActionParam] = &[ActionParam::optional(
 /// the shell does not depend on the agent binary.
 const DEFAULT_AGENT_NAME: &str = "Claude";
 
+/// What `peer.join` must be told: the token, and nothing else.
+///
+/// The token *is* the authorisation — a signed bearer credential naming
+/// the room and when it stops being good. There is deliberately no room
+/// parameter: a caller that could name the room it wanted to join would
+/// be choosing its own destination, and the token would stop being the
+/// thing that decides.
+const PEER_JOIN_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "token",
+    ParamType::Text,
+    "The invite token you were sent. Whitespace is ignored, so a token that arrived \
+     wrapped across lines in a chat message can be passed through as-is.",
+)];
+
 /// What `peer.invite.named` must be told: who is being invited, and
 /// what to call them. Both required — an invite to nobody in particular
 /// is [`peer.invite`], and this row exists precisely to say who.
@@ -184,6 +198,44 @@ impl Action {
                 Ok(())
             },
         ),
+        // Joining, with the pointer taken out.
+        //
+        // `peer.connect` raises the card and stops. Everything after it
+        // — paste, then Join — is a click, so a participant with no
+        // pointer could not finish joining a room at all. That is not an
+        // edge case here: this OS's claim is that an agent is an ordinary
+        // collaborator, and an ordinary collaborator has to be able to
+        // accept an invitation.
+        //
+        // The way round it was to synthesise clicks into the agent's
+        // session, which is how an agent came to own a mouse position;
+        // that position was then republished every second as a phantom
+        // cursor sitting on the Join button. Nothing expires here,
+        // because nothing is acquired: a token comes in as an argument
+        // and no pointer is ever involved.
+        //
+        // The redemption itself is `redeem_invite`, which is also what
+        // the card's Join button calls. One operation, two ways in — so
+        // the capability check a click passes is the one this passes.
+        Action {
+            id: "peer.join",
+            label: "Join workspace from invite",
+            subtitle: "Redeem an invite token and join its room, without a pointer",
+            params: PEER_JOIN_PARAMS,
+            apply: |st, args| {
+                let token: String =
+                    args.text("token").unwrap_or_default().split_whitespace().collect();
+                if token.is_empty() {
+                    return Err(ActionError::Refused(
+                        "joining a room takes the invite token you were sent".into(),
+                    ));
+                }
+                st.push_peer_sync_request(
+                    crate::shell::overlay_host::PeerSyncAction::AcceptInvite(token),
+                );
+                Ok(())
+            },
+        },
         // Inviting somebody by name. `peer.invite` mints a token and
         // says nothing about who it is for, which is why a peer that
         // joins with one is drawn as the number its transport identity
