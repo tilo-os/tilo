@@ -1572,6 +1572,16 @@ mod tests {
         let rooms: Vec<_> = {
             let mut t = tree.write();
             t.adopt_roomless_workspaces();
+            // A real session's workspaces have an owner — first boot
+            // installs one, and it is what `may_administer` reads.
+            // `bootstrap_demo` leaves it `None`, and a fixture that
+            // kept it would have every name below refused for the
+            // wrong reason: the negative assertions would pass without
+            // the naming path ever having been able to run.
+            let me = crate::shell::state::local_user_id();
+            for ws in t.workspaces.iter_mut() {
+                ws.set_owner(me.clone());
+            }
             t.workspaces.iter().map(|w| w.room).collect()
         };
         assert!(
