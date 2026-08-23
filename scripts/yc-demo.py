@@ -3303,9 +3303,21 @@ def run_the_agent(agent: Session, room: str, shots: str,
 
     It connects to its own session's broker, which is how its edits
     reach the other two: the same libp2p republish every peer's edits
-    take. `--no-model` keeps the run reproducible and off the network —
-    the vocabulary is a keyword table, and an instruction must never
-    wait on a request.
+    take.
+
+    It runs **with** the model. `--no-model` was passed until today, on
+    the reasoning that a keyword table keeps a film reproducible — but
+    the model was only ever a four-way classifier choosing between
+    table, caption, heading and none, with every character computed
+    locally, so a live run and an offline one produced byte-identical
+    documents. What it now drafts is the content, and the difference is
+    the beat: it decides which lines are scheduled items, orders them,
+    and says when they contradict the prose above them.
+
+    The keyword fallback remains and knows `table`, `caption` and
+    `heading` — not `run sheet`. If the model is unreachable it answers
+    on the page saying it cannot do what was asked, which is honest and
+    is not the beat.
 
     Returns None when the binary is not built, so a caller can say that
     rather than report a failure it did not observe.
@@ -3772,17 +3784,25 @@ def beat_four(quinten: Session, xaver: Session, agent: Session,
         # Reported, not shot around, and not fixed here: the compositor
         # restates every session's pointer from its own frame loop, so a
         # session that has never had a pointer moved through it still
-        # publishes one — and the agent is a session. Nothing in this
-        # script moves it (there is no `agent.pointer_move` anywhere),
-        # which is why this belongs to `shell` rather than to the film.
+        # publishes one — and the agent is a session.
+        #
+        # That was half the story and the half that sent three fixes to
+        # the wrong place. The agent had a pointer because *this file*
+        # gave it one: redeeming an invitation had no address, so joining
+        # meant clicking Paste and Join, and the position those clicks
+        # left behind was restated to the room once a second afterwards.
+        # It now joins through `peer.join`, which takes the token and
+        # touches nothing.
+        #
+        # So if this fires again, the first question is which route the
+        # agent took — not what the compositor is publishing.
         gap("the agent publishes a desktop cursor: a pill reading "
             f"{agent.user!r} is painted on quinten's screen at "
             f"{json.dumps(agent_seen[0])}. A pointer is for pointing at "
             f"something you are looking at, and this participant never "
-            f"looks at a screen — its presence should be a caret in the "
-            f"document at the moment it acts, and nothing else. The "
-            f"pointer is level-triggered from the compositor's frame "
-            f"loop, so this is a shell fix, not a demo one")
+            f"looks at a screen. It joined by address and should never "
+            f"have acquired a position — so check what gave it one "
+            f"before looking at how presence is published")
     else:
         note(f"{agent.user} publishes no desktop cursor, which is right: "
              f"what makes it a member of this room is the capability "
