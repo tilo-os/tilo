@@ -577,9 +577,20 @@ impl Colors {
     /// raised tier carried one derived step further out
     /// ([`GLASS_FILM_LIFT`]) — opaque, because the alpha that makes it a
     /// film belongs to the state painting it, not to the material.
+    ///
+    /// The step is taken along the direction the palette's own surfaces
+    /// lift, which is **not** the same question [`Colors::hairline_on`]
+    /// answers. That one picks whichever polarity moves the ground more,
+    /// which is what an edge wants — it only has to be seen. A film has to
+    /// agree with the cards and panels around it about which way "up" is,
+    /// and on a paper palette those go *brighter* (a white card on a paper
+    /// ground) while the polarity that moves that ground more is black.
+    /// Deriving the film from the edge rule gave a light theme a body that
+    /// darkened while every other raised surface lightened, and landed it
+    /// within a level of the bar it was drawn on into the bargain.
     pub fn glass_film(&self) -> Color {
-        let base = self.surfaces.base;
-        composite(Self::hairline_on(base, GLASS_FILM_LIFT), self.lift_target())
+        let step = if self.lifts_bright() { Color::WHITE } else { Color::BLACK };
+        composite(with_a(step, GLASS_FILM_LIFT), self.lift_target())
     }
 
     pub fn window_edge(&self) -> Color {
