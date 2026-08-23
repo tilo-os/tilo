@@ -1852,6 +1852,18 @@ impl Widget for GroupRow {
                 Vec::new()
             };
             for (i, h) in self.handles.iter_mut().enumerate() {
+                // A handle is the rule between two windows, and the grip
+                // for resizing them. A group that has not presented yet
+                // is not a window on screen, so the border it would be
+                // one side of is not there either — drawing it anyway
+                // leaves a rule floating against the space being held
+                // for an app that is still starting.
+                let shown = |g: Option<&WindowGroup>| {
+                    g.map(|g| Widget::presented(g)).unwrap_or(false)
+                };
+                if !shown(self.groups.get(i)) || !shown(self.groups.get(i + 1)) {
+                    continue;
+                }
                 let dx = self
                     .groups
                     .get(i + 1)

@@ -66,6 +66,7 @@
 use std::collections::HashMap;
 use std::os::fd::AsRawFd;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer as _, Fourcc, Modifier};
@@ -384,6 +385,20 @@ struct ForeignEntry {
     /// Size most recently sent to the client in an `xdg_toplevel`
     /// configure, in surface-local (logical) pixels.
     configured: Option<(i32, i32)>,
+    /// When this surface was first heard of — the toplevel being adopted,
+    /// in practice, since that is what lays its tab out and publishes a
+    /// placement. Start of the window [`ForeignFrameStore::mark_presented`]
+    /// waits before giving up on a well-sized frame.
+    first_seen: Instant,
+    /// Latched: this surface has produced something worth showing, so
+    /// its window is on screen and stays there.
+    ///
+    /// One-way on purpose. The predicate behind it asks whether the
+    /// current frame fits the tab it is in, and that briefly stops being
+    /// true every time the user resizes a group — a window that could
+    /// un-present would blink out mid-drag, which is a worse thing to
+    /// watch than the one this exists to prevent.
+    presented: bool,
 }
 
 impl ForeignEntry {
@@ -396,6 +411,8 @@ impl ForeignEntry {
             last_error: None,
             placement: None,
             configured: None,
+            first_seen: Instant::now(),
+            presented: false,
         }
     }
 }
@@ -687,6 +704,26 @@ impl ForeignFrameStore {
         })
     }
 
+    /// Dimensions of the frame currently staged for `id`, without
+    /// copying it. `None` when nothing has landed.
+    ///
+    /// Exists so a harness can compare what the client drew against the
+    /// tab it was drawn into. Those two disagreeing is what a window
+    /// visibly resizing after it opens *is*, and a test that can only see
+    /// the frame counter cannot tell that apart from a clean open.
+    pub fn frame_size(&self, id: SurfaceId) -> Option<(u32, u32)> {
+        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let e = guard.get(&id)?;
+        (e.width > 0 && e.height > 0).then_some((e.width, e.height))
+    }
+
+    /// Whether `id`'s window has been shown — the latched answer from
+    /// [`Self::mark_presented`], read without changing it.
+    pub fn is_presented(&self, id: SurfaceId) -> bool {
+        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        guard.get(&id).is_some_and(|e| e.presented)
+    }
+
     /// Reason the last capture failed, if any.
     pub fn last_error(&self, id: SurfaceId) -> Option<String> {
         let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
@@ -748,6 +785,83 @@ impl ForeignFrameStore {
             Some(logical)
         })
     }
+
+    /// Whether this surface has something worth putting on screen, and
+    /// latch the answer once it does.
+    ///
+    /// Read by [`ForeignSurfaceWidget::presented`], which the shell's
+    /// window group consults before painting anything at all — so this
+    /// is the predicate deciding when a launched app's window turns up.
+    ///
+    /// Three ways to become presentable, in the order they are checked:
+    ///
+    /// - **A capture failed.** Then there is something to say, and the
+    ///   tile says it. An app that cannot be shown must not be silently
+    ///   invisible.
+    /// - **A frame has landed that fits the tab.** Not merely a frame:
+    ///   the first buffer a client commits is the size *it* chose, because
+    ///   the compositor's opening configure carries no size and the real
+    ///   one is only sent once the tab has been laid out. Painting that
+    ///   first buffer means [`ForeignSurfaceWidget::fit_rect`] scales it
+    ///   to fit — the app appears magnified, then snaps down to 1:1 when
+    ///   the correctly-sized buffer arrives a moment later. Waiting for a
+    ///   frame that already fits is what makes an opened window keep the
+    ///   size it opened at.
+    /// - **[`PRESENT_GRACE`] has passed.** The backstop, and the reason
+    ///   this cannot strand a window: an app that never presents, or one
+    ///   whose buffers never match its tab, becomes visible anyway and
+    ///   shows whatever it has — including the placeholder naming it.
+    ///   A window nobody can see is a window nobody can close.
+    ///
+    /// `tile` is the rect the tab occupies, from the widget that is about
+    /// to draw. A degenerate one means the tab has not been laid out yet,
+    /// which is not something a frame can be judged against.
+    pub fn mark_presented(&self, id: SurfaceId, tile: Rect) -> bool {
+        self.with_entry(id, |e| {
+            if e.presented {
+                return true;
+            }
+            let ready = e.last_error.is_some()
+                || fills(e.width, e.height, tile)
+                || e.first_seen.elapsed() >= PRESENT_GRACE;
+            if ready {
+                e.presented = true;
+            }
+            ready
+        })
+    }
+}
+
+/// How long a surface may take to produce a frame that fits its tab
+/// before its window is shown regardless.
+///
+/// Sized against what a launch actually costs: a cold open measured
+/// here runs 2-6 s from the invocation to the first buffer, and the
+/// notification the launch raised is on screen for all of it. Ten
+/// seconds is past every launch observed and still short enough that an
+/// app which is never going to paint stops being a hole in the strip.
+const PRESENT_GRACE: Duration = Duration::from_secs(10);
+
+/// Whether a `w`x`h` buffer, fitted into `tile` the way
+/// [`ForeignSurfaceWidget::fit_rect`] fits it, covers that tile.
+///
+/// `fit_rect` scales uniformly by the smaller of the two ratios, so the
+/// buffer covers the tile exactly when its aspect ratio matches — any
+/// mismatch leaves a band down one side, and closing that band later is
+/// the visible resize. Sizes are not compared directly because they need
+/// not be equal to look right: a buffer twice the tile in both axes is
+/// drawn at exactly the tile, sharper and in the same place.
+///
+/// The half-percent tolerance absorbs the rounding in the logical-size
+/// configure (a 1-px disagreement at 1400 px is 0.07%) without admitting
+/// a band anyone could see.
+fn fills(w: u32, h: u32, tile: Rect) -> bool {
+    if w == 0 || h == 0 || tile.width() <= 0.0 || tile.height() <= 0.0 {
+        return false;
+    }
+    let scale = (tile.width() / w as f64).min(tile.height() / h as f64);
+    let covers = |drawn: f64, avail: f64| drawn / avail >= 0.995;
+    covers(w as f64 * scale, tile.width()) && covers(h as f64 * scale, tile.height())
 }
 
 // ---------------------------------------------------------------------------
@@ -991,6 +1105,15 @@ impl Widget for ForeignSurfaceWidget {
 
     fn name(&self) -> &str {
         "ForeignSurfaceWidget"
+    }
+
+    /// Whether the client has drawn something that belongs on screen.
+    ///
+    /// The whole judgement is [`ForeignFrameStore::mark_presented`]; it
+    /// lives on the store because the answer has to latch per surface,
+    /// and this widget is rebuilt whenever the tab tree is.
+    fn presented(&self) -> bool {
+        store().mark_presented(self.surface_id, self.rect)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -1285,6 +1408,103 @@ mod tests {
     fn pixel_order_rejects_non_rgba_fourcc() {
         assert!(PixelOrder::for_fourcc(Fourcc::Nv12).is_none());
         assert!(PixelOrder::for_fourcc(Fourcc::Argb8888).is_some());
+    }
+
+    /// A tab is 1200x800. These are the sizes a client hands us.
+    const TILE: Rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+
+    /// The window does not go up until there is a window to look at.
+    #[test]
+    fn a_surface_that_has_not_drawn_is_not_shown() {
+        let id = sid(40);
+        store().forget(id);
+        store().note_placement(id, TILE);
+        assert!(
+            !store().mark_presented(id, TILE),
+            "nothing has been committed, so there is nothing to show",
+        );
+        store().forget(id);
+    }
+
+    /// The frame the compositor's opening configure produces: the client
+    /// picked its own size, so painting it means scaling it to fit, and
+    /// the app appears magnified until the right-sized buffer lands.
+    /// That snap is the window "resizing itself" a second after opening.
+    #[test]
+    fn a_frame_that_does_not_fit_the_tab_is_not_shown() {
+        let id = sid(41);
+        store().forget(id);
+        // 4:3 into a 3:2 tab — fitted, it leaves a band down one side.
+        store().publish_rgba(id, &vec![0; 800 * 600 * 4], 800, 600);
+        assert!(
+            !store().mark_presented(id, TILE),
+            "an 800x600 buffer in a 1200x800 tab is drawn magnified, then \
+             snaps down when the real one arrives — which is the resize",
+        );
+        store().forget(id);
+    }
+
+    /// Any buffer whose aspect matches is drawn at exactly the tab, so
+    /// the one that follows it changes nothing the user can see.
+    #[test]
+    fn a_frame_that_fits_the_tab_is_shown() {
+        for (w, h) in [(1200u32, 800u32), (2400, 1600), (600, 400)] {
+            let id = sid(42);
+            store().forget(id);
+            store().publish_rgba(id, &vec![0; (w * h * 4) as usize], w, h);
+            assert!(
+                store().mark_presented(id, TILE),
+                "{w}x{h} has the tab's aspect, so it fills it",
+            );
+            store().forget(id);
+        }
+    }
+
+    /// Resizing a group makes the current frame stop fitting for a frame
+    /// or two. A window that answered this by disappearing would be a
+    /// worse defect than the one the gate exists to fix.
+    #[test]
+    fn a_shown_window_stays_shown_when_its_frame_stops_fitting() {
+        let id = sid(43);
+        store().forget(id);
+        store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
+        assert!(store().mark_presented(id, TILE));
+
+        let dragged = Rect::new(0.0, 0.0, 400.0, 800.0);
+        assert!(
+            store().mark_presented(id, dragged),
+            "the window is on screen; a resize does not take it away",
+        );
+        store().forget(id);
+    }
+
+    /// An app that cannot be shown must say so rather than be an
+    /// invisible hole in the strip.
+    #[test]
+    fn a_surface_whose_capture_failed_is_shown_so_it_can_say_why() {
+        let id = sid(44);
+        store().forget(id);
+        store().note_failure(id, "unsupported buffer".into());
+        assert!(store().mark_presented(id, TILE));
+        store().forget(id);
+    }
+
+    /// `fills` is what the gate is made of, and the grace period is what
+    /// stops it stranding a window. Both are asserted on the predicate
+    /// directly — the ten-second wait itself is not something a test can
+    /// sit through, so what is proved here is that a mismatch is the
+    /// only thing keeping the window back.
+    #[test]
+    fn fills_accepts_the_tabs_aspect_and_nothing_else() {
+        assert!(fills(1200, 800, TILE));
+        assert!(fills(300, 200, TILE), "same aspect, quarter size");
+        assert!(!fills(800, 600, TILE));
+        assert!(!fills(1200, 900, TILE));
+        assert!(!fills(0, 800, TILE), "no buffer is not a fitting buffer");
+        assert!(
+            !fills(1200, 800, Rect::ZERO),
+            "a tab with no area cannot be judged against",
+        );
     }
 
     #[test]

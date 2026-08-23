@@ -236,6 +236,13 @@ pub struct WindowGroup {
     /// create a brand-new group (e.g. split-tab-into-new-group in
     /// [`crate::widget::GroupRow::split_tab_into_new_group`]).
     spawned_at: Option<Instant>,
+    /// Set on any `draw` this group sat out because nothing in it had
+    /// presented yet. Drained on the first `draw` that does paint, which
+    /// is what latches the arrival fade to the moment the window turns
+    /// up rather than to the moment its tab was created. A group that is
+    /// never held back never sets it, and so animates exactly as it did
+    /// before this existed.
+    held_back: bool,
     /// Hosts whose matching tab pill is in the middle of the
     /// concept-parity close fade. Keyed by `(tab_id, Instant)` where
     /// the `Instant` is the close-start timestamp — the same stamp
@@ -336,6 +343,7 @@ impl WindowGroup {
             close_hover: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
+            held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
             style_dirty: false,
@@ -731,6 +739,7 @@ impl WindowGroup {
             close_hover: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
+            held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
             style_dirty: false,
@@ -1076,6 +1085,39 @@ impl Widget for WindowGroup {
         }
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+        // Nothing in this group has drawn yet, so there is nothing to
+        // put on screen. The group has still been through `build_layout`
+        // and `apply_layout`, so its width is already taken out of the
+        // strip and its neighbours are already standing where they will
+        // stand — the window arrives into a space that was held for it
+        // rather than shouldering one open.
+        //
+        // Painting the frame first is what put "waiting for first frame"
+        // in front of people: a window, a tab pill and a close button
+        // around an app that was still starting, for as long as it took
+        // to start. A window is a thing you can look at; until then this
+        // is a reservation, and the launch says so in a notification.
+        if !Widget::presented(self) {
+            self.held_back = true;
+            return;
+        }
+        // The frame this group was waiting for has landed. Play the
+        // arrival curve from here rather than from whenever the tab was
+        // spliced in, so what fades in is the window appearing and not
+        // an animation that finished while the app was still starting.
+        //
+        // Gated on having actually been held back, so a group that had
+        // something to show from its first draw — every group at shell
+        // start, and every group rebuilt from an unchanged tree — is
+        // painted exactly as before.
+        // Restarted, not merely started: the shell latches the arrival
+        // fade when it splices the group in, which is before the app has
+        // drawn — so by the time there is something to fade in, the fade
+        // has already run its course against an invisible group and the
+        // window would pop.
+        if std::mem::take(&mut self.held_back) {
+            self.spawned_at = Some(Instant::now());
+        }
         // Per-group spawn / close fades are mutually exclusive in
         // practice — a group can't be both "just arrived" and "last
         // tab just left" on the same frame. We check close first so
@@ -1767,6 +1809,16 @@ impl Widget for WindowGroup {
         }
     }
     fn name(&self) -> &str { "WindowGroup" }
+    /// Whether any window in this group has something to show.
+    ///
+    /// **Any**, not all: a group holding a live window and a second one
+    /// still starting is a window the person is looking at, and it does
+    /// not blink out because a tab beside it has not drawn. The gate is
+    /// for the group that is *only* a starting app — which is what a
+    /// launch makes, since a launch opens its own group.
+    fn presented(&self) -> bool {
+        self.hosts.is_empty() || self.hosts.iter().any(|(_, h)| h.presented())
+    }
     fn get_rect(&self) -> Rect { self.rect }
     /// East-west resize cursor while the pointer sits in the group's
     /// right-edge resize band (the `RESIZE_HANDLE_PX`-wide grip that
