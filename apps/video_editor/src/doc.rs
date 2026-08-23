@@ -595,6 +595,38 @@ mod tests {
     }
 
     #[test]
+    fn a_key_and_a_mask_survive_the_document() {
+        use crate::model::{ChromaKey, Mask, MaskShape};
+        let (mut p, cid) = one_clip();
+        let key = ChromaKey {
+            enabled: true,
+            color: [0.11, 0.68, 0.24],
+            tolerance: 0.27,
+            softness: 0.09,
+            spill: 0.63,
+        };
+        let mask = Mask {
+            shape: MaskShape::Ellipse,
+            x: -0.18,
+            y: 0.24,
+            w: 0.41,
+            h: 0.77,
+            rotation: -22.0,
+            feather: 0.31,
+            invert: true,
+        };
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.key = key;
+            c.mask = mask;
+        }
+        let back = round_trip(&p);
+        let c = back.clip(cid).unwrap();
+        assert_eq!(c.key, key, "every field of the key, not just the switch");
+        assert_eq!(c.mask, mask, "and every field of the mask");
+    }
+
+    #[test]
     fn a_transform_survives_the_document() {
         let (mut p, cid) = one_clip();
         let want = Transform {
@@ -732,7 +764,9 @@ mod tests {
         // Strip the new keys, leaving exactly what an older peer wrote.
         let clips = VideoDoc::map(&mut doc, "clips");
         let obj = VideoDoc::ensure_child(&mut doc, &clips, &cid.to_string());
-        for key in ["transform", "speed_rate", "speed_reverse", "anim", "markers"] {
+        for key in [
+            "transform", "speed_rate", "speed_reverse", "anim", "markers", "key", "mask",
+        ] {
             let _ = doc.delete(&obj, key);
         }
         let media = VideoDoc::map(&mut doc, "media");
@@ -746,6 +780,8 @@ mod tests {
         assert!(c.transform.is_identity(), "no geometry means the aspect-fit placement");
         assert!(c.speed.is_normal(), "no speed means normal speed");
         assert!(c.anim.is_empty(), "no curves");
+        assert!(!c.key.is_active(), "no key means nothing is keyed out");
+        assert!(!c.mask.is_active(), "and no mask means the layer is not cut");
         assert!(c.markers.is_empty());
         assert!(back.markers.is_empty());
         assert_eq!(back.media(p.media[0].id).unwrap().text, None);
