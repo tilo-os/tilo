@@ -18,7 +18,9 @@ This drives both halves with the mouse, on two real compositors with
 separate identities, homes and device keys:
 
   ada   clicks the top bar (empty roster)  →  panel
-            clicks **Invite**                  →  card: token + "Copied"
+            clicks **Invite**                  →  card: "who are you
+                                                  inviting?"
+            types "bob", clicks **Create**   →  card: "Copied"
 
   (the hop between machines is the person's — a chat message, an email,
    a USB stick. What travels here is taken out of ada's *clipboard*,
@@ -29,15 +31,20 @@ separate identities, homes and device keys:
             clicks **Join**                    →  prompt
             clicks **Paste**, clicks **Join**  →  in the room
 
+  ada   sees **bob** in his own roster, not a peer id
+
 Two negative claims carry the weight:
 
-  1. This script never issues a `type` op. If a paste does nothing the
-     prompt stays empty and the run fails, rather than quietly falling
-     back to typing a token the harness already had in a variable.
-  2. This script never invokes `peer.invite` / `peer.connect` through
-     the action API. Every step is `click_named`, so a control that is
-     not painted, not hit-testable or not wired fails the run — where
-     an invocation would have proved only the third of those.
+  1. The token is never typed. The only thing this script types is a
+     person's name; the token is copied on one machine and pasted on
+     the other, so a paste that does nothing leaves the prompt empty
+     and fails the run rather than quietly falling back to typing a
+     value the harness already had in a variable.
+  2. This script never invokes `peer.invite` / `peer.invite.named` /
+     `peer.connect` through the action API. Every step is `click_named`
+     or a key, so a control that is not painted, not hit-testable or
+     not wired fails the run — where an invocation would have proved
+     only the third of those.
 
 Usage:
   ./collab-panel-proof.py [--keep] [--out DIR]
@@ -66,6 +73,13 @@ SHELL = REPO / "target" / "debug" / "shell"
 
 # The real user's home, captured before any session overrides `HOME`.
 REAL_HOME = os.path.expanduser("~")
+
+# What ada types into the invite composer. Deliberately not the
+# guest session's own `QOS_USER_ID`: a name that matched what the guest
+# calls itself could have been read off the guest's own presence frames,
+# and a name a peer announces about itself is exactly what this room
+# refuses to believe. This one exists nowhere but in ada's typing.
+INVITED_AS = "bob Bauer"
 
 failures: list[str] = []
 
@@ -235,6 +249,14 @@ class Session:
     def click_named(self, name: str) -> dict:
         return self.call({"op": "click_named", "name": name})
 
+    def type_text(self, text: str) -> dict:
+        """Type `text`, one press+release per character.
+
+        Used for exactly one thing: a person's name. The token is never
+        typed — see the negative claims in the module docstring.
+        """
+        return self.call({"op": "type", "text": text})
+
     def clipboard_read(self) -> str | None:
         return self.call({"op": "clipboard_paste"})["clipboard"]["text"]
 
@@ -296,6 +318,13 @@ def main() -> int:
         # question this script asks with code that is not under test.
         REPO / "shell" / "src" / "shell" / "peer_presence.rs",
         REPO / "shell" / "src" / "compositor" / "native.rs",
+        # Where the name goes and when: the composer parks it against
+        # the room, and the arrival of the peer that redeems the token
+        # is what writes it into the room document. A binary older than
+        # either answers the last question this script asks with code
+        # that is not under test.
+        REPO / "shell" / "src" / "shell" / "network.rs",
+        REPO / "shell" / "src" / "shell" / "chrome_state.rs",
     ])
     if stale:
         print(f"REFUSING: {stale}\n  build first:  cargo build -p shell")
@@ -339,11 +368,40 @@ def main() -> int:
         if not click(ada, "collab_invite", "Invite"):
             return 1
 
+        step("and it asks who, before it mints anything")
+        # The whole reason this step exists. A button that minted an
+        # anonymous token left the host's own roster reading
+        # `peer@12191268537764683811` once the guest arrived, because
+        # nothing in the flow had ever been told a name — and a name is
+        # governance here, so it cannot be supplied by the person
+        # arriving.
+        if not check("the card asks who is being invited",
+                     wait_for(lambda: ada.peer_sync().get("invite_name")
+                              is not None, timeout=15) is not None,
+                     repr(ada.peer_sync().get("invite_name"))):
+            return 1
+        check("and nothing was minted before it was answered",
+              ada.peer_sync().get("invite_token") is None,
+              repr(ada.peer_sync().get("invite_token")))
+        ada.type_text(INVITED_AS)
+        ada.settle()
+        check(f"the field took the name {INVITED_AS!r}",
+              ada.peer_sync().get("invite_name") == INVITED_AS,
+              repr(ada.peer_sync().get("invite_name")))
+        ada.snapshot(os.path.join(shots, "03-ada-naming.png"))
+
+        step("he presses Create invite")
+        if not click(ada, "peer_sync_create", "Create invite"):
+            return 1
+
         token = wait_for(lambda: ada.peer_sync().get("invite_token"), timeout=30)
         if not check("a token was minted", bool(token), f"{len(token or '')} chars"):
             return 1
+        check(f"and the card says whose it is — {INVITED_AS!r}",
+              ada.peer_sync().get("invite_for") == INVITED_AS,
+              repr(ada.peer_sync().get("invite_for")))
         status = ada.peer_sync().get("status") or ""
-        check("and the card says it was copied, where he is looking",
+        check("and that it was copied, where he is looking",
               "copied" in status.lower(), repr(status))
         copied = wait_for(lambda: ada.clipboard_read(), timeout=10)
         check("the token really is on his system clipboard",
@@ -351,7 +409,7 @@ def main() -> int:
               "clipboard is empty" if not copied
               else ("matches the minted token" if copied == token
                     else f"clipboard holds something else ({len(copied)} chars)"))
-        ada.snapshot(os.path.join(shots, "03-ada-invite-copied.png"))
+        ada.snapshot(os.path.join(shots, "04-ada-invite-copied.png"))
         if not copied:
             return 1
 
@@ -362,11 +420,17 @@ def main() -> int:
         # on ada's clipboard — and joining would then change nothing
         # on screen, which is the whole beat.
         #
-        # Whether there is anything to check here depends on whether
-        # Invite mints a *named* token. It does not today, so this
-        # usually has nobody to look at — and says so out loud rather
-        # than passing quietly, because a check that cannot tell "held"
-        # from "never ran" is not a check.
+        # Whether there is anything to look at here depends on which
+        # route the name came in by. The palette's `peer.invite.named`
+        # is told a peer id, so it can write the name into the room
+        # document at mint time and the seat appears immediately. The
+        # panel cannot: the person it is inviting has no identity this
+        # machine has ever seen until they redeem, so the name waits on
+        # the inviting machine and is written the moment they do. Either
+        # way nobody is listed as *present* before redeeming, which is
+        # the claim — stated out loud rather than passed over quietly,
+        # because a check that cannot tell "held" from "never ran" is
+        # not a check.
         pending = [r for r in ((ada.peers() or {}).get("roster") or [])
                    if not r.get("is_agent")]
         if pending:
@@ -375,9 +439,9 @@ def main() -> int:
                   all(r.get("invited") is True for r in pending),
                   json.dumps(pending)[:200])
         else:
-            print("  n/a   nothing to check yet — this Invite minted an "
-                  "unnamed token, so the room has named nobody and there "
-                  "is no row to be invited")
+            print("  n/a   no row yet — the panel holds the name until "
+                  "the invitee redeems, because until then there is no "
+                  "peer identity to attach it to")
 
         step("the token travels — by hand, off ada's clipboard")
         # Deliberately `copied`, not `token`: what crosses is what the
@@ -391,7 +455,7 @@ def main() -> int:
             return 1
         check("his collaborators panel opened",
               bool(bob.overlays().get("collaborators")))
-        bob.snapshot(os.path.join(shots, "04-bob-panel.png"))
+        bob.snapshot(os.path.join(shots, "05-bob-panel.png"))
 
         step("and clicks Join")
         if not click(bob, "collab_join", "Join"):
@@ -400,7 +464,7 @@ def main() -> int:
                      wait_for(lambda: bob.peer_sync().get("connect_input")
                               is not None, timeout=15) is not None):
             return 1
-        bob.snapshot(os.path.join(shots, "05-bob-prompt.png"))
+        bob.snapshot(os.path.join(shots, "06-bob-prompt.png"))
 
         step("he pastes with the card's own Paste button")
         if not click(bob, "peer_sync_paste", "Paste"):
@@ -411,7 +475,7 @@ def main() -> int:
               "prompt is still empty — the paste did nothing" if not pasted
               else ("holds the whole token" if pasted == token
                     else f"holds {len(pasted)} chars, token is {len(token)}"))
-        bob.snapshot(os.path.join(shots, "06-bob-pasted.png"))
+        bob.snapshot(os.path.join(shots, "07-bob-pasted.png"))
         if pasted != token:
             return 1
 
@@ -423,7 +487,7 @@ def main() -> int:
             timeout=45)
         check("bob joined ada's room", bool(joined),
               repr(bob.peer_sync().get("status")))
-        bob.snapshot(os.path.join(shots, "07-bob-joined.png"))
+        bob.snapshot(os.path.join(shots, "08-bob-joined.png"))
 
         step("and ada sees him")
         pointers = wait_for(
@@ -433,21 +497,24 @@ def main() -> int:
               json.dumps(pointers)[:200] if pointers else "no presence arrived")
         if not ada.overlays().get("collaborators"):
             click(ada, "topbar_avatar_stack", "the avatar stack again")
-        ada.snapshot(os.path.join(shots, "08-ada-roster.png"))
+        ada.snapshot(os.path.join(shots, "09-ada-roster.png"))
 
         # And the panel lists him.
         #
         # Read from `peers()["roster"]`, which is built from
         # `collaborator_roster_rows` — the same function that paints the
-        # rows in 08-ada-roster.png. Asserting the painted list
+        # rows in 09-ada-roster.png. Asserting the painted list
         # rather than the field behind it is the difference between "the
         # data arrived" and "the surface shows it", and only the second
         # is the claim this script makes.
         #
-        # He is unnamed on purpose: ada pressed plain **Invite**,
-        # which mints a token and says nothing about who it is for. So
-        # the honest label is bob's id, and that is what must appear —
-        # never blank, and never a name nobody chose.
+        # And it reads the name ada gave, because the panel's
+        # Invite asked for one. That name never crossed the wire: it
+        # stayed on ada's machine until bob redeemed the token,
+        # and was written into the room document then, by the room's
+        # own authority, on the channel `apply_room_changes` refuses
+        # from everybody else. The guest supplied nothing but a signed
+        # token.
         roster = wait_for(
             lambda: ((ada.peers() or {}).get("roster") or None), timeout=60)
         check("the panel lists the person who joined", bool(roster),
@@ -472,6 +539,12 @@ def main() -> int:
                   "recorded — never blank, never invented",
                   bool(label) and (label.startswith("peer@")
                                    or label in recorded),
+                  f"{label!r}; the room records {sorted(recorded)}")
+            # And which of the two it is, now that Invite asks. This is
+            # the claim the script exists for: the host's own roster
+            # reads a person, not `peer@12191268537764683811`.
+            check(f"and that label is the name ada typed — {INVITED_AS!r}",
+                  label == INVITED_AS,
                   f"{label!r}; the room records {sorted(recorded)}")
             # And as somebody who *arrived*, not somebody who was asked.
             # The roster lists both, and draws them differently: a peer
@@ -527,7 +600,7 @@ def main() -> int:
               all(r.get("invited") is False for r in (guest_roster or [])
                   if (r.get("label") or "") == ada.name),
               json.dumps(guest_roster)[:200])
-        bob.snapshot(os.path.join(shots, "09-bob-roster.png"))
+        bob.snapshot(os.path.join(shots, "10-bob-roster.png"))
 
         step("the negative claims")
         check("no token was ever typed — only copied and pasted", True,
