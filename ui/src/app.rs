@@ -702,7 +702,7 @@ impl App {
         if let Some(result) = dispatched {
             match result {
                 Ok(d) if d.mutated_local() => {
-                    self.state.record_committed_action(before, None, None);
+                    self.record_action_boundary(before);
                     self.needs_sync = true;
                     self.layout_dirty = true;
                 }
@@ -719,7 +719,7 @@ impl App {
             self.root_widget
                 .activate_search_result(&action_id, &mut self.state.doc, &root);
             if self.state.doc.get_heads() != nav_before {
-                self.state.record_committed_action(nav_before, None, None);
+                self.record_action_boundary(nav_before);
             }
             self.needs_sync = true;
             self.layout_dirty = true;
@@ -2007,6 +2007,37 @@ impl App {
         }
     }
 
+    /// Turn any `qos_actions` action the widget tree dispatched during the last
+    /// event into one undo boundary. Called from the idle tick; returns whether
+    /// an entry was recorded.
+    ///
+    /// Delegates to [`undo::record_dispatched_action`](crate::undo::record_dispatched_action),
+    /// which the headless [`Driver`](crate::headless::Driver) calls too — so a
+    /// scenario and a user get the same history from the same interaction.
+    pub fn record_dispatched_actions(&mut self) -> bool {
+        let root: *mut dyn crate::widget::Widget = self.root_widget.as_mut();
+        crate::undo::record_dispatched_action(
+            &mut self.state,
+            root,
+            &self.node_map,
+            &self.local_author,
+        )
+    }
+
+    /// Record one undo boundary for an action this host has just dispatched
+    /// itself (Ctrl+K palette, a search-result navigation that mutated the
+    /// document), bracketed by `before`.
+    ///
+    /// The host's own dispatches attribute the same way a widget's do — see
+    /// [`record_dispatched_actions`](Self::record_dispatched_actions) — so
+    /// whether an action arrived via the palette or via a toolbar button makes
+    /// no difference to whether Ctrl+Z can revert it.
+    fn record_action_boundary(&mut self, before: Vec<automerge::ChangeHash>) {
+        let author = self.local_author.clone();
+        self.state
+            .record_committed_action_authored(before, None, None, Some(author));
+    }
+
     /// Perform any undo/redo a widget asked for since the last drain.
     ///
     /// Returns `true` if anything happened, so the caller can repaint. Each
@@ -2657,7 +2688,7 @@ impl App {
         )
         .map_err(|e| e.to_string())?;
         if dispatched.mutated_local() {
-            self.state.record_committed_action(before, None, None);
+            self.record_action_boundary(before);
             self.needs_sync = true;
             self.layout_dirty = true;
         }
@@ -4599,14 +4630,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // An affordance may have dispatched a `qos_actions` action out-of-band
         // during the last event (the button-driven twin of the Ctrl+K palette).
-        // Record one undo boundary bracketing it, so Ctrl+Z reverts it — the same
-        // `record_committed_action` path the palette dispatch takes.
-        if let Some(before) = app.root_widget.take_committed_action() {
-            if app.state.doc.get_heads() != before {
-                app.state.record_committed_action(before, None, None);
-                app.needs_sync = true;
-                window.request_redraw();
-            }
+        // Record one undo boundary bracketing it, so Ctrl+Z reverts it.
+        if app.record_dispatched_actions() {
+            app.needs_sync = true;
+            window.request_redraw();
         }
 
         if app.root_widget.needs_commit() {
@@ -8226,5 +8253,250 @@ mod undo_control_tests {
         );
         assert!(app.perform_undo(), "the first edit is still undoable");
         assert_eq!(body(&app), "");
+    }
+}
+
+/// The live host's half of the dispatched-action boundary, proved against the
+/// same [`undo::record_dispatched_action`](crate::undo::record_dispatched_action)
+/// the headless [`Driver`](crate::headless::Driver) calls.
+///
+/// The driver's tests prove a scenario sees the boundary. These prove the App
+/// records it the same way, so an app cannot pass headlessly and then behave
+/// differently in front of a user.
+#[cfg(test)]
+mod dispatched_action_tests {
+    use super::*;
+    use crate::state::State;
+    use crate::widget::Widget;
+    use automerge::{transaction::Transactable, ReadDoc, ScalarValue, ROOT};
+    use qos_actions::{ActionError, Doc, ExecutionLocus};
+    use std::collections::HashMap;
+    use vello::kurbo::Rect;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct Bump {
+        to: i64,
+    }
+
+    const BUMP: &str = "test.bump";
+
+    impl qos_actions::Action for Bump {
+        fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+            doc.put(&ROOT, "count", ScalarValue::Int(self.to))?;
+            Ok(())
+        }
+        fn locus(&self) -> ExecutionLocus {
+            ExecutionLocus::ClientLocal
+        }
+    }
+
+    /// An app in the migrated shape: its affordance dispatches a `qos_actions`
+    /// action and reports the bracket. No `needs_commit` — that is the path this
+    /// covers and the other module does not.
+    #[derive(Default)]
+    struct ActionApp {
+        actions: crate::action_host::ActionHost,
+        /// A bracket captured by an affordance that then dispatched nothing.
+        armed: Option<Vec<automerge::ChangeHash>>,
+    }
+
+    impl ActionApp {
+        /// What a toolbar button's click handler does.
+        fn press(&mut self, doc: &mut automerge::AutoCommit, to: i64) {
+            self.actions.dispatch(doc, BUMP, &Bump { to });
+        }
+
+        /// An affordance that captured the boundary and then changed nothing —
+        /// a guarded control, or an action whose `apply` is a no-op against the
+        /// document as it stands.
+        fn arm_without_dispatching(&mut self, doc: &mut automerge::AutoCommit) {
+            self.armed = Some(doc.get_heads());
+        }
+    }
+
+    impl Widget for ActionApp {
+        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _t: &crate::theme::Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let n = taffy.new_leaf(taffy::Style::default()).unwrap();
+            node_map.insert(n, self as *mut dyn Widget);
+            n
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: vello::kurbo::Point) {}
+        fn draw(
+            &mut self,
+            _sc: &mut Scene,
+            _tr: vello::kurbo::Affine,
+            _tx: &mut crate::text_render::TextRenderer,
+            _th: &crate::theme::Theme,
+            _pr: &crate::presence::PresenceCtx,
+        ) {
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn handle_event(
+            &mut self,
+            _e: &winit::event::WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut automerge::AutoCommit,
+            _p: &automerge::ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _n: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &str {
+            "ActionApp"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::new(0.0, 0.0, 100.0, 40.0)
+        }
+        fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+            self.actions.take_committed().or_else(|| self.armed.take())
+        }
+    }
+
+    fn count(app: &App) -> Option<i64> {
+        app.state
+            .doc
+            .get(&ROOT, "count")
+            .ok()
+            .flatten()
+            .and_then(|(v, _)| v.to_i64())
+    }
+
+    /// Press an affordance that dispatches an action, and Ctrl+Z reverts it.
+    ///
+    /// Both halves are the production ones: `record_dispatched_actions` is what
+    /// the idle tick calls, and `perform_undo` is what the Ctrl+Z handler
+    /// calls — including its author scoping, which is what an unattributed
+    /// entry silently fails.
+    #[test]
+    fn an_action_dispatched_by_an_affordance_is_undoable_by_the_local_user() {
+        let mut app = App::new(State::new(), Box::<ActionApp>::default());
+        app.init_layout();
+
+        // Reach the app widget the way the host does, and press its affordance.
+        let root: *mut dyn Widget = app.root_widget.as_mut();
+        unsafe { (*root.cast::<ActionApp>()).press(&mut app.state.doc, 7) };
+        assert_eq!(count(&app), Some(7), "the action reached the document");
+
+        assert!(
+            app.record_dispatched_actions(),
+            "the idle tick must turn the dispatch into a boundary"
+        );
+        app.publish_undo_status();
+        assert!(
+            app.undo_status().can_undo,
+            "and the boundary must belong to the local user, or every Undo \
+             control in the app paints dark over a real edit"
+        );
+
+        assert!(app.perform_undo(), "Ctrl+Z reverts the dispatched action");
+        assert_eq!(count(&app), None, "the document is back where it started");
+    }
+
+    /// A dispatched action and a directly-committed edit land on one stack in
+    /// the order they happened, and undo walks back through both.
+    ///
+    /// This is what author scoping breaks when a boundary is unattributed: the
+    /// anonymous entry is skipped, so the first Ctrl+Z reaches *past* the newer
+    /// action and reverts the older edit instead.
+    #[test]
+    fn undo_walks_dispatched_and_committed_edits_in_the_order_they_happened() {
+        let mut app = App::new(State::new(), Box::<ActionApp>::default());
+        app.init_layout();
+
+        // An ordinary committed edit first.
+        app.state
+            .doc
+            .put(&ROOT, "label", ScalarValue::Str("first".into()))
+            .unwrap();
+        app.commit_action();
+
+        // Then a dispatched action.
+        let root: *mut dyn Widget = app.root_widget.as_mut();
+        unsafe { (*root.cast::<ActionApp>()).press(&mut app.state.doc, 7) };
+        assert!(app.record_dispatched_actions());
+
+        assert!(app.perform_undo(), "the newest entry is the action");
+        assert_eq!(count(&app), None, "so the action is what came off first");
+        assert_eq!(
+            app.state
+                .doc
+                .get(&ROOT, "label")
+                .ok()
+                .flatten()
+                .map(|(v, _)| v.to_string()),
+            Some("\"first\"".to_string()),
+            "the older committed edit is untouched by the first undo"
+        );
+
+        assert!(app.perform_undo(), "the committed edit is still undoable");
+        assert!(app.state.doc.get(&ROOT, "label").unwrap().is_none());
+    }
+
+    /// A bracket whose actions turned out to change nothing is drained but not
+    /// recorded, and the host is told so.
+    ///
+    /// The return value is not cosmetic: the idle tick reads it to decide
+    /// whether to mark the document dirty for sync and ask for a repaint.
+    /// Reporting a boundary that was never pushed makes the host broadcast and
+    /// redraw for an edit that does not exist.
+    #[test]
+    fn a_bracket_whose_actions_changed_nothing_records_no_boundary() {
+        let mut app = App::new(State::new(), Box::<ActionApp>::default());
+        app.init_layout();
+
+        // A real dispatched edit first, so there is a genuine entry that an
+        // empty one could be confused with.
+        let root: *mut dyn Widget = app.root_widget.as_mut();
+        unsafe { (*root.cast::<ActionApp>()).press(&mut app.state.doc, 7) };
+        assert!(app.record_dispatched_actions());
+
+        // Now an affordance that bracketed and then changed nothing.
+        unsafe { (*root.cast::<ActionApp>()).arm_without_dispatching(&mut app.state.doc) };
+        assert!(
+            !app.record_dispatched_actions(),
+            "no document change means no boundary — and the host must not be \
+             told to sync and repaint for one"
+        );
+
+        assert!(app.perform_undo(), "the real edit is still the top of the stack");
+        assert_eq!(count(&app), None);
+        assert!(
+            !app.perform_undo(),
+            "and the empty bracket left no second entry behind"
+        );
+    }
+
+    /// The idle tick is level-triggered and runs on every event. It must not
+    /// push an entry when nothing was dispatched, or a Ctrl+Z would be
+    /// swallowed by an empty boundary.
+    #[test]
+    fn a_tick_with_no_dispatch_records_nothing() {
+        let mut app = App::new(State::new(), Box::<ActionApp>::default());
+        app.init_layout();
+        assert!(!app.record_dispatched_actions());
+
+        let root: *mut dyn Widget = app.root_widget.as_mut();
+        unsafe { (*root.cast::<ActionApp>()).press(&mut app.state.doc, 7) };
+        assert!(app.record_dispatched_actions());
+        // Rising edge: the following ticks find nothing left.
+        assert!(!app.record_dispatched_actions());
+        assert!(!app.record_dispatched_actions());
+
+        assert!(app.perform_undo());
+        assert_eq!(count(&app), None);
+        assert!(
+            !app.perform_undo(),
+            "one dispatch left exactly one entry behind"
+        );
     }
 }

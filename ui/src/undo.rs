@@ -30,6 +30,14 @@
 //! [`Widget::cursor_shape`](crate::widget::Widget::cursor_shape) and
 //! [`Widget::tooltip`](crate::widget::Widget::tooltip) already use.
 //!
+//! There is a third channel in the same family, one step earlier: an app whose
+//! edits are dispatched [`qos_actions`](crate::action_host) actions reports the
+//! bracket around them through
+//! [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action),
+//! and [`record_dispatched_action`] is where a host turns that into the undo
+//! entry the two halves above then see. It sweeps `node_map` for the same
+//! reason they do.
+//!
 //! Most apps need none of this directly: drop an
 //! [`UndoButton`](crate::widget::UndoButton) into a toolbar and it is wired.
 
@@ -159,6 +167,102 @@ pub fn shortcut(character: &str, ctrl: bool, shift: bool) -> Option<UndoRequest>
         "z" | "Z" => Some(UndoRequest::Undo),
         "y" | "Y" => Some(UndoRequest::Redo),
         _ => None,
+    }
+}
+
+/// Turn the actions a widget dispatched during the last event into exactly one
+/// undo boundary. Returns whether an entry was recorded.
+///
+/// The counterpart of [`shortcut`] for the *other* direction: the single place
+/// "an edit became an undo boundary" is written down, so a widget behaves
+/// identically under the live host ([`App`](crate::app::App)) and under the
+/// headless [`Driver`](crate::headless::Driver). Both call this once per tick.
+///
+/// It matters that there is only one of these, because there are two separate
+/// ways to get it wrong and both are silent:
+///
+/// * **Not draining at all.** [`take_committed_action`](crate::widget::Widget::take_committed_action)
+///   is rising-edge, so a host that never reads it records nothing — an app
+///   whose edits all travel through [`qos_actions`](crate::action_host) then has
+///   an empty undo history no matter how much the user changed. The driver did
+///   exactly this, which made undo unobservable to every headless test of such
+///   an app.
+/// * **Draining anonymously.** Undo is author-scoped: an entry with no author
+///   is skipped by the local user's own Ctrl+Z, which then reverts an *older*
+///   entry instead. So the boundary must be attributed, and to the same
+///   identity [`State::undo_as`](crate::state::State::undo_as) is asked about.
+///
+/// * **Draining only the root.** This is the third host→widget channel of its
+///   kind, and it was the only one that read a single widget: no container in
+///   the toolkit forwards `take_committed_action`, so an app that put its
+///   editor inside a `Row`, a `Column`, or an `AppShell` lost every boundary
+///   with no error anywhere. Like [`UndoStatus`] and [`UndoRequest`], this
+///   sweeps `node_map` — every laid-out widget registers itself there — so a
+///   widget is reached at any depth.
+///
+/// Every bracket found is drained, even when the actions turned out to change
+/// nothing: the rising edge must be cleared, or a later unrelated edit would be
+/// bracketed from a stale point and undone along with it.
+///
+/// One tick is one boundary. When several widgets dispatched in the same tick,
+/// the entry spans from the *earliest* of their brackets — the one the others
+/// descend from — so a single Ctrl+Z reverts the tick rather than peeling it
+/// apart in an order the user never performed.
+///
+/// # Safety
+///
+/// `root` and the `node_map` pointers must point at widgets that are alive for
+/// the call — the invariant every `node_map` sweep in
+/// [`App`](crate::app::App) and [`Driver`](crate::headless::Driver) already
+/// relies on. Exactly one `&mut` is live at a time, so a widget that is both
+/// the root and registered in the map is safe (and yields its bracket once,
+/// because reading clears it).
+pub fn record_dispatched_action(
+    state: &mut crate::state::State,
+    root: *mut dyn crate::widget::Widget,
+    node_map: &std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+    author: &crate::permissions::UserId,
+) -> bool {
+    let mut brackets: Vec<Vec<automerge::ChangeHash>> = Vec::new();
+    for w_ptr in std::iter::once(root).chain(node_map.values().copied()) {
+        // SAFETY: see the function's safety note. The reference is created and
+        // dropped inside this iteration, so no two overlap.
+        let w = unsafe { &mut *w_ptr };
+        if let Some(before) = w.take_committed_action() {
+            brackets.push(before);
+        }
+    }
+    let Some(before) = earliest_bracket(state, brackets) else {
+        return false;
+    };
+    if state.doc.get_heads() == before {
+        return false;
+    }
+    state.record_committed_action_authored(before, None, None, Some(author.clone()));
+    true
+}
+
+/// The bracket the others descend from, or `None` when there were none.
+///
+/// A change graph has no total order over heads, so "earliest" is asked of the
+/// document rather than guessed: the bracket with the most changes after it is
+/// the one furthest back. The single-bracket case — every real tick — skips the
+/// question entirely.
+fn earliest_bracket(
+    state: &mut crate::state::State,
+    mut brackets: Vec<Vec<automerge::ChangeHash>>,
+) -> Option<Vec<automerge::ChangeHash>> {
+    match brackets.len() {
+        0 => None,
+        1 => brackets.pop(),
+        _ => brackets
+            .into_iter()
+            .map(|b| {
+                let depth = state.doc.get_changes(&b).len();
+                (depth, b)
+            })
+            .max_by_key(|(depth, _)| *depth)
+            .map(|(_, b)| b),
     }
 }
 
