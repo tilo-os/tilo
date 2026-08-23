@@ -124,11 +124,6 @@ class Session:
             # presence actually crossed between the two apps — see
             # `presence_traffic`.
             "QUICK_COLLAB_DEBUG": "1",
-            # The self-recognition line is `debug!` — it sits on a path
-            # that also carries pointer traffic, so it is not something
-            # to emit at `info`. An explicit RUST_LOG in the caller's
-            # environment still wins.
-            "RUST_LOG": os.environ.get("RUST_LOG", "info,ui::presence=debug"),
         }
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
