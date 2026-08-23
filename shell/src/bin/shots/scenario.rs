@@ -597,6 +597,24 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             }
         }
         Action::SampleTabReveal { prefix, at_ms } => {
+            // Freezing an animation curve at a chosen offset needs
+            // `bar_mut_for_tests`, which is `cfg(any(test,
+            // debug_assertions))` — the toolkit does not expose its
+            // internals to a release build, and should not start doing
+            // so for a capture tool. So this one scenario is
+            // debug-only; every other scenario builds and runs in
+            // release, which is what lets `shots` be built at all in
+            // the configuration a session actually ships in.
+            #[cfg(not(debug_assertions))]
+            {
+                let _ = (prefix, at_ms);
+                eprintln!(
+                    "scenario: SampleTabReveal needs a debug build (it freezes an \
+                     animation curve through a debug-only accessor); skipping"
+                );
+            }
+            #[cfg(debug_assertions)]
+            {
             // Lay out once so the hover that preceded this has latched a
             // curve, then freeze it before a render's worth of wall time
             // can retire it.
@@ -626,6 +644,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 let name: &'static str =
                     Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
                 sink.capture(driver, name);
+            }
             }
         }
         Action::SampleMakeSpace { prefix, at_ms } => {
