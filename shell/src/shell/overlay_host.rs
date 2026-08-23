@@ -905,6 +905,30 @@ fn tile_signature(tile: &crate::shell::state::TileContent) -> String {
     serde_json::to_string(tile).unwrap_or_default()
 }
 
+/// Whether `tile` is a client window that has not drawn anything yet.
+///
+/// Asked of a tab that is about to have its contents replaced by this
+/// tile, to decide whether the replacement is ready to be shown. Only a
+/// foreign surface can answer yes: everything else is drawn by this
+/// process and is on screen the moment it is built.
+///
+/// The question is "has the client committed a buffer", not "does that
+/// buffer fit its tab" — the stricter test the window group applies
+/// before painting. It has to be the looser one here, because the tab's
+/// rectangle only reaches the client once this swap has happened: the
+/// widget that publishes the placement is the one being swapped in. A
+/// client that never draws keeps the card it already has, which says
+/// what is being done about it and is the honest thing to leave on
+/// screen.
+fn window_is_still_starting(tile: &crate::shell::state::TileContent) -> bool {
+    match tile {
+        crate::shell::state::TileContent::Foreign { surface_id, .. } => {
+            crate::compositor::foreign::store().frame_seq(*surface_id) == 0
+        }
+        _ => false,
+    }
+}
+
 impl ShellOverlayHost {
     /// Display name painted in the General tab's collaborator tile when
     /// no `me` collaborator is seeded in the active workspace. Pinned
@@ -2079,7 +2103,18 @@ impl ShellOverlayHost {
                             // and the screen disagree permanently, and
                             // every assertion made against the tree
                             // passes while the person sees the old thing.
+                            // ...but not before the window is there to
+                            // become. The card this tab is currently
+                            // showing says what is being done — a peer's
+                            // window that this machine is opening its own
+                            // instance of says exactly that — and
+                            // swapping it for a surface that has not
+                            // drawn replaces a sentence that is true with
+                            // a blank frame. The tile signature is left
+                            // unrecorded, so the swap is retried until
+                            // the window can be shown.
                             if tab_tiles.get(&tab.id) != Some(&signature)
+                                && !window_is_still_starting(&tab.tile)
                                 && let Some(host) = live.host_for_tab_mut(tab.id)
                             {
                                 host.replace_content(crate::shell::to_ui_tile(&tab.tile));
