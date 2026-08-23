@@ -1334,14 +1334,22 @@ impl Widget for SidebarWheelDisc {
         // to the index instead, which is the thing that actually has to
         // survive a resize.
         //
-        // Skipped mid-gesture: the drag owns the rotation while the
-        // pointer is down, and a resize cannot happen inside one.
-        if self.drag_from.is_none() {
+        // Only while the disc is at rest. This runs on every layout
+        // pass, so re-anchoring during a gesture or a settle would keep
+        // pulling the target back onto whichever workspace the indicator
+        // has reached so far — the drag would give ground as you made
+        // it, and a settle would never reach the workspace it was aimed
+        // at.
+        let at_rest = self.drag_from.is_none()
+            && self
+                .rotation_spring
+                .as_ref()
+                .map(|s| s.is_settled())
+                .unwrap_or(true);
+        if at_rest {
             self.rotation_deg = self.rotation_for_idx(self.active_idx);
             if let Some(spring) = self.rotation_spring.as_mut() {
-                if spring.is_settled() {
-                    spring.snap(self.rotation_deg);
-                }
+                spring.snap(self.rotation_deg);
             }
         }
     }
