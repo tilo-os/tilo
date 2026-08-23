@@ -320,37 +320,95 @@ pub(crate) const SYSTEM_FILE_MANAGER: &str = "dev.qos.file-explorer";
 /// file manager is for, and a read-only grant would leave its toolbar
 /// full of affordances that fail.
 fn grant_user_home_to_file_manager(chrome: &Chrome, package_id: &str) {
-    use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
-
-    if package_id != SYSTEM_FILE_MANAGER {
-        return;
-    }
-    let Some(home) = dirs::home_dir() else {
-        return;
-    };
-    let (ws_id, store) = {
+    let ws_id = {
         let st = chrome.borrow();
         if st.tree().active_workspace().is_none() {
             return;
         }
-        (
-            st.tree().active,
-            crate::portal::GrantStoreHandle::new(st.tree_handle()),
-        )
+        st.tree().active
     };
-    let caller = crate::portal::PortalCaller::new(ws_id, package_id.to_string());
-    if store.filesystem_path_granted(&caller, &home) {
-        return;
+    let granted = {
+        let mut st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        grant_file_manager_home(&mut tree, ws_id, package_id)
+    };
+    if granted {
+        chrome.borrow_mut().bump();
     }
-    store.insert(
-        &caller,
-        Capability::Filesystem {
+}
+
+/// [`grant_user_home_to_file_manager`] against a tree, for the launches
+/// that do not come from the palette.
+///
+/// The file manager is started by more than one path — the palette, and
+/// [`crate::shell::peer_windows`] when a peer's window says the room has
+/// one open. Only the first used to mint the grant, so a file manager
+/// started on the room's behalf opened on its own sandbox directory and
+/// reported, accurately, that it was empty. The grant is a precondition
+/// of the app being usable at all, so it belongs with the launch rather
+/// than with the palette that happened to be the first caller.
+///
+/// Returns whether a grant was added, so a caller with a repaint to do
+/// can skip it when there was nothing to change.
+///
+/// # Minted per machine, and why that is not yet enough
+///
+/// Every member mints their own, because the path names *this* machine's
+/// home and is meaningless on anybody else's. A member who only received
+/// a copy of somebody else's still got no `QOS_USER_HOME`
+/// (`packaging/launcher/src/sandbox.rs`, `push_user_home`, which exports
+/// it only when the local `$HOME` is covered by a granted bind) and so
+/// still opened on their sandbox directory.
+///
+/// This deliberately does **not** mirror the grant into the room
+/// document the way `GrantStoreHandle::insert` does. That is not
+/// sufficient to keep it off the wire, and the remaining hole is worth
+/// stating plainly rather than leaving to be rediscovered: the workspace
+/// projection writes `ws.capabilities` wholesale
+/// (`WorkspaceTree`'s doc write, `state.rs`), so the grant reaches every
+/// peer on the next persist regardless. A peer's sandbox then honours a
+/// path naming *this* machine's home directory.
+///
+/// Closing it needs a capability the projection knows not to ship — and
+/// one the doc-driven rebuild of `ws.capabilities` knows not to sweep,
+/// since that rebuild replaces the list with whatever the document holds.
+/// Both halves are a change to the capability model, not to this
+/// function, so it is recorded here rather than half-done.
+pub(crate) fn grant_file_manager_home(
+    tree: &mut crate::shell::state::WorkspaceTree,
+    workspace: crate::shell::state::WorkspaceId,
+    package_id: &str,
+) -> bool {
+    use crate::shell::state::{Capability, FsMode, GRANT_SESSION, ResourceRef, Verb};
+
+    if package_id != SYSTEM_FILE_MANAGER {
+        return false;
+    }
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == workspace) else {
+        return false;
+    };
+    // Asks the capability model rather than re-deriving prefix logic,
+    // exactly as the portal's own check does.
+    let actor = ws.actor_for_app(package_id);
+    if ws.allows(
+        &actor,
+        &ResourceRef::FsPath(home.to_string_lossy().into_owned()),
+        Verb::Read,
+    ) {
+        return false;
+    }
+    ws.grant_app(
+        package_id,
+        &Capability::Filesystem {
             path: home,
             mode: FsMode::ReadWrite,
             scope: GRANT_SESSION,
         },
     );
-    chrome.borrow_mut().bump();
+    true
 }
 
 pub(crate) fn launch_installed_app(
@@ -359,6 +417,24 @@ pub(crate) fn launch_installed_app(
     display_name: &str,
 ) -> Result<(), ActionError> {
     grant_user_home_to_file_manager(chrome, package_id);
+    // The room may already have this app open here. If it does, the
+    // window the person is asking for is on their screen already — put
+    // it in front of them rather than starting a second copy of it
+    // beside the first. See `peer_windows::opened_for_the_room` for why
+    // that is not the same as refusing to open an app twice.
+    let already = {
+        let st = chrome.borrow();
+        let tree = st.tree();
+        let salt = tree.local_salt();
+        tree.active_workspace().and_then(|ws| {
+            crate::shell::peer_windows::opened_for_the_room(ws, package_id, salt)
+                .map(|(strip, group, tab)| (ws.id, strip, group, tab))
+        })
+    };
+    if let Some((ws_id, strip, group, tab)) = already {
+        chrome.borrow_mut().focus_tab(ws_id, strip, group, tab);
+        return Ok(());
+    }
     // Say that the app is opening, before the work starts, so the
     // acknowledgement is on screen on the same frame as the keystroke.
     //

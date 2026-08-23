@@ -107,8 +107,6 @@ enum CtxAction {
 /// Canonical paper tone — a barely-warm off-white. Ink/selection/caret below are
 /// chosen to read on this in every theme.
 const PAPER_DEFAULT: Color = Color::from_rgb8(0xfc, 0xfc, 0xfa);
-/// Soft drop-shadow under the paper sheet.
-const PAPER_SHADOW_DEFAULT: Color = Color::from_rgb8(0x16, 0x18, 0x1c);
 /// Default ink for paper content that has no per-block style colour (table
 /// cells, image-block fallbacks). Dark so it reads on the light paper.
 const PAPER_INK: Color = Color::from_rgb8(0x1c, 0x1c, 0x20);
@@ -163,8 +161,8 @@ struct ChromeColors {
     /// genuinely light, else [`PAPER_DEFAULT`]. Always a light tone so the
     /// dark-authored document ink stays readable.
     paper: Color,
-    /// Drop shadow under the paper sheet.
-    paper_shadow: Color,
+    /// How far the paper sheet is lifted off the desk behind it.
+    paper_elevation: ui::tokens::Shadow,
 }
 
 impl ChromeColors {
@@ -191,7 +189,7 @@ impl ChromeColors {
             on_accent: Color::WHITE,
             scrollbar: c.neutral[4],
             paper,
-            paper_shadow: PAPER_SHADOW_DEFAULT,
+            paper_elevation: theme.tokens.elevation.e3,
         }
     }
 }
@@ -5104,7 +5102,7 @@ impl Widget for WordProcessorWidget {
         for i in 0..num_pages {
             let ptop = page_top + i as f64 * page_pitch - sy;
             let sheet = Rect::new(page_x, ptop, page_x + page_w, ptop + letter_h);
-            chrome::page::draw(scene, ctf, sheet, self.chrome.paper, self.chrome.paper_shadow);
+            chrome::page::draw(scene, ctf, sheet, self.chrome.paper, &self.chrome.paper_elevation);
             let page_no = i + 1;
             // Header band: the top margin, inset by the L/R text margins.
             let head_band = Rect::new(sheet.x0 + m.left, sheet.y0, sheet.x1 - m.right, sheet.y0 + m.top);

@@ -272,6 +272,18 @@ pub struct GroupRow {
     /// scroll_x`, so the leading_inset moves with `scroll_x` just
     /// like every other point in canvas space.
     leading_inset: f64,
+    /// Each group's `(id, left, right)` extent in canvas-x, as the most
+    /// recent `apply_layout` measured it off taffy — the same space
+    /// `group_left_edges` and `content_w` are in, so screen-x is
+    /// `rect.x0 + canvas_x - scroll_x`.
+    ///
+    /// Read for two things: answering [`Self::cut_on_both_edges`], and
+    /// noticing that the strip's geometry moved under the pan. Measured
+    /// rather than re-derived from the stored widths because the
+    /// question is about what was actually laid out — a group that
+    /// taffy shrank to fit is that width on screen whatever its stored
+    /// fraction says.
+    laid_spans: Vec<(u64, f64, f64)>,
     /// **Transient fullscreen override** (id of the group promoted to occupy
     /// the whole output, e.g. a slideshow that requested
     /// `xdg_toplevel.set_fullscreen`). Set by the shell each frame from the
@@ -373,6 +385,7 @@ impl GroupRow {
             pending_cross_strip_detach: None,
             scroll_dirty: false,
             leading_inset: 0.0,
+            laid_spans: Vec::new(),
             fullscreen_group: None,
             hidden: false,
             group_drag: None,
@@ -816,6 +829,140 @@ impl GroupRow {
         let upper = self.max_scroll_x().max(viewport * 3.0);
         sx = sx.clamp(0.0, upper);
         ((sx - self.scroll_x).abs() > f64::EPSILON).then_some(sx)
+    }
+
+    /// Whether the strip is resting cut on both sides at once: one group
+    /// severed by the row's left edge while a *different* one is severed
+    /// by its right edge.
+    ///
+    /// A scrolling strip is supposed to leave content off its ends —
+    /// that is what makes it a strip rather than a grid that resizes
+    /// everything to fit. What no offset should ever produce is half a
+    /// window on the left and half a window on the right in the same
+    /// frame, which frames neither of them. Cutting one and framing the
+    /// other is better in both directions.
+    ///
+    /// A group wider than the row itself is not counted. It is cut on
+    /// both sides at every offset there is, so it can neither witness
+    /// the fault nor be repaired out of it, and treating it as one would
+    /// make the strip yank itself around a window it can never frame.
+    pub fn cut_on_both_edges(&self) -> bool {
+        self.cut_on_both_edges_at(&self.laid_spans, self.scroll_x)
+    }
+
+    /// Ids of the groups the row's own edges are cutting through right
+    /// now, left to right — the windows a viewer is seeing part of.
+    ///
+    /// Empty whenever the strip's groups all fit on screen together;
+    /// otherwise the ones hanging off the ends, which is the strip
+    /// working normally. Exposed so a caller can assert on which windows
+    /// are whole rather than inferring it from a scroll offset.
+    pub fn groups_cut_by_row_edges(&self) -> Vec<u64> {
+        let row_w = self.rect.width().max(1.0);
+        let sx = self.scroll_x;
+        self.laid_spans
+            .iter()
+            .filter(|&&(_, x0, x1)| {
+                x1 - x0 > 0.0
+                    // On screen at all, and crossing one of the ends.
+                    && x1 > sx + 0.5
+                    && x0 < sx + row_w - 0.5
+                    && (x0 < sx - 0.5 || x1 > sx + row_w + 0.5)
+            })
+            .map(|&(id, _, _)| id)
+            .collect()
+    }
+
+    /// [`Self::cut_on_both_edges`] evaluated against a hypothetical pan,
+    /// so a candidate offset can be tested before the strip is moved to
+    /// it. `spans` are canvas-x extents; screen-x is `rect.x0 + canvas_x
+    /// - sx`, so a group crosses the row's left edge exactly when its
+    /// left extent is behind `sx`, and its right edge when its right
+    /// extent is past `sx + row_w`.
+    fn cut_on_both_edges_at(&self, spans: &[(u64, f64, f64)], sx: f64) -> bool {
+        let row_w = self.rect.width().max(1.0);
+        let (mut left, mut right) = (false, false);
+        for &(_, x0, x1) in spans {
+            if x1 - x0 <= 0.0 || x1 - x0 > row_w {
+                continue;
+            }
+            // Scrolled wholly past an end is not a cut — that is the
+            // strip doing its job. Only a group with part of itself on
+            // screen and part of itself past an edge has been severed.
+            if x1 <= sx + 0.5 || x0 >= sx + row_w - 0.5 {
+                continue;
+            }
+            if x0 < sx - 0.5 {
+                left = true;
+            }
+            if x1 > sx + row_w + 0.5 {
+                right = true;
+            }
+        }
+        left && right
+    }
+
+    /// Where the strip should be resting, given what was just laid out.
+    /// `None` — the common case — means it already is.
+    ///
+    /// Two rules, in order:
+    ///
+    /// 1. If the groups could all be on screen together, none of them
+    ///    may be cut. There is a whole window of offsets that shows them
+    ///    all; the strip is moved to the nearest edge of it, which is
+    ///    the smallest correction that gets there.
+    /// 2. Otherwise the strip genuinely overflows and something has to
+    ///    hang off an end — but not off both. The offsets that end a
+    ///    two-sided cut are the ones putting some group's leading edge
+    ///    flush with the row's left or its trailing edge flush with the
+    ///    row's right, and the nearest of those wins.
+    ///
+    /// Nearest, in both rules, because the smallest move preserves most
+    /// of what is already framed. It also lands on the right subject
+    /// without being told what the subject is: a strip is normally
+    /// scrolled toward whatever was last brought into view, so the
+    /// closest legal offset is the one that keeps that window framed and
+    /// lets its neighbour be the one that runs off.
+    fn strip_frame_target(&self, spans: &[(u64, f64, f64)]) -> Option<f64> {
+        let row_w = self.rect.width().max(1.0);
+        let max = self.max_scroll_x();
+        let first = spans.first()?;
+        let leftmost = spans.iter().fold(first.1, |a, s| a.min(s.1));
+        let rightmost = spans.iter().fold(first.2, |a, s| a.max(s.2));
+
+        if rightmost - leftmost <= row_w {
+            // Everything fits at once, so nothing is allowed to be cut.
+            // Any offset in `[rightmost - row_w, leftmost]` shows the
+            // lot; clamped into the strip's legal range, the nearest
+            // point of it is where the strip belongs.
+            let lo = (rightmost - row_w).clamp(0.0, max);
+            let hi = leftmost.clamp(0.0, max).max(lo);
+            let target = self.scroll_x.clamp(lo, hi);
+            return ((target - self.scroll_x).abs() > 0.5).then_some(target);
+        }
+
+        if !self.cut_on_both_edges_at(spans, self.scroll_x) {
+            return None;
+        }
+        let mut best: Option<f64> = None;
+        for &(_, x0, x1) in spans {
+            if x1 - x0 <= 0.0 || x1 - x0 > row_w {
+                continue;
+            }
+            for candidate in [x0, x1 - row_w] {
+                let candidate = candidate.clamp(0.0, max);
+                if self.cut_on_both_edges_at(spans, candidate) {
+                    continue;
+                }
+                let nearer = best.is_none_or(|b: f64| {
+                    (candidate - self.scroll_x).abs() < (b - self.scroll_x).abs()
+                });
+                if nearer {
+                    best = Some(candidate);
+                }
+            }
+        }
+        best.filter(|t| (t - self.scroll_x).abs() > 0.5)
     }
 
     /// True while a snap-to-nearest-group animation is in flight, or
@@ -1640,11 +1787,22 @@ impl Widget for GroupRow {
         let mut content_w = self.leading_inset;
         let mut edges: Vec<f64> = Vec::with_capacity(self.node_ids.len());
         let mut local_x: Vec<f64> = Vec::with_capacity(self.node_ids.len());
-        for &cn in &self.node_ids {
+        // Same walk collects each group's full canvas extent, which is
+        // what the framing rule below reasons about. Only trustworthy
+        // when taffy has a node per group — a pass landing between a
+        // splice and the rebuild would otherwise pair widths with the
+        // wrong ids.
+        let spans_aligned = self.node_ids.len() == self.groups.len();
+        let mut spans: Vec<(u64, f64, f64)> = Vec::with_capacity(self.node_ids.len());
+        for (i, &cn) in self.node_ids.iter().enumerate() {
             let cl = taffy.layout(cn).unwrap();
             edges.push(self.leading_inset + cl.location.x as f64);
             local_x.push(cl.location.x as f64);
-            let right = self.leading_inset + cl.location.x as f64 + cl.size.width as f64;
+            let left = self.leading_inset + cl.location.x as f64;
+            let right = left + cl.size.width as f64;
+            if spans_aligned {
+                spans.push((self.groups[i].id, left, right));
+            }
             if right > content_w {
                 content_w = right;
             }
@@ -1708,6 +1866,35 @@ impl Widget for GroupRow {
         }
         if self.scroll_x < 0.0 {
             self.scroll_x = 0.0;
+        }
+        // Re-frame when the strip's own geometry moved under the pan: a
+        // group resized, opened, closed, or landed on a differently
+        // sized output. The offset that framed the old widths is often
+        // the wrong one for the new ones, and nothing else revisits it —
+        // the shell's into-view pan is edge-triggered on *which group is
+        // focused*, so a strip whose windows changed width while focus
+        // stood still keeps an offset chosen for a layout that no longer
+        // exists. That is what leaves one window cut on each edge, which
+        // is the one arrangement that shows neither of them.
+        //
+        // Held off while the user is dragging. A resize or a tab drag
+        // moves the geometry every frame, and the strip has to stay
+        // under the hand rather than snap out from beneath it; the pan
+        // is corrected on release, when the drag stops republishing new
+        // spans.
+        if spans_aligned {
+            let geometry_moved = spans != self.laid_spans;
+            self.laid_spans = spans;
+            let steady = self.snap_anim.is_none()
+                && !self.group_drag_active()
+                && !self.handles.iter().any(|h| h.is_dragging());
+            if geometry_moved && steady {
+                if let Some(target) = self.strip_frame_target(&self.laid_spans) {
+                    self.scroll_x = target;
+                    self.scroll_dirty = true;
+                    self.last_wheel_at = None;
+                }
+            }
         }
         // Per-frame snap tick: advance any in-flight snap animation,
         // or kick a fresh one off if the user has been idle past the
@@ -4050,6 +4237,217 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Lay `row` out inside a `viewport_w`-wide viewport through the
+    /// real `build_layout` / `apply_layout` pair, rebuilding the taffy
+    /// tree so a changed width actually takes — the baked length on the
+    /// old node is what a stale tree would keep serving.
+    fn relayout_strip(row: &mut GroupRow, viewport_w: f64) {
+        use std::collections::HashMap;
+        use taffy::{AvailableSpace, Size as TSize, TaffyTree};
+
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
+        let root = row.build_layout(&mut taffy, &theme, &mut node_map);
+        let viewport = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(viewport_w as f32),
+                        height: Dimension::length(1080.0),
+                    },
+                    ..Default::default()
+                },
+                &[root],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                viewport,
+                TSize {
+                    width: AvailableSpace::Definite(viewport_w as f32),
+                    height: AvailableSpace::Definite(1080.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .expect("taffy compute_layout");
+        row.apply_layout(&taffy, root, Point::ORIGIN);
+    }
+
+    /// A strip of `count` groups, each `permille` of the strip's usable
+    /// width, behind the shell's wheel-disc gutter — the shape the
+    /// compositor actually lays out.
+    fn strip_at(count: usize, viewport_w: f64, leading_inset: f64, permille: u16) -> GroupRow {
+        let groups: Vec<WindowGroup> = (0..count)
+            .map(|i| make_group(100 + i as u64 * 100, &[i as u64 + 1]))
+            .collect();
+        let mut row = GroupRow::new(groups);
+        row.set_leading_inset(leading_inset);
+        set_strip_permille(&mut row, permille);
+        // Twice: the first `build_layout` bakes each group's length
+        // before `apply_layout` has ever set the row's rect, so it
+        // resolves the fractions against `DEFAULT_STRIP_USABLE_PX`
+        // rather than this viewport. The shell pushes real output spans
+        // and never sees that; a bare row needs the second pass.
+        relayout_strip(&mut row, viewport_w);
+        relayout_strip(&mut row, viewport_w);
+        row
+    }
+
+    fn set_strip_permille(row: &mut GroupRow, permille: u16) {
+        for g in row.groups.iter_mut() {
+            g.set_width(WindowWidth::Fraction(permille));
+        }
+    }
+
+    /// Which groups are wholly on screen, by id.
+    fn whole_groups(row: &GroupRow) -> Vec<u64> {
+        let cut = row.groups_cut_by_row_edges();
+        let (vis0, vis1) = row.visible_canvas_span();
+        row.laid_spans
+            .iter()
+            .filter(|(id, x0, x1)| {
+                !cut.contains(id) && *x1 > vis0 + 0.5 && *x0 < vis1 - 0.5
+            })
+            .map(|(id, _, _)| *id)
+            .collect()
+    }
+
+    /// A window group widened while the strip stood still must not be
+    /// left half on screen with its neighbour also half on screen.
+    ///
+    /// This is the arrangement the demo capture came out in: two windows
+    /// on a 1920-wide output, the file manager severed off the left edge
+    /// and the word processor's side panel severed off the right, both
+    /// at once. The strip is only ever re-framed when *focus* moves, so
+    /// widening every group — which moves every edge — kept an offset
+    /// chosen for the widths before it.
+    ///
+    /// The sequence is the compositor's own: a window opens and is
+    /// brought into view (the strip ends up scrolled toward it), then
+    /// the groups are given a new share of the strip.
+    #[test]
+    fn widening_a_strip_never_leaves_it_cut_on_both_edges() {
+        let mut row = strip_at(2, 1920.0, 291.0, 667);
+        // The strip is sitting where bringing the newest window into
+        // view leaves it: hard against its right end.
+        let parked = row.max_scroll_x();
+        row.set_scroll_x_for_test(parked);
+        assert!(parked > 0.0, "two groups at 667 permille overflow 1920");
+
+        set_strip_permille(&mut row, 720);
+        relayout_strip(&mut row, 1920.0);
+
+        assert!(
+            !row.cut_on_both_edges(),
+            "the strip rests cut on both edges after the widening — groups \
+             {:?} at scroll_x {:.0}, which shows half of one window on the \
+             left and half of another on the right",
+            row.laid_spans,
+            row.scroll_x(),
+        );
+        let whole = whole_groups(&row);
+        assert!(
+            !whole.is_empty(),
+            "if the two groups cannot both fit, one of them must still be \
+             framed whole — spans {:?} at scroll_x {:.0}",
+            row.laid_spans,
+            row.scroll_x(),
+        );
+        assert_eq!(
+            row.groups_cut_by_row_edges().len(),
+            1,
+            "exactly one window runs off an end when two of them overflow \
+             the output; spans {:?} at scroll_x {:.0}",
+            row.laid_spans,
+            row.scroll_x(),
+        );
+    }
+
+    /// And when they *do* both fit, neither of them is cut at all.
+    ///
+    /// The scrolling strip is the point of the layout, so a strip wider
+    /// than the output is expected to leave content off an end. A strip
+    /// narrower than the output has no such excuse: there is an offset
+    /// that shows every window whole, and resting anywhere else is the
+    /// pan being stale rather than the model working.
+    #[test]
+    fn a_strip_that_fits_the_output_frames_every_window_whole() {
+        let mut row = strip_at(2, 1920.0, 291.0, 720);
+        row.set_scroll_x_for_test(row.max_scroll_x());
+
+        // Narrowed until the pair fits — every window can now be whole.
+        set_strip_permille(&mut row, 580);
+        relayout_strip(&mut row, 1920.0);
+
+        let span = row
+            .laid_spans
+            .last()
+            .zip(row.laid_spans.first())
+            .map(|((_, _, r), (_, l, _))| r - l)
+            .unwrap_or_default();
+        assert!(
+            span <= 1920.0,
+            "test setup: two groups at 580 permille must fit 1920, got {span:.0}",
+        );
+        assert_eq!(
+            row.groups_cut_by_row_edges(),
+            Vec::<u64>::new(),
+            "nothing may be cut when the whole strip fits on screen — spans \
+             {:?} at scroll_x {:.0}",
+            row.laid_spans,
+            row.scroll_x(),
+        );
+        assert_eq!(
+            whole_groups(&row).len(),
+            2,
+            "both windows are on screen and whole — spans {:?} at scroll_x {:.0}",
+            row.laid_spans,
+            row.scroll_x(),
+        );
+    }
+
+    /// A window bigger than the output is cut on both sides by
+    /// definition, and the framing rule must leave it alone.
+    ///
+    /// Without the guard the rule would chase an impossible target:
+    /// revealing such a window's right edge severs its left, revealing
+    /// its left severs its right, and every offset reads as broken — so
+    /// the strip would move on every geometry change and never arrive.
+    ///
+    /// Driven through the two functions the layout pass calls rather
+    /// than through a laid-out row, because a single row cannot
+    /// currently produce the span: `WindowWidth::resolve` clamps every
+    /// group to `max_group_px`, which is the strip's own usable width.
+    /// A group only outgrows its row across pushed output spans, and the
+    /// guard is what keeps the rule total when it does.
+    #[test]
+    fn a_window_wider_than_the_output_is_left_alone() {
+        let mut row = strip_at(1, 900.0, 0.0, 1000);
+        // Hand-built: 1400px of window across a 900px row, parked
+        // showing its middle, so both of the row's edges cross it.
+        let oversized = [(100u64, 0.0, 1400.0)];
+        row.set_scroll_x_for_test(250.0);
+        assert!(
+            !row.cut_on_both_edges_at(&oversized, row.scroll_x()),
+            "a single oversized window is not a two-sided cut: there is no \
+             offset that frames it, so there is nothing to repair",
+        );
+        assert_eq!(
+            row.strip_frame_target(&oversized),
+            None,
+            "the framing rule leaves an unframeable window where it is",
+        );
+        // Two of them, so the rule cannot fall back on a neighbour either.
+        let both = [(100u64, 0.0, 1400.0), (200u64, 1408.0, 2808.0)];
+        row.set_scroll_x_for_test(700.0);
+        assert_eq!(
+            row.strip_frame_target(&both),
+            None,
+            "nor when every group on the strip is wider than the strip",
+        );
     }
 
     #[test]

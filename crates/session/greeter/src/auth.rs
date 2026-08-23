@@ -31,6 +31,10 @@ pub enum AuthUpdate {
     /// (fingerprint instructions, info, or a warning). `is_error` styles
     /// it as a warning.
     Prompt { text: String, is_error: bool },
+    /// Credentials accepted; greetd is starting the session. Lets the UI
+    /// resolve its in-flight state into a visible success frame instead of
+    /// holding a spinner until the process exits.
+    Accepted,
     /// Authentication failed — return to the form. `message` is the
     /// user-facing one-liner; `detail` is optional raw secondary text.
     Failed {
@@ -46,6 +50,7 @@ impl AuthUpdate {
             AuthUpdate::Prompt { text, is_error } => {
                 format!("P{SEP}{}{SEP}{text}", if *is_error { 1 } else { 0 })
             }
+            AuthUpdate::Accepted => "A".to_string(),
             AuthUpdate::Failed { message, detail } => {
                 format!("F{SEP}{message}{SEP}{}", detail.as_deref().unwrap_or(""))
             }
@@ -58,6 +63,7 @@ impl AuthUpdate {
     pub fn decode(s: &str) -> Option<Self> {
         let mut it = s.splitn(3, SEP);
         match it.next()? {
+            "A" => Some(AuthUpdate::Accepted),
             "P" => {
                 let flag = it.next()?;
                 let text = it.next().unwrap_or("").to_string();
@@ -99,6 +105,7 @@ pub fn spawn_auth(
 ) {
     std::thread::spawn(move || {
         let prompt_proxy = proxy.clone();
+        let accepted_proxy = proxy.clone();
         let result = authenticate_and_start(
             &sock,
             &username,
@@ -112,6 +119,11 @@ pub fn spawn_auth(
                         is_error: prompt.is_error,
                     }
                     .encode(),
+                ));
+            },
+            move || {
+                let _ = accepted_proxy.send_event(UserEvent::External(
+                    AuthUpdate::Accepted.encode(),
                 ));
             },
         );
