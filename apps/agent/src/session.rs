@@ -40,6 +40,13 @@ pub struct Config {
     /// How long that call may take before the keyword vocabulary decides
     /// instead. Short on purpose: the work must not wait on the network.
     pub model_timeout: Duration,
+    /// How long to wait for somebody in the room to answer with the
+    /// document before giving up and saying which address went
+    /// unanswered. `Duration::ZERO` waits forever — right for an agent
+    /// left running against a room whose document nobody has opened yet,
+    /// wrong for a scripted run, where it turns a mismatched route into
+    /// a hang that names no cause.
+    pub await_document: Duration,
 }
 
 pub struct Session {
@@ -153,12 +160,53 @@ impl Session {
 
     /// Run until the broker goes away — or, with `once`, until the first
     /// instruction has been carried out.
+    ///
+    /// If nobody ever answers with a document, give up after
+    /// `await_document` and say which address went unanswered. Waiting
+    /// forever was the previous behaviour and it is the wrong one: the
+    /// commonest cause is a route that does not match, the broker drops
+    /// a mismatched frame silently by design, and the symptom is an
+    /// agent sitting at 0% forever while every log line says it joined
+    /// fine. A harness then reports "the agent did not finish", which
+    /// names the one component that was working.
     pub fn run(&mut self) -> Result<()> {
+        let joined = Instant::now();
         loop {
             if self.step(Duration::from_millis(100))? && self.cfg.once {
                 return Ok(());
             }
+            if self.editor.is_none()
+                && !self.cfg.await_document.is_zero()
+                && joined.elapsed() >= self.cfg.await_document
+            {
+                anyhow::bail!("{}", self.unanswered());
+            }
         }
+    }
+
+    /// Why no document arrived, in terms of the thing that decides it.
+    ///
+    /// The broker's fan-out matches `(app, room, record)` and the record
+    /// is the innermost test — it fails closed both ways, and "no
+    /// record" is a value like any other rather than a wildcard. So an
+    /// agent told nothing about the record does not join an untitled
+    /// conversation *and* a saved one: it joins the untitled one only,
+    /// and a word processor with a file open is announcing
+    /// `file:<path>` and cannot hear it.
+    fn unanswered(&self) -> String {
+        let waited = self.cfg.await_document.as_secs();
+        let addressed = match self.cfg.record.as_deref() {
+            Some(r) => format!("record {r:?}"),
+            None => "no record (an untitled document)".to_string(),
+        };
+        format!(
+            "no participant answered with a document in {waited}s. Announced \
+             app={:?} room={} and {addressed}. The broker matches all three \
+             and drops what does not match, so if the app has a file open \
+             its record is `file:<path>` and this agent must be given the \
+             same one with --record.",
+            self.cfg.app_id, self.cfg.cluster,
+        )
     }
 
     /// Run until `deadline`, then return whether an instruction was
