@@ -33,7 +33,8 @@ use ui::widget::{
 };
 
 use crate::actions::{
-    delete_clip_action, remove_media_action, ripple_delete_action, split_clip_action,
+    delete_clip_action, remove_media_action, ripple_delete_action, set_project_meta_action,
+    split_clip_action,
     upsert_clip_action, upsert_media_action, upsert_track_action, VideoResourceCtx,
     VIDEO_EDITOR_ACTION_TYPE,
 };
@@ -41,7 +42,11 @@ use crate::doc::VideoDoc;
 use crate::export::{
     Container, ExportSettings, ExportStatus, FrameRate, Resolution,
 };
-use crate::model::{Clip, ClipId, EffectKind, Filters, MediaId, MediaItem, MediaKind, Project, TrackId, TrackKind, Transition};
+use crate::model::{
+    Clip, ClipId, EffectKind, Filters, MediaId, MediaItem, MediaKind, Project, TextAlign,
+    TextSource, TrackId, TrackKind, Transition, MAX_SPEED, MIN_SPEED,
+};
+use crate::param::{Interp, Param};
 use crate::portal::{self, ImportChannel, ImportOutcome};
 use crate::preview::{self, CompositedFrame, Rgb};
 use crate::probe;
@@ -110,6 +115,16 @@ const MEDIA_UNREADABLE_SHORT: &str = "Unreadable";
 /// Below this allocated width the media bin stops being a docked pane and
 /// collapses into an overlay flap summoned by the topbar hamburger. Above it
 /// the bin is docked beside the editor (the wide desktop layout).
+/// Height of a collapsible inspector section header.
+const SECTION_H: f64 = 24.0;
+/// The inset a picture-in-picture preset places a clip at: a third of the
+/// frame, a small margin off the corner. Big enough to see, small enough to
+/// leave the frame underneath readable.
+const PIP_SCALE: f64 = 0.32;
+const PIP_INSET: f64 = 0.04;
+/// Width of the key control at the head of an animatable inspector row.
+const KEY_BOX: f64 = 20.0;
+
 const BIN_BREAKPOINT: f64 = 900.0;
 
 /// Below this window width the inspector collapses to an overlay flap from
@@ -169,6 +184,171 @@ enum TransportAction {
     ToEnd,
 }
 
+/// A collapsible block of inspector controls.
+///
+/// Sections exist because the inspector grew past what a 300px column shows
+/// at once. Which are folded is **presentation** — it is a property of this
+/// reader's panel, not of the clip — so it lives in a widget field and never
+/// in the CRDT, and it persists across selections: a user who folds Transform
+/// away is telling the panel what they are working on, not this clip.
+///
+/// A folded header still states what is inside it (see `section_summary`), so
+/// folding hides controls but never hides state.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Section {
+    Transform,
+    Speed,
+    Title,
+    Effects,
+    Markers,
+}
+
+impl Section {
+    fn label(self) -> &'static str {
+        match self {
+            Section::Transform => "TRANSFORM",
+            Section::Speed => "SPEED",
+            Section::Title => "TITLE",
+            Section::Effects => "EFFECTS",
+            Section::Markers => "MARKERS",
+        }
+    }
+}
+
+/// A numeric inspector control that is not one of the original `0..1`
+/// sliders: it has its own range, its own readout, and in two cases it edits
+/// the *media item* rather than the clip.
+///
+/// One enum rather than a `Drag` variant each keeps the press / drag / commit
+/// arms from growing a near-identical copy per knob.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum NumField {
+    ScaleX,
+    ScaleY,
+    PosX,
+    PosY,
+    Rotation,
+    CropLeft,
+    CropRight,
+    CropTop,
+    CropBottom,
+    Speed,
+    TitleSize,
+    TitleBackdrop,
+}
+
+impl NumField {
+    fn label(self) -> &'static str {
+        match self {
+            NumField::ScaleX => "Scale X",
+            NumField::ScaleY => "Scale Y",
+            NumField::PosX => "Position X",
+            NumField::PosY => "Position Y",
+            NumField::Rotation => "Rotation",
+            NumField::CropLeft => "Left",
+            NumField::CropRight => "Right",
+            NumField::CropTop => "Top",
+            NumField::CropBottom => "Bottom",
+            NumField::Speed => "Rate",
+            NumField::TitleSize => "Size",
+            NumField::TitleBackdrop => "Backdrop",
+        }
+    }
+
+    /// The animatable parameter this control drives, if any. Crop and anchor
+    /// are deliberately not animatable in the model — they frame the shot
+    /// rather than move it — and neither title knob is a clip parameter at
+    /// all, so those have no key control.
+    fn param(self) -> Option<Param> {
+        Some(match self {
+            NumField::ScaleX => Param::ScaleX,
+            NumField::ScaleY => Param::ScaleY,
+            NumField::PosX => Param::PosX,
+            NumField::PosY => Param::PosY,
+            NumField::Rotation => Param::Rotation,
+            _ => return None,
+        })
+    }
+
+    /// Whether this knob writes the selected clip's **media item** instead of
+    /// the clip — the two title properties do, and they commit a different
+    /// action because of it.
+    fn is_media(self) -> bool {
+        matches!(self, NumField::TitleSize | NumField::TitleBackdrop)
+    }
+
+    /// The slider's linear span. Cropping stops short of the far edge so a
+    /// clip can never be dragged out of existence, and scale stops short of
+    /// zero for the same reason.
+    fn range(self) -> (f64, f64) {
+        match self {
+            NumField::ScaleX | NumField::ScaleY => (0.05, 4.0),
+            NumField::PosX | NumField::PosY => (-1.0, 1.0),
+            NumField::Rotation => (-180.0, 180.0),
+            NumField::CropLeft | NumField::CropRight | NumField::CropTop | NumField::CropBottom => {
+                (0.0, 0.9)
+            }
+            NumField::Speed => (MIN_SPEED, MAX_SPEED),
+            NumField::TitleSize => (0.02, 0.4),
+            NumField::TitleBackdrop => (0.0, 1.0),
+        }
+    }
+
+    /// Rate is the one knob whose span is multiplicative: 0.05x to 20x is
+    /// eight octaves, and on a linear track normal speed would sit at 5% of
+    /// the way along with every useful slow-motion rate crushed against the
+    /// left stop. On a log track 1x lands dead centre and half speed and
+    /// double speed are the same distance from it, which is how a rate reads.
+    fn logarithmic(self) -> bool {
+        matches!(self, NumField::Speed)
+    }
+
+    fn to_frac(self, v: f64) -> f64 {
+        let (lo, hi) = self.range();
+        if self.logarithmic() {
+            let v = v.clamp(lo, hi).max(1e-6);
+            return ((v.ln() - lo.ln()) / (hi.ln() - lo.ln())).clamp(0.0, 1.0);
+        }
+        ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
+    }
+
+    fn from_frac(self, f: f64) -> f64 {
+        let (lo, hi) = self.range();
+        let f = f.clamp(0.0, 1.0);
+        if self.logarithmic() {
+            return (lo.ln() + (hi.ln() - lo.ln()) * f).exp();
+        }
+        lo + (hi - lo) * f
+    }
+
+    fn readout(self, v: f64) -> String {
+        match self {
+            NumField::ScaleX | NumField::ScaleY => format!("{v:.2}×"),
+            NumField::PosX | NumField::PosY => format!("{v:+.2}"),
+            NumField::Rotation => format!("{v:.0}°"),
+            NumField::CropLeft
+            | NumField::CropRight
+            | NumField::CropTop
+            | NumField::CropBottom => format!("{:.0}%", v * 100.0),
+            NumField::Speed => format!("{v:.2}×"),
+            NumField::TitleSize => format!("{:.0}%", v * 100.0),
+            NumField::TitleBackdrop => format!("{:.0}%", v * 100.0),
+        }
+    }
+}
+
+/// Which marker an inspector row addresses. A clip marker and a project
+/// marker are edited through different actions (a whole-clip write versus a
+/// project-meta write), so the row has to carry which it is.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct MarkerRef {
+    id: Uuid,
+    /// `Some` for a marker pinned to a clip, `None` for a timeline one.
+    clip: Option<ClipId>,
+    /// Absolute timeline seconds, already rebased for a clip marker.
+    at: f64,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Drag {
     Playhead,
@@ -199,6 +379,10 @@ enum Drag {
     TransitionLen,
     /// Dragging the intensity slider of the effect at `idx` on the selected clip.
     EffectAmount { idx: usize },
+    /// Dragging one of the ranged controls — geometry, rate, title size. See
+    /// [`NumField`], which carries the range, the readout and where the value
+    /// is written.
+    Num(NumField),
 }
 
 /// The timeline's clip selection: an ordered set with a *primary* (anchor)
@@ -355,6 +539,15 @@ pub enum ShotScenario {
     /// A composed frame: a clip inset into a corner, a title in the lower
     /// third, named markers on the ruler.
     Composed,
+    /// The inspector scrolled to the geometry and rate sections, on a clip
+    /// that is inset, re-timed and keyframed.
+    Geometry,
+    /// A title clip selected, with its words, size, alignment and colour
+    /// showing, and the marker list under them.
+    TitleClip,
+    /// A keyframed clip with the playhead sitting on a key: the key control
+    /// filled, the curve's diamonds on the clip body.
+    Keyframes,
 }
 
 impl ShotScenario {
@@ -373,6 +566,9 @@ impl ShotScenario {
                 | ShotScenario::Scrolled
                 | ShotScenario::ClipMenu
                 | ShotScenario::Marquee
+                | ShotScenario::Geometry
+                | ShotScenario::TitleClip
+                | ShotScenario::Keyframes
         )
     }
 
@@ -393,6 +589,9 @@ impl ShotScenario {
             "clipmenu" => ShotScenario::ClipMenu,
             "marquee" => ShotScenario::Marquee,
             "composed" => ShotScenario::Composed,
+            "geometry" => ShotScenario::Geometry,
+            "title" => ShotScenario::TitleClip,
+            "keyframes" => ShotScenario::Keyframes,
             _ => return None,
         })
     }
@@ -547,6 +746,17 @@ pub struct VideoEditorApp {
     /// What the open context menu (or a pending menu action) targets — a bin
     /// media item or a timeline track header.
     menu_target: Option<MenuTarget>,
+    /// Inspector sections the reader has folded away. Presentation, never in
+    /// the document — see [`Section`]. Empty means everything is open.
+    collapsed: HashSet<Section>,
+    /// In-flight inline edit of the selected title's words, through the same
+    /// shared `EditableLabel` the bin rename uses.
+    title_edit: Option<(MediaId, EditableLabel)>,
+    /// In-flight inline rename of a marker in the inspector's list.
+    marker_rename: Option<(MarkerRef, EditableLabel)>,
+    /// Open keyframe menu: which parameter it belongs to, so choosing an item
+    /// knows what to key. The menu itself is the shared `ContextMenu`.
+    key_menu_param: Option<Param>,
     /// In-flight inline rename of a bin item: the shared `EditableLabel` gives
     /// the edit real caret / selection / clipboard / a11y for free.
     bin_rename: Option<(MediaId, EditableLabel)>,
@@ -618,6 +828,8 @@ enum MenuTarget {
     Clip(ClipId),
     /// The inspector's "Add effect" picker for the selected clip.
     AddEffect,
+    /// A key control's menu: what to do with `param`'s curve at the playhead.
+    Keyframe(Param),
 }
 
 impl Default for VideoEditorApp {
@@ -691,6 +903,10 @@ impl VideoEditorApp {
             flap_tick: Instant::now(),
             bin_menu: ContextMenu::new(),
             menu_target: None,
+            collapsed: HashSet::new(),
+            title_edit: None,
+            marker_rename: None,
+            key_menu_param: None,
             bin_rename: None,
             bin_drag: None,
             file_hovering: false,
@@ -1157,6 +1373,13 @@ impl VideoEditorApp {
     /// Row pitch of the media bin list, and where the first row starts.
     const BIN_ROW_H: f64 = 56.0;
     const BIN_LIST_TOP: f64 = 40.0;
+
+    /// The bin header's "+ Title" button, which makes a title source, places
+    /// it at the playhead and opens its words for typing.
+    fn add_title_rect(&self, r: &Regions) -> Rect {
+        let x1 = r.bin.x0 + 152.0;
+        Rect::new(x1 - 62.0, r.bin.y0 + 6.0, x1, r.bin.y0 + 26.0)
+    }
 
     fn bin_item_rects(&self, r: &Regions) -> Vec<(MediaId, Rect)> {
         let mut out = Vec::new();
@@ -1733,6 +1956,428 @@ impl VideoEditorApp {
         }
     }
 
+    /// The media item behind the selected clip, if any.
+    fn selected_media_item(&self) -> Option<&MediaItem> {
+        let id = self.selected()?;
+        let clip = self.project.clip(id)?;
+        self.project.media(clip.media)
+    }
+
+    /// Apply `edit` to the media item behind the selected clip, in memory
+    /// only — the live preview half of a title-property drag. The two title
+    /// knobs edit the *source*, not the clip, so they cannot go through
+    /// [`Self::preview_edit`] and commit a different action on release.
+    fn preview_media_edit(&mut self, edit: impl FnOnce(&mut MediaItem)) {
+        let Some(id) = self.selected() else { return };
+        if !self.project.clip_editable(id) {
+            return;
+        }
+        let Some(mid) = self.project.clip(id).map(|c| c.media) else { return };
+        if let Some(m) = self.project.media.iter_mut().find(|m| m.id == mid) {
+            edit(m);
+        }
+    }
+
+    /// Dispatch a whole-media write for the selected clip's source.
+    fn dispatch_selected_media(&mut self, doc: &mut AutoCommit) {
+        if let Some(m) = self.selected_media_item().cloned() {
+            self.actions
+                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&m));
+        }
+    }
+
+    /// Apply `edit` to the selected clip's title styling and dispatch it as
+    /// one media write. A no-op on a clip whose source is not a title.
+    fn edit_title(&mut self, doc: &mut AutoCommit, edit: impl FnOnce(&mut TextSource)) {
+        let has_text = self.selected_media_item().map(|m| m.text.is_some()).unwrap_or(false);
+        if !has_text {
+            return;
+        }
+        self.preview_media_edit(|m| {
+            let mut t = m.text.clone().unwrap_or_default();
+            edit(&mut t);
+            // The bin row names a title by its first line, so keep the two in
+            // step rather than leaving a renamed title labelled by old words.
+            m.name = t.content.lines().next().unwrap_or("Title").trim().to_string();
+            if m.name.is_empty() {
+                m.name = "Title".into();
+            }
+            m.text = Some(t);
+        });
+        self.dispatch_selected_media(doc);
+    }
+
+    /// What a ranged control currently shows. `None` when the control has
+    /// nothing behind it — a title knob with no title selected.
+    ///
+    /// Animatable channels read through [`Clip::param_at`], the same door the
+    /// compositor uses, so a keyframed slider tracks the playhead instead of
+    /// showing a constant the picture is ignoring.
+    fn num_value(&self, f: NumField) -> Option<f64> {
+        let clip = self.selected().and_then(|id| self.project.clip(id))?;
+        if let Some(p) = f.param() {
+            return Some(clip.param_at(p, self.playhead));
+        }
+        Some(match f {
+            NumField::CropLeft => clip.transform.crop_left,
+            NumField::CropRight => clip.transform.crop_right,
+            NumField::CropTop => clip.transform.crop_top,
+            NumField::CropBottom => clip.transform.crop_bottom,
+            NumField::Speed => clip.speed.rate(),
+            NumField::TitleSize => self.selected_media_item()?.text.as_ref()?.size,
+            NumField::TitleBackdrop => self.selected_media_item()?.text.as_ref()?.backdrop,
+            _ => return None,
+        })
+    }
+
+    /// Write a ranged control's value in memory (the live drag preview).
+    ///
+    /// An animated parameter is **keyed** at the playhead rather than having
+    /// its dead constant written: once a parameter has a curve the constant
+    /// is never read again, so writing it would look like the slider had
+    /// stopped working. This is also what makes a second keyframe cost one
+    /// drag — key it, move the playhead, drag.
+    fn set_num(&mut self, f: NumField, v: f64) {
+        let at = self.playhead;
+        if let Some(p) = f.param() {
+            self.preview_edit(move |c| c.set_param_at(p, at, v));
+            return;
+        }
+        match f {
+            NumField::CropLeft => self.preview_edit(move |c| c.transform.crop_left = v),
+            NumField::CropRight => self.preview_edit(move |c| c.transform.crop_right = v),
+            NumField::CropTop => self.preview_edit(move |c| c.transform.crop_top = v),
+            NumField::CropBottom => self.preview_edit(move |c| c.transform.crop_bottom = v),
+            NumField::Speed => {
+                self.preview_edit(move |c| {
+                    let rev = c.speed.reverse;
+                    c.set_speed(v, rev);
+                });
+            }
+            NumField::TitleSize => self.preview_media_edit(move |m| {
+                if let Some(t) = m.text.as_mut() {
+                    t.size = v;
+                }
+            }),
+            NumField::TitleBackdrop => self.preview_media_edit(move |m| {
+                if let Some(t) = m.text.as_mut() {
+                    t.backdrop = v;
+                }
+            }),
+            _ => {}
+        }
+    }
+
+    /// The three-state reading a key control shows for `param` on the
+    /// selection right now.
+    fn key_state(&self, param: Param) -> KeyState {
+        let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
+            return KeyState::Off;
+        };
+        if !clip.anim.is_animated(param) {
+            KeyState::Off
+        } else if clip.has_key_at(param, self.playhead) {
+            KeyState::OnKey
+        } else {
+            KeyState::Between
+        }
+    }
+
+    /// Plant a key for `param` at the playhead, holding whatever the
+    /// parameter reads there. The first key never moves the picture — it is
+    /// the *second* one that makes anything animate — so keying is safe to
+    /// try, which is what makes the control learnable.
+    fn key_here(&mut self, doc: &mut AutoCommit, param: Param) {
+        let at = self.playhead;
+        self.edit_selected(doc, move |c| {
+            let now = c.param_at(param, at);
+            let interp = c.key_interp_at(param, at).unwrap_or_default();
+            c.set_key_at(param, at, now, interp);
+        });
+    }
+
+    /// Open the keyframe menu for `param`. What it offers depends on whether
+    /// a key sits on the playhead: with one there the menu shapes or removes
+    /// it, without one it plants one. Both ways it can step to the
+    /// neighbouring keys and clear the whole curve.
+    fn open_key_menu(&mut self, param: Param, at: Point) {
+        let clip = self.selected().and_then(|id| self.project.clip(id)).cloned();
+        let Some(clip) = clip else { return };
+        let on_key = clip.has_key_at(param, self.playhead);
+        let interp = clip.key_interp_at(param, self.playhead).unwrap_or_default();
+        let mut menu = ContextMenu::new();
+        if on_key {
+            menu.push(MenuItem::action("Remove key here", || {}));
+            menu.push(MenuItem::separator());
+            for i in Interp::ALL {
+                // The shape in force is ticked, so the menu reports the key's
+                // state as well as offering to change it.
+                let mark = if i == interp { "✓ " } else { "    " };
+                menu.push(MenuItem::action(format!("{mark}{}", i.label()), || {}));
+            }
+        } else {
+            menu.push(MenuItem::action("Add key here", || {}));
+        }
+        menu.push(MenuItem::separator());
+        menu.push(MenuItem::action("Previous key", || {}));
+        menu.push(MenuItem::action("Next key", || {}));
+        menu.push(MenuItem::separator());
+        menu.push(MenuItem::action("Remove all keys", || {}));
+        menu.open_at([at.x as f32, at.y as f32]);
+        self.bin_menu = menu;
+        self.key_menu_param = Some(param);
+        self.menu_target = Some(MenuTarget::Keyframe(param));
+    }
+
+    /// Act on a keyframe-menu choice. The index scheme mirrors what
+    /// [`Self::open_key_menu`] built for this playhead position.
+    /// Indices count separators, because that is what `ContextMenu::item_at`
+    /// reports. The two shapes the menu takes are laid out here beside the
+    /// builder that produces them so they cannot drift apart.
+    fn key_menu_choose(&mut self, doc: &mut AutoCommit, param: Param, idx: usize) {
+        self.key_menu_param = None;
+        let at = self.playhead;
+        let on_key = self
+            .selected()
+            .and_then(|id| self.project.clip(id))
+            .map(|c| c.has_key_at(param, at))
+            .unwrap_or(false);
+        if on_key {
+            // 0 remove · 1 sep · 2..4 shapes · 5 sep · 6 prev · 7 next · 8 sep · 9 clear
+            match idx {
+                0 => self.edit_selected(doc, move |c| {
+                    c.remove_key_at(param, at);
+                }),
+                2..=4 => {
+                    let shape = Interp::ALL[idx - 2];
+                    self.edit_selected(doc, move |c| {
+                        c.set_interp_at(param, at, shape);
+                    })
+                }
+                6 => self.jump_to_key(false),
+                7 => self.jump_to_key(true),
+                9 => self.edit_selected(doc, move |c| c.anim.clear(param)),
+                _ => {}
+            }
+        } else {
+            // 0 add · 1 sep · 2 prev · 3 next · 4 sep · 5 clear
+            match idx {
+                0 => self.key_here(doc, param),
+                2 => self.jump_to_key(false),
+                3 => self.jump_to_key(true),
+                5 => self.edit_selected(doc, move |c| c.anim.clear(param)),
+                _ => {}
+            }
+        }
+    }
+
+    /// Move the playhead to the selected clip's next / previous keyframe.
+    /// Presentation, so no action: the playhead is this reader's, not the
+    /// document's.
+    fn jump_to_key(&mut self, forward: bool) {
+        let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else { return };
+        let to = if forward {
+            clip.next_key_after(self.playhead)
+        } else {
+            clip.prev_key_before(self.playhead)
+        };
+        if let Some(t) = to {
+            self.playhead = t.clamp(0.0, self.project.duration());
+            self.playing = false;
+            self.shuttle = 0.0;
+            self.chase_playhead = true;
+        }
+    }
+
+    /// Move the playhead to the next / previous marked instant, across the
+    /// project's markers and every clip's alike.
+    fn jump_to_marker(&mut self, forward: bool) {
+        let to = if forward {
+            self.project.next_marker_at(self.playhead)
+        } else {
+            self.project.prev_marker_at(self.playhead)
+        };
+        if let Some(t) = to {
+            self.playhead = t.clamp(0.0, self.project.duration());
+            self.playing = false;
+            self.shuttle = 0.0;
+            self.chase_playhead = true;
+        }
+    }
+
+    /// Add a timeline marker at the playhead and open it for naming, so the
+    /// marker is never left as an anonymous tick the user has to hunt for.
+    fn add_marker_here(&mut self, doc: &mut AutoCommit) {
+        let mut next = self.project.clone();
+        let palette = (next.markers.len() as u8 % 6) + 1;
+        let id = next.add_marker(self.playhead, "Marker", palette);
+        self.project = next.clone();
+        self.actions
+            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &set_project_meta_action(&next));
+        self.collapsed.remove(&Section::Markers);
+        self.begin_marker_rename(MarkerRef { id, clip: None, at: self.playhead });
+    }
+
+    fn begin_marker_rename(&mut self, m: MarkerRef) {
+        let name = self
+            .project
+            .all_markers()
+            .into_iter()
+            .find(|(_, mk, _)| mk.id == m.id)
+            .map(|(_, mk, _)| mk.name.clone())
+            .unwrap_or_default();
+        let mut label = EditableLabel::new(&name).with_font_size(12.0).with_id("marker_rename");
+        label.begin_edit();
+        self.marker_rename = Some((m, label));
+    }
+
+    /// Commit a marker rename through whichever action owns that marker: a
+    /// project-meta write for a timeline marker, a whole-clip write for one
+    /// pinned to a clip.
+    fn commit_marker_rename(&mut self, doc: &mut AutoCommit, m: MarkerRef, name: &str) {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        match m.clip {
+            None => {
+                let mut next = self.project.clone();
+                let Some(mk) = next.marker_mut(m.id) else { return };
+                if mk.name == name {
+                    return;
+                }
+                mk.name = name;
+                self.project = next.clone();
+                self.actions
+                    .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &set_project_meta_action(&next));
+            }
+            Some(cid) => {
+                if let Some(c) = self.project.clip_mut(cid) {
+                    let Some(mk) = c.markers.iter_mut().find(|mk| mk.id == m.id) else { return };
+                    if mk.name == name {
+                        return;
+                    }
+                    mk.name = name;
+                }
+                self.dispatch_clip(doc, cid);
+            }
+        }
+    }
+
+    fn delete_marker(&mut self, doc: &mut AutoCommit, m: MarkerRef) {
+        match m.clip {
+            None => {
+                let mut next = self.project.clone();
+                if !next.remove_marker(m.id) {
+                    return;
+                }
+                self.project = next.clone();
+                self.actions
+                    .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &set_project_meta_action(&next));
+            }
+            Some(cid) => {
+                let gone = self
+                    .project
+                    .clip_mut(cid)
+                    .map(|c| c.remove_marker(m.id))
+                    .unwrap_or(false);
+                if gone {
+                    self.dispatch_clip(doc, cid);
+                }
+            }
+        }
+        if self.marker_rename.as_ref().map(|(r, _)| r.id) == Some(m.id) {
+            self.marker_rename = None;
+        }
+    }
+
+    /// Create a title, place it at the playhead, select it and open its words
+    /// for typing.
+    ///
+    /// A title is the one source with no bytes: nothing to import, nothing to
+    /// hydrate, and it renders on every peer immediately — so "add a title"
+    /// can go all the way to an editable clip on the timeline in one step
+    /// rather than leaving an unnamed item in the bin to be dragged out.
+    fn add_title(&mut self, doc: &mut AutoCommit) {
+        let palette = (self.project.media.len() as u8) % 7;
+        let item = MediaItem {
+            id: Uuid::new_v4(),
+            name: "Title".into(),
+            kind: MediaKind::Text,
+            duration: 5.0,
+            width: self.project.width,
+            height: self.project.height,
+            fps: self.project.fps,
+            palette,
+            path: String::new(),
+            hydration: crate::media::Hydration::Local,
+            text: Some(TextSource::default()),
+            ..Default::default()
+        };
+        let mid = item.id;
+        self.project.media.push(item.clone());
+        self.actions
+            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&item));
+        self.selected_media = Some(mid);
+        if let Some(cid) = self.place_title_clip(doc, mid) {
+            self.selection.select_only(cid);
+            self.reveal_inspector();
+        }
+        self.collapsed.remove(&Section::Title);
+        self.begin_title_edit(mid);
+    }
+
+    /// Place a fresh title clip at the playhead on the topmost video track
+    /// that will take it, so a title lands *over* the picture rather than
+    /// under it.
+    fn place_title_clip(&mut self, doc: &mut AutoCommit, mid: MediaId) -> Option<ClipId> {
+        let track = self
+            .project
+            .display_tracks()
+            .into_iter()
+            .find(|t| t.kind == TrackKind::Video && !t.locked)
+            .map(|t| t.id)
+            .unwrap_or_else(|| self.add_track(doc, TrackKind::Video));
+        let at = snap_to_frame(self.playhead, self.project.fps);
+        let cid = self.project.add_clip(track, mid, at)?;
+        self.dispatch_clip(doc, cid);
+        Some(cid)
+    }
+
+    /// Commit new words for a title: one media write, so the picture, the bin
+    /// row and every clip that placed this title all follow from it.
+    fn commit_title_text(&mut self, doc: &mut AutoCommit, mid: MediaId, words: &str) {
+        let Some(m) = self.project.media(mid) else { return };
+        let mut next = m.clone();
+        let mut t = next.text.clone().unwrap_or_default();
+        if t.content == words {
+            return;
+        }
+        t.content = words.to_string();
+        next.name = words.lines().next().unwrap_or("Title").trim().to_string();
+        if next.name.is_empty() {
+            next.name = "Title".into();
+        }
+        next.text = Some(t);
+        if let Some(slot) = self.project.media.iter_mut().find(|m| m.id == mid) {
+            *slot = next.clone();
+        }
+        self.actions
+            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&next));
+    }
+
+    fn begin_title_edit(&mut self, mid: MediaId) {
+        let content = self
+            .project
+            .media(mid)
+            .and_then(|m| m.text.as_ref())
+            .map(|t| t.content.clone())
+            .unwrap_or_default();
+        let mut label = EditableLabel::new(&content).with_font_size(13.0).with_id("title_text");
+        label.begin_edit();
+        self.title_edit = Some((mid, label));
+    }
+
     /// Longest transition the selected clip can carry: its own length, since
     /// a ramp cannot outlast the footage it ramps into.
     fn transition_len_max(&self) -> f64 {
@@ -2103,6 +2748,7 @@ impl VideoEditorApp {
                     self.add_effect_to_selected(doc, kind);
                 }
             }
+            Some(MenuTarget::Keyframe(param)) => self.key_menu_choose(doc, param, idx),
             None => {}
         }
     }
@@ -2522,11 +3168,9 @@ impl VideoEditorApp {
         let mut l = InspectorLayout::default();
         let Some(id) = self.selected() else { return l };
         let Some(clip) = self.project.clip(id) else { return l };
-        let is_video = self
-            .project
-            .media(clip.media)
-            .map(|m| m.kind.is_visual())
-            .unwrap_or(true);
+        let media = self.project.media(clip.media);
+        let is_video = media.map(|m| m.kind.is_visual()).unwrap_or(true);
+        let is_title = media.map(|m| m.text.is_some()).unwrap_or(false);
         let x0 = r.inspector.x0 + PAD;
         let x1 = r.inspector.x1 - PAD;
         // Static header + four property rows consume a fixed block; the
@@ -2534,17 +3178,24 @@ impl VideoEditorApp {
         // `inspector_scroll` (the pane clips + is wheel-scrollable) so the
         // effects stack can grow without clipping the actions.
         let top = r.inspector.y0 - self.inspector_scroll;
-        let mut y = top + 146.0;
+        // The four property rows end on a baseline at `top + 132`; a 12px
+        // line reaches ~15px past it, so the first control label cannot start
+        // before `top + 147` without sitting on top of "Source Out".
+        let mut y = top + 162.0;
         let row = 34.0; // label sits at y, the 9px track at y+19
         let track_at = |y: f64| Rect::new(x0, y + 19.0, x1, y + 28.0);
+        // An animatable row indents its label past a key control at the head.
+        // The indent is unconditional so the row does not shuffle sideways the
+        // moment a parameter is keyed.
+        let key_at = |y: f64| Rect::new(x0, y - 3.0, x0 + KEY_BOX, y + 15.0);
 
         if is_video {
-            l.opacity = Some(track_at(y)); y += row;
-            l.brightness = Some(track_at(y)); y += row;
-            l.contrast = Some(track_at(y)); y += row;
-            l.saturation = Some(track_at(y)); y += row;
+            l.opacity = Some(track_at(y)); l.keys.push((Param::Opacity, key_at(y))); y += row;
+            l.brightness = Some(track_at(y)); l.keys.push((Param::Brightness, key_at(y))); y += row;
+            l.contrast = Some(track_at(y)); l.keys.push((Param::Contrast, key_at(y))); y += row;
+            l.saturation = Some(track_at(y)); l.keys.push((Param::Saturation, key_at(y))); y += row;
         } else {
-            l.volume = Some(track_at(y)); y += row;
+            l.volume = Some(track_at(y)); l.keys.push((Param::Volume, key_at(y))); y += row;
         }
         // Fade in / out share a row (two half-width tracks).
         let half = (x1 - x0) / 2.0 - 6.0;
@@ -2574,19 +3225,137 @@ impl VideoEditorApp {
             l.colors.push((i, Rect::new(sx0, y + 15.0, sx0 + sw, y + 15.0 + sw)));
         }
         y += 44.0;
-        // Effects stack (video only): a label, one row per effect, then an
-        // "Add effect" button.
-        if is_video {
-            l.effects_label_y = y + 6.0;
-            y += 26.0;
-            for _ in 0..clip.effects.len() {
-                l.effect_rows.push(Rect::new(x0, y, x1, y + 24.0));
-                y += 28.0;
+
+        // ---- collapsible sections ------------------------------------
+        // Each opens with a header row that folds it; a folded section
+        // contributes only its header (and still states what is inside it).
+        let mut header = |l: &mut InspectorLayout, y: &mut f64, s: Section| -> bool {
+            l.sections.push((s, Rect::new(x0, *y, x1, *y + SECTION_H)));
+            *y += SECTION_H + 4.0;
+            !self.collapsed.contains(&s)
+        };
+        // Geometry, video only — an audio clip has no picture to place.
+        if is_video && header(&mut l, &mut y, Section::Transform) {
+            for f in [
+                NumField::ScaleX,
+                NumField::ScaleY,
+                NumField::PosX,
+                NumField::PosY,
+                NumField::Rotation,
+            ] {
+                l.nums.push((f, track_at(y)));
+                if let Some(p) = f.param() {
+                    l.keys.push((p, key_at(y)));
+                }
+                y += row;
             }
-            l.add_effect = Rect::new(x0, y, x0 + 132.0, y + 24.0);
+            // Crop: two half-width pairs under their own caption. No key
+            // control — crop frames the shot rather than moving it, and the
+            // model does not animate it.
+            y += 12.0;
+            l.crop_label_y = y;
+            y += 20.0;
+            let half = (x1 - x0) / 2.0 - 6.0;
+            for pair in [
+                [NumField::CropLeft, NumField::CropRight],
+                [NumField::CropTop, NumField::CropBottom],
+            ] {
+                l.nums.push((pair[0], Rect::new(x0, y + 19.0, x0 + half, y + 28.0)));
+                l.nums.push((pair[1], Rect::new(x1 - half, y + 19.0, x1, y + 28.0)));
+                y += row;
+            }
+            // Picture-in-picture, as the four corners it is actually used for.
+            y += 16.0;
+            let bw = (x1 - x0 - 18.0) / 4.0;
+            for (i, (label, corner)) in [
+                ("↖", (-1.0, -1.0)),
+                ("↗", (1.0, -1.0)),
+                ("↙", (-1.0, 1.0)),
+                ("↘", (1.0, 1.0)),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let bx = x0 + i as f64 * (bw + 6.0);
+                l.pip.push((label, corner, Rect::new(bx, y, bx + bw, y + 26.0)));
+            }
+            y += 32.0;
+            l.reset_transform = Some(Rect::new(x0, y, x1, y + 26.0));
+            y += 34.0;
+        }
+        // Rate and direction.
+        if header(&mut l, &mut y, Section::Speed) {
+            l.nums.push((NumField::Speed, track_at(y)));
+            y += row;
+            let pw = (x1 - x0) / SPEED_PRESETS.len() as f64;
+            for (i, rate) in SPEED_PRESETS.iter().enumerate() {
+                let px0 = x0 + i as f64 * pw;
+                l.speed_presets.push((*rate, Rect::new(px0, y, px0 + pw - 3.0, y + 24.0)));
+            }
+            y += 32.0;
+            l.reverse = Some(Rect::new(x0, y, x1, y + 26.0));
+            y += 34.0;
+        }
+        // A title's words and setting — only for a clip whose source is one.
+        if is_title && header(&mut l, &mut y, Section::Title) {
+            // Captioned controls need the caption's line above them; without
+            // it the caption lands on the section header it sits under.
+            y += 16.0;
+            l.title_text = Some(Rect::new(x0, y, x1, y + 30.0));
+            y += 40.0;
+            l.nums.push((NumField::TitleSize, track_at(y)));
+            y += row;
+            let aw = (x1 - x0) / TextAlign::ALL.len() as f64;
+            for (i, a) in TextAlign::ALL.iter().enumerate() {
+                let ax = x0 + i as f64 * aw;
+                l.title_align.push((*a, Rect::new(ax, y, ax + aw - 3.0, y + 24.0)));
+            }
+            y += 32.0 + 16.0;
+            let sw = 24.0;
+            for (i, col) in TITLE_COLORS.iter().enumerate() {
+                let sx = x0 + i as f64 * (sw + 4.0);
+                if sx + sw > x1 {
+                    break;
+                }
+                l.title_colors.push((*col, Rect::new(sx, y, sx + sw, y + sw)));
+            }
+            y += sw + 12.0;
+            let hw = (x1 - x0) / 2.0 - 4.0;
+            l.title_bold = Some(Rect::new(x0, y, x0 + hw, y + 26.0));
+            l.title_italic = Some(Rect::new(x1 - hw, y, x1, y + 26.0));
+            y += 34.0;
+            l.nums.push((NumField::TitleBackdrop, track_at(y)));
+            y += row + 4.0;
+        }
+        // Effects stack (video only): one row per effect, then an "Add
+        // effect" button.
+        if is_video {
+            let open = header(&mut l, &mut y, Section::Effects);
+            l.effects_label_y = y;
+            if open {
+                for _ in 0..clip.effects.len() {
+                    l.effect_rows.push(Rect::new(x0, y, x1, y + 24.0));
+                    y += 28.0;
+                }
+                l.add_effect = Rect::new(x0, y, x0 + 132.0, y + 24.0);
+                y += 34.0;
+            }
+        }
+        // Markers: every marked instant on the timeline, the project's own and
+        // each clip's, so one list is the whole answer to "what is marked".
+        if header(&mut l, &mut y, Section::Markers) {
+            for (at, m, on_clip) in self.project.all_markers() {
+                l.marker_rows.push((
+                    MarkerRef { id: m.id, clip: on_clip, at },
+                    Rect::new(x0, y, x1, y + 26.0),
+                ));
+                y += 30.0;
+            }
+            l.add_marker = Some(Rect::new(x0, y, x1, y + 26.0));
             y += 34.0;
         }
         // Actions.
+        y += 6.0;
         l.split = Rect::new(x0, y, (x0 + x1) / 2.0 - 4.0, y + 28.0);
         l.delete = Rect::new((x0 + x1) / 2.0 + 4.0, y, x1, y + 28.0);
         y += 34.0;
@@ -2794,6 +3563,102 @@ impl VideoEditorApp {
                 // Scroll the inspector so the effects stack + actions are in view.
                 self.inspector_scroll = self.inspector_max_scroll(r);
             }
+            // A clip that has actually been placed, re-timed and keyframed,
+            // with the inspector scrolled to the controls that did it. Every
+            // value goes through the production model, so the capture is what
+            // the compositor is drawing rather than a posed panel.
+            ShotScenario::Geometry => {
+                if let Some(c) = self.project.top_video_clip_at(6.0) {
+                    let cid = c.id;
+                    self.selection.select_only(cid);
+                    if let Some(c) = self.project.clip_mut(cid) {
+                        c.transform = crate::model::Transform::pip(PIP_SCALE, (1.0, -1.0), PIP_INSET);
+                        c.transform.rotation = -6.0;
+                        c.transform.crop_left = 0.08;
+                        c.transform.crop_right = 0.08;
+                        c.set_speed(2.0, false);
+                        // Two keys, so the row reads as animated and the clip
+                        // carries diamonds.
+                        let start = c.start;
+                        c.set_key_at(Param::PosX, start + 0.5, 0.30, Interp::Ease);
+                        c.set_key_at(Param::PosX, start + 3.0, -0.30, Interp::Ease);
+                    }
+                    // 2x halves the clip's length, so a playhead left where it
+                    // was would now sit past its end and the preview would go
+                    // black. Land it inside what the clip now occupies.
+                    if let Some(c) = self.project.clip(cid) {
+                        self.playhead = c.start + c.duration() * 0.45;
+                    }
+                }
+                // Past the levels, onto the geometry and rate sections.
+                self.inspector_scroll = (self.inspector_max_scroll(r) * 0.62).max(0.0);
+            }
+            ShotScenario::TitleClip => {
+                // Build the title through the model the app itself uses, then
+                // select it — so what the capture shows is a real title clip,
+                // not an inspector posed to look like one.
+                let item = MediaItem {
+                    id: Uuid::new_v4(),
+                    name: "COASTLINE".into(),
+                    kind: MediaKind::Text,
+                    duration: 6.0,
+                    width: self.project.width,
+                    height: self.project.height,
+                    fps: self.project.fps,
+                    palette: 4,
+                    path: String::new(),
+                    hydration: crate::media::Hydration::Local,
+                    text: Some(TextSource {
+                        content: "COASTLINE".into(),
+                        size: 0.16,
+                        color: TITLE_COLORS[2],
+                        align: TextAlign::Left,
+                        backdrop: 0.25,
+                        ..TextSource::default()
+                    }),
+                    ..Default::default()
+                };
+                let mid = item.id;
+                self.project.media.push(item);
+                let track = self
+                    .project
+                    .display_tracks()
+                    .into_iter()
+                    .find(|t| t.kind == TrackKind::Video)
+                    .map(|t| t.id);
+                if let Some(track) = track {
+                    if let Some(cid) = self.project.add_clip(track, mid, 4.0) {
+                        self.selection.select_only(cid);
+                        self.selected_media = Some(mid);
+                        self.playhead = 6.0;
+                    }
+                }
+                self.project.add_marker(9.0, "act two", 1);
+                self.project.add_marker(18.5, "sunset", 3);
+                self.collapsed.insert(Section::Transform);
+                self.collapsed.insert(Section::Speed);
+                self.inspector_scroll = self.inspector_max_scroll(r) * 0.5;
+            }
+            ShotScenario::Keyframes => {
+                self.playhead = 6.0;
+                if let Some(c) = self.project.top_video_clip_at(6.0) {
+                    let cid = c.id;
+                    self.selection.select_only(cid);
+                    if let Some(c) = self.project.clip_mut(cid) {
+                        let start = c.start;
+                        // Opacity ramps across the clip, with a key exactly
+                        // under the playhead so the control shows its
+                        // on-a-key state; brightness is animated but has no
+                        // key here, so it shows the between-keys state.
+                        c.set_key_at(Param::Opacity, start + 1.0, 0.15, Interp::Linear);
+                        c.set_key_at(Param::Opacity, 6.0, 1.0, Interp::Ease);
+                        c.set_key_at(Param::Opacity, start + 8.0, 0.4, Interp::Hold);
+                        c.set_key_at(Param::Brightness, start + 2.0, 0.5, Interp::Linear);
+                        c.set_key_at(Param::Brightness, start + 7.0, 0.8, Interp::Linear);
+                    }
+                }
+                self.zoom = 42.0;
+            }
             ShotScenario::MultiSelect => {
                 // Everything on the top video lane, plus an audio clip, so the
                 // capture shows a selection spanning tracks.
@@ -2917,9 +3782,85 @@ struct InspectorLayout {
     add_effect: Rect,
     split: Rect,
     delete: Rect,
+    // ---- collapsible sections -------------------------------------------
+    /// Section header rows, in draw order. Clicking one folds or unfolds it.
+    sections: Vec<(Section, Rect)>,
+    /// Every ranged control currently laid out, with the track to drag.
+    nums: Vec<(NumField, Rect)>,
+    /// Picture-in-picture presets: label, corner in `-1..1`, and the button.
+    pip: Vec<(&'static str, (f64, f64), Rect)>,
+    /// "Fill frame" — clears the transform back to the plain aspect-fit.
+    reset_transform: Option<Rect>,
+    /// Baseline y of the "Crop" caption above the two crop rows.
+    crop_label_y: f64,
+    /// Rate presets (`0.5×`, `1×`, …) as a segmented row.
+    speed_presets: Vec<(f64, Rect)>,
+    /// The reverse toggle.
+    reverse: Option<Rect>,
+    // ---- title ------------------------------------------------------------
+    /// The words, edited inline through the shared editable label.
+    title_text: Option<Rect>,
+    title_align: Vec<(TextAlign, Rect)>,
+    /// Preset colours for the title's own (authored, non-palette) colour.
+    title_colors: Vec<([f64; 4], Rect)>,
+    title_bold: Option<Rect>,
+    title_italic: Option<Rect>,
+    // ---- keyframes --------------------------------------------------------
+    /// The key control at the head of each animatable row.
+    keys: Vec<(Param, Rect)>,
+    // ---- markers ----------------------------------------------------------
+    marker_rows: Vec<(MarkerRef, Rect)>,
+    /// Sub-rects of the row above: the name (click to rename) and the delete.
+    add_marker: Option<Rect>,
     /// Total content extent (px) from the inspector top, for scroll clamping.
     content_height: f64,
 }
+
+impl InspectorLayout {
+    /// The track laid out for `field`, if it is on screen right now.
+    fn num(&self, field: NumField) -> Option<Rect> {
+        self.nums.iter().find(|(f, _)| *f == field).map(|(_, r)| *r)
+    }
+}
+
+/// The three states a key control shows, which have to stay distinguishable:
+/// a parameter that is not animated at all, one that is animated with no key
+/// on the playhead, and one with a key right here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum KeyState {
+    Off,
+    Between,
+    OnKey,
+}
+
+/// Sub-rects of a marker row: `(name, delete)`. The rest of the row jumps the
+/// playhead to the marker.
+fn marker_row_parts(row: Rect) -> (Rect, Rect) {
+    let del = Rect::new(row.x1 - 22.0, row.center().y - 11.0, row.x1, row.center().y + 11.0);
+    let name = Rect::new(row.x0 + 16.0, row.y0, row.x1 - 84.0, row.y1);
+    (name, del)
+}
+
+/// The colours a title can be set to from the inspector.
+///
+/// A title's colour is authored content, not chrome: the user picked it and it
+/// must survive a theme change, so unlike a clip's label these are stored as
+/// real values rather than palette slots. The set is deliberately small and
+/// legible against video — whites and blacks for titling, then a few
+/// saturated hues — with a full picker left to Ctrl+K.
+const TITLE_COLORS: [[f64; 4]; 8] = [
+    [1.0, 1.0, 1.0, 1.0],
+    [0.08, 0.08, 0.09, 1.0],
+    [0.98, 0.83, 0.25, 1.0],
+    [0.95, 0.42, 0.31, 1.0],
+    [0.40, 0.78, 0.98, 1.0],
+    [0.44, 0.85, 0.55, 1.0],
+    [0.79, 0.55, 0.96, 1.0],
+    [1.0, 1.0, 1.0, 0.55],
+];
+
+/// Rate presets offered as a segmented row beside the rate slider.
+const SPEED_PRESETS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
 
 #[derive(Default)]
 struct ExportLayout {
@@ -3186,6 +4127,24 @@ impl Widget for VideoEditorApp {
         self.draw_bin_drag(scene, transform, tr, theme, &r);
         // Inline rename field, drawn over the bin item's name band.
         self.draw_bin_rename(scene, transform, tr, theme, presence, &r);
+        // Inline editors inside the inspector: the title's words and a
+        // marker's name. Drawn after the panel so the caret is on top of it.
+        if self.inspector_is_visible(&r) {
+            let l = self.inspector_layout(&r);
+            if let (Some((_, label)), Some(rect)) = (self.title_edit.as_mut(), l.title_text) {
+                label.apply_layout_external(rect.inset(-4.0));
+                label.draw(scene, transform, tr, theme, presence);
+            }
+            let row = self
+                .marker_rename
+                .as_ref()
+                .and_then(|(m, _)| l.marker_rows.iter().find(|(r, _)| r.id == m.id))
+                .map(|(_, row)| marker_row_parts(*row).0);
+            if let (Some((_, label)), Some(rect)) = (self.marker_rename.as_mut(), row) {
+                label.apply_layout_external(rect);
+                label.draw(scene, transform, tr, theme, presence);
+            }
+        }
         if self.show_export {
             self.draw_export_modal(scene, transform, tr, theme, &r);
         }
@@ -3233,6 +4192,66 @@ impl Widget for VideoEditorApp {
                     self.bin_rename = None;
                 }
                 EditOutcome::Cancelled => self.bin_rename = None,
+                EditOutcome::None => {}
+            }
+            if *handled {
+                return;
+            }
+        }
+        // The title's words, edited in place in the inspector through the
+        // same shared label. Committing writes the media item, so the title's
+        // picture, its bin row and every clip that placed it all update from
+        // one action.
+        if self.title_edit.is_some() {
+            let l = self.inspector_layout(&r);
+            let (mid, outcome) = {
+                let (mid, label) = self.title_edit.as_mut().unwrap();
+                if let Some(rect) = l.title_text {
+                    label.apply_layout_external(rect.inset(-4.0));
+                }
+                label.handle_event(
+                    event, scale_factor, modifiers, state, path, handled, focus_target, node_id,
+                    taffy,
+                );
+                (*mid, label.take_outcome())
+            };
+            match outcome {
+                EditOutcome::Committed(words) => {
+                    self.commit_title_text(state, mid, &words);
+                    self.title_edit = None;
+                }
+                EditOutcome::Cancelled => self.title_edit = None,
+                EditOutcome::None => {}
+            }
+            if *handled {
+                return;
+            }
+        }
+        // A marker's name, edited in place in the inspector's list.
+        if self.marker_rename.is_some() {
+            let l = self.inspector_layout(&r);
+            let row = self
+                .marker_rename
+                .as_ref()
+                .and_then(|(m, _)| l.marker_rows.iter().find(|(r, _)| r.id == m.id))
+                .map(|(_, row)| marker_row_parts(*row).0);
+            let (target, outcome) = {
+                let (target, label) = self.marker_rename.as_mut().unwrap();
+                if let Some(rect) = row {
+                    label.apply_layout_external(rect);
+                }
+                label.handle_event(
+                    event, scale_factor, modifiers, state, path, handled, focus_target, node_id,
+                    taffy,
+                );
+                (*target, label.take_outcome())
+            };
+            match outcome {
+                EditOutcome::Committed(name) => {
+                    self.commit_marker_rename(state, target, &name);
+                    self.marker_rename = None;
+                }
+                EditOutcome::Cancelled => self.marker_rename = None,
                 EditOutcome::None => {}
             }
             if *handled {
@@ -3674,6 +4693,27 @@ impl VideoEditorApp {
                 self.toggle_bin();
                 true
             }
+            // M drops a marker at the playhead and opens it for naming — an
+            // unnamed tick is a marker you cannot find again.
+            Key::Character(c) if c.eq_ignore_ascii_case("m") && !ctrl => {
+                self.add_marker_here(state);
+                true
+            }
+            // T makes a title, places it and puts the caret in its words.
+            Key::Character(c) if c.eq_ignore_ascii_case("t") && !ctrl => {
+                self.add_title(state);
+                true
+            }
+            // , and . step between marked instants, the project's own and
+            // every clip's alike.
+            Key::Character(c) if (c.as_str() == "," || c.as_str() == "<") && !ctrl => {
+                self.jump_to_marker(false);
+                true
+            }
+            Key::Character(c) if (c.as_str() == "." || c.as_str() == ">") && !ctrl => {
+                self.jump_to_marker(true);
+                true
+            }
             // Shift+Z fits the whole project to the window, the NLE standard.
             Key::Character(c) if c.eq_ignore_ascii_case("z") && !ctrl => {
                 self.zoom_to_fit(r);
@@ -3763,6 +4803,11 @@ impl VideoEditorApp {
                 self.trigger_import();
                 return;
             }
+        }
+        // "+ Title" in the bin header.
+        if self.bin_is_visible(r) && self.add_title_rect(r).contains(p) {
+            self.add_title(state);
+            return;
         }
         // While the bin is an open overlay, a click on the scrim (anywhere
         // outside the flap and the topbar toggle) dismisses it — matching the
@@ -3968,13 +5013,32 @@ impl VideoEditorApp {
             } else {
                 self.selection.set_primary(cid);
             }
+            // A narrow window keeps the inspector out of the way until there
+            // is something to inspect; picking a clip is exactly that moment.
+            self.reveal_inspector();
             let Some(clip) = self.project.clip(cid).cloned() else { return };
+            let cr = self.clip_rect(&clip, &lane, r);
+            // A key diamond on the clip's keyframe lane takes the playhead to
+            // that key. Checked before the trim handles and the move drag,
+            // because it is the smaller, more specific target inside the same
+            // body.
+            if !shift && p.y >= cr.y1 - 13.0 {
+                if let Some(t) = clip
+                    .key_times()
+                    .into_iter()
+                    .find(|t| (self.time_to_x(*t, &r.lanes) - p.x).abs() <= 5.0)
+                {
+                    self.playhead = t.clamp(0.0, self.project.duration());
+                    self.playing = false;
+                    self.shuttle = 0.0;
+                    return;
+                }
+            }
             if !self.project.clip_editable(cid) || shift {
                 // A locked clip is inspectable but not draggable; a shift-click
                 // is a selection gesture, not the start of a move.
                 return;
             }
-            let cr = self.clip_rect(&clip, &lane, r);
             if (p.x - cr.x0).abs() <= TRIM_HIT {
                 self.drag = Some(Drag::TrimIn { id: cid });
             } else if (p.x - cr.x1).abs() <= TRIM_HIT {
@@ -4106,6 +5170,128 @@ impl VideoEditorApp {
         if l.add_effect.width() > 0.0 && l.add_effect.contains(p) {
             self.open_effect_menu(p);
             return;
+        }
+        // Section headers fold and unfold.
+        for (s, rect) in &l.sections {
+            if rect.contains(p) {
+                if !self.collapsed.remove(s) {
+                    self.collapsed.insert(*s);
+                }
+                return;
+            }
+        }
+        // Key controls. An unkeyed parameter takes one click to start
+        // animating; a keyed one opens the menu that shapes, removes and
+        // steps between its keys, because "what do I do with this key" has
+        // more than one answer and a second click cannot express them all.
+        for (param, rect) in &l.keys {
+            if rect.contains(p) {
+                if self.key_state(*param) == KeyState::Off {
+                    self.key_here(state, *param);
+                } else {
+                    self.open_key_menu(*param, p);
+                }
+                return;
+            }
+        }
+        // Ranged controls — geometry, rate, title size.
+        for (f, track) in l.nums.clone() {
+            if hit_slider(track, p) {
+                self.drag = Some(Drag::Num(f));
+                let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                self.set_num(f, f.from_frac(frac));
+                return;
+            }
+        }
+        // Picture-in-picture presets, and the way back to filling the frame.
+        for (_, corner, rect) in l.pip.clone() {
+            if rect.contains(p) {
+                self.edit_selected(state, move |c| {
+                    c.transform = crate::model::Transform::pip(PIP_SCALE, corner, PIP_INSET);
+                });
+                return;
+            }
+        }
+        if let Some(rect) = l.reset_transform {
+            if rect.contains(p) {
+                self.edit_selected(state, |c| c.transform = crate::model::Transform::default());
+                return;
+            }
+        }
+        for (rate, rect) in l.speed_presets.clone() {
+            if rect.contains(p) {
+                self.edit_selected(state, move |c| {
+                    let rev = c.speed.reverse;
+                    c.set_speed(rate, rev);
+                });
+                return;
+            }
+        }
+        if let Some(rect) = l.reverse {
+            if rect.contains(p) {
+                self.edit_selected(state, |c| {
+                    let (rate, rev) = (c.speed.rate(), c.speed.reverse);
+                    c.set_speed(rate, !rev);
+                });
+                return;
+            }
+        }
+        // Title properties.
+        if let Some(rect) = l.title_text {
+            if rect.contains(p) {
+                if let Some(m) = self.selected_media_item().map(|m| m.id) {
+                    self.begin_title_edit(m);
+                }
+                return;
+            }
+        }
+        for (align, rect) in l.title_align.clone() {
+            if rect.contains(p) {
+                self.edit_title(state, move |t| t.align = align);
+                return;
+            }
+        }
+        for (col, rect) in l.title_colors.clone() {
+            if rect.contains(p) {
+                self.edit_title(state, move |t| t.color = col);
+                return;
+            }
+        }
+        if let Some(rect) = l.title_bold {
+            if rect.contains(p) {
+                self.edit_title(state, |t| t.bold = !t.bold);
+                return;
+            }
+        }
+        if let Some(rect) = l.title_italic {
+            if rect.contains(p) {
+                self.edit_title(state, |t| t.italic = !t.italic);
+                return;
+            }
+        }
+        // Marker rows: the name renames, the cross deletes, the rest of the
+        // row takes the playhead there — which is what a marker is for.
+        for (m, row) in l.marker_rows.clone() {
+            if !row.contains(p) {
+                continue;
+            }
+            let (name, del) = marker_row_parts(row);
+            if del.contains(p) {
+                self.delete_marker(state, m);
+            } else if name.contains(p) {
+                self.begin_marker_rename(m);
+            } else {
+                self.playhead = m.at.clamp(0.0, self.project.duration());
+                self.playing = false;
+                self.chase_playhead = true;
+            }
+            return;
+        }
+        if let Some(rect) = l.add_marker {
+            if rect.contains(p) {
+                self.add_marker_here(state);
+                return;
+            }
         }
         if l.split.contains(p) {
             self.split_selected(state);
@@ -4405,6 +5591,12 @@ impl VideoEditorApp {
                     });
                 }
             }
+            Drag::Num(f) => {
+                if let Some(track) = self.inspector_layout(r).num(f) {
+                    let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    self.set_num(f, f.from_frac(frac));
+                }
+            }
         }
     }
 
@@ -4443,6 +5635,14 @@ impl VideoEditorApp {
                     self.dispatch_clip(doc, id);
                 }
             }
+            // A title knob writes the *source*, so it commits a media write;
+            // everything else on this path is a clip field.
+            Drag::Num(f) if f.is_media() => self.dispatch_selected_media(doc),
+            Drag::Num(_) => {
+                if let Some(id) = self.selected() {
+                    self.dispatch_clip(doc, id);
+                }
+            }
         }
     }
 
@@ -4465,6 +5665,7 @@ impl VideoEditorApp {
                     | Drag::FadeOut
                     | Drag::TransitionLen
                     | Drag::EffectAmount { .. }
+                    | Drag::Num(_)
             )
         )
     }
@@ -4613,9 +5814,21 @@ impl VideoEditorApp {
             text_w(scene, tr, tf, hint, 13.0, c.accent[5], r.bin.center().x - hw as f64 / 2.0, r.bin.center().y, TextWeight::Semibold);
         }
         text_w(scene, tr, tf, "MEDIA BIN", 11.0, c.text_dim, r.bin.x0 + 14.0, r.bin.y0 + 14.0, TextWeight::Semibold);
+        // A title is the one source you make rather than import, so the bin
+        // offers it beside the count instead of leaving `MediaKind::Text`
+        // reachable only from the palette.
+        let add = self.add_title_rect(r);
+        let add_hover = add.contains(self.last_mouse);
+        fill_rrect(scene, tf, if add_hover { c.surface_white_10 } else { c.neutral[3] }, add, 5.0);
+        stroke_rrect(scene, tf, c.border_standard, add, 5.0, 1.0);
+        let at = text_centre(add, "+ Title", 10.5, TextWeight::Medium, tr);
+        text_w(scene, tr, tf, "+ Title", 10.5, c.text_primary, at.x, at.y, TextWeight::Medium);
         let count = format!("{} clips", self.project.media.len());
         let (cw, _) = tr.measure(&count, 11.0, None);
-        text(scene, tr, tf, &count, 11.0, c.text_dim, r.bin.x1 - 14.0 - cw as f64, r.bin.y0 + 14.0);
+        let count_x = r.bin.x1 - 14.0 - cw as f64;
+        if count_x > add.x1 + 8.0 {
+            text(scene, tr, tf, &count, 11.0, c.text_dim, count_x, r.bin.y0 + 14.0);
+        }
 
         // Clip bin content so a long list can't bleed over the timeline.
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &Rect::new(r.bin.x0, r.bin.y0 + 30.0, r.bin.x1, r.bin.y1));
@@ -5231,36 +6444,51 @@ impl VideoEditorApp {
                        readout: String,
                        v: f64,
                        size: f32,
-                       drag: bool| {
+                       drag: bool,
+                       // `Some` when this row carries a key control, whose box
+                       // the label starts after. The indent is unconditional
+                       // so keying a parameter does not shuffle its row
+                       // sideways; an animated one takes the accent instead.
+                       keyed: Option<bool>| {
             let Some(track) = track else { return };
-            text(scene, tr, tf, label, size, c.text_dim, track.x0, track.y0 - 20.0);
+            let lx = if keyed.is_some() { track.x0 + KEY_BOX + 6.0 } else { track.x0 };
+            let col = if keyed == Some(true) { c.accent[5] } else { c.text_dim };
+            text(scene, tr, tf, label, size, col, lx, track.y0 - 20.0);
             let (pw, _) = tr.measure(&readout, size, None);
             text(scene, tr, tf, &readout, size, c.text_primary, track.x1 - pw as f64, track.y0 - 20.0);
             draw_track(scene, tf, theme, track, v, hit_slider(track, self.last_mouse), drag);
         };
         let dragging = |d: Option<Drag>, want: Drag| d == Some(want);
-        row(scene, tr, l.opacity, "Opacity", format!("{:.0}%", clip.opacity * 100.0),
-            clip.opacity, 12.0, dragging(self.drag, Drag::Opacity));
-        row(scene, tr, l.volume, "Volume", format!("{:.0}%", clip.volume * 100.0),
-            clip.volume, 12.0, dragging(self.drag, Drag::Volume));
+        // Animatable rows read through `param_at`, the same door the
+        // compositor uses, so a keyframed slider follows the playhead rather
+        // than showing a constant the picture is already ignoring.
+        let animated = |p: Param| self.key_state(p) != KeyState::Off;
+        let at = self.playhead;
+        let opacity = clip.param_at(Param::Opacity, at);
+        row(scene, tr, l.opacity, "Opacity", format!("{:.0}%", opacity * 100.0),
+            opacity, 12.0, dragging(self.drag, Drag::Opacity), Some(animated(Param::Opacity)));
+        let volume = clip.param_at(Param::Volume, at);
+        row(scene, tr, l.volume, "Volume", format!("{:.0}%", volume * 100.0),
+            volume, 12.0, dragging(self.drag, Drag::Volume), Some(animated(Param::Volume)));
         // Colour-grade rows. The readout shows the multiplier (0.5 == 1.00×,
         // the identity).
-        for (track, label, v, d) in [
-            (l.brightness, "Brightness", clip.filters.brightness, Drag::Brightness),
-            (l.contrast, "Contrast", clip.filters.contrast, Drag::Contrast),
-            (l.saturation, "Saturation", clip.filters.saturation, Drag::Saturation),
+        for (track, label, p, d) in [
+            (l.brightness, "Brightness", Param::Brightness, Drag::Brightness),
+            (l.contrast, "Contrast", Param::Contrast, Drag::Contrast),
+            (l.saturation, "Saturation", Param::Saturation, Drag::Saturation),
         ] {
+            let v = clip.param_at(p, at);
             row(scene, tr, track, label, format!("{:.2}×", Filters::gain(v)), v, 12.0,
-                dragging(self.drag, d));
+                dragging(self.drag, d), Some(animated(p)));
         }
         // Fade in / out (seconds). Two half-width tracks share a row; their
         // readouts right-align by measurement like every other row, rather
         // than by a magic inset that only fitted one string.
         let cd = clip.duration().max(1e-6);
         row(scene, tr, l.fade_in, "Fade In", format!("{:.1}s", clip.fade_in),
-            (clip.fade_in / cd).clamp(0.0, 1.0), 11.0, dragging(self.drag, Drag::FadeIn));
+            (clip.fade_in / cd).clamp(0.0, 1.0), 11.0, dragging(self.drag, Drag::FadeIn), None);
         row(scene, tr, l.fade_out, "Fade Out", format!("{:.1}s", clip.fade_out),
-            (clip.fade_out / cd).clamp(0.0, 1.0), 11.0, dragging(self.drag, Drag::FadeOut));
+            (clip.fade_out / cd).clamp(0.0, 1.0), 11.0, dragging(self.drag, Drag::FadeOut), None);
         // Transition segmented control, through the shared painter.
         if !l.transitions.is_empty() {
             text(scene, tr, tf, "Transition", 12.0, c.text_dim, x0, l.transition_y - 20.0);
@@ -5280,7 +6508,7 @@ impl VideoEditorApp {
                 scene, tr, Some(track), "Transition length",
                 format!("{:.2}s", clip.transition_len()),
                 (clip.transition_len() / max).clamp(0.0, 1.0), 11.0,
-                self.drag == Some(Drag::TransitionLen),
+                self.drag == Some(Drag::TransitionLen), None,
             );
         }
         // Colour swatches.
@@ -5300,9 +6528,232 @@ impl VideoEditorApp {
                 }
             }
         }
+        // ---- collapsible sections ------------------------------------
+        // Headers first, so a folded section still says what is inside it.
+        for (s, rect) in &l.sections {
+            self.draw_section_header(scene, tf, tr, theme, *rect, *s, &clip, media.as_ref());
+        }
+        // Every ranged control laid out this frame: geometry, rate, title
+        // size. Each reads its value back through `num_value`, so a keyframed
+        // one tracks the playhead rather than showing a dead constant.
+        for (f, track) in &l.nums {
+            let Some(v) = self.num_value(*f) else { continue };
+            let keyed = f
+                .param()
+                .map(|p| self.key_state(p) != KeyState::Off)
+                .unwrap_or(false);
+            let lx = if f.param().is_some() { track.x0 + KEY_BOX + 6.0 } else { track.x0 };
+            let label_col = if keyed { c.accent[5] } else { c.text_dim };
+            text(scene, tr, tf, f.label(), 11.5, label_col, lx, track.y0 - 20.0);
+            let readout = f.readout(v);
+            let (pw, _) = tr.measure(&readout, 11.5, None);
+            text(scene, tr, tf, &readout, 11.5, c.text_primary, track.x1 - pw as f64, track.y0 - 20.0);
+            draw_track(
+                scene, tf, theme, *track, f.to_frac(v),
+                hit_slider(*track, self.last_mouse),
+                self.drag == Some(Drag::Num(*f)),
+            );
+        }
+        // Picture-in-picture presets. The glyph is the corner it puts the
+        // picture in, which is the whole of what the button does.
+        if !l.pip.is_empty() {
+            let top = l.pip[0].2;
+            text(scene, tr, tf, "Picture in picture", 11.5, c.text_dim, x0, top.y0 - 16.0);
+            let inset = crate::model::Transform::pip(PIP_SCALE, (1.0, -1.0), PIP_INSET);
+            let is_pip = (clip.transform.scale_x - inset.scale_x).abs() < 1e-6;
+            for (_, corner, rect) in &l.pip {
+                let on = is_pip
+                    && (clip.transform.pos_x.signum() - corner.0).abs() < 1e-6
+                    && (clip.transform.pos_y.signum() - corner.1).abs() < 1e-6;
+                let hovered = rect.contains(self.last_mouse);
+                let bg = if on {
+                    c.accent[5]
+                } else if hovered {
+                    c.surface_white_10
+                } else {
+                    c.neutral[3]
+                };
+                fill_rrect(scene, tf, bg, *rect, 6.0);
+                stroke_rrect(scene, tf, c.border_standard, *rect, 6.0, 1.0);
+                // A miniature frame with the inset drawn in the named corner.
+                let fg = if on { on_fill(theme, bg).1 } else { c.text_primary };
+                let g = Rect::new(
+                    rect.center().x - 11.0,
+                    rect.center().y - 7.0,
+                    rect.center().x + 11.0,
+                    rect.center().y + 7.0,
+                );
+                stroke_rrect(scene, tf, with_alpha(fg, 0.5), g, 2.0, 1.0);
+                let iw = g.width() * 0.42;
+                let ih = g.height() * 0.42;
+                let ix = if corner.0 < 0.0 { g.x0 + 2.0 } else { g.x1 - 2.0 - iw };
+                let iy = if corner.1 < 0.0 { g.y0 + 2.0 } else { g.y1 - 2.0 - ih };
+                fill_rrect(scene, tf, fg, Rect::new(ix, iy, ix + iw, iy + ih), 1.5);
+            }
+        }
+        if l.crop_label_y > 0.0 {
+            text(scene, tr, tf, "Crop", 11.5, c.text_dim, x0, l.crop_label_y);
+        }
+        if let Some(rect) = l.reset_transform {
+            let plain = clip.transform.is_identity();
+            draw_button_enabled(
+                scene, tf, tr, theme, rect, "Fill frame", false,
+                rect.contains(self.last_mouse), !plain,
+            );
+        }
+        // Rate presets + the reverse toggle.
+        if !l.speed_presets.is_empty() {
+            let rects: Vec<Rect> = l.speed_presets.iter().map(|(_, r)| *r).collect();
+            let labels: Vec<String> = l
+                .speed_presets
+                .iter()
+                .map(|(rate, _)| {
+                    if (rate - rate.round()).abs() < 1e-6 {
+                        format!("{}×", rate.round() as i64)
+                    } else {
+                        format!("{rate}×")
+                    }
+                })
+                .collect();
+            let refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+            // No preset is "selected" unless the rate is exactly on one —
+            // a segmented control that always highlights something would
+            // claim 1.37× was 1×.
+            let sel = l
+                .speed_presets
+                .iter()
+                .position(|(rate, _)| (rate - clip.speed.rate()).abs() < 1e-6)
+                .unwrap_or(usize::MAX);
+            draw_segmented(scene, tf, tr, theme, &rects, &refs, sel, self.last_mouse);
+        }
+        if let Some(rect) = l.reverse {
+            let on = clip.speed.reverse;
+            draw_button(
+                scene, tf, tr, theme, rect,
+                if on { "Playing backwards" } else { "Play backwards" },
+                on, rect.contains(self.last_mouse),
+            );
+        }
+        // ---- title ----------------------------------------------------
+        if let Some(rect) = l.title_text {
+            let text_src = media.as_ref().and_then(|m| m.text.clone()).unwrap_or_default();
+            text(scene, tr, tf, "Words", 11.5, c.text_dim, rect.x0, rect.y0 - 16.0);
+            let editing = self.title_edit.as_ref().map(|(m, _)| Some(*m) == media.as_ref().map(|m| m.id));
+            fill_rrect(scene, tf, c.surface_white_5, rect, 6.0);
+            stroke_rrect(
+                scene, tf,
+                if editing == Some(true) { c.border_focus } else { c.border_standard },
+                rect, 6.0, 1.0,
+            );
+            // While the inline editor owns this box it draws the words itself
+            // (with a caret); otherwise show them, or say plainly that there
+            // are none rather than leaving an empty box that looks broken.
+            if editing != Some(true) {
+                let shown = text_src.content.replace('\n', " ⏎ ");
+                let (shown, col) = if shown.trim().is_empty() {
+                    ("Click to type a title".to_string(), c.text_dim)
+                } else {
+                    (elide_w(&shown, (rect.width() - 20.0) as f32, tr), c.text_primary)
+                };
+                let baseline = text_baseline(rect, 13.0, tr);
+                text(scene, tr, tf, &shown, 13.0, col, rect.x0 + 10.0, baseline);
+            }
+        }
+        if !l.title_align.is_empty() {
+            let cur = media.as_ref().and_then(|m| m.text.as_ref()).map(|t| t.align).unwrap_or_default();
+            let rects: Vec<Rect> = l.title_align.iter().map(|(_, r)| *r).collect();
+            let labels: Vec<&str> = l.title_align.iter().map(|(a, _)| a.label()).collect();
+            let sel = l.title_align.iter().position(|(a, _)| *a == cur).unwrap_or(0);
+            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+        }
+        if !l.title_colors.is_empty() {
+            let cur = media.as_ref().and_then(|m| m.text.as_ref()).map(|t| t.color).unwrap_or([1.0; 4]);
+            text(scene, tr, tf, "Colour", 11.5, c.text_dim, x0, l.title_colors[0].1.y0 - 16.0);
+            for (col, rect) in &l.title_colors {
+                let sw = title_color(*col);
+                // A swatch can be white, near-black or translucent, so it is
+                // drawn on a chequer-free plate with a border: without one the
+                // white swatch vanishes on a light theme and the dark one on a
+                // dark theme.
+                fill_rrect(scene, tf, c.neutral[3], *rect, 6.0);
+                fill_rrect(scene, tf, sw, *rect, 6.0);
+                stroke_rrect(scene, tf, with_alpha(c.text_primary, 0.25), *rect, 6.0, 1.0);
+                if col.iter().zip(cur.iter()).all(|(a, b)| (a - b).abs() < 1e-6) {
+                    stroke_rrect(scene, tf, c.border_focus, rect.inset(1.5), 7.0, 2.0);
+                } else if rect.contains(self.last_mouse) {
+                    stroke_rrect(scene, tf, with_alpha(c.text_primary, 0.6), *rect, 6.0, 1.5);
+                }
+            }
+        }
+        for (rect, on, label) in [
+            (l.title_bold, media.as_ref().and_then(|m| m.text.as_ref()).map(|t| t.bold).unwrap_or(false), "Bold"),
+            (l.title_italic, media.as_ref().and_then(|m| m.text.as_ref()).map(|t| t.italic).unwrap_or(false), "Italic"),
+        ] {
+            let Some(rect) = rect else { continue };
+            draw_button(scene, tf, tr, theme, rect, label, on, rect.contains(self.last_mouse));
+        }
+        // ---- markers --------------------------------------------------
+        for (m, row) in &l.marker_rows {
+            let (name_rect, del) = marker_row_parts(*row);
+            let hovered = row.contains(self.last_mouse);
+            if hovered {
+                fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
+            }
+            let Some((_, mk, _)) =
+                self.project.all_markers().into_iter().find(|(_, k, _)| k.id == m.id)
+            else {
+                continue;
+            };
+            let col = clip_color(theme, mk.palette);
+            scene.fill(
+                Fill::NonZero, tf, col, None,
+                &Circle::new(Point::new(row.x0 + 7.0, row.center().y), 4.0),
+            );
+            let renaming = self.marker_rename.as_ref().map(|(r, _)| r.id) == Some(m.id);
+            if !renaming {
+                let name = if mk.name.trim().is_empty() { "Marker" } else { mk.name.as_str() };
+                let shown = elide_w(name, name_rect.width() as f32, tr);
+                let baseline = text_baseline(*row, 12.0, tr);
+                text(scene, tr, tf, &shown, 12.0, c.text_primary, name_rect.x0, baseline);
+                // A clip marker says which clip it travels with, because
+                // moving that clip moves the marker and nothing else would
+                // explain why the time changed.
+                let stamp = timecode(m.at, self.project.fps);
+                let (sw2, _) = tr.measure(&stamp, 11.0, None);
+                let stamp_col = if m.clip.is_some() { c.text_tertiary } else { c.text_dim };
+                text(scene, tr, tf, &stamp, 11.0, stamp_col, del.x0 - 8.0 - sw2 as f64, baseline);
+            }
+            if hovered {
+                if del.contains(self.last_mouse) {
+                    fill_rrect(scene, tf, with_alpha(c.semantic.danger, 0.18), del, 4.0);
+                }
+                let g = 11.0;
+                let xb = Rect::new(
+                    del.center().x - g / 2.0, del.center().y - g / 2.0,
+                    del.center().x + g / 2.0, del.center().y + g / 2.0,
+                );
+                ui::icons::draw_icon(
+                    scene, tf, xb, ui::icons::Icon::X, c.semantic.danger,
+                    ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
+        }
+        if let Some(rect) = l.add_marker {
+            if l.marker_rows.is_empty() {
+                text(scene, tr, tf, "Nothing marked yet", 11.5, c.text_dim, x0, rect.y0 - 16.0);
+            }
+            draw_button(
+                scene, tf, tr, theme, rect, "+ Marker at playhead (M)", false,
+                rect.contains(self.last_mouse),
+            );
+        }
+        // ---- key controls ---------------------------------------------
+        // Drawn last so a diamond sits over its row rather than under it.
+        for (param, rect) in &l.keys {
+            draw_key_control(scene, tf, theme, *rect, self.key_state(*param), rect.contains(self.last_mouse));
+        }
         // Effects stack (video only).
         if is_video {
-        text_w(scene, tr, tf, "EFFECTS", 11.0, c.text_dim, x0, l.effects_label_y, TextWeight::Semibold);
         for (i, row) in l.effect_rows.iter().enumerate() {
             let Some(e) = clip.effects.get(i) else { continue };
             let (up, down, slider, remove) = Self::effect_row_parts(*row);
@@ -5363,6 +6814,106 @@ impl VideoEditorApp {
         if l.valid {
             draw_button(scene, tf, tr, theme, l.split, "Split", false, l.split.contains(self.last_mouse));
             draw_danger_button(scene, tf, tr, theme, l.delete, "Delete", l.delete.contains(self.last_mouse));
+        }
+    }
+
+    /// One collapsible section header: a fold arrow, the name, and — when it
+    /// is folded — a summary of what is inside it.
+    ///
+    /// The summary is the point. Folding a section away is a view choice, but
+    /// a fold that hid "this clip plays at 4x in reverse" would turn a view
+    /// choice into missing state, and the user would have no way to know the
+    /// clip was re-timed without unfolding every section on every clip.
+    fn draw_section_header(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        section: Section,
+        clip: &Clip,
+        media: Option<&MediaItem>,
+    ) {
+        let c = &theme.tokens.colors;
+        let open = !self.collapsed.contains(&section);
+        if rect.contains(self.last_mouse) {
+            fill_rrect(scene, tf, c.surface_white_5, rect, 5.0);
+        }
+        let g = 11.0;
+        let arrow = Rect::new(
+            rect.x0 + 1.0,
+            rect.center().y - g / 2.0,
+            rect.x0 + 1.0 + g,
+            rect.center().y + g / 2.0,
+        );
+        ui::icons::draw_icon(
+            scene, tf, arrow,
+            if open { ui::icons::Icon::ChevronDown } else { ui::icons::Icon::ChevronRight },
+            c.text_dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        let baseline = text_baseline(rect, 11.0, tr);
+        text_w(
+            scene, tr, tf, section.label(), 11.0, c.text_dim,
+            rect.x0 + 18.0, baseline, TextWeight::Semibold,
+        );
+        if open {
+            return;
+        }
+        let Some(summary) = self.section_summary(section, clip, media) else { return };
+        let (w, _) = tr.measure(&summary, 11.0, None);
+        // A summary that reports something other than the default is worth
+        // reading, so it takes the accent rather than the dim tone.
+        text(scene, tr, tf, &summary, 11.0, c.accent[5], rect.x1 - w as f64, baseline);
+    }
+
+    /// What a folded section reports about itself, or `None` when everything
+    /// inside it is at its default and there is nothing to report.
+    fn section_summary(
+        &self,
+        section: Section,
+        clip: &Clip,
+        media: Option<&MediaItem>,
+    ) -> Option<String> {
+        match section {
+            Section::Transform => {
+                if clip.transform.is_identity() {
+                    return None;
+                }
+                let t = &clip.transform;
+                let mut parts = Vec::new();
+                if (t.scale_x - 1.0).abs() > 1e-6 || (t.scale_y - 1.0).abs() > 1e-6 {
+                    parts.push(format!("{:.2}×", t.scale_x));
+                }
+                if t.rotation.abs() > 1e-6 {
+                    parts.push(format!("{:.0}°", t.rotation));
+                }
+                if t.is_cropped() {
+                    parts.push("cropped".into());
+                }
+                if parts.is_empty() {
+                    parts.push("moved".into());
+                }
+                Some(parts.join(" · "))
+            }
+            Section::Speed => (!clip.speed.is_normal()).then(|| clip.speed.label()),
+            Section::Title => {
+                let t = media?.text.as_ref()?;
+                let first = t.content.lines().next().unwrap_or("").trim();
+                Some(if first.is_empty() { "no words yet".into() } else { first.to_string() })
+            }
+            Section::Effects => (!clip.effects.is_empty()).then(|| {
+                if clip.effects.len() == 1 {
+                    clip.effects[0].kind.label().to_string()
+                } else {
+                    format!("{} effects", clip.effects.len())
+                }
+            }),
+            Section::Markers => {
+                let n = self.project.all_markers().len();
+                (n > 0).then(|| if n == 1 { "1 marker".into() } else { format!("{n} markers") })
+            }
         }
     }
 
@@ -5678,7 +7229,14 @@ impl VideoEditorApp {
         }
         // name label
         let label = self.project.media(clip.media).map(|m| m.name.clone()).unwrap_or_default();
-        let avail = (cr.width() - 10.0).max(4.0) as f32;
+        // A re-timed clip carries a rate badge in the header's right end, so
+        // the name has to elide before it rather than running underneath it.
+        let badge_w = if clip.speed.is_normal() {
+            0.0
+        } else {
+            tr.measure_weighted(&clip.speed.label(), 9.5, None, TextWeight::Bold).0 as f64 + 18.0
+        };
+        let avail = (cr.width() - 10.0 - badge_w).max(4.0) as f32;
         if cr.width() > 30.0 {
             let shown = elide_w(&label, avail, tr);
             // The name sits on the clip's header strip, whose colour comes
@@ -5691,6 +7249,55 @@ impl VideoEditorApp {
         if clip.transition != Transition::None && cr.width() > 16.0 {
             let mk = triangle_corner(cr.x0, cr.y0, 12.0);
             scene.fill(Fill::NonZero, tf, with_alpha(on_fill(theme, base).1, 0.85), None, &mk);
+        }
+        // A re-timed clip says its rate on its own body. Speed changes the
+        // clip's *length*, so without a badge a 2x clip is indistinguishable
+        // from one that was simply trimmed shorter.
+        if !clip.speed.is_normal() && cr.width() > 52.0 {
+            let label = clip.speed.label();
+            let (lw, _) = tr.measure_weighted(&label, 9.5, None, TextWeight::Bold);
+            let pill = Rect::new(cr.x1 - 8.0 - lw as f64 - 10.0, cr.y0 + 2.0, cr.x1 - 4.0, cr.y0 + 16.0);
+            if pill.x0 > cr.x0 + 4.0 {
+                let bg = darken(base, 0.45);
+                fill_rrect(scene, tf, with_alpha(bg, 0.9), pill, 4.0);
+                let baseline = text_baseline(pill, 9.5, tr);
+                text_w(
+                    scene, tr, tf, &label, 9.5, on_fill(theme, bg).1,
+                    pill.x0 + 5.0, baseline, TextWeight::Bold,
+                );
+            }
+        }
+        // Keyframes, as diamonds on a lane along the foot of the clip. This is
+        // where animation becomes visible without opening the inspector — and
+        // clicking one takes the playhead there, which makes stepping through
+        // a curve direct rather than a menu round-trip.
+        //
+        // The foot, not the header: the header carries the clip's name, and
+        // marks laid over it turned "Drone_Coastline.mov" into
+        // "Drone_Coastli◆e.mov".
+        let key_times = clip.key_times();
+        if cr.width() > 12.0 && !key_times.is_empty() && cr.height() > 24.0 {
+            let mark = on_fill(theme, base).1;
+            let y = cr.y1 - 7.0;
+            stroke_line(
+                scene, tf, with_alpha(darken(base, 0.45), 0.75),
+                (cr.x0 + 3.0).max(r.lanes.x0), y, (cr.x1 - 3.0).min(r.lanes.x1), y, 1.0,
+            );
+            for t in key_times {
+                let x = self.time_to_x(t, &r.lanes);
+                if x < cr.x0 - 1.0 || x > cr.x1 + 1.0 || x < r.lanes.x0 || x > r.lanes.x1 {
+                    continue;
+                }
+                let s = 3.5;
+                let mut d = BezPath::new();
+                d.move_to((x, y - s));
+                d.line_to((x + s, y));
+                d.line_to((x, y + s));
+                d.line_to((x - s, y));
+                d.close_path();
+                scene.fill(Fill::NonZero, tf, with_alpha(mark, 0.95), None, &d);
+                scene.stroke(&Stroke::new(1.0), tf, with_alpha(darken(base, 0.5), 0.9), None, &d);
+            }
         }
         // Selection. The primary (anchor) clip — the one the inspector edits —
         // keeps the full white outline and trim handles; the rest of a
@@ -6114,6 +7721,49 @@ fn readout_fit(transport: Rect, big_w: f64, total_w: f64, meta_w: f64) -> Readou
         fit.meta_x = Some(meta_x);
     }
     fit
+}
+
+/// The key control at the head of an animatable inspector row: a diamond,
+/// the standard mark for a keyframe.
+///
+/// Its three states have to be told apart at a glance, so they differ in
+/// **two** ways each rather than only in colour: not animated is a small dim
+/// outline, animated-but-between-keys is a larger accent outline, and a key
+/// on the playhead is a filled accent diamond with a ring. A control that
+/// only changed hue would be unreadable to anyone who cannot separate those
+/// hues, and indistinguishable in a screenshot.
+fn draw_key_control(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect, state: KeyState, hovered: bool) {
+    let c = &theme.tokens.colors;
+    let ctr = rect.center();
+    if hovered {
+        fill_rrect(scene, tf, c.surface_white_10, rect, 5.0);
+    }
+    let (r, col, filled) = match state {
+        KeyState::Off => (4.0, c.text_tertiary, false),
+        KeyState::Between => (5.5, c.accent[5], false),
+        KeyState::OnKey => (5.5, c.accent[5], true),
+    };
+    let mut d = BezPath::new();
+    d.move_to((ctr.x, ctr.y - r));
+    d.line_to((ctr.x + r, ctr.y));
+    d.line_to((ctr.x, ctr.y + r));
+    d.line_to((ctr.x - r, ctr.y));
+    d.close_path();
+    if filled {
+        scene.fill(Fill::NonZero, tf, col, None, &d);
+        // The ring says "the playhead is exactly here", which is what makes
+        // this the state that edits a key rather than making one.
+        scene.stroke(&Stroke::new(1.0), tf, with_alpha(col, 0.5), None, &Circle::new(ctr, r + 3.0));
+    } else {
+        scene.stroke(&Stroke::new(1.4), tf, col, None, &d);
+    }
+}
+
+/// A title's authored colour as a Vello colour. Unlike a clip's palette slot
+/// this is a real stored value — the user picked it and it must survive a
+/// theme change — so it is converted, not resolved.
+fn title_color(c: [f64; 4]) -> Color {
+    Color::new([c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32])
 }
 
 fn hit_slider(track: Rect, p: Point) -> bool {
