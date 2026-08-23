@@ -957,6 +957,15 @@ pub fn run_with(
     {
         let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
         crate::appdir::push_app_dir(&mut argv, &app_dir);
+        // After `push_app_dir`, because that is what repoints `HOME` at
+        // the app's own directory: this says where the *user's* home is,
+        // and only when a grant has actually bound it.
+        if let Some(user_home) = crate::sandbox::push_user_home(&mut argv, &capabilities) {
+            tracing::debug!(
+                user_home = %user_home.display(),
+                "a granted bind covers the user's home; telling the app where it is"
+            );
+        }
         argv.push(entry);
     }
 

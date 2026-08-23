@@ -924,7 +924,7 @@ fn open_search_hit(path: &Path, is_dir: bool, chrome: &Chrome) {
         DocumentTarget::NoAppForDocument { ext } => {
             notify_open_failure(
                 path,
-                &format!("no installed app opens .{ext} documents"),
+                &format!("no app on this desktop opens .{ext} documents"),
                 chrome,
             );
         }

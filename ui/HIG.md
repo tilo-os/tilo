@@ -312,8 +312,8 @@ surfaces of the same role are automatically consistent.
 | Role | What it is | Radius | Surface | Border | Elevation |
 |---|---|---|---|---|---|
 | **Ground** | the desktop behind everything | — | `surfaces.base` | — | none |
-| **Bar** | docked chrome fixed to a screen edge (top bar) | — (edge to edge) | `surfaces.overlay` @ `CHROME_SURFACE_ALPHA` | bottom hairline only | `e1`, downward only |
-| **Panel** | a floating surface that opens over content (quick settings, palette, popovers, sheets) | `radii.xl` (24) | `surfaces.overlay` @ `CHROME_SURFACE_ALPHA` | full hairline | `e4` |
+| **Bar** | docked chrome fixed to a screen edge (top bar) | — (edge to edge) | `chrome::shell::panel_ground` (opaque) | bottom hairline only | `e1`, downward only |
+| **Panel** | a floating surface that opens over content (quick settings, palette, popovers, sheets) | `radii.xl` (24) | `chrome::shell::panel_ground` (opaque) | full hairline | `e4` |
 | **Control** | something inside a Bar or Panel that you press (action tile, list row, slider, field) | `radii.lg` (12) | selection tiers (§9.3) | per tier | none |
 | **Selector** | one of a set you choose between (tab pill, tray pill, workspace chip, strip segment, scope chip) | `radii.full` | selection tiers (§9.3) | per tier | none |
 | **Object** | a thing that holds app content (window card, tile) | `radii.xl` (24) | `surfaces.window_card` | `Colors::window_edge()` | `e3`; `e4` while dragged |
@@ -339,10 +339,26 @@ latter survives a theme the author never saw.
 - Ground: `surfaces.base`. Object: `surfaces.window_card`.
 - Scrim behind a modal Panel: `surfaces.scrim`, faded in with the panel.
 
-One shared constant, `CHROME_SURFACE_ALPHA`, sets the translucency of every Bar
-and Panel, so the whole chrome is one material at one opacity. Per-surface alpha
-literals are what made quick settings read as a different substance from the bar
-it hangs off.
+One shared constant, `CHROME_SURFACE_ALPHA`, sets the opacity of every Bar and
+Panel, so the whole chrome is one material. Per-surface alpha literals are what
+made quick settings read as a different substance from the bar it hangs off.
+
+**That material is opaque, and chrome does not fake glass.** Translucency is
+only worth its cost when the backdrop is blurred, and this renderer cannot blur
+a backdrop — vello can blur a *shape*, which is what a drop shadow is made of,
+but there is no backdrop filter short of rendering the scene to a texture and
+convolving it. Unblurred, a translucent panel simply adds a fraction of whatever
+is behind it to itself: not glass, but a loss of contrast that changes with what
+the user happens to have open. Measured at the old 0.80, one quick-settings
+panel's own body ran `#ffffff` over a document and `#f7f7f7` over the desktop —
+one flat surface reading as two, with a seam across the middle of it.
+
+**A Panel separates itself by value and by edge.** `panel_ground` walks the
+declared overlay tier away from *both* the desktop and the window card until it
+clears each of them, because a Panel floats over app content and a Bar does not,
+and the two are one material. `panel_border` supplies the edge. Get those right
+and elevation is a finishing touch; get them wrong and the shadow is asked to do
+their job, which is how it ends up too big to look like a shadow.
 
 ### 9.3 Selection is a lift, and only a lift
 
@@ -394,6 +410,27 @@ A selected pill casts no shadow — it is not floating, it is picked. A dragged
 object casts `e4` — it is genuinely lifted and will land somewhere. Rows of
 idle pills each laying down a soft shadow is what made the tab strip read as
 muddy rather than as chrome.
+
+**A shadow is the shape of the thing casting it, and comes from a token.** One
+painter, `surface::shadow(scene, transform, rect, radius, token)`: it blurs the
+surface's *own rounded outline*, so a shadow is equally dense the whole way
+round and its corners follow the surface's corners. Pass the radius. A surface
+that hands its shadow a square field gets a box around a rounded panel, with
+corners several times lighter than the flat edges — "boxy and uneven" is what
+that looks like from the outside.
+
+The token is the whole description: `offset_y`, `blur`, and a `color` whose
+**alpha is the strength and is honoured**. Do not hand a shadow a bare `Color` —
+a caller given a colour and no offset or blur has to invent the other two, which
+is how four surfaces in this toolkit each grew a different shadow, three of them
+a solid rounded rect nudged down a few pixels and called soft. `offset_y` stays
+a quarter of `blur` across the ramp; a larger ratio slides the falloff onto the
+bottom edge and the surface stops looking lifted and starts looking like it has
+a dark bar under it.
+
+`soft_shadow` is the older sprite painter and is **not** for drop shadows any
+more. It survives for effects with no outline to follow — the wheel disc's
+bloom, a glow around a dragged card.
 
 ### 9.4 Accent means live, not selected
 

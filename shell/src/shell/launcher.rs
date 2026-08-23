@@ -161,7 +161,7 @@ impl LaunchError {
     pub fn user_message(&self) -> String {
         match self {
             LaunchError::NotInstalled { package_id } => {
-                format!("{package_id} is not installed")
+                format!("this desktop has no app with the id {package_id}")
             }
             LaunchError::NotAGuiApp { package_id } => {
                 format!("{package_id} has no graphical entrypoint")
@@ -1007,6 +1007,17 @@ pub fn remember_launch_named(key: &str, identities: &[String], display_name: &st
     ));
 }
 
+/// Forget every launch this session has recorded.
+///
+/// For tests that need the *fallback* name resolution under test rather
+/// than a name a neighbouring test happened to remember — the table is
+/// process-wide and append-only, so a test asserting on what happens
+/// when nothing is known has to say so.
+#[cfg(test)]
+pub(crate) fn clear_launched_for_test() {
+    LAUNCHED.lock().expect("LAUNCHED poisoned").clear();
+}
+
 /// Display name for a Wayland `app_id`, if this session launched the
 /// package it belongs to.
 ///
@@ -1028,6 +1039,20 @@ pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
             .find(|(_, identities, _)| identities_match(identities, app_id))
         {
             return Some(display_name.clone());
+        }
+    }
+    // Not something this session launched, but possibly something this
+    // machine *has*. A package's manifest states its name, and that name
+    // is the app's name no matter who started it — a window that arrived
+    // from a previous session, from the CLI, or from another launcher is
+    // still Files. Without this the label fell through to the raw
+    // app-id, which is how a tab came to read `word-processor`.
+    if let Ok(apps) = installed_apps() {
+        if let Some(app) = apps
+            .iter()
+            .find(|a| app_id_matches_package(app_id, &a.package_id))
+        {
+            return Some(app.display_name.clone());
         }
     }
     // Not something this session launched. It may still be a host
@@ -1122,6 +1147,19 @@ pub fn placement_for_toplevel(
             None
         }
     }
+}
+
+/// Drop the placement note for `package_id`, if it has one.
+///
+/// The undo for a [`set_pending_placement`] whose launch then failed to
+/// start: the note names a tab the window will never arrive for, and
+/// leaving it would hand that tab to whatever the user next opened of
+/// the same app.
+pub fn clear_pending_placement(package_id: &str) {
+    let mut pending = PENDING_PLACEMENT
+        .lock()
+        .expect("PENDING_PLACEMENT poisoned");
+    pending.retain(|p| p.key != package_id);
 }
 
 /// Drop every placement note. Used by tests, which share this
@@ -1376,7 +1414,18 @@ mod tests {
                 package_id: "dev.qos.nope".into()
             }
         );
-        assert!(err.user_message().contains("not installed"));
+        let message = err.user_message();
+        assert!(
+            message.contains("dev.qos.nope"),
+            "the message must name the id it could not find: {message}"
+        );
+        // "installed" is not a word this desktop says to a user — nobody
+        // asked to install anything. The message was moved off it and
+        // this assertion had kept asserting the old wording.
+        assert!(
+            !message.contains("install"),
+            "user-facing text must not talk about installing: {message}"
+        );
     }
 
     #[test]

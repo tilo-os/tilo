@@ -223,7 +223,8 @@ def changed_pixels(a: str, b: str) -> int:
     if ia.size != ib.size:
         return ia.size[0] * ia.size[1]
     diff = ImageChops.difference(ia, ib)
-    return sum(1 for p in diff.getdata() if max(p) > 12)
+    data = getattr(diff, "get_flattened_data", diff.getdata)()
+    return sum(1 for p in data if max(p) > 12)
 
 
 def main() -> int:
@@ -272,7 +273,6 @@ def main() -> int:
         wait_for(lambda: os.path.exists(before_shot)
                  and os.path.getsize(before_shot) > 5000, timeout=20)
         before_targets = xaver.targets()
-        x_before = set(xaver.tabs_here())
 
         print("\n[3] quinten opens a window")
         q_before = set(quinten.tabs_here())
@@ -323,6 +323,24 @@ def main() -> int:
             print(f"        after:  {after_shot}")
 
         print("\n[7] and the same in the other direction")
+        # Opening a window in a room is an act, so it is gated like one:
+        # a guest who has only been admitted is not yet an editor. The
+        # owner makes him one first, or the action is not even exported
+        # to him and "the other direction" would fail on governance
+        # rather than on anything to do with drawing.
+        granted = quinten.call({
+            "op": "grant", "subject": "person:xaver",
+            "scope": "workspace", "verb": "write",
+        })
+        check("quinten makes xaver an editor", "err" not in granted,
+              json.dumps(granted.get("err", {}))[:120])
+        check("and the grant reaches xaver's own session",
+              bool(wait_for(lambda: any(
+                  a.get("provider") == ACTIONS
+                  and a.get("id") == "window.new.terminal"
+                  for a in xaver.enumerate("")), timeout=45)),
+              "window.new.terminal is now exported to him")
+
         xn_before = set(xaver.tabs_here())
         xaver.invoke(ACTIONS, "window.new.terminal")
         x_new = wait_for(lambda: (set(xaver.tabs_here()) - xn_before) or None,

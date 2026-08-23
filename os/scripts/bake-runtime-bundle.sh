@@ -22,6 +22,20 @@
 #   TRUST_LIST          if set, append the pubkey to this file after signing.
 #   BUNDLE_BIN          path to a prebuilt qos-runtime-bundle binary. Cargo
 #                       is used if unset.
+#   EXTRA_LIBS          whitespace-separated absolute paths to extra shared
+#                       objects to fold into the bundle's lib/ (empty by
+#                       default). This is how the shared toolkit reaches a
+#                       sandboxed app: `libruntime_dylib.so` (the `ui` +
+#                       runtime SDK dylib, built with `cargo build --profile
+#                       thin-app -p runtime-dylib`) and the matching Rust
+#                       `libstd-<hash>.so` go here, and the launcher's
+#                       `LD_LIBRARY_PATH=<mount>/lib` then resolves them by
+#                       soname inside bwrap. Each is hashed into the manifest
+#                       and covered by the signature like any other file, so
+#                       a swapped toolkit fails `verify`. Every listed path
+#                       must exist -- a typo is an error, not a silent skip,
+#                       because a bundle missing the toolkit produces a thin
+#                       app that dies at exec with an unresolved soname.
 #
 # Called from os/build.sh via `--bake-runtime` before the container build.
 # Callable stand-alone during dev — the output tree can then be COPYied
@@ -40,8 +54,10 @@ OUT_DIR="${OUT_DIR:-$OS_DIR/output/runtime-bundle}"
 IDENTITY_JSON="${IDENTITY_JSON:-}"
 TRUST_LIST="${TRUST_LIST:-}"
 BUNDLE_BIN="${BUNDLE_BIN:-}"
+EXTRA_LIBS="${EXTRA_LIBS:-}"
 
 msg() { printf '[bake-runtime-bundle] %s\n' "$*" >&2; }
+die() { printf '[bake-runtime-bundle] ERROR: %s\n' "$*" >&2; exit 1; }
 
 # 1. Locate the qos-runtime-bundle binary.
 if [ -z "$BUNDLE_BIN" ]; then
@@ -73,12 +89,23 @@ fi
 # 3. Sign + bake.
 BUNDLE_DIR="$OUT_DIR/qos-runtime/$RUNTIME_VERSION"
 msg "baking bundle at $BUNDLE_DIR (arch=$ARCH, from=$FROM)"
+
+# Shared objects to fold in beside the loader/libc set. Checked before the
+# bake so a missing toolkit is reported here rather than at an app's exec.
+INCLUDE_ARGS=()
+for lib in $EXTRA_LIBS; do
+    [ -f "$lib" ] || die "EXTRA_LIBS entry does not exist: $lib"
+    INCLUDE_ARGS+=(--include "$lib")
+    msg "including shared object: $lib"
+done
+
 rm -rf "$BUNDLE_DIR"
 "$BUNDLE_BIN" build \
     --version "$RUNTIME_VERSION" \
     --arch "$ARCH" \
     --from "$FROM" \
     --identity "$IDENTITY_JSON" \
+    "${INCLUDE_ARGS[@]+"${INCLUDE_ARGS[@]}"}" \
     --out "$BUNDLE_DIR"
 
 # 4. Extract + record the pubkey.

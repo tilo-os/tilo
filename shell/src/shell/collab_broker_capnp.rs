@@ -73,7 +73,7 @@ use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::presence::PresenceKey;
 
 use crate::shell::collab_broker::{
-    AuditEntry, BrokerChannels, CrdtRoute, PeerTable, apply_redaction_from_envelope,
+    AuditEntry, BrokerChannels, CrdtRoute, LocalIdentity, PeerTable, apply_redaction_from_envelope,
 };
 use crate::shell::collab_outbound::{PeerPublisher, Transport};
 
@@ -144,13 +144,16 @@ struct ContextSub {
 /// thread, `BrokerHandle::fanout_event`) resolve a [`CrdtRoute`] and
 /// push the event onto the subscribers of the matching channel only.
 ///
-/// Routing policy: the capnp `joinChannel(channelId, identity)`
-/// surface carries no app identity, so a capnp subscription is
-/// addressed at **cluster granularity** — its `channelId` is matched
-/// against the route's `cluster_id` (which is exactly what the SDK
-/// puts there: `ui::collaboration` derives `channelId` from the
-/// cluster uuid on the auto-Hello). A connection that has not joined
-/// any channel is addressed by nothing and receives nothing.
+/// Routing policy: a `channelId` carries the whole address, not just
+/// the cluster — [`ui::collaboration::channel_key`] encodes the
+/// `(app, cluster, record)` triple the SDK announced into it, and the
+/// fanout decodes it back ([`CrdtRoute::from_channel_key`]) to get the
+/// route that connection subscribed as. Delivery is then the ordinary
+/// [`CrdtRoute::delivers_to`] question, so an app's document reaches
+/// that app and chrome traffic reaches the room. A key naming no app
+/// still decodes to a cluster-scoped route, which is what keeps a
+/// connection predating the app segment working. A connection that has
+/// not joined any channel is addressed by nothing and receives nothing.
 #[derive(Default)]
 struct ChannelSubscribers {
     op: Vec<OpSub>,
@@ -196,6 +199,12 @@ pub struct CapnpBrokerState {
     /// fan-out is the whole story. It says so once rather than
     /// dropping frames in silence.
     publisher: Arc<PeerPublisher>,
+    /// Who the app on the far end of a capnp channel is. The same
+    /// instance the JSON transport resolves through, because an app
+    /// must not be a different participant for having connected over a
+    /// different socket — and every packaged qOS app speaks capnp, so
+    /// this transport is where a person is normally seen from.
+    identity: Arc<LocalIdentity>,
 }
 
 impl CapnpBrokerState {
@@ -210,19 +219,28 @@ impl CapnpBrokerState {
         peer_table: &Arc<PeerTable>,
         broker_channels: Arc<Mutex<BrokerChannels>>,
         publisher: Arc<PeerPublisher>,
+        identity: Arc<LocalIdentity>,
     ) -> Arc<Self> {
         Arc::new(Self {
             channels: Mutex::new(HashMap::new()),
             peer_table: Arc::downgrade(peer_table),
             broker_channels,
             publisher,
+            identity,
         })
     }
 
-    /// Publish a payload this transport just fanned out locally, on
-    /// the identical route. Every capnp write path funnels through
-    /// here so "did it leave the machine" is one decision rather than
-    /// one per RPC method.
+    /// What to stamp on traffic arriving on `route`.
+    ///
+    /// The capnp handshake is `joinChannel(channelId, identity)` and
+    /// carries no announced handle, so this transport has nothing to
+    /// offer but the room lookup — which is the authoritative answer
+    /// anyway.
+    fn participant_id(&self, route: &CrdtRoute) -> String {
+        self.identity.resolve(Some(route), None)
+    }
+
+    /// Publish a document delta to the peers in `route`'s room.
     ///
     /// The route gate, the refusal logging and the gossip size cap all
     /// live behind this handle, shared with the JSON dialect: a frame
@@ -272,16 +290,23 @@ impl CapnpBrokerState {
     /// [`PeerTable::fanout_to_route`] after it has finished writing to
     /// the JSON peers.
     ///
-    /// Only the channel the route names ([`CrdtRoute::channel_key`])
-    /// is considered — subscribers of other channels never observe the
-    /// event, and a route with no cluster addresses nothing at all.
+    /// Who receives it is [`CrdtRoute::delivers_to`], asked of the
+    /// route each subscriber's channel id decodes to. That is the same
+    /// call [`PeerTable::fanout_to_route`] makes of every JSON peer, so
+    /// one event cannot reach an audience on one transport that it is
+    /// refused on the other.
     ///
-    /// One widening: a **cluster-scoped** route (chrome traffic —
-    /// presence, cursors, roster) also reaches the record channels of
-    /// that cluster. "Who else is here" is a fact about the room, so a
-    /// peer looking at a different document in the same room is still
-    /// a legitimate audience; only document payloads are confined to
-    /// one record.
+    /// It is asked rather than restated on purpose. This filter used to
+    /// spell the rule out a second time, and the copy drifted: it read
+    /// "no record" as "addressed to the whole room", so a document
+    /// delta from an app that had not adopted records — which is most
+    /// of the fleet — was handed to *every* app in the cluster. Two
+    /// apps open in one room then answered each other's document
+    /// requests, and a reader asking the word processor what it held
+    /// was told by the file manager. The widening the copy was reaching
+    /// for is real, but it belongs to a route naming no *app* (chrome
+    /// traffic — presence, cursors, roster), and `delivers_to` already
+    /// draws it there.
     pub fn fanout_to_route(&self, event: &CollabEvent, except: u64, route: &CrdtRoute) {
         if route.cluster_id.is_empty() {
             return;
@@ -289,28 +314,9 @@ impl CapnpBrokerState {
         let Ok(mut all_channels) = self.channels.lock() else {
             return;
         };
-        let addressed = route.channel_key();
-        let room_wide = route.record_id.is_empty();
-        tracing::info!(
-            target: "qos_collab_probe",
-            addressed = %addressed,
-            room_wide,
-            registered = ?all_channels.keys().collect::<Vec<_>>(),
-            "PROBE capnp fanout: addressed key vs registered channels",
-        );
         let channels = all_channels
             .iter_mut()
-            .filter(|(k, _)| {
-                if k.as_str() == addressed {
-                    return true;
-                }
-                // The room-wide widening, decided by parsing the
-                // subscriber's key rather than by matching a prefix of
-                // it. A prefix test had to spell out the key's shape a
-                // second time, and stopped recognising a room's
-                // channels the moment the shape grew an app segment.
-                room_wide && CrdtRoute::from_channel_key(k).cluster_id == route.cluster_id
-            })
+            .filter(|(k, _)| route.delivers_to(&CrdtRoute::from_channel_key(k)))
             .map(|(_, subs)| subs);
         // Materialise each event into the transport-native envelope
         // once, then push a clone to every subscriber. Cheaper than
@@ -828,7 +834,7 @@ fn handle_signed_op_send(
                 .signed_document(route, Transport::Capnp, envelope.clone());
             let event = CollabEvent::SignedCRDTIncremental {
                 envelope: Box::new(envelope),
-                from_user_id: format!("peer-{peer_id}"),
+                from_user_id: state.participant_id(route),
             };
             if let Some(t) = state.peer_table.upgrade() {
                 t.fanout_to_route(&event, peer_id, route);
@@ -968,7 +974,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
             // synthesises them from `PresenceKey::pointer_default()`
             // when it processes this event.
             let event = CollabEvent::RemoteCursorMoved {
-                user_id: format!("peer-{peer_id}"),
+                user_id: state.participant_id(&route),
                 x,
                 y,
             };
@@ -1144,7 +1150,7 @@ fn publish_keyed_presence(
     };
     state.publish_presence(full_route, key.clone(), payload.clone());
     let event = CollabEvent::RemotePresenceUpdate {
-        user_id: format!("peer-{peer_id}"),
+        user_id: state.participant_id(route),
         key,
         payload,
     };
@@ -1349,11 +1355,12 @@ pub fn spawn(
     peer_table: Arc<PeerTable>,
     broker_channels: Arc<Mutex<BrokerChannels>>,
     publisher: Arc<PeerPublisher>,
+    identity: Arc<LocalIdentity>,
     quit: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
     let _ = std::fs::remove_file(&socket_path);
     let wired = publisher.is_wired();
-    let state = CapnpBrokerState::new(&peer_table, broker_channels, publisher);
+    let state = CapnpBrokerState::new(&peer_table, broker_channels, publisher, identity);
     peer_table.attach_capnp(Arc::clone(&state));
 
     // Bind on the caller's thread, before anything is detached.
@@ -1759,7 +1766,16 @@ mod tests {
         assert_eq!(received.artifact, artifact);
         assert_eq!(received.seq, 1);
         assert_eq!(received.payload, b"hi-capnp");
-        assert!(from.starts_with("peer-"), "attribution shape: {from}");
+        // Attributed to whoever is at this machine, not to the
+        // connection slot the op came in on. There is no room here to
+        // ask, so the answer is the local user id; what matters is that
+        // it is an identity a name can attach to rather than a number
+        // an app has no way to resolve.
+        assert!(
+            !from.starts_with("peer-") && !from.starts_with("peer@"),
+            "a transport id reached a subscriber: {from}",
+        );
+        assert_eq!(from, crate::shell::state::local_user_id());
 
         drop(legacy);
         drop(handle);
@@ -2610,6 +2626,139 @@ mod tests {
             snapshot.op,
             b"a-whole-document".to_vec(),
             "the document's bytes cross unchanged",
+        );
+
+        drop(handle);
+    }
+
+    /// One room, two apps: a document delta reaches the app it belongs
+    /// to and not the app open beside it.
+    ///
+    /// This is the central claim of a shared workspace, and it was
+    /// false. The capnp fanout read "this route names no record" as
+    /// "this route is addressed to the whole room" — and most of the
+    /// fleet names no record — so the word processor's deltas were
+    /// pushed onto the file manager's subscribers and the file
+    /// manager's onto the word processor's. What made it hard to see
+    /// from the outside is that traffic still *flowed*: a reader that
+    /// asked the word processor for its document got an answer, just
+    /// not from the word processor.
+    ///
+    /// Driven end to end through the real transport — three
+    /// connections to a live broker, a real `joinChannel`, a real
+    /// publish — because the defect was a second, drifted copy of the
+    /// delivery rule inside the fanout. Asking `delivers_to` directly
+    /// would re-assert the rule the fanout was ignoring.
+    ///
+    /// The third subscriber is not decoration. It joins the bare
+    /// cluster, which is what chrome and any connection predating the
+    /// app segment address, and it must still be reached: a fanout
+    /// narrowed until nothing crosses would satisfy the refusal above
+    /// on its own.
+    #[test]
+    fn a_documents_delta_reaches_its_own_app_and_not_the_app_beside_it() {
+        let (json_path, capnp_path) = unique_paths("capnp-app-scoped");
+        let handle =
+            spawn_full(json_path.clone(), Some(capnp_path.clone()), None).expect("spawn broker");
+
+        // Two apps a person really does have open at once, in one
+        // room, neither of them naming a record.
+        let cluster = uuid::Uuid::new_v4().to_string();
+        let words = CrdtRoute::app("dev.qos.word-processor", cluster.clone()).channel_key();
+        let files = CrdtRoute::app("dev.qos.file-explorer", cluster.clone()).channel_key();
+        let room = CrdtRoute::cluster(cluster.clone()).channel_key();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let capnp_path_clone = capnp_path.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&rt, async move {
+                // The audience: the same app, a different app, and the
+                // room itself. Each is its own connection — the fanout
+                // skips the sender's peer id, so a client listening to
+                // itself would prove nothing.
+                let (wc, _wd) = dial_capnp_for_test(capnp_path_clone.clone())
+                    .await
+                    .expect("dial word-processor reader");
+                let words_reader = runtime_collab::CollabClient::from_raw(wc);
+                let words_chan = words_reader
+                    .join_channel(&words, b"words-reader")
+                    .await
+                    .expect("join word-processor");
+                let words_sub = words_chan.subscribe().await.expect("subscribe word-processor");
+
+                let (fc, _fd) = dial_capnp_for_test(capnp_path_clone.clone())
+                    .await
+                    .expect("dial file-explorer reader");
+                let files_reader = runtime_collab::CollabClient::from_raw(fc);
+                let files_chan = files_reader
+                    .join_channel(&files, b"files-reader")
+                    .await
+                    .expect("join file-explorer");
+                let files_sub = files_chan.subscribe().await.expect("subscribe file-explorer");
+
+                let (rc, _rd) = dial_capnp_for_test(capnp_path_clone.clone())
+                    .await
+                    .expect("dial room reader");
+                let room_reader = runtime_collab::CollabClient::from_raw(rc);
+                let room_chan = room_reader
+                    .join_channel(&room, b"room-reader")
+                    .await
+                    .expect("join room");
+                let room_sub = room_chan.subscribe().await.expect("subscribe room");
+
+                // A second word processor publishes an edit.
+                let (sc, _sd) = dial_capnp_for_test(capnp_path_clone)
+                    .await
+                    .expect("dial word-processor writer");
+                let writer = runtime_collab::CollabClient::from_raw(sc);
+                let write_chan = writer
+                    .join_channel(&words, b"words-writer")
+                    .await
+                    .expect("join word-processor writer");
+                write_chan
+                    .send_unsigned_incremental(b"quinten-typed-this")
+                    .await
+                    .expect("send the edit");
+
+                let to_its_app = words_sub.read().await.map(|e| e.op).ok();
+                let to_the_room = room_sub.read().await.map(|e| e.op).ok();
+                // The fanout is one pass over the channel map, so by
+                // the time either read above returned, a delivery to
+                // the neighbour would already be sitting in its queue.
+                // The wait is slack for a loaded machine, not a race.
+                let to_the_neighbour = matches!(
+                    tokio::time::timeout(Duration::from_secs(2), files_sub.read()).await,
+                    Ok(Ok(_)),
+                );
+                let _ = tx.send((to_its_app, to_the_room, to_the_neighbour));
+            });
+        });
+
+        let (to_its_app, to_the_room, to_the_neighbour) = rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the capnp thread reported");
+
+        assert_eq!(
+            to_its_app.as_deref(),
+            Some(&b"quinten-typed-this"[..]),
+            "an edit must reach the other window of the app that made it — \
+             this is what one shared document means",
+        );
+        assert!(
+            !to_the_neighbour,
+            "the word processor's document reached the file manager: two apps in one \
+             room are not one document, and a reader asking either of them what it holds \
+             is answered by whichever replies first",
+        );
+        assert_eq!(
+            to_the_room.as_deref(),
+            Some(&b"quinten-typed-this"[..]),
+            "a connection addressing the bare room still hears the room's traffic",
         );
 
         drop(handle);

@@ -156,6 +156,32 @@ impl PeerOrigin {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The handle presence frames identify this origin's peer by, or
+    /// `None` when the origin is not a remote libp2p peer at all.
+    ///
+    /// The bridge between the two ways a session learns somebody is in
+    /// a room. Presence arrives keyed by
+    /// [`crate::network::behaviour::peer_liveness_handle`]; room
+    /// replication arrives keyed by the identity the transport
+    /// authenticated, which is this. Reducing that identity to the same
+    /// handle is what lets one peer be one row whichever route it
+    /// turned up by.
+    ///
+    /// Deliberately one-way, and deliberately not used for authority. A
+    /// handle is a digest, and a decision that turns on equality must
+    /// not turn on one — which is why [`Self::peer`] carries the peer id
+    /// whole. This is for display and de-duplication, where a collision
+    /// costs a merged row rather than a granted permission.
+    ///
+    /// An in-process hub subscriber and a local replay have no peer id
+    /// and get `None`, so neither can be mistaken for somebody who
+    /// arrived over a wire.
+    pub fn liveness_handle(&self) -> Option<u64> {
+        let base58 = self.0.strip_prefix("p2p:")?;
+        let peer = base58.parse::<libp2p::PeerId>().ok()?;
+        Some(crate::network::behaviour::peer_liveness_handle(&peer))
+    }
 }
 
 impl std::fmt::Display for PeerOrigin {
@@ -486,6 +512,54 @@ pub enum TileContent {
         app_id: String,
         surface_id: u64,
     },
+    /// A window a peer has open in this room, named by the app that
+    /// draws it, before this machine has an instance of that app bound
+    /// to the tab.
+    ///
+    /// This is what a [`TileContent::Foreign`] becomes when it arrives
+    /// from someone else: a peer's `surface_id` is a handle on *their*
+    /// compositor's client and resolves here to nothing at best and to
+    /// somebody else's window at worst, so the surface is dropped and
+    /// the app id — the one part of the tile that means the same thing
+    /// on both machines — is kept.
+    ///
+    /// It is a waypoint, not a destination. `shell::peer_windows` reads
+    /// these, and where the room permits it and the app is installed,
+    /// starts a local instance in the same room and binds it into this
+    /// tab ([`crate::compositor::tab_binding::Placement::IntoTab`]) —
+    /// after which the tile is a `Foreign` like any other and this
+    /// variant is gone. It survives only where that cannot happen, and
+    /// then it is what the user is shown, so `label` and the reason are
+    /// what they read.
+    ///
+    /// Never projected into a room document: the projection writes only
+    /// tabs this machine owns, and a `PeerWindow` is by construction
+    /// somebody else's.
+    PeerWindow {
+        /// The wayland app-id the peer's window announces — for a qOS
+        /// package, its package id.
+        app_id: String,
+        /// What to call it on screen. The peer's own tab title, which
+        /// they resolved through their installed-app names, so it reads
+        /// "Word Processor" rather than "dev.qos.word-processor"
+        /// wherever they had the app installed.
+        label: String,
+        /// What this machine is doing about it, in the words the user
+        /// reads on the card — "Opening here…", or the reason there will
+        /// be no window.
+        ///
+        /// Empty means nobody has looked yet, and that is also how
+        /// `shell::peer_windows` knows which tabs it still owes an
+        /// answer: writing the note *is* the record of the decision, so a
+        /// refusal is stated once and a launch is started once.
+        ///
+        /// A sentence rather than a code because there is exactly one
+        /// place it is produced (`shell::peer_windows::examine`) and
+        /// exactly one place it is read (the card), and a code would only
+        /// add a second table to keep in step with the first.
+        #[serde(default)]
+        note: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -655,6 +729,27 @@ pub struct Collaborator {
     /// member's membership capability — never from this field.
     #[serde(default)]
     pub role_id: Option<String>,
+    /// True for somebody the room has *named* but who has not taken
+    /// part in it yet — invited, not arrived.
+    ///
+    /// The two are different facts and the difference is visible. A
+    /// room's authority writes an invitee's name into the room document
+    /// at the moment it mints their token, which is a real membership
+    /// statement and is why the row exists at all; but it is not
+    /// evidence that anybody came. A roster that drew the two the same
+    /// way would claim somebody was here on the strength of an
+    /// invitation they may never have opened — and it would make
+    /// joining a room change nothing on the screens of the people
+    /// already in it.
+    ///
+    /// Set only by
+    /// [`crate::shell::peer_presence::PeerPresence::refresh_roster`],
+    /// which knows both halves. `false` — the default, and what every
+    /// other constructor yields — means an ordinary participant, so a
+    /// collaborator built anywhere else reads as present exactly as it
+    /// did before this existed.
+    #[serde(default)]
+    pub invited: bool,
     /// The session this person is here through — the publishing peer's
     /// libp2p handle ([`crate::network::behaviour::peer_liveness_handle`]).
     ///
@@ -685,6 +780,7 @@ impl Collaborator {
             cursor_color: None,
             avatar: None,
             role_id: None,
+            invited: false,
             session: None,
         }
     }
@@ -722,6 +818,13 @@ impl Collaborator {
     /// Attach a role id pointing into the workspace's role table.
     pub fn with_role(mut self, role_id: impl Into<String>) -> Self {
         self.role_id = Some(role_id.into());
+        self
+    }
+
+    /// Mark this collaborator as invited rather than arrived — see
+    /// [`Self::invited`].
+    pub fn as_invited(mut self) -> Self {
+        self.invited = true;
         self
     }
 }
@@ -914,6 +1017,26 @@ pub struct Workspace {
 /// keys on this; a peer's Ed25519 key hex is a valid value, and so is
 /// the local user's account name.
 pub type UserId = String;
+
+/// What a role is called on screen, beside the name that holds it.
+///
+/// Lower-case because it is a tag next to a name — the same shape the
+/// roster's `agent` tag has — and not a sentence. One mapping, shared
+/// by every surface that shows a role, so the chip beside a person and
+/// the chip beside an agent cannot come to spell the same authority two
+/// different ways.
+pub fn role_label(role: CapRole) -> &'static str {
+    match role {
+        CapRole::Owner => "owner",
+        CapRole::Editor => "editor",
+        CapRole::Commenter => "commenter",
+        CapRole::Viewer => "viewer",
+        // Not "no role". A blocked member is still in the room's
+        // directory — that is the whole point of the state, and a row
+        // that said nothing would read as an ordinary participant.
+        CapRole::Denied => "blocked",
+    }
+}
 
 /// The id of the person sitting at this machine.
 ///
@@ -2331,7 +2454,24 @@ impl WorkspaceTree {
     /// labelled with its own handle rather than with somebody's name.
     pub fn room_peer_labels(&self, room: RoomId) -> std::collections::BTreeMap<u64, String> {
         let mut out = std::collections::BTreeMap::new();
-        for (peer, name) in self.room_peer_names_in_doc(room) {
+        // Room documents are not persisted -- they are re-projected from
+        // the cache -- so a machine that has just restarted holds none
+        // until something asks it to export. On a machine that governs
+        // the room, the cache is what the document is projected *from*,
+        // so reading it is reading the same authority rather than a
+        // weaker one, and it means a host does not show the people it
+        // invited as numbers for the first few seconds after a restart.
+        //
+        // A guest gets no such fallback. What it knows about the room is
+        // what replicated, and a guest with a name in its cache and none
+        // in the document would be one that had written a name it was
+        // not entitled to write.
+        let named = if self.governs_room(room) {
+            self.room_peer_names.get(&room).cloned().unwrap_or_default()
+        } else {
+            self.room_peer_names_in_doc(room)
+        };
+        for (peer, name) in named {
             let Ok(parsed) = peer.parse::<libp2p::PeerId>() else {
                 continue;
             };
@@ -3260,6 +3400,19 @@ impl WorkspaceTree {
         };
         let is_local = |id: u64| peer_salt_of(id) == local_salt;
 
+        // Read before the workspace is borrowed mutably: both live on
+        // the tree rather than on the workspace.
+        let host_strip = self
+            .workspaces
+            .iter()
+            .find(|w| w.room == room)
+            .and_then(|w| {
+                let active = self.active_strip.get(&w.id).copied();
+                active
+                    .filter(|id| w.strips.iter().any(|s| s.id == *id && is_local(id.raw())))
+                    .or_else(|| w.strips.iter().find(|s| is_local(s.id.raw())).map(|s| s.id))
+            });
+
         let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
             return false;
         };
@@ -3270,25 +3423,79 @@ impl WorkspaceTree {
             .map(|s| (s.id, s))
             .collect();
 
+        // **Which strip a peer's windows land in is this machine's
+        // business.** The room replicates contents — that a window is
+        // open, and what is in it — and a strip id is not contents, it
+        // is where this desktop decided to put things.
+        //
+        // Taking the peer's strip id literally minted a second strip
+        // here, and strips stack: their window appeared *below* ours on
+        // a desktop that scrolls horizontally and has no vertical
+        // arrangement to mean anything. Groups scroll along a strip, so
+        // that is where somebody else's window belongs — beside yours,
+        // one scroll away, exactly like a window you opened yourself.
+        //
+        // Their groups are merged into the strip we are using, so they
+        // keep their own ids: `merge_strip` matches by group id, and the
+        // ids are already disjoint per peer. Nothing about the group
+        // — its width, its tabs, whose it is — is changed by moving it.
+        let foreign: Vec<u64> = by_strip.keys().copied().filter(|id| !is_local(*id)).collect();
+        let mut peer_groups: Vec<ReplicatedGroup> = Vec::new();
+        for sid in foreign {
+            let rep = by_strip.remove(&sid).expect("key just listed");
+            peer_groups.extend(rep.groups);
+        }
+        // Nowhere of ours to put them: this workspace has no strip this
+        // machine owns, so one is made. Same outcome the old code
+        // reached, minus the stacking — it is a first strip rather than
+        // a second one.
+        if !peer_groups.is_empty() && host_strip.is_none() {
+            ws.strips.push(Strip::new(StripId::from(next_id()), "Main"));
+            changed = true;
+        }
+        let host_strip = host_strip.or_else(|| ws.strips.last().map(|s| s.id));
+
         // `(order, id, strip)` so local-only strips keep a position too.
         let mut out: Vec<(u64, u64, Strip)> = Vec::new();
+        let mut peer_groups = Some(peer_groups);
         for (i, strip) in std::mem::take(&mut ws.strips).into_iter().enumerate() {
             let sid = strip.id.raw();
-            match by_strip.remove(&sid) {
-                Some(rep) => {
-                    // Ours keeps the position our cache has it in. Taking
-                    // it back from the document would undo a local
-                    // reorder until the next projection re-stated it,
-                    // which reads as the layout twitching.
-                    let order = if is_local(sid) { i as u64 } else { rep.order };
-                    out.push((order, sid, Self::merge_strip(strip, rep, &is_local, &mut changed)));
+            // Everybody else's windows join this one.
+            let adopting = (Some(strip.id) == host_strip)
+                .then(|| peer_groups.take())
+                .flatten()
+                .filter(|g| !g.is_empty());
+            let published = by_strip.remove(&sid);
+            if published.is_none() && adopting.is_none() {
+                if is_local(sid) {
+                    // Ours, and simply not published (new, empty, or
+                    // below the share floor). The document has no say
+                    // over it.
+                    out.push((i as u64, sid, strip));
+                } else {
+                    // Neither ours nor in the room any more. Peers'
+                    // strips no longer become strips here at all, so
+                    // this is one left over from when they did — its
+                    // windows have since been merged into ours.
+                    changed = true;
                 }
-                // Ours, and simply not published (new, empty, or below
-                // the share floor). The document has no say over it.
-                None if is_local(sid) => out.push((i as u64, sid, strip)),
-                // A peer's strip that has left the room.
-                None => changed = true,
+                continue;
             }
+            let mut rep = published.unwrap_or_else(|| ReplicatedStrip {
+                id: sid,
+                order: i as u64,
+                name: None,
+                groups: Vec::new(),
+            });
+            // Ours keeps the position our cache has it in. Taking it
+            // back from the document would undo a local reorder until
+            // the next projection re-stated it, which reads as the
+            // layout twitching.
+            let order = if is_local(sid) { i as u64 } else { rep.order };
+            if let Some(extra) = adopting {
+                rep.groups.extend(extra);
+            }
+            out.push((order, sid, Self::merge_strip(strip, rep, &is_local, &mut changed)));
         }
         for (sid, rep) in by_strip {
             out.push((rep.order, sid, Self::hydrate_strip(rep)));
@@ -3403,7 +3610,7 @@ impl WorkspaceTree {
                             *changed = true;
                         }
                         if let Some(tile) = rep.tile.clone() {
-                            let tile = Self::localise_tile(tile);
+                            let tile = Self::localise_tile(tile, Some(&tab.tile), &rep.title);
                             if serde_json::to_vec(&tab.tile).ok()
                                 != serde_json::to_vec(&tile).ok()
                             {
@@ -3465,16 +3672,17 @@ impl WorkspaceTree {
 
     /// A tab that arrived from a peer.
     fn hydrate_tab(rep: ReplicatedTab) -> Tab {
+        let title = rep.title;
         Tab {
-            id: rep.id,
-            title: rep.title,
             tile: rep
                 .tile
-                .map(Self::localise_tile)
+                .map(|tile| Self::localise_tile(tile, None, &title))
                 .unwrap_or(TileContent::Stub {
                     kind: AppKind::Other(String::new()),
                     label: String::new(),
                 }),
+            id: rep.id,
+            title,
         }
     }
 
@@ -3483,16 +3691,49 @@ impl WorkspaceTree {
     /// [`TileContent::Foreign`] names a `wl_surface` protocol id, which is
     /// this compositor's handle on a client *it* is hosting. A peer's
     /// number resolves here to nothing at best and to somebody else's
-    /// window at worst, so it is degraded to a stub carrying the app id:
-    /// honest about what is open in the room, and not pretending to be a
-    /// live surface. The pixels of a remote window are what
-    /// foreign-surface streaming is for; this is the window's *existence*.
-    fn localise_tile(tile: TileContent) -> TileContent {
+    /// window at worst, so the surface is dropped and what survives is the
+    /// app id, as a [`TileContent::PeerWindow`] — which is what
+    /// `shell::peer_windows` then starts a local instance of, so the tab
+    /// ends up hosting a real window of the same app on the same room.
+    ///
+    /// `current` is what this tab holds here *now*, and it is why this
+    /// takes an argument at all. Once a local instance has been bound into
+    /// the tab the tile is a `Foreign` naming this machine's own surface,
+    /// and the peer keeps re-projecting their `Foreign` naming theirs. A
+    /// merge that overwrote ours with theirs on every round would take the
+    /// window away again a fraction of a second after it appeared, forever.
+    /// So a local binding for the same app wins over the remote tile: the
+    /// remote one carries no information we do not already have.
+    fn localise_tile(
+        tile: TileContent,
+        current: Option<&TileContent>,
+        title: &str,
+    ) -> TileContent {
         match tile {
-            TileContent::Foreign { app_id, .. } => TileContent::Stub {
-                kind: AppKind::Other(app_id.clone()),
-                label: app_id,
-            },
+            TileContent::Foreign { app_id, .. } => {
+                // Already resolved here — either to our own instance of
+                // the same app, or to the same waypoint. Either way the
+                // remote tile has nothing to add.
+                match current {
+                    Some(TileContent::Foreign { app_id: local, .. })
+                    | Some(TileContent::PeerWindow { app_id: local, .. })
+                        if local.eq_ignore_ascii_case(&app_id) =>
+                    {
+                        return current.cloned().expect("matched a Some");
+                    }
+                    _ => {}
+                }
+                let label = if title.trim().is_empty() {
+                    app_id.clone()
+                } else {
+                    title.to_string()
+                };
+                TileContent::PeerWindow {
+                    app_id,
+                    label,
+                    note: String::new(),
+                }
+            }
             other => other,
         }
     }
@@ -6201,14 +6442,19 @@ pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
 /// must keep their own filtered count — the fallback only fires for the
 /// active workspace.
 pub fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
+    // Somebody named but not yet arrived is not counted. This drives the
+    // avatar cluster's `+N` chip and the wheel disc's presence dot, and
+    // both are claims that people are *in* the workspace — an invitation
+    // that has not been redeemed is not one of them.
+    let present = |c: &&Collaborator| c.id != "me" && !c.invited;
     let active = tree.active_workspace();
     let per_ws = active
-        .map(|w| w.collaborators.iter().filter(|c| c.id != "me").count())
+        .map(|w| w.collaborators.iter().filter(present).count())
         .unwrap_or(0);
     if per_ws > 0 {
         return per_ws;
     }
-    tree.collaborators.iter().filter(|c| c.id != "me").count()
+    tree.collaborators.iter().filter(present).count()
 }
 
 #[cfg(test)]
@@ -6828,6 +7074,86 @@ mod automerge_foundation_tests {
         assert!(guest.set_room(guest_ws, room));
         guest.adopt_ownerless_workspaces(&"xaver".to_string());
         (host, guest, room)
+    }
+
+    /// A window somebody else in the room opened lands *beside* yours,
+    /// not underneath it.
+    ///
+    /// Groups scroll horizontally within a strip; strips stack. So a
+    /// peer's window becoming a strip of its own is not a cosmetic
+    /// difference — it puts two windows one above the other on a
+    /// desktop whose whole spatial model is a horizontal scroll, which
+    /// is a thing this window manager does not do.
+    ///
+    /// The room replicates *contents*. Which strip holds them is this
+    /// machine's layout and nobody else's, so a peer's strip id is not
+    /// a strip this machine has to mint.
+    #[test]
+    fn a_peers_window_lands_beside_yours_and_not_below_it() {
+        const HOST: u16 = 0x2222;
+        const GUEST: u16 = 0x3333;
+        let (mut host, mut guest, room) = two_in_a_room();
+        host.set_salt_override(HOST);
+        guest.set_salt_override(GUEST);
+
+        // Each has one window of their own, in a strip of their own.
+        for (tree, salt, title) in [
+            (&mut host, HOST, "Host window"),
+            (&mut guest, GUEST, "Guest window"),
+        ] {
+            let ws = tree.workspaces.iter().position(|w| w.room == room).unwrap();
+            let tab_id = salted(salt, 3);
+            tree.workspaces[ws].strips = vec![Strip {
+                id: StripId::from(salted(salt, 1)),
+                name: "Main".into(),
+                window_groups: vec![WindowGroup {
+                    id: salted(salt, 2),
+                    tabs: vec![Tab {
+                        id: tab_id,
+                        title: title.into(),
+                        tile: TileContent::AppPlaceholder {
+                            kind: AppKind::Other("Notes".into()),
+                            label: title.into(),
+                        },
+                    }],
+                    active_tab: tab_id,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                }],
+            }];
+            tree.sync_room_doc(room);
+        }
+
+        ship(&mut host, &mut guest, room, 1);
+
+        let ws = guest.workspaces.iter().find(|w| w.room == room).unwrap();
+        let titles: Vec<&str> = ws
+            .strips
+            .iter()
+            .flat_map(|s| s.window_groups.iter())
+            .flat_map(|g| g.tabs.iter())
+            .map(|t| t.title.as_str())
+            .collect();
+        assert!(
+            titles.contains(&"Host window") && titles.contains(&"Guest window"),
+            "the host's window has to arrive at all; got {titles:?}",
+        );
+        assert_eq!(
+            ws.strips.len(),
+            1,
+            "both windows belong in one horizontally-scrolling strip; \
+             {} strips means they are stacked vertically, with strips {:?}",
+            ws.strips.len(),
+            ws.strips
+                .iter()
+                .map(|s| (s.id.raw(), s.window_groups.len()))
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            ws.strips[0].window_groups.len(),
+            2,
+            "one group each, side by side",
+        );
     }
 
     fn ship(from: &mut WorkspaceTree, to: &mut WorkspaceTree, room: RoomId, hub: u64) {
@@ -7489,6 +7815,56 @@ mod automerge_foundation_tests {
             Some("Xaver"),
             "and it has to be reachable from the handle a presence frame carries",
         );
+    }
+
+    /// A host that has just restarted still knows who it invited.
+    ///
+    /// Room documents are not persisted, so a fresh process holds none
+    /// until a peer asks it to export one — and the first thing that
+    /// arrives from a peer is presence, which is precisely when the name
+    /// is needed. The name itself *is* persisted, so the answer exists;
+    /// this is about it being reachable before the first sync round.
+    #[test]
+    fn a_host_that_restarted_still_knows_who_it_invited() {
+        let (mut host, _ws, room) = host_owning_a_room();
+        let xaver = peer_id(9);
+        assert!(host.name_peer(room, &ROOM_OWNER.to_string(), &xaver, "Xaver"));
+
+        // What a restart leaves: the cache, and no projected document.
+        host.room_docs.clear();
+
+        assert_eq!(
+            host.room_peer_labels(room).get(&handle_of(&xaver)).map(String::as_str),
+            Some("Xaver"),
+            "the machine that governs the room is the one the document is \
+             projected from, so its cache is the same authority",
+        );
+    }
+
+    /// And a guest gets no such shortcut. What it knows about the room is
+    /// what replicated; a name in a guest's cache with none in the
+    /// document is a name that guest was not entitled to write.
+    #[test]
+    fn a_guest_reads_names_only_out_of_the_replicated_document() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        let xaver = peer_id(9);
+        assert!(host.name_peer(room, &"quinten".to_string(), &xaver, "Xaver"));
+        ship(&mut host, &mut guest, room, 1);
+        assert!(guest.room_peer_labels(room).contains_key(&handle_of(&xaver)));
+
+        // A name the guest holds locally and the room does not.
+        guest
+            .room_peer_names
+            .entry(room)
+            .or_default()
+            .insert(peer_id(11), "Somebody Else".to_string());
+
+        let labels = guest.room_peer_labels(room);
+        assert!(
+            !labels.values().any(|n| n == "Somebody Else"),
+            "a guest must not show a name that is not in the room document",
+        );
+        assert_eq!(labels.get(&handle_of(&xaver)).map(String::as_str), Some("Xaver"));
     }
 
     /// A peer nobody named is left as the id it arrived under. Not
@@ -8173,6 +8549,12 @@ mod collaborator_tests {
         assert_eq!(c.cursor_color, None);
         assert_eq!(c.avatar, None);
         assert_eq!(c.role_id, None);
+        // Present, not invited. A collaborator persisted before the
+        // distinction existed says nothing about whether its peer had
+        // arrived, and the invited state draws as an empty seat — so
+        // defaulting the other way would redraw every already-saved
+        // participant as somebody who never turned up.
+        assert!(!c.invited);
     }
 
     #[test]
@@ -9309,5 +9691,154 @@ mod agent_membership {
         )
         .expect("owner grants");
         assert!(ws.agent_members().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod peer_window_merge_tests {
+    //! What a peer's window becomes here, and what keeps it that way.
+    //!
+    //! Asserted against `WorkspaceTree::merge_group`, the function the
+    //! room-sync path actually runs, rather than against a helper written
+    //! to agree with it.
+
+    use super::*;
+
+    const APP: &str = "dev.qos.word-processor";
+
+    /// Somebody else's tab, as the room document delivers it.
+    fn remote_tab(id: u64, surface: u64) -> ReplicatedTab {
+        ReplicatedTab {
+            id,
+            order: 0,
+            title: "Word Processor".into(),
+            tile: Some(TileContent::Foreign {
+                app_id: APP.into(),
+                surface_id: surface,
+            }),
+        }
+    }
+
+    fn group_with(tab: Tab) -> WindowGroup {
+        let active_tab = tab.id;
+        WindowGroup {
+            id: next_id(),
+            tabs: vec![tab],
+            active_tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+        }
+    }
+
+    /// A peer's `Foreign` names a surface on *their* compositor. Kept
+    /// verbatim it would resolve here to nothing, or to an unrelated
+    /// window of ours; what survives instead is the app id, which means
+    /// the same thing on both machines and is what a local instance can be
+    /// started from.
+    #[test]
+    fn a_peers_window_arrives_as_the_app_it_names() {
+        let local = group_with(Tab {
+            id: 7,
+            title: String::new(),
+            tile: TileContent::Stub {
+                kind: AppKind::Other(String::new()),
+                label: String::new(),
+            },
+        });
+        let rep = ReplicatedGroup {
+            id: local.id,
+            order: 0,
+            width: None,
+            maximized: None,
+            tabs: vec![remote_tab(7, 4242)],
+        };
+        let mut changed = false;
+        let merged = WorkspaceTree::merge_group(local, rep, &|_| false, &mut changed);
+        match &merged.tabs[0].tile {
+            TileContent::PeerWindow { app_id, label, note } => {
+                assert_eq!(app_id, APP);
+                assert_eq!(label, "Word Processor", "the peer's own name for it");
+                assert!(note.is_empty(), "nobody has answered for it yet");
+            }
+            other => panic!("expected a peer window, got {other:?}"),
+        }
+    }
+
+    /// The binding survives the peer's next projection.
+    ///
+    /// Once this machine has started its own instance and bound it into
+    /// the tab, the tile names *our* surface while the peer keeps
+    /// re-projecting theirs. A merge that took theirs each round would
+    /// take the window away again a fraction of a second after it
+    /// appeared, on every sync interval, forever — which is the shape a
+    /// naive "the document wins" merge produces.
+    #[test]
+    fn a_local_instance_is_not_clobbered_by_the_peers_own_surface() {
+        let local = group_with(Tab {
+            id: 7,
+            title: "Word Processor".into(),
+            // What `bind_into_tab` left here after our instance mapped.
+            tile: TileContent::Foreign {
+                app_id: APP.into(),
+                surface_id: 99,
+            },
+        });
+        let rep = ReplicatedGroup {
+            id: local.id,
+            order: 0,
+            width: None,
+            maximized: None,
+            // The peer's surface id, which is not ours.
+            tabs: vec![remote_tab(7, 4242)],
+        };
+        let mut changed = false;
+        let merged = WorkspaceTree::merge_group(local, rep, &|_| false, &mut changed);
+        match &merged.tabs[0].tile {
+            TileContent::Foreign { app_id, surface_id } => {
+                assert_eq!(app_id, APP);
+                assert_eq!(
+                    *surface_id, 99,
+                    "the tab must keep hosting this machine's own window"
+                );
+            }
+            other => panic!("expected our own surface, got {other:?}"),
+        }
+        assert!(!changed, "a merge that changed nothing must not say it did");
+    }
+
+    /// A different app taking the tab over *is* news, and is taken.
+    /// The rule is "a local binding for the same app wins", not "whatever
+    /// is here wins" — the second would strand the tab on a window whose
+    /// tab now holds something else.
+    #[test]
+    fn a_different_app_in_the_tab_still_replaces_what_is_here() {
+        let local = group_with(Tab {
+            id: 7,
+            title: "Word Processor".into(),
+            tile: TileContent::Foreign {
+                app_id: APP.into(),
+                surface_id: 99,
+            },
+        });
+        let mut rep_tab = remote_tab(7, 4242);
+        rep_tab.title = "Terminal".into();
+        rep_tab.tile = Some(TileContent::Foreign {
+            app_id: "dev.qos.terminal".into(),
+            surface_id: 4242,
+        });
+        let rep = ReplicatedGroup {
+            id: local.id,
+            order: 0,
+            width: None,
+            maximized: None,
+            tabs: vec![rep_tab],
+        };
+        let mut changed = false;
+        let merged = WorkspaceTree::merge_group(local, rep, &|_| false, &mut changed);
+        match &merged.tabs[0].tile {
+            TileContent::PeerWindow { app_id, .. } => assert_eq!(app_id, "dev.qos.terminal"),
+            other => panic!("expected the new app, got {other:?}"),
+        }
+        assert!(changed);
     }
 }

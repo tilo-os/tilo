@@ -30,13 +30,22 @@ use crate::shell::state::WorkspaceTree;
 
 pub const TOPBAR_HEIGHT_PX: f32 = 40.0;
 
-/// Concept §1.1 top-bar backdrop is `bg-black/80 backdrop-blur-xl`. Until the
-/// pinned Vello supports `push_blur_layer`, we honour just the alpha split
-/// (gap #3 in `docs/nirios/visual-gaps.md`): the top-bar surface is tinted
-/// at 0.80 over whatever sits beneath it. The `surfaces.overlay` token in
-/// `ui::tokens::colors` is defined as `rgba8(0, 0, 0, 204)` —
-/// `204 / 255 ≈ 0.8` — so this constant is the single source of truth the
-/// `shell_chrome_test` suite pins the token against.
+/// Opacity of the top-bar surface: the toolkit's shared chrome opacity, so
+/// the bar cannot drift away from the popovers that hang off it.
+///
+/// The concept's §1.1 backdrop is `bg-black/80 backdrop-blur-xl`, and this
+/// used to honour "just the alpha split" on the grounds that vello has no
+/// backdrop filter. A tint without its blur is not glass, though — it is a
+/// contrast loss that tracks whatever is open behind the surface — so
+/// chrome is opaque and the depth comes from the surface's own ground and
+/// edge. See `ui::chrome::shell::CHROME_SURFACE_ALPHA`.
+///
+/// Note that [`TopBarChrome::draw`] fills `surfaces.overlay` directly and
+/// never consults this constant, so the bar is currently painting the
+/// declared tier raw rather than resolving `ChromeRole::Bar`. That is why
+/// the dark bar is darker than the desktop while a panel is lighter — the
+/// two are not, in fact, one material on screen yet, whatever
+/// `bar_and_panel_share_one_material` proves about the roles themselves.
 pub const TOP_BAR_SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
 
 /// Weight of the SystemMonitor sparkline fill. Low enough that the bars
@@ -451,6 +460,13 @@ impl TopBarChrome {
             Some(ws) if ws.collaborators.iter().any(|c| c.id != "me") => &ws.collaborators,
             _ => &tree.collaborators,
         };
+        // Somebody who has been invited and has not arrived is not in
+        // the avatar cluster. An avatar there is a claim that a specific
+        // person is in this workspace, and the empty-roster slot exists
+        // precisely to say "there is nobody here yet, invite someone" —
+        // so filling it with the person you just invited would answer
+        // its own offer and hide the moment they actually turn up.
+        let present = |c: &&crate::shell::state::Collaborator| c.id != "me" && !c.invited;
         self.collaborator_initials.clear();
         self.collaborator_colors.clear();
         // Peer count flows through the shared helper so the top-bar
@@ -463,7 +479,7 @@ impl TopBarChrome {
         // gave the two surfaces different answers whenever the room had
         // to break a tie.
         let colors = crate::shell::state::roster_colors(roster);
-        for c in roster.iter().filter(|c| c.id != "me").take(3) {
+        for c in roster.iter().filter(present).take(3) {
             let Some(ch) = c.name.chars().next() else {
                 continue;
             };
@@ -649,11 +665,9 @@ impl TopBarChrome {
         self.overview_btn_rect
     }
 
-    /// Translucent-tint fallback alpha for the top-bar surface. Concept
-    /// §1.1 uses `bg-black/80 backdrop-blur-xl`; without the `backdrop-blur`
-    /// primitive we at least honour the /80 alpha split (visual-gap #3 in
-    /// `docs/nirios/visual-gaps.md`). Pinned so a future regression that
-    /// reverts the topbar to an opaque fill fails the chrome-test suite.
+    /// Opacity of the top-bar surface. See [`TOP_BAR_SURFACE_ALPHA`];
+    /// pinned by `shell_chrome_test` so the bar cannot drift away from the
+    /// chrome constant the popovers share.
     pub fn top_bar_alpha() -> f32 {
         TOP_BAR_SURFACE_ALPHA
     }
@@ -1654,8 +1668,7 @@ impl Widget for TopBarChrome {
         }
 
         // Avatar stack click target. Spans from the left-most circle to the
-        // right of the stack (rx before drawing). Empty collaborators still
-        // get a zero-sized rect so the click handler short-circuits.
+        // right of the stack (rx before drawing).
         let slot_count =
             self.collaborator_initials.len() + if self.collaborator_overflow > 0 { 1 } else { 0 };
         if slot_count > 0 {
@@ -1667,7 +1680,63 @@ impl Widget for TopBarChrome {
             self.avatar_stack_rect =
                 Rect::new(leftmost_cx - 9.0, y_mid - 11.0, stack_right_x, y_mid + 11.0);
         } else {
-            self.avatar_stack_rect = Rect::ZERO;
+            // An empty roster is exactly when this control matters most.
+            // Clicking the stack is how the room's people are opened, and
+            // a stack of nobody used to paint nothing and publish
+            // `Rect::ZERO` — so the one person who needs the control, the
+            // one about to invite the *first* collaborator, was the one
+            // person it was not there for. The panel behind it could then
+            // only be reached by its address, which is not a gesture.
+            //
+            // So the slot keeps its geometry and says what it is for. The
+            // ring is dashed and the chip is unfilled because an empty
+            // seat is not a person: a filled chip in the avatar row would
+            // read as a participant nobody added. The verb is spelled out
+            // beside it because a bare `+` in a top bar is a guess.
+            let label = "Invite";
+            let label_size = tokens.typography.scale.xs;
+            let (label_w, label_h) =
+                text_renderer.measure_weighted(label, label_size, None, TextWeight::Medium);
+            let chip_r = 7.5_f64;
+            let pill_x1 = stack_right_x + 2.0;
+            let chip_cx = pill_x1 - 6.0 - chip_r;
+            let label_x = chip_cx - chip_r - 6.0 - label_w as f64;
+            let pill = Rect::new(label_x - 10.0, center_y - 12.0, pill_x1, center_y + 12.0);
+            let pill_rr = RoundedRect::from_rect(pill, tokens.radii.sm as f64);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.surfaces.raised,
+                None,
+                &pill_rr,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                label_size,
+                colors.text_dim,
+                transform * Affine::translate((label_x, center_y - label_h as f64 / 2.0)),
+                None,
+                TextWeight::Medium,
+            );
+            let chip = vello::kurbo::Circle::new(Point::new(chip_cx, center_y), chip_r);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
+                transform,
+                colors.border_standard,
+                None,
+                &chip,
+            );
+            let plus = Rect::new(chip_cx - 5.0, center_y - 5.0, chip_cx + 5.0, center_y + 5.0);
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                plus,
+                ui::icons::Icon::Plus,
+                colors.text_dim,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            self.avatar_stack_rect = pill;
         }
 
         // End of cache build — splice the freshly-encoded local scene
@@ -2111,6 +2180,122 @@ mod tests {
         );
     }
 
+    /// Inviting the *first* person is the one moment the avatar stack
+    /// has nobody to draw, and it used to answer that by publishing
+    /// `Rect::ZERO` — so the control for "open the room's people"
+    /// vanished at exactly the moment somebody wanted it, and the panel
+    /// behind it could only be reached by its address. An empty roster
+    /// has to still be something a person can point at and click.
+    #[test]
+    fn empty_roster_still_offers_a_clickable_invite_affordance() {
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: Default::default(),
+            active_group: Default::default(),
+            collaborators: Vec::new(),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+
+        let mut bar = TopBarChrome::from_tree(&tree);
+        let chrome = crate::shell::chrome_state::ChromeState::new(tree);
+        bar = bar.with_chrome(chrome.clone());
+
+        let theme = Theme::default();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+        let vp = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(40.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                vp,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1600.0),
+                    height: taffy::AvailableSpace::Definite(40.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .unwrap();
+        bar.apply_layout(&taffy, node, Point::ORIGIN);
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+        assert!(
+            bar.collaborator_initials().is_empty() && bar.collaborator_overflow() == 0,
+            "this test is about the empty case and the roster is not empty",
+        );
+        let stack = bar.avatar_stack_rect;
+        assert!(
+            stack.area() > 0.0,
+            "an empty roster still has to offer a control to click",
+        );
+        let bar_rect = bar.get_rect();
+        assert!(
+            stack.y0 >= bar_rect.y0 && stack.y1 <= bar_rect.y1,
+            "the affordance sits inside the bar: {stack:?} vs {bar_rect:?}",
+        );
+        let tray = bar.tray_pill_rect();
+        assert!(
+            stack.x1 <= tray.x0,
+            "the affordance stays left of the tray pill: stack.x1={}, tray.x0={}",
+            stack.x1,
+            tray.x0,
+        );
+
+        // And it is wired to the thing it looks like: clicking opens the
+        // room's people, which is what the stack does when it has some.
+        assert!(!chrome.borrow().overlays.collaborators);
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = winit::event::Modifiers::default();
+        let mut focus: Option<NodeId> = None;
+        for event in [
+            WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(
+                    stack.center().x,
+                    stack.center().y,
+                ),
+            },
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+        ] {
+            let mut handled = false;
+            bar.handle_event(
+                &event,
+                1.0,
+                &modifiers,
+                &mut doc,
+                &doc_root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+        }
+        assert!(
+            chrome.borrow().overlays.collaborators,
+            "clicking the empty-roster affordance opened the collaborators panel",
+        );
+    }
+
     /// Regression: the topbar must paint a soft drop-shadow band below
     /// its rect so the seam between the translucent overlay surface and
     /// the dotted-grid backdrop doesn't read as "noisy pixels". The
@@ -2189,6 +2374,80 @@ mod tests {
         assert!(
             (bar_bottom - TOPBAR_HEIGHT_PX as f64).abs() < 0.5,
             "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
+        );
+    }
+
+    /// The bar shows the room's people once there are any.
+    ///
+    /// The empty-roster slot says "Invite", which is right for a room
+    /// nobody is in and wrong the moment somebody joins one: a bar
+    /// offering to invite the first person, with a person already
+    /// there, is the OS contradicting its own collaborators panel.
+    ///
+    /// Both states are asserted together because only the pair says
+    /// anything. A stack that is empty in both cases and a stack that
+    /// is full in both cases each pass half of this.
+    #[test]
+    fn a_peer_in_the_room_replaces_the_invite_slot_with_their_avatar() {
+        let empty = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: Default::default(),
+            active_group: Default::default(),
+            collaborators: Vec::new(),
+            ..Default::default()
+        };
+        let mut empty = empty;
+        empty.active = empty.workspaces[0].id;
+        let bar = TopBarChrome::from_tree(&empty);
+        assert!(
+            bar.collaborator_initials().is_empty(),
+            "a room nobody is in has nobody to show, so the slot offers \
+             the invite instead",
+        );
+
+        // What `PeerPresence::refresh_roster` writes when somebody
+        // joins: a tree-level collaborator, id spelled the way the
+        // presence path spells a peer.
+        let mut joined = empty.clone();
+        joined.collaborators = vec![crate::shell::state::Collaborator::new(
+            "peer@11895642303397647149",
+            "Xaver",
+        )];
+        let bar = TopBarChrome::from_tree(&joined);
+        assert_eq!(
+            bar.collaborator_initials(),
+            &['X'],
+            "with somebody in the room the bar must show them, not an \
+             offer to invite the first person",
+        );
+        assert_eq!(
+            bar.collaborator_overflow(),
+            0,
+            "one peer is not an overflow",
+        );
+
+        // And the state in between, which is the one that can lie. The
+        // room has named him — the invitation is real and the panel
+        // lists it — but he has not redeemed it. An avatar here would
+        // be the bar claiming he is in the workspace, and it would
+        // replace the very affordance that exists to invite him.
+        let mut asked = empty.clone();
+        asked.collaborators = vec![
+            crate::shell::state::Collaborator::new("peer@11895642303397647149", "Xaver")
+                .as_invited(),
+        ];
+        let bar = TopBarChrome::from_tree(&asked);
+        assert!(
+            bar.collaborator_initials().is_empty(),
+            "somebody invited and not yet arrived is not an avatar in the \
+             cluster: {:?}",
+            bar.collaborator_initials(),
+        );
+        assert_eq!(
+            bar.collaborator_overflow(),
+            0,
+            "and does not show up in the +N chip either",
         );
     }
 }
