@@ -16,8 +16,8 @@
 use std::sync::mpsc::{Receiver, Sender};
 
 use crate::backend::{
-    preferred_backend, AlbumPage, ArtistPage, HomeContent, PlaylistPage, ResolvedStream,
-    SearchBundle, SearchKind,
+    default_backend, preferred_backend, AlbumPage, ArtistPage, HomeContent, PlaylistPage,
+    ResolvedStream, SearchBundle, SearchKind,
 };
 
 /// A unit of work for the background thread.
@@ -85,6 +85,24 @@ impl StreamWorker {
     /// Spawn the worker thread. Constructing the backend (live network init)
     /// happens *inside* the thread, so this call never blocks the caller.
     pub fn spawn() -> Self {
+        Self::spawn_inner(false)
+    }
+
+    /// Spawn a worker pinned to the **bundled offline backend**, whatever this
+    /// build compiled in.
+    ///
+    /// [`spawn`](Self::spawn) asks [`preferred_backend`] for the best source
+    /// available, and since `live` is a *default* feature that is the real
+    /// YouTube-Music client on any ordinary build. A test about how the app
+    /// behaves when a page cannot be served therefore depends on the host's
+    /// network being down — it passes on a disconnected machine and fails on a
+    /// connected one, having proved nothing either way. This pins the source so
+    /// the outcome is the app's, not the network's.
+    pub fn spawn_offline() -> Self {
+        Self::spawn_inner(true)
+    }
+
+    fn spawn_inner(force_offline: bool) -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<StreamRequest>();
         let (up_tx, up_rx) = std::sync::mpsc::channel::<StreamUpdate>();
 
@@ -94,9 +112,16 @@ impl StreamWorker {
                 // Build the data source once. `preferred_backend` picks live
                 // rustypipe if compiled + reachable, else the offline sample —
                 // never panicking, so the worker always has a backend.
-                let backend = preferred_backend(|note| {
-                    let _ = up_tx.send(StreamUpdate::Note(note));
-                });
+                let backend = if force_offline {
+                    let _ = up_tx.send(StreamUpdate::Note(
+                        "offline backend pinned; using bundled library".to_string(),
+                    ));
+                    default_backend()
+                } else {
+                    preferred_backend(|note| {
+                        let _ = up_tx.send(StreamUpdate::Note(note));
+                    })
+                };
                 let _ = up_tx.send(StreamUpdate::Backend {
                     name: backend.name().to_string(),
                     live: backend.is_live(),
