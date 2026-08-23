@@ -331,16 +331,14 @@ pub fn paint_card(
     let radius = theme.tokens.radii.md as f64;
     let shape = RoundedRect::from_rect(rect, radius);
 
-    // Soft drop shadow — fades with the card.
-    crate::surface::soft_shadow(
-        scene,
-        transform,
-        rect,
-        theme.tokens.colors.neutral[0],
-        18.0,
-        6.0,
-        (a * 0.5).clamp(0.0, 1.0),
-    );
+    // Drop shadow from the elevation token, following the card's own
+    // radius, and fading with the card. The spread, the offset and the
+    // strength used to be three literals here (18 / 6 / half), which is
+    // three decisions a toast should not be making on its own.
+    use crate::color_compat::ColorCompat;
+    let mut elev = theme.tokens.elevation.e3;
+    elev.color = elev.color.with_alpha_factor(a);
+    crate::surface::shadow(scene, transform, rect, radius, &elev);
 
     // Raised surface + hairline border.
     scene.fill(
