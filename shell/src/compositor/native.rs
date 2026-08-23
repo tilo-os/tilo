@@ -417,12 +417,23 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                             "w": r.width(), "h": r.height(),
                         })
                     });
+                    // What the client actually drew, beside the tab it
+                    // was drawn into. A window that opens and then
+                    // resizes is those two disagreeing for a moment, so
+                    // a harness watching an open needs both to say
+                    // whether it was clean.
+                    let buffer = store.frame_size(tab.surface_id).map(|(w, h)| {
+                        serde_json::json!({ "w": w, "h": h })
+                    });
                     serde_json::json!({
                         "surface_id": tab.surface_id,
                         "app_id": tab.app_id,
                         "frame_seq": store.frame_seq(tab.surface_id),
                         "last_error": store.last_error(tab.surface_id),
                         "rect": placement,
+                        "buffer": buffer,
+                        // Whether the shell is painting this window yet.
+                        "presented": store.is_presented(tab.surface_id),
                     })
                 })
                 .collect();

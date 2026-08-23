@@ -183,6 +183,24 @@ pub trait Widget {
     /// stored `enabled: bool` set via a `with_enabled`/`set_enabled`
     /// builder; non-interactive widgets inherit the default.
     fn is_enabled(&self) -> bool { true }
+    /// Whether this widget has something to show yet.
+    ///
+    /// Almost everything does from the moment it is built, which is why
+    /// the default is `true`. The exception is a widget standing in for
+    /// a process that has been started and has not drawn: between those
+    /// two moments there is a widget, and a rect, and nothing in it.
+    ///
+    /// A [`crate::widget::WindowGroup`] whose tiles all answer `false`
+    /// is laid out but not painted. It keeps its place in the strip, so
+    /// the windows either side of it are already where they will be when
+    /// it lands, and the person is not shown an empty frame that fills in
+    /// seconds later — a window appears when it has something in it.
+    ///
+    /// Implementors must **latch**: once this has answered `true` it may
+    /// never answer `false` again for the same content. A widget that
+    /// could un-present would make a window vanish mid-resize, which is
+    /// a worse defect than the one this exists to fix.
+    fn presented(&self) -> bool { true }
     fn needs_commit(&self) -> bool { false }
     fn on_commit(&mut self) {}
     fn get_state(&self) -> Option<String> { None }
