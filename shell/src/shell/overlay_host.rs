@@ -685,50 +685,44 @@ fn draw_invite_person_row(
 /// somebody else's screen, and running prose is not something anybody
 /// reads that way. Returns the y it ends at.
 #[allow(clippy::too_many_arguments)]
-fn draw_fingerprint_line(
+/// The invite code, drawn as the field it is.
+///
+/// It used to be a small chip with a sentence beside it explaining what
+/// it was for. The sentence did no work — it did not say what to do with
+/// the code, and a caption is not how an interface tells you that a
+/// field is readable and copyable. The field says it by being one:
+/// full width, set large, in the face that makes a code legible
+/// character by character.
+fn draw_invite_code(
     scene: &mut Scene,
     transform: Affine,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     at: Point,
-    fingerprint: &str,
-    why: &str,
+    code: &str,
     avail: f64,
 ) -> f64 {
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
-    let size = (tokens.typography.scale.xs).max(10.0);
-    let (fw, fh) = text_renderer.measure(fingerprint, size, None);
-    let chip = Rect::new(at.x, at.y, at.x + fw as f64 + 18.0, at.y + fh as f64 + 10.0);
+    let size = tokens.typography.scale.lg.max(15.0);
+    let (_, fh) = text_renderer.measure(code, size, None);
+    let field = Rect::new(at.x, at.y, at.x + avail, at.y + fh as f64 + 20.0);
     scene.fill(
         Fill::NonZero,
         transform,
         colors.surface_white_5,
         None,
-        &RoundedRect::from_rect(chip, tokens.radii.sm as f64),
+        &RoundedRect::from_rect(field, tokens.radii.md as f64),
     );
     text_renderer.draw_text(
         scene,
-        fingerprint,
+        code,
         size,
         colors.text_primary,
-        transform * Affine::translate((chip.x0 + 9.0, chip.y0 + 5.0)),
+        transform * Affine::translate((field.x0 + 14.0, field.y0 + 10.0)),
         None,
     );
-    let why = text_renderer.elide_to_width(
-        why,
-        size,
-        (avail - chip.width() - 10.0).max(1.0) as f32,
-    );
-    text_renderer.draw_text(
-        scene,
-        &why,
-        size,
-        colors.text_dim,
-        transform * Affine::translate((chip.x1 + 10.0, chip.y0 + 5.0)),
-        None,
-    );
-    chip.y1
+    field.y1
 }
 
 /// Gap between two chips in the filter band.
@@ -1724,10 +1718,11 @@ impl ShellOverlayHost {
             let mut st = chrome.borrow_mut();
             match outcome {
                 Ok(token) => {
-                    st.peer_sync_status = Some(match invitee.as_deref() {
-                        Some(name) => format!("Invite ready for {name}"),
-                        None => "Invite ready — share this token".to_string(),
-                    });
+                    // Nothing. The card appearing, with the name and
+                    // the code on it, is the whole message — a status
+                    // line restating what the card already shows is one
+                    // more sentence to read and no more information.
+                    st.peer_sync_status = None;
                     st.peer_sync_invite_token = Some(token);
                     st.peer_sync_invite_for = invitee.clone();
                     st.peer_sync_invite_name = None;
@@ -1813,7 +1808,7 @@ impl ShellOverlayHost {
         let Some(token) = token else { return };
         ui::text_selection::clipboard_copy(&token);
         let mut st = chrome.borrow_mut();
-        st.peer_sync_status = Some("Copied — paste it on the other machine".to_string());
+        st.peer_sync_status = Some("Copied".to_string());
         st.bump();
     }
 
@@ -10422,8 +10417,8 @@ impl ShellOverlayHost {
             let parsed = parse_invite(token);
             let who = invite_for.as_deref().unwrap_or("Anyone with this invite");
             let sub = match parsed.as_ref() {
-                Some(t) => format!("Invite ready · expires in {}", time_until(t.expiry_unix_seconds)),
-                None => "Invite ready".to_string(),
+                Some(t) => format!("Expires in {}", time_until(t.expiry_unix_seconds)),
+                None => String::new(),
             };
             y = draw_invite_person_row(
                 scene,
@@ -10437,14 +10432,13 @@ impl ShellOverlayHost {
             );
             y += 12.0;
             if let Some(t) = parsed.as_ref() {
-                y = draw_fingerprint_line(
+                y = draw_invite_code(
                     scene,
                     transform,
                     text_renderer,
                     theme,
                     Point::new(rect.x0 + pad, y),
                     &peer_fingerprint(&t.owner_peer_id),
-                    "reads the same on their screen",
                     avail,
                 );
             }
@@ -10464,14 +10458,13 @@ impl ShellOverlayHost {
                     false,
                 );
                 y += 12.0;
-                y = draw_fingerprint_line(
+                y = draw_invite_code(
                     scene,
                     transform,
                     text_renderer,
                     theme,
                     Point::new(rect.x0 + pad, y),
                     &peer_fingerprint(&t.owner_peer_id),
-                    "check it matches the sender's screen",
                     avail,
                 );
             } else {
@@ -10586,25 +10579,7 @@ impl ShellOverlayHost {
                 self.peer_sync_prompt_rects.push((which, brect));
                 bx = brect.x0 - 8.0;
             }
-            // The chord next to the button it duplicates, so the card
-            // teaches the keyboard route rather than hiding it.
-            let hint = if invite_name.is_some() {
-                "Enter to create · Escape to cancel"
-            } else if input.is_some() {
-                "Ctrl+V to paste · Enter to join · Escape to dismiss"
-            } else {
-                "Ctrl+C to copy · Escape to dismiss"
-            };
-            let hint = text_renderer.elide_to_width(hint, body_size, (avail * 0.6) as f32);
-            text_renderer.draw_text(
-                scene,
-                &hint,
-                body_size,
-                colors.text_dim,
-                transform
-                    * Affine::translate((rect.x0 + pad, y.min(rect.y1 - pad - bh + 8.0))),
-                None,
-            );
+
         }
     }
 
