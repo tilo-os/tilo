@@ -2341,6 +2341,39 @@ impl App {
         }
     }
 
+    /// Perform an accessibility [`Action`](crate::a11y::Action) on whatever the
+    /// keyboard is currently pointing at — the focused widget, or, when that
+    /// widget nominates one, the **active descendant** inside it.
+    ///
+    /// This is the keyboard's half of the routing
+    /// [`dispatch_a11y_action`](Self::dispatch_a11y_action) does for an
+    /// assistive technology, and it deliberately resolves the target the same
+    /// way ([`crate::accesskit_bridge::active_descendant_path`]): pressing Enter
+    /// must activate the element the reader just announced, not the canvas
+    /// containing it. A widget that nominates nothing gets an empty key path and
+    /// behaves exactly as it did before.
+    ///
+    /// Returns `true` if the widget consumed the action.
+    pub fn perform_action_on_focused(&mut self, action: &crate::a11y::Action) -> bool {
+        let Some(fid) = self.focused_node else {
+            return false;
+        };
+        let Some(&w_ptr) = self.node_map.get(&fid) else {
+            return false;
+        };
+        let key_path = unsafe { (*w_ptr).accessibility() }
+            .and_then(|n| crate::accesskit_bridge::active_descendant_path(&n))
+            .unwrap_or_default();
+        let did = unsafe {
+            (*w_ptr).perform_action_at(action, &key_path, &mut self.state.doc, &self.state.root)
+        };
+        if did {
+            self.needs_sync = true;
+            self.layout_dirty = true;
+        }
+        did
+    }
+
     /// Rebuild the [retained semantic tree](crate::a11y_tree::SemanticTree) from
     /// the current widget tree, node map, focus, and the focused app's open
     /// resources, diffing it against the previous frame.
@@ -4177,32 +4210,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         ..
                     } = event
                     {
-                        if let Some(fid) = app.focused_node {
-                            if let Some(&w_ptr) = app.node_map.get(&fid) {
-                                // Aim at the widget's active descendant when it
-                                // nominates one, so Enter on a canvas activates
-                                // the clip the user is on rather than the whole
-                                // canvas — the same target the reader is sitting
-                                // on. Empty for every ordinary widget.
-                                let key_path = unsafe { (*w_ptr).accessibility() }
-                                    .and_then(|n| {
-                                        crate::accesskit_bridge::active_descendant_path(&n)
-                                    })
-                                    .unwrap_or_default();
-                                let did = unsafe {
-                                    (*w_ptr).perform_action_at(
-                                        &crate::a11y::Action::Activate,
-                                        &key_path,
-                                        &mut app.state.doc,
-                                        &app.state.root,
-                                    )
-                                };
-                                if did {
-                                    handled = true;
-                                    app.needs_sync = true;
-                                    app.layout_dirty = true;
-                                }
-                            }
+                        if app.perform_action_on_focused(&crate::a11y::Action::Activate) {
+                            handled = true;
                         }
                     }
                 }
@@ -4245,29 +4254,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             }
                             _ => (None, 0),
                         };
-                        if let (Some(act), Some(fid)) = (action, app.focused_node) {
-                            if let Some(&w_ptr) = app.node_map.get(&fid) {
-                                let key_path = unsafe { (*w_ptr).accessibility() }
-                                    .and_then(|n| {
-                                        crate::accesskit_bridge::active_descendant_path(&n)
-                                    })
-                                    .unwrap_or_default();
-                                let mut any = false;
-                                for _ in 0..times {
-                                    any |= unsafe {
-                                        (*w_ptr).perform_action_at(
-                                            &act,
-                                            &key_path,
-                                            &mut app.state.doc,
-                                            &app.state.root,
-                                        )
-                                    };
-                                }
-                                if any {
-                                    handled = true;
-                                    app.needs_sync = true;
-                                    app.layout_dirty = true;
-                                }
+                        if let Some(act) = action {
+                            let mut any = false;
+                            for _ in 0..times {
+                                any |= app.perform_action_on_focused(&act);
+                            }
+                            if any {
+                                handled = true;
                             }
                         }
                     }
@@ -7188,8 +7181,13 @@ mod synthetic_node_dispatch_tests {
     use crate::a11y::{Action, Role};
     use crate::state::State;
     use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+    use crate::widget::Widget;
     use std::cell::RefCell;
+    use std::collections::HashMap;
     use std::rc::Rc;
+    use taffy::{NodeId, TaffyTree};
+    use vello::kurbo::Rect as KurboRect;
+    use winit::event::WindowEvent;
 
     #[derive(Clone)]
     struct Person {
@@ -7230,6 +7228,229 @@ mod synthetic_node_dispatch_tests {
             })
             .map(|(id, _)| *id)
             .unwrap_or_else(|| panic!("no exported node for row {index}"))
+    }
+
+    /// A canvas widget in the shape the video editor and `sheets` use: it paints
+    /// its own contents, has no child widgets, describes its elements as
+    /// synthetic nodes keyed by identity, and implements **only**
+    /// `perform_action_at`.
+    struct Timeline {
+        clips: Vec<&'static str>,
+        cursor: usize,
+        focused: bool,
+        activated: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl Timeline {
+        fn new(activated: Rc<RefCell<Vec<String>>>) -> Self {
+            Self {
+                clips: vec!["intro", "interview", "outro"],
+                cursor: 1,
+                focused: false,
+                activated,
+            }
+        }
+    }
+
+    impl Widget for Timeline {
+        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &crate::theme::Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: vello::kurbo::Point) {}
+        fn draw(
+            &mut self,
+            _sc: &mut vello::Scene,
+            _tr: vello::kurbo::Affine,
+            _txt: &mut crate::text_render::TextRenderer,
+            _th: &crate::theme::Theme,
+            _pr: &crate::presence::PresenceCtx,
+        ) {
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut automerge::AutoCommit,
+            _p: &automerge::ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _ni: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &str {
+            "Timeline"
+        }
+        fn get_rect(&self) -> KurboRect {
+            KurboRect::new(0.0, 0.0, 400.0, 100.0)
+        }
+        fn is_focusable(&self) -> bool {
+            true
+        }
+        fn set_focus(&mut self, f: bool) {
+            self.focused = f;
+        }
+        fn is_focused(&self) -> bool {
+            self.focused
+        }
+
+        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+            use crate::a11y::{AccessNode, AccessState, Role};
+            Some(
+                AccessNode::new(Role::Canvas)
+                    .with_name("Timeline")
+                    .with_state(AccessState::new().focusable(true).focused(self.focused))
+                    .with_children(
+                        self.clips
+                            .iter()
+                            .enumerate()
+                            .map(|(i, id)| {
+                                AccessNode::new(Role::ListItem)
+                                    .with_name(*id)
+                                    // Identity-keyed: a clip keeps its id when
+                                    // it is dragged to another position.
+                                    .with_hashed_key(*id)
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(true)
+                                            .focused(i == self.cursor),
+                                    )
+                            })
+                            .collect(),
+                    ),
+            )
+        }
+
+        fn perform_action_at(
+            &mut self,
+            action: &crate::a11y::Action,
+            key_path: &[u64],
+            _state: &mut automerge::AutoCommit,
+            _path: &automerge::ObjId,
+        ) -> bool {
+            use crate::a11y::{hash_key, Action};
+            let Some(&key) = key_path.first() else {
+                return false;
+            };
+            // Recover the clip from its hashed id — a stale key matches nothing
+            // and is dropped rather than guessed at.
+            let Some(index) = self.clips.iter().position(|id| hash_key(id) == key) else {
+                return false;
+            };
+            match action {
+                Action::Focus => {
+                    self.cursor = index;
+                    true
+                }
+                Action::Activate => {
+                    self.cursor = index;
+                    self.activated.borrow_mut().push(self.clips[index].into());
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
+
+    #[test]
+    fn keyboard_activation_reaches_the_clip_the_reader_is_on() {
+        // A canvas that implements only the routed hook must still be operable
+        // from the keyboard, aimed at the same element the reader announced.
+        let activated: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut app = App::new(State::new(), Box::new(Timeline::new(activated.clone())));
+        app.autofocus_first = true;
+        app.init_layout();
+
+        // The reader is on "interview" (the widget's cursor).
+        let update = app.build_a11y_tree_update(1.0);
+        let (_, focused) = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == update.focus)
+            .expect("focus names a node in the update");
+        assert_eq!(focused.label(), Some("interview"));
+
+        // Enter activates exactly that clip, not the canvas.
+        assert!(app.perform_action_on_focused(&Action::Activate));
+        assert_eq!(*activated.borrow(), vec!["interview".to_string()]);
+    }
+
+    #[test]
+    fn an_assistive_technology_and_the_keyboard_agree_on_the_target() {
+        // Drive the cursor with an AT focus request, then press Enter: the two
+        // routes must land on the same clip, or Enter activates something other
+        // than what was just announced.
+        let activated: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut app = App::new(State::new(), Box::new(Timeline::new(activated.clone())));
+        app.autofocus_first = true;
+        app.init_layout();
+
+        let update = app.build_a11y_tree_update(1.0);
+        let outro = update
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("outro"))
+            .map(|(id, _)| *id)
+            .expect("the clip reached the tree");
+
+        app.dispatch_a11y_action(outro, &Action::Focus);
+        let after = app.build_a11y_tree_update(1.0);
+        assert_eq!(after.focus, outro, "the AT moved the reader onto outro");
+
+        assert!(app.perform_action_on_focused(&Action::Activate));
+        assert_eq!(
+            *activated.borrow(),
+            vec!["outro".to_string()],
+            "the keyboard activated the clip the reader was on"
+        );
+    }
+
+    #[test]
+    fn a_clip_keeps_its_identity_when_the_track_is_reordered() {
+        // The whole point of an identity key: an id an AT is holding must follow
+        // the clip, not the slot it happened to occupy.
+        let activated: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut app = App::new(State::new(), Box::new(Timeline::new(activated.clone())));
+        app.init_layout();
+
+        let before = app.build_a11y_tree_update(1.0);
+        let outro = before
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("outro"))
+            .map(|(id, _)| *id)
+            .unwrap();
+
+        // Drag "outro" to the front.
+        {
+            let w = app.node_map.values().next().copied().unwrap();
+            let t = unsafe { &mut *(w as *mut Timeline) };
+            t.clips = vec!["outro", "intro", "interview"];
+        }
+
+        let after = app.build_a11y_tree_update(1.0);
+        assert_eq!(
+            after
+                .nodes
+                .iter()
+                .find(|(_, n)| n.label() == Some("outro"))
+                .map(|(id, _)| *id),
+            Some(outro),
+            "the clip kept its id across the move"
+        );
+        // And the id an AT was holding still activates that same clip.
+        app.dispatch_a11y_action(outro, &Action::Activate);
+        assert_eq!(*activated.borrow(), vec!["outro".to_string()]);
     }
 
     #[test]
