@@ -163,13 +163,13 @@ pub fn to_s16le(block: &[f32]) -> Vec<u8> {
 /// 23 MB, which is cheap next to re-running a decoder for every 20ms block an
 /// export asks for — and an export asks for every block of every clip, in
 /// order, so a cache that holds the whole thing never misses twice.
-#[cfg(feature = "gst")]
+#[cfg(any(feature = "gst", feature = "decode"))]
 pub struct DecodedPcm {
     paths: std::collections::HashMap<MediaId, String>,
     loaded: std::collections::HashMap<MediaId, Option<std::sync::Arc<Vec<f32>>>>,
 }
 
-#[cfg(feature = "gst")]
+#[cfg(any(feature = "gst", feature = "decode"))]
 impl DecodedPcm {
     /// Index every media in `project` whose bytes are readable. A reference
     /// that has not hydrated is simply absent, and its clips mix as silence.
@@ -207,7 +207,7 @@ impl DecodedPcm {
     }
 }
 
-#[cfg(feature = "gst")]
+#[cfg(any(feature = "gst", feature = "decode"))]
 impl PcmSource for DecodedPcm {
     fn samples(&mut self, media: MediaId, from_secs: f64, frames: usize) -> Option<Vec<f32>> {
         let pcm = self.pcm_for(media)?;
@@ -233,7 +233,7 @@ pub fn decode_pcm_for_test(uri: &str) -> Option<Vec<f32>> {
 /// `audioconvert ! audioresample` does the format and rate work, so the
 /// result is directly mixable whatever the file held. `None` when the source
 /// has no audio stream at all — a silent video is not an error.
-#[cfg(feature = "gst")]
+#[cfg(any(feature = "gst", feature = "decode"))]
 fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
     use media::gst;
     use media::gst::prelude::*;
@@ -349,6 +349,31 @@ impl MonitorSink for NullSink {
     fn push(&mut self, _block: &[f32]) -> bool {
         true
     }
+}
+
+/// The best output this machine offers: the system sink where one opens,
+/// [`NullSink`] where none does.
+///
+/// A box with no audio device is a normal state, not a failure — a headless
+/// CI runner is one — so it plays silently rather than refusing to play. The
+/// caller can tell which it got from [`output_is_audible`].
+#[cfg(any(feature = "gst", feature = "decode"))]
+pub fn open_output() -> Box<dyn MonitorSink> {
+    match SystemSink::open() {
+        Some(s) => Box::new(s),
+        None => {
+            tracing::info!("no audio output available; monitoring silently");
+            Box::new(NullSink)
+        }
+    }
+}
+
+/// Whether this machine has an audio output at all, for an honest UI: the
+/// transport can then say it is playing *silently* rather than implying
+/// sound the user is not getting.
+#[cfg(any(feature = "gst", feature = "decode"))]
+pub fn output_is_audible() -> bool {
+    SystemSink::open().is_some()
 }
 
 /// What the monitor thread reads and the UI writes.
@@ -474,14 +499,14 @@ impl Drop for AudioMonitor {
 /// `autoaudiosink` picks whatever the host offers (PipeWire here). A machine
 /// with no output at all yields `None`, and the editor falls back to
 /// [`NullSink`] — silent playback rather than no playback.
-#[cfg(feature = "gst")]
+#[cfg(any(feature = "gst", feature = "decode"))]
 pub struct SystemSink {
     pipeline: media::gst::Pipeline,
     src: gstreamer_app::AppSrc,
     pushed: u64,
 }
 
-#[cfg(feature = "gst")]
+#[cfg(any(feature = "gst", feature = "decode"))]
 impl SystemSink {
     pub fn open() -> Option<Self> {
         use media::gst;
@@ -517,7 +542,7 @@ impl SystemSink {
     }
 }
 
-#[cfg(feature = "gst")]
+#[cfg(any(feature = "gst", feature = "decode"))]
 impl MonitorSink for SystemSink {
     fn push(&mut self, block: &[f32]) -> bool {
         use media::gst;
@@ -544,7 +569,7 @@ impl MonitorSink for SystemSink {
     }
 }
 
-#[cfg(feature = "gst")]
+#[cfg(any(feature = "gst", feature = "decode"))]
 impl Drop for SystemSink {
     fn drop(&mut self) {
         use media::gst;
