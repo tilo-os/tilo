@@ -430,6 +430,52 @@ pub enum NeighbourMsg {
     },
 }
 
+impl NeighbourMsg {
+    /// A stable short name for this message kind, for diagnostics.
+    ///
+    /// Exists so a publish that fails can say *what* failed to go out. The
+    /// message itself is not loggable — several variants carry whole documents.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::SyncReq { .. } => "SyncReq",
+            Self::SyncResp { .. } => "SyncResp",
+            Self::PresenceMoved { .. } => "PresenceMoved",
+            Self::PresenceCleared { .. } => "PresenceCleared",
+            Self::SurfaceFrame { .. } => "SurfaceFrame",
+            Self::SurfaceStreamStart { .. } => "SurfaceStreamStart",
+            Self::SurfaceStreamEnd { .. } => "SurfaceStreamEnd",
+            Self::RemoteInput { .. } => "RemoteInput",
+            Self::PermissionRequest { .. } => "PermissionRequest",
+            Self::PermissionGrant { .. } => "PermissionGrant",
+            Self::Heartbeat { .. } => "Heartbeat",
+            Self::AppCrdtIncremental { .. } => "AppCrdtIncremental",
+            Self::AppCrdtIncrementalSigned { .. } => "AppCrdtIncrementalSigned",
+            Self::AppPresence { .. } => "AppPresence",
+            Self::AppCrdtSnapshot { .. } => "AppCrdtSnapshot",
+            Self::ScrollbackRequest { .. } => "ScrollbackRequest",
+            Self::ScrollbackResponse { .. } => "ScrollbackResponse",
+        }
+    }
+
+    /// Whether losing this message costs the room something it cannot recover
+    /// on its own.
+    ///
+    /// A dropped caret or heartbeat is corrected by the next one. A dropped
+    /// CRDT frame is not: Automerge queues every later change that names it as
+    /// an ancestor, so one loss freezes the document permanently and silently.
+    /// That difference is what decides how loudly a failed publish is reported.
+    pub fn loss_is_permanent(&self) -> bool {
+        matches!(
+            self,
+            Self::AppCrdtIncremental { .. }
+                | Self::AppCrdtIncrementalSigned { .. }
+                | Self::AppCrdtSnapshot { .. }
+                | Self::SyncResp { .. }
+                | Self::ScrollbackResponse { .. }
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,6 +484,59 @@ mod tests {
         let json = serde_json::to_string(&msg).expect("serialize");
         let parsed: NeighbourMsg = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(msg, parsed);
+    }
+
+    /// Losing one of these is not recoverable by repetition, and that is what
+    /// decides how loudly a failed publish is reported.
+    ///
+    /// The distinction is the whole reason the original defect went unnoticed:
+    /// a dropped caret looks the same as a dropped document frame at the
+    /// transport, but the caret is corrected by the next one and the frame
+    /// freezes the document permanently — Automerge queues every later change
+    /// that names the lost one as an ancestor.
+    #[test]
+    fn frames_whose_loss_is_permanent_are_classified_as_such() {
+        let crdt = [
+            NeighbourMsg::AppCrdtIncremental {
+                peer: 1,
+                app_id: String::new(),
+                cluster_id: String::new(),
+                record_id: String::new(),
+                data: vec![],
+            },
+            NeighbourMsg::AppCrdtSnapshot {
+                peer: 1,
+                app_id: String::new(),
+                cluster_id: String::new(),
+                record_id: String::new(),
+                data: vec![],
+            },
+            NeighbourMsg::SyncResp { changes: vec![], room: String::new() },
+        ];
+        for m in &crdt {
+            assert!(m.loss_is_permanent(), "{} carries history; losing it is permanent", m.kind());
+        }
+
+        // Repeated state. The next one corrects the last, so a drop is noise.
+        let recoverable = [
+            NeighbourMsg::Heartbeat { peer: 1, ts: 0 },
+            NeighbourMsg::PresenceMoved {
+                peer: 1,
+                user: String::new(),
+                key: String::new(),
+                point: (0.0, 0.0),
+                ts: 0,
+            },
+            NeighbourMsg::AppPresence {
+                peer: 1,
+                app_id: String::new(),
+                cluster_id: String::new(),
+                frame: vec![],
+            },
+        ];
+        for m in &recoverable {
+            assert!(!m.loss_is_permanent(), "{} is corrected by the next one", m.kind());
+        }
     }
 
     #[test]
