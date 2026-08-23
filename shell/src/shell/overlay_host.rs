@@ -292,6 +292,11 @@ pub struct ShellOverlayHost {
     /// One at a time: a second `OpenFile` while a dialog is up waits in
     /// the queue rather than stacking two modals over each other.
     file_picker: Option<Box<ActiveFilePicker>>,
+    /// The scrim rect the last frame actually filled under the portal's
+    /// file-chooser dialog, or `Rect::ZERO` on a frame that drew no
+    /// dialog. Same contract, and same reason to record rather than
+    /// recompute, as [`Self::peer_sync_scrim_rect`].
+    file_picker_scrim_rect: Rect,
     /// Whether peer-sync palette commands (`/invite`, `/connect`) are
     /// surfaced to the user. Off by default; the compositor flips this
     /// to `true` when booted with `--enable-peer-sync`. Toggled via
@@ -327,6 +332,15 @@ pub struct ShellOverlayHost {
     /// frame decides where the card lands, and a second opinion computed
     /// on the side is a second opinion that drifts.
     peer_sync_card_rect: Rect,
+    /// The scrim rect the last frame actually filled under the card, or
+    /// `Rect::ZERO` on a frame that painted no card.
+    ///
+    /// Recorded for the same reason [`Self::peer_sync_card_rect`] is: a
+    /// test that recomputed the scrim would be agreeing with itself.
+    /// What has to be true is that the rect the *renderer* was handed
+    /// reaches the top of the output, because chrome left undimmed
+    /// above a modal is chrome a person will try to click.
+    peer_sync_scrim_rect: Rect,
     /// Where the last frame's body content ended. Proves the measured
     /// body height was big enough for what got drawn into it.
     peer_sync_body_end: f64,
@@ -1296,11 +1310,13 @@ impl ShellOverlayHost {
             portal_prompts: None,
             portal_pickers: None,
             file_picker: None,
+            file_picker_scrim_rect: Rect::ZERO,
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
             peer_sync_prompt_rects: Vec::new(),
             peer_sync_card_rect: Rect::ZERO,
+            peer_sync_scrim_rect: Rect::ZERO,
             peer_sync_body_end: 0.0,
             notification_stack: None,
             last_chrome_revision: u64::MAX,
@@ -6424,6 +6440,13 @@ impl Widget for ShellOverlayHost {
         // The compositor drawing it is also what makes it trustworthy:
         // the requesting app cannot draw over it, read it, or dismiss
         // it.
+        //
+        // The recorded rect is cleared first, so a frame that draws no
+        // dialog cannot leave the previous frame's scrim behind as a
+        // rect something reads as still covering the screen.
+        self.file_picker_scrim_rect = Rect::ZERO;
+        let picker_scrim = self.rect;
+        let picker_body = file_picker_rect(self.rect);
         if let Some(active) = self.file_picker.as_mut() {
             // Through `fill_scrim`, at the same strength every other
             // modal dims with. Filling with the raw token instead — as
@@ -6434,11 +6457,12 @@ impl Widget for ShellOverlayHost {
             // floating on a void, with the desktop and the very document
             // the file was going into erased behind it, so nothing on
             // screen said what had asked or where the file would land.
-            fill_scrim(scene, transform, self.rect, MODAL_SCRIM_ALPHA, theme);
-            active.widget.set_rect(file_picker_rect(self.rect));
+            fill_scrim(scene, transform, picker_scrim, MODAL_SCRIM_ALPHA, theme);
+            active.widget.set_rect(picker_body);
             active
                 .widget
                 .draw(scene, transform, text_renderer, theme, presence);
+            self.file_picker_scrim_rect = picker_scrim;
         }
 
         // The hardware-key readout sits above absolutely everything,
@@ -10311,6 +10335,10 @@ impl ShellOverlayHost {
         theme: &Theme,
     ) {
         self.peer_sync_prompt_rects.clear();
+        // Cleared before every early return below, so a frame that
+        // paints no card cannot leave last frame's scrim behind for
+        // something to read as still covering the screen.
+        self.peer_sync_scrim_rect = Rect::ZERO;
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
@@ -10389,6 +10417,7 @@ impl ShellOverlayHost {
             .max_width(PEER_SYNC_CARD_WIDTH);
         let layout = ModalFrame::layout(self.rect, &spec, text_renderer, theme);
         self.peer_sync_card_rect = layout.card;
+        self.peer_sync_scrim_rect = layout.scrim;
         ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
 
         // The body arithmetic below is written against the card and its
@@ -13578,6 +13607,176 @@ mod palette_dispatch_tests {
         assert!(
             chrome.borrow().peer_sync_invite_token.is_none(),
             "a click on the scrim puts the card away",
+        );
+    }
+
+    /// Everything the shell draws sits under the modal's scrim —
+    /// including the top bar, which is the one strip of chrome a
+    /// person's eye goes to first.
+    ///
+    /// The contract this pins is not "the card looks nice on a dark
+    /// background". It is that the surface swallowing the click and the
+    /// surface showing the dim are the same rectangle. A modal whose
+    /// scrim stopped short of the top bar would leave a live-looking
+    /// clock, tray and workspace pill above a dialog that has already
+    /// taken the keyboard — chrome the user will try to click, and the
+    /// scrim would be lying about what is reachable.
+    ///
+    /// Read off the rect the renderer was actually handed
+    /// (`peer_sync_scrim_rect`, recorded by `draw_peer_sync`) rather
+    /// than recomputed here: a test that ran the same arithmetic as the
+    /// paint would agree with itself no matter what the paint did.
+    #[test]
+    fn the_modal_scrim_covers_the_whole_output_including_the_top_bar() {
+        let topbar = Rect::new(
+            TEST_VIEWPORT.x0,
+            TEST_VIEWPORT.y0,
+            TEST_VIEWPORT.x1,
+            TEST_VIEWPORT.y0 + crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX as f64,
+        );
+        for theme in [Theme::dark(), Theme::light()] {
+            let (mut h, chrome) = host_with_chrome();
+            for face in peer_sync_faces(&chrome) {
+                set_peer_sync_face(&chrome, face);
+                draw_peer_sync_face(&mut h, &theme);
+                let scrim = h.peer_sync_scrim_rect;
+                assert_eq!(
+                    scrim, TEST_VIEWPORT,
+                    "the {face} face dimmed {scrim:?} instead of the whole output \
+                     {TEST_VIEWPORT:?}",
+                );
+                // Stated separately from the equality above, because the
+                // top bar is the specific thing that must not be left
+                // bright, and a future viewport change should not be
+                // able to quietly drop it out of the covered region.
+                assert!(
+                    scrim.y0 <= topbar.y0
+                        && scrim.y1 >= topbar.y1
+                        && scrim.x0 <= topbar.x0
+                        && scrim.x1 >= topbar.x1,
+                    "the {face} face left the top bar {topbar:?} outside its scrim {scrim:?}",
+                );
+            }
+        }
+    }
+
+    /// A frame that draws no card leaves no scrim behind it.
+    ///
+    /// Without this the coverage assertion above could pass on a stale
+    /// rect from an earlier frame, which would make the guarantee read
+    /// as held at exactly the moment it stopped being.
+    #[test]
+    fn a_frame_with_no_card_records_no_scrim() {
+        let (mut h, chrome) = host_with_chrome();
+        set_peer_sync_face(&chrome, "token");
+        draw_peer_sync_face(&mut h, &Theme::dark());
+        assert_eq!(
+            h.peer_sync_scrim_rect, TEST_VIEWPORT,
+            "card up, scrim recorded"
+        );
+
+        {
+            let mut st = chrome.borrow_mut();
+            st.peer_sync_invite_token = None;
+            st.peer_sync_invite_name = None;
+            st.peer_sync_connect_input = None;
+        }
+        draw_peer_sync_face(&mut h, &Theme::dark());
+        assert_eq!(
+            h.peer_sync_scrim_rect,
+            Rect::ZERO,
+            "no card this frame, so no scrim is being claimed",
+        );
+    }
+
+    /// The portal's file-chooser dims the same whole output the invite
+    /// card does.
+    ///
+    /// It is the modal with the strongest claim to it: an app in another
+    /// process is parked on the answer, and `handle_event` absorbs every
+    /// event while it is up. Leaving the top bar bright above it would
+    /// advertise chrome that is, in fact, inert.
+    #[test]
+    fn the_file_picker_scrim_covers_the_whole_output_including_the_top_bar() {
+        let (mut h, _chrome) = host_with_chrome();
+        h.rect = TEST_VIEWPORT;
+        h.file_picker = Some(Box::new(ActiveFilePicker {
+            widget: ui::widget::FilePicker::new(
+                "Open",
+                std::path::Path::new("/"),
+                vec![std::path::PathBuf::from("/")],
+            ),
+            app_id: "test.app".to_string(),
+            multiple: false,
+            reply: None,
+        }));
+
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        h.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+
+        assert_eq!(
+            h.file_picker_scrim_rect, TEST_VIEWPORT,
+            "the file chooser dimmed {:?} instead of the whole output {:?}",
+            h.file_picker_scrim_rect, TEST_VIEWPORT,
+        );
+
+        // And it goes away with the dialog.
+        h.file_picker = None;
+        let mut scene = Scene::new();
+        h.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+        assert_eq!(
+            h.file_picker_scrim_rect,
+            Rect::ZERO,
+            "no dialog this frame, so no scrim is being claimed",
+        );
+    }
+
+    /// A click in the top bar's band, while the card is up, is taken by
+    /// the scrim and never reaches the top bar.
+    ///
+    /// The paint and the input are separate mechanisms and can fail
+    /// separately: a scrim that covers the screen but lets the click
+    /// through is worse than one that does not cover it, because it
+    /// looks correct while it is wrong. So this asserts the routing
+    /// rather than the pixels — the event goes in at the top bar's own
+    /// band, and the chrome behind must be unmoved by it.
+    #[test]
+    fn a_click_on_the_top_bar_band_is_swallowed_while_the_card_is_up() {
+        let (mut h, chrome) = host_with_chrome();
+        set_peer_sync_face(&chrome, "token");
+        draw_peer_sync_face(&mut h, &Theme::dark());
+
+        let mid_topbar = crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX as f64 / 2.0;
+        assert!(
+            h.peer_sync_scrim_rect
+                .contains(Point::new(1400.0, mid_topbar)),
+            "the point being clicked has to be one the scrim claims to cover",
+        );
+        h.last_cursor = Some(Point::new(1400.0, mid_topbar));
+
+        let before = chrome.borrow().overlays.collaborators;
+        assert!(
+            h.handle_peer_sync_event(&left_press(), &Modifiers::default()),
+            "a click in the top bar's band must be consumed by the modal, not \
+             forwarded to the chrome painted under it",
+        );
+        assert_eq!(
+            chrome.borrow().overlays.collaborators,
+            before,
+            "the top bar acted on a click that landed on the modal's scrim",
         );
     }
 
