@@ -143,25 +143,16 @@ def private_session_bus(run_dir: str,
                         runtime_dir: str) -> tuple[str, subprocess.Popen] | None:
     """A D-Bus session bus of this run's own.
 
-    Not a nicety. The compositor serves the file-chooser portal by taking
-    the well-known name `org.freedesktop.impl.portal.desktop.qos`, and a
-    bus name has exactly one owner: the *first* compositor on that bus
-    wins it and every later one logs
-
-        portal: another process already owns
-        org.freedesktop.impl.portal.desktop.qos — this session's file
-        dialog will never be reached
-
-    and then silently does nothing when an app asks for a file. On a
-    machine where anyone has left a qOS session running — another agent's
-    test, a demo from an hour ago — the take would fail at exactly the
-    click it exists to film, with no error anywhere the person clicking
-    can see. A bus of its own makes the run independent of whatever else
-    is on the machine.
-
-    It also keeps this session's `org.freedesktop.Notifications` off the
+    It keeps this session's `org.freedesktop.Notifications` off the
     desktop's bus, where it would otherwise be competing with GNOME for
-    your notifications.
+    your notifications — and it keeps the compositor's portal backend
+    from fighting whatever else on the machine has already claimed
+    `org.freedesktop.impl.portal.desktop.qos`, since a bus name has
+    exactly one owner and every later claimant just logs and gives up.
+
+    Nothing in this take asks the portal for anything any more, so
+    failing to raise one is no longer fatal — it costs you a couple of
+    notifications on your own desktop.
     """
     # The bus must not inherit the real XDG_RUNTIME_DIR, and this is not a
     # tidiness point — it destroys the desktop's file access.
@@ -204,98 +195,6 @@ def private_session_bus(run_dir: str,
     return None
 
 
-#: Where the OS image registers the compositor as a portal backend. Copied
-#: into the run rather than read from `/usr/share`, which on a development
-#: host carries gnome's and gtk's registrations and not this one.
-QOS_PORTAL_FILE = os.path.join(REPO, "os", "usr", "share",
-                               "xdg-desktop-portal", "portals", "qos.portal")
-PORTAL_FRONTEND = "/usr/libexec/xdg-desktop-portal"
-#: The desktop name `qos.portal` says its backend may be used in.
-PORTAL_DESKTOP = "nirios"
-
-
-def portal_frontend(run_dir: str, bus_address: str,
-                    runtime_dir: str) -> subprocess.Popen | None:
-    """Run an `xdg-desktop-portal` that routes file dialogs to qOS.
-
-    An app does not ask the compositor for a file. It asks
-    `org.freedesktop.portal.Desktop` — the portal *frontend* — which
-    looks at the registered backends, picks one for the current desktop,
-    and forwards. The compositor is only the backend
-    (`org.freedesktop.impl.portal.desktop.qos`).
-
-    On the real system `os/usr/share/xdg-desktop-portal/portals/
-    qos.portal` is what tells the frontend that backend exists and may be
-    used in `nirios`. A development host has never installed it: its
-    frontend knows about gnome and gtk, so the word processor's Insert
-    image would either fail or open a *GTK* dialog in a window of its
-    own — outside the compositor, outside the recording, and not the
-    thing the demo is about.
-
-    So the run brings its own frontend up on its own bus, with a data dir
-    holding exactly one registration — this one. Nothing else can be
-    chosen, and the dialog that opens is the compositor's own chrome,
-    inside the window being filmed.
-    """
-    if not (os.path.exists(PORTAL_FRONTEND) and os.path.exists(QOS_PORTAL_FILE)):
-        return None
-    data_dir = os.path.join(run_dir, "portal-data")
-    portals = os.path.join(data_dir, "xdg-desktop-portal", "portals")
-    os.makedirs(portals, exist_ok=True)
-    shutil.copyfile(QOS_PORTAL_FILE, os.path.join(portals, "qos.portal"))
-
-    # Name the backend outright rather than leaving it to be inferred.
-    # `qos.portal` carries the deprecated `UseIn=` key, and the system
-    # data dirs have to stay on the path (the frontend hard-fails with
-    # "No GSettings schemas are installed" without them) — which puts
-    # gtk.portal and gnome.portal back in view. This says which one wins
-    # for every interface, so nothing here depends on how a particular
-    # xdg-desktop-portal breaks a tie.
-    config_home = os.path.join(run_dir, "portal-config")
-    os.makedirs(os.path.join(config_home, "xdg-desktop-portal"), exist_ok=True)
-    with open(os.path.join(config_home, "xdg-desktop-portal",
-                           "portals.conf"), "w") as fh:
-        fh.write("[preferred]\ndefault=qos\n"
-                 "org.freedesktop.impl.portal.FileChooser=qos\n")
-
-    system_data = os.environ.get(
-        "XDG_DATA_DIRS", "/usr/local/share:/usr/share")
-    env = dict(os.environ)
-    env.update(
-        DBUS_SESSION_BUS_ADDRESS=bus_address,
-        XDG_CURRENT_DESKTOP=PORTAL_DESKTOP,
-        XDG_DATA_DIRS=f"{data_dir}:{system_data}",
-        XDG_CONFIG_HOME=config_home,
-        XDG_RUNTIME_DIR=runtime_dir,
-        G_MESSAGES_DEBUG="",
-    )
-    env.pop("WAYLAND_DISPLAY", None)
-    proc = subprocess.Popen(
-        [PORTAL_FRONTEND, "--replace"], env=env,
-        stdout=open(os.path.join(run_dir, "portal.log"), "w"),
-        stderr=subprocess.STDOUT, preexec_fn=yc.die_with_parent())
-    yc.track(proc)
-    return proc
-
-
-def owns_name(bus_address: str, name: str, timeout: float = 20.0) -> bool:
-    """Whether `name` has an owner on that bus, within `timeout`.
-
-    The frontend takes a moment to claim its name, and a request made
-    before it does is a request that fails with nothing on screen.
-    """
-    env = dict(os.environ, DBUS_SESSION_BUS_ADDRESS=bus_address)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        done = subprocess.run(
-            ["gdbus", "call", "--session", "--dest", "org.freedesktop.DBus",
-             "--object-path", "/org/freedesktop/DBus", "--method",
-             "org.freedesktop.DBus.NameHasOwner", name],
-            capture_output=True, text=True, env=env)
-        if "true" in done.stdout:
-            return True
-        time.sleep(0.4)
-    return False
 
 
 class WindowedSession(yc.Session):
