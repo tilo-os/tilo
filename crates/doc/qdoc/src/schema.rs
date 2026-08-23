@@ -30,7 +30,41 @@ pub const PRESERVED_SEG_ORD: &str = "ord";
 /// the original part byte-for-byte.
 pub const PRESERVED_SEG_BYTES: &str = "bytes";
 pub const KEY_META: &str = "meta"; // Map (actor->user, etc.)
-pub const KEY_BLOBS: &str = "blobs"; // Map<blake3_hex, Bytes>  (content-addressed image/binary store)
+// Content-addressed binary references. `blobs` is a `Map<blake3_hex, descriptor>`
+// where a descriptor is a sub-map of *metadata only* — the bytes themselves live
+// outside the CRDT in a content-addressed store (see `blobstore`).
+//
+// Storing the bytes inline was a correctness bug, not just a size one. A 146 KB
+// image became a 146 KB automerge change; gossipsub caps an RPC at 64 KiB, so the
+// change was rejected by the transport and discarded without a word. Automerge
+// will not apply a change whose ancestors it lacks — it queues it — so every
+// later keystroke naming that change as an ancestor sat unapplied forever and
+// the far replica froze at the line before the image, while both ends still
+// reported themselves connected. A reference is a few dozen bytes and cannot
+// hit that ceiling, which is why this is the fix rather than a bigger pipe.
+pub const KEY_BLOBS: &str = "blobs"; // Map<blake3_hex, descriptor>  (content-addressed; bytes live outside)
+/// A blob descriptor's media type (`Str`, e.g. `image/png`). Sniffed from the
+/// content on `put_blob`, so it is always present for content we recognise.
+pub const BLOB_MIME: &str = "mime";
+/// A blob descriptor's content length in bytes (`Int`).
+pub const BLOB_LEN: &str = "len";
+/// A blob descriptor's intrinsic pixel width (`Int`), 0 when unknown.
+pub const BLOB_W: &str = "w";
+/// A blob descriptor's intrinsic pixel height (`Int`), 0 when unknown.
+pub const BLOB_H: &str = "h";
+
+// The descriptor fields as projected onto a referencing `image` block's attrs by
+// `materialize`, so a renderer reads them beside the `blob` attr it already
+// reads. Deliberately distinct from the existing `width`/`height` attrs, which
+// mean *requested display size* and are frequently absent: these are the
+// intrinsic size of the content, and they are what lets a not-yet-arrived image
+// reserve exactly the space it will occupy. Without them a placeholder falls back
+// to a fixed guess and every paragraph after the image reflows when the bytes
+// land — on a live shared document, while someone is typing into it.
+pub const ATTR_BLOB_MIME: &str = "blob_mime";
+pub const ATTR_BLOB_BYTES: &str = "blob_bytes";
+pub const ATTR_BLOB_W: &str = "blob_w";
+pub const ATTR_BLOB_H: &str = "blob_h";
 // Page header / footer regions. Each is a `Map<block_id, block>` with the exact
 // same shape as `blocks` (fractional order keys, same block fields), holding the
 // ordered paragraph sequence rendered at the top/bottom of every page. Created

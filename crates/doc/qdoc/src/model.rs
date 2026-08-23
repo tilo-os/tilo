@@ -635,28 +635,91 @@ pub fn materialize_changes(doc: &AutoCommit, c: &Containers) -> Vec<crate::snaps
         .collect()
 }
 
-/// Fetch a content-addressed blob by its blake3 hex hash.
-pub fn blob(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<Vec<u8>> {
+/// A blob's descriptor — what the document holds *instead of* its bytes.
+///
+/// `None` when the document does not reference that hash at all, which is a
+/// different thing from referencing it and not having the content yet.
+pub fn blob_meta(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<crate::blobstore::BlobMeta> {
     let blobs = blobs_obj(doc, c)?;
     match doc.get(&blobs, hash) {
+        Ok(Some((Value::Object(ObjType::Map), d))) => {
+            let str_at = |k: &str| match doc.get(&d, k) {
+                Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                    ScalarValue::Str(v) => v.to_string(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            };
+            let int_at = |k: &str| match doc.get(&d, k) {
+                Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                    ScalarValue::Int(v) => *v,
+                    ScalarValue::Uint(v) => *v as i64,
+                    _ => 0,
+                },
+                _ => 0,
+            };
+            Some(crate::blobstore::BlobMeta {
+                mime: str_at(BLOB_MIME),
+                len: int_at(BLOB_LEN).max(0) as u64,
+                w: int_at(BLOB_W).max(0) as u32,
+                h: int_at(BLOB_H).max(0) as u32,
+            })
+        }
+        // A document authored before the bytes moved out still describes
+        // itself: the inline payload knows its own length and format.
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Bytes(b) => Some(b.clone()),
+            ScalarValue::Bytes(b) => Some(crate::blobstore::sniff(b)),
             _ => None,
         },
         _ => None,
     }
 }
 
-/// All content-addressed blobs (`blake3_hex` → bytes).
+/// Every blob hash this document references, whether or not the content for it
+/// is here yet.
+pub fn blob_hashes(doc: &AutoCommit, c: &Containers) -> Vec<String> {
+    match blobs_obj(doc, c) {
+        Some(b) => doc.keys(&b).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Fetch a content-addressed blob's bytes by its blake3 hex hash.
+///
+/// Resolves through the process-wide blob store. `None` means the content has
+/// not arrived — a *knowable* state, and the one a renderer turns into a
+/// placeholder rather than into nothing.
+pub fn blob(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<Vec<u8>> {
+    if let Some(bytes) = crate::blobstore::get(hash) {
+        return Some(bytes);
+    }
+    // Documents written before the bytes moved out of the CRDT still carry them
+    // inline. Serve those, and warm the store so every later read of this hash
+    // takes the same path as a modern document's.
+    let blobs = blobs_obj(doc, c)?;
+    match doc.get(&blobs, hash) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            ScalarValue::Bytes(b) => {
+                crate::blobstore::store().put(hash, b);
+                Some(b.clone())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The blobs whose content is available here, keyed by blake3 hex.
+///
+/// A referenced hash that is **absent** from this map is the signal that the
+/// content has not arrived yet. That absence is deliberate and load-bearing:
+/// it is what a renderer keys a placeholder off, and the descriptor
+/// (`blob_meta`) says how much space that placeholder must reserve.
 pub fn blobs(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, Vec<u8>> {
     let mut out = BTreeMap::new();
-    if let Some(blobs) = blobs_obj(doc, c) {
-        for k in doc.keys(&blobs) {
-            if let Ok(Some((Value::Scalar(s), _))) = doc.get(&blobs, &k) {
-                if let ScalarValue::Bytes(b) = s.as_ref() {
-                    out.insert(k, b.clone());
-                }
-            }
+    for k in blob_hashes(doc, c) {
+        if let Some(bytes) = blob(doc, c, &k) {
+            out.insert(k, bytes);
         }
     }
     out
@@ -1126,7 +1189,7 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         .map(|id| materialize_block(doc, &c.blocks, &id))
         .collect();
     let (columns, column_gap) = columns(doc, c);
-    DocSnapshot {
+    let mut snap = DocSnapshot {
         schema: SCHEMA_ID.to_string(),
         schema_version: SCHEMA_VERSION,
         blocks,
@@ -1142,6 +1205,68 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         columns,
         column_gap: column_gap.map(|g| g as f32),
         language: language(doc, c),
+    };
+    project_blob_meta(doc, c, &mut snap);
+    snap
+}
+
+/// Copy each referenced blob's descriptor onto the image blocks that reference
+/// it, as `blob_mime` / `blob_bytes` / `blob_w` / `blob_h`.
+///
+/// The descriptor is stored once per hash — deduplicated with the content,
+/// which is where it belongs — but it is read per block, and a renderer already
+/// reads the `blob` attr off the block. Projecting here means no new plumbing
+/// is needed to size an image whose bytes have not arrived: the intrinsic size
+/// comes out of the same map the hash does.
+///
+/// Deliberately distinct from the `width`/`height` attrs, which mean *requested
+/// display size* and are frequently absent. Without an intrinsic size a
+/// not-yet-arrived image falls back to a fixed guess, and every paragraph after
+/// it moves when the bytes land — on a shared document, while someone is typing
+/// into it.
+fn project_blob_meta(doc: &AutoCommit, c: &Containers, snap: &mut DocSnapshot) {
+    fn walk(
+        doc: &AutoCommit,
+        c: &Containers,
+        cache: &mut BTreeMap<String, crate::blobstore::BlobMeta>,
+        blocks: &mut [BlockView],
+    ) {
+        for b in blocks.iter_mut() {
+            let hash = match b.attrs.get("blob") {
+                Some(AttrVal::Str(h)) if !h.is_empty() => h.clone(),
+                _ => {
+                    walk(doc, c, cache, &mut b.children);
+                    continue;
+                }
+            };
+            let meta = match cache.get(&hash) {
+                Some(m) => m.clone(),
+                None => {
+                    let m = blob_meta(doc, c, &hash).unwrap_or_default();
+                    cache.insert(hash.clone(), m.clone());
+                    m
+                }
+            };
+            if !meta.mime.is_empty() {
+                b.attrs.insert(ATTR_BLOB_MIME.to_string(), AttrVal::Str(meta.mime.clone()));
+            }
+            b.attrs.insert(ATTR_BLOB_BYTES.to_string(), AttrVal::Int(meta.len as i64));
+            if meta.w > 0 && meta.h > 0 {
+                b.attrs.insert(ATTR_BLOB_W.to_string(), AttrVal::Int(meta.w as i64));
+                b.attrs.insert(ATTR_BLOB_H.to_string(), AttrVal::Int(meta.h as i64));
+            }
+            walk(doc, c, cache, &mut b.children);
+        }
+    }
+    let mut cache: BTreeMap<String, crate::blobstore::BlobMeta> = BTreeMap::new();
+    walk(doc, c, &mut cache, &mut snap.blocks);
+    walk(doc, c, &mut cache, &mut snap.header);
+    walk(doc, c, &mut cache, &mut snap.footer);
+    for n in snap.notes.iter_mut() {
+        walk(doc, c, &mut cache, &mut n.blocks);
+    }
+    for cm in snap.comments.iter_mut() {
+        walk(doc, c, &mut cache, &mut cm.blocks);
     }
 }
 
@@ -2003,12 +2128,24 @@ impl<'a> DocMut<'a> {
     /// re-putting identical bytes hashes to the same key. Creates the blobs map
     /// lazily for documents opened under an older schema.
     pub fn put_blob(&mut self, bytes: &[u8]) -> String {
-        let hash = blake3::hash(bytes).to_hex().to_string();
+        let hash = crate::blobstore::put(bytes);
         let blobs = match blobs_obj(self.doc, self.c) {
             Some(b) => b,
             None => self.doc.put_object(&self.c.root, KEY_BLOBS, ObjType::Map).unwrap(),
         };
-        let _ = self.doc.put(&blobs, hash.as_str(), ScalarValue::Bytes(bytes.to_vec()));
+        // Idempotent by construction: the key is the content hash, so identical
+        // bytes address the same descriptor. Re-putting it would be pure
+        // tombstone churn in the CRDT for no change in meaning.
+        if matches!(self.doc.get(&blobs, hash.as_str()), Ok(Some((Value::Object(ObjType::Map), _)))) {
+            return hash;
+        }
+        let meta = crate::blobstore::sniff(bytes);
+        if let Ok(d) = self.doc.put_object(&blobs, hash.as_str(), ObjType::Map) {
+            let _ = self.doc.put(&d, BLOB_MIME, ScalarValue::Str(meta.mime.as_str().into()));
+            let _ = self.doc.put(&d, BLOB_LEN, ScalarValue::Int(meta.len as i64));
+            let _ = self.doc.put(&d, BLOB_W, ScalarValue::Int(meta.w as i64));
+            let _ = self.doc.put(&d, BLOB_H, ScalarValue::Int(meta.h as i64));
+        }
         hash
     }
 }
