@@ -6304,7 +6304,12 @@ const TRANSPORT_NAMES: [(TransportAction, &str); 5] = [
 impl VideoEditorApp {
     /// The media rows the bin currently lists, in painted order.
     fn a11y_bin_items(&self) -> Vec<MediaId> {
-        self.project.media.iter().map(|m| m.id).collect()
+        // `bin_order`, not the project's own order: that is the order the rows
+        // are painted in, and a reader walking a differently-ordered list
+        // would be told the second row is something the second row is not.
+        // It also indexes `focus.bin`, so the keyboard cursor and the
+        // highlighted row have to be counting the same list.
+        self.bin_order()
     }
 
     /// The marker rows the inspector lists, in painted order: the reference a
@@ -17447,6 +17452,44 @@ mod tests {
             app.commit_marker_text(doc, m, MarkerField::Note, note);
         }
         m
+    }
+
+    /// The bin the reader walks has to be the bin on the screen.
+    ///
+    /// The rows are painted in `bin_order` -- pictures first, then by name --
+    /// while the tree listed them in the project's own order, which arrives
+    /// from the document in map-key order and is re-rolled every run. So a
+    /// reader was told the second row was something the second row was not,
+    /// and `focus.bin` -- which indexes this list -- moved the cursor to one
+    /// row while the highlight sat on another.
+    #[test]
+    fn the_reader_walks_the_bin_in_the_order_it_is_painted() {
+        let (app, _doc) = app_and_doc();
+        let painted: Vec<MediaId> = app
+            .bin_item_rects(&app.regions())
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(painted.len() > 1, "the fixture has a bin worth ordering");
+        assert_eq!(
+            app.a11y_bin_items(),
+            painted,
+            "the spoken bin must be the drawn bin, row for row",
+        );
+
+        // And the cursor lands on the row the eye would call the second one.
+        let names: Vec<String> = app
+            .a11y_bin_items()
+            .iter()
+            .filter_map(|m| app.project.media(*m).map(|x| x.name.clone()))
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_ne!(
+            names, sorted,
+            "the painted order is not plain alphabetical, so this test is \
+             comparing against the real rule rather than a coincidence",
+        );
     }
 
     /// A marker is a named instant on the screen, sometimes carrying a note.
