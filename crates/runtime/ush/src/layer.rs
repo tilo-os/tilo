@@ -576,11 +576,15 @@ mod tests {
 
     #[test]
     fn an_ordinary_directory_is_accepted() {
-        let dir = tempfile::TempDir::with_prefix_in(
-            "ush-fs-",
-            dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")),
-        )
-        .expect("tempdir on disk");
+        // The data directory, not `/tmp`: the subject is whether a real
+        // on-disk filesystem can carry an upper layer, and `/tmp` is
+        // frequently a tmpfs, which cannot. It is not guaranteed to exist
+        // yet, though — a container running as root has a bare `/root` —
+        // and a missing parent made this fail as if the filesystem had
+        // been rejected, which is the opposite of what it observed.
+        let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+        std::fs::create_dir_all(&base).expect("the data directory must be creatable");
+        let dir = tempfile::TempDir::with_prefix_in("ush-fs-", &base).expect("tempdir on disk");
         upper_filesystem_supported(&dir.path().join("layers/persistent"))
             .expect("an ordinary data directory must be usable");
     }
