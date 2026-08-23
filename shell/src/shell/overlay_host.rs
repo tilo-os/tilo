@@ -1007,17 +1007,22 @@ const QS_OPEN_ANIM_MS: u64 = 180;
 const MODAL_OPEN_ANIM_MS: u64 = 220;
 
 // ---------------------------------------------------------------------------
-// Translucent-tint fallback alphas (gap #3 in `docs/nirios/visual-gaps.md`).
-// The concept uses `backdrop-blur-xl` / `backdrop-blur-md` on top of
-// `bg-slate-900/80` + `/70` tints, but the pinned Vello lacks
-// `scene.push_blur_layer`. The shell therefore honours the alpha split
-// alone — the surfaces sit translucent over whatever is beneath them, so a
-// gradient wallpaper still bleeds through even without a convolution pass.
-// Centralised so the `shell_chrome_test` suite can pin the numeric values.
+// Surface and scrim alphas (gap #3 in `docs/nirios/visual-gaps.md`).
+//
+// The concept layers `backdrop-blur-xl` / `backdrop-blur-md` under
+// `bg-slate-900/80` + `/70` tints. The pinned Vello has no backdrop
+// filter — it can blur a *shape* (`draw_blurred_rounded_rect`, which is
+// what a drop shadow is made of) but not what is behind one — so the
+// tint is all the shell could honour, and a tint without its blur is not
+// glass. It is a contrast loss that changes with whatever the user has
+// open behind it.
+//
+// So the chrome surfaces are opaque and the *scrims* carry the depth
+// instead: a scrim dims a known quantity by a known amount, which is a
+// thing an un-blurred fill can actually do well. Centralised so the
+// `shell_chrome_test` suite can pin the numeric values.
 // ---------------------------------------------------------------------------
 
-/// Alpha applied to the collaborator and QuickSettings popover surfaces.
-/// Concept §1.1 / §3.1 specifies `bg-slate-900/80`.
 /// Height of the "Room activity" row at the foot of the collaborator
 /// dropdown, including the separator above it.
 const COLLAB_FOOTER_H: f64 = 40.0;
@@ -1051,7 +1056,22 @@ const INVITED_TAG: &str = "invited";
 /// moment its peer turns up.
 const INVITED_ROW_ALPHA: f32 = 0.55;
 
-pub const POPOVER_SURFACE_ALPHA: f32 = 0.80;
+/// Alpha applied to the collaborator and QuickSettings popover surfaces.
+///
+/// Opaque, and it defers to the toolkit's own chrome constant so a
+/// popover cannot drift away from the bar it hangs off again. This used
+/// to be a literal `0.80` on the grounds that the concept called for
+/// `bg-slate-900/80 backdrop-blur-md`; the pinned vello has no backdrop
+/// filter, so what shipped was the tint without the blur, which is not
+/// glass but a loss of contrast that varies with whatever the user has
+/// open behind it. A 2026-08 report put it plainly: the transparency
+/// looked bad.
+///
+/// The palette and the workspace-settings modal already went opaque for
+/// the same reason after the 2026-07-09 report ("too transparent — looks
+/// terrible"); see [`MODAL_SURFACE_ALPHA`]. The popover was the one
+/// surface left behind.
+pub const POPOVER_SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
 
 /// Alpha applied to the GlobalSearch palette and Workspace-Settings modal
 /// surfaces. Concept §4.1 / §5.1 specified `bg-slate-900/70`, but at that
