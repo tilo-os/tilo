@@ -119,3 +119,21 @@ not change:
 - **`TaskStop` does not stop a distrobox-routed build.** The wrapper dies; the container-side cargo keeps compiling and holding memory.
 - **A gap describing a limitation that has since been fixed is worse than no gap** — it reports a working feature as broken, and has already sent people to "fix" things that worked.
 - **Twelve times in two days the test or the claim was wrong rather than the code.** Make a check fail for the right reason before believing it passes.
+
+## The word processor cannot be typed into until it is clicked
+
+Opening the app and typing puts nothing in the document. The caret is not
+in the body on open, so every keystroke goes somewhere that is not the
+page, silently — no caret, no error, no indication that the window which
+is plainly focused is not taking input.
+
+Found by a beat that deliberately typed without clicking first, on the
+assumption that a document app opens ready to be written in. It does
+not, and the cost was not just the beat: a person opening a new document
+and starting to type is the most ordinary thing anyone does with a word
+processor, and the app's answer is to discard it.
+
+The demo now aims a caret into the page first, which is what a person
+would end up doing after the first attempt vanished. The app should not
+require it: opening a document should put the caret at the start of the
+body, the same way `Ctrl+End` now puts it at the end.
