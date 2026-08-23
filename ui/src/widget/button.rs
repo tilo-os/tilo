@@ -228,6 +228,70 @@ impl Button {
     }
 }
 
+/// Gap between the control's edge and the inner edge of the focus ring, in
+/// logical px.
+///
+/// The ring is drawn *outside* the control rather than on its boundary. A
+/// boundary ring has to contrast with the control's own fill, and
+/// `border_focus` is the same colour as the Primary fill in every preset the
+/// OS ships — so the ring was drawn and could not be seen. Moving it out
+/// means its neighbours on both sides are the ground behind the control, and
+/// the ground is a surface token the ring is already known to clear.
+///
+/// 2px is the smallest gap that still reads as a separate ring: at 1px the
+/// band is lost to antialiasing at the corners and reads as a fattened
+/// border. Combined with [`FOCUS_RING_WIDTH_PX`] the ring reaches 4px beyond
+/// the control, which is `spacing.s1` — the tightest step on the token scale
+/// — so a focused control cannot overlap a neighbour in any row laid out on
+/// that scale.
+pub const FOCUS_RING_GAP_PX: f64 = 2.0;
+
+/// Stroke width of the focus ring, in logical px. Two pixels survives
+/// antialiasing on the rounded corners with a fully-covered core, which is
+/// what keeps the measured contrast honest at small sizes.
+pub const FOCUS_RING_WIDTH_PX: f64 = 2.0;
+
+/// How much room a **clipping** parent must reserve on each side so a
+/// control sitting at its edge keeps a whole focus ring.
+///
+/// The ring is painted outside the control, so it lives in space the control
+/// never claimed. Where nothing clips, it simply overflows and is fine. Where
+/// the parent pushes a clip layer — `Scrollable`, and anything else that
+/// bounds its children to its own rect — a control placed flush against that
+/// bound loses the ring on that side entirely, which puts the defect straight
+/// back for exactly the controls at a container's edge. Measured: flush = 0px
+/// of ring survives, reserved = the full width does.
+///
+/// Equal to `spacing.s1`, so reserving for it is one step on the token scale.
+pub const FOCUS_RING_RESERVE_PX: f64 = FOCUS_RING_GAP_PX + FOCUS_RING_WIDTH_PX;
+
+/// Stroke the focus ring for `shape` outside the control's own edge.
+///
+/// Vello centres a stroke on its path, so the path is inflated by the gap
+/// plus half the stroke width; the painted band then lands exactly in
+/// `[edge + gap, edge + gap + width]`. The corner radius grows by the same
+/// offset so the ring stays concentric with the control.
+///
+/// Both button painters call this, and it is `pub` so other controls can
+/// adopt the same ring without re-deriving the geometry.
+pub fn stroke_focus_ring(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    rect: Rect,
+    radius: f64,
+) {
+    let offset = FOCUS_RING_GAP_PX + FOCUS_RING_WIDTH_PX / 2.0;
+    let ring = RoundedRect::from_rect(rect.inflate(offset, offset), radius + offset);
+    scene.stroke(
+        &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH_PX),
+        transform,
+        theme.border_focus,
+        None,
+        &ring,
+    );
+}
+
 /// Visual style for a button face. Mirrors the conventions the retained
 /// [`Button`] and the standard app toolbars already paint by hand:
 /// - `Neutral` — a raised surface with a standard border (the default).
@@ -393,6 +457,13 @@ impl Button {
         let (bg, border, fg) = face_colors(theme, face.style, face.interact);
         let shape = RoundedRect::from_rect(face.rect, face.radius);
 
+        // Focus ring first, and deliberately outside the disabled-dim layer
+        // below: that layer clips to `shape`, which would erase a ring drawn
+        // beyond the control's own edge.
+        if face.interact.focused {
+            stroke_focus_ring(scene, transform, theme, face.rect, face.radius);
+        }
+
         // Disabled faces dim as one layer so fill + border + label fade
         // together, matching the retained widget's DISABLED_ALPHA look.
         let dim = face.interact.disabled;
@@ -407,9 +478,9 @@ impl Button {
         }
 
         scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
-        if face.interact.focused {
-            scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, theme.border_focus, None, &shape);
-        } else if let Some(bc) = border {
+        // The ring no longer replaces the style's own border: it sits outside
+        // the control, so a focused neutral face keeps its 1px edge.
+        if let Some(bc) = border {
             scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, bc, None, &shape);
         }
 
@@ -517,7 +588,14 @@ impl Widget for Button {
             if self.enabled {
                 out_scene.append(&self.cached, Some(inner));
             } else {
-                let clip = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+                // Inflate past the focus ring: the cached scene can contain
+                // a band outside `self.rect`, and a clip at the control's own
+                // edge would erase exactly the ring this fix added.
+                let reach = FOCUS_RING_RESERVE_PX;
+                let clip = RoundedRect::from_rect(
+                    self.rect.inflate(reach, reach),
+                    theme.tokens.radii.md as f64 + reach,
+                );
                 out_scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, out_transform, &clip);
                 out_scene.append(&self.cached, Some(inner));
                 out_scene.pop_layer();
@@ -555,24 +633,26 @@ impl Widget for Button {
             &shape,
         );
 
-        // Focus ring wins over the style border; an accent-filled style has
-        // no rest border (its fill is self-defining) so it only strokes when
-        // focused.
-        if self.is_focused {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(2.0),
-                transform,
-                theme.border_focus,
-                None,
-                &shape,
-            );
-        } else if let Some(border_color) = border_opt {
+        // The style's own border always draws. The focus ring is a separate
+        // band outside the control (see `stroke_focus_ring`), so it no longer
+        // has to displace the border to be seen — nor to contrast with the
+        // fill it used to sit on.
+        if let Some(border_color) = border_opt {
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
                 transform,
                 border_color,
                 None,
                 &shape,
+            );
+        }
+        if self.is_focused {
+            stroke_focus_ring(
+                scene,
+                transform,
+                theme,
+                self.rect,
+                theme.tokens.radii.md as f64,
             );
         }
 
@@ -1202,6 +1282,365 @@ mod tests {
         assert!(
             doc.get(&root, "clicked").unwrap().is_none(),
             "disabled button must not write the CRDT path"
+        );
+    }
+
+    // =====================================================================
+    // Focus-ring visibility
+    //
+    // The ring used to be stroked *on* the control's own boundary, 2px wide
+    // and centred on the edge. `border_focus` is the same colour as the
+    // Primary fill in every shipped preset, so the inner half vanished into
+    // the fill and the outer half was a single antialiased sliver that only
+    // made the silhouette 2px larger — which is how the defect was finally
+    // spotted. A test asserting "a stroke was emitted" passes on that bug.
+    // A test that merely diffs focused-vs-unfocused pixels passes too, on
+    // the strength of that sliver. So these assert the *structure* a focus
+    // ring has to have: a band of ring, separated from the control by
+    // untouched ground, contrasting with that ground.
+    // =====================================================================
+
+    /// Every preset the OS ships. A new preset must clear the bar too, so
+    /// this is the sweep rather than a spot-check on `dark()`.
+    fn all_themes() -> Vec<(&'static str, Theme)> {
+        [
+            "dark", "light", "qos-blue", "catppuccin-mocha", "catppuccin-latte",
+            "dracula", "nord", "gruvbox", "gruvbox-light", "solarized", "oled",
+            "warm-light", "rose-pine", "high-contrast",
+        ]
+        .iter()
+        .map(|n| (*n, Theme::named(n).unwrap_or_else(|| panic!("unknown theme {n}"))))
+        .collect()
+    }
+
+    /// The surface tiers the OS actually paints behind a control. The ring
+    /// now sits on one of these rather than on the control, so this is the
+    /// set it has to contrast against.
+    fn backdrops(theme: &Theme) -> Vec<(&'static str, vello::peniko::Color)> {
+        let s = &theme.tokens.colors.surfaces;
+        vec![
+            ("base", s.base),
+            ("raised", s.raised),
+            ("popover", s.overlay),
+            ("scrim", s.scrim),
+            ("window_card", s.window_card),
+        ]
+    }
+
+    const RING_W: u32 = 200;
+    const RING_H: u32 = 110;
+
+    /// Button box inside that buffer, with room on every side for an
+    /// outside ring.
+    fn ring_rect() -> Rect {
+        Rect::new(40.0, 35.0, 160.0, 75.0)
+    }
+
+    /// Paint one button face over `backdrop` and read the pixels back.
+    fn paint_face_on(
+        theme: &Theme,
+        backdrop: vello::peniko::Color,
+        style: ButtonStyle,
+        focused: bool,
+    ) -> Vec<u8> {
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        Button::paint(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            theme,
+            &ButtonFace::new(ring_rect(), "Save").style(style).focused(focused),
+        );
+        crate::offscreen::OffscreenRenderer::new(RING_W, RING_H).render(&scene, backdrop)
+    }
+
+    /// What a scanline running inward from outside the control found.
+    #[derive(Debug)]
+    struct Scan {
+        /// Width in px of the first non-ground band met coming in from
+        /// outside — the focus ring.
+        ring_px: u32,
+        /// Untouched ground between that band and the control's fill.
+        gap_px: u32,
+        /// A fully-covered pixel from the middle of the ring band, so the
+        /// measurement is not taken on an antialiased edge.
+        ring_color: vello::peniko::Color,
+    }
+
+    /// Walk right along row `y` from the buffer's left edge to the control's
+    /// left edge, classifying each pixel as ground or not-ground.
+    ///
+    /// Expected structure of a correct outside ring:
+    ///   `ground… | RING | ground… | fill…`
+    /// The historical inside ring produces `ground… | fill…` with the stroke
+    /// fused onto the fill, so `gap_px` comes back 0.
+    fn scan_inward(
+        rgba: &[u8],
+        y: u32,
+        backdrop: vello::peniko::Color,
+        fill_x: u32,
+    ) -> Option<Scan> {
+        use crate::color_compat::ColorCompat;
+        use crate::offscreen::OffscreenRenderer;
+        use vello::peniko::Color;
+
+        // Antialiasing moves an edge pixel by a step or two; anything past
+        // that is a real difference in what was drawn.
+        let is_ground = |x: u32| {
+            let (r, g, b, _) = OffscreenRenderer::sample(rgba, RING_W, x, y);
+            (r as i32 - backdrop.r() as i32).abs() <= 2
+                && (g as i32 - backdrop.g() as i32).abs() <= 2
+                && (b as i32 - backdrop.b() as i32).abs() <= 2
+        };
+
+        let mut x = 0u32;
+        while x < fill_x && is_ground(x) {
+            x += 1;
+        }
+        if x >= fill_x {
+            return None; // nothing drawn outside the control at all
+        }
+        let ring_start = x;
+        while x < fill_x && !is_ground(x) {
+            x += 1;
+        }
+        let ring_px = x - ring_start;
+        let gap_start = x;
+        while x < fill_x && is_ground(x) {
+            x += 1;
+        }
+        let (r, g, b, _) =
+            OffscreenRenderer::sample(rgba, RING_W, ring_start + ring_px / 2, y);
+        Some(Scan {
+            ring_px,
+            gap_px: x - gap_start,
+            ring_color: Color::from_rgb8(r, g, b),
+        })
+    }
+
+    /// WCAG 2.2 §1.4.11 non-text contrast: a UI component boundary — which
+    /// is exactly what a focus indicator is — needs 3.0:1 against adjacent
+    /// colour.
+    const RING_MIN_CONTRAST: f64 = 3.0;
+
+    /// **The defect.** Keyboard focus must be visible on a Primary button,
+    /// in every theme, over every surface the OS puts behind a control —
+    /// and must get that visibility from the ground it sits on, never from
+    /// the control it surrounds.
+    #[test]
+    fn focus_ring_is_visible_against_what_is_behind_it() {
+        use crate::a11y::contrast_ratio;
+        let mut failures: Vec<String> = Vec::new();
+        let mut worst = (f64::MAX, String::new());
+
+        for (name, theme) in all_themes() {
+            for (bd_name, bd) in backdrops(&theme) {
+                for (style_name, style) in [
+                    ("primary", ButtonStyle::Primary),
+                    ("danger", ButtonStyle::Danger),
+                    ("neutral", ButtonStyle::Neutral),
+                ] {
+                    let px = paint_face_on(&theme, bd, style, true);
+                    let y = ring_rect().center().y as u32;
+                    let where_ = format!("{name}/{bd_name}/{style_name}");
+
+                    let Some(scan) = scan_inward(&px, y, bd, ring_rect().x0 as u32) else {
+                        failures.push(format!(
+                            "  {where_:42} nothing drawn outside the control"
+                        ));
+                        continue;
+                    };
+                    let ratio = contrast_ratio(scan.ring_color, bd);
+                    if ratio < worst.0 {
+                        worst = (ratio, where_.clone());
+                    }
+                    if scan.gap_px == 0 {
+                        failures.push(format!(
+                            "  {where_:42} ring fused to the fill (gap 0px) — \
+                             its visibility depends on contrasting with the \
+                             control, which is the defect"
+                        ));
+                    } else if scan.ring_px < 2 {
+                        failures.push(format!(
+                            "  {where_:42} ring is only {}px wide",
+                            scan.ring_px
+                        ));
+                    } else if ratio < RING_MIN_CONTRAST {
+                        failures.push(format!(
+                            "  {where_:42} ring {ratio:.2}:1 against its ground"
+                        ));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "focus ring fails to read against its backdrop in {} case(s):\n{}\n\
+             (weakest ring-vs-ground contrast overall: {} at {:.2}:1)",
+            failures.len(),
+            failures.join("\n"),
+            worst.1,
+            worst.0,
+        );
+    }
+
+    /// Pin the geometry. The gap has to be wide enough to read as a
+    /// separate ring rather than a border, and tight enough not to reach a
+    /// neighbouring control in a dense row.
+    #[test]
+    fn focus_ring_geometry_is_a_clear_band_outside_the_control() {
+        let theme = Theme::dark();
+        let bd = theme.tokens.colors.surfaces.base;
+        let px = paint_face_on(&theme, bd, ButtonStyle::Primary, true);
+        let scan = scan_inward(
+            &px,
+            ring_rect().center().y as u32,
+            bd,
+            ring_rect().x0 as u32,
+        )
+        .expect("a focused Primary button must draw something outside itself");
+
+        assert_eq!(
+            scan.gap_px, FOCUS_RING_GAP_PX as u32,
+            "backdrop band between control and ring"
+        );
+        assert_eq!(
+            scan.ring_px, FOCUS_RING_WIDTH_PX as u32,
+            "ring stroke width"
+        );
+        // Total outward reach must stay inside the smallest spacing step so
+        // a focused control cannot overlap its neighbour in a row laid out
+        // on the token scale.
+        let reach = scan.gap_px + scan.ring_px;
+        assert!(
+            reach as f32 <= theme.tokens.spacing.s1,
+            "focus ring reaches {reach}px beyond the control but the tightest \
+             token gap is {}px — it would collide with a neighbour",
+            theme.tokens.spacing.s1,
+        );
+    }
+
+    /// The retained `Widget::draw` path and the immediate-mode `paint` path
+    /// must agree. Fixing one and not the other leaves every retained button
+    /// in the OS broken while the test on `paint` goes green.
+    #[test]
+    fn retained_draw_ring_matches_the_immediate_mode_face() {
+        use crate::offscreen::OffscreenRenderer;
+        let theme = Theme::dark();
+        let bd = theme.tokens.colors.surfaces.base;
+
+        let mut b = Button::new("id", "Save", None).with_style(ButtonStyle::Primary);
+        b.rect = ring_rect();
+        b.set_focus(true);
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        b.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &crate::presence::PresenceCtx::default(),
+        );
+        let retained = OffscreenRenderer::new(RING_W, RING_H).render(&scene, bd);
+
+        let y = ring_rect().center().y as u32;
+        let r = scan_inward(&retained, y, bd, ring_rect().x0 as u32)
+            .expect("retained draw must paint a ring outside the control");
+        let p = paint_face_on(&theme, bd, ButtonStyle::Primary, true);
+        let i = scan_inward(&p, y, bd, ring_rect().x0 as u32).expect("paint ring");
+
+        assert_eq!(
+            (r.ring_px, r.gap_px),
+            (i.ring_px, i.gap_px),
+            "retained Button::draw and Button::paint disagree on ring geometry"
+        );
+    }
+
+    /// An outside ring lives in space the control never claimed, so a parent
+    /// that clips its children can shave it off — putting the defect back on
+    /// exactly the controls at a container's edge.
+    ///
+    /// This pins the contract [`FOCUS_RING_RESERVE_PX`] names: reserving that
+    /// much is *necessary* (flush against the clip, the ring is gone) and
+    /// *sufficient* (with it reserved, the whole ring survives). The clip here
+    /// is the one `Scrollable::draw` pushes — a layer bounded to the
+    /// container's own rect.
+    fn ring_px_left_of_control(inset: f64) -> u32 {
+        use crate::a11y::contrast_ratio;
+        use crate::offscreen::OffscreenRenderer;
+        use vello::peniko::Color;
+
+        let theme = Theme::dark();
+        let card = theme.tokens.colors.surfaces.raised;
+        let container = Rect::new(20.0, 10.0, 200.0, 70.0);
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            Affine::IDENTITY,
+            card,
+            None,
+            &container,
+        );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &container,
+        );
+        let b = Rect::new(
+            container.x0 + inset,
+            container.y0 + 12.0,
+            container.x0 + inset + 90.0,
+            container.y0 + 46.0,
+        );
+        Button::paint(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &ButtonFace::new(b, "Edge").primary().focused(true),
+        );
+        scene.pop_layer();
+
+        let px = OffscreenRenderer::new(RING_W, RING_H).render(&scene, card);
+        let y = b.center().y as u32;
+        let mut ring = 0u32;
+        for x in (container.x0 as u32).saturating_sub(8)..(b.x0 as u32) {
+            let (r, g, bl, _) = OffscreenRenderer::sample(&px, RING_W, x, y);
+            if contrast_ratio(Color::from_rgb8(r, g, bl), card) >= RING_MIN_CONTRAST {
+                ring += 1;
+            }
+        }
+        ring
+    }
+
+    #[test]
+    fn a_clipping_container_must_reserve_room_for_the_focus_ring() {
+        assert_eq!(
+            ring_px_left_of_control(0.0),
+            0,
+            "a control flush against a clipping parent should lose its ring \
+             entirely — if this changed, the reserve contract needs revisiting"
+        );
+        assert_eq!(
+            ring_px_left_of_control(FOCUS_RING_RESERVE_PX),
+            FOCUS_RING_WIDTH_PX as u32,
+            "reserving FOCUS_RING_RESERVE_PX must let the whole ring through"
+        );
+    }
+
+    /// The reserve is one step on the spacing scale, so laying out for it
+    /// never needs an off-scale magic number.
+    #[test]
+    fn focus_ring_reserve_is_one_spacing_step() {
+        assert_eq!(
+            FOCUS_RING_RESERVE_PX as f32,
+            Theme::dark().tokens.spacing.s1,
+            "reserve should stay expressible as spacing.s1"
         );
     }
 }

@@ -662,7 +662,7 @@ pub trait Widget {
 
 pub type Element = Box<dyn Widget>;
 
-mod button;      pub use button::{Button, ButtonStyle, ButtonInteract, ButtonFace, face_colors};
+mod button;      pub use button::{Button, ButtonStyle, ButtonInteract, ButtonFace, face_colors, stroke_focus_ring, FOCUS_RING_GAP_PX, FOCUS_RING_WIDTH_PX, FOCUS_RING_RESERVE_PX};
 mod checkbox;    pub use checkbox::Checkbox;
 mod column;      pub use column::Column;
 mod row;         pub use row::Row;
