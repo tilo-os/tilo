@@ -7351,9 +7351,12 @@ impl VideoEditorApp {
         seg_group(scene, tr, "FRAME RATE", &fps);
 
         // Estimate + status.
-        let est = self.export.estimated_mb(self.project.duration());
+        // One source of truth for the size line: the export module knows which
+        // encoder will run here and whether a size can honestly be predicted
+        // from the rate it is given, which this dialog does not.
+        let est = self.export.estimate_label(&self.project);
         let (w, h) = self.export.resolution.dims();
-        let info = format!("≈ {:.0} MB   ·   {}×{}   ·   {}", est, w, h, timecode(self.project.duration(), self.project.fps));
+        let info = format!("{est}   ·   {}×{}   ·   {}", w, h, timecode(self.project.duration(), self.project.fps));
         text(scene, tr, tf, &info, 12.0, c.text_dim, x0, card.y1 - 96.0);
         match &self.export_status {
             ExportStatus::Rendering { progress } => {
