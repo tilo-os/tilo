@@ -69,4 +69,4 @@ default = ["decode"]
 decode = ["media/decode", "dep:gstreamer", "dep:gstreamer-app"]
 # Real export through GStreamer (encode + mux to a real file). Heavier; needs
 # the gstreamer-1.0 dev headers, so it stays opt-in and off the default build.
-gst = ["dep:gstreamer", "dep:gstreamer-app"]
+gst = ["dep:gstreamer", "dep:gstreamer-app", "media/encode"]
