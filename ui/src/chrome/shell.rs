@@ -504,3 +504,343 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Strip ribbon
+// ---------------------------------------------------------------------------
+
+/// Geometry and appearance for the **strip ribbon** — the indicator that
+/// says which strip of the current workspace has focus, and how many
+/// there are (HIG §9.10, §9.11).
+///
+/// Strips had no representation on screen whatsoever. A workspace could
+/// hold four of them with nothing indicating that a second one existed,
+/// no key bound to move between them, and no animation when focus did
+/// move. A user could not discover the level of the model they were
+/// standing in.
+///
+/// What the ribbon indicates is worth being precise about. Every strip in
+/// a workspace renders at once, sharing the content height between them,
+/// so the ribbon does not mean "this is the strip you can see". It means
+/// **this is the strip with focus** — the one a new window joins and the
+/// one the keyboard is aimed at — which is exactly the fact that was
+/// invisible.
+///
+/// It sits on the content's right edge because the workspace disc owns
+/// the left and horizontal scrolling inside the content belongs to
+/// groups and tabs; keeping one level of the model per edge is what lets
+/// a user tell, from the control alone, what a gesture is about to
+/// change.
+#[derive(Clone, Copy, Debug)]
+pub struct StripRibbon {
+    /// Content rect the ribbon is anchored to the right edge of.
+    pub content: Rect,
+    /// How many strips the workspace holds.
+    pub count: usize,
+    /// Index of the focused strip.
+    pub focused: usize,
+}
+
+/// Width of a ribbon segment.
+pub const RIBBON_SEG_W: f64 = 6.0;
+/// Height of an unfocused segment.
+pub const RIBBON_SEG_H: f64 = 22.0;
+/// Height of the focused segment. Longer, so the ribbon reads at a glance
+/// without needing colour to carry the whole signal — which is what keeps
+/// it legible on the high-contrast palette.
+pub const RIBBON_SEG_H_FOCUSED: f64 = 40.0;
+/// Gap between segments.
+///
+/// Sized so that segment height plus gap clears the minimum pointer
+/// target: an unfocused segment is [`RIBBON_SEG_H`] tall, and its hit
+/// rect claims half the gap either side, so the pitch is exactly
+/// [`RIBBON_HIT_W`]. Adjacent targets therefore tile without overlapping
+/// — a click near a boundary belongs to exactly one strip.
+pub const RIBBON_GAP: f64 = RIBBON_HIT_W - RIBBON_SEG_H;
+/// Distance from the content's right edge to the ribbon.
+///
+/// Small, so the ribbon hugs the screen edge and reads as chrome the
+/// shell owns rather than as something attached to the window beside it.
+/// Rendered at a larger margin it sat a few pixels from the Notes app's
+/// own scrollbar, and the two vertical marks read as a pair.
+pub const RIBBON_MARGIN: f64 = 5.0;
+/// Minimum pointer target (HIG §9.6). The segment itself is 6 px wide;
+/// the hit rect around it is not.
+pub const RIBBON_HIT_W: f64 = 32.0;
+
+/// Weight of an unfocused ribbon segment against the desktop.
+const RIBBON_IDLE_ALPHA: u8 = 46;
+/// Weight of a hovered but unfocused segment.
+const RIBBON_HOVER_ALPHA: u8 = 96;
+/// Weight of the focused segment.
+const RIBBON_FOCUSED_ALPHA: u8 = 224;
+
+/// Body of one ribbon segment.
+///
+/// The ribbon cannot use [`selection_tier`] unmodified, and the reason is
+/// worth recording. That tier is built for a control sitting in a row of
+/// its own, where "unselected" can legitimately be transparent because
+/// the row around it supplies the context. A ribbon segment has no row:
+/// an unfocused segment painted at zero alpha would mean the only
+/// evidence that a second strip exists is invisible.
+///
+/// Giving unfocused segments a floor is not enough on its own either.
+/// [`Colors::lift`] has nothing to move toward on the high-contrast
+/// palette — `surfaces.base` and `surfaces.raised` are both pure black —
+/// so it falls back to a weak derived step, and a floored unfocused
+/// segment came out *brighter than the focused one*. Rendered, the
+/// high-contrast ribbon read inverted: the strip with focus was the
+/// dimmest of the three.
+///
+/// So the ribbon states are three explicitly ordered weights against the
+/// desktop's own ground, which keeps the ordering true on every palette
+/// and gives high-contrast what it actually wants — a bright mark on
+/// black.
+fn ribbon_fill(theme: &Theme, focused: bool, hover: bool) -> Color {
+    let alpha = if focused {
+        RIBBON_FOCUSED_ALPHA
+    } else if hover {
+        RIBBON_HOVER_ALPHA
+    } else {
+        RIBBON_IDLE_ALPHA
+    };
+    Colors::hairline_on(theme.tokens.colors.surfaces.base, alpha)
+}
+
+impl StripRibbon {
+    /// Total height the whole ribbon occupies.
+    pub fn extent(&self) -> f64 {
+        if self.count == 0 {
+            return 0.0;
+        }
+        let focused = if self.focused < self.count { 1 } else { 0 };
+        let plain = self.count - focused;
+        plain as f64 * RIBBON_SEG_H
+            + focused as f64 * RIBBON_SEG_H_FOCUSED
+            + (self.count.saturating_sub(1)) as f64 * RIBBON_GAP
+    }
+
+    /// Rect of segment `i`, or `None` if out of range.
+    pub fn segment_rect(&self, i: usize) -> Option<Rect> {
+        if i >= self.count {
+            return None;
+        }
+        let x1 = self.content.x1 - RIBBON_MARGIN;
+        let x0 = x1 - RIBBON_SEG_W;
+        let mut y = self.content.center().y - self.extent() / 2.0;
+        for k in 0..i {
+            y += if k == self.focused { RIBBON_SEG_H_FOCUSED } else { RIBBON_SEG_H };
+            y += RIBBON_GAP;
+        }
+        let h = if i == self.focused { RIBBON_SEG_H_FOCUSED } else { RIBBON_SEG_H };
+        Some(Rect::new(x0, y, x1, y + h))
+    }
+
+    /// Pointer target for segment `i` — widened to the minimum target
+    /// size and half the gap on each side, so the ribbon is clickable
+    /// rather than merely visible.
+    pub fn hit_rect(&self, i: usize) -> Option<Rect> {
+        let seg = self.segment_rect(i)?;
+        let cx = seg.center().x;
+        Some(Rect::new(
+            cx - RIBBON_HIT_W / 2.0,
+            seg.y0 - RIBBON_GAP / 2.0,
+            cx + RIBBON_HIT_W / 2.0,
+            seg.y1 + RIBBON_GAP / 2.0,
+        ))
+    }
+
+    /// Which segment, if any, contains `p`.
+    pub fn hit(&self, p: vello::kurbo::Point) -> Option<usize> {
+        (0..self.count).find(|i| self.hit_rect(*i).is_some_and(|r| r.contains(p)))
+    }
+
+    /// Paint the ribbon. `hover` is the segment under the pointer.
+    pub fn draw(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        hover: Option<usize>,
+        alpha: f32,
+    ) {
+        if self.count == 0 || alpha <= 0.0 {
+            return;
+        }
+        for i in 0..self.count {
+            let Some(seg) = self.segment_rect(i) else { continue };
+            let tier = selection_tier(
+                theme,
+                SelectionState::new(i == self.focused, hover == Some(i), false),
+            );
+            let shape = RoundedRect::from_rect(seg, ChromeRole::Selector.radius(theme, seg.height()));
+            let fill = ribbon_fill(theme, i == self.focused, hover == Some(i));
+            scene.fill(Fill::NonZero, transform, fill.with_alpha_factor(alpha), None, &shape);
+            if let Some(edge) = tier.border {
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    edge.with_alpha_factor(alpha),
+                    None,
+                    &shape,
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod ribbon_tests {
+    use super::*;
+    use vello::kurbo::Point;
+
+    fn ribbon(count: usize, focused: usize) -> StripRibbon {
+        StripRibbon { content: Rect::new(0.0, 40.0, 1600.0, 900.0), count, focused }
+    }
+
+    /// Segments appear in strip order, top to bottom, and never overlap.
+    #[test]
+    fn segments_are_ordered_and_disjoint() {
+        let r = ribbon(4, 2);
+        let rects: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
+        for w in rects.windows(2) {
+            assert!(
+                w[1].y0 >= w[0].y1,
+                "segments overlap: {:?} then {:?}",
+                w[0],
+                w[1]
+            );
+        }
+    }
+
+    /// The focused segment is visibly longer than the others, so the
+    /// ribbon reads without relying on colour alone — which is what keeps
+    /// it legible on the high-contrast palette.
+    #[test]
+    fn the_focused_segment_is_longer() {
+        let r = ribbon(3, 1);
+        let focused = r.segment_rect(1).unwrap().height();
+        for i in [0usize, 2] {
+            assert!(
+                focused > r.segment_rect(i).unwrap().height(),
+                "focused segment is not longer than segment {i}"
+            );
+        }
+    }
+
+    /// The ribbon is centred in the content it belongs to, whichever
+    /// segment has focus — so changing strips does not shift the whole
+    /// control up or down the screen.
+    #[test]
+    fn the_ribbon_stays_centred_whichever_strip_has_focus() {
+        let content = Rect::new(0.0, 40.0, 1600.0, 900.0);
+        for focused in 0..4 {
+            let r = StripRibbon { content, count: 4, focused };
+            let first = r.segment_rect(0).unwrap();
+            let last = r.segment_rect(3).unwrap();
+            let mid = (first.y0 + last.y1) / 2.0;
+            assert!(
+                (mid - content.center().y).abs() < 0.001,
+                "focus {focused}: ribbon centre {mid} drifted off {}",
+                content.center().y
+            );
+        }
+    }
+
+    /// Every segment is clickable at the minimum pointer target, even
+    /// though the painted segment is 6 px wide.
+    #[test]
+    fn every_segment_is_clickable_at_the_minimum_target() {
+        let r = ribbon(3, 0);
+        for i in 0..3 {
+            let hit = r.hit_rect(i).unwrap();
+            assert!(
+                hit.width() >= 32.0 && hit.height() >= 32.0,
+                "segment {i} target is {}x{}, under the 32 px minimum",
+                hit.width(),
+                hit.height()
+            );
+            assert_eq!(r.hit(hit.center()), Some(i), "segment {i} is not hittable at its centre");
+        }
+    }
+
+    /// Pointer targets tile without overlapping, so a click near a
+    /// boundary resolves to exactly one strip rather than to whichever
+    /// the hit-test happened to check first.
+    #[test]
+    fn pointer_targets_do_not_overlap() {
+        let r = ribbon(4, 2);
+        let hits: Vec<Rect> = (0..4).map(|i| r.hit_rect(i).unwrap()).collect();
+        for (i, w) in hits.windows(2).enumerate() {
+            assert!(
+                w[1].y0 >= w[0].y1 - 0.001,
+                "targets {i} and {} overlap: {:?} then {:?}",
+                i + 1,
+                w[0],
+                w[1]
+            );
+        }
+    }
+
+    /// A click in the gutter beside the ribbon is not a strip switch.
+    #[test]
+    fn a_click_away_from_the_ribbon_hits_nothing() {
+        let r = ribbon(3, 1);
+        assert_eq!(r.hit(Point::new(400.0, 470.0)), None);
+    }
+
+    /// The focused segment is the *most* prominent one, on every theme.
+    ///
+    /// This is the assertion that was missing when the ribbon first
+    /// rendered: on the high-contrast palette the focused segment came
+    /// out dimmer than its unfocused neighbours, because `lift` has
+    /// nothing to move toward when base and raised are both black while
+    /// the unfocused floor was a fixed weight. The ribbon read inverted
+    /// and only a rendered crop showed it.
+    #[test]
+    fn the_focused_segment_is_the_most_prominent_on_every_theme() {
+        use crate::a11y::relative_luminance;
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high_contrast", Theme::high_contrast()),
+        ] {
+            let base = theme.tokens.colors.surfaces.base;
+            let g = relative_luminance(base);
+            let contrast = |c: Color| {
+                let a = c.components[3];
+                let b = base.components;
+                let over = Color::new([
+                    c.components[0] * a + b[0] * (1.0 - a),
+                    c.components[1] * a + b[1] * (1.0 - a),
+                    c.components[2] * a + b[2] * (1.0 - a),
+                    1.0,
+                ]);
+                (relative_luminance(over) - g).abs()
+            };
+            let idle = contrast(ribbon_fill(&theme, false, false));
+            let hover = contrast(ribbon_fill(&theme, false, true));
+            let focused = contrast(ribbon_fill(&theme, true, false));
+            assert!(
+                idle > 0.0,
+                "{name}: an unfocused segment is invisible, so a second strip \
+                 cannot be discovered by looking"
+            );
+            assert!(hover > idle, "{name}: hover ({hover:.4}) does not lift off idle ({idle:.4})");
+            assert!(
+                focused > hover,
+                "{name}: the focused segment ({focused:.4}) is less prominent than a \
+                 merely hovered one ({hover:.4}) — the ribbon reads inverted"
+            );
+        }
+    }
+
+    /// A workspace with one strip still shows its ribbon: that single
+    /// segment is how the control is discovered at all.
+    #[test]
+    fn one_strip_still_draws_a_segment() {
+        let r = ribbon(1, 0);
+        assert!(r.segment_rect(0).is_some());
+        assert!(r.extent() > 0.0);
+    }
+}
