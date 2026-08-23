@@ -17,6 +17,7 @@ So this asks both questions, of two real compositors:
   - the host paints the guest's, and
   - both are still there seconds after either pointer stopped, and
   - both carry the name the room gave them, not a raw handle, and
+  - both can be found in the store by the person's name, and
   - neither session paints anybody at the origin.
 
 Every claim is read from the other session's own presence store — the
@@ -414,14 +415,29 @@ def main() -> int:
               bool(near(ada.pointers(), WHERE_X)),
               json.dumps(ada.pointers())[:300])
 
-        print("\n[7] nobody is painted at the origin")
+        print("\n[7] a person can be found by their name")
+        # The question every reader of this store actually asks: "which
+        # of these rows is ada's". A row carries two things — the
+        # identity, which is the handle the frames arrive under, and the
+        # name, which is what the room calls that handle — and only one
+        # of them is a person. A harness that looks a person up in the
+        # other field finds nothing while the cursor is on screen,
+        # correctly drawn and correctly named, and reports that presence
+        # never crossed. That has happened, so it is asserted here.
+        for watcher, rows, who in ((bob, bob.pointers(), "ada"),
+                                   (ada, ada.pointers(), "bob")):
+            hit = [r for r in rows if who in (r.get("name"), r.get("user"))]
+            check(f"{watcher.name}'s store can be asked for {who} by name",
+                  bool(hit), json.dumps(rows)[:300])
+
+        print("\n[8] nobody is painted at the origin")
         for s, rows in (("bob", bob.pointers()), ("ada", ada.pointers())):
             ghosts = [r for r in rows
                       if abs(float(r.get("x", 9))) < 1 and abs(float(r.get("y", 9))) < 1]
             check(f"{s}'s screen has no cursor at the origin", not ghosts,
                   json.dumps(ghosts)[:200])
 
-        print("\n[8] the pictures")
+        print("\n[9] the pictures")
         os.makedirs(args.out, exist_ok=True)
         for s, at, other in ((bob, WHERE_Q, "ada"), (ada, WHERE_X, "bob")):
             p = os.path.join(args.out, f"{s.name}-sees-{other}.png")
