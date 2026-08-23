@@ -4011,6 +4011,49 @@ def show_xavers_screen(xaver: Session, shots: str) -> None:
     xaver.snapshot(os.path.join(shots, "06b-xaver-window-and-text.png"))
 
 
+def xaver_works_in_files(xaver: "Session", stop: "threading.Event") -> None:
+    """Move Xaver's pointer around his file manager until told to stop.
+
+    This is the shot the film exists for, and until now it did not
+    happen: while quinten wrote, xaver sat perfectly still, so the
+    strongest frame in the demo showed one person working and a second
+    person's name on a roster.
+
+    Two people in one document is what every editor on the market has.
+    Two people in *different applications* in one room, each seeing the
+    other, is the thing that needs an operating system underneath it —
+    and the file manager is the proof, because nobody wrote a line of
+    collaboration code for it. It is collaborative because it is in the
+    room.
+
+    So he uses it. His pointer travels over his own Files window, which
+    publishes presence, which quinten's screen draws as a cursor in his
+    colour. Nothing is faked: a real second session really is moving a
+    real pointer over a real application.
+
+    Deliberately only the pointer. Clicking would navigate him somewhere,
+    and a beat that changes what a second person is looking at while the
+    first person types is two things happening rather than one.
+    """
+    # Over his file list, which is the left half of his strip. A slow
+    # arc rather than a straight line: a pointer that travels in a
+    # perfectly straight line at a constant speed is the one thing a
+    # hand never does.
+    path = [
+        (520.0, 300.0), (600.0, 340.0), (700.0, 390.0), (760.0, 430.0),
+        (700.0, 470.0), (600.0, 430.0), (540.0, 370.0), (620.0, 320.0),
+    ]
+    i = 0
+    while not stop.is_set():
+        x, y = path[i % len(path)]
+        try:
+            xaver.pointer_move(x, y)
+        except Exception:                       # noqa: BLE001
+            return
+        i += 1
+        stop.wait(0.55)
+
+
 def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
                quinten_wp: dict | None, shots: str) -> None:
     banner("7.  quinten writes, and xaver's screen is asked what it holds")
@@ -4091,6 +4134,14 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     # one into the page and tries again — and the transcript says which
     # of the two actually wrote the text, because they are different
     # claims about how usable the app is.
+    # He is not alone on this. Xaver's hand starts moving in his own
+    # file manager now, so what the camera holds for the next few
+    # seconds is two people working in two different applications in one
+    # room — which is the whole argument.
+    xaver_busy = threading.Event()
+    xaver_hand = threading.Thread(
+        target=xaver_works_in_files, args=(xaver, xaver_busy), daemon=True)
+    xaver_hand.start()
     quinten.type_prose(TYPED_TEXT)
     quinten.settle(1.5)
 
@@ -4234,6 +4285,12 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
             f"within {DOC_SYNC_TIMEOUT_S:.0f}s, so his document was never "
             f"read back — this run establishes nothing about beat 7 in "
             f"either direction. See {xaver.log_path}")
+    # His hand stops here. It has been moving through the typing and the
+    # crossing, which is the span the shot is about; leaving it running
+    # would put a wandering cursor over the beats after this one, where
+    # it means nothing and only competes for attention.
+    xaver_busy.set()
+    xaver_hand.join(timeout=3.0)
     xaver.settle(2.0)
     after_screen = screen_shot(
         xaver, os.path.join(shots, "08-xaver-received.png"))
