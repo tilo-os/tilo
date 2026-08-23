@@ -10,6 +10,7 @@ pub mod p2p;
 pub mod protocol;
 pub mod replica;
 pub mod streaming;
+pub mod blob_relay;
 pub mod surface_stream;
 pub mod wayland;
 

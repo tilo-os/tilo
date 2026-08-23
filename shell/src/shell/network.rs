@@ -212,6 +212,10 @@ pub struct ShellNetwork {
     /// [`Self::note_snapshot_request`] for why the pairing lives here
     /// rather than in the frame.
     snapshot_requests: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Carries document content between peers, and notices when a shared
+    /// record references something that has not arrived, or is waiting on a
+    /// change it was never sent.
+    blob_relay: Arc<Mutex<crate::network::blob_relay::BlobRelay>>,
     /// Phase 6 buffer of inbound cooperative-scrollback *requests*.
     /// The broker's drainer reads these, consults its local op log,
     /// and (if it has any matching ops) publishes a corresponding
@@ -443,6 +447,7 @@ impl ShellNetwork {
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
             snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            blob_relay: Arc::new(Mutex::new(crate::network::blob_relay::BlobRelay::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         })
@@ -576,6 +581,7 @@ impl ShellNetwork {
         record_id: String,
         data: Vec<u8>,
     ) {
+        self.sync_content(&cluster_id, &record_id, &data);
         let msg = NeighbourMsg::AppCrdtIncremental {
             peer: self.local_peer_id_hash(),
             app_id,
@@ -587,6 +593,110 @@ impl ShellNetwork {
             ws: self.active_ws_for_publish(),
             msg,
         });
+    }
+
+    /// Offer the room any content this frame newly refers to, and say so when
+    /// a document is referencing something nobody here can supply.
+    ///
+    /// Content is pushed rather than requested. The side that just stored a
+    /// blob is by definition the side that has it, and a peer that has only
+    /// the reference cannot ask for what it has not heard of yet without a
+    /// round trip that delays the image for no benefit. Offers are made once
+    /// per room per hash, so editing a document a hundred times does not send
+    /// its photograph a hundred times.
+    fn sync_content(&self, cluster_id: &str, record_id: &str, frame: &[u8]) {
+        if cluster_id.is_empty() {
+            return;
+        }
+        let Ok(mut relay) = self.blob_relay.lock() else {
+            return;
+        };
+        let obs = relay.observe_frame(cluster_id, record_id, frame);
+
+        if obs.missing_ancestors > 0 {
+            // The document has a hole: Automerge is queueing changes it cannot
+            // apply, and the record reads as the page *before* the gap however
+            // many later changes arrived. Saying so is the whole point — this
+            // state used to be reachable only by reading the log afterwards.
+            tracing::warn!(
+                room = %cluster_id,
+                record = %record_id,
+                missing = obs.missing_ancestors,
+                "shell_network: this document is waiting on {} change(s) it was never sent;                  it will read as the text before the gap until they arrive",
+                obs.missing_ancestors,
+            );
+        }
+        for hash in &obs.missing {
+            tracing::info!(
+                room = %cluster_id, record = %record_id, hash = %hash,
+                "shell_network: this document references content that has not arrived;                  it renders as a placeholder until a peer offers it",
+            );
+        }
+
+        for hash in obs.have {
+            if relay.already_announced(cluster_id, &hash) {
+                continue;
+            }
+            let Some(bytes) = qdoc::blobstore::get(&hash) else {
+                continue;
+            };
+            let Some(chunks) = crate::network::blob_relay::BlobRelay::split(&bytes) else {
+                tracing::error!(
+                    room = %cluster_id, record = %record_id, hash = %hash,
+                    bytes = bytes.len(),
+                    limit = crate::network::blob_relay::MAX_BLOB_BYTES,
+                    "shell_network: this content is too large to send; peers will show a                      placeholder for it and no retry will change that",
+                );
+                relay.mark_announced(cluster_id, &hash);
+                continue;
+            };
+            relay.mark_announced(cluster_id, &hash);
+            let count = chunks.len() as u32;
+            let ws = self.active_ws_for_publish();
+            for (index, data) in chunks.into_iter().enumerate() {
+                let msg = NeighbourMsg::BlobChunk {
+                    peer: self.local_peer_id_hash(),
+                    cluster_id: cluster_id.to_string(),
+                    hash: hash.clone(),
+                    index: index as u32,
+                    count,
+                    data,
+                };
+                let _ = self.cmd_tx.try_send(NetCmd::Publish { ws, msg });
+            }
+            tracing::info!(
+                room = %cluster_id, hash = %hash, bytes = bytes.len(), chunks = count,
+                "shell_network: offered this document's content to the room",
+            );
+        }
+    }
+
+    /// Take one received piece of content, storing the whole once it verifies.
+    ///
+    /// Public so an integration test can drive it without standing up
+    /// gossipsub, mirroring the other `handle_*_message` adapters.
+    pub fn handle_blob_chunk_message(
+        &self,
+        peer: u64,
+        hash: String,
+        index: u32,
+        count: u32,
+        data: Vec<u8>,
+    ) {
+        let Ok(mut relay) = self.blob_relay.lock() else {
+            return;
+        };
+        if let Some(whole) = relay.accept_chunk(peer, &hash, index, count, data) {
+            let bytes = whole.len();
+            if qdoc::blobstore::store().put(&hash, &whole) {
+                tracing::info!(
+                    from = peer, hash = %hash, bytes,
+                    "shell_network: content arrived and verified; the image it backs can render",
+                );
+            } else {
+                tracing::warn!(from = peer, hash = %hash, bytes, "shell_network: could not store content");
+            }
+        }
     }
 
     /// Adapter: queue a received `AppCrdtIncremental` into the
@@ -1355,11 +1465,39 @@ impl ShellNetwork {
                         "PROBE gossip recv AppCrdtIncremental",
                     );
                     if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
+                        // Fold it into this shell's view of the record before
+                        // handing it on: that is what tells us whether the
+                        // document now references content we lack, and whether
+                        // its history has a hole.
+                        self.sync_content(cluster_id, record_id, data);
                         self.handle_app_crdt_message(
                             peer_hash,
                             app_id.clone(),
                             cluster_id.clone(),
                             record_id.clone(),
+                            data.clone(),
+                        );
+                    }
+                    continue;
+                }
+                // A piece of a document's content, travelling separately from
+                // the document precisely so neither has to fit inside the
+                // other. Verified against its hash before it is stored.
+                if let NeighbourMsg::BlobChunk {
+                    peer: peer_hash,
+                    ref cluster_id,
+                    ref hash,
+                    index,
+                    count,
+                    ref data,
+                } = msg
+                {
+                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
+                        self.handle_blob_chunk_message(
+                            peer_hash,
+                            hash.clone(),
+                            index,
+                            count,
                             data.clone(),
                         );
                     }
@@ -1549,6 +1687,7 @@ pub(crate) fn shell_network_for_test(
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
         snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        blob_relay: Arc::new(Mutex::new(crate::network::blob_relay::BlobRelay::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
     };
