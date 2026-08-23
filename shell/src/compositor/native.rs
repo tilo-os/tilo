@@ -108,6 +108,7 @@ use crate::compositor::test_control::{
 };
 use crate::compositor::{BackendKind, parse_backend_from_args};
 use crate::shell::overlay_host::PeerSyncRequest;
+use crate::shell::peer_presence::POINTER_IDLE;
 
 /// Env-var name for the Phase 7 CI test introspection hook. When set to a
 /// writable path, [`run`] serializes the shell `WorkspaceTree` to that path
@@ -3179,14 +3180,30 @@ pub fn run() -> ! {
         // when an invite is accepted, and the subscription has to follow
         // it there or the session stops hearing the room it just joined.
         let peers_moved = if let Some(relay) = frame_builder.peer_presence() {
-            // The pointer as the input state actually knows it, which
-            // for a session that has never had one moved through it is
-            // "nowhere" rather than the origin. `cursor()` would answer
-            // the origin here, and this publisher is level-triggered:
-            // it would announce that non-position to the room on every
-            // frame, and every peer would paint a cursor for somebody
-            // who is not there.
-            relay.set_cursor_position(state.client_input.pointer_position());
+            // Where this session is pointing *now* — not merely where
+            // its pointer was last put. This publisher is
+            // level-triggered and restates a stationary pointer on a
+            // keepalive, so whatever is answered here is announced to
+            // the room for as long as it keeps being answered.
+            //
+            // Two different non-answers, and both had to be taught.
+            // `cursor()` reports the origin for a pointer that has
+            // never been anywhere, which put a cursor in the corner of
+            // every peer's screen for somebody who was not there.
+            // `pointer_position()` fixed that and reports the truth —
+            // but the truth outlives its usefulness: a session gets a
+            // real position the first time anything presses a button
+            // on it, and pressing a button is how a session joins a
+            // room, so one press left a pill sitting on every peer's
+            // desktop at a control that had long since been dismissed.
+            //
+            // `live_pointer` is the question the room is actually
+            // asking. Any input at all answers it again immediately.
+            relay.set_cursor_position(
+                state
+                    .client_input
+                    .live_pointer(std::time::Instant::now(), POINTER_IDLE),
+            );
             let (rooms, here) = {
                 let chrome = frame_builder.chrome_handle();
                 let chrome = chrome.borrow();
