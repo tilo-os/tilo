@@ -2774,7 +2774,7 @@ def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
     # both screens, and that it is on the clipboard. This is the frame
     # the invitation has flashed past in every previous cut, so it is
     # held for longer than anything else in the film.
-    read_hold(READ_HOLD_S * 2)
+    read_hold(READ_HOLD_S * 1.5)
     if shots and tag:
         host.snapshot(os.path.join(shots, f"{tag}-copied.png"))
     # The moment it has been read, and not one beat later: it is a modal
@@ -2885,7 +2885,7 @@ def join_room(guest: Session, token: str, via: str,
         guest.snapshot(os.path.join(shots, f"{tag}-pasted.png"))
     # The same short code, on the other machine, beside the words telling
     # you to check it matches. Held, for the same reason as above.
-    read_hold(READ_HOLD_S * 2)
+    read_hold(READ_HOLD_S * 1.5)
 
     step("and Join")
     joined_click = guest.click_named("peer_sync_join")
@@ -3793,20 +3793,25 @@ def beat_four(quinten: Session, xaver: Session, agent: Session,
 
     cut("quinten")
 
-    step("read quinten's room back out of the other two")
-    # Neither of these is quinten's own state — each guest independently
-    # reports the room it now holds — and neither is filmed from the
-    # guest. Asking a far session what it holds is a question, and a
-    # question has no picture: what it produces is a line in this
-    # transcript. The camera stays where the story is, and what xaver
-    # holds is *seen* in the last shot of the film rather than described
-    # over a screenshot of his backdrop.
-    claim("xaver's own copy carries quinten's name for the room",
-          xaver.active_workspace()["name"], host_ws["name"])
-    # Read from the agent's session, shot on nobody's: it is asserted
-    # here and *seen* in the roster on quinten's screen below.
-    claim("the agent's own copy carries it too",
-          agent.active_workspace()["name"], host_ws["name"])
+    # Two socket reads with nothing in frame. The comment inside
+    # already says this question has no picture and that what it
+    # produces is a line in the transcript -- so the camera should
+    # not have been running through it, and was.
+    with off_camera("the other two sessions are asked what they call quinten's\n     room -- answered over a socket, with nothing on screen"):
+        step("read quinten's room back out of the other two")
+        # Neither of these is quinten's own state — each guest independently
+        # reports the room it now holds — and neither is filmed from the
+        # guest. Asking a far session what it holds is a question, and a
+        # question has no picture: what it produces is a line in this
+        # transcript. The camera stays where the story is, and what xaver
+        # holds is *seen* in the last shot of the film rather than described
+        # over a screenshot of his backdrop.
+        claim("xaver's own copy carries quinten's name for the room",
+              xaver.active_workspace()["name"], host_ws["name"])
+        # Read from the agent's session, shot on nobody's: it is asserted
+        # here and *seen* in the roster on quinten's screen below.
+        claim("the agent's own copy carries it too",
+              agent.active_workspace()["name"], host_ws["name"])
 
     step("and the room's people, from the top bar")
     # Now there is a roster, so the affordance exists: the avatar stack
@@ -4212,7 +4217,7 @@ def show_xavers_screen(xaver: Session, shots: str) -> None:
     had just written into.
     """
     frame_one_window(xaver, WORD_PROCESSOR)
-    read_hold(READ_HOLD_S * 2)
+    read_hold(READ_HOLD_S * 1.5)
     xaver.snapshot(os.path.join(shots, "06b-xaver-window-and-text.png"))
 
 
@@ -5082,7 +5087,7 @@ def beat_nine(quinten: Session, xaver: Session, agent: Session,
     # What he asked for, in his own document, addressed to a participant
     # by name. Nothing else in the film explains what is about to happen,
     # so this frame has to be readable.
-    read_hold(READ_HOLD_S * 2)
+    read_hold(READ_HOLD_S * 1.5)
     quinten.snapshot(os.path.join(shots, "11-instruction.png"))
     note(f"the instruction is a line in the document: {AGENT_INSTRUCTION!r}")
 
@@ -5146,7 +5151,7 @@ def beat_nine(quinten: Session, xaver: Session, agent: Session,
     # manager showing an empty folder, under a caption about a document
     # two other participants had just written into.
     frame_one_window(quinten, WORD_PROCESSOR, prefer=quinten_wp)
-    read_hold(READ_HOLD_S * 2)
+    read_hold(READ_HOLD_S * 1.5)
     quinten.snapshot(os.path.join(shots, "12-agent-table.png"))
     xaver.snapshot(os.path.join(shots, "12b-xaver-agent-table.png"))
 
