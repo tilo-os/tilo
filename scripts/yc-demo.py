@@ -58,6 +58,7 @@ import hashlib
 import base64
 import json
 import os
+import random
 import re
 import shutil
 import signal
@@ -199,13 +200,11 @@ AGENT_SCOPE = f"app:{WORD_PROCESSOR}"
 # which is the one thing the beat is for.
 #
 # 55 ms is around 60 words a minute: quick, clearly deliberate, and slow
-# enough that the caret is visibly ahead of the words. Deterministic
-# rather than jittered, so two runs of the film type identically.
+# enough that the caret is visibly ahead of the words.
 TYPING_PACE = 0.055
 
 # Where hands actually slow down. A person does not type at one rate —
-# they pause fractionally after a word and longer after a sentence, and
-# a perfectly even cadence is the thing that reads as a machine.
+# they pause fractionally after a word and longer after a sentence.
 TYPING_PAUSE = {
     " ": 0.085,
     ",": 0.16,
@@ -213,6 +212,40 @@ TYPING_PAUSE = {
     ":": 0.2,
     "\n": 0.3,
 }
+
+# And no two keystrokes take the same time. An exactly even cadence is
+# the tell — it is the one thing real typing never does, and at 18 keys
+# a second the eye picks it out as a machine even when the speed is
+# right. Each interval is scaled by a factor drawn around 1.0, so the
+# rhythm wanders the way a hand does.
+#
+# Seeded, not arbitrary: two runs of the film type identically, which is
+# what lets a frame from one run be compared against a frame from
+# another. The spread is deliberately asymmetric — a hand has a floor it
+# cannot go below and a long tail of hesitations above it, so the
+# distribution is skewed rather than centred.
+TYPING_JITTER = (0.72, 1.45)
+TYPING_SEED = 0x9E3779B9
+
+
+def _typing_jitter(who: str):
+    """An endless run of interval multipliers for `who`'s hands.
+
+    Its own `random.Random`, seeded from the name, rather than the module
+    generator: two sessions type at once in this film, and drawing from a
+    shared generator would make each person's rhythm depend on how their
+    keystrokes happened to interleave with the other's — so a rerun that
+    scheduled them differently would type differently.
+
+    `triangular` rather than `uniform` because a hand is not uniform: it
+    has a floor it cannot beat and a tail of hesitations above it. The
+    mode sits below the midpoint, so most keys land near the base pace
+    and the occasional one drags.
+    """
+    lo, hi = TYPING_JITTER
+    rng = random.Random(TYPING_SEED ^ hash(who) & 0xFFFF_FFFF)
+    while True:
+        yield rng.triangular(lo, hi, lo + (hi - lo) * 0.35)
 
 # What quinten types into the document, and what xaver's session is then
 # asked whether it holds.
@@ -315,6 +348,10 @@ class Session:
                  tools: dict[str, str] | None = None):
         self.name = name
         self.user = user
+        # This session's own typing rhythm, seeded from its name so each
+        # person types a little differently and each of them types the
+        # same way every run.
+        self._typing_jitter = _typing_jitter(name)
         self.dir = run_dir
         self.sock = sock
         self.binary = binary
@@ -880,7 +917,8 @@ class Session:
                 self.key_up("Shift")
             else:
                 self.type_text(ch)
-            time.sleep(TYPING_PAUSE.get(ch, TYPING_PACE))
+            base = TYPING_PAUSE.get(ch, TYPING_PACE)
+            time.sleep(base * next(self._typing_jitter))
 
     def modifiers(self, ctrl=False, shift=False, alt=False, logo=False) -> None:
         self.input_ops += 1
