@@ -112,6 +112,11 @@ impl VideoDoc {
         let _ = doc.put(&proj, "fps", p.fps);
         let _ = doc.put(&proj, "width", p.width as i64);
         let _ = doc.put(&proj, "height", p.height as i64);
+        let _ = doc.put(
+            &proj,
+            "markers",
+            serde_json::to_string(&p.markers).unwrap_or_else(|_| "[]".to_string()),
+        );
     }
 
     pub fn upsert_media(doc: &mut AutoCommit, m: &MediaItem) {
@@ -128,6 +133,24 @@ impl VideoDoc {
         // state, never the bytes (see crate::media).
         let _ = doc.put(&obj, "path", m.path.as_str());
         let _ = doc.put(&obj, "hydration", m.hydration.as_str());
+        // A title's text and styling. Written as a compact JSON scalar for
+        // the same reason the effects stack is: the action model rewrites a
+        // media item whole, so a structured sub-map would buy no finer merge
+        // granularity and would cost a schema.
+        match &m.text {
+            Some(t) => {
+                let _ = doc.put(
+                    &obj,
+                    "text",
+                    serde_json::to_string(t).unwrap_or_default(),
+                );
+            }
+            // Explicitly cleared, so turning a title back into a plain
+            // reference replicates as a change rather than as silence.
+            None => {
+                let _ = doc.delete(&obj, "text");
+            }
+        }
     }
 
     pub fn upsert_track(doc: &mut AutoCommit, t: &Track) {
@@ -166,6 +189,22 @@ impl VideoDoc {
             &obj,
             "effects",
             serde_json::to_string(&c.effects).unwrap_or_else(|_| "[]".to_string()),
+        );
+        // Geometry, time-remap, curves and markers. Each is written as its
+        // own key rather than one blob, so a peer reading a document that
+        // predates any one of them still gets the others.
+        let _ = doc.put(
+            &obj,
+            "transform",
+            serde_json::to_string(&c.transform).unwrap_or_default(),
+        );
+        let _ = doc.put(&obj, "speed_rate", c.speed.rate);
+        let _ = doc.put(&obj, "speed_reverse", c.speed.reverse);
+        let _ = doc.put(&obj, "anim", serde_json::to_string(&c.anim).unwrap_or_default());
+        let _ = doc.put(
+            &obj,
+            "markers",
+            serde_json::to_string(&c.markers).unwrap_or_else(|_| "[]".to_string()),
         );
     }
 
@@ -213,6 +252,9 @@ impl VideoDoc {
             p.fps = Self::get_f64(doc, &proj, "fps").unwrap_or(30.0);
             p.width = Self::get_i64(doc, &proj, "width").unwrap_or(1920) as u32;
             p.height = Self::get_i64(doc, &proj, "height").unwrap_or(1080) as u32;
+            p.markers = Self::get_str(doc, &proj, "markers")
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
         }
 
         if let Ok(Some((Value::Object(ObjType::Map), media))) = doc.get(&ROOT, "media") {
@@ -241,6 +283,10 @@ impl VideoDoc {
                     hydration: crate::media::Hydration::from_str(
                         &Self::get_str(doc, &obj, "hydration").unwrap_or_default(),
                     ),
+                    // Absent for every decoded source, and for any document
+                    // written before titles existed.
+                    text: Self::get_str(doc, &obj, "text")
+                        .and_then(|s| serde_json::from_str(&s).ok()),
                 });
             }
         }
@@ -309,6 +355,22 @@ impl VideoDoc {
                     effects: Self::get_str(doc, &obj, "effects")
                         .and_then(|s| serde_json::from_str(&s).ok())
                         .unwrap_or_default(),
+                    // Each of these is absent in a document written before it
+                    // existed, and each default restores the old behaviour:
+                    // identity geometry, normal speed, no curves, no markers.
+                    transform: Self::get_str(doc, &obj, "transform")
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .unwrap_or_default(),
+                    speed: crate::model::Speed {
+                        rate: Self::get_f64(doc, &obj, "speed_rate").unwrap_or(1.0),
+                        reverse: Self::get_bool(doc, &obj, "speed_reverse"),
+                    },
+                    anim: Self::get_str(doc, &obj, "anim")
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .unwrap_or_default(),
+                    markers: Self::get_str(doc, &obj, "markers")
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .unwrap_or_default(),
                 });
             }
         }
@@ -348,6 +410,7 @@ pub fn sample_project() -> Project {
             // bundled sample-media/ dir hydrates these for --shots.
             path: media::workspace_path(name),
             hydration: Hydration::Projected,
+            text: None,
         }
     };
 
@@ -409,6 +472,7 @@ pub fn sample_project() -> Project {
             fade_out,
             transition_duration: 0.0,
             effects: Vec::new(),
+            ..Default::default()
         });
     };
 

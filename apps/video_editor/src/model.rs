@@ -11,10 +11,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::media::{self, Hydration};
+use crate::param::{ClipAnimation, Interp, Param};
 
 pub type MediaId = Uuid;
 pub type TrackId = Uuid;
 pub type ClipId = Uuid;
+pub type MarkerId = Uuid;
 
 /// Smallest clip we allow a trim/split to produce, in seconds. Stops a
 /// drag from collapsing a clip to a zero-width sliver that can't be
@@ -133,6 +135,292 @@ impl EffectKind {
     }
 }
 
+/// Where a clip's picture lands inside the project frame.
+///
+/// The identity transform is the aspect-fit ("contain") placement the
+/// compositor has always used, so a clip that has never been touched
+/// renders exactly as before. Everything is expressed in **frame-relative**
+/// units rather than pixels, so changing the project resolution rescales a
+/// composition instead of breaking it.
+///
+/// Order of operations, source → screen: crop the source, translate the
+/// anchor to the origin, scale, rotate, then offset by `pos`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Transform {
+    /// Horizontal scale about the anchor. 1.0 = the aspect-fit size.
+    pub scale_x: f64,
+    /// Vertical scale about the anchor.
+    pub scale_y: f64,
+    /// Offset in frame widths / heights. `(0, 0)` is centred; `(0.25, 0)`
+    /// is a quarter of the frame to the right. Y grows downward, matching
+    /// the frame's pixel coordinates.
+    pub pos_x: f64,
+    pub pos_y: f64,
+    /// Clockwise rotation in degrees about the anchor.
+    pub rotation: f64,
+    /// The point of the source that scale and rotation pivot around and
+    /// that `pos` places, in normalised source coordinates. `(0.5, 0.5)`
+    /// is the centre.
+    pub anchor_x: f64,
+    pub anchor_y: f64,
+    /// Fraction of the source cut off each edge before it is placed.
+    /// Cropping removes picture; it does not move or resize what remains.
+    pub crop_left: f64,
+    pub crop_right: f64,
+    pub crop_top: f64,
+    pub crop_bottom: f64,
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self {
+            scale_x: 1.0,
+            scale_y: 1.0,
+            pos_x: 0.0,
+            pos_y: 0.0,
+            rotation: 0.0,
+            anchor_x: 0.5,
+            anchor_y: 0.5,
+            crop_left: 0.0,
+            crop_right: 0.0,
+            crop_top: 0.0,
+            crop_bottom: 0.0,
+        }
+    }
+}
+
+impl Transform {
+    /// True when this transform is the plain aspect-fit — the compositor
+    /// can then take its original path and the inspector can show
+    /// "untransformed".
+    pub fn is_identity(&self) -> bool {
+        (self.scale_x - 1.0).abs() < 1e-9
+            && (self.scale_y - 1.0).abs() < 1e-9
+            && self.pos_x.abs() < 1e-9
+            && self.pos_y.abs() < 1e-9
+            && self.rotation.abs() < 1e-9
+            && (self.anchor_x - 0.5).abs() < 1e-9
+            && (self.anchor_y - 0.5).abs() < 1e-9
+            && !self.is_cropped()
+    }
+
+    pub fn is_cropped(&self) -> bool {
+        self.crop_left.abs() > 1e-9
+            || self.crop_right.abs() > 1e-9
+            || self.crop_top.abs() > 1e-9
+            || self.crop_bottom.abs() > 1e-9
+    }
+
+    /// The visible source rect after cropping, as `(left, top, right,
+    /// bottom)` in normalised source coordinates. Crops that would meet or
+    /// cross are clamped so the rect always has area — a fully cropped-away
+    /// clip would just be an invisible layer, and a degenerate rect would
+    /// make the shader's inside-test meaningless.
+    pub fn crop_rect(&self) -> (f64, f64, f64, f64) {
+        let l = self.crop_left.clamp(0.0, 1.0);
+        let t = self.crop_top.clamp(0.0, 1.0);
+        let r = (1.0 - self.crop_right).clamp(0.0, 1.0);
+        let b = (1.0 - self.crop_bottom).clamp(0.0, 1.0);
+        // Keep at least a sliver in each axis.
+        let (l, r) = if r - l < 1e-4 { (l.min(1.0 - 1e-4), l.min(1.0 - 1e-4) + 1e-4) } else { (l, r) };
+        let (t, b) = if b - t < 1e-4 { (t.min(1.0 - 1e-4), t.min(1.0 - 1e-4) + 1e-4) } else { (t, b) };
+        (l, t, r, b)
+    }
+
+    /// A picture-in-picture placement: `scale` of the frame, tucked into a
+    /// corner with `inset` (in frame widths) of margin. `corner` is
+    /// `(x, y)` each in `-1..1`, so `(1, -1)` is top-right.
+    pub fn pip(scale: f64, corner: (f64, f64), inset: f64) -> Self {
+        let s = scale.clamp(0.02, 1.0);
+        // The half-extent of the scaled clip in frame units, plus the
+        // margin, is how far from the centre its centre must sit.
+        let off = (0.5 - s * 0.5 - inset).max(0.0);
+        Self {
+            scale_x: s,
+            scale_y: s,
+            pos_x: corner.0.clamp(-1.0, 1.0) * off,
+            pos_y: corner.1.clamp(-1.0, 1.0) * off,
+            ..Self::default()
+        }
+    }
+}
+
+/// How fast a clip plays, and in which direction.
+///
+/// `rate` is a multiplier on real time: 2.0 plays twice as fast, so the
+/// same source window occupies half as long on the timeline. This is why
+/// [`Clip::duration`] divides by the rate — speeding a clip up shortens
+/// it, exactly as dragging its speed handle should.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Speed {
+    pub rate: f64,
+    /// Play the source window backwards. The clip still occupies the same
+    /// stretch of timeline; it just reads from the out-point down.
+    pub reverse: bool,
+}
+
+impl Default for Speed {
+    fn default() -> Self {
+        Self { rate: 1.0, reverse: false }
+    }
+}
+
+/// Slowest and fastest rate the model accepts. Below the floor a clip's
+/// timeline length explodes; above the ceiling the source is skipped so
+/// coarsely that the result is noise.
+pub const MIN_SPEED: f64 = 0.05;
+pub const MAX_SPEED: f64 = 20.0;
+
+impl Speed {
+    pub fn new(rate: f64, reverse: bool) -> Self {
+        Self { rate: rate.clamp(MIN_SPEED, MAX_SPEED), reverse }
+    }
+    /// The rate, guaranteed usable as a divisor.
+    pub fn rate(&self) -> f64 {
+        if self.rate.is_finite() { self.rate.clamp(MIN_SPEED, MAX_SPEED) } else { 1.0 }
+    }
+    pub fn is_normal(&self) -> bool {
+        !self.reverse && (self.rate() - 1.0).abs() < 1e-9
+    }
+    /// Signed rate: negative when playing backwards. What the source-time
+    /// map and the audio resampler both step by.
+    pub fn signed(&self) -> f64 {
+        if self.reverse { -self.rate() } else { self.rate() }
+    }
+    /// A short label like `2×` or `0.5× rev` for the inspector and the
+    /// timeline badge.
+    pub fn label(&self) -> String {
+        let r = self.rate();
+        let n = if (r - r.round()).abs() < 1e-6 {
+            format!("{}×", r.round() as i64)
+        } else {
+            format!("{r:.2}×")
+        };
+        if self.reverse { format!("{n} rev") } else { n }
+    }
+}
+
+/// A named point of interest, at a time. Timeline markers hang off the
+/// project in absolute seconds; clip markers hang off a clip in clip-local
+/// seconds so they travel with the footage.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Marker {
+    pub id: Uuid,
+    /// Seconds. Absolute for a project marker, clip-local for a clip one.
+    pub t: f64,
+    pub name: String,
+    /// Palette slot, resolved to a real colour by the theme — the model
+    /// never stores raw RGB, so markers restyle with the OS.
+    pub palette: u8,
+    /// Optional free-text note.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+}
+
+impl Marker {
+    pub fn new(t: f64, name: impl Into<String>, palette: u8) -> Self {
+        Self { id: Uuid::new_v4(), t, name: name.into(), palette, note: String::new() }
+    }
+}
+
+/// Horizontal placement of a title's lines within its box.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextAlign {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
+impl TextAlign {
+    pub const ALL: [TextAlign; 3] = [TextAlign::Left, TextAlign::Center, TextAlign::Right];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TextAlign::Left => "left",
+            TextAlign::Center => "center",
+            TextAlign::Right => "right",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            TextAlign::Left => "Left",
+            TextAlign::Center => "Center",
+            TextAlign::Right => "Right",
+        }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "left" => TextAlign::Left,
+            "right" => TextAlign::Right,
+            _ => TextAlign::Center,
+        }
+    }
+}
+
+/// A title: the text of a [`MediaKind::Text`] source and how it is set.
+///
+/// Sizes are fractions of the **frame height**, not pixels, so a title
+/// composed against a 1080p project still reads correctly when the project
+/// is switched to 4K. The colour is stored explicitly (unlike clip palette
+/// slots) because a title's colour is authored content, not chrome — the
+/// user picked it and it must survive a theme change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextSource {
+    pub content: String,
+    /// Cap height as a fraction of the frame height. 0.1 ≈ 108px at 1080p.
+    pub size: f64,
+    /// Straight (non-premultiplied) sRGB in 0..1, plus alpha.
+    pub color: [f64; 4],
+    pub align: TextAlign,
+    /// Font family. Empty means "the system's default sans", which is what
+    /// a box with no fonts installed can actually honour.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub font: String,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+    /// Opacity of a full-frame backing plate behind the text, 0 = none.
+    #[serde(default)]
+    pub backdrop: f64,
+}
+
+impl Default for TextSource {
+    fn default() -> Self {
+        Self {
+            content: String::new(),
+            size: 0.12,
+            color: [1.0, 1.0, 1.0, 1.0],
+            align: TextAlign::Center,
+            font: String::new(),
+            bold: true,
+            italic: false,
+            backdrop: 0.0,
+        }
+    }
+}
+
+impl TextSource {
+    pub fn new(content: impl Into<String>) -> Self {
+        Self { content: content.into(), ..Self::default() }
+    }
+    /// A cache key covering everything that changes the rasterised picture.
+    /// The frame size is the caller's to add.
+    pub fn raster_key(&self) -> String {
+        format!(
+            "{}|{:.5}|{:?}|{}|{}|{}|{}|{:.4}",
+            self.content,
+            self.size,
+            self.color,
+            self.align.as_str(),
+            self.font,
+            self.bold,
+            self.italic,
+            self.backdrop,
+        )
+    }
+}
+
 /// What a piece of source media is. Drives the bin icon, whether it
 /// lands on a video or audio track by default, and which inspector
 /// controls (opacity vs. volume) apply.
@@ -141,6 +429,9 @@ pub enum MediaKind {
     Video,
     Audio,
     Image,
+    /// A title. Its picture is rasterised from the item's [`TextSource`]
+    /// rather than decoded from a file, so it has no path to hydrate.
+    Text,
 }
 
 impl MediaKind {
@@ -149,18 +440,35 @@ impl MediaKind {
             MediaKind::Video => "video",
             MediaKind::Audio => "audio",
             MediaKind::Image => "image",
+            MediaKind::Text => "text",
         }
     }
     pub fn from_str(s: &str) -> Self {
         match s {
             "audio" => MediaKind::Audio,
             "image" => MediaKind::Image,
+            "text" => MediaKind::Text,
             _ => MediaKind::Video,
         }
     }
-    /// Does this media carry a picture? Images and video do; audio does not.
+    /// Does this media carry a picture? Titles, images and video do; audio
+    /// does not.
     pub fn is_visual(self) -> bool {
-        matches!(self, MediaKind::Video | MediaKind::Image)
+        matches!(self, MediaKind::Video | MediaKind::Image | MediaKind::Text)
+    }
+    /// Is this media's picture generated from the document rather than
+    /// decoded from bytes? A generated source is never "un-hydrated" — it
+    /// is always available, on any peer, with no decoder.
+    pub fn is_generated(self) -> bool {
+        matches!(self, MediaKind::Text)
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            MediaKind::Video => "Video",
+            MediaKind::Audio => "Audio",
+            MediaKind::Image => "Image",
+            MediaKind::Text => "Title",
+        }
     }
 }
 
@@ -260,6 +568,29 @@ pub struct MediaItem {
     /// project remembers what was already fetched.
     #[serde(default = "default_hydration", with = "hydration_serde")]
     pub hydration: Hydration,
+    /// The title's text and styling, for a [`MediaKind::Text`] item. `None`
+    /// for every decoded source — a title is the one media whose picture
+    /// comes out of the document instead of out of a file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<TextSource>,
+}
+
+impl Default for MediaItem {
+    fn default() -> Self {
+        Self {
+            id: Uuid::nil(),
+            name: String::new(),
+            kind: MediaKind::Video,
+            duration: 0.0,
+            width: 0,
+            height: 0,
+            fps: 30.0,
+            palette: 0,
+            path: String::new(),
+            hydration: Hydration::Projected,
+            text: None,
+        }
+    }
 }
 
 fn default_hydration() -> Hydration {
@@ -302,6 +633,20 @@ pub struct Track {
     pub solo: bool,
 }
 
+impl Default for Track {
+    fn default() -> Self {
+        Self {
+            id: Uuid::nil(),
+            name: String::new(),
+            kind: TrackKind::Video,
+            index: 1,
+            muted: false,
+            locked: false,
+            solo: false,
+        }
+    }
+}
+
 /// A placed clip: a reference to media, positioned on a track, sourcing a
 /// `[in_point, out_point]` window of that media.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -339,6 +684,50 @@ pub struct Clip {
     /// default; the user adds / removes / reorders them.
     #[serde(default)]
     pub effects: Vec<ClipEffect>,
+    /// Where the picture lands in the frame: crop, scale, rotation,
+    /// position, anchor. Identity is the aspect-fit the compositor has
+    /// always drawn, so an untouched clip is pixel-identical to before.
+    #[serde(default)]
+    pub transform: Transform,
+    /// Playback rate and direction. Normal by default.
+    #[serde(default)]
+    pub speed: Speed,
+    /// Keyframe curves. A parameter with a curve here ignores its constant
+    /// field — see [`Clip::param_at`], the one door every reader goes
+    /// through.
+    #[serde(default, skip_serializing_if = "ClipAnimation::is_empty")]
+    pub anim: ClipAnimation,
+    /// Markers pinned to this clip, in clip-local seconds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<Marker>,
+}
+
+impl Default for Clip {
+    /// A blank clip, chiefly so callers can write `..Default::default()`
+    /// and stop having to change every literal when the model grows.
+    fn default() -> Self {
+        Self {
+            id: Uuid::nil(),
+            track: Uuid::nil(),
+            media: Uuid::nil(),
+            start: 0.0,
+            in_point: 0.0,
+            out_point: 0.0,
+            opacity: 1.0,
+            volume: 1.0,
+            transition: Transition::None,
+            palette: 0,
+            filters: Filters::default(),
+            fade_in: 0.0,
+            fade_out: 0.0,
+            transition_duration: 0.0,
+            effects: Vec::new(),
+            transform: Transform::default(),
+            speed: Speed::default(),
+            anim: ClipAnimation::default(),
+            markers: Vec::new(),
+        }
+    }
 }
 
 /// Default incoming-transition length, seconds, for a clip that has not been
@@ -359,9 +748,20 @@ impl Clip {
         want.min(self.duration()).max(0.0)
     }
 
-    /// On-timeline length, seconds.
-    pub fn duration(&self) -> f64 {
+    /// The length of the *source* window this clip reads, seconds. Speed
+    /// does not change it — a 4-second window is 4 seconds of footage
+    /// however fast it is played.
+    pub fn source_span(&self) -> f64 {
         (self.out_point - self.in_point).max(0.0)
+    }
+
+    /// On-timeline length, seconds.
+    ///
+    /// Speed divides it: play a 4-second window at 2× and it occupies 2
+    /// seconds of timeline. At the default rate of 1.0 this is exactly the
+    /// source window, so nothing that predates speed changes behaviour.
+    pub fn duration(&self) -> f64 {
+        self.source_span() / self.speed.rate()
     }
     /// Timeline position of the clip's right edge, seconds.
     pub fn end(&self) -> f64 {
@@ -418,6 +818,157 @@ impl Clip {
         }
         g.clamp(0.0, 1.0)
     }
+
+    // --- animation -------------------------------------------------------
+
+    /// The constant this parameter falls back to when it has no curve.
+    ///
+    /// `EffectAmount` past the end of the stack has no constant either;
+    /// the caller treats `None` as "there is nothing to drive".
+    pub fn param_const(&self, param: Param) -> Option<f64> {
+        Some(match param {
+            Param::Opacity => self.opacity,
+            Param::Volume => self.volume,
+            Param::Brightness => self.filters.brightness,
+            Param::Contrast => self.filters.contrast,
+            Param::Saturation => self.filters.saturation,
+            Param::ScaleX => self.transform.scale_x,
+            Param::ScaleY => self.transform.scale_y,
+            Param::PosX => self.transform.pos_x,
+            Param::PosY => self.transform.pos_y,
+            Param::Rotation => self.transform.rotation,
+            Param::EffectAmount(i) => self.effects.get(i as usize)?.amount,
+        })
+    }
+
+    /// **The one door.** The value of `param` at absolute timeline time
+    /// `playhead`: the curve if this clip has one, else the constant.
+    ///
+    /// Every reader — compositor, audio mixer, export, inspector — goes
+    /// through here, which is why animating a parameter needs no second
+    /// code path anywhere.
+    pub fn param_at(&self, param: Param, playhead: f64) -> f64 {
+        let local = playhead - self.start;
+        self.anim
+            .sample(param, local)
+            .or_else(|| self.param_const(param))
+            .unwrap_or(0.0)
+    }
+
+    /// Write a keyframe for `param` at absolute timeline time `playhead`.
+    /// The first key on a parameter is planted at its current value unless
+    /// `value` says otherwise, so keying does not jump the picture.
+    pub fn set_key_at(&mut self, param: Param, playhead: f64, value: f64, interp: Interp) {
+        let local = playhead - self.start;
+        self.anim.ensure(param).set_key(local, value, interp);
+    }
+
+    /// Remove `param`'s keyframe near `playhead` (within half a frame at
+    /// 30fps). Returns whether one went.
+    pub fn remove_key_at(&mut self, param: Param, playhead: f64) -> bool {
+        let local = playhead - self.start;
+        let Some(track) = self.anim.track_mut(param) else { return false };
+        let gone = track.remove_key_near(local, 1.0 / 60.0);
+        if gone && track.keys.is_empty() {
+            self.anim.clear(param);
+        }
+        gone
+    }
+
+    /// The grade at `playhead`, with any animated axis substituted in.
+    pub fn filters_at(&self, playhead: f64) -> Filters {
+        if self.anim.is_empty() {
+            return self.filters;
+        }
+        Filters {
+            brightness: self.param_at(Param::Brightness, playhead),
+            contrast: self.param_at(Param::Contrast, playhead),
+            saturation: self.param_at(Param::Saturation, playhead),
+        }
+    }
+
+    /// The geometry at `playhead`. Crop and anchor are not animatable —
+    /// they describe the clip's framing rather than its motion — so they
+    /// come straight off the static transform.
+    pub fn transform_at(&self, playhead: f64) -> Transform {
+        if self.anim.is_empty() {
+            return self.transform;
+        }
+        Transform {
+            scale_x: self.param_at(Param::ScaleX, playhead),
+            scale_y: self.param_at(Param::ScaleY, playhead),
+            pos_x: self.param_at(Param::PosX, playhead),
+            pos_y: self.param_at(Param::PosY, playhead),
+            rotation: self.param_at(Param::Rotation, playhead),
+            ..self.transform
+        }
+    }
+
+    /// The effect stack at `playhead`, with animated intensities applied.
+    pub fn effects_at(&self, playhead: f64) -> Vec<ClipEffect> {
+        if self.anim.is_empty() {
+            return self.effects.clone();
+        }
+        self.effects
+            .iter()
+            .enumerate()
+            .map(|(i, e)| ClipEffect {
+                kind: e.kind,
+                amount: self.param_at(Param::EffectAmount(i as u32), playhead),
+            })
+            .collect()
+    }
+
+    // --- time remap ------------------------------------------------------
+
+    /// Seconds into the source this clip is showing at timeline time
+    /// `playhead`.
+    ///
+    /// Forward, the playhead's distance into the clip is multiplied by the
+    /// rate and added to the in-point. Reversed, it is subtracted from the
+    /// out-point, so the clip's first timeline frame is the source's last.
+    /// The result is held inside `[in, out]`: past either end a clip shows
+    /// its edge frame rather than footage it does not own.
+    pub fn source_time(&self, playhead: f64) -> f64 {
+        let into = (playhead - self.start).max(0.0);
+        let travelled = into * self.speed.rate();
+        let raw = if self.speed.reverse {
+            self.out_point - travelled
+        } else {
+            self.in_point + travelled
+        };
+        raw.clamp(self.in_point.min(self.out_point), self.out_point.max(self.in_point))
+            .max(0.0)
+    }
+
+    /// Set the speed, keeping the clip's **source window** and therefore
+    /// re-timing its on-timeline length. Returns the new timeline length.
+    pub fn set_speed(&mut self, rate: f64, reverse: bool) -> f64 {
+        self.speed = Speed::new(rate, reverse);
+        self.duration()
+    }
+
+    // --- markers ---------------------------------------------------------
+
+    /// Add a marker at absolute timeline time `t`, stored clip-local.
+    /// Ignored when `t` is outside the clip.
+    pub fn add_marker(&mut self, t: f64, name: impl Into<String>, palette: u8) -> Option<Uuid> {
+        if !self.covers(t) {
+            return None;
+        }
+        let m = Marker::new(t - self.start, name, palette);
+        let id = m.id;
+        self.markers.push(m);
+        self.markers
+            .sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
+        Some(id)
+    }
+
+    pub fn remove_marker(&mut self, id: Uuid) -> bool {
+        let before = self.markers.len();
+        self.markers.retain(|m| m.id != id);
+        self.markers.len() != before
+    }
 }
 
 /// The whole editable project.
@@ -430,6 +981,9 @@ pub struct Project {
     pub media: Vec<MediaItem>,
     pub tracks: Vec<Track>,
     pub clips: Vec<Clip>,
+    /// Timeline markers, in absolute seconds, kept sorted by time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<Marker>,
 }
 
 impl Project {
@@ -442,7 +996,62 @@ impl Project {
             media: Vec::new(),
             tracks: Vec::new(),
             clips: Vec::new(),
+            markers: Vec::new(),
         }
+    }
+
+    // --- timeline markers ------------------------------------------------
+
+    /// Drop a marker at absolute time `t`. Kept sorted so the timeline can
+    /// walk them in order and "next marker" is a scan, not a sort.
+    pub fn add_marker(&mut self, t: f64, name: impl Into<String>, palette: u8) -> MarkerId {
+        let m = Marker::new(t.max(0.0), name, palette);
+        let id = m.id;
+        self.markers.push(m);
+        self.markers
+            .sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
+        id
+    }
+
+    pub fn marker(&self, id: MarkerId) -> Option<&Marker> {
+        self.markers.iter().find(|m| m.id == id)
+    }
+
+    pub fn marker_mut(&mut self, id: MarkerId) -> Option<&mut Marker> {
+        self.markers.iter_mut().find(|m| m.id == id)
+    }
+
+    pub fn remove_marker(&mut self, id: MarkerId) -> bool {
+        let before = self.markers.len();
+        self.markers.retain(|m| m.id != id);
+        self.markers.len() != before
+    }
+
+    /// The first project marker strictly after `t`, for "jump to next
+    /// marker". `None` at the end of the list rather than wrapping, so the
+    /// playhead never silently teleports backwards.
+    pub fn next_marker(&self, t: f64) -> Option<&Marker> {
+        self.markers.iter().find(|m| m.t > t + 1e-9)
+    }
+
+    /// The last project marker strictly before `t`.
+    pub fn prev_marker(&self, t: f64) -> Option<&Marker> {
+        self.markers.iter().rev().find(|m| m.t < t - 1e-9)
+    }
+
+    /// Every marker in the project on one absolute timeline: the project's
+    /// own, plus each clip's rebased onto where that clip sits. What the
+    /// ruler draws.
+    pub fn all_markers(&self) -> Vec<(f64, &Marker, Option<ClipId>)> {
+        let mut out: Vec<(f64, &Marker, Option<ClipId>)> =
+            self.markers.iter().map(|m| (m.t, m, None)).collect();
+        for c in &self.clips {
+            for m in &c.markers {
+                out.push((c.start + m.t, m, Some(c.id)));
+            }
+        }
+        out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        out
     }
 
     pub fn media(&self, id: MediaId) -> Option<&MediaItem> {
@@ -530,6 +1139,7 @@ impl Project {
             fade_out: 0.0,
             transition_duration: 0.0,
             effects: Vec::new(),
+            ..Default::default()
         });
         Some(id)
     }
@@ -543,22 +1153,48 @@ impl Project {
         if at <= clip.start + MIN_CLIP || at >= clip.end() - MIN_CLIP {
             return None;
         }
-        let offset = at - clip.start; // seconds into the clip == seconds into source
-        let split_src = clip.in_point + offset;
+        // Seconds into the clip on the timeline, and where that lands in
+        // the source — which is not the same distance once the clip is
+        // sped up, slowed down or reversed.
+        let offset = at - clip.start;
+        let split_src = clip.source_time(at);
+        let full = clip.duration();
         let mut right = clip.clone();
         right.id = Uuid::new_v4();
         right.start = at;
-        right.in_point = split_src;
+        // Reversed, the tail of the timeline is the *head* of the source,
+        // so the cut moves the out-point rather than the in-point.
+        if clip.speed.reverse {
+            right.out_point = split_src;
+            if let Some(left) = self.clip_mut(id) {
+                left.in_point = split_src;
+                left.fade_out = 0.0;
+            }
+        } else {
+            right.in_point = split_src;
+            if let Some(left) = self.clip_mut(id) {
+                left.out_point = split_src;
+                left.fade_out = 0.0;
+            }
+        }
         // A head transition belongs to the new cut, not the right half.
         right.transition = Transition::None;
         // The fade-in stays with the head (left); the fade-out belongs to
         // the tail (right). Each half keeps the relevant ramp only.
         right.fade_in = 0.0;
-        // Shorten the left half to end at the split (and drop its tail fade,
-        // which now lands inside the right clip).
+        // Curves and markers are clip-local, so each half keeps what falls
+        // inside it, rebased — and the value at the cut is preserved on
+        // both sides, so splitting a ramp does not change the picture.
+        right.anim = clip.anim.sliced(offset, full);
+        right.markers = clip
+            .markers
+            .iter()
+            .filter(|m| m.t >= offset)
+            .map(|m| Marker { t: m.t - offset, ..m.clone() })
+            .collect();
         if let Some(left) = self.clip_mut(id) {
-            left.out_point = split_src;
-            left.fade_out = 0.0;
+            left.anim = clip.anim.sliced(0.0, offset);
+            left.markers.retain(|m| m.t < offset);
         }
         let new_id = right.id;
         self.clips.push(right);
@@ -676,7 +1312,20 @@ impl Project {
             let min_delta = -c.in_point; // can't go before source 0
             let d = delta.clamp(min_delta, max_delta);
             c.in_point += d;
-            c.start += d;
+            // `d` is source seconds; the timeline start moves by however
+            // long those seconds take to play, which the rate decides.
+            let on_timeline = d / c.speed.rate();
+            c.start += on_timeline;
+            // Curves are anchored to the clip's start, so pulling the head
+            // in has to rebase them or the animation slides off the frames
+            // it was drawn against.
+            if !c.anim.is_empty() {
+                c.anim = c.anim.sliced(on_timeline, c.duration() + on_timeline);
+            }
+            c.markers.retain(|m| m.t >= on_timeline);
+            for m in c.markers.iter_mut() {
+                m.t -= on_timeline;
+            }
         }
     }
 

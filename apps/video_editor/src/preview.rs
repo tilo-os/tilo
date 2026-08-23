@@ -27,8 +27,10 @@
 //! see in the offline preview matches the graded export.
 
 use crate::model::{
-    Clip, ClipEffect, ClipId, EffectKind, Filters, MediaId, Project, Track, TrackKind, Transition,
+    Clip, ClipEffect, ClipId, EffectKind, Filters, MediaId, MediaKind, Project, Track, TrackKind,
+    Transform, Transition,
 };
+use crate::param::Param;
 
 /// A normalised RGB triple in 0..1. Render-agnostic so the math is testable
 /// without a GPU.
@@ -185,10 +187,13 @@ pub fn palette_rgb(palette: u8) -> Rgb {
 }
 
 /// The source time (seconds into the media) the preview must decode for the
-/// clip under the playhead: the clip's in-point plus how far the playhead has
-/// travelled into the clip on the timeline.
+/// clip under the playhead.
+///
+/// This is the clip's own time map — see [`Clip::source_time`] — which
+/// folds in the playback rate and direction, so a 2× clip advances through
+/// its source twice as fast and a reversed one runs backwards.
 pub fn source_time_for(clip: &Clip, playhead: f64) -> f64 {
-    (clip.in_point + (playhead - clip.start)).max(0.0)
+    clip.source_time(playhead)
 }
 
 /// A decoded RGBA picture ready to blit onto the preview canvas.
@@ -476,6 +481,15 @@ pub struct Layer {
     pub alpha: f64,
     /// Geometric mask, when this layer is wiping in.
     pub wipe: Option<Wipe>,
+    /// Where the picture sits in the frame, sampled at this instant so an
+    /// animated move or scale is already resolved by the time the
+    /// compositor sees it.
+    pub transform: Transform,
+    /// Whether this layer's source texture carries meaningful alpha (a
+    /// title, or an image with transparency). Decoded video is opaque, and
+    /// honouring its alpha channel unconditionally would make a decoder
+    /// that leaves it at zero render nothing at all.
+    pub source_alpha: bool,
 }
 
 /// The transition active on `clip` at `playhead`, as (kind, progress in
@@ -495,16 +509,30 @@ pub fn active_transition(clip: &Clip, playhead: f64) -> Option<(Transition, f64)
     Some((clip.transition, (into / dur).clamp(0.0, 1.0)))
 }
 
-fn layer_for(clip: &Clip, source_time: f64, alpha: f64, wipe: Option<Wipe>) -> Layer {
+/// Build a layer for `clip` sampled at absolute time `at`.
+///
+/// Every animatable value is read through [`Clip::param_at`] at `at`, so a
+/// keyframed grade, scale or effect intensity is already a plain number by
+/// the time it reaches the GPU.
+fn layer_at(
+    clip: &Clip,
+    at: f64,
+    source_time: f64,
+    alpha: f64,
+    wipe: Option<Wipe>,
+    source_alpha: bool,
+) -> Layer {
     Layer {
         clip: clip.id,
         media: clip.media,
         source_time,
         palette: clip.palette,
-        filters: clip.filters,
-        effects: clip.effects.clone(),
+        filters: clip.filters_at(at),
+        effects: clip.effects_at(at),
         alpha: alpha.clamp(0.0, 1.0),
         wipe,
+        transform: clip.transform_at(at),
+        source_alpha,
     }
 }
 
@@ -513,8 +541,10 @@ fn layer_for(clip: &Clip, source_time: f64, alpha: f64, wipe: Option<Wipe>) -> L
 /// A's out-point, so A holds on its last frame; when the clips overlap,
 /// A keeps playing.
 fn outgoing_source_time(a: &Clip, playhead: f64) -> f64 {
-    let raw = a.in_point + (playhead - a.start);
-    raw.clamp(a.in_point, a.out_point.max(a.in_point))
+    // `Clip::source_time` already holds the result inside `[in, out]`,
+    // which is exactly the "hold on the last frame" behaviour an abutting
+    // cut needs, and it honours the outgoing clip's own speed.
+    a.source_time(playhead)
 }
 
 /// Build the composite stack at `playhead`: every visible clip on every
@@ -558,29 +588,53 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
         }
     }
 
+    // Whether a clip's picture carries its own alpha: a title always does,
+    // and so can an image. Decoded video does not.
+    let has_alpha = |c: &Clip| {
+        project
+            .media(c.media)
+            .is_some_and(|m| matches!(m.kind, MediaKind::Text | MediaKind::Image))
+    };
+
     for (i, c) in clips.iter().enumerate() {
         if !c.covers(playhead) || claimed.contains(&c.id) {
             continue;
         }
-        let base = (c.envelope(playhead) * c.opacity).clamp(0.0, 1.0);
+        // Opacity goes through the animation door, so a keyframed fade is
+        // just a different number here — no second path.
+        let base =
+            (c.envelope(playhead) * c.param_at(Param::Opacity, playhead)).clamp(0.0, 1.0);
         let t_in = source_time_for(c, playhead);
+        let alpha_src = has_alpha(c);
+        let mk = |alpha: f64, wipe: Option<Wipe>| {
+            layer_at(c, playhead, t_in, alpha, wipe, alpha_src)
+        };
         let prev = i.checked_sub(1).map(|j| clips[j]);
         let Some((kind, t)) = active_transition(c, playhead) else {
-            out.push(layer_for(c, t_in, base, None));
+            out.push(mk(base, None));
             continue;
         };
         // The A side, sampled where the outgoing clip is at this instant.
         let a_layer = |alpha: f64| {
-            prev.map(|a| layer_for(a, outgoing_source_time(a, playhead), alpha, None))
+            prev.map(|a| {
+                layer_at(
+                    a,
+                    playhead,
+                    outgoing_source_time(a, playhead),
+                    alpha,
+                    None,
+                    has_alpha(a),
+                )
+            })
         };
         match kind {
             // mix(black, B, t) — nothing beneath, so B simply rises out
             // of the letterbox black.
-            Transition::FadeIn => out.push(layer_for(c, t_in, base * t, None)),
+            Transition::FadeIn => out.push(mk(base * t, None)),
             // mix(A, B, t) — both clips are sampled, B fades up over A.
             Transition::CrossDissolve => {
                 out.extend(a_layer(1.0));
-                out.push(layer_for(c, t_in, base * t, None));
+                out.push(mk(base * t, None));
             }
             // A → black → B: A dims away over the first half, B rises
             // out of black over the second.
@@ -588,21 +642,19 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
                 if t < 0.5 {
                     out.extend(a_layer(1.0 - 2.0 * t));
                 } else {
-                    out.push(layer_for(c, t_in, base * (2.0 * t - 1.0), None));
+                    out.push(mk(base * (2.0 * t - 1.0), None));
                 }
             }
             // Real geometry: B is revealed behind a travelling soft edge,
             // with A intact everywhere the edge has not reached.
             Transition::Wipe => {
                 out.extend(a_layer(1.0));
-                out.push(layer_for(
-                    c,
-                    t_in,
+                out.push(mk(
                     base,
                     Some(Wipe { dir: WipeDir::LeftToRight, progress: t, softness: 0.06 }),
                 ));
             }
-            Transition::None => out.push(layer_for(c, t_in, base, None)),
+            Transition::None => out.push(mk(base, None)),
         }
     }
 }
