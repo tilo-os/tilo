@@ -734,6 +734,112 @@ mod tests {
         (first, last)
     }
 
+    /// A project with one audio clip placed at `start` on the timeline,
+    /// sourcing from `in_point` for `len` seconds.
+    ///
+    /// Both offsets are non-zero on purpose. A clip at timeline 0 sourcing
+    /// from 0 makes the timeline second and the source second the same
+    /// number, so a mixer that confuses the two still looks right.
+    fn placed_project(start: f64, in_point: f64, len: f64) -> Project {
+        let mut p = Project::new("p");
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "a.wav".into(),
+            kind: MediaKind::Audio,
+            duration: in_point + len,
+            fps: 0.0,
+            ..Default::default()
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track {
+            id: tid,
+            name: "A1".into(),
+            kind: TrackKind::Audio,
+            index: 1,
+            ..Default::default()
+        });
+        let cid = p.add_clip(tid, mid, start).expect("media exists");
+        let c = p.clip_mut(cid).unwrap();
+        c.in_point = in_point;
+        c.out_point = in_point + len;
+        p
+    }
+
+    /// A block must read the span of source it *covers*, not one displaced
+    /// from it.
+    ///
+    /// `mix_block` evaluates gain at the middle of the block, so that a fade
+    /// ramp is centred on it rather than lagging a whole block behind. The
+    /// read position was taken from that same midpoint, which is a different
+    /// thing entirely: every block then began half a block into the source it
+    /// was supposed to cover. Constant, so nothing sounded stretched — the
+    /// sound simply sat a fixed distance from the picture, which at 30fps is
+    /// 800 samples, about 17 ms.
+    ///
+    /// The clip is placed away from the timeline origin and sources from a
+    /// non-zero in-point, so the assertion is on the real timeline → source
+    /// mapping rather than on an identity.
+    #[test]
+    fn a_block_reads_the_span_it_covers_not_one_offset_from_it() {
+        let (start, in_point, len) = (1.0, 3.0, 5.0);
+        let p = placed_project(start, in_point, len);
+        let n = (in_point + len) as usize * SAMPLE_RATE as usize;
+        let mut src = RampSource { len: n };
+
+        // One video frame's worth at 30fps — the block size an export pushes.
+        let frames = SAMPLE_RATE as usize / 30;
+        // A block one second into the clip, which is source second 4.0.
+        let at = start + 1.0;
+        let block = mix_block(&p, at, frames, &mut src);
+        let (a, b) = span_of(&block, n);
+
+        let want = (in_point + 1.0) * SAMPLE_RATE as f64;
+        let off = a - want;
+        assert!(
+            off.abs() < 2.0,
+            "a block at timeline {at}s of a clip placed at {start}s from in-point \
+             {in_point}s must start at source frame {want}, got {a} — {off:+.0} frames \
+             out. Half a block is {:+.0}, which is the read-at-the-midpoint bug.",
+            frames as f64 / 2.0,
+        );
+        // And it covers a block's worth from there, rather than reading the
+        // right span at the wrong rate.
+        assert!(
+            (b - (want + frames as f64 - 1.0)).abs() < 2.0,
+            "and ends at source frame {}, got {b}",
+            want + frames as f64 - 1.0,
+        );
+    }
+
+    /// Consecutive blocks have to abut, or the export's audio gains or loses
+    /// samples every frame and drifts away from the picture over a long
+    /// timeline.
+    #[test]
+    fn consecutive_blocks_abut_with_no_gap_and_no_overlap() {
+        let (start, in_point, len) = (1.0, 3.0, 5.0);
+        let p = placed_project(start, in_point, len);
+        let n = (in_point + len) as usize * SAMPLE_RATE as usize;
+        let mut src = RampSource { len: n };
+
+        let frames = SAMPLE_RATE as usize / 30;
+        let step = frames as f64 / SAMPLE_RATE as f64;
+        let mut previous_end: Option<f64> = None;
+        for i in 0..30 {
+            let at = start + 0.5 + i as f64 * step;
+            let (a, b) = span_of(&mix_block(&p, at, frames, &mut src), n);
+            if let Some(end) = previous_end {
+                assert!(
+                    (a - end - 1.0).abs() < 2.0,
+                    "block {i} starts at source frame {a}; the one before it ended at \
+                     {end}, so the two are {:+.0} frames apart instead of adjacent",
+                    a - end - 1.0,
+                );
+            }
+            previous_end = Some(b);
+        }
+    }
+
     #[test]
     fn at_normal_speed_a_block_covers_exactly_its_own_frames() {
         let (p, _) = speed_project(1.0, false, 10.0);
