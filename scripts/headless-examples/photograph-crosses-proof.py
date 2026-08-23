@@ -93,10 +93,15 @@ FAILURES: list[str] = []
 
 
 def check(label: str, ok: bool, detail: str = "") -> bool:
-    print(f"  [{'ok' if ok else 'FAIL'}] {label}" + (f" — {detail}" if detail else ""))
+    # `detail` explains a failure; printing it on success reads as though the
+    # thing it warns about happened anyway.
+    print(f"  [{'ok' if ok else 'FAIL'}] {label}" + (f" — {detail}" if detail and not ok else ""))
     if not ok:
         FAILURES.append(label)
     return ok
+
+
+ANSI = __import__("re").compile(r"\x1b\[[0-9;]*m")
 
 
 def note(msg: str) -> None:
@@ -198,13 +203,19 @@ def html_with_image(png: bytes) -> str:
 
 
 def html_without_image() -> str:
-    """Xaver's own file: the same document, minus the one thing at issue."""
-    return (
-        "<html><body>"
-        "<h1>Harbour, Tuesday</h1>"
-        "<p>The photograph below has to reach the other machine.</p>"
-        "</body></html>"
-    )
+    """What the second app opens: nothing.
+
+    Empty rather than "the same document minus the picture", and the
+    reason is worth writing down. Two apps that each *import* a file
+    build two separately-created Automerge documents; merging those
+    leaves one side's blocks addressed by a root key the other side's
+    version of that key wins, so the second app sits looking at its own
+    copy and the first one's page never arrives. An app that imported
+    nothing has nothing to win with, so the whole document it is handed
+    is the document it shows — which is the state a peer joining a room
+    is actually in.
+    """
+    return "<html><body></body></html>"
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +334,12 @@ class Session:
             # itself off, and the only symptom is a missing peer.* action.
             "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
             "NIRIOS_HEADLESS_SIZE": "1600x1200",
+            # The shell says what it did with a document's content at `info`,
+            # and those lines are the account of the hop this script is about.
+            # Without them a run that moved the bytes and one that dropped them
+            # produce identical logs, which is the condition the whole defect
+            # lived in.
+            "RUST_LOG": "warn,shell::shell::network=info,shell::shell::collab_broker=info",
             "LC_ALL": "en_US.UTF-8",
             "LANG": "en_US.UTF-8",
             "LANGUAGE": "en_US",
@@ -559,14 +576,54 @@ def main() -> int:
         check("xaver's page photographed before anything crossed",
               xaver.snapshot(before))
 
-        print("\n[4] the photograph crosses")
-        # Nothing is typed and nothing is clicked. Quinten's app stored
-        # the image when it imported the file; from there the whole
-        # journey is the room's.
+        print("\n[4] the bytes cross")
+        # Nothing is typed and nothing is clicked. Quinten's app stored the
+        # image when it imported the file; from there the whole journey is
+        # the room's.
+        #
+        # Four separate things had to happen, and the defect could have been
+        # any one of them: never offered, never asked for, never delivered,
+        # or delivered somewhere the reader does not look. Each is checked
+        # on its own so a failure names which.
+        def both_logs():
+            return quinten.log_text(), xaver.log_text()
+
+        wait_for(lambda: "content arrived and verified" in xaver.log_text(),
+                 timeout=90, poll=2.0)
+        q_log, x_log = both_logs()
+        check("quinten's shell took the content from its own app and offered it",
+              "offered a local app's content to the room" in q_log,
+              "the app's bytes never reached the shell, so there was nothing to send")
+        check("the content arrived on xaver's machine and verified against its hash",
+              "content arrived and verified" in x_log,
+              "the bytes did not cross")
+        check("xaver's shell handed it down to the apps in the room",
+              "handing arrived content to the apps in this room" in x_log,
+              "the shell has the picture and the app that draws it does not")
+
+        # The request is the *recovery* path, and whether it runs depends on
+        # timing this script does not control: when the unsolicited offer
+        # lands, nobody needs to ask. Requiring it here would fail a run in
+        # which everything worked first time. Its own coverage is the unit
+        # test, which drops the offer deliberately and then insists on the
+        # question being asked.
+        asked = "asking the room for it" in x_log
+        answered = "sent on request from a peer" in q_log
+        note("the recovery path ran too: xaver asked and quinten answered"
+             if asked and answered else
+             "the offer landed first time, so nothing had to be asked for")
+
+        for name, log in (("quinten", q_log), ("xaver", x_log)):
+            for line in ANSI.sub("", log).splitlines():
+                if "shell_network:" in line and ("content" in line or "asking" in line):
+                    said = line.split("shell_network: ")[-1].strip()
+                    note(f"{name}: {said.split(' room=')[0][:110]}")
+
+        print("\n[5] and the photograph is on xaver's page")
         landed, moved, waited = False, 0, 0.0
         start = time.time()
         after = os.path.join(shots, "2-xaver-after.png")
-        while time.time() - start < 90.0:
+        while time.time() - start < 60.0:
             if xaver.snapshot(after):
                 d = pixels_changed(before, after)
                 if d is not None:
@@ -579,26 +636,22 @@ def main() -> int:
 
         check("the photograph is on xaver's screen", landed,
               f"largest change seen: {moved} pixels")
+        note(f"before: {before}")
+        note(f"after:  {after}")
         if landed:
             note(f"it took {waited:.1f}s from both apps being up — a "
                  f"{len(png)}-byte picture across a chunked transport")
-            note(f"before: {before}")
-            note(f"after:  {after}")
-
-        print("\n[5] what the two shells said about it")
-        # The claim above is about pixels. This one is about the path:
-        # the room has to show the content being offered on one side and
-        # arriving on the other, or a photograph on screen could still be
-        # something the app drew for itself.
-        q_log, x_log = quinten.log_text(), xaver.log_text()
-        offered = "offered" in q_log and "content" in q_log
-        arrived = "content arrived and verified" in x_log
-        check("quinten's shell offered the content to the room", offered)
-        check("xaver's shell received it and it verified against its hash", arrived)
-        for name, log in (("quinten", q_log), ("xaver", x_log)):
-            for line in log.splitlines():
-                if "shell_network:" in line and ("content" in line or "asked" in line):
-                    note(f"{name}: {line.strip()[-160:]}")
+        elif "content arrived and verified" in x_log:
+            # Worth separating, because these are two different faults and
+            # only one of them is about moving bytes. The content is on the
+            # machine and in the app's own store; if the page is still blank
+            # then what has not arrived is the *document* — two apps that
+            # each imported a file hold separately-created Automerge
+            # documents, and merging those leaves one side's blocks behind
+            # whichever root key wins.
+            note("the bytes are on xaver's machine and were handed to his app, "
+                 "so this is not the transport: his document did not adopt "
+                 "quinten's blocks, and there is no image block to draw")
 
         return 1 if FAILURES else 0
     finally:
