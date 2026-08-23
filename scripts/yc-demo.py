@@ -191,6 +191,29 @@ LIVE_APPS = os.path.join(REPO, "target", "qos-apps-live")
 AGENT_SUBJECT = "agent:claude"
 AGENT_SCOPE = f"app:{WORD_PROCESSOR}"
 
+# How fast a person types, on camera.
+#
+# Not a speed setting — before this, runs of unshifted characters went
+# out in a single `type` call, so a sentence arrived in two or three
+# instant bursts. The viewer saw text appear without seeing it typed,
+# which is the one thing the beat is for.
+#
+# 55 ms is around 60 words a minute: quick, clearly deliberate, and slow
+# enough that the caret is visibly ahead of the words. Deterministic
+# rather than jittered, so two runs of the film type identically.
+TYPING_PACE = 0.055
+
+# Where hands actually slow down. A person does not type at one rate —
+# they pause fractionally after a word and longer after a sentence, and
+# a perfectly even cadence is the thing that reads as a machine.
+TYPING_PAUSE = {
+    " ": 0.085,
+    ",": 0.16,
+    ".": 0.22,
+    ":": 0.2,
+    "\n": 0.3,
+}
+
 # What quinten types into the document, and what xaver's session is then
 # asked whether it holds.
 TYPED_TEXT = "the same document on both machines"
@@ -786,7 +809,7 @@ class Session:
         self.input_ops += 1
         ok(call(self.sock, {"op": "key_up", "key": name}))
 
-    def type_prose(self, text: str) -> None:
+    def type_prose(self, text: str, pace: bool | None = None) -> None:
         """Type `text` into a *client* so that it arrives as written.
 
         `type` alone does not. It emits one keycode per character, and a
@@ -809,28 +832,55 @@ class Session:
         real bullet. A draft typed this way arrives as a document rather
         than as one lowercase run-on line.
 
-        Runs of unshifted characters still go through one `type` call, so
-        this costs a round trip per capital and not per character.
-        """
-        pending: list[str] = []
+        One character at a time, at a pace a person reads as typing.
 
-        def flush() -> None:
-            if pending:
-                self.type_text("".join(pending))
-                pending.clear()
+        Batching the unshifted runs into a single `type` call is much
+        cheaper — one round trip per capital rather than per character —
+        and it is the wrong thing on camera. A sentence that arrives in
+        three instant bursts is not a person writing; the viewer sees
+        text appear and has no idea it was typed, which is the one thing
+        this beat exists to show.
+
+        The cadence is deterministic rather than random, so two runs of
+        the film type identically: a base interval, plus a longer pause
+        after the punctuation and spaces where a person's hands actually
+        slow down. Off camera the pause is skipped entirely and the old
+        batching applies, because a harness waiting out a realistic
+        typing speed is just a slower harness.
+        """
+        paced = RECORDER is not None and pace is not False
+        if not paced:
+            pending: list[str] = []
+
+            def flush() -> None:
+                if pending:
+                    self.type_text("".join(pending))
+                    pending.clear()
+
+            for ch in text:
+                if ch == "\n":
+                    flush()
+                    self.key("Enter")
+                elif ch in SHIFTED_KEYS:
+                    flush()
+                    self.key_down("Shift")
+                    self.key(SHIFTED_KEYS[ch])
+                    self.key_up("Shift")
+                else:
+                    pending.append(ch)
+            flush()
+            return
 
         for ch in text:
             if ch == "\n":
-                flush()
                 self.key("Enter")
             elif ch in SHIFTED_KEYS:
-                flush()
                 self.key_down("Shift")
                 self.key(SHIFTED_KEYS[ch])
                 self.key_up("Shift")
             else:
-                pending.append(ch)
-        flush()
+                self.type_text(ch)
+            time.sleep(TYPING_PAUSE.get(ch, TYPING_PACE))
 
     def modifiers(self, ctrl=False, shift=False, alt=False, logo=False) -> None:
         self.input_ops += 1
