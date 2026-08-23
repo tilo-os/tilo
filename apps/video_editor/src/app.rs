@@ -420,6 +420,35 @@ pub struct VideoEditorApp {
     /// decodes the true frame of the clip under the playhead through GStreamer.
     #[cfg(feature = "decode")]
     preview_decoder: preview::PreviewDecoder,
+    /// The preview's frame source, held for the app's lifetime.
+    ///
+    /// It owns the decode sessions and one YUV converter per layer slot, so
+    /// rebuilding it per frame would re-open a pipeline every frame. It is
+    /// re-indexed (not rebuilt) when the media bin changes.
+    #[cfg(feature = "decode")]
+    frame_source: Option<crate::gpu::MediaFrameSource>,
+    /// Signature of the media the frame source was last indexed against.
+    #[cfg(feature = "decode")]
+    frame_source_sig: u64,
+    /// Frames since the frame source last dropped its idle sessions.
+    #[cfg(feature = "decode")]
+    prune_countdown: u32,
+    /// Audio monitoring: the mixed timeline, played while the transport
+    /// runs. `None` until the first frame builds it, and it holds a
+    /// [`audio::NullSink`] on a box with no output — silent playback rather
+    /// than no playback, so `Clip::volume` and the track mutes still have
+    /// something on the other end of them.
+    #[cfg(any(feature = "gst", feature = "decode"))]
+    monitor: Option<crate::audio::AudioMonitor>,
+    #[cfg(any(feature = "gst", feature = "decode"))]
+    monitor_tried: bool,
+    /// Set when the document changes, so the monitor is handed the new
+    /// timeline once per edit instead of once per frame.
+    #[cfg(any(feature = "gst", feature = "decode"))]
+    monitor_stale: bool,
+    /// The document heads the model was last loaded at — how "the document
+    /// changed" is told from "the same document was reloaded".
+    doc_heads: Vec<automerge::ChangeHash>,
     /// The GPU compositor that produces the preview picture — the *same*
     /// renderer the export runs, so what you see is byte-for-byte what you
     /// get. Built once and reused; `None` on a box with no usable adapter,
@@ -597,6 +626,19 @@ impl VideoEditorApp {
             auto_place_imports: false,
             #[cfg(feature = "decode")]
             preview_decoder: preview::PreviewDecoder::new(),
+            #[cfg(feature = "decode")]
+            frame_source: None,
+            #[cfg(feature = "decode")]
+            frame_source_sig: 0,
+            #[cfg(feature = "decode")]
+            prune_countdown: 0,
+            #[cfg(any(feature = "gst", feature = "decode"))]
+            monitor: None,
+            #[cfg(any(feature = "gst", feature = "decode"))]
+            monitor_tried: false,
+            #[cfg(any(feature = "gst", feature = "decode"))]
+            monitor_stale: true,
+            doc_heads: Vec::new(),
             compositor: None,
             compositor_tried: false,
             composited: None,
@@ -1170,6 +1212,56 @@ impl VideoEditorApp {
     /// Every pane that currently shows a bar, for the hover / press sweeps.
     const SCROLL_PANES: [ScrollPane; 3] =
         [ScrollPane::Inspector, ScrollPane::Bin, ScrollPane::Timeline];
+
+    /// Keep the audio monitor in step with the transport.
+    ///
+    /// One reconcile per frame rather than a call at every site that moves
+    /// the playhead: the transport is set from a dozen places (a key, a
+    /// scrub, a click on the ruler, reaching the end), and a monitor that
+    /// only heard about some of them would drift out of step with the
+    /// picture in exactly the cases the user notices.
+    ///
+    /// The monitor is *not* re-seeked for small differences while playing.
+    /// Its clock is the sample count and the playhead's is wall time, so
+    /// they wander apart by a few milliseconds; correcting that every frame
+    /// would restart the mix continuously. Only a real jump moves it.
+    #[cfg(any(feature = "gst", feature = "decode"))]
+    fn pump_monitor(&mut self) {
+        if !self.monitor_tried {
+            self.monitor_tried = true;
+            // The demo/shots build must make no sound and open no pipeline:
+            // a capture has to stay hermetic.
+            if !self.seed_demo {
+                self.monitor = Some(crate::audio::AudioMonitor::new(
+                    &self.project,
+                    crate::audio::open_output(),
+                    Box::new(crate::audio::DecodedPcm::new(&self.project)),
+                ));
+                self.monitor_stale = false;
+            }
+        }
+        let Some(m) = self.monitor.as_ref() else { return };
+        if self.monitor_stale {
+            m.set_project(&self.project);
+            self.monitor_stale = false;
+        }
+        // A jump this big is a scrub or a cut, not clock wander.
+        const RESYNC: f64 = 0.35;
+        if self.playing {
+            if !m.is_playing() {
+                m.play(self.playhead);
+            } else if (m.position() - self.playhead).abs() > RESYNC {
+                m.seek(self.playhead);
+            }
+        } else {
+            if m.is_playing() {
+                m.pause();
+            }
+            if (m.position() - self.playhead).abs() > 1e-6 {
+                m.seek(self.playhead);
+            }
+        }
+    }
 
     // ---- playback --------------------------------------------------------
     fn advance_playback(&mut self) {
@@ -2254,22 +2346,35 @@ impl VideoEditorApp {
 
         #[cfg(feature = "decode")]
         let rgba = {
-            // Hand the compositor the decoder's picture for the clip it is
-            // resolving, when the decoder has one for that media.
-            let decoder = &self.preview_decoder;
-            let mut sources = crate::gpu::CpuFrames::new(|media, _t| {
-                if decoder.frame_media() != Some(media) {
-                    return None;
+            // The preview resolves its layers straight off the decode
+            // sessions, which hand back a GPU-resident planar picture. The
+            // CPU path this replaced converted every frame to RGBA on the
+            // host first — a full-frame colour convert per layer per frame,
+            // for a picture that was already on the GPU.
+            //
+            // `Responsive` never blocks: it serves the cached frame if there
+            // is one and otherwise nudges the pipeline and holds the last
+            // picture, so a scrub cannot stall the UI thread.
+            let sig = crate::gpu::MediaFrameSource::project_signature(&self.project);
+            if self.frame_source.is_none() {
+                self.frame_source =
+                    Some(crate::gpu::MediaFrameSource::new(&self.project, crate::gpu::Fetch::Responsive));
+                self.frame_source_sig = sig;
+            } else if sig != self.frame_source_sig {
+                if let Some(src) = self.frame_source.as_mut() {
+                    src.set_project(&self.project);
                 }
-                let f = decoder.frame()?;
-                Some(crate::gpu::CpuFrame {
-                    width: f.width,
-                    height: f.height,
-                    rgba: f.rgba.clone(),
-                    identity: f.pts_ms,
-                })
-            });
-            compositor.frame(&self.project, self.playhead, w, h, &mut sources)
+                self.frame_source_sig = sig;
+            }
+            let sources = self.frame_source.as_mut().expect("just built");
+            // An open pipeline holds a decoder and a slice of the GPU. Drop
+            // the idle ones periodically rather than every frame, which
+            // would churn sessions the playhead is about to want again.
+            self.prune_countdown = self.prune_countdown.wrapping_add(1);
+            if self.prune_countdown.is_multiple_of(120) {
+                sources.prune();
+            }
+            compositor.frame(&self.project, self.playhead, w, h, sources)
         };
         #[cfg(not(feature = "decode"))]
         let rgba = {
@@ -2701,6 +2806,17 @@ impl Widget for VideoEditorApp {
         if !self.drag_is_editing() {
             self.project = VideoDoc::load_project(state);
         }
+        // The document's heads are the cheap "something actually changed"
+        // signal. Reloading the model every frame says nothing; a new head
+        // means a real edit, local or from a peer.
+        let heads = state.get_heads();
+        if heads != self.doc_heads {
+            self.doc_heads = heads;
+            #[cfg(any(feature = "gst", feature = "decode"))]
+            {
+                self.monitor_stale = true;
+            }
+        }
         // Bring in any pending / portal-picked media as real clips (this pushes
         // straight into `self.project.media` and the CRDT).
         self.drain_import(state);
@@ -2850,6 +2966,8 @@ impl Widget for VideoEditorApp {
         presence: &PresenceCtx,
     ) {
         self.advance_playback();
+        #[cfg(any(feature = "gst", feature = "decode"))]
+        self.pump_monitor();
         self.advance_flap();
         // Destination round-trip + render progress, every frame.
         self.poll_export();
