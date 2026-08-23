@@ -734,63 +734,91 @@ shot-inspected (empty state and demo).
       set (ordered) with a "Loading apps from Flathub…" state; the sample stays
       offline/`--shots` only. (bd2f320c)
 
-## video_editor — real import / decode / export (a real editing engine, now with real media)
+## video_editor — a real editor: GPU compositing, hardware decode, real audio
 
-The timeline/CRDT editing engine (split/trim/ripple/snap/grade/fade, all
-tested) was real, but it could not import real media, never showed real video,
-and could not export. Those three seams are now real; each headless-gated part
-is honestly gated and proven.
+**This section previously described the export as working, and it was wrong in a
+way worth recording.** It claimed export pushed "the composited timeline frames
+(the same grade/fade math the preview shows)" and cited as proof "a real export
+that writes a valid `ftyp` MP4". Both statements were literally true and
+completely misleading: export rendered a *synthesized gradient* built from a
+seven-entry palette table, never the user's footage, under every feature
+combination — and a container magic-byte check passes happily on a valid MP4 of
+a gradient. That check is precisely why the bug survived. Everything below is
+now proven by decoding the encoded file back and comparing pixels.
 
-- [x] Live-verified (CLEAR): importing a real 900×640 PNG through the real
-      probe path lands a real `MediaItem` in the bin with real metadata (shows
-      "640p") and places it as a clip on V1, read straight back out of the CRDT
-      doc; the split scenario shows a real cut (one clip → two with correct
-      source in/out) and the grade scenario reflects opacity/saturation/fade in
-      both the inspector and the preview tint. Empty state is honest ("No media
-      yet" / "No clip at playhead" / "No clip selected"). 76 tests pass, none
-      `#[ignore]`; real decode/export stay honestly gated behind
-      `--features decode`/`gst`.
+- [x] **Export encodes the real footage.** Preview and export share ONE wgpu
+      compute compositor (`gpu/compositor.rs` + `composite.wgsl`), so they cannot
+      disagree — the export reads that compositor back rather than re-deriving a
+      frame. Proven per container by decoding the output and comparing against
+      the source: horizontal detail and mean-absolute-difference, plus assertions
+      that a brightness change moves the *encoded* pixels and that the four
+      transitions reach the file as different pictures. The WebM chain is decoded
+      back too; it had never been until recently (every fidelity test was MP4).
+- [x] **The colour grade reaches real video.** It used to be computed on the
+      palette colour and then discarded — `let _ = decoded;` — so brightness,
+      contrast, saturation and every effect only tinted the fallback gradient and
+      did nothing to actual footage.
+- [x] **Multi-layer compositing.** `top_video_clip_at` picked one clip and
+      discarded every lower track, so picture-in-picture and real dissolves were
+      architecturally impossible. The compositor now walks every visible track
+      bottom-to-top; a transition is the incoming layer's alpha rather than a
+      special case, which is what makes a dissolve sample both clips.
+- [x] **Real transitions.** Cross-dissolve, fade, dip and wipe were one flat
+      white-or-black flash; three of the four were byte-identical.
+- [x] **Hardware decode**, multi-vendor: `decodebin3` autoplugs `nvh264dec`
+      (NVIDIA) or `vah264dec` (AMD/Intel incl. iGPU), falling back to
+      `avdec_h264`. Reported as the element actually plugged, never asserted.
+      Seeks carry ACCURATE — keyframe-only seeking landed up to 4166 ms away.
+      The preview takes planar NV12 (3.1 MB/frame) instead of a CPU colour
+      convert (8.3 MB/frame).
+- [x] **Hardware encode selection**, same shape: VA → NVENC → QSV → v4l2 →
+      x264 → openh264, with a `QOS_MEDIA_HWENC` override that falls back to
+      *software* rather than another vendor's GPU. **Not provable on this
+      machine**: Fedora strips H.264/H.265 from Mesa's VA driver and nvcodec
+      exposes 0 features without libcuda, so H.264 hardware selection is proven
+      only against injected registries. The kilobit bitrate family *is* proven on
+      real hardware via `vaav1enc` (400 kbit/s → 202 KB vs 8 Mbit/s → 4.0 MB).
+- [x] **Real audio**, which the export simply did not have: mixing, per-clip
+      volume and fades, track mute/solo, monitoring on the transport with a
+      sample-count clock, and AAC/Opus muxed into the file. Proven with a
+      generated stereo fixture (440 Hz left, 880→1760 Hz right at a zero
+      crossing) that validates itself before any test may use it; channels are
+      neither swapped nor summed, proven by injecting a swap. A/V sync measured:
+      Opus lands the landmark at +0.0 ms (it is delay-compensated), MP4's +45 ms
+      is AAC priming rather than an export error.
+- [x] **Editing depth**: transform (crop/scale/rotate/position, PiP presets),
+      speed with reverse, title clips rendered through the toolkit's own text
+      stack, keyframed parameters (linear/hold/ease, clip-local so a split keeps
+      the value on both sides), markers, multi-select with marquee, cross-track
+      moves, per-track solo/lock/mute.
+- [x] **Project files** (`.qvp`): magic + `version` + `min_reader` + payload
+      length, so a writer that only adds fields stays readable by older builds
+      and an interrupted write is refused rather than loading a convincing
+      partial timeline. The implicit autosave is kept as the "work is never
+      lost" guarantee; files are a second, explicit copy. Recents are stored
+      outside the CRDT deliberately — that document replicates, and local file
+      paths must not ride along to a collaborator.
+- [x] **Accessibility**: the app contributed *zero* nodes — no `accessibility()`
+      anywhere in the crate, so a screen reader saw an empty window and a
+      keyboard-only user could scrub the playhead and nothing else. It now
+      exposes bin rows, tracks, clips (position/duration/track/selection),
+      transport buttons with real names, inspector sliders with values, and the
+      export dialog as a focus-trapping dialog. In the timeline, Up/Down walk
+      clips across tracks while **Left/Right stay nudge/step** — taking them for
+      navigation would break the tool to make it navigable.
 
-- [x] Real media import — added an "Import…" action (topbar + empty-bin button
-      + Ctrl+O) that opens the XDG FileChooser portal (`ashpd`, `portal`
-      feature) and brings picked video/audio/image files into the bin as real
-      clips. A dependency-free container probe (`src/probe.rs`) reads **real**
-      metadata with no decoder — ISOBMFF duration/dimensions/codec/fps (`mvhd`
-      /`tkhd`/`stsd`/`stsz`/`hdlr`), WAV channels/rate/duration, PNG/JPEG dims —
-      so the default build gets real numbers, not placeholders. Files under the
-      `/var/workspace` FUSE mount store a workspace-relative reference (they
-      replicate to peers); a local import stores an absolute path. `media::
-      resolve` now handles absolute paths. Tests: crafted-byte probe tests
-      (mp4/wav/png/jpeg + honest-degrade), and an app test that drives a real
-      PNG through `sync` → a real `MediaItem` in the bin with real dims/duration,
-      replicated into the CRDT. The old "Media import isn't wired up yet" leak
-      is gone.
-- [x] Real preview decode — replaced the always-synthesized gradient (and the
-      broken openh264-fed-raw-bytes stub) with a `PreviewDecoder` on the shared
-      `media::MediaEngine`: it seeks the clip's source time, plays a frame to
-      the sink, and pauses to hold it. Behind `--features decode` (→
-      `media/decode`) the engine is a real GStreamer `playbin`; the canvas blits
-      the true frame (green "LIVE" badge) and falls back to the representative
-      frame for an un-hydrated reference. Proven: a hermetic synth-backed seam
-      test (top-clip → resolve → hydration-gate → seek/poll → frame), and — with
-      `decode`+`gst` — a real round-trip that encodes an H.264 clip in-process
-      and decodes a true 192×108 frame back. Visually verified: `--import` a real
-      SMPTE clip and the preview shows the real colour bars, not a gradient.
-- [x] Real export — `export.rs`'s `gst` path returned "not yet wired". It now
-      builds a real `appsrc → videoconvert → encoder → mux → filesink` pipeline
-      (`--features gst`), pushing the composited timeline frames (the same
-      grade/fade math the preview shows) and writing a real file: MP4/MOV via
-      `openh264enc`, WebM via `vp8enc`. It never reports success unless a
-      non-empty file exists. The default build stays honest — a "needs the
-      GStreamer build" status, no fake progress. Tests: pipeline-construction +
-      even-aspect output dims (default build), and a real export that writes a
-      valid `ftyp` MP4 (`gst` feature).
-- Honesty: capabilities that are feature-gated say so plainly (the import
-      notice, the "needs the GStreamer build" export status); nothing fabricates
-      progress or a written file. Real gst dep: `gstreamer1-devel` +
-      `-plugins-base-devel` + `-plugins-good` + `-plugin-openh264` +
-      `-plugin-libav` (dev headers + codec/mux plugins) — installed in
-      `my-distrobox`; the default build needs none of it.
+**Honesty notes.** The size estimate withholds its megabyte figure wherever the
+chosen encoder demonstrably ignores its bitrate target — measured here as
+openh264 writing 59 Mbit/s for a 1 Mbit/s request, vp8 14.4 and vp9 8.9 — which
+on this machine is every container. A source whose bytes are absent says "Not on
+this device"; one that is present but is not media (an HTML page saved as
+`.mp4`, which is how this was found) says its size and length are unknown rather
+than printing `0p · 0:00` as fact.
+
+**Not done**: colour curves/LUT and masks/chroma key (compositor supports them;
+UI and shader work not started), and an in-app undo affordance — undo lives on
+`ui::State`/`UndoLog` while a widget only receives `&mut AutoCommit`, so no app
+in the fleet can render an Undo control. That needs a toolkit API.
 
 ## terminal — CLEAR (real PTY + real shell; bulk-output O(n²) freeze fixed)
 - [x] Live-verified end-to-end: the `shell` shot drives a real login-shell PTY
