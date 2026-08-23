@@ -95,6 +95,21 @@ than the guess, and a palette where a fixed black is wrong. The modal that
 landed tonight takes the viewport it is given and reads the token, which is the
 shape to copy.
 
+**Focus-ring follow-ups**, on branch `focus-ring-outside-the-control`.
+
+The ring now draws outside the control, 2px band with a 2px gap, clearing 3.0
+against every surface in all fourteen presets. Two things it deliberately did
+not change:
+
+- **Clipping containers must reserve `FOCUS_RING_RESERVE_PX` (4px).** A control
+  flush against `Scrollable`'s clip loses its ring entirely — measured at 0px
+  surviving. Changing `Scrollable`'s layout shifts every scrollable in the OS,
+  so it wants a deliberate decision rather than a drive-by.
+- **`Toggle` has the identical defect** — it strokes `border_focus` on a track
+  that is `accent_primary` when on, so a focused on-switch measures 1.00:1. It
+  is a one-line adoption of the now-public `stroke_focus_ring`, but a pill at
+  `radii.full` is a different geometry decision.
+
 ## Rules learned the hard way
 
 - **A stale binary invalidates a run.** Five verifications died this way, twice with an agent judging its own fix against a build that predated it. The rig now refuses to record against one.
