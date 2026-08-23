@@ -2264,8 +2264,18 @@ mod tests {
             let st = app.shared.borrow();
             let first = st.list_rows()[0].0;
             let _ = first;
-            // First row sits just below the list header.
-            Point::new(app.nav.overview_rect().x0 + 120.0, app.nav.overview_rect().y0 + crate::draw::HEADER_H + crate::draw::LIST_ROW_H / 2.0)
+            // First row sits just below the list header — measured from
+            // where the shell actually puts the content, not from the pane
+            // rect. In the narrow layout the sidebar chip floats over the
+            // pane's top-left and the shell reserves a band for it, so the
+            // content starts lower than the pane does; asking
+            // `overview_rect()` here aimed the click into that band and hit
+            // nothing.
+            let content = app.nav.overview_content_rect();
+            Point::new(
+                content.x0 + 120.0,
+                content.y0 + crate::draw::HEADER_H + crate::draw::LIST_ROW_H / 2.0,
+            )
         };
         assert!(click_at(&mut app, &mut doc, row_center), "row click consumed");
         app.layout_for_test(560.0, 860.0);
