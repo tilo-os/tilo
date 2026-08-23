@@ -279,6 +279,17 @@ pub struct TileHost {
     /// this tile's node shape changed even though no hosted widget
     /// reported anything.
     structure_dirty: bool,
+    /// Latched: this tile has had something to show at least once, so
+    /// the window it is in stays on screen from here on.
+    ///
+    /// It has to survive [`TileHost::replace_content`], which is the
+    /// case that makes it necessary: a tab announcing a window somebody
+    /// else in the room opened is a card, and a card is on screen. When
+    /// this machine's own instance of that app arrives, the tile becomes
+    /// a client surface that has not drawn yet — and without the latch
+    /// the window the person was already looking at would blink out and
+    /// come back, which is worse than what it replaced.
+    was_presented: std::cell::Cell<bool>,
     rect: Rect,
     /// Set by the parent `WindowGroup` each frame to indicate whether
     /// this tile is the "focused" tile — the concept's
@@ -307,6 +318,7 @@ impl TileHost {
             binding: None,
             announced: None,
             structure_dirty: false,
+            was_presented: std::cell::Cell::new(false),
             rect: Rect::ZERO,
             focused: false,
             spawned_at: None,
@@ -645,6 +657,24 @@ impl Widget for TileHost {
         });
     }
     fn name(&self) -> &str { "TileHost" }
+    /// Whether the thing this tile hosts has drawn yet.
+    ///
+    /// Only an app can answer anything but `true`: a stub and a notice
+    /// are cards this process painted itself, and they are on screen the
+    /// moment the tile is. An app that stands in for a client process
+    /// answers for that process — see
+    /// `crate::widget::Widget::presented`.
+    fn presented(&self) -> bool {
+        if self.was_presented.get() {
+            return true;
+        }
+        let now = match &self.content {
+            TileContent::App(w) => w.presented(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => true,
+        };
+        self.was_presented.set(now);
+        now
+    }
     fn get_rect(&self) -> Rect { self.rect }
     /// The tile's presence identity is the record it is showing.
     ///
