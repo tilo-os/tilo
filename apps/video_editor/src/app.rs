@@ -2161,6 +2161,9 @@ impl VideoEditorApp {
             palette,
             path: stored,
             hydration: resolved.hydration,
+            // An imported file is decoded, never generated: only a title
+            // carries text.
+            text: None,
         };
         let id = item.id;
         self.project.media.push(item.clone());
@@ -4374,6 +4377,7 @@ impl VideoEditorApp {
                 MediaKind::Video => c.semantic.info,
                 MediaKind::Audio => c.semantic.success,
                 MediaKind::Image => c.semantic.warning,
+                MediaKind::Text => c.accent[5],
             };
             scene.fill(Fill::NonZero, tf, kc, None, &Circle::new(Point::new(thumb.x1 - 8.0, thumb.y0 + 8.0), 4.0));
             // text (the name is drawn by the inline rename field while editing).
