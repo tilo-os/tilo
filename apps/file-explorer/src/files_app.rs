@@ -446,11 +446,12 @@ impl FileExplorerWidget {
             ),
         };
         let sp = &theme.tokens.spacing;
-        // In the narrow layout the shell paints the hamburger chip over the
-        // content pane's top-left (it summons the places drawer); reserve a
-        // strip so the list header + rows start clear of it instead of under
-        // it. Wide docks the places list, with no chip over the content.
-        let chip_reserve = if self.nav.mode() == ShellMode::Narrow { 44.0 } else { 0.0 };
+        // The hamburger chip that summons the places drawer floats over this
+        // pane's top-left in the narrow layout. `NavShell` reserves that band
+        // itself, in the pass that positions the chip — reserving it here
+        // instead would mean asking the shell how wide it was on the *previous*
+        // frame, which is how the list used to be built 44px lower than it was
+        // laid out and then jump the first time anything rebuilt it.
         // A plain (percent-height) column: this pane is the root of `NavShell`'s
         // inner layout, sized to the content rect, so it must FILL that rect
         // (`percent(1.0)` height). `with_fill_remaining_height` (flex-grow from
@@ -460,7 +461,6 @@ impl FileExplorerWidget {
         // optional error row.
         let mut view_col = Column::new()
             .with_vertical_padding(sp.s1)
-            .with_extra_top_padding(chip_reserve)
             .with_horizontal_padding(sp.s3, sp.s3);
         if let Some(err) = self.error.as_deref() {
             // Real error affordance: the message plus a "Try Again" button
