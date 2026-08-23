@@ -837,9 +837,32 @@ pub fn dispatch_command<S: ControlState>(
             }
         }
         Command::Type { text } => {
+            // A `KeyTag::Char` reaches a Wayland client as a bare evdev
+            // keycode (`client_input::evdev_from_char`, which lowercases
+            // before it looks the character up), and a keycode carries no
+            // case: 35 is `h` or `H` purely by whether Shift is held at
+            // the time. Real hardware holds it, so this must too.
+            //
+            // Getting this wrong is quiet rather than loud, which is why
+            // it survived: the chrome's own widgets read the synthesised
+            // event's `text` field and so show the capital regardless,
+            // while a focused client — the case that matters, since that
+            // is where a document lives — silently receives the lowercase
+            // letter. A scripted `type` of "Hello" lands as "hello".
             let mut actions = Vec::with_capacity(text.chars().count() * 2);
             for c in text.chars() {
                 let tag = KeyTag::Char(c);
+                let shift = KeyTag::Named(NamedKeyTag::Shift);
+                // ASCII uppercase only: the shifted punctuation marks have
+                // no entry in the keycode table at all, so they are not
+                // delivered to a client with or without this bracket.
+                let shifted = c.is_ascii_uppercase();
+                if shifted {
+                    actions.push(PlannedAction::KeyboardKey {
+                        key: shift,
+                        pressed: true,
+                    });
+                }
                 actions.push(PlannedAction::KeyboardKey {
                     key: tag,
                     pressed: true,
@@ -848,6 +871,12 @@ pub fn dispatch_command<S: ControlState>(
                     key: tag,
                     pressed: false,
                 });
+                if shifted {
+                    actions.push(PlannedAction::KeyboardKey {
+                        key: shift,
+                        pressed: false,
+                    });
+                }
             }
             (Response::Ok { frame: 0 }, actions)
         }
@@ -1482,6 +1511,65 @@ mod tests {
                     pressed: false,
                 },
             ]
+        );
+    }
+
+    /// Typing a capital asks the client for a capital.
+    ///
+    /// `KeyTag::Char` reaches a Wayland client as a bare evdev keycode
+    /// (`client_input::evdev_from_char` lowercases before its table
+    /// lookup, and `keyboard_input_event` leaves `physical_key`
+    /// unidentified so there is no scancode to prefer). A keycode has no
+    /// case of its own: keycode 35 is `h` or `H` according to whether
+    /// Shift is held. Without the bracket, a scripted `type` of "Hi"
+    /// arrives in the focused document as "hi".
+    ///
+    /// This is invisible from the chrome side — chrome widgets read the
+    /// synthesised event's `text` field, which carries the capital — so
+    /// only a test on the delivered key stream catches it. Asserting the
+    /// exact action sequence, rather than a count, is what makes the
+    /// missing Shift show up at all.
+    #[test]
+    fn typing_a_capital_holds_shift_around_it() {
+        let state = StaticState::new(&[]);
+        let (resp, actions) = dispatch_command(
+            &Command::Type {
+                text: "Hi".to_string(),
+            },
+            &state,
+        );
+        assert!(matches!(resp, Response::Ok { .. }));
+        assert_eq!(
+            actions,
+            vec![
+                PlannedAction::KeyboardKey {
+                    key: KeyTag::Named(NamedKeyTag::Shift),
+                    pressed: true,
+                },
+                PlannedAction::KeyboardKey {
+                    key: KeyTag::Char('H'),
+                    pressed: true,
+                },
+                PlannedAction::KeyboardKey {
+                    key: KeyTag::Char('H'),
+                    pressed: false,
+                },
+                PlannedAction::KeyboardKey {
+                    key: KeyTag::Named(NamedKeyTag::Shift),
+                    pressed: false,
+                },
+                PlannedAction::KeyboardKey {
+                    key: KeyTag::Char('i'),
+                    pressed: true,
+                },
+                PlannedAction::KeyboardKey {
+                    key: KeyTag::Char('i'),
+                    pressed: false,
+                },
+            ],
+            "a capital is typed with Shift held across it, and a lowercase \
+             letter is not — a bare keycode would reach the client as its \
+             lowercase letter either way",
         );
     }
 
