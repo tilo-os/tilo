@@ -55,6 +55,7 @@ use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
+use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
@@ -67,7 +68,8 @@ use smithay::{
     delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
     delegate_ext_data_control, delegate_fractional_scale, delegate_output,
     delegate_pointer_gestures, delegate_primary_selection, delegate_seat, delegate_session_lock,
-    delegate_shm, delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_shell,
+    delegate_shm, delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
+    delegate_xdg_shell,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -186,6 +188,18 @@ pub struct State {
     pub compositor_state: CompositorState,
     /// `xdg_wm_base` global state — toplevels and popups.
     pub xdg_shell_state: XdgShellState,
+    /// `zxdg_decoration_manager_v1` global state — who draws the frame
+    /// around a toplevel.
+    ///
+    /// This compositor does, always: a window lives in a tab, and the
+    /// tab's chrome *is* its decoration. Without this global there is
+    /// nothing for a toolkit to negotiate with, and every one of them
+    /// falls back to drawing its own title bar — which is both a second
+    /// frame inside the first and, worse, a strip the client subtracts
+    /// from the size it was configured to. See [`XdgDecorationHandler`]
+    /// below for what the compositor answers and why it answers the
+    /// same thing to every request.
+    pub xdg_decoration_state: XdgDecorationState,
     /// `wl_shm` global state — software buffer support. Empty extra-format
     /// list for now; `wl_shm` always advertises ARGB8888 + XRGB8888.
     pub shm_state: ShmState,
@@ -444,6 +458,11 @@ impl State {
     pub fn new(loop_handle: LoopHandle<'static, Self>, display_handle: DisplayHandle) -> Self {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        // Advertise `zxdg_decoration_manager_v1`. Every client, without
+        // a filter: a toolkit that cannot see this global does not ask,
+        // it decorates itself, so hiding it from anyone is choosing the
+        // broken behaviour for them.
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
@@ -602,6 +621,7 @@ impl State {
             display_handle,
             compositor_state,
             xdg_shell_state,
+            xdg_decoration_state,
             shm_state,
             data_device_state,
             dmabuf_state,
@@ -1793,6 +1813,82 @@ impl XdgShellHandler for State {
     }
 }
 
+/// Who draws the frame around a toplevel. On qOS, the compositor —
+/// always, and to every client that asks.
+///
+/// This is not a preference being expressed but the shell's model being
+/// stated. A window here lives in a tab: the title, the controls and the
+/// border are drawn by the compositor around the tile, and a client that
+/// draws its own is drawing a second frame inside the first. The
+/// protocol calls that arrangement `ServerSide`, so `ServerSide` is the
+/// answer regardless of what was requested — which the protocol allows,
+/// because a compositor's configure is a decision and not an
+/// acknowledgement.
+///
+/// The size is the sharper reason. A client that decorates itself does
+/// not add a title bar to the size it was given; it *subtracts* one and
+/// renders the remainder. Configured 670x668 for its tab, every winit
+/// app on this machine committed 670x633 and never committed anything
+/// else — a 35-pixel band of empty tab under every window for the life
+/// of the session, and a presentation gate left waiting for a frame that
+/// answers the tab. This handler is what stops that at the source; the
+/// gate's tolerance for a short buffer stays behind it as the backstop
+/// for clients that never bind this global at all.
+impl XdgDecorationHandler for State {
+    /// The client has asked for a decoration object, which is the first
+    /// point at which the compositor can state a mode. Stating it here
+    /// rather than waiting for a request matters: this configure reaches
+    /// the client before its first buffer, so the size it renders is the
+    /// one the compositor asked for and there is no first frame drawn to
+    /// the wrong size.
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        Self::decorate(&toplevel);
+    }
+
+    /// The client has stated a preference. It is heard and answered with
+    /// the same mode as always — including when the preference was
+    /// `ClientSide`, which is the request this exists to refuse.
+    ///
+    /// A client told "no" here is not left guessing: it gets a
+    /// `zxdg_toplevel_decoration_v1.configure` naming `ServerSide`, and
+    /// every conforming toolkit drops the frame it was about to draw.
+    fn request_mode(
+        &mut self,
+        toplevel: ToplevelSurface,
+        mode: smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+    ) {
+        tracing::debug!(
+            target: "shell::compositor::decoration",
+            surface_id = crate::compositor::state::surface_id(toplevel.wl_surface()),
+            requested = ?mode,
+            "client stated a decoration preference; answering ServerSide",
+        );
+        Self::decorate(&toplevel);
+    }
+
+    /// The client has withdrawn its preference and left the choice to
+    /// the compositor. The choice was never anywhere else.
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        Self::decorate(&toplevel);
+    }
+}
+
+impl State {
+    /// Put `ServerSide` in the toplevel's pending state and send it.
+    ///
+    /// Smithay only puts a decoration configure on the wire when the
+    /// mode changed or the initial one has not been sent, so calling
+    /// this on every request costs one event per real change and nothing
+    /// per repeat.
+    fn decorate(toplevel: &ToplevelSurface) {
+        use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(Mode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+}
+
 impl SeatHandler for State {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
@@ -1837,6 +1933,10 @@ impl FractionalScaleHandler for State {
 
 delegate_compositor!(State);
 delegate_xdg_shell!(State);
+// `zxdg_decoration_manager_v1`: the compositor draws window chrome, and
+// this is how a client is told so rather than left to guess. See the
+// `XdgDecorationHandler` impl above.
+delegate_xdg_decoration!(State);
 delegate_shm!(State);
 delegate_dmabuf!(State);
 delegate_seat!(State);

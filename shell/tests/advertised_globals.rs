@@ -113,6 +113,13 @@ fn advertised_globals() -> Vec<String> {
 /// separately below. Covering `wl_output` needs a harness that attaches
 /// an output; this one does not have one, and says so rather than
 /// implying the coverage.
+///
+/// **`zxdg_decoration_manager_v1` is deliberately not here either**, but
+/// for the opposite reason: it is constructed, and it has a whole test
+/// file to itself (`server_side_decorations.rs`), because its presence
+/// on the wire is only half of what matters — the other half is the mode
+/// the compositor answers with. Listing it here too would give one cause
+/// two failures and no extra information.
 const REQUIRED_AT_CONSTRUCTION: &[&str] = &[
     "wl_compositor",
     "wl_shm",

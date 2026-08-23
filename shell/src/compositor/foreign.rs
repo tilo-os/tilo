@@ -843,9 +843,10 @@ impl ForeignFrameStore {
     ///   the correctly-sized buffer arrives a moment later. Waiting for a
     ///   frame sized to the tab is what makes an opened window keep the
     ///   size it opened at. What counts as sized to the tab is [`fills`],
-    ///   and it has to admit a client that keeps a strip of that size for
-    ///   decorations it draws itself — otherwise the answer never comes
-    ///   and the window waits out the grace below.
+    ///   which also admits a client that kept a strip of that size for
+    ///   decorations it draws itself — a client the decoration protocol
+    ///   could not talk out of it — because otherwise the answer never
+    ///   comes and the window waits out the grace below.
     /// - **[`PRESENT_GRACE`] has passed.** The backstop, and the reason
     ///   this cannot strand a window: an app that never presents, or one
     ///   whose buffers never match its tab, becomes visible anyway and
@@ -940,12 +941,23 @@ const PRESENT_GRACE: Duration = Duration::from_secs(10);
 /// draws its own frame keeps the title bar out of the size it was given
 /// and commits the remainder, so it answers one axis exactly and comes up
 /// short on the other — for ever, because there is no later buffer in
-/// which it gives that strip back. Every winit client on this compositor
-/// is such a client: no `xdg_decoration` global is advertised, so the
-/// toolkit falls back to decorating itself. Configured 670x668 they all
-/// commit 670x633, which under the covering test alone was not an answer
-/// at all, and their windows waited out [`PRESENT_GRACE`] — ten seconds
-/// of empty tab over an app that had painted in two.
+/// which it gives that strip back. Configured 670x668 such a client
+/// commits 670x633, which under the covering test alone is not an answer
+/// at all, and its window waits out [`PRESENT_GRACE`] — ten seconds of
+/// empty tab over an app that painted in two.
+///
+/// That was every winit client on this compositor until it began
+/// advertising `zxdg_decoration_manager_v1` and answering `ServerSide`
+/// (see `State`'s `XdgDecorationHandler`), which is the real fix: a
+/// client told the compositor decorates keeps nothing back, commits
+/// 670x668, and is admitted by the covering arm above with no band left
+/// under it. This arm remains as the backstop for the clients that
+/// negotiation cannot reach — one that never binds the global, or a
+/// toolkit that decorates itself regardless of the answer. They still
+/// get shown promptly rather than stranded; what they do not get is a
+/// tab whose bottom strip is empty, and no arm of this predicate can
+/// give them that. Only the client can, by rendering the size it was
+/// asked for.
 ///
 /// Overflowing either axis is what still disqualifies the opening buffer:
 /// a client's own idea of its size is not derived from the tab and does
@@ -1727,16 +1739,22 @@ mod tests {
     /// A client that answered the size it was configured to, less the
     /// strip its own toolkit kept for decorations, has arrived.
     ///
-    /// This is not a hypothetical. The compositor advertises no
-    /// `xdg_decoration` global, so every winit client falls back to
-    /// drawing its own frame and reserves the title bar out of the size
-    /// it was given: configured 670x668, it commits 670x633 and never
-    /// commits anything else. Measured on the launch path with all four
-    /// of Files, the word processor, the calculator and Notes.
+    /// This is not a hypothetical. Before the compositor advertised
+    /// `zxdg_decoration_manager_v1`, every winit client fell back to
+    /// drawing its own frame and reserved the title bar out of the size
+    /// it was given: configured 670x668, it committed 670x633 and never
+    /// committed anything else. Measured on the launch path with all
+    /// four of Files, the word processor, the calculator and Notes.
     ///
     /// Judged on aspect alone that buffer never fits, so the window was
     /// held back until [`PRESENT_GRACE`] ran out — ten seconds of empty
     /// tab over an app that had painted in two.
+    ///
+    /// Negotiation now stops qOS's own apps ever committing it, but this
+    /// case is not retired with them: a client that never binds the
+    /// global, or one whose toolkit decorates itself whatever it is
+    /// told, produces exactly this buffer and must still be shown when
+    /// it does.
     #[test]
     fn a_frame_short_by_the_clients_own_decorations_is_shown() {
         let id = sid(45);
