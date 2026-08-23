@@ -7862,6 +7862,8 @@ impl VideoEditorApp {
             Ok(()) => {
                 self.recents = crate::project_file::recents::remember(&self.recents, &path);
                 self.project_notice = Some(format!("Saved to {}", path.display()));
+                // Save As can move the project; relative media follows it.
+                crate::media::set_project_anchor(path.parent().map(|p| p.to_path_buf()));
                 self.project_path = Some(path);
                 // The document's heads as they are *now*, not the copy `sync`
                 // cached at the start of the frame. Saving from a key press
@@ -7911,6 +7913,11 @@ impl VideoEditorApp {
                 return;
             }
         };
+        // Relative media in this file means "beside this file" — set before
+        // anything asks whether a source can be read, including the notice
+        // below, or a project copied somewhere with its footage would report
+        // the footage missing.
+        crate::media::set_project_anchor(path.parent().map(|p| p.to_path_buf()));
         // The name follows the file unless the file's own project carries a
         // real one — a project still called "Untitled" opened from
         // `Holiday.qvp` should read as Holiday.

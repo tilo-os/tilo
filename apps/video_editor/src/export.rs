@@ -532,12 +532,77 @@ pub fn start_export(
 }
 
 /// Run the encode. Split out so [`start_export`] reads as the threading it is.
+/// Media a clip places on the timeline whose bytes cannot be read.
+///
+/// The compositor treats an unresolved source as normal and draws the
+/// layer's representative fill — right for a preview of a reference whose
+/// bytes are still arriving, and wrong for an export, which would write a
+/// file of stand-ins and call it finished. So the render asks this first
+/// and refuses by name.
+///
+/// Titles are excluded: a title's picture is drawn from the document, so it
+/// has no bytes to be missing. Media sitting in the bin but not placed on
+/// any clip is excluded too — it is not in the file either way.
+pub fn unreadable_sources(project: &Project) -> Vec<(String, crate::media::Hydration)> {
+    let mut out: Vec<(String, crate::media::Hydration)> = Vec::new();
+    for item in &project.media {
+        if item.kind.is_generated() || !project.clips.iter().any(|c| c.media == item.id) {
+            continue;
+        }
+        let src = item.source();
+        if !src.is_decodable() && !out.iter().any(|(n, _)| *n == item.name) {
+            out.push((item.name.clone(), src.hydration));
+        }
+    }
+    out
+}
+
+/// The refusal an export gives when a source it needs cannot be read.
+///
+/// It separates the two halves the app already distinguishes elsewhere: a
+/// reference whose bytes have not arrived is a different problem from a
+/// path that resolves to nothing, and a message that blurred them would
+/// send the user looking in the wrong place.
+fn unreadable_reason(missing: &[(String, crate::media::Hydration)]) -> String {
+    let names: Vec<&str> = missing.iter().map(|(n, _)| n.as_str()).collect();
+    let all_projected = missing
+        .iter()
+        .all(|(_, h)| *h == crate::media::Hydration::Projected);
+    let what = if all_projected {
+        "is not on this device yet"
+    } else {
+        "cannot be read"
+    };
+    format!(
+        "Cannot export: {} {what}. Exporting now would write stand-in frames \
+         rather than the footage.",
+        names.join(", "),
+    )
+}
+
+/// Whether the timeline places any clip whose picture has to be decoded.
+///
+/// A title-only or audio-only timeline legitimately never decodes a frame,
+/// so the render's "did any real footage arrive?" check has to know the
+/// difference — otherwise it would refuse a perfectly good title card.
+pub fn places_decoded_video(project: &Project) -> bool {
+    project.clips.iter().any(|c| {
+        project
+            .media(c.media)
+            .is_some_and(|m| m.kind.is_visual() && !m.kind.is_generated())
+    })
+}
+
 fn render(
     project: &Project,
     settings: &ExportSettings,
     destination: &std::path::Path,
     state: &JobState,
 ) -> Result<String, String> {
+    let missing = unreadable_sources(project);
+    if !missing.is_empty() {
+        return Err(unreadable_reason(&missing));
+    }
     #[cfg(feature = "gst")]
     {
         gst_pipeline::run(project, settings, destination, state)
@@ -672,6 +737,16 @@ mod gst_pipeline {
             .map_err(|e| format!("export compositor: {e}"))?;
         let mut sources = crate::gpu::MediaFrameSource::new(project, crate::gpu::Fetch::Exact);
         let mut pcm = crate::audio::DecodedPcm::new(project);
+        // Whether any frame of this render actually got a decoded picture.
+        //
+        // The reference check above proves every source *resolves*; this
+        // proves one of them decoded. A path that resolves to a file no
+        // decoder can open would otherwise pass the first check and encode
+        // stand-in fills — a valid container, a confident success, and none
+        // of the user's footage, which is the exact failure this export has
+        // produced before.
+        let expects_pictures = super::places_decoded_video(project);
+        let mut any_real = false;
 
         // Total frames across the timeline duration at the target rate.
         let duration = project.duration().max(1.0 / fps);
@@ -693,6 +768,7 @@ mod gst_pipeline {
             }
             let t = i as f64 / fps;
             let rgba = compositor.frame(project, t, w, h, &mut sources);
+            any_real |= sources.served_real_picture();
             debug_assert_eq!(rgba.len(), frame_bytes);
             let mut buffer = gst::Buffer::with_size(frame_bytes)
                 .map_err(|_| "allocate export frame buffer".to_string())?;
@@ -779,6 +855,18 @@ mod gst_pipeline {
             std::fs::remove_file(&out).ok();
         }
         result?;
+
+        // A timeline of real footage that decoded none of it wrote a file of
+        // stand-in fills. It is a valid container and it is not the user's
+        // work, so it is removed rather than handed back as a render.
+        if expects_pictures && !any_real {
+            std::fs::remove_file(&out).ok();
+            return Err(
+                "Cannot export: none of the timeline's footage could be decoded, so the \
+                 file would have held stand-in frames rather than the picture."
+                    .to_string(),
+            );
+        }
 
         // Never report success unless a real, non-empty file exists.
         match std::fs::metadata(&out) {
@@ -1521,6 +1609,124 @@ mod tests {
         assert!(pipeline_desc(&mov, 2, 2, "/tmp/o.mov").contains("qtmux"), "MOV muxes with qtmux");
     }
 
+    /// A project holding one clip of `path`, which is exactly what the
+    /// export probe and a hand-built project look like.
+    fn one_clip_over(path: &str) -> Project {
+        use crate::model::{MediaItem, MediaKind, Track, TrackKind};
+        use uuid::Uuid;
+        let mut p = Project::new("relative");
+        p.width = 320;
+        p.height = 180;
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "clip".into(),
+            kind: MediaKind::Video,
+            duration: 2.0,
+            width: 320,
+            height: 180,
+            fps: 30.0,
+            palette: 3,
+            path: path.to_string(),
+            hydration: crate::media::Hydration::Local,
+            ..Default::default()
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            ..Default::default()
+        });
+        let cid = p.add_clip(tid, mid, 0.0).expect("media exists");
+        p.clip_mut(cid).unwrap().out_point = 0.2;
+        p
+    }
+
+    #[test]
+    fn a_source_that_cannot_be_read_is_named_rather_than_stood_in_for() {
+        // The bug: a relative media path resolved to nothing, every layer
+        // fell back to its representative fill, and the export wrote a
+        // valid MP4 of a flat gradient and reported Done. A stand-in frame
+        // is right for a preview and never right for a file.
+        let p = one_clip_over("no/such/directory/definitely-not-here-42.mp4");
+        let missing = unreadable_sources(&p);
+        assert_eq!(missing.len(), 1, "the one unreadable source is named: {missing:?}");
+        assert_eq!(missing[0].0, "clip");
+
+        let out = std::env::temp_dir().join(format!("qos-ve-missing-{}.mp4", std::process::id()));
+        // Safety: single-threaded test mutation of process env.
+        unsafe { std::env::set_var("QOS_VE_EXPORT_OUT", &out) };
+        let status = begin_export(&p, &ExportSettings::default());
+        unsafe { std::env::remove_var("QOS_VE_EXPORT_OUT") };
+
+        match status {
+            ExportStatus::Failed { reason } => {
+                assert!(reason.contains("clip"), "the refusal names the source: {reason:?}");
+                assert!(
+                    reason.contains("stand-in"),
+                    "and says what it would otherwise have written: {reason:?}",
+                );
+            }
+            other => panic!("an unreadable source must refuse, got {other:?}"),
+        }
+        assert!(!out.exists(), "and no file is left behind looking like a render");
+    }
+
+    #[test]
+    fn a_title_only_timeline_still_exports_because_it_decodes_nothing() {
+        // The refusal must not catch a project that legitimately has no
+        // bytes to read: a title's picture comes from the document.
+        use crate::model::{MediaItem, MediaKind, TextSource, Track, TrackKind};
+        use uuid::Uuid;
+        let mut p = Project::new("title only");
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "Title".into(),
+            kind: MediaKind::Text,
+            duration: 2.0,
+            text: Some(TextSource::new("HELLO")),
+            ..Default::default()
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            ..Default::default()
+        });
+        p.add_clip(tid, mid, 0.0).expect("media exists");
+        assert!(unreadable_sources(&p).is_empty(), "a title has no bytes to be missing");
+        assert!(
+            !places_decoded_video(&p),
+            "and nothing on this timeline is expected to decode",
+        );
+    }
+
+    #[test]
+    fn media_sitting_unused_in_the_bin_never_blocks_an_export() {
+        // Importing a file and then not using it must not make the whole
+        // project unexportable — it is not in the render either way.
+        use crate::model::{MediaItem, MediaKind};
+        use uuid::Uuid;
+        let mut p = one_clip_over("no/such/definitely-not-here-42.mp4");
+        p.clips.clear();
+        p.media.push(MediaItem {
+            id: Uuid::new_v4(),
+            name: "unused".into(),
+            kind: MediaKind::Video,
+            path: "also/not/here.mp4".into(),
+            ..Default::default()
+        });
+        assert!(
+            unreadable_sources(&p).is_empty(),
+            "nothing placed on the timeline, so nothing is missing from the render",
+        );
+    }
+
     #[test]
     fn output_dims_preserve_aspect_and_stay_even() {
         let mut p = Project::new("t");
@@ -1537,11 +1743,18 @@ mod tests {
     // Real export through GStreamer: encodes a short two-frame project to a
     // real file and asserts a valid, non-empty container was written. Only
     // compiled under `--features gst`; the encoder/mux plugins must be present.
+    //
+    // The clip is a **title**, whose picture is drawn from the document. It
+    // used to be a video reference whose bytes were not on this machine —
+    // which the export now refuses, correctly: that project could only ever
+    // have encoded stand-in fills. A title needs no decoder, so the encode
+    // and mux path this test is about still runs end to end, over a picture
+    // that is genuinely the one the timeline holds.
     #[cfg(feature = "gst")]
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn real_export_writes_a_playable_mp4() {
-        use crate::model::{MediaItem, MediaKind, Track, TrackKind};
+        use crate::model::{MediaItem, MediaKind, TextSource, Track, TrackKind};
         use uuid::Uuid;
         // A tiny real project: one 0.2s clip so the export loop runs quickly.
         let mut p = Project::new("Export Test");
@@ -1549,14 +1762,15 @@ mod tests {
         p.media.push(MediaItem {
             id: mid,
             name: "c".into(),
-            kind: MediaKind::Video,
+            kind: MediaKind::Text,
             duration: 0.2,
             width: 320,
             height: 180,
             fps: 30.0,
             palette: 3,
-            path: crate::media::workspace_path("c.mp4"),
-            hydration: crate::media::Hydration::Projected,
+            path: String::new(),
+            hydration: crate::media::Hydration::Local,
+            text: Some(TextSource::new("EXPORT")),
             ..Default::default()
         });
         let tid = Uuid::new_v4();
