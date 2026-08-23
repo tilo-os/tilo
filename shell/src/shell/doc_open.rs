@@ -161,7 +161,7 @@ impl OpenError {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| path.display().to_string());
                 match ext {
-                    Some(ext) => format!("no installed app opens .{ext} files ({name})"),
+                    Some(ext) => format!("no app on this desktop opens .{ext} files ({name})"),
                     None => format!("{name} has no file type to open it by"),
                 }
             }
@@ -1235,8 +1235,14 @@ mod tests {
             "the message must name the file and its type: {message}"
         );
         assert!(
-            message.contains("no installed app opens"),
+            message.contains("no app on this desktop opens"),
             "the message must say nothing can open it: {message}"
+        );
+        // Same rule as the launcher's: the user installed nothing, so
+        // the sentence may not tell them something is not installed.
+        assert!(
+            !message.contains("install"),
+            "user-facing text must not talk about installing: {message}"
         );
         assert!(
             chrome

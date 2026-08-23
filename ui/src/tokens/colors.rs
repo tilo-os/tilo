@@ -65,6 +65,16 @@ const HAIRLINE_MIN_DELTA: f64 = 0.02;
 /// distinct body, quiet enough that ink painted on it keeps its contrast.
 const LIFT_FALLBACK_ALPHA: u8 = 38;
 
+/// How far [`Colors::glass_film`] carries the raised tier past itself.
+///
+/// The raised tier is where a *card* sits — one quiet step off the ground.
+/// A film you can see through has to start further out than that, because
+/// most of its strength is then given straight back by its own alpha: a
+/// translucent body painted in the raised colour lands between the ground
+/// and the card, which is under where an opaque card already is. This is
+/// the step that buys the material somewhere to go.
+const GLASS_FILM_LIFT: u8 = 46;
+
 #[derive(Clone, Debug)]
 pub struct ColorRamp { pub stops: [Color; 11] }
 
@@ -522,16 +532,65 @@ impl Colors {
     /// [`Colors::hairline_on`] chooses an edge, which keeps a lift available
     /// even where the surface family is deliberately flat.
     pub fn lift(&self, t: f32) -> Color {
+        mix8(self.surfaces.base, self.lift_target(), t)
+    }
+
+    /// The colour a lift moves *toward* — the preset's raised tier where it
+    /// registers against the ground, and a derived step where it does not.
+    ///
+    /// Named separately from [`Colors::lift`] because it is also the anchor
+    /// for [`Colors::glass_film`]: a material and a flat wash have to agree
+    /// on which direction "away from the ground" is, or a glass pill and a
+    /// solid one lift opposite ways on the same theme.
+    pub fn lift_target(&self) -> Color {
         use crate::a11y::relative_luminance;
         let base = self.surfaces.base;
         let g = relative_luminance(base);
         let raised = self.surfaces.raised;
-        let target = if (relative_luminance(raised) - g).abs() >= HAIRLINE_MIN_DELTA {
+        if (relative_luminance(raised) - g).abs() >= HAIRLINE_MIN_DELTA {
             raised
         } else {
             composite(Self::hairline_on(base, LIFT_FALLBACK_ALPHA), base)
-        };
-        mix8(base, target, t)
+        }
+    }
+
+    /// Whether this palette's surfaces lift by getting *brighter*.
+    ///
+    /// Every other derivation in this file is careful to pick its polarity
+    /// per ground rather than off the preset's `dark` flag, and this is the
+    /// same question asked once so a material can orient itself: a lit
+    /// surface is brighter where the light falls, and "brighter" is a
+    /// different direction on a paper-white desktop than on a graphite one.
+    pub fn lifts_bright(&self) -> bool {
+        use crate::a11y::relative_luminance;
+        let base = self.surfaces.base;
+        relative_luminance(self.lift_target()) >= relative_luminance(base)
+    }
+
+    /// The colour of the film a glass surface is made of.
+    ///
+    /// **Not white.** `surface_white_*` is this idea written down as a
+    /// literal, and it only works over a dark ground: over a light one the
+    /// same wash lands within a shade of the surface and the body vanishes.
+    /// Real glass takes its colour from what it is made of and lets the
+    /// ground show through its alpha, so the film here is the theme's own
+    /// raised tier carried one derived step further out
+    /// ([`GLASS_FILM_LIFT`]) — opaque, because the alpha that makes it a
+    /// film belongs to the state painting it, not to the material.
+    ///
+    /// The step is taken along the direction the palette's own surfaces
+    /// lift, which is **not** the same question [`Colors::hairline_on`]
+    /// answers. That one picks whichever polarity moves the ground more,
+    /// which is what an edge wants — it only has to be seen. A film has to
+    /// agree with the cards and panels around it about which way "up" is,
+    /// and on a paper palette those go *brighter* (a white card on a paper
+    /// ground) while the polarity that moves that ground more is black.
+    /// Deriving the film from the edge rule gave a light theme a body that
+    /// darkened while every other raised surface lightened, and landed it
+    /// within a level of the bar it was drawn on into the bargain.
+    pub fn glass_film(&self) -> Color {
+        let step = if self.lifts_bright() { Color::WHITE } else { Color::BLACK };
+        composite(with_a(step, GLASS_FILM_LIFT), self.lift_target())
     }
 
     pub fn window_edge(&self) -> Color {

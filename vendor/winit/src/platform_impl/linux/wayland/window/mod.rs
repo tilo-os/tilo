@@ -582,6 +582,11 @@ impl Window {
     }
 
     #[inline]
+    pub fn start_drag(&self, offers: Vec<(String, Vec<u8>)>) -> bool {
+        self.window_state.lock().unwrap().start_drag(offers)
+    }
+
+    #[inline]
     pub fn set_cursor_hittest(&self, hittest: bool) -> Result<(), ExternalError> {
         let surface = self.window.wl_surface();
 

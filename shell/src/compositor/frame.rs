@@ -200,7 +200,23 @@ impl FrameBuilder {
             theme,
             viewport: (viewport.0 as f64, viewport.1 as f64),
             outputs: None,
-            presence: PresenceCtx::default(),
+            presence: {
+                // The desktop overlay draws every workspace-scoped
+                // pointer in this store, which includes the ones the
+                // session's *own* apps publish: the broker resolves
+                // every local connection to one participant and fans
+                // each app's frames to the rest of the room, this
+                // subscription included. Without this the owner gets a
+                // pill with their own name on it, floating over their
+                // own window.
+                //
+                // The same rule the roster has always applied — see
+                // `room_roster`, which drops the local handle before it
+                // builds a row.
+                let mut ctx = PresenceCtx::default();
+                ctx.set_own_identity([crate::shell::state::local_user_id()]);
+                ctx
+            },
             peer_presence: None,
         };
         builder.rebuild_layout_tree();
@@ -348,7 +364,24 @@ impl FrameBuilder {
             let tree = chrome.tree();
             tree.room_epoch()
         };
-        if epoch == self.last_room_epoch {
+        // Peer windows are examined on the rounds after an arrival as
+        // well as on the arrival itself: `peer_windows::examine` starts at
+        // most one launch per app per pass, so a room that gained several
+        // windows of one app at once needs more than one look. Checked
+        // before the epoch gate for that reason.
+        let owed = {
+            let chrome = self.chrome.borrow();
+            let tree = chrome.tree();
+            crate::shell::peer_windows::any_pending(&tree)
+        };
+        let decided = if owed {
+            let chrome = self.chrome.borrow();
+            let mut tree = chrome.tree_mut();
+            crate::shell::peer_windows::examine(&mut tree)
+        } else {
+            false
+        };
+        if epoch == self.last_room_epoch && !decided {
             return false;
         }
         self.last_room_epoch = epoch;
@@ -436,39 +469,20 @@ impl FrameBuilder {
     }
 
     /// Fold everything peers have sent since the last frame into the
-    /// presence the next paint will read, and put whoever it heard from
-    /// on that room's roster. Returns whether a peer moved, which is a
-    /// reason to repaint.
+    /// presence the next paint will read, then restate who is in the
+    /// room on screen. Returns whether either changed — a peer moved,
+    /// or the room's people did — both of which are reasons to repaint.
     ///
-    /// The two halves belong together. A presence frame is the moment
-    /// this session learns a named person is in one of its rooms; using
-    /// it only to move a cursor left the chrome — the avatar stack, the
-    /// wheel-disc dots, the collaborators overlay — with no way to know
-    /// anyone had arrived. A roster bumped here also means a peer
-    /// arriving repaints, because the revision changed.
+    /// The roster refresh runs whether or not the fold found anything:
+    /// somebody who joined and has not moved their pointer publishes
+    /// nothing, and they are in the room all the same.
     pub fn pump_peer_presence(&mut self) -> bool {
         let Some(relay) = self.peer_presence.as_ref() else {
             return false;
         };
-        let seen = relay.pump(&mut self.presence);
-        if seen.is_empty() {
-            return false;
-        }
-        let mut roster_changed = false;
-        {
-            let chrome = self.chrome.borrow();
-            let mut tree = chrome.tree_mut();
-            for s in &seen {
-                let Some(room) = crate::shell::state::RoomId::parse(&s.room) else {
-                    continue;
-                };
-                roster_changed |= tree.note_peer_present(room, s.peer, &s.user);
-            }
-        }
-        if roster_changed {
-            self.chrome.borrow_mut().bump();
-        }
-        true
+        let moved = relay.pump(&mut self.presence);
+        let roster_changed = relay.refresh_roster(&self.presence);
+        moved || roster_changed
     }
 
     /// Read-only view of the presence the next paint will draw.
@@ -765,6 +779,18 @@ impl FrameBuilder {
         for (which, rect) in host.peer_sync_prompt_rects_for_tests() {
             put(format!("peer_sync_{which}"), rect);
         }
+        // The collaborator dropdown's own controls. Named so a scenario
+        // clicks the button a person clicks, rather than invoking the
+        // action behind it — a click proves the control is painted,
+        // hit-testable and wired, and an invocation proves only the
+        // third of those.
+        let (collab_invite, collab_join) = host.collaborators_action_rects_for_tests();
+        put("collab_invite".into(), collab_invite);
+        put("collab_join".into(), collab_join);
+        put(
+            "collab_room_activity".into(),
+            host.collaborators_activity_rect_for_tests(),
+        );
     }
 }
 
@@ -921,7 +947,8 @@ mod tests {
         fb.pump_apps(&mut doc, &root);
         assert!(
             fb.chrome_revision() > before,
-            "a peer's change landed in the tree and nothing told the shell to              rebuild, so it would never be drawn"
+            "a peer's change landed in the tree and nothing told the shell \
+             to rebuild, so it would never be drawn"
         );
     }
 
