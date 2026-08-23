@@ -1929,7 +1929,16 @@ impl Widget for SidebarWheelDisc {
                     while self.wheel_accumulator.abs() >= WHEEL_DETENT_PX {
                         let dir: i32 = if self.wheel_accumulator < 0.0 { 1 } else { -1 };
                         let target = self.active_idx as i32 + dir;
-                        self.wheel_accumulator -= dir as f32 * WHEEL_DETENT_PX;
+                        // Drain toward zero. `dir` is the direction of
+                        // *travel*, which is the opposite sign to the
+                        // accumulator, so spending a detent ADDS one
+                        // detent's worth back. Subtracting it instead —
+                        // as this did — drives the accumulator further
+                        // from zero on every pass, and the loop that
+                        // waits for it to fall under the threshold never
+                        // ends. Any scroll of a full detent or more hung
+                        // the compositor on the spot.
+                        self.wheel_accumulator += dir as f32 * WHEEL_DETENT_PX;
                         if (0..n as i32).contains(&target) {
                             self.click_to_spoke(target as usize);
                         } else {
@@ -1980,12 +1989,7 @@ impl Widget for SidebarWheelDisc {
             .map(|prev| (now - prev).as_secs_f32().clamp(0.0, 1.0 / 30.0))
             .unwrap_or(1.0 / 60.0);
         self.last_update_at = Some(now);
-        let mut keep = self.tick_rotation_spring(dt);
-        // The indicator steps off the *visible* rotation, so it has to
-        // be re-derived on every frame the spring moves — that is what
-        // carries the stepping through a flick's coast as well as
-        // through the drag itself.
-        self.sync_active_from_visual();
+        let mut keep = self.advance(dt);
         // Wheel-scroll idle reset. The discrete-detent path in
         // `handle_event` already triggers `click_to_spoke` (and its
         // spring animation) for each `WHEEL_DETENT_PX` of scroll, so
@@ -2271,6 +2275,24 @@ impl SidebarWheelDisc {
         self.sync_active_from_visual();
     }
 
+    /// One frame of wheel motion: step the spring, then re-derive the
+    /// indicator from where that left the disc.
+    ///
+    /// Split out of [`Widget::update`] so the only thing `update` adds
+    /// is reading the wall clock. Tests drive this directly with a fixed
+    /// dt — a tight loop's real dt collapses to nearly zero, so a test
+    /// that went through `update` would be measuring the clock rather
+    /// than the spring — and are still exercising the production path.
+    fn advance(&mut self, dt: f32) -> bool {
+        let keep = self.tick_rotation_spring(dt);
+        // The indicator steps off the *visible* rotation, so it has to
+        // be re-derived on every frame the spring moves — that is what
+        // carries the stepping through a flick's coast as well as
+        // through the drag itself.
+        self.sync_active_from_visual();
+        keep
+    }
+
     /// Advance the rim snap-spring by `dt` seconds. Drops the spring
     /// (and the dt clock) once settled. Returns whether the spring is
     /// still animating. Split out of `update` so production feeds it the
@@ -2450,6 +2472,16 @@ mod tests {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
             button: MouseButton::Left,
+        }
+    }
+
+    /// Synthetic wheel event. `lines` is in `LineDelta` units, which the
+    /// widget scales by 16 px — one mouse-wheel click.
+    fn wheel_event(lines: f32) -> WindowEvent {
+        WindowEvent::MouseWheel {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines),
+            phase: winit::event::TouchPhase::Moved,
         }
     }
 
@@ -3556,6 +3588,362 @@ mod tests {
     }
 
     /// Click-to-spoke (concept's `handleClickItem`) — calling
+    // -----------------------------------------------------------------
+    // How it feels, in numbers.
+    //
+    // A still cannot show weight and neither can a video on its own —
+    // these pin the quantities the recordings and the sampled frames
+    // only illustrate. All of them drive `advance`, which is `update`
+    // minus the wall-clock read, at a fixed 60 Hz.
+    // -----------------------------------------------------------------
+
+    /// Frames of production motion at 60 Hz.
+    fn frames(d: &mut SidebarWheelDisc, n: usize) {
+        for _ in 0..n {
+            d.advance(1.0 / 60.0);
+        }
+    }
+
+    /// Drag by `dy` px from the current origin without releasing, then
+    /// let `settle_frames` of motion play so the rim catches up.
+    fn drag_to(d: &mut SidebarWheelDisc, cx: f64, start_y: f64, dy: f64, settle_frames: usize) {
+        pump(d, cursor_event(cx, start_y + dy));
+        frames(d, settle_frames);
+    }
+
+    /// The complaint this whole change starts from: the highlight used
+    /// to sit still for the entire gesture and jump once at the end.
+    ///
+    /// Walks a single continuous drag across three detents and records
+    /// the indicator at every frame. Requires it to visit each workspace
+    /// in turn — never skipping one, never running backwards — and to
+    /// change hands within half a detent of the boundary each time.
+    #[test]
+    fn the_indicator_steps_one_workspace_at_a_time_during_a_drag() {
+        let mut d = mk(&["A", "B", "C", "D", "E"]);
+        let gap = d.spoke_gap_deg();
+        let cx = drag_anchor_x(&d);
+        let start_y = d.diameter_px / 2.0;
+        // Start on the middle workspace so there is room to travel in
+        // the direction under test without meeting an end.
+        pump(&mut d, cursor_event(cx, start_y));
+        assert!(pump(&mut d, press_event()));
+
+        // One detent is `gap / DRAG_FACTOR` px. Walk three of them in
+        // small steps, sampling the indicator continuously.
+        let px_per_detent = (gap / DRAG_FACTOR) as f64;
+        let mut seen = vec![d.active_idx];
+        let mut steps_at = Vec::new();
+        let sub_steps = 60;
+        for i in 1..=(3 * sub_steps) {
+            let dy = -(px_per_detent * 3.0) * (i as f64 / (3 * sub_steps) as f64);
+            drag_to(&mut d, cx, start_y, dy, 2);
+            if *seen.last().expect("seeded") != d.active_idx {
+                steps_at.push((d.active_idx, d.visual_rotation_deg()));
+                seen.push(d.active_idx);
+            }
+        }
+
+        assert_eq!(
+            seen,
+            vec![0, 1, 2, 3],
+            "the indicator must walk the list one workspace at a time under the \
+             hand — it went {seen:?}"
+        );
+
+        // Each hand-off happens as the wheel crosses the boundary
+        // between the two, i.e. half a detent from either's home.
+        for (idx, rot) in &steps_at {
+            let boundary = -(*idx as f32 - 0.5) * gap;
+            assert!(
+                (rot - boundary).abs() < gap * 0.15,
+                "the indicator changed to {idx} at {rot:.2}°, but the boundary \
+                 between {} and {idx} is at {boundary:.2}°",
+                idx - 1
+            );
+        }
+    }
+
+    /// Weight, measured. The settle must never cross its target — an
+    /// overshoot-and-return is the signature of something light — and it
+    /// must take visible but bounded time to arrive.
+    #[test]
+    fn the_settle_is_slow_enough_to_feel_and_never_overshoots() {
+        let mut d = mk(&["A", "B", "C", "D"]);
+        let cx = drag_anchor_x(&d);
+        let start_y = d.diameter_px / 2.0;
+        pump(&mut d, cursor_event(cx, start_y));
+        assert!(pump(&mut d, press_event()));
+        // Just past halfway to the next workspace, then release: a
+        // plain one-detent settle with no fling in it.
+        drag_to(&mut d, cx, start_y, -60.0, 40);
+        assert!(pump(&mut d, release_event()));
+
+        let target = d.rotation_deg;
+        let start = d.visual_rotation_deg();
+        assert!(
+            (target - start).abs() > 1.0,
+            "nothing to settle: start {start:.2}° target {target:.2}°"
+        );
+        let travel = target - start;
+
+        let mut frames_taken = 0usize;
+        let mut worst_overshoot = 0.0f32;
+        for i in 1..=600 {
+            d.advance(1.0 / 60.0);
+            // Progress past 1.0 is overshoot, in units of the trip.
+            let progress = (d.visual_rotation_deg() - start) / travel;
+            worst_overshoot = worst_overshoot.max(progress - 1.0);
+            if d.rotation_spring.is_none() {
+                frames_taken = i;
+                break;
+            }
+        }
+
+        assert!(frames_taken > 0, "the settle never finished in 10 s");
+        assert!(
+            worst_overshoot < 0.005,
+            "the settle overshot its target by {:.1}% of the trip — overshoot \
+             reads light and bouncy, which is the opposite of the intent",
+            worst_overshoot * 100.0
+        );
+
+        let ms = frames_taken as f32 * 1000.0 / 60.0;
+        assert!(
+            (250.0..900.0).contains(&ms),
+            "the settle took {ms:.0} ms. Under ~250 ms it snaps and the weight is \
+             gone; over ~900 ms the control is not heavy, it is slow."
+        );
+    }
+
+    /// Follow-lag: the rim trails the pointer instead of being welded to
+    /// it, and the gap grows with speed. Rigid tracking reads weightless.
+    #[test]
+    fn the_rim_trails_a_fast_drag_further_than_a_slow_one() {
+        let lag_for = |px_per_frame: f64| -> f32 {
+            let mut d = mk(&["A", "B", "C", "D", "E", "F"]);
+            let cx = drag_anchor_x(&d);
+            let start_y = d.diameter_px / 2.0;
+            pump(&mut d, cursor_event(cx, start_y));
+            assert!(pump(&mut d, press_event()));
+            // Long enough for the follow spring to reach steady state.
+            let mut dy = 0.0;
+            for _ in 0..40 {
+                dy -= px_per_frame;
+                pump(&mut d, cursor_event(cx, start_y + dy));
+                d.advance(1.0 / 60.0);
+            }
+            (d.rotation_deg - d.visual_rotation_deg()).abs()
+        };
+
+        let slow = lag_for(2.0);
+        let fast = lag_for(14.0);
+        assert!(
+            slow > 0.0,
+            "the rim tracked the pointer exactly — with no lag at all there is \
+             no mass to read"
+        );
+        assert!(
+            fast > slow * 2.0,
+            "lag barely changed with speed ({slow:.2}° slow vs {fast:.2}° fast). \
+             Inertia shows up as a gap that opens when you move quickly."
+        );
+        // ...but never so far that it reads as the machine being late.
+        assert!(
+            fast < 15.0,
+            "the rim trails a fast drag by {fast:.1}°, a whole detent — past a \
+             point lag stops reading as weight and starts reading as latency"
+        );
+    }
+
+    /// Momentum: from the same release position, a flick must land
+    /// further down the list than a slow let-go.
+    #[test]
+    fn a_flick_carries_past_the_workspace_a_slow_release_settles_on() {
+        let land = |px_per_frame: f64, pause_frames: usize| -> usize {
+            let mut d = mk(&["A", "B", "C", "D", "E", "F", "G", "H"]);
+            let cx = drag_anchor_x(&d);
+            let start_y = d.diameter_px / 2.0;
+            pump(&mut d, cursor_event(cx, start_y));
+            assert!(pump(&mut d, press_event()));
+            let mut dy = 0.0;
+            for _ in 0..24 {
+                dy -= px_per_frame;
+                pump(&mut d, cursor_event(cx, start_y + dy));
+                d.advance(1.0 / 60.0);
+            }
+            // A pause before release bleeds the velocity off, which is
+            // what separates "thrown" from "placed".
+            frames(&mut d, pause_frames);
+            assert!(pump(&mut d, release_event()));
+            d.selected_idx()
+        };
+
+        // Same distance travelled, released moving vs released still.
+        let flicked = land(12.0, 0);
+        let placed = land(12.0, 45);
+        assert!(
+            flicked > placed,
+            "a flick landed on workspace {flicked} and a slow release on {placed} \
+             — releasing while still moving has to carry further, or the wheel \
+             has no momentum"
+        );
+    }
+
+    /// The ends. Pulling past the first workspace has to give, resist
+    /// more the further it is pulled, stay bounded, and come back to the
+    /// end itself rather than to anything beyond it.
+    #[test]
+    fn pulling_past_the_first_workspace_resists_and_returns_to_it() {
+        let mut d = mk(&["A", "B", "C"]);
+        let cx = drag_anchor_x(&d);
+        let start_y = d.diameter_px / 2.0;
+        pump(&mut d, cursor_event(cx, start_y));
+        assert!(pump(&mut d, press_event()));
+
+        // Down from workspace 0 is off the top of the list. Pulls are
+        // evenly spaced so successive gains are directly comparable —
+        // "each extra 100 px buys less than the last 100 px did" is the
+        // property, and uneven steps would not test it.
+        let mut last_gain = f32::INFINITY;
+        let mut last = 0.0f32;
+        let reach = d.overscroll_reach_deg();
+        for pull_px in (1..=12).map(|i| i as f64 * 100.0) {
+            drag_to(&mut d, cx, start_y, pull_px, 30);
+            let at = d.rotation_deg;
+            assert!(
+                at > last,
+                "the end stopped dead at {pull_px} px — it should always give a \
+                 little more, never nothing"
+            );
+            assert!(
+                at < reach,
+                "overscroll reached {at:.1}°, past its {reach:.1}° ceiling — the \
+                 wheel can be dragged somewhere it does not belong"
+            );
+            let raw = (pull_px as f32) * DRAG_FACTOR;
+            assert!(
+                at < raw,
+                "pulling {pull_px} px past the end moved the wheel {at:.1}° of the \
+                 {raw:.1}° asked for — that is no resistance at all"
+            );
+            let gain = at - last;
+            assert!(
+                gain < last_gain,
+                "resistance did not grow between pulls (gain {gain:.2}° after \
+                 {last_gain:.2}°)"
+            );
+            last_gain = gain;
+            last = at;
+            // The indicator stays on the workspace being pulled away
+            // from: there is nothing past it to point at.
+            assert_eq!(d.active_idx, 0, "overscroll must not select a workspace");
+        }
+
+        // Far out it has all but stopped, but has still not stopped.
+        drag_to(&mut d, cx, start_y, 20_000.0, 30);
+        assert!(
+            d.rotation_deg > last && d.rotation_deg < reach,
+            "a huge pull landed at {:.2}°, outside ({last:.2}°, {reach:.2}°)",
+            d.rotation_deg
+        );
+
+        assert!(pump(&mut d, release_event()));
+        assert_eq!(
+            d.rotation_deg, 0.0,
+            "release past an end must return to the end itself, not to a detent \
+             beyond it"
+        );
+        assert_eq!(d.selected_idx(), 0);
+        frames(&mut d, 200);
+        assert!(
+            d.visual_rotation_deg().abs() < 0.1,
+            "the wheel did not come back to rest at the end ({:.2}°)",
+            d.visual_rotation_deg()
+        );
+    }
+
+    /// The last workspace is an end too, and it is the one a wrapping
+    /// list used to hide: scrolling off the bottom quietly reappeared at
+    /// the top.
+    #[test]
+    fn the_last_workspace_is_an_end_and_the_list_does_not_wrap() {
+        let mut d = mk(&["A", "B", "C"]);
+        let cx = drag_anchor_x(&d);
+        let start_y = d.diameter_px / 2.0;
+        pump(&mut d, cursor_event(cx, start_y));
+        assert!(pump(&mut d, press_event()));
+        // Far past the bottom of a three-workspace list.
+        drag_to(&mut d, cx, start_y, -10_000.0, 60);
+        assert_eq!(
+            d.active_idx, 2,
+            "dragging past the last workspace wrapped round to the start"
+        );
+        assert!(pump(&mut d, release_event()));
+        assert_eq!(d.selected_idx(), 2);
+    }
+
+    /// Scroll input has to meet the same edge the drag does, or the two
+    /// ways into the control feel like two different controls.
+    #[test]
+    fn scrolling_into_an_end_pulls_against_it_and_lets_go() {
+        let mut d = mk(&["A", "B", "C"]);
+        let cx = drag_anchor_x(&d);
+        let mid_y = d.diameter_px / 2.0;
+        pump(&mut d, cursor_event(cx, mid_y));
+
+        // Scroll hard against the top end, which is where we start.
+        for _ in 0..6 {
+            pump(&mut d, wheel_event(4.0));
+        }
+        frames(&mut d, 20);
+        assert_eq!(d.active_idx, 0, "there is no workspace above the first");
+        let pulled = d.rotation_deg;
+        assert!(
+            pulled > 0.5,
+            "scrolling into the end moved the wheel {pulled:.2}° — with no give \
+             at all the control reads as dead exactly where it most needs to \
+             answer"
+        );
+        assert!(
+            pulled < d.overscroll_reach_deg(),
+            "scroll overscroll {pulled:.1}° passed its ceiling"
+        );
+
+        // Idle is the scroll wheel's version of lifting a finger.
+        std::thread::sleep(Duration::from_millis(WHEEL_SCROLL_TIMEOUT_MS + 60));
+        let mut st = AutoCommit::new();
+        let obj = automerge::ROOT.clone();
+        d.update(&mut st, &obj);
+        assert_eq!(
+            d.rotation_deg, 0.0,
+            "the pull never let go once the gesture ended"
+        );
+        frames(&mut d, 200);
+        assert!(d.visual_rotation_deg().abs() < 0.1);
+    }
+
+    /// Scrolling in the middle of the list still costs the documented
+    /// three wheel clicks per workspace — the overscroll work must not
+    /// have quietly turned scroll into a continuous drag.
+    #[test]
+    fn scrolling_mid_list_still_takes_three_clicks_per_workspace() {
+        let mut d = mk(&["A", "B", "C", "D", "E"]);
+        let cx = drag_anchor_x(&d);
+        let mid_y = d.diameter_px / 2.0;
+        pump(&mut d, cursor_event(cx, mid_y));
+        // One wheel click is 16 px; the detent is 48.
+        for click in 1..=3 {
+            pump(&mut d, wheel_event(-1.0));
+            let expected = if click == 3 { 1 } else { 0 };
+            assert_eq!(
+                d.selected_idx(), expected,
+                "after {click} wheel click(s) the wheel should be on workspace \
+                 {expected}"
+            );
+        }
+    }
+
     /// `click_to_spoke(target)` rotates the wheel so `target` becomes
     /// active and animates via the snap spring.
     #[test]
