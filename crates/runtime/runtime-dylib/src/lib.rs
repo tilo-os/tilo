@@ -1,11 +1,18 @@
-//! `runtime-dylib` — the qOS runtime SDK, packaged as a single shared
-//! object (`libruntime_dylib.so`).
+//! `runtime-dylib` — the qOS runtime SDK and UI toolkit, packaged as a
+//! single shared object (`libruntime_dylib.so`).
 //!
-//! This crate carries **no logic of its own**. It re-exports the two
-//! SDK surfaces a qOS app links against — the [`runtime`] umbrella and
-//! the [`cli`] helpers — so that building this crate as a `dylib` pulls
-//! their whole transitive graph (portal / collab / fs / identity, plus
-//! their deps) into one shared library.
+//! This crate carries **no logic of its own**. It re-exports the three
+//! surfaces a qOS app links against — the [`runtime`] umbrella, the
+//! [`cli`] helpers and the [`ui`] toolkit — so that building this crate
+//! as a `dylib` pulls their whole transitive graph (portal / collab /
+//! fs / identity, and for `ui` the wgpu + vello + cosmic-text +
+//! automerge + taffy + fluent + winit stack) into one shared library.
+//!
+//! `ui` is the reason this crate earns its keep. A graphical qOS app
+//! statically linked against the toolkit is ~24 MB, of which ~18 MB is
+//! `.text` belonging to the toolkit and its dependencies — carried
+//! again, in full, by every single app. Linked out of here it exists
+//! once on disk, inside the content-addressed runtime bundle.
 //!
 //! ## How a thin app uses it
 //!
@@ -28,3 +35,4 @@
 // downstream `-C prefer-dynamic` link step consumes.
 pub use cli;
 pub use runtime;
+pub use ui;
