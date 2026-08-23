@@ -2648,11 +2648,27 @@ impl ShellOverlayHost {
                         .map(|gid| (sid, gid))
                 })
         };
+        // With one window on the workspace there is nothing to tell
+        // apart, and a permanently lit edge around the only thing on
+        // screen is decoration — the marker has to earn its place. It
+        // is the workspace's total, not the strip's: three strips
+        // holding one window each is exactly the case where "which one
+        // takes the keystroke" is unanswerable without it.
+        let disambiguating = self
+            .group_row_ptrs
+            .values()
+            .map(|&ptr| {
+                // SAFETY: see field doc on `group_row_ptrs`.
+                let row: &GroupRow = unsafe { &*ptr };
+                row.groups.len()
+            })
+            .sum::<usize>()
+            > 1;
         for (&strip_id, &ptr) in self.group_row_ptrs.iter() {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
             for g in row.groups.iter_mut() {
-                g.set_focused(focused == Some((strip_id, g.id)));
+                g.set_focused(disambiguating && focused == Some((strip_id, g.id)));
             }
         }
     }

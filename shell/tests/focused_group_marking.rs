@@ -21,6 +21,10 @@
 //!   4. A strip whose pointer was never seeded still lights a window.
 //!      "No window is lit" is the state the signal exists to abolish, so
 //!      an unset pointer must not be able to reproduce it.
+//!   5. A workspace holding a single window lights nothing. With nothing
+//!      to tell apart the marker is decoration, and a permanently lit
+//!      edge around the only thing on screen is what makes chrome feel
+//!      arbitrary.
 
 use std::collections::HashMap;
 
@@ -185,5 +189,46 @@ fn a_strip_with_no_recorded_pointer_still_lights_a_window() {
         vec![(s_a, G_A1)],
         "an unseeded strip falls back to its leftmost group; leaving every \
          window unlit is the state this signal exists to abolish",
+    );
+}
+
+#[test]
+fn a_workspace_with_one_window_lights_nothing() {
+    // Same builder, trimmed to a single group on a single strip.
+    let (mut t, s_a, s_b) = tree();
+    {
+        let ws = &mut t.workspaces[0];
+        ws.strips.retain(|s| s.id == s_a);
+        ws.strips[0].window_groups.retain(|g| g.id == G_A1);
+    }
+    let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&t);
+    tick(&mut host);
+
+    assert_eq!(
+        lit(&mut host, [s_a, s_b]),
+        Vec::new(),
+        "the only window on the workspace needs no marker telling the user it \
+         is the one they are typing into",
+    );
+}
+
+#[test]
+fn a_second_window_anywhere_in_the_workspace_turns_the_marker_on() {
+    // One group per strip, two strips: nothing to disambiguate *within* a
+    // strip, but plenty to disambiguate across the workspace — which is
+    // the case a per-strip count would get wrong.
+    let (mut t, s_a, s_b) = tree();
+    {
+        let ws = &mut t.workspaces[0];
+        ws.strips[0].window_groups.retain(|g| g.id == G_A1);
+    }
+    let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&t);
+    tick(&mut host);
+
+    assert_eq!(
+        lit(&mut host, [s_a, s_b]),
+        vec![(s_a, G_A1)],
+        "two strips holding one window each is exactly when the user cannot \
+         tell which window the keyboard is aimed at",
     );
 }
