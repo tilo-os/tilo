@@ -33,7 +33,7 @@
 //! [`crate::shell::overlay_host::ShellOverlayHost::active_tile_rect`].
 
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ui::widget::{WheelJumpAccum, wheel_jump_detents};
 
@@ -132,6 +132,25 @@ pub struct ClientInput {
     /// [`route_input`], which every source of motion goes through — a
     /// real seat, the test-control socket, a peer's injected input.
     cursor: Option<(f64, f64)>,
+    /// When input last reached this session — any input, not just a
+    /// pointer: a key, a wheel, a button, a motion.
+    ///
+    /// A position and a *claim about that position* are different
+    /// facts, and this is what separates them. Where the pointer was
+    /// put stays true forever; "somebody is pointing there" stops being
+    /// true when nobody is at the machine any more. Publishing is
+    /// level-triggered with a keepalive, so without this the first is
+    /// broadcast as the second until the session exits — one press,
+    /// years later, still announcing itself.
+    ///
+    /// Any input at all counts, deliberately. Somebody typing has not
+    /// touched their mouse, and their pointer is still under their
+    /// hand; the question this answers is whether anyone is *there*,
+    /// which is what a cursor on a peer's screen asserts.
+    ///
+    /// Stamped in [`route_input`], which its own comment names as the
+    /// one function every local input goes through.
+    last_input: Option<Instant>,
     /// Implicit pointer grab owner, latched on the first button press and
     /// released when the last button comes up. Without this a drag that
     /// starts on a client and leaves its tile would silently switch to the
@@ -333,6 +352,52 @@ impl ClientInput {
     /// where nobody is.
     pub fn pointer_position(&self) -> Option<(f64, f64)> {
         self.cursor
+    }
+
+    /// Where this session is pointing *right now*, or `None` if that is
+    /// not a thing it can currently say.
+    ///
+    /// [`Self::pointer_position`] answers where the pointer was put.
+    /// This answers the question a cursor on a peer's screen actually
+    /// asks — *is somebody pointing there* — and the two come apart the
+    /// moment a session goes quiet. A pointer is an instrument for
+    /// pointing at something you are looking at, so a session nobody
+    /// has touched for `idle` has nothing to say about where it is,
+    /// however real the position it holds.
+    ///
+    /// This is the difference between a position and a claim, and it is
+    /// the one the keepalive erases: a session restates a stationary
+    /// pointer every second so a peer who joins late is not shown an
+    /// empty desktop, and a position from one press at start-up was
+    /// therefore restated for the whole life of the session.
+    ///
+    /// Any input revives it on the next frame, so the failure mode is a
+    /// cursor that is briefly missing for somebody genuinely idle —
+    /// never a stale one that cannot be got rid of.
+    pub fn live_pointer(&self, now: Instant, idle: Duration) -> Option<(f64, f64)> {
+        let at = self.cursor?;
+        let last = self.last_input?;
+        (now.saturating_duration_since(last) < idle).then_some(at)
+    }
+
+    /// When input last reached this session, if it ever has.
+    pub fn last_input(&self) -> Option<Instant> {
+        self.last_input
+    }
+
+    /// Place the pointer and record the input that placed it, as the
+    /// `CursorMoved` arm of [`route_input`] does.
+    ///
+    /// Test-only, and it writes both fields for the same reason
+    /// `route_input` does: in production a position exists *because*
+    /// somebody did something, so a fixture that set one without the
+    /// other would be a session state the compositor cannot reach. That
+    /// `route_input` really writes both is proved separately, against
+    /// the real event, in this module's own tests.
+    #[cfg(test)]
+    pub(crate) fn note_input_for_test(&mut self, at: Option<(f64, f64)>, when: Instant) {
+        self.cursor = at;
+        self.last_input = Some(when);
     }
 }
 
@@ -1642,6 +1707,14 @@ pub fn route_input(
     state
         .remote_input_firewall
         .note_local_input(std::time::Instant::now());
+    // Somebody is at this session. Stamped here rather than beside the
+    // firewall's own note above because it answers a different question
+    // — that one is "did the host just take the controls back from a
+    // peer", this one is "is anyone here at all" — and the pointer
+    // publisher reads it to decide whether it still has something to
+    // say. Deliberately every input, not just the pointer arms: a
+    // person typing has not moved their mouse and is plainly present.
+    state.client_input.last_input = Some(std::time::Instant::now());
     let captured = chrome_captures_input(fb);
     match event {
         WindowEvent::CursorMoved { position, .. } => {
@@ -2930,6 +3003,93 @@ mod tests {
             state.client_input.pointer_position(),
             Some((640.0, 610.0)),
             "and once it has been somewhere, that is where it is",
+        );
+    }
+
+    /// A session that was pointed at once, a long time ago, is not
+    /// pointing at anything now.
+    ///
+    /// The case the previous gate could not see. It refused a pointer
+    /// that had never been anywhere, which is right and which a session
+    /// stops being the instant anything presses a button on it — and
+    /// pressing a button is how a session joins a room. From then on
+    /// the position is real, the gate passes it, and the keepalive
+    /// restates it to the room every second for as long as the session
+    /// lives, so one press at start-up puts a cursor and a name pill on
+    /// every peer's screen permanently.
+    ///
+    /// Asserted through `route_input` rather than by writing the fields,
+    /// because the bug was never in the fields: both of them were
+    /// exactly right, and it was the frame loop's *question* that was
+    /// wrong. `live_pointer` is the question it now asks.
+    #[test]
+    fn a_pointer_nobody_has_touched_in_a_long_time_is_not_pointing_at_anything() {
+        let mut state = state_sharing(9_000_102);
+        let mut fb = FrameBuilder::new((1920, 1014));
+        let mods = Modifiers::default();
+        let idle = Duration::from_secs(10);
+
+        // Exactly what pressing Join does: the pointer goes to the
+        // button and the button is pressed. Nothing after this touches
+        // the session again.
+        route_input(
+            &mut state,
+            &mut fb,
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(1178.31, 582.0),
+            },
+            &mods,
+        );
+        let pressed = state
+            .client_input
+            .last_input()
+            .expect("routing a motion records that somebody was here");
+
+        assert_eq!(
+            state.client_input.pointer_position(),
+            Some((1178.31, 582.0)),
+            "the position is real - it is where the press landed",
+        );
+        assert_eq!(
+            state.client_input.live_pointer(pressed, idle),
+            Some((1178.31, 582.0)),
+            "and at the moment of the press this session is pointing there",
+        );
+
+        // The session is left alone. No key, no wheel, no motion.
+        let later = pressed + idle + Duration::from_secs(1);
+        assert_eq!(
+            state.client_input.pointer_position(),
+            Some((1178.31, 582.0)),
+            "where the pointer was put does not stop being true",
+        );
+        assert_eq!(
+            state.client_input.live_pointer(later, idle),
+            None,
+            "but nobody is pointing at that button any more, so the session has nothing to announce",
+        );
+
+        // Anything at all brings it back, on the next frame.
+        route_input(
+            &mut state,
+            &mut fb,
+            &WindowEvent::MouseWheel {
+                device_id: unsafe { std::mem::zeroed() },
+                delta: winit::event::MouseScrollDelta::LineDelta(0.0, -1.0),
+                phase: winit::event::TouchPhase::Moved,
+            },
+            &mods,
+        );
+        let revived = state
+            .client_input
+            .last_input()
+            .expect("a wheel is input too");
+        assert!(revived > pressed, "the stamp moved forward");
+        assert_eq!(
+            state.client_input.live_pointer(revived, idle),
+            Some((1178.31, 582.0)),
+            "somebody is here again, and their pointer is where they left it",
         );
     }
 
