@@ -48,6 +48,7 @@ pub mod record;
 pub mod portal;
 pub mod uri;
 pub mod state;
+pub mod undo;
 pub mod view;
 pub mod widget;
 pub mod text_render;
@@ -114,6 +115,7 @@ pub use color_compat::ColorCompat;
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
 pub use record::{RecordCheckout, RecordId, RecordKind, RecordRef, RecordSet, RecordStore};
 pub use state::{State, UndoEntry, UndoLog};
+pub use undo::{UndoAccess, UndoRequest, UndoStatus};
 pub use view::{
     FocusView, FreezeThaw, FrozenApp, ThawError, View, ViewContribution, ViewRect, FROZEN_VERSION,
 };
