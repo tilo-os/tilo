@@ -2328,13 +2328,18 @@ impl App {
         use crate::a11y::Action;
         let &w_ptr = self.node_map.get(&taffy_id)?;
 
-        // Focusing a synthetic node means two things at once: the keyboard goes
-        // to the owning widget, and the widget puts its own cursor on that
-        // element. Do the first half here unconditionally so a widget only has
+        // Operating an element inside a widget means two things at once: the
+        // keyboard goes to the owning widget, and the widget puts its own
+        // cursor on that element. Do the first half here so a widget only has
         // to implement the second — otherwise "focus row 4" would either move
         // the keyboard without moving the cursor, or the reverse, depending on
         // whether the widget claimed the action.
-        if !key_path.is_empty() && matches!(action, Action::Focus) {
+        //
+        // This covers every verb, not just Focus: clicking a control focuses it
+        // as well as pressing it, and an assistive technology activating one
+        // must leave the reader on what it just operated rather than back at
+        // the window root.
+        if !key_path.is_empty() {
             self.set_focused_node(Some(taffy_id));
         }
 
