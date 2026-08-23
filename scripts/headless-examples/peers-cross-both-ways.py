@@ -109,7 +109,12 @@ class Session:
         self.log_path = os.path.join(self.dir, "shell.log")
         self.log = open(self.log_path, "w")
         self.proc = subprocess.Popen(
-            [str(SHELL), "--backend", "headless", "--enable-peer-sync"],
+            # `--mode native` named rather than defaulted: it is the
+            # smithay compositor and the only mode that attaches a
+            # presence relay at all, so leaving it to the default would
+            # make this rig's verdict depend on what the default is.
+            [str(SHELL), "--mode", "native", "--backend", "headless",
+             "--enable-peer-sync"],
             env=env, stdout=self.log, stderr=subprocess.STDOUT,
             preexec_fn=die_with_parent(),
         )
