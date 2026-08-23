@@ -1403,14 +1403,12 @@ impl Widget for WindowGroup {
             // shadow. The previous translucent-white fill was designed for a
             // dark desktop and disappeared entirely once it floated over a
             // light app card — the decoration was invisible in fullscreen.
-            crate::surface::soft_shadow(
+            crate::surface::shadow(
                 scene,
                 transform,
                 title_pill,
-                vello::peniko::Color::BLACK,
-                10.0,
-                2.0,
-                0.35,
+                title_pill.height() / 2.0,
+                &theme.tokens.elevation.e2,
             );
             let (title_fill, title_border) = crate::surface::chip_colors(theme, false);
             crate::surface::pill(scene, transform, title_pill, title_fill, title_border, None);
@@ -1435,14 +1433,12 @@ impl Widget for WindowGroup {
                 Rect::new(restore_x0, y0, restore_x0 + restore_w, y0 + pill_h);
 
             // Restore pill.
-            crate::surface::soft_shadow(
+            crate::surface::shadow(
                 scene,
                 transform,
                 self.restore_rect,
-                vello::peniko::Color::BLACK,
-                10.0,
-                2.0,
-                0.35,
+                self.restore_rect.height() / 2.0,
+                &theme.tokens.elevation.e2,
             );
             // Hover promotes the chip to the accent fill, matching how a
             // selected pill reads everywhere else in the toolkit.
@@ -1500,14 +1496,12 @@ impl Widget for WindowGroup {
             // `hover:bg-red-500/80` (WindowFrame.tsx:249) — red-500 at
             // 80% alpha — so we multiply `semantic.danger` by 0.8 rather
             // than painting it fully opaque.
-            crate::surface::soft_shadow(
+            crate::surface::shadow(
                 scene,
                 transform,
                 self.close_rect,
-                vello::peniko::Color::BLACK,
-                10.0,
-                2.0,
-                0.35,
+                self.close_rect.height() / 2.0,
+                &theme.tokens.elevation.e2,
             );
             let close_fill = if self.close_hover {
                 theme.tokens.colors.semantic.danger.with_alpha_factor(0.8)
