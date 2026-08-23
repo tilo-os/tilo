@@ -359,6 +359,32 @@ pub(crate) fn launch_installed_app(
     display_name: &str,
 ) -> Result<(), ActionError> {
     grant_user_home_to_file_manager(chrome, package_id);
+    // Say that the app is opening, before the work starts, so the
+    // acknowledgement is on screen on the same frame as the keystroke.
+    //
+    // The window is seconds away — it is a process to start, a wayland
+    // connection to make and a first frame to draw — and it is not shown
+    // until it has something in it, precisely so nobody is handed an
+    // empty frame to look at. That leaves this notification as the only
+    // thing standing between the user and an apparently dead Enter key,
+    // which is why a plain launch raises it and not just the path that
+    // has to fetch the app first.
+    //
+    // It is retired by the window appearing rather than by a timer
+    // (`ShellOverlayHost::retire_notices_for_opened_windows`), so the
+    // indication covers exactly the wait and ends on something the
+    // person can see.
+    let notice = {
+        let mut st = chrome.borrow_mut();
+        let id = st.push_notification_full(
+            Notification::new(format!("Opening {display_name}"), "Loading…".to_string())
+                .with_app_name("Applications")
+                .with_dismiss_after(std::time::Duration::from_secs(120)),
+        );
+        st.bump();
+        id
+    };
+    catalogue::note_pending_notice(package_id, notice);
     // Scoped so the borrow is released before the error branch below
     // takes a mutable one.
     let launched = {
@@ -395,6 +421,12 @@ pub(crate) fn launch_installed_app(
         let message = err.user_message();
         {
             let mut st = chrome.borrow_mut();
+            // Nothing is opening after all, so stop saying it is. The
+            // notice is claimed back rather than left to expire, or the
+            // next window to paint would retire somebody else's.
+            if let Some(id) = catalogue::take_pending_notice(package_id) {
+                st.dismiss_notification(id);
+            }
             st.push_notification_full(
                 Notification::new(format!("Couldn't open {display_name}"), message.clone())
                     .with_severity(NotificationSeverity::Error)
