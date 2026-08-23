@@ -12946,6 +12946,13 @@ mod tests {
     /// Build an app + its backing doc seeded from the same sample, so the
     /// app's in-memory project and `doc` agree (mirrors the live wiring).
     fn app_and_doc() -> (VideoEditorApp, AutoCommit) {
+        // No test may put a real file chooser on the person's screen. Several
+        // here press the shortcuts that ask for one (Ctrl+O, Ctrl+Shift+O,
+        // Ctrl+Shift+S) and assert only that the app *asked*; without this the
+        // request reached D-Bus and a full run opened four real dialogs.
+        // Suppression is process-wide and one-way, so setting it from the one
+        // fixture every test builds through covers the suite.
+        ui::portal::suppress_for_tests();
         let mut doc = AutoCommit::new();
         VideoDoc::seed_sample(&mut doc);
         let mut app = VideoEditorApp::new();
