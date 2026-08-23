@@ -22,6 +22,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
 use shell::shell::sidebar_wheel_disc::{SidebarWheelDisc, SpokeLabel};
+use ui::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -262,10 +263,18 @@ fn sidebar_wheel_disc_keeps_a_visible_rim_under_high_contrast() {
 /// The band has to be a real surface there, or the shell's near-white
 /// labels land on a near-white document.
 ///
-/// It also has to END. A wheel that blacks out the whole footprint passes
+/// It also has to END. A wheel that blacks out the whole screen passes
 /// "is it a surface" just as happily, and is the other way to fail: the
 /// disc is a slice of something large, so the app must still be plainly
-/// visible inside the band's inner arc.
+/// visible beyond the disc's own footprint.
+///
+/// Where it ends moved. The body used to stop at an inner arc, leaving
+/// the app showing through the left of the slot, and the probe for
+/// "still a slice" looked there. The body is solid now — that hollow
+/// was the thing the owner asked to close — so the surface runs off the
+/// left edge of the footprint instead and the probe moved with it. Both
+/// halves of the original claim are still checked, and the solid fill is
+/// now checked too.
 ///
 /// Sample points are derived from the band the widget actually paints
 /// rather than hardcoded, so tuning the depth moves the probes with it
@@ -288,12 +297,19 @@ fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
         (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as u32
     };
 
-    let (r_in, r_out) = disc.band_radii();
+    let (r_in, r_out) = disc.label_band_radii();
     let c = disc.disc_centre();
+    let footprint = disc.get_rect();
     // The band's vertical middle, where it is at full alpha and widest.
     let row_y = c.y.round() as u32;
     let on_band = ((c.x + (r_in + r_out) / 2.0).round() as u32).min(CANVAS_W - 1);
+    // Well inside where the old inner arc used to cut the body off.
     let inside_arc = ((c.x + r_in - 24.0).round() as u32).min(CANVAS_W - 1);
+    assert!(
+        (inside_arc as f64) > footprint.x0 + 2.0,
+        "probe at x={inside_arc} is outside the disc's own footprint {footprint:?} \
+         — it would be testing open wallpaper"
+    );
 
     let band = luma(on_band, row_y);
     assert!(
@@ -302,13 +318,39 @@ fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
          — the labels painted on it have nothing to read against; see {path:?}"
     );
 
-    let beyond = luma(inside_arc, row_y);
+    // Solid: the body reaches the centre, so a point that used to fall
+    // in the hole is now surface too, and just as opaque.
+    let inner = luma(inside_arc, row_y);
+    assert!(
+        inner < 110,
+        "the disc is hollow again — the bright app shows through at luma {inner}/255 \
+         at ({inside_arc},{row_y}), inside the footprint. The body is meant to be a \
+         solid segment, filled to the centre; see {path:?}"
+    );
+
+    // ...and it still ends. The disc mounts flush to the left edge here,
+    // exactly as it does in the shell's sidebar column, so the edge it
+    // has to end at is the RIM: past that — clear of the rim's outward
+    // shadow — the app must be plainly visible, or the wheel has taken
+    // over the screen instead of occupying a slice of it.
+    let outside = ((c.x + r_out + RIM_SHADOW_CLEARANCE).round() as u32).min(CANVAS_W - 1);
+    assert!(
+        (outside as f64) > footprint.x1 - 1.0 || (outside as f64) > c.x + r_out,
+        "probe at x={outside} is not past the rim at {:.0}",
+        c.x + r_out
+    );
+    let beyond = luma(outside, row_y);
     assert!(
         beyond > 170,
-        "the disc blacked out the app inside its own inner arc (luma {beyond}/255 at \
-         ({inside_arc},{row_y})) — it is meant to be a slice, not a panel; see {path:?}"
+        "the disc blacked out the app past its own rim (luma {beyond}/255 at \
+         ({outside},{row_y})) — it is meant to be a slice, not a panel; see {path:?}"
     );
 }
+
+/// Pixels past the rim at which the app must be fully visible again —
+/// clear of the rim's outward shadow, which is allowed to reach a little
+/// beyond the rim by design.
+const RIM_SHADOW_CLEARANCE: f64 = 36.0;
 
 /// The body is ONE colour. It used to be a nine-stop radial ramp from
 /// transparent at the inner end to a peak alpha at the rim, and on screen
@@ -333,7 +375,7 @@ fn the_band_is_filled_flat_with_a_single_colour() {
     let (scene, disc) = render_three_spoke_disc(&Theme::dark(), &mut tr);
     let rgba = renderer.render(&scene, Color::from_rgb8(0x80, 0x80, 0x80));
 
-    let (r_in, r_out) = disc.band_radii();
+    let (r_in, r_out) = disc.label_band_radii();
     let c = disc.disc_centre();
     // A row a third of the way down the footprint: inside a sector, clear
     // of the active wedge's tint at the middle and of the labels, which
@@ -428,4 +470,95 @@ fn spinning_the_wheel_turns_the_labels_with_it() {
         "half a detent moved the active label by {moved:.0} px — the sectors are not \
          turning with the disc"
     );
+}
+
+/// Renders the disc under every theme track the shell can be switched
+/// into, and requires the surface to actually change with the theme.
+///
+/// The disc used to paint six literal Tailwind hex values for its
+/// workspace colours, so the same maroon-tinted pink sector arrived
+/// under the light theme and under high contrast alike — no theme could
+/// reach it. Sampling the active wedge in three themes and requiring
+/// three different answers is what keeps that from coming back: a
+/// hardcoded constant cannot pass a test that asks the theme to move it.
+#[test]
+fn the_disc_takes_its_colours_from_the_theme() {
+    let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
+        eprintln!("skip: no wgpu adapter available for offscreen render");
+        return;
+    };
+    let mut tr = TextRenderer::new();
+
+    let mut wedges = Vec::new();
+    for (name, theme) in [
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("high-contrast", Theme::high_contrast()),
+    ] {
+        let (scene, disc) = render_three_spoke_disc(&theme, &mut tr);
+        let path = screenshots_dir().join(format!("wheel-disc-theme-{name}.png"));
+        let ground = theme.tokens.colors.surfaces.base;
+        renderer.render_png(&scene, ground, &path);
+        assert!(path.exists(), "snapshot PNG should be written to {path:?}");
+
+        // Probe the active wedge against an inactive neighbour at the
+        // same radius. Comparing the two isolates the wedge's own tint
+        // from the body fill underneath, which is themed as well and
+        // would otherwise be most of the difference.
+        //
+        // Both probes sit 4° off their sector's centreline, which is
+        // clear of the label chip drawn there and well inside the
+        // dividers at ±7.5°.
+        let rgba = renderer.render(&scene, ground);
+        let (r_in, r_out) = disc.label_band_radii();
+        let c = disc.disc_centre();
+        let radius = (r_in + r_out) / 2.0;
+        let probe = |deg: f64| -> (i32, i32, i32) {
+            let a = deg.to_radians();
+            let x = ((c.x + radius * a.cos()).round().max(0.0) as u32).min(CANVAS_W - 1);
+            let y = ((c.y + radius * a.sin()).round().max(0.0) as u32).min(CANVAS_H - 1);
+            let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y);
+            (r as i32, g as i32, b as i32)
+        };
+        let lit = probe(4.0);
+        let unlit = probe(19.0);
+        assert_ne!(
+            lit, unlit,
+            "{name}: the active sector is painted the same as its neighbour — \
+             nothing marks which workspace is selected"
+        );
+
+        // The channel the wedge pushes hardest must be the channel the
+        // theme's own workspace colour leads with. This is the
+        // assertion the hardcoded palette could not pass: it painted
+        // `pink-500`, which leads with red, while every theme's derived
+        // series leads with its accent.
+        let delta = [lit.0 - unlit.0, lit.1 - unlit.1, lit.2 - unlit.2];
+        let lead = |c: [i32; 3]| {
+            (0..3).max_by_key(|&i| c[i]).expect("three channels")
+        };
+        let want = theme.tokens.colors.categorical(0);
+        let want_ch = lead([want.r() as i32, want.g() as i32, want.b() as i32]);
+        assert_eq!(
+            lead(delta),
+            want_ch,
+            "{name}: the active wedge shifts channel {} hardest but the theme's \
+             workspace colour {want:?} leads with channel {want_ch} — the disc is \
+             not painting the themed colour (delta {delta:?})",
+            lead(delta)
+        );
+
+        wedges.push((name, lit));
+    }
+
+    for i in 0..wedges.len() {
+        for j in (i + 1)..wedges.len() {
+            assert_ne!(
+                wedges[i].1, wedges[j].1,
+                "the disc painted identical pixels under {} and {} — its colours \
+                 are not coming from the theme",
+                wedges[i].0, wedges[j].0
+            );
+        }
+    }
 }
