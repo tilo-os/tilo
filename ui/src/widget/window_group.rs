@@ -1850,7 +1850,30 @@ impl Widget for WindowGroup {
     /// for the group that is *only* a starting app — which is what a
     /// launch makes, since a launch opens its own group.
     fn presented(&self) -> bool {
-        self.hosts.is_empty() || self.hosts.iter().any(|(_, h)| h.presented())
+        if self.hosts.is_empty() {
+            return true;
+        }
+        // Every tab is asked, and `any` would not ask them all.
+        //
+        // Asking is what records the answer: a tab's `presented()` is
+        // the only thing that marks its window as having drawn, and its
+        // `opening()` reads that mark. Stopping at the first tab that
+        // says yes therefore strands every tab behind it — nothing ever
+        // records that their windows drew, so they go on painting the
+        // card that holds a window's place over a window that has been
+        // on screen for minutes.
+        //
+        // The tab a peer's window asks this machine to open is bound
+        // into a tab that already exists, which lands it in exactly that
+        // position. It is why the same window reported itself drawn on
+        // the machine that owns it and never did on the one it was
+        // replicated to.
+        //
+        // `h.presented()` first in the `||` so it is evaluated on every
+        // pass; the value is the one `any` would have produced.
+        self.hosts
+            .iter()
+            .fold(false, |seen, (_, h)| h.presented() || seen)
     }
     /// Whether this group is a window's place being held for an app that
     /// is still starting — see [`Widget::opening`].
@@ -2180,6 +2203,197 @@ mod tests {
             "a group holding a window the person is using must never be \
              replaced by a card about the tab beside it",
         );
+    }
+
+    /// A tab whose window answers the way a client window really does:
+    /// being *asked* whether it has drawn is what records that it has,
+    /// and until something asks, the tile still reports itself as
+    /// holding the window's place.
+    ///
+    /// Not a contrivance — this is `ForeignSurfaceWidget` verbatim. Its
+    /// `presented()` is `ForeignFrameStore::mark_presented`, the only
+    /// thing in the compositor that sets the flag, and its `opening()`
+    /// is `is_opening`, which reads it. A window nobody asks about
+    /// therefore keeps its card forever, however long ago it drew.
+    struct Latching {
+        /// Whether the client has actually put a frame on screen.
+        drawn: bool,
+        /// The store's latch for this one surface.
+        latched: std::rc::Rc<std::cell::Cell<bool>>,
+        /// How many times anything asked.
+        asked: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+
+    impl Latching {
+        fn new(drawn: bool) -> (Self, std::rc::Rc<std::cell::Cell<bool>>,
+                                std::rc::Rc<std::cell::Cell<u32>>) {
+            let latched = std::rc::Rc::new(std::cell::Cell::new(false));
+            let asked = std::rc::Rc::new(std::cell::Cell::new(0));
+            (
+                Self { drawn, latched: latched.clone(), asked: asked.clone() },
+                latched,
+                asked,
+            )
+        }
+    }
+
+    impl Widget for Latching {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _t: &crate::theme::Theme,
+            _m: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.new_leaf(taffy::Style::default()).unwrap()
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _tr: &mut TextRenderer,
+            _th: &crate::theme::Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _event: &winit::event::WindowEvent,
+            _scale: f64,
+            _m: &winit::event::Modifiers,
+            _state: &mut automerge::AutoCommit,
+            _path: &automerge::ObjId,
+            _handled: &mut bool,
+            _focus: &mut Option<NodeId>,
+            _node: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &str {
+            "Latching"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+        fn presented(&self) -> bool {
+            self.asked.set(self.asked.get() + 1);
+            if self.drawn {
+                self.latched.set(true);
+            }
+            self.latched.get()
+        }
+        fn opening(&self) -> bool {
+            !self.latched.get()
+        }
+    }
+
+    impl crate::widget::app_widget::AppWidget for Latching {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Files
+        }
+        fn app_title(&self) -> &str {
+            "Latching"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("L")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+
+    /// Build a two-tab group where tab 2 is the one on screen.
+    fn group_of_two(first_drawn: bool, second_drawn: bool) -> (
+        WindowGroup,
+        std::rc::Rc<std::cell::Cell<bool>>,
+        std::rc::Rc<std::cell::Cell<u32>>,
+    ) {
+        let (a, _, _) = Latching::new(first_drawn);
+        let (b, latched, asked) = Latching::new(second_drawn);
+        let tabs: Vec<(TabDescriptor, TileContent)> = vec![
+            (TabDescriptor::new(1, "Notes"), TileContent::App(Box::new(a))),
+            (TabDescriptor::new(2, "Files"), TileContent::App(Box::new(b))),
+        ];
+        (WindowGroup::new(10, tabs, 2, WindowWidth::Normal), latched, asked)
+    }
+
+    /// Every tab in a group is asked whether its window has drawn — not
+    /// only the tabs up to the first one that says yes.
+    ///
+    /// The group's own answer is "does any of my tabs have a window on
+    /// screen", and `any` is the obvious way to compute it. It is also
+    /// wrong here, because the asking is what records the answer: a tab
+    /// behind one that has already said yes is never asked, so nothing
+    /// ever marks its window as drawn, and the tile goes on painting the
+    /// card that holds the window's place over a window that arrived
+    /// minutes ago.
+    ///
+    /// A window bound into a tab that already exists — which is what a
+    /// peer's window asks this machine to open — lands in exactly that
+    /// position. Which is why it was seen there and not on the machine
+    /// that owns the same window, where the window is the tab that gets
+    /// asked first.
+    #[test]
+    fn every_tab_in_a_group_is_asked_whether_its_window_has_drawn() {
+        let (g, latched, asked) = group_of_two(true, true);
+
+        assert!(Widget::presented(&g), "both of its tabs have drawn");
+        assert!(
+            asked.get() > 0,
+            "the second tab was never asked whether its window had drawn, so \
+             nothing recorded that it had",
+        );
+        assert!(
+            latched.get(),
+            "a window that has drawn must end up marked as having drawn",
+        );
+        assert!(
+            !Widget::opening(&g),
+            "and must not still be holding its own place",
+        );
+    }
+
+    /// The tile itself stops saying a window is on its way once that
+    /// window has drawn — which is the part a person actually sees.
+    #[test]
+    fn a_drawn_window_behind_another_tab_retires_its_opening_card() {
+        let (g, _latched, _asked) = group_of_two(true, true);
+        let _ = Widget::presented(&g);
+        let host = g
+            .hosts
+            .iter()
+            .find(|(id, _)| *id == 2)
+            .map(|(_, h)| h)
+            .expect("the group holds the tab it was built with");
+        assert!(
+            !Widget::opening(host),
+            "the card holding this window's place must be gone: the window is \
+             drawn, populated, and the one on screen",
+        );
+    }
+
+    /// And a window that genuinely has not drawn still gets its card.
+    ///
+    /// The gate exists so a window does not appear at whatever size its
+    /// client happened to pick and then visibly resize itself. Asking
+    /// every tab must not become answering yes for all of them.
+    #[test]
+    fn a_window_that_has_not_drawn_still_holds_its_place() {
+        let (g, latched, _asked) = group_of_two(true, false);
+        let _ = Widget::presented(&g);
+        assert!(
+            !latched.get(),
+            "asking is not answering — a window that has not drawn must not be \
+             recorded as having drawn",
+        );
+        let host = g
+            .hosts
+            .iter()
+            .find(|(id, _)| *id == 2)
+            .map(|(_, h)| h)
+            .expect("the group holds the tab it was built with");
+        assert!(Widget::opening(host), "its place is still being held");
     }
 
     /// Pressing the per-tab Maximize2 hit rect flips
