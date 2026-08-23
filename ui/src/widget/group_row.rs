@@ -1853,13 +1853,20 @@ impl Widget for GroupRow {
             };
             for (i, h) in self.handles.iter_mut().enumerate() {
                 // A handle is the rule between two windows, and the grip
-                // for resizing them. A group that has not presented yet
-                // is not a window on screen, so the border it would be
-                // one side of is not there either — drawing it anyway
-                // leaves a rule floating against the space being held
-                // for an app that is still starting.
+                // for resizing them. A group with nothing on screen is
+                // not a window, so the border it would be one side of is
+                // not there either — drawing it anyway leaves a rule
+                // floating in empty space.
+                //
+                // A group holding a place for an app that is still
+                // starting *is* on screen: it is a card the width of the
+                // window it is waiting for. Its edges are real edges, and
+                // a rule that appeared only once the app finished loading
+                // would be one more thing moving at the moment the person
+                // is looking at the window arriving.
                 let shown = |g: Option<&WindowGroup>| {
-                    g.map(|g| Widget::presented(g)).unwrap_or(false)
+                    g.map(|g| Widget::presented(g) || Widget::opening(g))
+                        .unwrap_or(false)
                 };
                 if !shown(self.groups.get(i)) || !shown(self.groups.get(i + 1)) {
                     continue;
