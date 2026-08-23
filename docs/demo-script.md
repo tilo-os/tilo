@@ -168,7 +168,7 @@ Asking it here is what buys the single shot the excursion exists for —
 the replicated window *and* Quinten's sentence in it, at once, instead of
 a cut for each.
 
-## 7 · Quinten's writing appears on Xaver's screen ⏳ — one path works
+## 7 · Quinten's writing appears on Xaver's screen ❌ — not on any frame yet
 
 **Two packaged word processors converge when both are opened from the
 palette.** Proven from the receiving side:
@@ -211,9 +211,24 @@ own. The reader therefore gets the text from an app that is not the one
 drawn, and the claim passes without Xaver's word processor holding
 anything.
 
-The same defect hangs beat 9: the agent addresses the word processor,
-every app in the room answers, and it waits out its timeout. Both are
-one broker fix.
+**And underneath it, a membership check against the wrong id.** Each
+word processor's document has a cluster id of its own, and the check
+that decides whether an incoming update belongs to this session compares
+it against the *room* ids the session knows. So a document update is
+dropped as not-ours. From `target/v3/xaver/compositor.log`:
+
+```
+PROBE is_in_room cluster=0b506812-…  in_room=true   known=["0b506812-…"]   x25
+PROBE is_in_room cluster=cf8d0374-…  in_room=false  known=["0b506812-…"]   x9
+```
+
+`0b506812` is the room; `cf8d0374` is the other machine's copy of the
+document. Nine updates arrived and nine were dropped, which is exactly
+"presence crosses, the document does not" — presence rides the room
+cluster and passes the same check.
+
+The same fan-out defect hangs beat 9: the agent addresses the word
+processor, every app in the room answers, and it waits out its timeout.
 
 `scripts/yc-demo.py` now hashes Xaver's screen before and after and
 raises a gap when the socket says yes and not a pixel moved — so this
@@ -254,7 +269,7 @@ pointer slowly enough for two processes to hand a drag between them, and
 none of the claims this cut supports is about drag and drop. It deserves
 its own minute rather than fifteen seconds of this one.
 
-## 9 · Claude does something ✅ — two endings, pick one
+## 9 · Claude does something ⏳ — blocked on the same broker defect
 
 `qos-agent` joins the document the way a second copy of the app would:
 same `(app, room, record)` route, asks the room for state, holds a live
@@ -277,7 +292,15 @@ run records which path decided, and the harness asserts it — a fallback
 run can never be written up later as a live one. That matters more now
 that the name on screen is Claude.
 
-Two endings, both live, both attributed:
+**It does not currently complete.** `qos-agent` joins, receives the
+document, and then waits out its timeout without applying anything —
+because every app in the room answers a handshake addressed to the word
+processor, so it is offered documents it did not ask for. Same broker
+fan-out as beat 7; `scripts/yc-demo.py` quotes the `room_wide=true`
+lines from the session log when the timeout fires, so nobody has to
+re-diagnose a hung process.
+
+Two endings, both live, both attributed, both from before that:
 
 - **The table** — bullets become a formatted table.
   `…/scratchpad/table-03-after.png`
