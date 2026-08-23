@@ -124,24 +124,57 @@ impl Default for ExportSettings {
 }
 
 impl ExportSettings {
-    /// Estimated output size in megabytes for a `duration`-second project.
+    /// Estimated output size in megabytes for a `duration`-second project,
+    /// muxing audio or not.
     ///
-    /// Video only: charging the estimate for an audio track would quote a
-    /// size for something the video figure does not describe.
+    /// This is the sum of what the two encoders are *asked* for:
+    /// [`Resolution::target_mbps`] for the picture and [`AUDIO_BITRATE_BPS`]
+    /// for the sound, both being the numbers [`pipeline_desc_with_audio`]
+    /// writes into the graph — so the figure describes the encode that
+    /// actually runs rather than a guess about it.
     ///
-    /// This is what the encoder is *asked* for — [`Resolution::target_mbps`],
-    /// set on whichever encoder [`encode_chain`] selected, in that encoder's
-    /// own units. How closely the file then lands on it is the encoder's
-    /// business, and they differ: the VA-API, NVENC, QSV and x264 encoders
-    /// rate-control to a target, while `openh264enc` — the last-resort
-    /// fallback, used only where none of those is installed — was measured on
-    /// this build not to track the setting at all. Five seconds of 720p noise
-    /// asked to fit 1 Mbit/s came out at roughly 59, and asking for 2 or 8
-    /// Mbit/s of the same compressible clip produced files within 0.4% of each
-    /// other. So on a machine that falls all the way back to openh264, treat
-    /// this as the requested rate rather than a prediction of the file size.
-    pub fn estimated_mb(&self, duration: f64) -> f64 {
-        self.resolution.target_mbps() * duration / 8.0
+    /// `with_audio` is not a preference; it is whether this export will mux an
+    /// audio track at all ([`crate::audio::has_audio`]). Quoting the audio
+    /// allowance for a video-only timeline would bill for a track the file
+    /// never carries — which is what this estimate used to do, charging
+    /// 0.256 Mbit/s for stereo back when the pipeline had no audio branch to
+    /// encode it with.
+    ///
+    /// How closely the file lands on the total is the encoders' business, and
+    /// they differ. [`Self::estimate_label`] is what a dialog should show: it
+    /// declines to quote a size at all where the selected encoder is known not
+    /// to track the rate it is given.
+    pub fn estimated_mb(&self, duration: f64, with_audio: bool) -> f64 {
+        let audio_mbps = if with_audio { AUDIO_BITRATE_BPS as f64 / 1_000_000.0 } else { 0.0 };
+        (self.resolution.target_mbps() + audio_mbps) * duration / 8.0
+    }
+
+    /// The size line for the export dialog: either an approximate megabyte
+    /// figure, or — where one cannot honestly be given — the rate that was
+    /// requested and a plain statement that the size does not follow from it.
+    ///
+    /// The distinction is [`media::encode::Selection::bitrate_is_predictive`],
+    /// false for an encoder measured to ignore its bitrate (`openh264enc`, the
+    /// fallback a machine with no other H.264 encoder actually uses) and for a
+    /// build that could not confirm any encoder at all. In both cases a
+    /// megabyte number would be a guess dressed as a measurement: openh264 was
+    /// asked for 1 Mbit/s and wrote 59, and asking it for 2 or for 8 Mbit/s
+    /// produced files within 0.4% of each other.
+    pub fn estimate_label(&self, project: &Project) -> String {
+        let with_audio = crate::audio::has_audio(project);
+        let (video, _, _) = encode_chain(self.container);
+        if video.bitrate_is_predictive() {
+            return format!("≈ {:.0} MB", self.estimated_mb(project.duration(), with_audio));
+        }
+        let audio = if with_audio {
+            format!(" + {} kbit/s audio", AUDIO_BITRATE_BPS / 1000)
+        } else {
+            String::new()
+        };
+        format!(
+            "{:.0} Mbit/s{audio}, size not predictable here",
+            self.resolution.target_mbps(),
+        )
     }
 
     pub fn suggested_filename(&self, project: &str) -> String {
@@ -253,6 +286,20 @@ pub fn selected_encoders(container: Container) -> EncodeReport {
     EncodeReport { video: Some(video), audio: Some(audio_encoder(container)) }
 }
 
+/// The rate the export asks its audio encoder for, in bits per second.
+///
+/// 128 kbit/s is the ordinary transparent-enough setting for stereo AAC and
+/// comfortably so for Opus, and it is set explicitly rather than left to each
+/// encoder's default — those disagree (`opusenc` starts at 64 kbit/s,
+/// `avenc_aac` at 128, `fdkaacenc` at "auto"), so the same project would land
+/// at a different rate depending on which encoder the machine happened to
+/// have.
+///
+/// It is also what [`ExportSettings::estimated_mb`] charges for the audio
+/// track, which is only meaningful because it is the number written into the
+/// pipeline rather than an assumption about it.
+pub const AUDIO_BITRATE_BPS: u64 = 128_000;
+
 /// The audio half of the graph: a raw-PCM `appsrc` fed the mixed timeline,
 /// converted and encoded into the same muxer the video goes to.
 ///
@@ -264,10 +311,11 @@ pub fn audio_branch_desc(container: Container, muxer_name: &str) -> Option<Strin
     Some(format!(
         "appsrc name=qos_audio is-live=false format=time \
          caps=audio/x-raw,format=S16LE,channels={ch},rate={rate},layout=interleaved \
-         ! audioconvert ! audioresample ! {enc} ! {muxer_name}.",
+         ! audioconvert ! audioresample ! {enc} {bitrate} ! {muxer_name}.",
         ch = crate::audio::CHANNELS,
         rate = crate::audio::SAMPLE_RATE,
         enc = enc.spec.element,
+        bitrate = enc.spec.bitrate_arg(AUDIO_BITRATE_BPS),
     ))
 }
 
@@ -952,10 +1000,13 @@ mod tests {
             assert!(voiced.contains("appsrc name=qos_audio"), "{voiced}");
             assert!(voiced.contains(enc), "{container:?} encodes audio with {enc}: {voiced}");
             // The branch has to end at the same muxer the video goes to, or
-            // it would be a second file's worth of graph going nowhere.
+            // it would be a second file's worth of graph going nowhere — and
+            // it carries the rate the size estimate quotes on the way there.
+            let arg = selected.spec.bitrate_arg(AUDIO_BITRATE_BPS);
             assert!(
-                voiced.contains("name=qos_mux") && voiced.contains(&format!("{enc} ! qos_mux.")),
-                "the audio branch links into the video's muxer: {voiced}",
+                voiced.contains("name=qos_mux")
+                    && voiced.contains(&format!("{enc} {arg} ! qos_mux.")),
+                "the audio branch encodes at {arg} and links into the video's muxer: {voiced}",
             );
             assert!(
                 voiced.contains(&format!("rate={}", crate::audio::SAMPLE_RATE)),
@@ -1088,8 +1139,21 @@ mod tests {
                 // 10s at that bitrate, in megabytes, video only.
                 let want = resolution.target_mbps() * 10.0 / 8.0;
                 assert!(
-                    (s.estimated_mb(10.0) - want).abs() < 1e-9,
-                    "the estimate quotes exactly the encoded bitrate, nothing more",
+                    (s.estimated_mb(10.0, false) - want).abs() < 1e-9,
+                    "a silent export quotes exactly the encoded video bitrate, nothing more",
+                );
+                // And with audio, exactly that plus the rate the audio branch
+                // is given — which is written into the same graph.
+                let audio_branch = audio_branch_desc(container, "qos_mux").expect("audio branch");
+                assert!(
+                    audio_branch.contains(&format!("={AUDIO_BITRATE_BPS} !")),
+                    "{container:?} must encode audio at the quoted {AUDIO_BITRATE_BPS} bps: \
+                     {audio_branch}",
+                );
+                let want_av = want + AUDIO_BITRATE_BPS as f64 / 1_000_000.0 * 10.0 / 8.0;
+                assert!(
+                    (s.estimated_mb(10.0, true) - want_av).abs() < 1e-9,
+                    "an export that muxes audio quotes the video rate plus the audio one",
                 );
             }
         }
@@ -1202,13 +1266,142 @@ mod tests {
         }
     }
 
+    /// One ten-second clip on a track of `kind`. Nothing here decodes — the
+    /// estimate reads the document, not the media.
+    ///
+    /// The two kinds give a silent and a voiced project of **identical
+    /// duration**, which is what lets the two size labels be compared: with
+    /// different durations the audio allowance would be lost inside the
+    /// difference in length.
+    fn project_of(name: &str, kind: crate::model::TrackKind) -> Project {
+        use crate::model::{MediaItem, MediaKind, Track};
+        use uuid::Uuid;
+        let mut p = Project::new(name);
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "clip".into(),
+            kind: if kind == crate::model::TrackKind::Audio {
+                MediaKind::Audio
+            } else {
+                MediaKind::Video
+            },
+            duration: CLIP_SECS,
+            ..Default::default()
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track { id: tid, name: "T1".into(), kind, index: 1, ..Default::default() });
+        let cid = p.add_clip(tid, mid, 0.0).expect("the media exists");
+        p.clip_mut(cid).expect("clip").out_point = CLIP_SECS;
+        p
+    }
+
+    /// Long enough that the audio allowance survives the label's rounding to
+    /// whole megabytes: 128 kbit/s over a minute is 0.96 MB, so the two
+    /// figures differ by one. At ten seconds it is 0.16 MB and both labels
+    /// read the same — true of the display, but then the label can say
+    /// nothing about whether audio was accounted for.
+    const CLIP_SECS: f64 = 60.0;
+
+    /// The dialog's size line must not quote a megabyte figure the encoder
+    /// cannot deliver.
+    ///
+    /// The estimate has been wrong in both directions: it once charged
+    /// 0.256 Mbit/s for a stereo track the pipeline had no branch to encode,
+    /// and once — after that allowance was removed — went on quoting a
+    /// video-only figure while the pipeline muxed real audio. Both were
+    /// confident numbers about something else. So this asserts on the two
+    /// things that make the figure mean anything: it accounts for audio when
+    /// and only when audio will be muxed, and it is withheld entirely where
+    /// the selected encoder is [not
+    /// rate-controlling](media::encode::Selection::bitrate_is_predictive).
+    ///
+    /// Which branch each container takes is a fact about this machine, so the
+    /// test asks the selection rather than assuming — and covers both branches
+    /// wherever the machine has one predictive encoder and one that is not.
+    #[test]
+    fn the_size_line_quotes_a_size_only_where_one_can_be_predicted() {
+        use crate::model::TrackKind;
+        let silent = project_of("silent", TrackKind::Video);
+        let voiced = project_of("voiced", TrackKind::Audio);
+        assert!(!crate::audio::has_audio(&silent) && crate::audio::has_audio(&voiced));
+        assert!(
+            (silent.duration() - voiced.duration()).abs() < 1e-9,
+            "the two projects must be the same length, or the comparison below \
+             measures duration rather than the audio allowance: {} vs {}",
+            silent.duration(),
+            voiced.duration(),
+        );
+
+        let mut saw_predictive = false;
+        let mut saw_unpredictable = false;
+        for container in Container::ALL {
+            let s = ExportSettings { container, ..Default::default() };
+            let (video, _, _) = encode_chain(container);
+            let (a, b) = (s.estimate_label(&silent), s.estimate_label(&voiced));
+            println!("{container:?} via {}: silent {a:?}, with audio {b:?}", video.describe());
+
+            // The arithmetic first, at full precision and independent of how
+            // the label rounds: an audio track costs exactly the rate the
+            // audio branch is given.
+            let d = voiced.duration();
+            let charged = s.estimated_mb(d, true) - s.estimated_mb(d, false);
+            let want = AUDIO_BITRATE_BPS as f64 / 1_000_000.0 * d / 8.0;
+            assert!(
+                (charged - want).abs() < 1e-9,
+                "muxing audio costs the {AUDIO_BITRATE_BPS} bps the branch encodes at: \
+                 charged {charged} MB, expected {want} MB",
+            );
+
+            if video.bitrate_is_predictive() {
+                saw_predictive = true;
+                assert!(a.contains("MB") && b.contains("MB"), "a size is quoted: {a:?} / {b:?}");
+                // The audio track has to cost something, or the figure is
+                // still describing a video-only file.
+                let mb = |label: &str| {
+                    label
+                        .trim_start_matches(['≈', ' '])
+                        .trim_end_matches(" MB")
+                        .parse::<f64>()
+                        .unwrap_or_else(|e| panic!("a megabyte figure in {label:?}: {e}"))
+                };
+                assert!(
+                    mb(&b) > mb(&a),
+                    "muxing audio must cost more than not muxing it: {a:?} vs {b:?}",
+                );
+            } else {
+                saw_unpredictable = true;
+                assert!(
+                    !a.contains("MB") && !b.contains("MB"),
+                    "{} does not track its bitrate, so no size may be quoted: {a:?} / {b:?}",
+                    video.spec.element,
+                );
+                // What *is* known — the rate that was asked for — is still
+                // said, so the line is informative rather than merely blank.
+                let mbps = format!("{:.0} Mbit/s", s.resolution.target_mbps());
+                assert!(a.contains(&mbps) && b.contains(&mbps), "{a:?} / {b:?}");
+                assert!(
+                    b.contains(&format!("{} kbit/s audio", AUDIO_BITRATE_BPS / 1000)),
+                    "and the audio rate, when there is audio: {b:?}",
+                );
+                assert!(!a.contains("kbit/s"), "but not when there is none: {a:?}");
+            }
+        }
+        println!("size line: predictive branch seen={saw_predictive}, \
+                  unpredictable branch seen={saw_unpredictable}");
+        assert!(
+            saw_predictive || saw_unpredictable,
+            "Container::ALL is empty, so this test observed nothing",
+        );
+    }
+
     #[test]
     fn size_estimate_scales_with_resolution() {
         let d = 60.0;
         let p720 = ExportSettings { resolution: Resolution::P720, ..Default::default() }
-            .estimated_mb(d);
+            .estimated_mb(d, true);
         let p2160 = ExportSettings { resolution: Resolution::P2160, ..Default::default() }
-            .estimated_mb(d);
+            .estimated_mb(d, true);
         assert!(p2160 > p720 * 4.0, "4K should be much heavier than 720p");
     }
 
