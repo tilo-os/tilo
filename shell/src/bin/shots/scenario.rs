@@ -378,6 +378,30 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 }
                 st.bump();
             });
+            // Stand in for the client. A window is not painted until it
+            // has drawn something that fits the tab it is in, which is
+            // what stops a launch putting an empty frame on screen — and
+            // an adopted toplevel with no process behind it has drawn
+            // nothing at all, so without this the placement scenarios
+            // would depict where windows land by showing none of them.
+            //
+            // A layout pass first, because the size to draw at is the
+            // tab's, and the tab does not have one until it has been
+            // laid out. Which app each window is still reads off the tab
+            // pill above it.
+            driver.relayout();
+            if let Some((w, h)) = shell::compositor::foreign::store().viewport(surface_id)
+                && w > 0
+                && h > 0
+            {
+                let px = (w as usize) * (h as usize) * 4;
+                shell::compositor::foreign::store().publish_rgba(
+                    surface_id,
+                    &vec![0xF4; px],
+                    w,
+                    h,
+                );
+            }
         }
         Action::AddHostedTab { app, title } => {
             let app = *app;
