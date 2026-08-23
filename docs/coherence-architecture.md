@@ -67,6 +67,50 @@ home server, or a company cluster (`qos-relay`, `compositor/hosted.rs`).
   compositor surface-stream + input-injection (shared-screen-with-multi-input). Kept as
   the honest fallback tier; not true co-edit.
 
+### Presence — the compositor owns the pointer, the app owns the document
+
+Peer presence arrives on two transports and both layers can draw. Split it by what
+kind of position the thing *is*:
+
+- **The compositor owns a peer's pointer** — on the desktop, over chrome, over an app
+  window, between windows. It paints from `PresenceCtx::pointers`, scoped by room.
+- **The app owns presence inside its own content** — caret, selection, typing swipe,
+  authorship tint. Those are offsets in a document, resolved by the widget that holds
+  the text.
+
+A pointer over an app window is the compositor's, not the app's. Three reasons, in
+order of force:
+
+1. **What travels between hosts is a desktop coordinate.** The publishing compositor
+   substitutes its own pointer position precisely because an app's surface-local
+   `(40, 30)` is a different place in every window (`shell::peer_presence`). An app
+   painting that number into its own window space draws a desktop position as if it
+   were window-local — correct only when the window sits at the origin.
+2. **Only the compositor spans the gaps.** A pointer crossing from one window to
+   another, or resting on chrome, has no app to draw it.
+3. **Only the app can resolve a document offset.** The compositor does not have the
+   text, so the caret is not something it could take over even if it wanted to.
+
+Both stores are still populated from one arrival — `pointers` feeds the overlay,
+`remote_cursors` feeds "follow that peer" — so the split is about *painting*, not
+about what is recorded. `presence::PointerOwner` is where a cursor records which layer
+draws it; `RemoteCursor::painted_by_window()` is the single predicate every app-side
+painter consults. A pointer that arrives with no desktop scope (the SDK/relay dialect
+carries no key; the hosted backend never fills `pointers`) stays the app's to paint,
+because nothing else is drawing it.
+
+Populating two stores is *not* by itself protection against double-painting: the shell
+is itself a `ui::App` and threads one `PresenceCtx` into both painters, so a single
+arrival came out as two identical dots. That duplicate hid for a long time because the
+two layers spelled a peer's identity differently and it read as two people rather than
+as one person drawn twice — so the invariant is pinned by tests
+(`presence::mod`, `presence::render`, `shell::peer_presence`), not left to the eye.
+
+Still open: an off-screen peer's edge mist is drawn by the app layer, because the
+overlay drops peers outside its rect rather than pointing at them. It was never the
+thing being doubled, and it belongs with the pointer — move it when the overlay grows
+an off-screen indicator.
+
 ### Permissions — capabilities, not Unix mode bits
 A permission is `(subject: role|user) × (scope: app | resource-type | resource-instance
 | fs-path) × (verb: an exported action, or a coarse cap read/write/invite/admin)`. Roles

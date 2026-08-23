@@ -2034,20 +2034,32 @@ fn two_peers_arriving_off_the_wire_paint_two_avatars_on_the_bar() {
         },
     ];
 
-    // The compositor's frame loop: fold the frames, then put whoever
-    // they came from on that room's roster.
+    // What the room calls these two sessions. Names are a governance
+    // fact: the room's authority writes them into the room document and
+    // `apply_room_changes` refuses them from anybody else. The `"bob"`
+    // and `"dana"` each frame announced above are deliberately *not*
+    // consulted — a session that could name itself could name anyone,
+    // beside a caret editing a document this same room governs. So the
+    // bar below proves the name came from the room, not from the wire.
+    let room_says = |_: &str| {
+        std::collections::BTreeMap::from([
+            (0x11u64, "bob".to_string()),
+            (0x22u64, "dana".to_string()),
+        ])
+    };
+    let this_room = |_: &str| true;
+
+    // The compositor's frame loop: fold the frames, then restate who is
+    // in the room.
     let mut presence = PresenceCtx::default();
-    let seen = fold_inbound(frames, &mut presence);
-    assert_eq!(seen.len(), 2, "both frames must be reported as sightings");
-    for s in &seen {
+    assert!(
+        fold_inbound(frames, &mut presence, &room_says, &this_room),
+        "two room-scoped frames must land"
+    );
+    for (peer, name) in [(0x11u64, "bob"), (0x22u64, "dana")] {
         assert!(
-            tree.note_peer_present(
-                shell::shell::state::RoomId::parse(&s.room).expect("a room id"),
-                s.peer,
-                &s.user,
-            ),
-            "{} arriving must change the roster",
-            s.user
+            tree.note_peer_present(room, peer, name),
+            "{name} arriving must change the roster"
         );
     }
 

@@ -55,7 +55,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use collab_types::{
     ArtifactId, ChannelState, Ed25519PublicKey, OpClass, OpId, RedactedMarker, SignedOp,
@@ -196,12 +196,16 @@ impl RedactionLog {
 
 /// Per-peer entry in the broker's fan-out table.
 struct Peer {
-    /// Stable id assigned at accept time. Threaded into the synthetic
-    /// `user_id = "peer-<id>"` on presence updates, unless the peer
-    /// announced a `handle` on its `Hello`.
+    /// Stable id assigned at accept time. Identifies the *connection*
+    /// — it is what the fan-out filter excludes a sender by — and is
+    /// deliberately not an identity: two apps one person has open are
+    /// two connections and one participant. Who that participant is
+    /// gets answered by [`LocalIdentity`].
     id: u64,
     /// The name this peer asked to be shown as in presence, from its
-    /// `Hello`. Informational: never consulted for routing or authority.
+    /// `Hello`. Informational: never consulted for routing or
+    /// authority, and outranked by whatever the room says this
+    /// machine's peer is called — see [`LocalIdentity`].
     handle: Mutex<Option<String>>,
     /// Write side of the connected stream. The read side is owned by
     /// the per-peer reader thread.
@@ -220,14 +224,130 @@ impl Peer {
         self.route.lock().ok().and_then(|g| g.clone())
     }
 
-    /// The name presence from this peer is stamped with: its announced
-    /// handle, else the synthetic `peer-<id>`.
-    fn presence_user_id(&self) -> String {
-        self.handle
-            .lock()
-            .ok()
-            .and_then(|g| g.clone())
-            .unwrap_or_else(|| format!("peer-{}", self.id))
+    /// What this connection said it wanted to be called, if anything.
+    /// One input to [`LocalIdentity::resolve`], and the weakest one.
+    fn announced_handle(&self) -> Option<String> {
+        self.handle.lock().ok().and_then(|g| g.clone())
+    }
+}
+
+/// What a room calls the peers in it, keyed by the handle presence
+/// frames identify their sender by. Same shape as
+/// [`crate::shell::peer_presence::PeerLabels`].
+pub type PeerLabels = std::collections::BTreeMap<u64, String>;
+
+/// How long a room's answer is reused before it is asked again.
+/// Reading it takes the replica's lock and parses every peer id the
+/// room document holds, and the paths that need it run at pointer
+/// rate. Matches the cadence the peer-sync drain uses for the same
+/// lookup.
+const LABEL_TTL: Duration = Duration::from_secs(2);
+
+/// Who the traffic from a **locally connected** app belongs to.
+///
+/// The broker stamps an identity on everything an app sends before
+/// another app sees it: presence, pointers, and the signed deltas a
+/// caret is drawn from. Those stamps used to be minted per connection
+/// (`peer-<n>`), so one person showed up as a different stranger in
+/// every app they had open, and no amount of the room knowing their
+/// name could reach them — there was no lookup on those paths at all.
+///
+/// A local connection is *this machine's* peer, so the name is the one
+/// the room wrote for this machine's peer id: the same governance fact
+/// [`crate::shell::state::WorkspaceTree::room_peer_labels`] answers for
+/// remote peers, read through the same lookup, so a participant reads
+/// the same on the caret, the roster and the pointer.
+///
+/// The order is deliberate:
+///
+/// 1. **What the room says.** Written by the inviter beside the
+///    capability grant, on the replicated channel `apply_room_changes`
+///    refuses from anyone but the room's authority. A peer that could
+///    name itself could name itself anything, next to a caret editing
+///    a document that room's capabilities gate.
+/// 2. **What the connection calls itself.** No authority whatsoever —
+///    it is kept only because an agent shares a machine with the person
+///    running it, and it names a local process rather than asserting
+///    who is in the room. It can never overrule (1).
+/// 3. **This machine's own user id.** Not a stand-in and not invented:
+///    it is the identity the compositor already publishes its own
+///    pointer under, so an unnamed local participant falls back to an
+///    id — which is what an unnamed remote one does too.
+pub struct LocalIdentity {
+    /// What the room calls a peer, keyed by liveness handle.
+    ///
+    /// A parameter rather than a lookup done here, for the reason
+    /// [`crate::shell::peer_presence::fold_inbound`] takes the same
+    /// one: so this is exercisable without standing a network up, and
+    /// so production has exactly one implementation of it — the room
+    /// document, via [`crate::shell::network::ShellNetwork::peer_labels`].
+    labels: Box<dyn Fn(&str) -> PeerLabels + Send + Sync>,
+    /// This machine's own liveness handle — the key its name is
+    /// written under. Presence frames identify their sender by that
+    /// digest while the room document keys names by base58 `PeerId`,
+    /// and `room_peer_labels` is where the two are bridged; a lookup
+    /// done against anything else silently misses and falls back to an
+    /// id, which is the failure this type exists to end.
+    local_handle: u64,
+    /// The last answer per cluster, with the instant it was given.
+    cache: Mutex<HashMap<String, (Instant, Option<String>)>>,
+}
+
+impl LocalIdentity {
+    /// The production wiring: ask the room document through the
+    /// peer-sync network. A session without one names nobody, which
+    /// leaves every local participant on the `local_user_id` fallback.
+    pub fn from_network(net: Option<Arc<ShellNetwork>>) -> Arc<Self> {
+        let local_handle = net.as_ref().map(|n| n.local_peer_id_hash()).unwrap_or(0);
+        Arc::new(Self {
+            labels: Box::new(move |cluster| {
+                net.as_ref()
+                    .map(|n| n.peer_labels(cluster))
+                    .unwrap_or_default()
+            }),
+            local_handle,
+            cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Wire an explicit lookup in place of the room document.
+    pub fn with_lookup(
+        local_handle: u64,
+        labels: impl Fn(&str) -> PeerLabels + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            labels: Box::new(labels),
+            local_handle,
+            cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// The room's name for this machine's peer in `cluster_id`.
+    fn room_name(&self, cluster_id: &str) -> Option<String> {
+        if cluster_id.is_empty() {
+            return None;
+        }
+        let now = Instant::now();
+        if let Ok(cache) = self.cache.lock()
+            && let Some((at, answer)) = cache.get(cluster_id)
+            && now.duration_since(*at) < LABEL_TTL
+        {
+            return answer.clone();
+        }
+        let answer = (self.labels)(cluster_id).get(&self.local_handle).cloned();
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.insert(cluster_id.to_string(), (now, answer.clone()));
+        }
+        answer
+    }
+
+    /// The identity to stamp on traffic from a local connection that
+    /// announced `route` and calls itself `announced`.
+    pub fn resolve(&self, route: Option<&CrdtRoute>, announced: Option<&str>) -> String {
+        route
+            .and_then(|r| self.room_name(&r.cluster_id))
+            .or_else(|| announced.map(str::to_owned))
+            .unwrap_or_else(crate::shell::state::local_user_id)
     }
 }
 
@@ -592,6 +712,18 @@ impl PeerTable {
     /// through this so their ids never collide.
     pub(crate) fn next_peer_id(&self) -> u64 {
         self.peer_id_counter.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// How many connections this broker has ever accepted, across both
+    /// transports.
+    ///
+    /// Read as a generation rather than a count: it only ever rises, so
+    /// a value different from the one recorded beside an announcement
+    /// means somebody has connected who was not there to hear it. See
+    /// [`remote_participant_id`], which uses it to decide that a name
+    /// already said still needs saying.
+    pub(crate) fn connections_seen(&self) -> u64 {
+        self.peer_id_counter.load(Ordering::Relaxed)
     }
 
     /// Attach the capnp fanout sink. Called at most once at
@@ -982,7 +1114,13 @@ fn translate(
                     }
                     let event = CollabEvent::SignedCRDTIncremental {
                         envelope,
-                        from_user_id: format!("peer-{src_id}"),
+                        // The same identity this connection's presence
+                        // is stamped with. A delta is what a caret is
+                        // drawn from, so attributing it differently
+                        // from the pointer beside it put one person on
+                        // screen twice, under two names and two
+                        // colours.
+                        from_user_id: src_user_id.to_string(),
                     };
                     if compaction_evicted.is_some() {
                         TranslatedAction::CompactionApplied {
@@ -1091,6 +1229,8 @@ fn reader_loop(
     peer: Arc<Peer>,
     mut stream: UnixStream,
     table: Arc<PeerTable>,
+    peer_sync: Option<Arc<ShellNetwork>>,
+    identity: Arc<LocalIdentity>,
     publisher: Arc<PeerPublisher>,
     channels: Arc<Mutex<BrokerChannels>>,
     pending_scrollback: Arc<Mutex<HashMap<ArtifactId, Vec<CrdtRoute>>>>,
@@ -1214,7 +1354,11 @@ fn reader_loop(
         } else {
             None
         };
-        let src_user_id = peer.presence_user_id();
+        // Resolved per frame rather than once at Hello: the route is
+        // only known after the Hello, and the room can name a peer at
+        // any point after that. `LocalIdentity` caches the room lookup
+        // so this stays cheap at pointer rate.
+        let src_user_id = identity.resolve(src_route.as_ref(), peer.announced_handle().as_deref());
         match translate(peer.id, &src_user_id, src_route.as_ref(), req, &channels) {
             TranslatedAction::Nothing => {}
             TranslatedAction::Fanout { event, route } => {
@@ -1502,13 +1646,32 @@ pub fn spawn_full(
     capnp_socket_path: Option<PathBuf>,
     peer_sync: Option<Arc<ShellNetwork>>,
 ) -> std::io::Result<BrokerHandle> {
+    let identity = LocalIdentity::from_network(peer_sync.clone());
     // The outbound half, built once and shared by both transports.
     // One instance is the whole point: when the capnp server held no
     // network handle and the JSON reader loop held one, "does a local
     // edit leave this machine" had two answers, and the one sandboxed
     // apps got was "no".
     let publisher = PeerPublisher::from_network(peer_sync.clone());
-    spawn_inner(socket_path, capnp_socket_path, peer_sync, publisher)
+    spawn_inner(socket_path, capnp_socket_path, peer_sync, identity, publisher)
+}
+
+/// [`spawn_full`], with the "who is this" lookup supplied rather than
+/// built from the network.
+///
+/// The room document is the only implementation production uses —
+/// `spawn_full` builds it and every caller goes through that. This
+/// exists so the attribution the broker stamps can be exercised
+/// against a room whose answers are known, without standing a libp2p
+/// node up to be told them.
+pub fn spawn_full_with_identity(
+    socket_path: PathBuf,
+    capnp_socket_path: Option<PathBuf>,
+    peer_sync: Option<Arc<ShellNetwork>>,
+    identity: Arc<LocalIdentity>,
+) -> std::io::Result<BrokerHandle> {
+    let publisher = PeerPublisher::from_network(peer_sync.clone());
+    spawn_inner(socket_path, capnp_socket_path, peer_sync, identity, publisher)
 }
 
 /// Same broker, with the outbound half supplied by the caller.
@@ -1524,13 +1687,15 @@ pub fn spawn_with_publisher(
     capnp_socket_path: Option<PathBuf>,
     publisher: Arc<PeerPublisher>,
 ) -> std::io::Result<BrokerHandle> {
-    spawn_inner(socket_path, capnp_socket_path, None, publisher)
+    let identity = LocalIdentity::from_network(None);
+    spawn_inner(socket_path, capnp_socket_path, None, identity, publisher)
 }
 
 fn spawn_inner(
     socket_path: PathBuf,
     capnp_socket_path: Option<PathBuf>,
     peer_sync: Option<Arc<ShellNetwork>>,
+    identity: Arc<LocalIdentity>,
     publisher: Arc<PeerPublisher>,
 ) -> std::io::Result<BrokerHandle> {
     // Best-effort unlink: a previous shell instance may have left a
@@ -1556,6 +1721,8 @@ fn spawn_inner(
         Arc::new(Mutex::new(HashMap::new()));
 
     let listener_table = Arc::clone(&table);
+    let listener_peer_sync = peer_sync.clone();
+    let listener_identity = Arc::clone(&identity);
     let listener_publisher = Arc::clone(&publisher);
     let listener_channels = Arc::clone(&channels);
     let listener_pending = Arc::clone(&pending_scrollback);
@@ -1588,6 +1755,8 @@ fn spawn_inner(
                         );
                         let reader_table = Arc::clone(&listener_table);
                         let reader_peer = Arc::clone(&peer);
+                        let reader_peer_sync = listener_peer_sync.clone();
+                        let reader_identity = Arc::clone(&listener_identity);
                         let reader_publisher = Arc::clone(&listener_publisher);
                         let reader_channels = Arc::clone(&listener_channels);
                         let reader_pending = Arc::clone(&listener_pending);
@@ -1598,6 +1767,8 @@ fn spawn_inner(
                                     reader_peer,
                                     stream,
                                     reader_table,
+                                    reader_peer_sync,
+                                    reader_identity,
                                     reader_publisher,
                                     reader_channels,
                                     reader_pending,
@@ -1657,6 +1828,22 @@ fn spawn_inner(
             std::thread::Builder::new()
                 .name("qos-collab-broker-drain".into())
                 .spawn(move || {
+                    // The name already announced for each peer, per
+                    // cluster. Presence arrives at pointer rate, and the
+                    // roster it implies changes almost never, so the
+                    // announcement is made when the answer changes and
+                    // not on every frame.
+                    let mut announced: std::collections::HashMap<(String, u64), (String, u64)> =
+                        std::collections::HashMap::new();
+                    // And what the room said, the last time it was
+                    // asked. Reading it means taking the replica's lock
+                    // and parsing every peer id the room document holds,
+                    // which is not a thing to do thirty times a second
+                    // per peer on the path the sync round also needs
+                    // that lock for. Re-asked on a cadence instead, so a
+                    // name that changes still lands promptly.
+                    let mut labels: std::collections::HashMap<String, (Instant, PeerLabels)> =
+                        std::collections::HashMap::new();
                     while !quit.load(Ordering::Relaxed) {
                         // Drain inbound unsigned CRDT increments.
                         let drained: Vec<_> = {
@@ -1766,16 +1953,20 @@ fn spawn_inner(
                             if matches!(&payload, ui::collaboration::PresencePayload::Arrived) {
                                 drain_net.note_snapshot_request(&entry.cluster_id);
                             }
-                            // Attributed to the publishing host, not to
-                            // a local peer slot: `user_id` is what the
-                            // receiving app colours the caret by, so two
-                            // peers must never collapse onto one id.
+                            let user_id = remote_participant_id(
+                                &entry.cluster_id,
+                                entry.peer,
+                                &|c| drain_net.peer_labels(c),
+                                &drain_table,
+                                &mut labels,
+                                &mut announced,
+                            );
+                            let route = CrdtRoute::cluster(entry.cluster_id.clone());
                             let event = CollabEvent::RemotePresenceUpdate {
-                                user_id: format!("peer@{}", entry.peer),
+                                user_id,
                                 key,
                                 payload,
                             };
-                            let route = CrdtRoute::cluster(entry.cluster_id);
                             drain_table.fanout_to_route(&event, u64::MAX, &route);
                         }
 
@@ -1819,9 +2010,26 @@ fn spawn_inner(
                                             &drain_channels,
                                         );
                                     }
+                                    // The id the *same* peer's presence
+                                    // arrives under, and named through
+                                    // the same room lookup. It used to
+                                    // be `peer-net-<handle>` while the
+                                    // pointer beside it was
+                                    // `peer@<handle>`, so one person was
+                                    // two participants on the receiving
+                                    // screen — two colours, and a roster
+                                    // entry that named only one of them.
+                                    let from_user_id = remote_participant_id(
+                                        &entry.cluster_id,
+                                        entry.peer,
+                                        &|c| drain_net.peer_labels(c),
+                                        &drain_table,
+                                        &mut labels,
+                                        &mut announced,
+                                    );
                                     let event = CollabEvent::SignedCRDTIncremental {
                                         envelope: Box::new(envelope),
-                                        from_user_id: format!("peer-net-{}", entry.peer),
+                                        from_user_id,
                                     };
                                     // Signed envelopes carry the same
                                     // app + cluster stamp as the unsigned
@@ -1973,6 +2181,7 @@ fn spawn_inner(
             Arc::clone(&table),
             Arc::clone(&channels),
             Arc::clone(&publisher),
+            Arc::clone(&identity),
             Arc::clone(&capnp_quit),
         ) {
             Ok(handle) => (Some(handle), true),
@@ -2006,8 +2215,410 @@ fn spawn_inner(
     })
 }
 
+/// What, if anything, to tell local apps this peer is called.
+///
+/// `said` is the name last announced for the peer, `known` what the room
+/// says now, and `id` the `peer@<handle>` the presence frames carry.
+///
+/// Three cases, and the last two are the ones worth spelling out:
+///
+/// - The room names the peer and that is not what was last said: say it.
+/// - The room has **stopped** naming a peer that was named: say the id.
+///   An app told a name once holds it until told otherwise, so a label
+///   taken back in the room would otherwise stay on screen for the rest
+///   of the session — and it would be a name over a caret that nobody
+///   is entitled to any more.
+/// - The room has never named the peer and still does not: say nothing.
+///   The id is already what an app that was told nothing shows, so an
+///   announcement would be a frame per presence frame saying so.
+/// The id a **remote** peer's traffic is attributed under, announcing
+/// the room's name for it first when the room has one and nobody has
+/// said it yet.
+///
+/// Every path that shows a remote participant goes through here — the
+/// pointer, the presence, and the signed delta a caret is drawn from —
+/// because they have to agree. They did not: presence used
+/// `peer@<handle>` and deltas used `peer-net-<handle>`, so the roster
+/// entry naming the first left the second showing a number, and the
+/// palette gave one person two colours in one document.
+///
+/// The id stays the peer handle even once a name is known. A roster
+/// entry names a participant; it does not recolour one, and a peer
+/// whose colour changed the moment it was named would be a peer nobody
+/// could keep track of.
+///
+/// `labels` caches what the room said, on [`LABEL_TTL`]: reading it
+/// takes the replica's lock and parses every peer id the room document
+/// holds, which is not a thing to do per pointer sample. `announced`
+/// remembers what has already been said, so the roster is published
+/// when the answer changes rather than on every frame.
+fn remote_participant_id(
+    cluster_id: &str,
+    peer: u64,
+    labels_of: &dyn Fn(&str) -> PeerLabels,
+    table: &PeerTable,
+    labels: &mut HashMap<String, (Instant, PeerLabels)>,
+    announced: &mut HashMap<(String, u64), (String, u64)>,
+) -> String {
+    // Attributed to the publishing host, not to a local peer slot:
+    // this is what the receiving app colours the caret by, so two
+    // peers must never collapse onto one id.
+    let user_id = format!("peer@{peer}");
+    let now = Instant::now();
+    let fresh = labels
+        .get(cluster_id)
+        .is_some_and(|(at, _)| now.duration_since(*at) < LABEL_TTL);
+    if !fresh {
+        labels.insert(cluster_id.to_string(), (now, labels_of(cluster_id)));
+    }
+    // What this peer is called, according to the room -- which is to
+    // say, according to whoever invited them. A peer that has not been
+    // named has no entry, and is left labelled with the id above
+    // rather than given a name nobody chose.
+    let slot = (cluster_id.to_string(), peer);
+    let known = labels
+        .get(cluster_id)
+        .and_then(|(_, m)| m.get(&peer))
+        .map(String::as_str);
+    let prior = announced.get(&slot);
+    let generation = table.connections_seen();
+    let say = roster_announcement(prior.map(|(n, _)| n.as_str()), known, &user_id)
+        // A name is said when the answer changes, which is right for a
+        // roster that changes almost never and wrong for an app that
+        // connected after it was said: the audience for that
+        // announcement did not include it, and nothing would ever say
+        // it again. That is how a caret ended up showing a handle on a
+        // screen whose chrome, which reads the room directly, showed
+        // the name — the app had simply missed the one broadcast.
+        //
+        // So a connection this answer has not been said in front of is
+        // itself a reason to say it again.
+        .or_else(|| {
+            let unheard = prior.is_some_and(|(_, at)| *at != generation);
+            unheard.then(|| known.unwrap_or(&user_id).to_string())
+        });
+    if let Some(name) = say {
+        announced.insert(slot, (name.clone(), generation));
+        let roster = CollabEvent::Context {
+            collaborators: vec![ui::collaboration::Collaborator {
+                id: user_id.clone(),
+                name,
+                // The palette colour the id already resolves to.
+                color: [0.0, 0.0, 0.0],
+            }],
+            permissions: Vec::new(),
+        };
+        // Cluster scope: a roster is chrome traffic, and every app in
+        // the room is a legitimate audience for who is in it.
+        table.fanout_to_route(&roster, u64::MAX, &CrdtRoute::cluster(cluster_id.to_string()));
+    }
+    user_id
+}
+
+fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Option<String> {
+    let now = known.unwrap_or(id);
+    match said {
+        Some(before) if before == now => None,
+        Some(_) => Some(now.to_string()),
+        None if now == id => None,
+        None => Some(now.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// The peer id a presence frame carries. A digest, which is why a
+    /// name is worth attaching to it and why it is not one.
+    const PEER: &str = "peer@5537458103208628978";
+
+    /// The demo beat: a peer the room has named is announced under that
+    /// name, once.
+    #[test]
+    fn a_named_peer_is_announced_and_then_left_alone() {
+        assert_eq!(
+            super::roster_announcement(None, Some("Xaver"), PEER),
+            Some("Xaver".to_string()),
+        );
+        // Presence arrives at pointer rate. Saying it again every frame
+        // would be a roster update per pointer move.
+        assert_eq!(super::roster_announcement(Some("Xaver"), Some("Xaver"), PEER), None);
+    }
+
+    /// A peer nobody has named produces no announcement at all. The id
+    /// is already what an app that was told nothing shows.
+    #[test]
+    fn an_unnamed_peer_is_not_announced() {
+        assert_eq!(super::roster_announcement(None, None, PEER), None);
+    }
+
+    /// And a name taken back has to be taken back on screen. An app
+    /// holds a name until it is told otherwise, so a label the room has
+    /// revoked would otherwise sit over that peer's caret for the rest
+    /// of the session.
+    #[test]
+    fn a_revoked_name_reverts_the_peer_to_its_id() {
+        assert_eq!(
+            super::roster_announcement(Some("Xaver"), None, PEER),
+            Some(PEER.to_string()),
+        );
+        // …and once said, not repeated.
+        assert_eq!(super::roster_announcement(Some(PEER), None, PEER), None);
+    }
+
+    /// A remote peer is one participant on the receiving screen, and
+    /// the same one whichever kind of frame it sent.
+    ///
+    /// Presence carried `peer@<handle>` and signed deltas carried
+    /// `peer-net-<handle>`, so a peer that typed and pointed became two
+    /// entries in the palette, and the roster entry — announced against
+    /// the first form — named only one of them. The caret said a number
+    /// while the pointer beside it said a name.
+    #[test]
+    fn a_remote_peer_is_one_id_across_presence_and_deltas() {
+        let table = Arc::new(super::PeerTable::new());
+        let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = Arc::clone(&seen);
+        let _sub = table.subscribe_rooms(
+            vec!["room-1".to_string()],
+            Box::new(move |event, _route| {
+                if let CollabEvent::Context { collaborators, .. } = event {
+                    for c in collaborators {
+                        if let Ok(mut g) = sink_seen.lock() {
+                            g.push((c.id.clone(), c.name.clone()));
+                        }
+                    }
+                }
+            }),
+        );
+
+        const HANDLE: u64 = 721_275_257_761_426_039;
+        let room = |_c: &str| {
+            let mut m = PeerLabels::new();
+            m.insert(HANDLE, "Xaver".to_string());
+            m
+        };
+        let mut labels = HashMap::new();
+        let mut announced = HashMap::new();
+
+        // The pointer arrives first, then the delta the caret is drawn
+        // from — the order a person typing produces.
+        let from_presence = super::remote_participant_id(
+            "room-1", HANDLE, &room, &table, &mut labels, &mut announced,
+        );
+        let from_delta = super::remote_participant_id(
+            "room-1", HANDLE, &room, &table, &mut labels, &mut announced,
+        );
+
+        assert_eq!(
+            from_presence, from_delta,
+            "one peer, one id — a delta attributed differently from the \
+             pointer beside it is the same person drawn twice",
+        );
+        assert_eq!(
+            from_presence,
+            format!("peer@{HANDLE}"),
+            "and the id stays the peer handle once a name is known: a \
+             roster entry names a participant, it does not recolour one",
+        );
+
+        let announcements = seen.lock().unwrap().clone();
+        assert_eq!(
+            announcements,
+            vec![(format!("peer@{HANDLE}"), "Xaver".to_string())],
+            "the room's name is announced exactly once, against the id \
+             both frames arrived under",
+        );
+    }
+
+    /// An app that starts after the name was said still learns it.
+    ///
+    /// The roster is published when the room's answer changes, because
+    /// presence arrives at pointer rate and a roster update per pointer
+    /// move is not a roster. But "changes" was measured against what
+    /// had been *said*, not against who had *heard* it, so an app that
+    /// connected a second later missed the one broadcast and nothing
+    /// ever repeated it. Its caret drew the peer's handle while the
+    /// chrome two centimetres away — which reads the room directly —
+    /// drew the name. Both were reporting honestly; only one had been
+    /// told.
+    #[test]
+    fn a_name_already_announced_is_said_again_for_an_app_that_missed_it() {
+        let table = Arc::new(super::PeerTable::new());
+        let heard: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&heard);
+        let _sub = table.subscribe_rooms(
+            vec!["room-1".to_string()],
+            Box::new(move |event, _route| {
+                if let CollabEvent::Context { collaborators, .. } = event {
+                    for c in collaborators {
+                        if let Ok(mut g) = sink.lock() {
+                            g.push(c.name.clone());
+                        }
+                    }
+                }
+            }),
+        );
+
+        const HANDLE: u64 = 4_242_424_242;
+        let room = |_c: &str| {
+            let mut m = PeerLabels::new();
+            m.insert(HANDLE, "Xaver".to_string());
+            m
+        };
+        let mut labels = HashMap::new();
+        let mut announced = HashMap::new();
+        let mut say = || {
+            super::remote_participant_id(
+                "room-1", HANDLE, &room, &table, &mut labels, &mut announced,
+            );
+        };
+
+        say();
+        say();
+        assert_eq!(
+            heard.lock().unwrap().clone(),
+            vec!["Xaver".to_string()],
+            "a name that has not changed is not re-broadcast per frame",
+        );
+
+        // Somebody connects — an app opening, on either transport.
+        let _ = table.next_peer_id();
+        say();
+        assert_eq!(
+            heard.lock().unwrap().clone(),
+            vec!["Xaver".to_string(), "Xaver".to_string()],
+            "the app that just connected was not in the audience for the \
+             first announcement, so the name has to be said again",
+        );
+
+        // And then it settles again.
+        say();
+        assert_eq!(
+            heard.lock().unwrap().len(),
+            2,
+            "once everyone connected has heard it, it stops being said",
+        );
+    }
+
+    /// The same claim, on the production drain rather than the helper
+    /// it calls.
+    ///
+    /// The unit test above pins `remote_participant_id`'s contract; it
+    /// says nothing about whether the signed-delta drain actually calls
+    /// it, and that is precisely where the bug lived — the delta path
+    /// minted `peer-net-<handle>` inline, right beside a presence path
+    /// that had been resolving names correctly for months. So this
+    /// drives a real room, a real signed envelope through
+    /// `ShellNetwork`'s inbound buffer, and reads what a connected app
+    /// is handed.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_remote_delta_reaches_an_app_under_the_name_the_room_wrote() {
+        use collab_types::{ArtifactId, ArtifactKind, ChannelId, ChannelState, OpClass, Role};
+
+        // A room this machine governs, in which the inviter has named
+        // the peer that is about to send something.
+        let mut tree = crate::shell::state::WorkspaceTree::default();
+        let ws = tree.append_empty_workspace("Design review");
+        let room = tree.room_of(ws).expect("a fresh workspace mints a room");
+        let owner = "quinten".to_string();
+        tree.adopt_ownerless_workspaces(&owner);
+        let xaver = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        assert!(
+            tree.name_peer(room, &owner, &xaver.to_base58(), "Xaver"),
+            "the room's authority may name a peer in it",
+        );
+        let xaver_handle = crate::network::behaviour::peer_liveness_handle(&xaver);
+        let cluster = room.to_string();
+
+        let socket_path = temp_sock("remote-delta-name");
+        let (net, _cmd_rx) =
+            crate::shell::network::shell_network_for_test(tree.shared(), 0xB0BAu64);
+        let net = Arc::new(net);
+        let handle = spawn_full(socket_path.clone(), None, Some(Arc::clone(&net)))
+            .expect("broker should bind");
+
+        let app = "dev.qos.word-processor";
+        let mut watcher = connect_manager_as(&socket_path, app, &cluster);
+        wait_for_announced(&handle, 1, Duration::from_millis(500));
+        let _ = watcher.poll();
+
+        // A document the sender may write to.
+        let (sk, pk) = collab_types::generate_keypair();
+        let artifact = ArtifactId::new();
+        let ra = collab_fixtures::role_attestation(&sk, pk, pk, ChannelId::new(), Role::Owner);
+        let att = ra.attestation.id;
+        let mut state = ChannelState::default();
+        state.authorised_signers.push(pk);
+        state.artifacts.insert(artifact, ArtifactKind::Note);
+        state.register_attestation(ra);
+        handle.register_channel_state(artifact, state);
+
+        net.handle_app_crdt_signed_message(
+            xaver_handle,
+            app.to_string(),
+            cluster.clone(),
+            String::new(),
+            collab_fixtures::signed_op(
+                &sk,
+                pk,
+                artifact,
+                att,
+                OpClass::Splice,
+                b"typed on another machine".to_vec(),
+                1,
+            ),
+        );
+
+        let events = poll_until(&mut watcher, 2, Duration::from_millis(2000));
+        let attributions: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                CollabEvent::SignedCRDTIncremental { from_user_id, .. } => {
+                    Some(from_user_id.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            attributions,
+            vec![format!("peer@{xaver_handle}")],
+            "the delta has to arrive under the id the same peer's \
+             presence arrives under, got {events:?}",
+        );
+
+        let named: Vec<(String, String)> = events
+            .iter()
+            .filter_map(|e| match e {
+                CollabEvent::Context { collaborators, .. } => collaborators
+                    .first()
+                    .map(|c| (c.id.clone(), c.name.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            named,
+            vec![(format!("peer@{xaver_handle}"), "Xaver".to_string())],
+            "and the room's name for it has to reach the app, against \
+             that same id, got {events:?}",
+        );
+
+        drop(watcher);
+        drop(handle);
+    }
+
+    /// A rename reaches the people watching, rather than the first name
+    /// standing for the session.
+    #[test]
+    fn a_renamed_peer_is_announced_again() {
+        assert_eq!(
+            super::roster_announcement(Some("Xaver"), Some("Xaver Peeters"), PEER),
+            Some("Xaver Peeters".to_string()),
+        );
+    }
+
     use super::*;
     use std::path::Path;
     use std::time::Duration;
@@ -2679,7 +3290,16 @@ mod tests {
             "peer A must not see its own SyncIncremental echoed back, got {events_a:?}"
         );
 
-        // --- Assertion 3: presence updates carry the synthetic user_id.
+        // --- Assertion 3: presence is attributed to a participant, and
+        // the same one on every screen it reaches.
+        //
+        // It used to be attributed to a *connection* — peer B was the
+        // second to connect, so it arrived as "peer-1" — which meant one
+        // person was a different stranger in each app they had open and
+        // could never resolve to a name. There is no room here to name
+        // anyone, so what B is called is this machine's own user id;
+        // what is asserted is that it is an identity rather than a slot,
+        // and that A and C agree on it.
         peer_b.send(CollabRequest::Presence {
             key: PresenceKey::Workspace { id: "42".into() },
             payload: PresencePayload::Arrived,
@@ -2687,34 +3307,35 @@ mod tests {
         let events_a = poll_until(&mut peer_a, 1, Duration::from_millis(500));
         let events_c = poll_until(&mut peer_c, 1, Duration::from_millis(500));
 
-        // peer B was the second to connect → its synthetic id is "peer-1".
-        let saw_a = events_a.iter().any(|e| {
-            matches!(
-                e,
+        let arrived = |events: &[CollabEvent]| -> Option<String> {
+            events.iter().find_map(|e| match e {
                 CollabEvent::RemotePresenceUpdate {
                     user_id,
                     key: PresenceKey::Workspace { id },
                     payload: PresencePayload::Arrived,
-                } if user_id == "peer-1" && id == "42"
-            )
-        });
-        let saw_c = events_c.iter().any(|e| {
-            matches!(
-                e,
-                CollabEvent::RemotePresenceUpdate {
-                    user_id,
-                    key: PresenceKey::Workspace { id },
-                    payload: PresencePayload::Arrived,
-                } if user_id == "peer-1" && id == "42"
-            )
-        });
-        assert!(
-            saw_a,
-            "peer A should see peer-1's Workspace 42 Arrived, got {events_a:?}"
+                } if id == "42" => Some(user_id.clone()),
+                _ => None,
+            })
+        };
+        let saw_a = arrived(&events_a)
+            .unwrap_or_else(|| panic!("peer A saw no Workspace 42 Arrived, got {events_a:?}"));
+        let saw_c = arrived(&events_c)
+            .unwrap_or_else(|| panic!("peer C saw no Workspace 42 Arrived, got {events_c:?}"));
+
+        assert_eq!(
+            saw_a, saw_c,
+            "one participant must read the same on every screen",
         );
         assert!(
-            saw_c,
-            "peer C should see peer-1's Workspace 42 Arrived, got {events_c:?}"
+            !saw_a.starts_with("peer-"),
+            "presence is attributed to a connection slot ({saw_a}) rather \
+             than to whoever is on the other end of it",
+        );
+        assert_eq!(
+            saw_a,
+            crate::shell::state::local_user_id(),
+            "with no room to ask, a local app's traffic belongs to the \
+             person at this machine",
         );
 
         drop(peer_a);

@@ -12,8 +12,20 @@ path = "src/lib.rs"
 name = "word-processor"
 path = "src/main.rs"
 
+[features]
+# Build the word processor as a thin app. Enabling this puts the shared
+# toolkit dylib (`runtime-dylib` -> libruntime_dylib.so) on the link
+# path; combined with `-C prefer-dynamic --profile thin-app` rustc then
+# serves `ui` (and its wgpu / vello / cosmic-text / automerge graph) and
+# libstd out of that shared object instead of baking a private copy into
+# this binary. Off by default -- a normal `cargo build --release -p
+# word-processor` is an unchanged static build.
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
 ui = { path = "../../ui", features = ["portal"] }
+# Only pulled in under `--features thin`; see the `thin` feature above.
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 qos-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
 spellcheck = { path = "../../crates/text/spellcheck" }
