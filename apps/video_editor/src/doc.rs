@@ -428,7 +428,37 @@ impl VideoDoc {
             }
         }
 
+        Self::in_a_settled_order(&mut p);
         p
+    }
+
+    /// Put a freshly-loaded project's collections into an order that does not
+    /// depend on how the document happened to be keyed.
+    ///
+    /// Automerge hands a map's entries back in key order, and every id here is
+    /// a UUID minted when the project was made, so for a project seeded in
+    /// this process that order is re-rolled on every run. Left as it arrived,
+    /// one project loaded twice put its tracks, clips and media in two
+    /// different orders -- and a timeline drawn in a different order is a
+    /// different picture. That is what made two `--shots` captures of one
+    /// scenario impossible to diff: same shapes, same count, shuffled.
+    ///
+    /// Ordering is by what the thing *is* rather than by its id: a track by
+    /// the lane it occupies, a clip by where it sits on that lane, a source by
+    /// its name. Two peers that agree about the edit therefore agree about the
+    /// order, which an id-based sort could not promise.
+    fn in_a_settled_order(p: &mut Project) {
+        p.tracks.sort_by(|a, b| a.index.cmp(&b.index).then_with(|| a.name.cmp(&b.name)));
+        let lane: std::collections::HashMap<Uuid, usize> =
+            p.tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
+        p.clips.sort_by(|a, b| {
+            lane.get(&a.track)
+                .unwrap_or(&usize::MAX)
+                .cmp(lane.get(&b.track).unwrap_or(&usize::MAX))
+                .then_with(|| a.start.total_cmp(&b.start))
+                .then_with(|| a.in_point.total_cmp(&b.in_point))
+        });
+        p.media.sort_by(|a, b| a.name.cmp(&b.name));
     }
 
     /// Build the demo project so the editor opens populated (and `--shots`
