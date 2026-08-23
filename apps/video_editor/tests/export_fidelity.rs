@@ -18,7 +18,10 @@ use gstreamer_app as gst_app;
 use video_editor::export::{
     Container, ExportSettings, ExportStatus, FrameRate, Resolution, begin_export, output_path,
 };
-use video_editor::model::{MediaItem, MediaKind, Project, Track, TrackKind};
+use video_editor::model::{
+    MediaItem, MediaKind, Project, TextAlign, TextSource, Track, TrackKind, Transform,
+};
+use video_editor::param::{Interp, Param};
 
 const GRID_W: usize = 160;
 const GRID_H: usize = 90;
@@ -69,6 +72,7 @@ fn project_over(path: &std::path::Path, len: f64, name: &str) -> Project {
         palette: 3,
         path: path.to_string_lossy().into_owned(),
         hydration: video_editor::media::Hydration::Local,
+        ..Default::default()
     });
     let tid = uuid::Uuid::new_v4();
     p.tracks.push(Track {
@@ -371,4 +375,184 @@ fn a_wipe_reaches_the_encoded_file_as_geometry() {
 
     tidy(&wipe);
     tidy(&dissolve);
+}
+
+
+// ---------------------------------------------------------------------------
+// Geometry, titles and time-remap in the encoded file.
+//
+// These need no source footage: a title's picture is generated from the
+// document, so the whole pipeline — compose, encode, mux, decode back — can
+// be exercised against a picture whose every pixel is known in advance.
+// That is a stronger check than comparing against a decoded source, because
+// there is nothing to blame a mismatch on but the export.
+// ---------------------------------------------------------------------------
+
+/// A project holding one title over `len` seconds, and the ids to edit it.
+fn title_project(name: &str, words: &str) -> (Project, uuid::Uuid, uuid::Uuid) {
+    let mut p = Project::new(name);
+    p.width = 1280;
+    p.height = 720;
+    let mid = uuid::Uuid::new_v4();
+    p.media.push(MediaItem {
+        id: mid,
+        name: "Title".into(),
+        kind: MediaKind::Text,
+        duration: 4.0,
+        text: Some(TextSource {
+            content: words.into(),
+            // Big enough that a 160x90 decode grid still resolves it.
+            size: 0.55,
+            color: [1.0, 1.0, 1.0, 1.0],
+            align: TextAlign::Center,
+            bold: true,
+            ..TextSource::default()
+        }),
+        ..Default::default()
+    });
+    let tid = uuid::Uuid::new_v4();
+    p.tracks.push(Track {
+        id: tid,
+        name: "V1".into(),
+        kind: TrackKind::Video,
+        index: 1,
+        ..Default::default()
+    });
+    let cid = p.add_clip(tid, mid, 0.0).expect("media exists");
+    p.clip_mut(cid).expect("clip").out_point = 4.0;
+    (p, mid, cid)
+}
+
+/// How much of the decoded grid is bright, as a fraction. A white title on
+/// black is exactly this measurement.
+fn bright_fraction(px: &[[u8; 3]]) -> f64 {
+    let lit = px.iter().filter(|q| q[0] > 170 && q[1] > 170 && q[2] > 170).count();
+    lit as f64 / px.len() as f64
+}
+
+/// The centre of mass of the bright pixels, in grid coordinates, or `None`
+/// when nothing is lit.
+fn bright_centre(px: &[[u8; 3]]) -> Option<(f64, f64)> {
+    let (mut sx, mut sy, mut n) = (0.0, 0.0, 0.0);
+    for (i, q) in px.iter().enumerate() {
+        if q[0] > 170 && q[1] > 170 && q[2] > 170 {
+            sx += (i % GRID_W) as f64;
+            sy += (i / GRID_W) as f64;
+            n += 1.0;
+        }
+    }
+    (n > 0.0).then(|| (sx / n, sy / n))
+}
+
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn a_title_reaches_the_encoded_file_as_real_glyphs() {
+    let (p, _, _) = title_project("title_export", "HELLO");
+    let path = export(&p);
+    let frame = decode_frame(&path, 1.0);
+
+    let lit = bright_fraction(&frame);
+    assert!(
+        lit > 0.01,
+        "the encoded file carries the title's glyphs, not black: {:.4} of the frame is lit",
+        lit,
+    );
+    assert!(
+        lit < 0.5,
+        "and it is glyphs rather than a white card: {:.4} lit",
+        lit,
+    );
+    // Centred: the bright mass sits near the middle of the frame.
+    let (cx, cy) = bright_centre(&frame).expect("something is lit");
+    assert!(
+        (cx - GRID_W as f64 / 2.0).abs() < GRID_W as f64 * 0.15,
+        "a centred title encodes centred horizontally, got x={cx:.1}",
+    );
+    assert!(
+        (cy - GRID_H as f64 / 2.0).abs() < GRID_H as f64 * 0.15,
+        "and vertically, got y={cy:.1}",
+    );
+    tidy(&path);
+}
+
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn a_transform_moves_the_picture_in_the_encoded_file() {
+    // The same title, pushed into the lower-right quadrant. If the export
+    // ignored geometry the two files would be identical.
+    let (mut p, _, cid) = title_project("title_moved_export", "HELLO");
+    p.clip_mut(cid).expect("clip").transform = Transform {
+        scale_x: 0.45,
+        scale_y: 0.45,
+        pos_x: 0.25,
+        pos_y: 0.25,
+        ..Transform::default()
+    };
+    let path = export(&p);
+    let frame = decode_frame(&path, 1.0);
+    let (cx, cy) = bright_centre(&frame).expect("the title is still on screen");
+    assert!(
+        cx > GRID_W as f64 * 0.6,
+        "the transform moved the title right in the encoded file, got x={cx:.1}",
+    );
+    assert!(
+        cy > GRID_H as f64 * 0.6,
+        "and down, got y={cy:.1}",
+    );
+    tidy(&path);
+}
+
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn a_keyframed_move_is_at_a_different_place_in_each_encoded_second() {
+    // An animated parameter has to be sampled per frame during the encode,
+    // not once for the whole file. Two instants of the same clip must
+    // therefore differ — and differ in the direction the curve runs.
+    let (mut p, _, cid) = title_project("title_animated_export", "HELLO");
+    {
+        let c = p.clip_mut(cid).expect("clip");
+        c.transform = Transform { scale_x: 0.4, scale_y: 0.4, ..Transform::default() };
+        c.set_key_at(Param::PosY, 0.0, -0.3, Interp::Linear);
+        c.set_key_at(Param::PosY, 3.0, 0.3, Interp::Linear);
+    }
+    let path = export(&p);
+    let (_, early) = {
+        let f = decode_frame(&path, 0.2);
+        (bright_fraction(&f), bright_centre(&f).expect("lit at the head"))
+    };
+    let (_, late) = {
+        let f = decode_frame(&path, 2.8);
+        (bright_fraction(&f), bright_centre(&f).expect("lit at the tail"))
+    };
+    assert!(
+        late.1 > early.1 + GRID_H as f64 * 0.2,
+        "the keyframed move travels down the encoded file: y {:.1} → {:.1}",
+        early.1,
+        late.1,
+    );
+    tidy(&path);
+}
+
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn speed_shortens_the_encoded_file() {
+    // Timeline length is the source window divided by the rate, and the
+    // export encodes the timeline — so a sped-up clip must produce a
+    // shorter file, not the same file played faster.
+    let (mut p, _, cid) = title_project("title_speed_export", "HELLO");
+    let normal = p.duration();
+    p.clip_mut(cid).expect("clip").set_speed(2.0, false);
+    assert!(
+        (p.duration() - normal / 2.0).abs() < 1e-9,
+        "the timeline halves: {normal} → {}",
+        p.duration(),
+    );
+    let path = export(&p);
+    // Past the end of the sped-up timeline there is nothing to decode.
+    let frame = decode_frame(&path, 0.5);
+    assert!(
+        bright_fraction(&frame) > 0.005,
+        "the sped-up file still carries the title inside its own length",
+    );
+    tidy(&path);
 }
