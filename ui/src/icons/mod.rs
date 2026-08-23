@@ -145,6 +145,11 @@ pub enum Icon {
     Delete,
     /// Return / Enter key glyph (a down-then-left corner arrow).
     CornerDownLeft,
+    // --- History set ---
+    /// Undo — a leftward arrow curving back on itself. Lucide `undo-2`.
+    Undo2,
+    /// Redo — the mirror of [`Icon::Undo2`]. Lucide `redo-2`.
+    Redo2,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -694,6 +699,16 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M20 4v7a4 4 0 0 1-4 4H4"),
             path_from_d("M9 10 4 15l5 5"),
         ],
+        // Undo2: the left-pointing arrowhead + the loop that doubles back.
+        Icon::Undo2 => vec![
+            path_from_d("M9 14 4 9l5-5"),
+            path_from_d("M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"),
+        ],
+        // Redo2: Undo2 mirrored — arrowhead on the right, loop to the left.
+        Icon::Redo2 => vec![
+            path_from_d("m15 14 5-5-5-5"),
+            path_from_d("M20 9H9.5A5.5 5.5 0 0 0 4 14.5 5.5 5.5 0 0 0 9.5 20H13"),
+        ],
     }
 }
 
@@ -1089,6 +1104,8 @@ mod tests {
             Icon::ArrowBigUp,
             Icon::Delete,
             Icon::CornerDownLeft,
+            Icon::Undo2,
+            Icon::Redo2,
         ] {
             let sub = icon_subpaths(icon);
             assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
