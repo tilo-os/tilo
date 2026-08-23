@@ -101,8 +101,10 @@ pub const MEDIA: &str = "ve_media";
 /// uuid of whatever it edits.
 pub const FIELD: &str = "ve_field";
 
-/// The field name used for a clip's in-place rename.
-pub const FIELD_CLIP_NAME: &str = "clip_name";
+/// The field name for a title clip's words — the inspector's inline
+/// multi-line editor, and the one editable field in this app that reports
+/// a caret offset. Its subject is the title's media id.
+pub const FIELD_TITLE_WORDS: &str = "title_words";
 
 fn widget_key(parts: &[&str]) -> PresenceKey {
     PresenceKey::Widget {
@@ -487,7 +489,7 @@ pub fn external_driver_recipe() -> &'static str {
         "  no selection\n",
         "             path [\"ve_timeline\"]            Selection { start: 0,\n",
         "                                                        end: 0 }\n",
-        "  typing     path [\"ve_field\", \"clip_name\", <clip uuid>]\n",
+        "  typing     path [\"ve_field\", \"title_words\", <media uuid>]\n",
         "                                             Caret { pos: byte }\n",
         "  pointer    the room scope                  Pointer { x, y }\n",
         "\n",
@@ -532,11 +534,11 @@ mod tests {
         let field = PresenceKey::Widget {
             path: vec![
                 PathSegment::Field("ve_field".to_string()),
-                PathSegment::Field("clip_name".to_string()),
+                PathSegment::Field("title_words".to_string()),
                 PathSegment::Field("6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e".to_string()),
             ],
         };
-        assert_eq!(field, field_key(FIELD_CLIP_NAME, clip));
+        assert_eq!(field, field_key(FIELD_TITLE_WORDS, clip));
     }
 
     /// The recipe is the only thing an outside program reads before writing a
@@ -545,7 +547,7 @@ mod tests {
     #[test]
     fn the_published_recipe_names_the_keys_this_crate_actually_builds() {
         let recipe = external_driver_recipe();
-        for tag in [TIMELINE, CLIP, FIELD, FIELD_CLIP_NAME] {
+        for tag in [TIMELINE, CLIP, FIELD, FIELD_TITLE_WORDS] {
             assert!(recipe.contains(tag), "the recipe never mentions {tag:?}");
         }
         assert!(
@@ -613,8 +615,8 @@ mod tests {
         assert_eq!(payload, PresencePayload::Caret { pos: 12_500 });
 
         let clip = Uuid::new_v4();
-        let (key, payload) = point_frame(Some((FIELD_CLIP_NAME, clip, 4)), 12.5);
-        assert_eq!(key, field_key(FIELD_CLIP_NAME, clip));
+        let (key, payload) = point_frame(Some((FIELD_TITLE_WORDS, clip, 4)), 12.5);
+        assert_eq!(key, field_key(FIELD_TITLE_WORDS, clip));
         assert_eq!(
             payload,
             PresencePayload::Caret { pos: 4 },
@@ -773,14 +775,14 @@ mod tests {
         ctx.apply_remote_presence("ada".into(), k, p);
         assert_eq!(peer_playheads(&ctx).len(), 1);
 
-        let (k, p) = point_frame(Some((FIELD_CLIP_NAME, clip, 3)), 12.5);
+        let (k, p) = point_frame(Some((FIELD_TITLE_WORDS, clip, 3)), 12.5);
         ctx.apply_remote_presence("ada".into(), k, p);
         assert!(
             peer_playheads(&ctx).is_empty(),
             "their ghost playhead steps aside while they type",
         );
         assert_eq!(
-            peer_field_carets(&ctx, FIELD_CLIP_NAME, clip),
+            peer_field_carets(&ctx, FIELD_TITLE_WORDS, clip),
             vec![(uid("ada"), 3)],
         );
 
@@ -788,7 +790,7 @@ mod tests {
         let (k, p) = point_frame(None, 12.5);
         ctx.apply_remote_presence("ada".into(), k, p);
         assert_eq!(peer_playheads(&ctx).len(), 1);
-        assert!(peer_field_carets(&ctx, FIELD_CLIP_NAME, clip).is_empty());
+        assert!(peer_field_carets(&ctx, FIELD_TITLE_WORDS, clip).is_empty());
     }
 
     /// Several participants at once, which is the case the whole feature is
@@ -843,6 +845,6 @@ mod tests {
         let ctx = PresenceCtx::empty();
         assert!(peer_playheads(&ctx).is_empty());
         assert!(peer_clips(&ctx).is_empty());
-        assert!(peer_field_carets(&ctx, FIELD_CLIP_NAME, Uuid::new_v4()).is_empty());
+        assert!(peer_field_carets(&ctx, FIELD_TITLE_WORDS, Uuid::new_v4()).is_empty());
     }
 }

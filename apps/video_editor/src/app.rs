@@ -25,7 +25,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
 use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
+use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::a11y::{AccessNode, AccessState, Role};
@@ -765,6 +765,11 @@ pub enum ShotScenario {
     /// keyed, so the box, the channel chooser, the amount slider and its
     /// key control are all on screen at once.
     Curves,
+    /// Two other participants in the room: their playheads down the lanes
+    /// with their names on them, and the clips they have selected outlined
+    /// in their colours -- next to this participant's own selection, so the
+    /// capture shows the two reading as different people.
+    Collaborators,
 }
 
 impl ShotScenario {
@@ -791,6 +796,7 @@ impl ShotScenario {
                 | ShotScenario::KeyMenu
                 | ShotScenario::ProjectMenu
                 | ShotScenario::Curves
+                | ShotScenario::Collaborators
         )
     }
 
@@ -824,6 +830,7 @@ impl ShotScenario {
             "discard" => ShotScenario::DiscardOpen,
             "saved" => ShotScenario::SavedProject,
             "curves" => ShotScenario::Curves,
+            "collaborators" => ShotScenario::Collaborators,
             _ => return None,
         })
     }
@@ -853,6 +860,16 @@ pub struct VideoEditorApp {
     bin_bar: ui::widget::Scrollbar,
     selection: Selection,
     selected_media: Option<MediaId>,
+    /// Decides which one thing to tell the room about this participant on
+    /// each poll of [`Widget::presence_payload`], which only carries one.
+    /// See [`crate::presence`] for why there are two things to say.
+    local_presence: crate::presence::LocalPresence,
+    /// Other participants, staged for a `--shots` capture. `None` in the
+    /// live app, where they arrive over the collaboration socket like
+    /// anyone else; a capture cannot wait on a socket, so the scenario
+    /// stages the very frames a peer would have sent and the draw reads
+    /// them through the identical path.
+    shot_presence: Option<PresenceCtx>,
     playing: bool,
     // --- ui state ---
     show_export: bool,
@@ -1196,6 +1213,8 @@ impl VideoEditorApp {
             shot_scenario: ShotScenario::Live,
             shot_applied: false,
             shot_interaction_applied: false,
+            local_presence: crate::presence::LocalPresence::default(),
+            shot_presence: None,
             playhead: 10.0,
             zoom: 34.0,
             scroll: 0.0,
@@ -4554,6 +4573,50 @@ impl VideoEditorApp {
     /// Arrange a rect-dependent interaction scenario for a `--shots` capture,
     /// once, from `draw` where the layout rect is known. Uses the same
     /// production affordances a live interaction drives.
+    /// Stage two other participants for the `collaborators` capture.
+    ///
+    /// Their frames are built by [`crate::presence::point_frame`] and
+    /// [`crate::presence::range_frame`] -- the very functions this editor
+    /// publishes itself with -- and folded in through
+    /// [`PresenceCtx::apply_remote_presence`], the one decoder every inbound
+    /// frame goes through. So what the capture shows is what a real peer
+    /// produces; only the socket between them is missing.
+    fn seed_shot_collaborators(&mut self) {
+        use ui::permissions::UserId;
+        let mut ctx = PresenceCtx::empty();
+        // Clips to hand out, in timeline order so the pick is the same on
+        // every run rather than whatever order a map iterated in.
+        let mut clips: Vec<(ClipId, f64, f64)> = self
+            .project
+            .clips
+            .iter()
+            .map(|c| (c.id, c.start, c.end()))
+            .collect();
+        clips.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        for (i, (id, name, at)) in [("ada", "Ada", 6.5), ("bo", "Bo", 21.0)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (id, name, at))| (i, (id, name, at)))
+        {
+            ctx.names.insert(UserId(id.to_string()), name.to_string());
+            let (k, p) = crate::presence::point_frame(None, at);
+            ctx.apply_remote_presence(id.to_string(), k, p);
+            // Each takes a different clip, and neither takes the one this
+            // participant has, so the three selections are distinguishable.
+            if let Some((cid, start, end)) = clips
+                .iter()
+                .filter(|(cid, _, _)| Some(*cid) != self.selected())
+                .nth(i)
+                .copied()
+            {
+                let (k, p) = crate::presence::range_frame(Some((cid, start, end)));
+                ctx.apply_remote_presence(id.to_string(), k, p);
+            }
+        }
+        self.shot_presence = Some(ctx);
+    }
+
     fn apply_shot_interaction(&mut self, r: &Regions) {
         // A capture that is about the inspector has to show it, and on a
         // narrow window it starts out of the way. Opening it here is what
@@ -4570,6 +4633,9 @@ impl VideoEditorApp {
             self.inspector_flap.snap(true);
         }
         match self.shot_scenario {
+            ShotScenario::Collaborators => {
+                self.seed_shot_collaborators();
+            }
             ShotScenario::ProjectMenu => {
                 let btn = r.project_btn;
                 if btn.width() > 0.0 {
@@ -5344,6 +5410,12 @@ impl Widget for VideoEditorApp {
             r = self.regions();
         }
         let r = r;
+        // Everything below draws the room from here. In the live app that is
+        // the host's own context, fed by the collaboration socket; a capture
+        // scenario can stage one instead (see `seed_shot_collaborators`).
+        // Cloned because the draws below need `&mut self`.
+        let staged = self.shot_presence.clone();
+        let presence: &PresenceCtx = staged.as_ref().unwrap_or(presence);
         // Keep the inspector scroll within the current selection's content.
         let max_scroll = self.inspector_max_scroll(&r);
         self.inspector_scroll = self.inspector_scroll.clamp(0.0, max_scroll);
@@ -5378,7 +5450,7 @@ impl Widget for VideoEditorApp {
         if !r.inspector_overlay {
             self.draw_inspector(scene, transform, tr, theme, &r);
         }
-        self.draw_timeline(scene, transform, tr, theme, &r);
+        self.draw_timeline(scene, transform, tr, theme, presence, &r);
         if r.inspector_overlay && self.inspector_flap.reveal() > 0.001 {
             self.draw_inspector(scene, transform, tr, theme, &r);
         }
@@ -5918,6 +5990,37 @@ impl Widget for VideoEditorApp {
             }
         }
         Some(CursorIcon::Default)
+    }
+
+    /// This editor publishes about the timeline it holds.
+    fn presence_key(&self) -> Option<PresenceKey> {
+        Some(crate::presence::timeline_key())
+    }
+
+    /// Where this participant is, for the room to draw.
+    ///
+    /// Two facts -- the playhead and the selected clip -- through a hook that
+    /// carries one at a time, so [`crate::presence::LocalPresence`] hands over
+    /// whichever has moved since it was last sent. Both survive on the
+    /// receiving side because the caret store and the selection store are
+    /// separate; see [`crate::presence`].
+    ///
+    /// None of this is an action and none of it reaches the document. A
+    /// playhead is view state: replaying someone else's is meaningless, and
+    /// putting it on an undo stack would be worse than meaningless.
+    fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
+        let editing = self
+            .title_edit
+            .as_ref()
+            .map(|(mid, field)| (crate::presence::FIELD_TITLE_WORDS, *mid, field.cursor_pos()));
+        let selected = self
+            .selected()
+            .and_then(|id| self.project.clip(id))
+            .map(|c| (c.id, c.start, c.end()));
+        self.local_presence.next([
+            crate::presence::point_frame(editing, self.playhead),
+            crate::presence::range_frame(selected),
+        ])
     }
 
     fn name(&self) -> &str {
@@ -10959,7 +11062,7 @@ impl VideoEditorApp {
         }
     }
 
-    fn draw_timeline(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+    fn draw_timeline(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx, r: &Regions) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.base, r.timeline);
         stroke_line(scene, tf, c.border_standard, r.timeline.x0, r.timeline.y0, r.timeline.x1, r.timeline.y0, 1.0);
@@ -11046,9 +11149,11 @@ impl VideoEditorApp {
 
         // Clip bodies clipped to the lane area so they don't bleed over the gutter/ruler.
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1));
+        let mut drawn: Vec<(ClipId, Rect)> = Vec::new();
         for (tid, kind, lane) in &lanes {
             for clip in self.project.clips_on(*tid) {
                 self.draw_clip(scene, tf, tr, theme, clip, lane, *kind, r);
+                drawn.push((clip.id, self.clip_rect(clip, lane, r)));
             }
         }
         // A lane that will not be heard or seen — muted, or not soloed while
@@ -11077,6 +11182,12 @@ impl VideoEditorApp {
                 x += 12.0;
             }
         }
+        // Which clips other participants are holding, outlined in their
+        // colours. Over the mute/lock scrims, because a peer's selection has
+        // to stay legible on a lane that is greyed back -- knowing someone
+        // else is working on a locked clip is exactly when it matters.
+        crate::presence::draw_peer_clips(scene, tf, tr, theme, presence, &drawn);
+
         // Live rubber band, over the clips it is sweeping.
         if let Some(band) = self.marquee {
             fill_rect(scene, tf, with_alpha(c.accent[5], 0.24), band);
@@ -11098,6 +11209,22 @@ impl VideoEditorApp {
         let tagrect = Rect::new(tagx - 3.0, r.ruler.y0 + 2.0, tagx + tw as f64 + 5.0, r.ruler.y0 + 16.0);
         fill_rrect(scene, tf, c.accent[5], tagrect, 3.0);
         text_w(scene, tr, tf, &tag, 10.0, on_fill(theme, c.accent[5]).1, tagx, r.ruler.y0 + 3.0, TextWeight::Bold);
+
+        // Everyone else's playhead, after the local one so a peer parked on
+        // the same frame reads as an addition to it rather than as something
+        // that replaced it. Drawn through this editor's own seconds-to-pixels
+        // mapping, so a peer's line lands on the pixel the local one would at
+        // the same instant under the same zoom and scroll.
+        crate::presence::draw_peer_playheads(
+            scene,
+            tf,
+            tr,
+            theme,
+            presence,
+            r.lanes,
+            r.timeline.y1,
+            |t| self.time_to_x(t, &r.lanes),
+        );
 
         // Zoom readout, doubling as fit-to-window. Without it there was no way
         // to tell how far in you were, and no way back out but wheeling.
