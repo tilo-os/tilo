@@ -2,15 +2,22 @@
 //!
 //! A strip is a horizontal run of window groups wider than the display,
 //! so "where am I looking" is a real piece of state (`GroupRow::scroll_x`)
-//! that several unrelated interactions can move. Two things are pinned
+//! that several unrelated interactions can move. Three things are pinned
 //! here:
 //!
 //!   * The tab strip's `+` opens the picker and moves nothing. It is a
 //!     button, and a button that pans the desktop under the pointer is
 //!     the kind of thing a person notices immediately and cannot explain.
-//!   * Stepping focus along the strip works from the keyboard, from a
-//!     horizontal scroll, and from the modifier wheel — and all three
-//!     land on the same window, because they are one operation.
+//!   * Stepping focus along the strip works from the keyboard and from a
+//!     horizontal scroll, and both land on the same window, because they
+//!     are one operation.
+//!   * The rail says how much strip there is and which part of it is on
+//!     screen — and goes there when clicked.
+//!
+//! Note what does *not* move the view: a bare wheel. That boundary lives
+//! in `desktop_env_interactions::wheel_over_strip_does_not_move_it` —
+//! the view travels through focus changes, which is exactly why a
+//! sideways scroll here steps focus rather than free-panning the canvas.
 //!
 //! The harness builds a real `ShellOverlayHost` over a real
 //! `WorkspaceTree`, runs a real layout pass, and drives real
