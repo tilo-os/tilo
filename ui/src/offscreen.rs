@@ -38,6 +38,21 @@
 //! screenshot suites mostly do not see it and the parallel test
 //! binaries do.
 //!
+//! # Never cache one in a `thread_local!`
+//! An `OffscreenRenderer` must not be dropped from a thread-local
+//! destructor. Dropping wgpu resources calls
+//! `wgpu_core::snatch::SnatchLock::read`, which under `debug_assertions`
+//! reads wgpu's own `SNATCH_LOCK_TRACE` thread-local. TLS destructors run
+//! in reverse registration order, so a cache registered before the first
+//! wgpu call is torn down *after* wgpu's trace TLS — and the drop then
+//! panics with "cannot access a Thread Local Storage value during or
+//! after destruction". A panic in a TLS destructor is `SIGABRT`, not a
+//! test failure: it kills the process and every result it had left to
+//! report. A local variable is fine (it drops mid-execution); a
+//! process-wide `static`, which never drops at all, is the way to cache
+//! one across calls. `OffscreenRenderer` is `Send` so that this is
+//! possible — see `offscreen_renderer_stays_send`.
+//!
 //! Consequences: byte-comparing two renders is not a sound equality
 //! test. Compare with [`OffscreenRenderer::pixels_differing_beyond_aa`],
 //! or compare the `Scene` the draw pass produced, which *is* exact. A
@@ -378,6 +393,21 @@ impl OffscreenRenderer {
 #[cfg(test)]
 mod tests {
     use super::OffscreenRenderer;
+
+    /// `OffscreenRenderer` has to stay `Send`.
+    ///
+    /// The compositor's snapshot path caches one in a process-wide
+    /// `static` precisely so it is never dropped from a thread-local
+    /// destructor — which aborts the process (see the module docs). A
+    /// `static Mutex<Option<OffscreenRenderer>>` only compiles while
+    /// this holds, so a field that quietly gives up `Send` would break
+    /// that caller rather than this crate. Fail here, where the reason
+    /// is written down.
+    #[test]
+    fn offscreen_renderer_stays_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<OffscreenRenderer>();
+    }
 
     /// The frame comparison tolerates exactly the one-step antialiasing
     /// wobble the rasteriser is allowed and nothing wider. Without this
