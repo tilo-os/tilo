@@ -27,7 +27,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_shots_arg(&args) {
+    // `--scene-digest` runs the capture up to (but not into) the GPU and
+    // prints a hash of the scene, so two processes can be asked whether they
+    // composed the same picture. It routes through `--shots` itself rather
+    // than a parallel path, so the number always describes the real capture.
+    let digest = args.iter().any(|a| a == "--scene-digest");
+    if let Some(out) = parse_shots_arg(&args).or_else(|| digest.then(std::path::PathBuf::new)) {
         // Point the FUSE-media seam at the bundled sample-media/ dir so the
         // capture resolves the demo project's media to local (hydrated)
         // sources — exercising the hydration branch without a live mount.
@@ -65,25 +70,32 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(40));
             }
-            render_shot_to_png(Box::new(app), DEFAULT_SHOTS_VIEWPORT, &out, state)?;
+            emit(Box::new(app), DEFAULT_SHOTS_VIEWPORT, &out, state, digest)?;
             return Ok(());
         }
         if empty {
-            render_shot_to_png(video_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?;
+            emit(video_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new(), digest)?;
         } else if args.iter().any(|a| a == "--narrow") {
-            render_shot_to_png(video_editor::app_root_narrow(), NARROW_SHOTS_VIEWPORT, &out, ui::State::new())?;
+            emit(video_editor::app_root_narrow(), NARROW_SHOTS_VIEWPORT, &out, ui::State::new(), digest)?;
         } else {
             // Every scenario resolves through the same `ShotScenario` selector
             // the app itself defines, so adding one there is enough to make it
             // capturable — no second list to keep in step.
             match scenario.as_deref().and_then(video_editor::app::ShotScenario::from_arg) {
-                Some(s) => render_shot_to_png(
+                Some(s) => emit(
                     Box::new(video_editor::VideoEditorApp::new_for_shot(s)),
                     DEFAULT_SHOTS_VIEWPORT,
                     &out,
                     ui::State::new(),
+                    digest,
                 )?,
-                None => render_shot_to_png(video_editor::app_root_demo(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
+                None => emit(
+                    video_editor::app_root_demo(),
+                    DEFAULT_SHOTS_VIEWPORT,
+                    &out,
+                    ui::State::new(),
+                    digest,
+                )?,
             }
         }
         return Ok(());
@@ -164,84 +176,81 @@ fn parse_size_env() -> Option<(u32, u32)> {
 /// a **warmed** one (already synced through the import + decode warm-up) so the
 /// imported media persists into the rendered frame instead of being wiped by a
 /// fresh empty sync.
+/// Write the capture, or print its fingerprint when only the number is wanted.
+fn emit(
+    widget: Box<dyn Widget>,
+    viewport: (u32, u32),
+    out: &std::path::Path,
+    state: ui::State,
+    digest: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if digest {
+        print_scene_digest(widget, viewport, state)
+    } else {
+        render_shot_to_png(widget, viewport, out, state)
+    }
+}
+
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     out: &std::path::Path,
     mut state: ui::State,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // `QOS_SHOTS_SIZE=WxH` overrides the scenario's viewport, so any width can
-    // be captured and looked at. Without it the app could only ever be
-    // photographed at two sizes, and a layout that collapsed at a third had
-    // nothing watching it.
-    let (w, h) = parse_size_env().unwrap_or(viewport);
+    let (size, theme) = shot_config(viewport);
+    let mut text_renderer = TextRenderer::new();
+    let scene = video_editor::shot::compose(
+        &mut *widget,
+        size,
+        &theme,
+        &mut state,
+        &mut text_renderer,
+    )?;
+
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut renderer = OffscreenRenderer::new(size.0, size.1);
+    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    println!("video_editor: wrote shot to {}", out.display());
+    Ok(())
+}
+
+/// Fingerprint the scene a capture would rasterise, and print it.
+///
+/// The picture itself cannot be compared byte for byte — vello's rasteriser is
+/// allowed a one-step wobble on antialiased edges (see `video_editor::shot`) —
+/// but the scene behind it can, and that is the layer the editor decides. Two
+/// runs of this printing two different numbers means the app composed two
+/// different pictures, which is a bug in the app rather than in the GPU.
+fn print_scene_digest(
+    mut widget: Box<dyn Widget>,
+    viewport: (u32, u32),
+    mut state: ui::State,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (size, theme) = shot_config(viewport);
+    let mut text_renderer = TextRenderer::new();
+    let scene = video_editor::shot::compose(
+        &mut *widget,
+        size,
+        &theme,
+        &mut state,
+        &mut text_renderer,
+    )?;
+    println!("{:016x}", video_editor::shot::fingerprint(&scene));
+    Ok(())
+}
+
+/// The viewport and theme a capture runs at: the scenario's own, unless
+/// `QOS_SHOTS_SIZE=WxH` / `QOS_SHOTS_THEME` say otherwise. Without the size
+/// override the app could only ever be photographed at two widths, and a
+/// layout that collapsed at a third had nothing watching it.
+fn shot_config(viewport: (u32, u32)) -> ((u32, u32), Theme) {
+    let size = parse_size_env().unwrap_or(viewport);
     let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    widget.sync(&mut state.doc, &state.root);
-    // The host publishes the history's state every frame, and the transport
-    // strip's undo button is drawn from it. A capture that skipped this step
-    // would photograph that button permanently dead however much the
-    // scenario had actually done — the picture has to be of the real
-    // control, not of a control the capture path starved.
-    let status = state.undo_status(None);
-    widget.set_undo_status(&status);
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
-    println!("video_editor: wrote shot to {}", out.display());
-    Ok(())
+    (size, theme)
 }

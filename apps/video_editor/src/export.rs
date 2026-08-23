@@ -1080,14 +1080,36 @@ mod tests {
         p
     }
 
-    /// The peak level of the audio inside a media file, or 0 when it has no
-    /// readable audio at all.
+    /// The decoded audio of a media file.
+    ///
+    /// Fails rather than handing back silence when the file cannot be read. A
+    /// helper that answers `0.0` both for "this is quiet" and for "I could not
+    /// look" turns a failure to observe into a claim about the subject: the
+    /// assertions below would then report an export that had carried audio
+    /// perfectly well as one that had produced none, naming the wrong thing as
+    /// broken. That is exactly how this test flaked under a full suite run --
+    /// the decode came back empty, and "empty" read as "silent".
+    #[cfg(feature = "gst")]
+    fn decoded_audio(path: &std::path::Path) -> Vec<f32> {
+        let uri = crate::media::engine_source(path).to_uri();
+        let pcm = crate::audio::decode_pcm_for_test(&uri).unwrap_or_else(|| {
+            panic!("no readable audio stream in {} -- the level cannot be judged", path.display())
+        });
+        assert!(
+            pcm.len() > crate::audio::SAMPLE_RATE as usize / 2,
+            "only {} samples decoded from {}: too little to say anything about its level",
+            pcm.len(),
+            path.display(),
+        );
+        pcm
+    }
+
+    /// The peak level of the audio inside a media file. See [`decoded_audio`]:
+    /// a file that cannot be read fails here rather than reading as silence.
     #[cfg(feature = "gst")]
     fn audio_peak(path: &std::path::Path) -> f32 {
-        let uri = crate::media::engine_source(path).to_uri();
-        crate::audio::decode_pcm_for_test(&uri)
-            .map(|p| crate::audio::peak(&p))
-            .unwrap_or(0.0)
+        let pcm = decoded_audio(path);
+        crate::audio::peak(&pcm)
     }
 
     #[test]
@@ -1149,9 +1171,7 @@ mod tests {
 
         // Decode the audio back out of what was written. A container check
         // cannot tell a real stream from a missing one.
-        let uri = crate::media::engine_source(&out).to_uri();
-        let pcm = crate::audio::decode_pcm_for_test(&uri)
-            .expect("the exported file carries a decodable audio stream");
+        let pcm = decoded_audio(&out);
         assert!(
             pcm.len() > crate::audio::SAMPLE_RATE as usize,
             "at least half a second of audio was muxed, got {} samples",
