@@ -39,6 +39,7 @@ use crate::shell::catalogue::{self, CatalogueApp};
 use crate::shell::chrome_state::{Chrome, OpenTarget};
 use crate::shell::launcher::{self, InstalledApp};
 use crate::shell::notification::{Notification, NotificationSeverity};
+use crate::shell::search::action_api::{ActionArgs, ActionError};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
 /// Chip label / group header for launchable apps. Mirrors
@@ -193,7 +194,7 @@ impl ApplicationsProvider {
                 title: format!("Open {}", app.display_name),
                 subtitle: Some(subtitle),
                 score: score - NOT_INSTALLED_TIEBREAK,
-                on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
+                on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
                     // Everything decided on the frame thread is decided
                     // *now*, while the user's selection and the layout
                     // they were looking at are both still true. The
@@ -230,7 +231,16 @@ impl ApplicationsProvider {
                             .with_app_name("Applications"),
                         );
                         st.bump();
-                        return;
+                        // The notification is how the person at the
+                        // machine learns; this is how a caller that
+                        // cannot see the screen learns. Same failure as
+                        // an installed app's launch, so it answers the
+                        // same way rather than reporting success for an
+                        // app that was never started.
+                        return Err(ActionError::Refused(format!(
+                            "Couldn't open {display_name}: {}",
+                            launcher::LaunchError::NoWorkspace.user_message()
+                        )));
                     };
                     // The palette closes the instant this returns, so
                     // this notification is the only thing standing
@@ -258,6 +268,7 @@ impl ApplicationsProvider {
                         room,
                         capabilities,
                     );
+                    Ok(())
                 }),
                 params: Vec::new(),
             });
@@ -843,7 +854,12 @@ mod tests {
         );
         let row = out.first().expect("a row for the offered app");
         assert!(c.borrow().notifications().is_empty());
-        (row.on_open)(&mut doc, &automerge::ROOT, &c);
+        let opened = (row.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none());
+        assert!(
+            opened.is_err(),
+            "no active workspace is no room to launch into — the caller must be told, \
+             not answered as though the app had started",
+        );
         let st = c.borrow();
         let n = st
             .notifications()
