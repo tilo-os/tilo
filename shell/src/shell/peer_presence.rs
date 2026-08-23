@@ -351,6 +351,88 @@ impl PeerPresence {
             &|room| mine.iter().any(|r| r == room),
         )
     }
+
+    /// Write the active room's people into the tree, where the roster
+    /// and the top bar read them.
+    ///
+    /// A peer's arrival used to be visible only as a cursor: the roster
+    /// reads `WorkspaceTree::collaborators`, and nothing in a live
+    /// session ever wrote it, so the surface that answers "who is in
+    /// this room" answered "No peers connected" after somebody had
+    /// demonstrably joined. This is that write.
+    ///
+    /// Deliberately not folded into [`Self::pump`]. That answers "did a
+    /// peer move", which a caller uses to decide whether a cursor needs
+    /// repainting; this answers "did who-is-here change", and the two
+    /// are different questions with different answers — a peer named
+    /// while sitting still changes the second and not the first.
+    ///
+    /// Level-triggered: it restates the room's people whether or not
+    /// anything arrived this frame, so somebody who joined and never
+    /// touched their mouse is listed without waiting for a pointer that
+    /// may never come. It is also what makes a stale list impossible to
+    /// persist — the next frame overwrites whatever a state file held.
+    ///
+    /// Returns whether the list changed, which is a reason to repaint.
+    ///
+    /// The *active* workspace's room, not every room the session
+    /// listens to. The roster is a statement about the room on screen,
+    /// and a session is in every room it has ever joined.
+    pub fn refresh_roster(&self, presence: &PresenceCtx) -> bool {
+        let local = self.net.local_peer_id_hash();
+        let Ok(replica) = self.net.replica.lock() else {
+            return false;
+        };
+        // Computed under a read guard and written only when it differs.
+        // This runs on every frame; taking the tree's writer that often
+        // would contend with the network thread folding peer changes in
+        // for a list that changes when somebody joins.
+        let rows = {
+            let tree = replica.tree.read();
+            let Some(ws) = tree.workspaces.iter().find(|w| w.id == tree.active) else {
+                return false;
+            };
+            if ws.room.is_nil() {
+                return false;
+            }
+            let labels = tree.room_peer_labels(ws.room);
+            let seen = handles_seen_in(presence, &ws.room.to_string());
+            let rows = room_roster(ws, &labels, &seen, local);
+            if tree.collaborators == rows {
+                return false;
+            }
+            rows
+        };
+        replica.tree.write().collaborators = rows;
+        true
+    }
+}
+
+/// The peer handles this session has had presence from in `room`.
+///
+/// Read out of the same [`PresenceCtx`] the overlay draws its cursors
+/// from, so a peer in the roster and a cursor on the desktop are the
+/// same evidence rather than two stores that can disagree — which is
+/// what the roster listing somebody the desktop does not draw, or the
+/// reverse, would mean.
+fn handles_seen_in(presence: &PresenceCtx, room: &str) -> std::collections::BTreeSet<u64> {
+    let mut out = std::collections::BTreeSet::new();
+    for (key, peers) in &presence.pointers {
+        let PresenceKey::Workspace { id } = key else {
+            continue;
+        };
+        if id.as_str() != room {
+            continue;
+        }
+        for (user, _) in peers {
+            if let Some(handle) = user.0.strip_prefix("peer@")
+                && let Ok(handle) = handle.parse::<u64>()
+            {
+                out.insert(handle);
+            }
+        }
+    }
+    out
 }
 
 /// What a room calls the peers in it, keyed by the handle presence
@@ -454,6 +536,69 @@ pub fn fold_inbound(
         any = true;
     }
     any
+}
+
+/// The people in `ws`'s room, as the roster lists them.
+///
+/// Two sources, because a room knows two different things about who is
+/// in it and neither one is sufficient on its own.
+///
+/// `labels` is the room *document*'s answer: every peer its authority
+/// has named, replicated as governance. It carries somebody who was
+/// invited and has not touched their mouse yet, which presence cannot —
+/// a session whose pointer has never been anywhere publishes nothing,
+/// deliberately, so a roster built from presence alone leaves a person
+/// who joined and sat still out of the room they joined. An agent
+/// session never moves a mouse at all.
+///
+/// `seen` is the peer handles this session has actually had presence
+/// from in that room. It carries somebody the room has *not* named — a
+/// peer who redeemed a plain invite, which says nothing about who it is
+/// for — and the document cannot, because nothing wrote them into it.
+///
+/// `local` is this session's own handle, and it is dropped. The roster
+/// answers "who else is here". A host names *itself* when it mints an
+/// invite ([`ShellNetwork::issue_invite`]) so that its guests read a
+/// name instead of a number; without this the host would read that name
+/// back out of its own room document and list itself as a peer.
+///
+/// Names are never invented and never taken from the peer's own word
+/// for itself. A peer nobody has named keeps its id, so a row is never
+/// blank and never carries a name nobody chose.
+///
+/// The role is the room's own statement too, not a second one: it comes
+/// from the capability list [`crate::shell::state::Workspace::role_of`]
+/// reads, which reaches a guest by the same replication the names do
+/// (`sync_room_doc` projects the owner and the grants). A participant the
+/// capability list says nothing about has no role, and shows none.
+pub fn room_roster(
+    ws: &crate::shell::state::Workspace,
+    labels: &PeerLabels,
+    seen: &std::collections::BTreeSet<u64>,
+    local: u64,
+) -> Vec<crate::shell::state::Collaborator> {
+    let mut handles: std::collections::BTreeSet<u64> = labels.keys().copied().collect();
+    handles.extend(seen.iter().copied());
+    handles.remove(&local);
+    handles
+        .into_iter()
+        .map(|handle| {
+            // The identity is the handle, spelled the way the presence
+            // path spells it. One person is therefore one id in the
+            // roster and on the desktop, which is what makes a row's
+            // avatar the same colour as that person's cursor — and why
+            // a peer that is named later does not change colour in
+            // front of the people watching it.
+            let id = format!("peer@{handle}");
+            let name = labels.get(&handle).cloned().unwrap_or_else(|| id.clone());
+            let role = ws.role_of(&name);
+            let who = crate::shell::state::Collaborator::new(id, name);
+            match role {
+                Some(role) => who.with_role(crate::shell::state::role_label(role)),
+                None => who,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1284,6 +1429,202 @@ mod two_sessions {
         assert!(
             on_host.pointers.is_empty(),
             "and nothing may be filed under it",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session's own view of who is in the room it is looking at,
+    /// read the way the roster and the top bar read it.
+    fn roster_of(tree: &crate::shell::state::WorkspaceTreeHandle) -> Vec<(String, Option<String>)> {
+        tree.read()
+            .collaborators
+            .iter()
+            .map(|c| (c.name.clone(), c.role_id.clone()))
+            .collect()
+    }
+
+    /// Stand a session up around `tree` with `peer` as its identity.
+    /// Returns the relay and the command channel, which has to be kept
+    /// alive or the actor's sends start failing.
+    fn session(
+        dir: &std::path::Path,
+        sock: &str,
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+        peer: &str,
+    ) -> (
+        PeerPresence,
+        Arc<ShellNetwork>,
+        tokio::sync::mpsc::Receiver<NetCmd>,
+    ) {
+        let (net, cmds) = shell_network_for_test(tree.clone(), handle_of(peer));
+        let net = Arc::new(net);
+        let relay = PeerPresence::attach(&broker(dir, sock), Arc::clone(&net), Vec::new());
+        relay.set_rooms(rooms_of(tree));
+        (relay, net, cmds)
+    }
+
+    /// The gap this closes: somebody demonstrably joined, and the
+    /// surface that answers "who is in this room" said nobody was.
+    ///
+    /// The host had every fact it needed — the guest's pointer was on
+    /// its screen and the guest's name was in its room document — and
+    /// still listed nothing, because `WorkspaceTree::collaborators` is
+    /// what the roster reads and nothing in a live session wrote it.
+    #[test]
+    fn a_peer_who_joined_is_in_the_roster() {
+        let guest_peer = peer_id(21);
+        let host_peer = peer_id(22);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
+        let guest_tree = guest_joining(&mut host_tree, room);
+        let host_handle = host_tree.shared();
+        let guest_handle = guest_tree.shared();
+
+        let dir = std::env::temp_dir().join(format!("qos-roster-join-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
+        let (guest, _guest_net, mut guest_cmds) =
+            session(&dir, "g.sock", &guest_handle, &guest_peer);
+
+        assert!(
+            roster_of(&host_handle).is_empty(),
+            "before anyone arrives the room has nobody in it",
+        );
+
+        // The guest arrives the only way a guest can: presence, on the
+        // room they joined.
+        guest.set_cursor(420.0, 300.0);
+        assert!(guest.publish_local_cursor(&room.to_string()));
+        over_the_wire(published(&mut guest_cmds), &host_net);
+
+        let mut on_host = PresenceCtx::default();
+        assert!(host.pump(&mut on_host), "the frame folds the guest in");
+        assert!(
+            host.refresh_roster(&on_host),
+            "and the room's people changed, which is a reason to repaint",
+        );
+
+        assert_eq!(
+            roster_of(&host_handle),
+            vec![("bob".to_string(), None)],
+            "the host's roster must name the person who joined it",
+        );
+
+        // Level-triggered, so a second pass with nothing new reports no
+        // change — a frame loop that said "changed" every tick would
+        // never let the desktop idle.
+        assert!(
+            !host.refresh_roster(&on_host),
+            "restating the same room's people is not a change",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A plain invite says nothing about who its token is for, so the
+    /// peer who redeems one has no name in the room. They are listed as
+    /// their id — never blank, and never a name nobody chose.
+    #[test]
+    fn a_peer_the_room_has_not_named_is_listed_as_its_id() {
+        let guest_peer = peer_id(31);
+        let host_peer = peer_id(32);
+        let (mut host_tree, room) = host_naming(&[]);
+        let guest_tree = guest_joining(&mut host_tree, room);
+        let host_handle = host_tree.shared();
+        let guest_handle = guest_tree.shared();
+
+        let dir = std::env::temp_dir().join(format!("qos-roster-unnamed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
+        let (guest, _guest_net, mut guest_cmds) =
+            session(&dir, "g.sock", &guest_handle, &guest_peer);
+
+        guest.set_cursor(10.0, 20.0);
+        assert!(guest.publish_local_cursor(&room.to_string()));
+        over_the_wire(published(&mut guest_cmds), &host_net);
+
+        let mut on_host = PresenceCtx::default();
+        host.pump(&mut on_host);
+        host.refresh_roster(&on_host);
+
+        let expected = format!("peer@{}", handle_of(&guest_peer));
+        assert_eq!(
+            roster_of(&host_handle),
+            vec![(expected, None)],
+            "an unnamed peer keeps its id as its label",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A host names itself when it mints an invite, so its guests read
+    /// a name rather than a number. Reading that back as a peer of its
+    /// own would put the person holding the machine in their own list
+    /// of other people.
+    #[test]
+    fn the_room_does_not_list_the_session_reading_it() {
+        let guest_peer = peer_id(41);
+        let host_peer = peer_id(42);
+        // Both ends named, which is what `issue_invite` leaves behind.
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob"), (&host_peer, OWNER)]);
+        let guest_tree = guest_joining(&mut host_tree, room);
+        let host_handle = host_tree.shared();
+        let guest_handle = guest_tree.shared();
+
+        let dir = std::env::temp_dir().join(format!("qos-roster-self-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
+        let (guest, _guest_net, mut guest_cmds) =
+            session(&dir, "g.sock", &guest_handle, &guest_peer);
+
+        guest.set_cursor(1.0, 2.0);
+        assert!(guest.publish_local_cursor(&room.to_string()));
+        over_the_wire(published(&mut guest_cmds), &host_net);
+        let mut on_host = PresenceCtx::default();
+        host.pump(&mut on_host);
+        host.refresh_roster(&on_host);
+
+        let listed: Vec<String> = roster_of(&host_handle).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(
+            listed,
+            vec!["bob".to_string()],
+            "the roster is who else is here, and the host is not else",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other direction, and the one presence alone cannot do.
+    ///
+    /// The guest has never seen the host's pointer here — nobody has
+    /// moved a mouse in this test — and the host is in the room all the
+    /// same. What the guest lists comes out of the room document that
+    /// replicated when it joined: the host's name for itself, and the
+    /// role the room's own capability list gives that name.
+    #[test]
+    fn the_guest_reads_the_host_out_of_the_room_it_joined() {
+        let host_peer = peer_id(51);
+        let guest_peer = peer_id(52);
+        let (mut host_tree, room) = host_naming(&[(&host_peer, OWNER)]);
+        let guest_tree = guest_joining(&mut host_tree, room);
+        let guest_handle = guest_tree.shared();
+
+        let dir = std::env::temp_dir().join(format!("qos-roster-guest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (guest, _guest_net, _guest_cmds) =
+            session(&dir, "g.sock", &guest_handle, &guest_peer);
+
+        // Nothing has arrived and nothing has moved.
+        let empty = PresenceCtx::default();
+        assert!(
+            guest.refresh_roster(&empty),
+            "a guest that joined a room has somebody to list in it",
+        );
+        assert_eq!(
+            roster_of(&guest_handle),
+            vec![(OWNER.to_string(), Some("owner".to_string()))],
+            "the guest lists the host by the name and role the room \
+             replicated, without a pointer ever crossing",
         );
 
         let _ = std::fs::remove_dir_all(&dir);

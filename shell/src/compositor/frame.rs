@@ -453,13 +453,20 @@ impl FrameBuilder {
     }
 
     /// Fold everything peers have sent since the last frame into the
-    /// presence the next paint will read. Returns whether a peer
-    /// moved, which is a reason to repaint.
+    /// presence the next paint will read, then restate who is in the
+    /// room on screen. Returns whether either changed — a peer moved,
+    /// or the room's people did — both of which are reasons to repaint.
+    ///
+    /// The roster refresh runs whether or not the fold found anything:
+    /// somebody who joined and has not moved their pointer publishes
+    /// nothing, and they are in the room all the same.
     pub fn pump_peer_presence(&mut self) -> bool {
         let Some(relay) = self.peer_presence.as_ref() else {
             return false;
         };
-        relay.pump(&mut self.presence)
+        let moved = relay.pump(&mut self.presence);
+        let roster_changed = relay.refresh_roster(&self.presence);
+        moved || roster_changed
     }
 
     /// Read-only view of the presence the next paint will draw.
