@@ -10,6 +10,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use media::encode::{AudioCodec, EncodeReport, HwEncPolicy, Selection, VideoCodec};
+
 use crate::model::Project;
 
 /// Output resolution presets. Stored as the long edge; the project's
@@ -152,32 +154,94 @@ pub enum ExportStatus {
     Failed { reason: String },
 }
 
-/// The GStreamer element chain that encodes the export, per container: the
-/// (encoder, optional parser, muxer) triple. Kept pure + shared so the pipeline
-/// **construction** is verifiable without a gstreamer stack (see tests).
-///
-/// The encoders/muxers are the real elements the runner plugs:
-///   * MP4 / MOV — `openh264enc ! h264parse ! (mp4mux|qtmux)` (H.264).
-///   * WebM — `vp8enc ! webmmux` (VP8, WebM's baseline codec).
-pub fn encode_chain(container: Container) -> (&'static str, Option<&'static str>, &'static str) {
+/// The video codec each container carries. The *codec* is fixed by the
+/// container (and named in [`Container::label`]); which *encoder* writes it is
+/// chosen per machine — see [`encode_chain`].
+pub fn video_codec(container: Container) -> VideoCodec {
     match container {
-        Container::Mp4 => ("openh264enc", Some("h264parse"), "mp4mux"),
-        Container::Mov => ("openh264enc", Some("h264parse"), "qtmux"),
-        Container::WebM => ("vp8enc", None, "webmmux"),
+        Container::Mp4 | Container::Mov => VideoCodec::H264,
+        Container::WebM => VideoCodec::Vp8,
     }
 }
 
-/// The audio encoder each container takes, or `None` for one that carries
-/// no audio.
-///
-/// MP4 and MOV take AAC (`avenc_aac`); WebM takes Opus, which is its
-/// companion codec the way VP8 is its video one. Both are present in the
-/// runtime the export already depends on, so this adds no new requirement.
-pub fn audio_encoder(container: Container) -> Option<&'static str> {
+/// The audio codec each container carries. MP4 and MOV take AAC; WebM takes
+/// Opus, which is its companion codec the way VP8 is its video one.
+pub fn audio_codec(container: Container) -> AudioCodec {
     match container {
-        Container::Mp4 | Container::Mov => Some("avenc_aac"),
-        Container::WebM => Some("opusenc"),
+        Container::Mp4 | Container::Mov => AudioCodec::Aac,
+        Container::WebM => AudioCodec::Opus,
     }
+}
+
+/// The parser + muxer for a container. Fixed by the container format, so
+/// unlike the encoder these do not vary with the machine.
+pub fn mux_chain(container: Container) -> (Option<&'static str>, &'static str) {
+    match container {
+        Container::Mp4 => (Some("h264parse"), "mp4mux"),
+        Container::Mov => (Some("h264parse"), "qtmux"),
+        Container::WebM => (None, "webmmux"),
+    }
+}
+
+/// Whether an element factory is installed — where this build can look.
+///
+/// `media`'s registry probe is only compiled where GStreamer is linked, which
+/// for this crate means a `decode` or `gst` build. Without either, nothing can
+/// be confirmed, and the selection says so ([`Selection::confirmed`]) rather
+/// than assuming an encoder is present or absent.
+#[cfg(any(feature = "decode", feature = "gst"))]
+fn registry_available(name: &str) -> bool {
+    media::encode::registry_has(name)
+}
+
+#[cfg(not(any(feature = "decode", feature = "gst")))]
+fn registry_available(_name: &str) -> bool {
+    false
+}
+
+/// The GStreamer element chain that encodes the export, per container: the
+/// (video encoder, optional parser, muxer) triple.
+///
+/// The encoder is **chosen against the machine's real GStreamer registry**,
+/// not hard-coded. For H.264 that means a VA-API, NVENC or QSV encoder when
+/// one is installed — covering AMD, Intel and NVIDIA, integrated and discrete
+/// — then `x264enc`, then `openh264enc`, which is the baseline this workspace
+/// can always count on but also the weakest (Baseline profile only). The
+/// returned [`Selection`] carries which of those it is, and reports hardware
+/// only when the registry actually confirmed one.
+///
+/// The muxer half stays fixed by the container:
+///   * MP4 / MOV — `… ! h264parse ! (mp4mux|qtmux)`
+///   * WebM — `… ! webmmux`
+pub fn encode_chain(container: Container) -> (Selection, Option<&'static str>, &'static str) {
+    let (parse, mux) = mux_chain(container);
+    let sel = media::encode::select_video(
+        video_codec(container),
+        HwEncPolicy::from_env(),
+        registry_available,
+    );
+    (sel, parse, mux)
+}
+
+/// The audio encoder each container takes, chosen the same way as the video
+/// one. There is no hardware AAC or Opus encoder to prefer, so the ordering
+/// here is by quality — `fdkaacenc` ahead of `avenc_aac`.
+pub fn audio_encoder(container: Container) -> Selection {
+    media::encode::select_audio(
+        audio_codec(container),
+        HwEncPolicy::from_env(),
+        registry_available,
+    )
+}
+
+/// Which encoders an export of `container` would actually use on this machine.
+///
+/// An observation, not a capability claim: [`EncodeReport::is_hardware`] is
+/// false both for a software encoder and for a build that could not consult a
+/// registry, so "not yet known" can never be read as "yes".
+pub fn selected_encoders(container: Container) -> EncodeReport {
+    let (video, _, _) = encode_chain(container);
+    EncodeReport { video: Some(video), audio: Some(audio_encoder(container)) }
 }
 
 /// The audio half of the graph: a raw-PCM `appsrc` fed the mixed timeline,
@@ -187,25 +251,15 @@ pub fn audio_encoder(container: Container) -> Option<&'static str> {
 /// branches cannot drift, and so the whole graph is unit-testable without a
 /// GStreamer stack.
 pub fn audio_branch_desc(container: Container, muxer_name: &str) -> Option<String> {
-    let enc = audio_encoder(container)?;
+    let enc = audio_encoder(container);
     Some(format!(
         "appsrc name=qos_audio is-live=false format=time \
          caps=audio/x-raw,format=S16LE,channels={ch},rate={rate},layout=interleaved \
          ! audioconvert ! audioresample ! {enc} ! {muxer_name}.",
         ch = crate::audio::CHANNELS,
         rate = crate::audio::SAMPLE_RATE,
+        enc = enc.spec.element,
     ))
-}
-
-/// The encoder property that carries a target bitrate in bits per second.
-/// Both encoders default far below any of the presets — openh264enc sits at
-/// 128 kbps — so without setting this the size estimate in the dialog would
-/// be describing a bitrate nothing was ever asked to hit.
-fn bitrate_property(container: Container) -> &'static str {
-    match container {
-        Container::Mp4 | Container::Mov => "bitrate",
-        Container::WebM => "target-bitrate",
-    }
 }
 
 /// Build the `gst-launch`-style pipeline description the export runs: a raw
@@ -233,7 +287,13 @@ pub fn pipeline_desc_with_audio(
     let fps = settings.frame_rate.fps() as u32;
     let parse = parse.map(|p| format!("{p} ! ")).unwrap_or_default();
     let bitrate = (settings.resolution.target_mbps() * 1_000_000.0) as u64;
-    let bitrate_prop = bitrate_property(settings.container);
+    // Each encoder names and scales its bitrate differently — `bitrate` in
+    // bits for openh264, `target-bitrate` in bits for libvpx, `bitrate` in
+    // *kilo*bits for every hardware encoder and x264. The spec converts, so
+    // the number the size estimate quotes is the rate the encoder is asked
+    // for whichever one was selected.
+    let bitrate_arg = enc.spec.bitrate_arg(bitrate);
+    let enc = enc.spec.element;
     let audio = with_audio
         .then(|| audio_branch_desc(settings.container, "qos_mux"))
         .flatten()
@@ -242,7 +302,7 @@ pub fn pipeline_desc_with_audio(
     format!(
         "appsrc name=qos_src is-live=false format=time \
          caps=video/x-raw,format=RGBA,width={w},height={h},framerate={fps}/1 \
-         ! videoconvert ! {enc} {bitrate_prop}={bitrate} ! {parse}{mux} name=qos_mux \
+         ! videoconvert ! {enc} {bitrate_arg} ! {parse}{mux} name=qos_mux \
          ! filesink location={out}{audio}"
     )
 }
@@ -487,6 +547,11 @@ mod gst_pipeline {
         // Only ask for an audio branch when there is something to put in it:
         // a muxer left holding an empty pad never finishes the file.
         let with_audio = crate::audio::has_audio(project);
+        // State which encoders this machine actually resolved to, so a slow
+        // export is diagnosable — "it fell back to openh264enc because no
+        // vah264enc is installed" rather than a guess. `gst::init` above has
+        // populated the registry, so this is read, not assumed.
+        tracing::info!("export: {}", selected_encoders(settings.container).describe());
         let desc = pipeline_desc_with_audio(settings, w, h, &out_str, with_audio);
         let pipeline = gst::parse::launch(&desc)
             .map_err(|e| format!("build export pipeline: {e}"))?
@@ -873,7 +938,8 @@ mod tests {
             );
 
             let voiced = pipeline_desc_with_audio(&s, 64, 64, "/tmp/o", true);
-            let enc = audio_encoder(container).expect("every container carries audio");
+            let selected = audio_encoder(container);
+            let enc = selected.spec.element;
             assert!(voiced.contains("appsrc name=qos_audio"), "{voiced}");
             assert!(voiced.contains(enc), "{container:?} encodes audio with {enc}: {voiced}");
             // The branch has to end at the same muxer the video goes to, or
@@ -1022,20 +1088,86 @@ mod tests {
 
     #[test]
     fn the_label_names_the_codec_the_pipeline_produces() {
-        // Every choice in the dialog has to name what the user will get.
+        // Every choice in the dialog has to name what the user will get. The
+        // *encoder* now varies with the machine, so the label is checked
+        // against the codec the container carries — and the encoder actually
+        // selected is checked to be one that writes that codec, which is what
+        // keeps the two from drifting apart.
         for container in Container::ALL {
-            let (enc, _, _) = encode_chain(container);
+            let (sel, _, _) = encode_chain(container);
+            let codec = video_codec(container);
             let label = container.label().to_lowercase();
-            let codec = match enc {
-                "openh264enc" => "h.264",
-                "vp8enc" => "vp8",
-                other => panic!("unlabelled encoder {other}"),
+            let named = match codec {
+                VideoCodec::H264 => "h.264",
+                VideoCodec::Vp8 => "vp8",
+                VideoCodec::Vp9 => "vp9",
+                VideoCodec::Av1 => "av1",
             };
             assert!(
-                label.contains(codec),
-                "{container:?} is labelled {:?} but encodes with {enc}",
+                label.contains(named),
+                "{container:?} is labelled {:?} but carries {codec:?}",
                 container.label(),
             );
+            assert!(
+                codec.candidates().iter().any(|c| c.element == sel.spec.element),
+                "{container:?} is labelled {named} but selected {}, which does not encode it",
+                sel.spec.element,
+            );
+        }
+    }
+
+    #[test]
+    fn the_pipeline_asks_the_selected_encoder_for_the_bitrate_in_its_own_units() {
+        // The whole point of carrying units per encoder: the number in the
+        // pipeline has to *mean* the bitrate the dialog's size estimate quotes,
+        // whichever encoder this machine chose. Reconstructing it from the
+        // selection is not a tautology — it is checking that the description
+        // built for the runner used the converted value rather than the raw
+        // bits, which is the difference between 16 Mbit/s and 16 Gbit/s.
+        for container in Container::ALL {
+            for resolution in Resolution::ALL {
+                let s = ExportSettings { container, resolution, ..Default::default() };
+                let desc = pipeline_desc(&s, 640, 360, "/tmp/o");
+                let (sel, _, _) = encode_chain(container);
+                let bps = (resolution.target_mbps() * 1_000_000.0) as u64;
+                let want = format!("{} {}", sel.spec.element, sel.spec.bitrate_arg(bps));
+                assert!(
+                    desc.contains(&want),
+                    "expected {want:?} in the pipeline for {container:?}/{resolution:?}: {desc}",
+                );
+                // And the value is a real rate, never the encoders' "auto".
+                assert!(
+                    !desc.contains(&format!("{}=0 ", sel.spec.bitrate_property)),
+                    "the encoder must not be left on its own default: {desc}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_export_reports_which_encoder_it_selected_without_claiming_hardware() {
+        for container in Container::ALL {
+            let report = selected_encoders(container);
+            let video = report.video.as_ref().expect("a video encoder is always named");
+            assert!(
+                !video.spec.element.is_empty(),
+                "the report names a real element: {}",
+                report.describe(),
+            );
+            // The honesty rule, stated as an assertion: a selection that no
+            // registry confirmed can never come back as hardware.
+            if !video.confirmed {
+                assert!(
+                    !report.is_hardware(),
+                    "an unconfirmed selection reported hardware: {}",
+                    report.describe(),
+                );
+            }
+            // Whatever ran, the description says which family it was, so a
+            // caller states it rather than assuming it.
+            let d = report.describe();
+            assert!(d.contains("video: "), "{d}");
+            assert!(d.contains("audio: "), "{d}");
         }
     }
 
@@ -1102,9 +1234,22 @@ mod tests {
         let d = pipeline_desc(&mp4, 1920, 1080, "/tmp/out.mp4");
         assert!(d.contains("appsrc name=qos_src"), "an appsrc feeds real frames: {d}");
         assert!(d.contains("format=RGBA,width=1920,height=1080"), "caps match the frames: {d}");
-        assert!(d.contains("openh264enc"), "H.264 encoder: {d}");
+        // Which H.264 encoder this is depends on the machine — a VA-API,
+        // NVENC or QSV one where the registry has it, openh264enc where it
+        // does not — so the assertion is against the encoder that was actually
+        // selected, at the bitrate the size estimate quotes, in that encoder's
+        // own units. (`media::encode` proves the fallback lands on openh264enc
+        // when nothing else is installed, against a registry it fabricates,
+        // which is a check no real machine can weaken.)
+        let (sel, _, _) = encode_chain(Container::Mp4);
         assert!(
-            d.contains("openh264enc bitrate=16000000"),
+            !sel.spec.kind.is_hardware() || sel.confirmed,
+            "a hardware element is only ever named once the registry confirmed it: {}",
+            sel.describe(),
+        );
+        assert!(d.contains(sel.spec.element), "the selected H.264 encoder: {d}");
+        assert!(
+            d.contains(&format!("{} {}", sel.spec.element, sel.spec.bitrate_arg(16_000_000))),
             "the encoder is told to hit the bitrate the size estimate quotes: {d}",
         );
         assert!(d.contains("h264parse ! mp4mux"), "parsed + MP4-muxed: {d}");
@@ -1112,10 +1257,11 @@ mod tests {
 
         let webm = ExportSettings { container: Container::WebM, ..Default::default() };
         let dw = pipeline_desc(&webm, 640, 360, "/tmp/o.webm");
-        assert!(dw.contains("vp8enc") && dw.contains("webmmux"), "VP8/WebM chain: {dw}");
+        let (vp8, _, _) = encode_chain(Container::WebM);
+        assert!(dw.contains(vp8.spec.element) && dw.contains("webmmux"), "VP8/WebM chain: {dw}");
         assert!(
-            dw.contains("vp8enc target-bitrate="),
-            "VP8 takes its bitrate under a different property name: {dw}",
+            dw.contains(&format!("{} {}=", vp8.spec.element, vp8.spec.bitrate_property)),
+            "the VP8 encoder gets its bitrate under whichever property it names: {dw}",
         );
         assert!(!dw.contains("h264parse"), "no h264parse for WebM: {dw}");
 
