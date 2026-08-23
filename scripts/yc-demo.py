@@ -2159,6 +2159,17 @@ def frame_one_window(s: Session, app_id: str, prefer: dict | None = None,
              f"{json.dumps(resp['err'])[:120]}")
     s.settle(0.6)
     focus_app_group(s, app_id, prefer=prefer)
+    # Measured, not assumed — the same rule the two-window framing keeps.
+    # Focusing a group scrolls it *into view*, which is not the same as
+    # scrolling it *wholly* into view: at 720 permille the shot came out
+    # with the document readable and its right edge past the screen.
+    # Said rather than silently accepted, because the next person to
+    # widen this will otherwise re-find it from the frame.
+    if VIEWPORT:
+        clipped = [w for w in windows_off_screen(s, VIEWPORT) if app_id in w]
+        if clipped:
+            note(f"{s.name}: the framed window is not wholly on screen — "
+                 + "; ".join(clipped))
 
 
 #: How many pixels have to move before a screen counts as having
