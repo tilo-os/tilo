@@ -4361,7 +4361,25 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     xaver_hand = threading.Thread(
         target=xaver_works_in_files, args=(xaver, xaver_busy), daemon=True)
     xaver_hand.start()
-    quinten.type_prose(TYPED_TEXT)
+    # He puts the caret in the page, then writes. One click, once.
+    #
+    # This used to type with no click at all, on the reasoning above:
+    # the app opens with its caret in the body, and a click can land on
+    # the style panel and send every keystroke somewhere that is not the
+    # document. The first half of that turns out not to be true. The
+    # caret is *not* in the body on open, so the no-click path failed on
+    # every run and the fallback retyped the whole thing — which put
+    # thirteen seconds of keystrokes producing nothing on screen into the
+    # film, then a click, then the same words typed a second time. Fifty
+    # -three seconds on a beat whose content is thirteen.
+    #
+    # The panel worry is real and is handled by aiming rather than by not
+    # aiming: the click goes to 40% of the tile's width, and the panel
+    # occupies the last 250px of an 800px window, so it is nowhere near.
+    #
+    # That the app cannot be typed into until it is clicked is a finding
+    # about the app, not about this script -- see docs/demo-todo.md.
+    typed_here = type_into_the_document(quinten, quinten_wp, TYPED_TEXT)
     quinten.settle(1.5)
 
     def quinten_holds() -> bool:
@@ -4388,40 +4406,23 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     # sixty-six against a budget of seventy-five for the whole film.
     with off_camera("his own app is asked whether the words reached its "
                     "document, which decides what a later failure means"):
-        typed_here = quinten_holds()
-    if typed_here:
-        note("typed straight into the open document — the app had the "
-             "caret in the page already, and nothing had to be aimed")
+        landed = quinten_holds()
+    if landed:
+        note("the words are in his document, not merely on his screen")
     else:
-        note("nothing reached his document with no click, so the caret was "
-             "not in the page; aiming one into it and typing again")
-        # Same tile lookup as before. A client tile is registered as
-        # `foreign-surface-<id>`, and when the compositor knows which tab
-        # it belongs to it appends that in brackets — both forms occur in
-        # one run, so the id is a prefix to match rather than a whole
-        # name to look up. An exact-name lookup silently found nothing
-        # while the window was plainly on screen.
+        note("the caret was aimed into the page and the words still did "
+             "not reach the document — so this is the app, not the aim")
+        # No second attempt. Retyping here is what put the words on
+        # screen twice and thirteen wasted seconds of keystrokes into the
+        # film; if an aimed caret did not take them, typing them again
+        # into the same place will not either, and the claim below is
+        # allowed to fail and say so.
         surface = (quinten_wp or {}).get("surface_id")
-        stem = f"foreign-surface-{surface}"
-        named = next((n for n in quinten.target_names()
-                      if n == stem or n.startswith(stem + "[")), None)
-        rect = quinten.named_rect(named) if named else None
-        if not rect:
-            others = [n for n in quinten.target_names()
-                      if n.startswith("foreign-surface-")]
-            gap(f"quinten's word processor (surface {surface}) has no "
-                f"laid-out tile either, so there is nowhere to aim a caret. "
-                f"Laid out right now: {others or 'no client tiles at all'}")
-        else:
-            bx, by, bw, bh = rect
-            at = (bx + bw * 0.4, by + bh * 0.55)
-            note(f"his document is {named} at {[round(v) for v in rect]}; "
-                 f"clicking {[round(v) for v in at]}")
-            quinten.click_at(*at)
-            quinten.settle(1.2)
-            quinten.type_prose(TYPED_TEXT)
-            quinten.settle(1.0)
-            typed_here = quinten_holds()
+        laid = [n for n in quinten.target_names()
+                if n.startswith("foreign-surface-")]
+        note(f"his word processor is surface {surface}; client tiles laid "
+             f"out right now: {laid or 'none at all'}")
+
     quinten.snapshot(os.path.join(shots, "07-quinten-typed.png"))
 
     step("first, that he typed into the document and not at the chrome")
@@ -4429,8 +4430,11 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     # apart. If the text never reaches xaver, that is either a document
     # which did not cross or a document which never had the text in it,
     # and both end as an empty page on the far screen.
-    claim("quinten's own document holds what he typed", typed_here, True)
+    claim("quinten's own document holds what he typed", landed, True)
     if not typed_here:
+        gap("there was no laid-out tile to aim a caret into, so the words "
+            "were never typed and nothing below this is about the network")
+    elif not landed:
         note("the keystrokes did not reach his document at all, so nothing "
              "downstream of this is about the network")
 
