@@ -454,6 +454,12 @@ const DRAG_FACTOR: f32 = 0.15;
 /// `15° · N` of rotation.
 const SPOKE_ANGLE_STEP_DEG: f32 = 5.5;
 
+/// How many sectors span the visible band when there are at least this
+/// many workspaces. Five puts the active sector in the middle with two
+/// either side: enough to see where you are going without making any
+/// one of them too small to carry a name.
+const SECTORS_ACROSS_BAND: usize = 5;
+
 /// Pixels of accumulated wheel scroll required to advance one
 /// workspace. The wheel uses *discrete detents*: scroll input
 /// accumulates as raw pixels and every `WHEEL_DETENT_PX` worth of
@@ -750,22 +756,45 @@ impl SidebarWheelDisc {
         out
     }
 
-    /// Degrees between adjacent spokes. Concept-faithful: a fixed 15°
-    /// regardless of `N`, matching `App.tsx`'s `360°/24 = 15°` cadence.
-    /// This gives the same visual density the reference shows
-    /// (active + ±15° neighbours visible inside the 66° arc band).
-    /// Snap math: `active_idx` advances by `-nearest_offset mod N`, so
-    /// a full 360° rotation wraps `24 % N` workspaces — for `N < 24`
-    /// the wheel cycles through workspaces multiple times per
-    /// revolution but each spoke always lands at a multiple of 15°.
+    /// Degrees between adjacent spokes, derived from the band the disc
+    /// was actually laid out into.
+    ///
+    /// This was a fixed angle, and a fixed angle cannot be right at more
+    /// than one window size: the arc length a degree buys grows with the
+    /// radius, and the radius is derived from the slot's width. The same
+    /// constant that put three workspaces on a tall band put one on a
+    /// short one — a switcher showing only the workspace you are already
+    /// in — and tuning it for the short band made the sectors on the
+    /// tall one too small to read as objects.
+    ///
+    /// So the band's own angular height is divided instead. Up to
+    /// [`SECTORS_ACROSS_BAND`] sectors span it, fewer when there are
+    /// fewer workspaces, which is what keeps two workspaces reading as
+    /// two halves of a wheel rather than two chips adrift on one.
     pub fn spoke_gap_deg(&self) -> f32 {
+        let n = self.spokes.len();
         // Single-workspace disc is treated as 360° to avoid the wheel
         // scrolling past itself unnecessarily.
-        if self.spokes.len() <= 1 {
-            360.0
-        } else {
-            SPOKE_ANGLE_STEP_DEG
+        if n <= 1 {
+            return 360.0;
         }
+        let Some(span) = self.band_angular_height_deg() else {
+            // No layout yet — early frames and hand-built test discs.
+            return SPOKE_ANGLE_STEP_DEG;
+        };
+        span / n.min(SECTORS_ACROSS_BAND) as f32
+    }
+
+    /// How much angle the visible band covers, or `None` before the
+    /// first layout pass has given the disc a real rect.
+    fn band_angular_height_deg(&self) -> Option<f32> {
+        let half_h = self.rect.height() / 2.0 * BAND_TANGENT_FRACTION;
+        let radius = self.diameter_px / 2.0;
+        if half_h <= 1.0 || radius <= 1.0 {
+            return None;
+        }
+        let ratio = (half_h / radius).clamp(-1.0, 1.0);
+        Some((2.0 * ratio.asin().to_degrees()) as f32)
     }
 
     /// Degrees-per-pixel drag coefficient. Concept-faithful
@@ -1295,6 +1324,26 @@ impl Widget for SidebarWheelDisc {
         if rw > 1.0 {
             self.diameter_px = rw / VISIBLE_RADIUS_FRACTION * 2.0;
         }
+        // Re-anchor the wheel on the workspace it is showing.
+        //
+        // `rotation_deg` is an angle, but the angle a workspace sits at
+        // depends on the gap, and the gap is derived from the geometry
+        // this pass just changed. So the same stored rotation names a
+        // different workspace before and after a resize — the disc would
+        // silently slide onto a neighbour, or land between two. Anchored
+        // to the index instead, which is the thing that actually has to
+        // survive a resize.
+        //
+        // Skipped mid-gesture: the drag owns the rotation while the
+        // pointer is down, and a resize cannot happen inside one.
+        if self.drag_from.is_none() {
+            self.rotation_deg = self.rotation_for_idx(self.active_idx);
+            if let Some(spring) = self.rotation_spring.as_mut() {
+                if spring.is_settled() {
+                    spring.snap(self.rotation_deg);
+                }
+            }
+        }
     }
 
     fn draw(
@@ -1691,7 +1740,16 @@ impl Widget for SidebarWheelDisc {
         let chip_x1 = cx + r_out - LABEL_RIM_GAP;
         let chip_x0 = cx + r_ref + LABEL_INNER_INSET;
         let chip_w = chip_x1 - chip_x0;
-        if !self.spokes.is_empty() && chip_w >= LABEL_MIN_W {
+        // A band too shallow to carry names is a reason to drop the
+        // names, not the sectors. This gate used to wrap the whole loop,
+        // so on a narrow disc every label, every presence dot and every
+        // click target went with them: the switcher rendered as an empty
+        // curve with an add button, and nothing on it could be clicked.
+        // The sectors are still drawn and still hit-tested; they fall
+        // back to their icon, which is what the chip does with an empty
+        // name anyway.
+        let names_fit = chip_w >= LABEL_MIN_W;
+        if !self.spokes.is_empty() {
             let n = self.spokes.len();
             let n_i = n as i32;
             let gap = self.spoke_gap_deg() as f64;
@@ -1795,7 +1853,11 @@ impl Widget for SidebarWheelDisc {
                     scene,
                     transform * rotate,
                     chip,
-                    &self.spokes[idx].text,
+                    if names_fit {
+                        self.spokes[idx].text.as_str()
+                    } else {
+                        ""
+                    },
                     lead,
                     style,
                     theme,
@@ -2763,6 +2825,105 @@ mod tests {
         }
     }
 
+    /// The band always holds workspaces. Whatever the rotation, however
+    /// hard the wheel has been thrown, at least one sector has to be on
+    /// screen and named — a switcher showing an empty curve tells the
+    /// user their workspaces are gone.
+    #[test]
+    fn the_disc_is_never_empty_at_any_rotation() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        layout_into_slot(&mut d, live_slot());
+
+        let gap = d.spoke_gap_deg();
+        // Well past either end, so the rubber band is fully extended.
+        let far = gap * 12.0;
+        let mut rot = -far;
+        while rot <= far {
+            d.rotation_deg = d.resist_past_ends(rot);
+            d.rotation_spring = None;
+            d.sync_active_from_visual();
+            paint(&mut d);
+            let named = d.spoke_hit_rects.iter().filter(|r| r.area() > 0.0).count();
+            assert!(
+                named > 0,
+                "the disc went blank at {rot:.1}° (clamped to {:.1}°): {:?}",
+                d.rotation_deg,
+                d.spoke_hit_rects
+            );
+            rot += gap / 4.0;
+        }
+    }
+
+    /// Same invariant under the scroll wheel, which reaches the
+    /// rotation through a different path than a rim-drag: an
+    /// accumulator spending whole detents, with the remainder diverted
+    /// into the end resistance.
+    #[test]
+    fn the_disc_is_never_empty_under_sustained_scrolling() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        layout_into_slot(&mut d, live_slot());
+        // Park the cursor on the arc: the handler ignores wheel events
+        // that are not over the disc.
+        let cx = drag_anchor_x(&d);
+        let cy = (d.rect.y0 + d.rect.y1) / 2.0;
+        pump(&mut d, cursor_event(cx, cy));
+
+        for dir in [-1.0_f32, 1.0] {
+            for _ in 0..60 {
+                pump(&mut d, wheel_event(dir * 3.0));
+                frames(&mut d, 2);
+                paint(&mut d);
+                let named =
+                    d.spoke_hit_rects.iter().filter(|r| r.area() > 0.0).count();
+                assert!(
+                    named > 0,
+                    "the disc went blank while scrolling: rotation {:.1}°, \
+                     residual {:.1}°, active {}",
+                    d.rotation_deg,
+                    d.visual_residual_deg(),
+                    d.active_idx
+                );
+            }
+        }
+    }
+
+    /// Every workspace stays on the disc, and stays clickable, at every
+    /// size the sidebar can take.
+    ///
+    /// Two separate faults blanked it. The angular step between sectors
+    /// was a fixed number of degrees, but the arc length a degree buys
+    /// scales with the radius, which is derived from the slot's width —
+    /// so one constant put three workspaces on a tall band and a single
+    /// one on a short band, leaving a switcher that showed only the
+    /// workspace you were already in. And a band too narrow for a name
+    /// dropped the entire label pass, taking every sector's click target
+    /// with it: an empty curve with an add button on it.
+    #[test]
+    fn every_workspace_stays_on_the_disc_at_every_size() {
+        for w in [140.0_f64, 180.0, 234.0, 320.0] {
+            for h in [400.0_f64, 560.0, 700.0, 790.0, 900.0] {
+                let mut d = mk(&["Home", "Research", "Design"]);
+                layout_into_slot(&mut d, Rect::new(0.0, 40.0, w, 40.0 + h));
+                paint(&mut d);
+                let placed: Vec<Rect> = d
+                    .spoke_hit_rects
+                    .iter()
+                    .copied()
+                    .filter(|r| r.area() > 0.0)
+                    .collect();
+                assert_eq!(
+                    placed.len(),
+                    d.spokes.len(),
+                    "at {w}x{h} only {} of {} workspaces are on the disc \
+                     (chip width {:.1}, names need {LABEL_MIN_W})",
+                    placed.len(),
+                    d.spokes.len(),
+                    d.label_chip_width()
+                );
+            }
+        }
+    }
+
     /// The add-workspace button does not rotate, so a sector label sweeps
     /// past it on every turn of the wheel. The button has to stay usable
     /// throughout — a control the wheel can bury is what drove this
@@ -3209,10 +3370,19 @@ mod tests {
         let mut d = mk(&["Home", "Research", "Design"]);
         let gap = d.spoke_gap_deg();
         let diameter = d.diameter_px;
-        // The gap is uniform regardless of N — that is the invariant
-        // this guards. Track the constant rather than a literal, so
-        // retuning the geometry cannot silently void the guard.
-        assert!((gap - SPOKE_ANGLE_STEP_DEG).abs() < 1e-4);
+        // Uniform spacing regardless of N — that is the invariant this
+        // guards. Asserted against the mapping itself rather than a
+        // constant: the gap is derived from the laid-out geometry, so a
+        // literal would only pin one window size.
+        assert!(gap > 0.0, "degenerate gap {gap}");
+        for i in 0..d.spokes.len().saturating_sub(1) {
+            let step = d.rotation_for_idx(i) - d.rotation_for_idx(i + 1);
+            assert!(
+                (step - gap).abs() < 1e-4,
+                "workspaces {i} and {} are {step}° apart, not {gap}°",
+                i + 1
+            );
+        }
 
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
@@ -3401,7 +3571,7 @@ mod tests {
         // place instead of silently landing on a spoke.
         let mut d = mk(&["A", "B", "C", "D"]);
         let gap = d.spoke_gap_deg() as f64;
-        assert!((gap - SPOKE_ANGLE_STEP_DEG as f64).abs() < 1e-4);
+        assert!(gap > 0.0, "degenerate gap {gap}");
         let drag_px = 0.73 * gap / DRAG_FACTOR as f64;
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
@@ -4234,7 +4404,11 @@ mod tests {
         assert!(d.visual_rotation_deg().abs() < 0.1, "the bounce has not finished");
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
-        drag_to(&mut d, cx, start_y, -130.0, 30);
+        // A clear detent and a bit, in gaps rather than pixels: how many
+        // pixels a detent costs depends on the geometry the disc was
+        // laid out into.
+        let gap = d.spoke_gap_deg() as f64;
+        drag_to(&mut d, cx, start_y, -(1.3 * gap / DRAG_FACTOR as f64), 30);
         assert!(pump(&mut d, release_event()));
         assert_ne!(d.selected_idx(), 0);
         assert_ne!(
