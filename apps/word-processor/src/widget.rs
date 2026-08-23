@@ -5429,11 +5429,12 @@ impl Widget for WordProcessorWidget {
             // under-the-text bands.
             //
             // It has to go *under* the glyphs. Painted over them it is a wash
-            // that drags ink and paper toward the same pigment together: a
-            // fresh mark measured 2.1:1 between the two, for every hue in the
-            // palette, where unmarked body text reads about 15:1. Beneath
-            // them the ink stays ink and only the paper takes the colour —
-            // which is also what a highlighter physically is.
+            // that drags ink and paper toward the same pigment together: on
+            // this canvas a fresh mark measured 2.4:1 between the two, for
+            // every hue in the palette, where unmarked body text reads about
+            // 15:1. Beneath them the same band at the same strength leaves
+            // 7.5:1, because only the paper takes the colour and the ink
+            // stays ink — which is also what a highlighter physically is.
             for (user, spans) in typing_bands_for_block(l, layout, presence, now) {
                 let mapped: Vec<(Rect, f32)> = spans
                     .iter()
