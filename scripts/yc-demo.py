@@ -805,8 +805,17 @@ class Session:
             self.modifiers(logo=True)
             self.key("k")
             self.modifiers()
-            self.settle(0.4)
-            self.type_text(search)
+            # A beat for the palette to be *there* before anything is
+            # typed into it. Somebody opening a search opens it, sees it,
+            # and then types; a run that fires both in the same instant
+            # shows a box and its answer arriving together, which is not
+            # a search happening.
+            self.settle(1.0)
+            # And typed, not pasted. `type_text` puts the whole query in
+            # at once — the palette's rows resolve in a single frame and
+            # the viewer never sees a query being formed. This is the
+            # same per-character path the document uses.
+            self.type_prose(search)
             self.settle(1.2)
             rows = self.palette().get("rows") or []
             if not any(app_id in json.dumps(r) for r in rows):
@@ -3392,22 +3401,30 @@ def beat_two(quinten: Session, xaver: Session, host_ws: dict,
     # Redeeming is xaver's, and it is his screen that changes — and the
     # film does not go there for it.
     #
-    # This used to be a cut, and it is the most tempting one in the whole
-    # storyboard: it is a real gesture on a second machine, and every
-    # step of it is proven below. What it shows is a person pasting a
-    # string into a dialog, which is the least surprising thing in this
-    # system, and it costs the audience a cut out and a cut back at the
-    # point where they are still working out who the first person is.
+    # This is filmed, and the reasoning that took it off camera was
+    # wrong. Watching somebody paste a string into a dialog is indeed the
+    # least surprising thing in this system — but the beat is not the
+    # paste, it is *a second machine joining*, which is the claim the
+    # whole first half is building toward. Taken away, the roster simply
+    # gains a member and the audience is asked to believe a join
+    # happened somewhere they could not see.
     #
-    # What they see instead is quinten's roster gaining a member two
-    # beats later, on the screen they are already watching. Every claim
-    # here still holds; the pictures are written to `shots/` and are not
-    # in the cut.
+    # It is also the one cut to Xaver in the film, so it carries his
+    # introduction. Removing it left him as a name on somebody else's
+    # screen until well past the halfway mark.
     step("the token travels — by hand, off quinten's clipboard")
-    with off_camera("xaver redeeming the invitation on his own machine — "
-                    "quinten's roster gains him on screen shortly"):
-        claim("xaver joined",
-              join_room(xaver, token, via="panel", shots=shots, tag="02c"), True)
+    # A person reads a code, moves to another machine, and types or
+    # pastes it. Instant redemption reads as staged, because it is: two
+    # sessions on one box with a shared clipboard. The pause is the
+    # honest depiction of a hop this demo cannot actually perform.
+    quinten.settle(2.5)
+    cut("xaver")
+    claim("xaver joined",
+          join_room(xaver, token, via="panel", shots=shots, tag="02c"), True)
+    if RECORDER:
+        RECORDER.dwell()
+    with off_camera("the two assertions under the join, which are "
+                    "answered over a socket rather than shown"):
         claim("xaver's own state holds quinten's room",
               xaver.active_workspace()["room"], host_ws["room"])
         claim("and his own copy names quinten as owner",
