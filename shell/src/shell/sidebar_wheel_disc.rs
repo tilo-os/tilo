@@ -896,6 +896,56 @@ impl SidebarWheelDisc {
         colors.categorical(idx)
     }
 
+    /// How large a size step the active sector's chip gets, given the
+    /// width the band actually has for it.
+    ///
+    /// The chip's width is fixed by geometry — it spans the readable
+    /// depth of the band, and cannot be widened inward because a chip
+    /// reaching further in swings out through the footprint's left edge
+    /// once its sector rotates off centre. So at the full step a long
+    /// name simply did not fit and got an ellipsis: the live shell's own
+    /// default workspace rendered as `Resear…`, in the one surface whose
+    /// entire job is telling you where you are and where you can go.
+    ///
+    /// Taking the largest step the name does fit in keeps the active and
+    /// inactive chips reading as one family in two states — the step
+    /// just gets smaller for a long name — and never trades a
+    /// workspace's name away for a size difference that is decoration.
+    ///
+    /// Returns [`SECTOR_CHIP_H`] when even the inactive size overflows;
+    /// there is nothing better available then, and the chip's own
+    /// truncation takes over.
+    fn active_chip_height(
+        &self,
+        idx: usize,
+        chip_w: f64,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) -> f64 {
+        let Some(spoke) = self.spokes.get(idx) else {
+            return SECTOR_CHIP_H_ACTIVE;
+        };
+        let lead = ChipLead::Glyph(self.spoke_icon(idx));
+        let mut chosen = SECTOR_CHIP_H;
+        let mut step = SECTOR_CHIP_H;
+        while step <= SECTOR_CHIP_H_ACTIVE {
+            let need = Chip::natural_width_at(&spoke.text, step, lead, theme, text_renderer);
+            if need <= chip_w {
+                chosen = step;
+            }
+            step += 2.0;
+        }
+        chosen
+    }
+
+    /// The width available to a sector's label chip, in pixels. Exposed
+    /// alongside [`SidebarWheelDisc::active_chip_height`] so a caller
+    /// can ask the same question `draw` asks.
+    pub fn label_chip_width(&self) -> f64 {
+        let (r_ref, r_out) = self.label_band_radii();
+        (r_out - LABEL_RIM_GAP) - (r_ref + LABEL_INNER_INSET)
+    }
+
     /// Pick a lucide icon for the spoke at `idx`, matching the
     /// `radial-workspace-switcher/src/App.tsx:10-17` mapping by lower-
     /// cased label. Unknown labels default to `Layers`. Public for the
@@ -1614,7 +1664,30 @@ impl Widget for SidebarWheelDisc {
                     continue;
                 }
 
-                let row_h = if is_active { SECTOR_CHIP_H_ACTIVE } else { SECTOR_CHIP_H };
+                // The active sector's chip is a size step larger — but
+                // only as large a step as its own name has room for.
+                //
+                // The chip's width is fixed by geometry: it spans the
+                // readable depth of the band, and it cannot be widened
+                // inward because a chip reaching further in swings out
+                // through the footprint's left edge once its sector
+                // rotates off centre. So a long name at the full step
+                // simply did not fit, and got an ellipsis: the live
+                // shell's own default workspace rendered as `Resear…`
+                // in the one place whose entire job is telling you where
+                // you are and where you can go.
+                //
+                // Taking the largest step the name does fit in keeps the
+                // active/inactive pair reading as one family in two
+                // states — the step just gets smaller for a long name —
+                // and never truncates a workspace's name for a size
+                // difference that is decoration.
+                let lead = ChipLead::Glyph(self.spoke_icon(idx));
+                let row_h = if is_active {
+                    self.active_chip_height(idx, chip_w, theme, text_renderer)
+                } else {
+                    SECTOR_CHIP_H
+                };
                 let chip = Rect::new(chip_x0, cy - row_h / 2.0, chip_x1, cy + row_h / 2.0);
                 let rotate = Affine::rotate_about(mid, c);
 
@@ -1670,7 +1743,7 @@ impl Widget for SidebarWheelDisc {
                     transform * rotate,
                     chip,
                     &self.spokes[idx].text,
-                    ChipLead::Glyph(self.spoke_icon(idx)),
+                    lead,
                     style,
                     theme,
                     text_renderer,
@@ -3942,6 +4015,51 @@ mod tests {
                  {expected}"
             );
         }
+    }
+
+    /// The active workspace's own name must never be the thing that
+    /// gets thrown away to make room for a font size.
+    ///
+    /// `Research` is one of the three workspaces the shell boots with,
+    /// and at the full active size step it did not fit the band on a
+    /// 900-px-tall display: the switcher showed `Resear…` for the
+    /// workspace you were standing in.
+    #[test]
+    fn the_active_workspace_name_is_never_truncated_to_fit_its_size_step() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        layout_into_slot(&mut d, live_slot());
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        let chip_w = d.label_chip_width();
+        assert!(chip_w > LABEL_MIN_W, "band too shallow to test: {chip_w}");
+
+        for (idx, name) in ["Home", "Research", "Design"].iter().enumerate() {
+            let h = d.active_chip_height(idx, chip_w, &theme, &mut tr);
+            assert!(
+                (SECTOR_CHIP_H..=SECTOR_CHIP_H_ACTIVE).contains(&h),
+                "{name}: chip height {h} outside the family's two sizes"
+            );
+            let need = Chip::natural_width_at(
+                name,
+                h,
+                ChipLead::Glyph(d.spoke_icon(idx)),
+                &theme,
+                &mut tr,
+            );
+            assert!(
+                need <= chip_w,
+                "{name} needs {need:.0} px at the chosen {h} px step but the band \
+                 only has {chip_w:.0} px — it would be painted with an ellipsis"
+            );
+        }
+
+        // The step is only given up when it has to be: a short name
+        // still gets the full one.
+        assert_eq!(
+            d.active_chip_height(0, chip_w, &theme, &mut tr),
+            SECTOR_CHIP_H_ACTIVE,
+            "`Home` fits at the full step and must keep it"
+        );
     }
 
     /// `click_to_spoke(target)` rotates the wheel so `target` becomes
