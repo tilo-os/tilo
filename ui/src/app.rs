@@ -4179,9 +4179,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     {
                         if let Some(fid) = app.focused_node {
                             if let Some(&w_ptr) = app.node_map.get(&fid) {
+                                // Aim at the widget's active descendant when it
+                                // nominates one, so Enter on a canvas activates
+                                // the clip the user is on rather than the whole
+                                // canvas — the same target the reader is sitting
+                                // on. Empty for every ordinary widget.
+                                let key_path = unsafe { (*w_ptr).accessibility() }
+                                    .and_then(|n| {
+                                        crate::accesskit_bridge::active_descendant_path(&n)
+                                    })
+                                    .unwrap_or_default();
                                 let did = unsafe {
-                                    (*w_ptr).perform_action(
+                                    (*w_ptr).perform_action_at(
                                         &crate::a11y::Action::Activate,
+                                        &key_path,
                                         &mut app.state.doc,
                                         &app.state.root,
                                     )
@@ -4236,11 +4247,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         };
                         if let (Some(act), Some(fid)) = (action, app.focused_node) {
                             if let Some(&w_ptr) = app.node_map.get(&fid) {
+                                let key_path = unsafe { (*w_ptr).accessibility() }
+                                    .and_then(|n| {
+                                        crate::accesskit_bridge::active_descendant_path(&n)
+                                    })
+                                    .unwrap_or_default();
                                 let mut any = false;
                                 for _ in 0..times {
                                     any |= unsafe {
-                                        (*w_ptr).perform_action(
+                                        (*w_ptr).perform_action_at(
                                             &act,
+                                            &key_path,
                                             &mut app.state.doc,
                                             &app.state.root,
                                         )
