@@ -55,8 +55,23 @@ printf '  qos-hello (static): %s bytes\n' "$HELLO_STATIC"
 printf '  notes     (static): %s bytes\n' "$NOTES_STATIC"
 
 hr "2. thin: runtime-dylib + prefer-dynamic (--profile thin-app, --features thin)"
-run "$env_prefix RUSTFLAGS='-C prefer-dynamic' \
-     cargo build --profile thin-app -p hello -p notes-cli --features thin 2>&1 | tail -2"
+# `cargo rustc -- <flag>`, not `RUSTFLAGS=<flag> cargo build`. RUSTFLAGS
+# REPLACES build.rustflags from .cargo/config.toml, so the env-var form
+# silently drops target-cpu=x86-64-v3 and every link-time hardening flag
+# -- full RELRO, BIND_NOW, noexecstack and the GNU_PROPERTY shadow-stack
+# mark -- from the very binaries this script exists to show off. The
+# `--` form is additive, so the config list survives. Verified three
+# ways on a one-file crate whose build.rustflags asks for `-z shstk`:
+# plain build keeps the mark, RUSTFLAGS= loses it, `cargo rustc --`
+# keeps it.
+#
+# One invocation per binary, because `cargo rustc` takes a single target.
+run "$env_prefix cargo rustc --profile thin-app -p runtime-dylib \
+     -- -C prefer-dynamic 2>&1 | tail -2"
+run "$env_prefix cargo rustc --profile thin-app -p hello --bin qos-hello --features thin \
+     -- -C prefer-dynamic 2>&1 | tail -2"
+run "$env_prefix cargo rustc --profile thin-app -p notes-cli --bin notes --features thin \
+     -- -C prefer-dynamic 2>&1 | tail -2"
 HELLO_THIN=$(size "$WT/target/thin-app/qos-hello")
 NOTES_THIN=$(size "$WT/target/thin-app/notes")
 LIBRT="$WT/target/thin-app/libruntime_dylib.so"

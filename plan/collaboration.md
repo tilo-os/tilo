@@ -55,7 +55,7 @@ fn export_room_changes_since(&mut self, room: RoomId, since: &[ChangeHash]) -> O
 fn apply_room_changes(&mut self, room: RoomId, changes: &[Vec<u8>]) -> Result<bool, AutomergeError>;
 ```
 
-A room document carries that room's identity, name, owner and capabilities — the set the receiving side actually reads back. `WorkspaceTree::export_changes_since` still exists for local document forks (the history pane's restore, the screenshot driver) and is **not** peer-facing.
+A room document carries that room's identity, name, owner, capabilities and the names of the peers in it — the set the receiving side actually reads back. `WorkspaceTree::export_changes_since` still exists for local document forks (the history pane's restore, the screenshot driver) and is **not** peer-facing.
 
 A `WorkspaceTreeReplica` wraps the tree and a `Hub` subscriber (the in-process testing scaffold) or the live libp2p actor:
 
@@ -69,6 +69,10 @@ Changes that belong to no single room never cross. The active-workspace pointer 
 ### Write authority on a room's governance
 
 A room document's **owner** and **capability list** are its governance — `may_administer` reads the first, `decide` reads the second, and the FUSE mount enforces an export of the second. Automerge merges a map key by last-writer-wins and has no per-key ACL, so two machines both projecting their cache into one room document do not disagree about the owner, they toss a coin for it by actor id. `grant_as`/`revoke_as` gate the local path; without the same authority on the replication path a guest simply uses that instead.
+
+A room's **peer names** are governance for the same reason, and it is not a cosmetic one. A peer arrives as a transport identity, and a caret labelled `peer@5537458103208628978` tells the person reading it that a machine is editing their document rather than who is. The name that answers that cannot come from the peer: a peer that announced its own name could announce any name, beside a caret inside a document this room's capabilities gate. So the name is written by whoever invited them — `WorkspaceTree::name_peer`, keyed by the base58 `PeerId`, projected only by the machine that governs the room and refused by `apply_room_changes` from anybody else, exactly like the capability list.
+
+The peer id stays the identity. The name is a label on it, so a peer that gains one does not change the colour its caret is drawn in, and a peer nobody has named keeps its id as its label rather than acquiring an invented one. Presence frames identify their sender by `peer_liveness_handle`, a digest of the peer id, so the lookup from a caret back to a name hashes the document's keys (`room_peer_labels`) rather than storing the digest — a digest is fine for matching a frame and is not a thing to build an identity on.
 
 So each machine records, per room, who may write its governance (`WorkspaceTree::room_authority`):
 
