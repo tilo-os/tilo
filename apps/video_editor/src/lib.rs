@@ -8,6 +8,9 @@
 //!                   (`/var/workspace/…`); bytes hydrate on demand.
 //!   * [`doc`]     — Automerge projection of the project (the collaborative,
 //!                   undoable source of truth) + the demo project seed.
+//!   * [`project_file`] — the versioned `.qvp` file behind Save / Save As /
+//!                   Open: the same Automerge document, framed and stamped,
+//!                   so a project can be copied and handed to someone.
 //!   * [`preview`] — the composited-frame producer: a representative frame
 //!                   from clip metadata, or (behind the `decode` feature) a
 //!                   real decoded frame via `ui::VideoPlayer` / GStreamer.
@@ -34,6 +37,7 @@ pub mod model;
 pub mod param;
 pub mod portal;
 pub mod preview;
+pub mod project_file;
 pub mod probe;
 pub mod thumbnail;
 pub mod timecode;
