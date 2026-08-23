@@ -3808,27 +3808,35 @@ def beat_seven(ada: Session, bob: Session, host_ws: dict,
             "for this beat to watch cross")
         return
 
-    step("bob opens the word processor on his own machine")
-    # Off camera, deliberately. Both copies have to be up before either
-    # types — see the settle below — but watching a second machine open
-    # the same app the film has just watched arrive is the same shot
-    # twice, and it costs two cuts to show it.
-    # His machine runs its own copy and draws it locally. Nothing is
-    # streamed; the two copies share one document.
-    # Bounded like every other wait, and for a sharper reason than the
-    # others: `LAUNCH_TIMEOUT_S` is four minutes, deliberately, because a
-    # launch on a loaded machine really can take that long and a harness
-    # that gives up early reports a working system as broken. But those
-    # four minutes are spent on ada's unchanging screen, and one run
-    # spent 250 of its 350 seconds — 72% of the whole film — sitting in
-    # exactly this call while the app it was waiting for never painted.
-    # The wait keeps its full length; only the camera stops attending it.
-    with patience(20.0):
-        his = bob.launch(WORD_PROCESSOR, search="word processor")
-    claim("bob's word processor painted", his is not None, True)
+    step("bob already has the window — he opens nothing")
+    # He does not launch anything here, and that is the point rather than
+    # a shortcut. The window arrived on his machine in beat 6 because it
+    # belongs to a room he is in; asking him to open a second copy of an
+    # app he can already see would be staging work the product exists to
+    # remove.
+    #
+    # It also used to be wrong in a way that hid itself. Opening the app
+    # here started a *second* window on every machine in the room — one
+    # locally-owned tab projects back into the room and every member
+    # materialises it — so this beat quietly produced the duplicate
+    # word processors that turned up in the frames. Since that was fixed,
+    # a launch on his side focuses the window he has instead of making
+    # one, so waiting for a new surface here waits for something that by
+    # design never arrives.
+    # Identified the same way the beat-6 assertion identifies it: a tab
+    # on his machine whose title names the app. Deliberately not "any new
+    # tab" — see beat 6 on why a tab he opened himself is a claim that
+    # cannot fail.
+    his = next(
+        (t for t in bob.tabs_here().values()
+         if (t.get("title") or "").lower().startswith("word processor")),
+        None,
+    )
+    claim("the window that crossed in beat 6 is his to type in",
+          his is not None, True)
     if his is None:
-        gap("bob has no word processor open, so there is no far screen "
-            "to read a document back off")
+        gap("bob has no word processor on screen, so there is no far "
+            "screen to read a document back off")
         return
     # With the viewport, so the framing is measured rather than performed
     # and assumed: this beat's shot is the far screen, and a far screen
