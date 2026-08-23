@@ -167,8 +167,21 @@ else
   fi
 fi
 
-if [ -e "$OS_ROOT/etc/systemd/system/multi-user.target.wants/qos-growfs-sysroot.service" ] \
-   || [ -e "$OS_ROOT/usr/lib/systemd/system/multi-user.target.wants/qos-growfs-sysroot.service" ]; then
+#    Ask systemctl rather than guess where the wants symlink lives; fall back to
+#    the path `systemctl enable` actually writes when systemctl is unavailable.
+#    A shipped-but-unenabled unit grows nothing while looking entirely present.
+growfs_enabled=""
+if command -v systemctl >/dev/null 2>&1; then
+  case "$(systemctl --root="$OS_ROOT" is-enabled qos-growfs-sysroot.service 2>/dev/null)" in
+    enabled|enabled-runtime|static) growfs_enabled=yes ;;
+    *) growfs_enabled=no ;;
+  esac
+elif [ -e "$OS_ROOT/etc/systemd/system/multi-user.target.wants/qos-growfs-sysroot.service" ]; then
+  growfs_enabled=yes
+else
+  growfs_enabled=no
+fi
+if [ "$growfs_enabled" = yes ]; then
   ok "qos-growfs-sysroot.service is enabled"
 else
   bad "qos-growfs-sysroot.service is not enabled — the filesystem is never grown"
