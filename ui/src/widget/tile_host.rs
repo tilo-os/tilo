@@ -286,16 +286,31 @@ pub struct TileHost {
     /// this tile's node shape changed even though no hosted widget
     /// reported anything.
     structure_dirty: bool,
-    /// Latched: this tile has had something to show at least once, so
-    /// the window it is in stays on screen from here on.
+    /// Latched: what this tile is showing has had something to show at
+    /// least once, so it stays on screen from here on.
     ///
-    /// It has to survive [`TileHost::replace_content`], which is the
-    /// case that makes it necessary: a tab announcing a window somebody
-    /// else in the room opened is a card, and a card is on screen. When
-    /// this machine's own instance of that app arrives, the tile becomes
-    /// a client surface that has not drawn yet — and without the latch
-    /// the window the person was already looking at would blink out and
-    /// come back, which is worse than what it replaced.
+    /// Scoped to the contents, and cleared by
+    /// [`TileHost::replace_content`]. The latch keeps one thing being
+    /// itself — a client whose buffer briefly stops fitting its tab
+    /// mid-resize is still the window the person is looking at, and must
+    /// not flash back to a placeholder they have already watched go away.
+    /// That is a claim about a surface, and the answer it caches was
+    /// given by the thing that was in the tile when it was asked.
+    ///
+    /// Swapping the contents makes it an answer about something else.
+    /// The only path that does so is a window arriving for a tab that
+    /// already exists: a peer has an app open, so the tab is on screen
+    /// holding a card while this machine starts its own instance of it.
+    /// The card is on screen, so it presented — and the window that then
+    /// takes the tab has not drawn a frame answering it. Kept, the latch
+    /// hands that window the card's answer, and the client's opening
+    /// buffer — the size *it* chose, before it was ever told the tab's —
+    /// goes on screen scaled to fit and snaps down a moment later.
+    ///
+    /// Nothing the latch was protecting is lost by clearing it here: a
+    /// surface that has presented is latched *by surface id* in the
+    /// compositor's frame store, which is where a claim about a window
+    /// belongs, and this only ever mirrored it.
     was_presented: std::cell::Cell<bool>,
     rect: Rect,
     /// Set by the parent `WindowGroup` each frame to indicate whether
@@ -483,6 +498,9 @@ impl TileHost {
         self.content = content;
         self.announced = None;
         self.structure_dirty = true;
+        // Whatever was here answered `presented` for itself. What is here
+        // now has to answer for itself as well — see `was_presented`.
+        self.was_presented.set(false);
     }
     /// What this tile is showing, read-only.
     pub fn content(&self) -> &TileContent { &self.content }
@@ -1871,6 +1889,55 @@ mod tests {
             "a tile that has presented must never answer `opening` again — \
              a window the person is looking at would be replaced by a card \
              saying it is on its way",
+        );
+    }
+
+    /// A tile answers for what it is showing *now*.
+    ///
+    /// The latch above is about one thing staying itself: a window whose
+    /// buffer briefly stops fitting its tab is still that window, and the
+    /// per-surface latch in the compositor's frame store is what actually
+    /// holds that — this one only mirrors it.
+    ///
+    /// Replacing the tile's contents is a different event, and the only
+    /// path that does it is a window arriving for a tab that already
+    /// exists: a peer has an app open, so the tab is on screen holding a
+    /// card while this machine starts its own instance. The card answered
+    /// `presented`, which is true of a card and says nothing whatever
+    /// about the window that takes its place. Carrying the card's answer
+    /// over paints the client's very first buffer — the size *it* chose,
+    /// before it was ever told the tab's — scaled to fit: the window
+    /// opens magnified and snaps down a moment later, which is the whole
+    /// thing the opening card exists to prevent.
+    #[test]
+    fn a_tile_handed_a_window_answers_for_it_and_not_for_the_card_before_it() {
+        let mut host = TileHost::new(TileContent::Notice {
+            title: "Word Processor".into(),
+            detail: "Opening here…".into(),
+        });
+        assert!(
+            Widget::presented(&host),
+            "precondition: a card is on screen the moment its tile is",
+        );
+
+        // The window the tab was holding a place for arrives, and has not
+        // yet drawn a frame that answers the tab.
+        host.replace_content(TileContent::App(Box::new(Starting {
+            rect: Rect::new(50.0, 50.0, 150.0, 150.0),
+            drawn: std::rc::Rc::new(std::cell::Cell::new(false)),
+            presented: false,
+            opening: true,
+        })));
+
+        assert!(
+            !Widget::presented(&host),
+            "the card presented, not the window; saying otherwise puts the \
+             client's opening buffer on screen stretched to a tab it was \
+             never asked to fill",
+        );
+        assert!(
+            Widget::opening(&host),
+            "the tab is holding this window's place now, and has to say so",
         );
     }
 
