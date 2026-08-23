@@ -2838,19 +2838,28 @@ def beat_four(quinten: Session, xaver: Session, agent: Session,
     # for it would be asserting something that should not exist. What
     # makes it a participant is that it holds a capability in the room,
     # and that is what is checked.
+    caps = quinten.active_workspace().get("capabilities") or []
     members: dict[str, list[str]] = {}
-    for cap in (quinten.active_workspace().get("capabilities") or []):
+    for cap in caps:
         subject = json.dumps(cap.get("subject"))
         for name in (quinten.user, xaver.user, agent.user):
             if f'"{name}"' in subject or f":{name}" in subject:
                 members.setdefault(name, []).append(str(cap.get("verb")))
-    note(f"the room's own capability list names {sorted(members)}")
-    claim("the agent is in the room the same way the people are — by "
-          "holding a capability in it", agent.user in members, True)
-    if agent.user in members:
-        note(f"{agent.user} holds {sorted(set(members[agent.user]))} here, "
-             f"and no cursor: an agent is a participant whose actions are "
-             f"visible, not a mouse on somebody's screen")
+    if not caps:
+        # Said as a gap rather than asserted away. An empty list here is
+        # this reader looking in the wrong place, not a room with nobody
+        # in it — three participants joined it two beats ago.
+        gap("the active workspace reported no capability list, so who is "
+            "in this room could not be read off it")
+    else:
+        note(f"the room's own capability list names {sorted(members)} "
+             f"across {len(caps)} capabilities")
+        claim("the agent is in the room the same way the people are — by "
+              "holding a capability in it", agent.user in members, True)
+        if agent.user in members:
+            note(f"{agent.user} holds {sorted(set(members[agent.user]))} "
+                 f"here, and no cursor: an agent is a participant whose "
+                 f"actions are visible, not a mouse on somebody's screen")
     if RECORDER:
         RECORDER.dwell()
         RECORDER.dwell()
