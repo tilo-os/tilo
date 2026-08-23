@@ -2218,8 +2218,8 @@ def frame_both_windows(s: Session, viewport: tuple[int, int] | None = None) -> N
     if viewport:
         wrong = windows_off_screen(s, viewport) + windows_overlapping(s)
         if wrong:
-            gap(f"{s.name}: the strip is not filmable after "
-                f"{len(attempts)} attempt(s) at framing it — "
+            gap(f"{s.name}: the strip is not filmable at "
+                f"{FILM_GROUP_SHARE} permille per group — "
                 + "; ".join(wrong))
         else:
             note(f"{s.name}: every window is wholly on screen and none is "
