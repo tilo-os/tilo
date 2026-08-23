@@ -202,6 +202,8 @@ pub struct ShellOverlayHost {
     /// only on Released so a fast drag doesn't spawn a subprocess per
     /// pixel of motion.
     qs_slider_drag: Option<usize>,
+    /// Ribbon segment under the pointer, if any. Paint-only.
+    strip_ribbon_hover: Option<usize>,
     /// Off-thread reader for the OS state quick settings displays.
     /// See [`crate::shell::qs_refresh`] for why the reads left the frame.
     qs_refresh: crate::shell::qs_refresh::QsRefresh,
@@ -931,6 +933,7 @@ impl ShellOverlayHost {
             qs_transition: ui::Transition::closed(),
             qs_was_open: false,
             qs_slider_drag: None,
+            strip_ribbon_hover: None,
             qs_refresh: crate::shell::qs_refresh::QsRefresh::new(),
             ws_settings_was_open: false,
             ws_settings_transition: ui::Transition::closed(),
@@ -4160,6 +4163,36 @@ impl ShellOverlayHost {
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
     }
 
+    /// The strip ribbon for the active workspace, anchored to the right
+    /// edge of the content area.
+    ///
+    /// The content's right gutter is [`STRIP_TRAILING_GUTTER_PX`] wide
+    /// and holds nothing else, so the ribbon costs no layout: it sits in
+    /// space the strips already leave clear.
+    fn strip_ribbon(&self) -> ui::chrome::shell::StripRibbon {
+        let (count, focused) = self
+            .chrome
+            .as_ref()
+            .map(|c| c.borrow().strip_focus())
+            .unwrap_or((0, 0));
+        ui::chrome::shell::StripRibbon {
+            content: Rect::new(
+                self.rect.x0,
+                self.rect.y0 + crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX as f64,
+                self.rect.x1,
+                self.rect.y1,
+            ),
+            count,
+            focused,
+        }
+    }
+
+    /// Ribbon geometry for integration tests, so a scenario can click a
+    /// strip segment without duplicating the anchoring maths.
+    pub fn strip_ribbon_for_tests(&self) -> ui::chrome::shell::StripRibbon {
+        self.strip_ribbon()
+    }
+
     /// Public alias for [`Self::quick_settings_rect`] so integration
     /// tests can compute drill-in row coordinates without duplicating
     /// the popover-rect math.
@@ -5330,6 +5363,15 @@ impl Widget for ShellOverlayHost {
             }
         }
 
+        // Strip ribbon — which strip of this workspace has focus, and
+        // how many there are. Drawn under the popovers so an open panel
+        // sits over it, and hidden while the overview is up because the
+        // overview is not showing strips.
+        if !self.overlay_flags().overview {
+            let ribbon = self.strip_ribbon();
+            ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
+        }
+
         // Quick-settings popover (anchored top-right, no scrim so it reads
         // as a dropdown rather than a modal). Concept wraps this in a
         // `motion.div` with `initial={{ opacity: 0, y: -10, scale: 0.95 }}`
@@ -5599,10 +5641,23 @@ impl Widget for ShellOverlayHost {
         // Track cursor position so we can hit-test overlay clicks in the
         // absence of position data on MouseInput.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Some(Point::new(
-                position.x / scale_factor,
-                position.y / scale_factor,
-            ));
+            let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor = Some(p);
+            // Ribbon hover. Paint-only, so it is tracked here rather
+            // than routed: a segment thickens under the pointer to say
+            // it is a control, which is most of how the ribbon
+            // advertises that it can be clicked at all.
+            let hover = if self.overlay_flags().overview {
+                None
+            } else {
+                self.strip_ribbon().hit(p)
+            };
+            if hover != self.strip_ribbon_hover {
+                self.strip_ribbon_hover = hover;
+                if let Some(chrome) = self.chrome.clone() {
+                    chrome.borrow_mut().bump();
+                }
+            }
         }
 
         // The portal's file-chooser dialog runs before everything,
@@ -5955,6 +6010,7 @@ impl Widget for ShellOverlayHost {
             let ctrl_down = mstate.control_key();
             let alt_down = mstate.alt_key();
             let is_mod = super_down || ctrl_down;
+            let shift_down = mstate.shift_key();
             // A passphrase field takes the keyboard whole while it is up.
             // Ahead of every chord below, including the palette ones: a
             // password can contain any character, and a `k` in one must
@@ -6156,6 +6212,37 @@ impl Widget for ShellOverlayHost {
                             }
                             _ => {}
                         }
+                    }
+                }
+                // Shift+ArrowUp / Shift+ArrowDown (with the same Super
+                // or Ctrl modifier) — move focus between the strips of
+                // the current workspace.
+                //
+                // Strips had no binding at all: the only switch function
+                // in the tree was reachable from a debug-only simulator
+                // that built a scratch copy of the workspace tree and
+                // threw it away, so no key, gesture or click could move
+                // between them. Workspaces already own the unshifted
+                // Up/Down on both modifiers, and strips are a different
+                // level of the same model rather than a variant of the
+                // same move, so they take the shifted pair.
+                if shift_down
+                    && matches!(
+                        logical_key,
+                        Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown)
+                    )
+                {
+                    let dir = if matches!(logical_key, Key::Named(NamedKey::ArrowUp)) {
+                        -1
+                    } else {
+                        1
+                    };
+                    if let Some(chrome) = self.chrome.clone() {
+                        let mut st = chrome.borrow_mut();
+                        if st.switch_strip(dir) {
+                            *handled = true;
+                        }
+                        return;
                     }
                 }
                 // Cmd+ArrowUp / Cmd+ArrowDown — switch active workspace.
@@ -6408,6 +6495,18 @@ impl Widget for ShellOverlayHost {
         } = event
         {
             if let Some(p) = self.last_cursor {
+                // Strip ribbon: click a segment to focus that strip.
+                // Gated on no overlay owning the pointer, so a click that
+                // happens to land under an open panel goes to the panel.
+                if !self.overlay_flags().overview
+                    && !self.cursor_over_open_overlay(p)
+                    && let Some(i) = self.strip_ribbon().hit(p)
+                    && let Some(chrome) = self.chrome.clone()
+                {
+                    chrome.borrow_mut().focus_strip_index(i);
+                    *handled = true;
+                    return;
+                }
                 if self.palette_visible {
                     // Scope-pill click (runs before outside-click so users
                     // can swap scope without dismissing the palette).
