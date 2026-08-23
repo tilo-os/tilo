@@ -64,8 +64,11 @@ use qos_actions::{ActionInput, ActionSpec, EncodedAction, Resource};
 /// * `"root"` — the synthetic window root.
 /// * `"w<taffy_id>"` — a laid-out widget, keyed by its `taffy::NodeId` (stable
 ///   between structural rebuilds, exactly the key the AccessKit bridge uses).
-/// * `"<parent>~<index>"` — a synthetic a11y child (a table row/cell) with no
-///   widget of its own, keyed by its position under its parent.
+/// * `"<parent>~<key>"` — a synthetic a11y child (a table row/cell, a clip on a
+///   timeline track) with no widget of its own, keyed by its
+///   [`AccessNode::key`] — its ordinal under its parent unless the widget gave
+///   it an explicit identity. Same rule the AccessKit bridge uses, so the two
+///   trees agree on which element is which.
 /// * `"r:<resource_id>"` — a resource from the app's action model, keyed by its
 ///   already-stable [`ResourceId`](qos_actions::ResourceId).
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -78,8 +81,8 @@ impl SemanticId {
     fn widget(taffy_id: TaffyNodeId) -> Self {
         SemanticId(format!("w{}", u64::from(taffy_id)))
     }
-    fn synthetic(parent: &SemanticId, index: usize) -> Self {
-        SemanticId(format!("{}~{}", parent.0, index))
+    fn synthetic(parent: &SemanticId, key: u64) -> Self {
+        SemanticId(format!("{}~{}", parent.0, key))
     }
     fn resource(id: &str) -> Self {
         SemanticId(format!("r:{id}"))
@@ -113,6 +116,30 @@ pub enum SemanticActionKind {
         /// Placeholder text for the argument field.
         placeholder: String,
     },
+}
+
+/// How to reach a **synthetic** node — one with no backing
+/// [`Widget`](crate::widget::Widget) of its own — when driving it.
+///
+/// A widget that paints its own contents (a table's rows, a timeline's clips)
+/// describes them through [`AccessNode::children`]. Reading such a node needs
+/// nothing extra, but *operating* one does: the host has to know which widget
+/// owns it and which element inside that widget it is. Those two travel
+/// together, so they live in one struct — a node either has both or is not
+/// synthetic.
+///
+/// This is the same addressing
+/// [`accesskit_bridge::resolve_node_id`](crate::accesskit_bridge::resolve_node_id)
+/// produces for an incoming assistive-technology request, so an agent invoking
+/// an affordance by name and a screen reader clicking a node end up in the same
+/// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at) call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyntheticRef {
+    /// The `taffy::NodeId` of the widget that synthesised this node.
+    pub owner_taffy_id: u64,
+    /// Keys from the owner's direct synthetic child down to this node — one per
+    /// level of nesting (`[row]` for a row, `[row, cell]` for a cell in it).
+    pub key_path: Vec<u64>,
 }
 
 /// One thing an assistive client can do to a [`SemanticNode`], addressable by a
@@ -157,6 +184,15 @@ pub struct SemanticNode {
     /// host can route a [`Verb`](SemanticActionKind::Verb) back to it. `None` for
     /// root / synthetic / resource nodes.
     pub widget_taffy_id: Option<u64>,
+    /// How to reach this node when it is **synthetic** — its owning widget plus
+    /// the key path naming it. `None` for widget / root / resource nodes, which
+    /// are addressed by [`widget_taffy_id`](Self::widget_taffy_id) instead.
+    ///
+    /// Without this a synthetic node could be read but not driven: a
+    /// [`Verb`](SemanticActionKind::Verb) had nothing to dispatch against and
+    /// silently did nothing, so a canvas app's elements were unreachable to an
+    /// agent, a CLI, or a headless test.
+    pub synthetic_ref: Option<SyntheticRef>,
 }
 
 impl SemanticNode {
@@ -224,6 +260,7 @@ impl SemanticTree {
                 actions: Vec::new(),
                 children: Vec::new(),
                 widget_taffy_id: None,
+                synthetic_ref: None,
             },
         );
         Self {
@@ -299,6 +336,7 @@ impl SemanticTree {
                 actions: Vec::new(),
                 children: root_children,
                 widget_taffy_id: None,
+                synthetic_ref: None,
             },
         );
 
@@ -466,7 +504,7 @@ impl Build<'_> {
                     // under the parent so it still gets a stable id.
                     None => SemanticId::synthetic(
                         parent_children.last().unwrap_or(&SemanticId::root()),
-                        parent_children.len(),
+                        parent_children.len() as u64,
                     ),
                 };
 
@@ -474,8 +512,14 @@ impl Build<'_> {
                 for child in w.children() {
                     self.visit_widget(child, &mut children);
                 }
-                for (i, synth) in access.children.iter().enumerate() {
-                    let child = self.visit_synthetic(&id, i, synth);
+                // Synthetic descendants are addressable only when their owner
+                // was laid out — a widget with no taffy id gives the host
+                // nothing to dispatch against, so its elements stay readable but
+                // not drivable rather than being handed a wrong owner.
+                let owner = taffy_id.map(u64::from);
+                for (ordinal, synth) in access.children.iter().enumerate() {
+                    let key = synth.key.unwrap_or(ordinal as u64);
+                    let child = self.visit_synthetic(&id, key, synth, owner, &[]);
                     children.push(child);
                 }
 
@@ -504,6 +548,8 @@ impl Build<'_> {
                     actions,
                     children,
                     widget_taffy_id: taffy_id.map(u64::from),
+                    // A widget is addressed by its taffy id, not a key path.
+                    synthetic_ref: None,
                 };
                 self.order.push(id.clone());
                 self.nodes.insert(id.clone(), node);
@@ -517,12 +563,30 @@ impl Build<'_> {
         }
     }
 
-    /// Emit a synthetic a11y child (a table row/cell) that has no backing widget.
-    fn visit_synthetic(&mut self, parent: &SemanticId, index: usize, access: &AccessNode) -> SemanticId {
-        let id = SemanticId::synthetic(parent, index);
+    /// Emit a synthetic a11y child (a table row/cell, a clip on a track) that has
+    /// no backing widget.
+    ///
+    /// `key` is the node's [`AccessNode::key`] or its ordinal among its
+    /// siblings; `owner` is the taffy id of the widget that synthesised it, and
+    /// `parent_path` the keys already walked from that widget. Together they
+    /// give the node a [`SyntheticRef`], which is what makes its affordances
+    /// invokable rather than merely readable.
+    fn visit_synthetic(
+        &mut self,
+        parent: &SemanticId,
+        key: u64,
+        access: &AccessNode,
+        owner: Option<u64>,
+        parent_path: &[u64],
+    ) -> SemanticId {
+        let id = SemanticId::synthetic(parent, key);
+        let mut key_path = parent_path.to_vec();
+        key_path.push(key);
+
         let mut children: Vec<SemanticId> = Vec::new();
-        for (i, child) in access.children.iter().enumerate() {
-            let c = self.visit_synthetic(&id, i, child);
+        for (ordinal, child) in access.children.iter().enumerate() {
+            let child_key = child.key.unwrap_or(ordinal as u64);
+            let c = self.visit_synthetic(&id, child_key, child, owner, &key_path);
             children.push(c);
         }
         let node = SemanticNode {
@@ -535,6 +599,10 @@ impl Build<'_> {
             actions: verbs_for(access),
             children,
             widget_taffy_id: None,
+            synthetic_ref: owner.map(|owner_taffy_id| SyntheticRef {
+                owner_taffy_id,
+                key_path,
+            }),
         };
         self.order.push(id.clone());
         self.nodes.insert(id.clone(), node);
@@ -566,6 +634,8 @@ impl Build<'_> {
             actions,
             children,
             widget_taffy_id: None,
+            // A resource is addressed by its own id, not through a widget.
+            synthetic_ref: None,
         };
         self.order.push(id.clone());
         self.nodes.insert(id.clone(), node);
