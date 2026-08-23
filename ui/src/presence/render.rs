@@ -5,6 +5,92 @@ use crate::theme::Theme;
 use crate::permissions::UserId;
 use super::PresenceCtx;
 
+/// How much pigment a "just typed" marker lays down over the text.
+///
+/// This is the *strength* dial; [`MARKER_PIGMENT_L`] is the evenness one,
+/// and separating the two is what makes a strong marker safe. The pigment
+/// is pinned to a fixed luminance before it is laid down, so the band
+/// cannot go darker than that pigment however opaque this is — raising it
+/// makes the marker easier to see without ever walking the text
+/// underneath toward its background.
+/// `text_stays_legible_under_a_marker_in_both_palettes` holds the floor
+/// at WCAG AA on the word processor's paper and on a dark app surface,
+/// measured through the real renderer rather than modelled.
+///
+/// Set by looking at frames rather than by taste: at 0.5 the band
+/// measured 1.22:1 against paper, which is a tint you have to be told
+/// about. At this value it measures 1.79:1 — something you see first and
+/// read through second, which is what a highlighter is.
+const MARKER_ALPHA: f32 = 0.7;
+
+/// The relative luminance every marker pigment is mapped to before it is
+/// laid down (see [`marker_pigment`]).
+const MARKER_PIGMENT_L: f32 = 0.30;
+
+/// Relative luminance (WCAG), from sRGB.
+fn relative_luminance(c: Color) -> f32 {
+    let c = c.to_rgba8();
+    let f = |v: u8| {
+        let v = v as f32 / 255.0;
+        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b)
+}
+
+/// A peer's colour re-tuned to a common marker luminance, keeping its hue.
+///
+/// A fixed alpha over [`super::PEER_PALETTE`] does not give a marker of
+/// even strength, because the palette spans a 4x luminance range: it is
+/// picked so that *cursors* stay far apart on screen, and a cursor is an
+/// opaque shape whose lightness costs it nothing. Composited onto a light
+/// page, the same spread is the difference between a marker and a stain.
+/// Its palest members land near 1.1:1 against white paper where its
+/// darkest land near 1.9:1, so side by side one peer has highlighted a
+/// line and the other appears not to have — which reads as the feature
+/// failing for that person rather than as a palette artefact. Which id
+/// draws which colour is deliberately not named here: peer colours are
+/// assigned per room and move, so the point is the spread rather than
+/// any particular pairing.
+///
+/// Scaling in linear light to a fixed luminance fixes it at the pigment
+/// rather than at the alpha, and that is the right place: what identifies
+/// a collaborator here is *hue*, which is preserved exactly, while
+/// lightness is the thing carrying no information and doing the damage.
+/// Real highlighter ink behaves the same way — a pen's yellow and its
+/// pink are different hues at much the same tone. Measured on rendered
+/// frames rather than modelled, this takes two peers highlighting the
+/// same page from 1.39:1 and 1.09:1 against the paper — one marker and
+/// one barely-there wash — to 1.79:1 and 1.65:1, a spread of 1.08x.
+///
+/// Pinning the luminance has a second effect worth keeping: it bounds how
+/// dark a band can ever be, which is what lets [`MARKER_ALPHA`] be raised
+/// to something you can actually see without the text paying for it.
+///
+/// Only the marker uses this. Carets, pointers, chips and selections keep
+/// the peer's colour untouched, so the person a highlight belongs to is
+/// still the person their cursor is coloured by.
+fn marker_pigment(c: Color) -> Color {
+    let l = relative_luminance(c);
+    if l <= f32::EPSILON {
+        return c;
+    }
+    let k = MARKER_PIGMENT_L / l;
+    let rgba = c.to_rgba8();
+    let ch = |v: u8| -> u8 {
+        let v = v as f32 / 255.0;
+        // sRGB -> linear, scale, clamp, and back.
+        let lin = if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        let scaled = (lin * k).clamp(0.0, 1.0);
+        let enc = if scaled <= 0.0031308 {
+            12.92 * scaled
+        } else {
+            1.055 * scaled.powf(1.0 / 2.4) - 0.055
+        };
+        (enc.clamp(0.0, 1.0) * 255.0).round() as u8
+    };
+    Color::from_rgba8(ch(rgba.r), ch(rgba.g), ch(rgba.b), rgba.a)
+}
+
 /// Deterministic per-user color — maps a UserId string to a hue with stable lightness.
 ///
 /// Consults the [`PresenceCtx::color_for`] override map first (seeded by
@@ -230,11 +316,15 @@ impl PresenceCtx {
         user: &UserId,
         spans: &[(Rect, f32)],
     ) {
-        let color = color_for(self, user, theme);
+        let color = marker_pigment(color_for(self, user, theme));
         for (rect, alpha) in spans {
-            // Base 0.5 so a fresh mark is a clear-but-readable marker; it
-            // tapers to nothing as `alpha` → 0.
-            let a = (alpha * 0.5).clamp(0.0, 1.0);
+            // Under reduce-motion the mark takes the cut rather than the
+            // dissolve: it holds full strength for its whole life and then
+            // goes, instead of easing away. The span is still dropped at
+            // `TYPING_FADE`, so it clears on the same schedule — what is
+            // removed is the animation, not the marker or its lifetime.
+            let fade = if theme.reduce_motion { 1.0 } else { *alpha };
+            let a = (fade * MARKER_ALPHA).clamp(0.0, 1.0);
             scene.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
@@ -1269,6 +1359,173 @@ mod tests {
                 d > 60.0
             });
             assert!(edge, "a pale peer has no visible edge against {name}");
+        }
+    }
+
+
+    /// Paint a fresh full-width marker for `user` on `paper` and return the
+    /// composited band colour. The production `draw_peer_typing`, rendered
+    /// for real — the band is read back off the framebuffer, not computed.
+    fn marker_band(user: &str, paper: Color, theme: &Theme) -> (u8, u8, u8) {
+        let ctx = PresenceCtx::empty();
+        let mut scene = Scene::new();
+        ctx.draw_peer_typing(
+            &mut scene,
+            theme,
+            &UserId(user.to_string()),
+            &[(Rect::new(0.0, 0.0, 40.0, 40.0), 1.0)],
+        );
+        let mut r = OffscreenRenderer::new(40, 40);
+        let rgba = r.render(&scene, paper);
+        let (red, green, blue, _) = OffscreenRenderer::sample(&rgba, 40, 20, 20);
+        (red, green, blue)
+    }
+
+    /// WCAG relative luminance of a sampled band.
+    fn lum(c: (u8, u8, u8)) -> f32 {
+        relative_luminance(Color::from_rgb8(c.0, c.1, c.2))
+    }
+
+    /// Contrast ratio between two sampled colours.
+    fn contrast(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
+        let (la, lb) = (lum(a), lum(b));
+        let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// Every peer's marker lands at comparable strength against the page.
+    ///
+    /// The palette spans a 4x luminance range because it is tuned for
+    /// *cursors*, where lightness is free. Laid down as a wash at one fixed
+    /// alpha, the palest peer colour reached about 1.1:1 against white
+    /// paper while the darkest reached about 1.9:1 — one peer looked like
+    /// they had highlighted a line and the other like the feature had not
+    /// fired. The test walks a spread of ids rather than naming colours,
+    /// because which id draws which colour is assigned per room and moves.
+    /// This is the assertion that stops a fixed alpha coming back.
+    #[test]
+    fn every_peers_marker_is_about_as_strong_as_every_others() {
+        let theme = Theme::default();
+        // Paper, as the word processor draws it in *either* palette.
+        let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
+        let paper_rgb = (0xfa, 0xfa, 0xf8);
+
+        let peers = ["alice", "bob", "charlie", "me", "agent", "dave", "erin", "sara"];
+        let strengths: Vec<(f32, &str)> = peers
+            .iter()
+            .map(|u| (contrast(marker_band(u, paper, &theme), paper_rgb), *u))
+            .collect();
+
+        for (s, u) in &strengths {
+            assert!(
+                *s > 1.4,
+                "{u}'s marker is invisible against the page ({s:.2}:1)"
+            );
+        }
+        let lo = strengths.iter().map(|(s, _)| *s).fold(f32::MAX, f32::min);
+        let hi = strengths.iter().map(|(s, _)| *s).fold(0.0f32, f32::max);
+        assert!(
+            hi / lo < 1.25,
+            "markers differ too much between peers: {lo:.2}..{hi:.2} — {strengths:?}"
+        );
+    }
+
+    /// And the text underneath still reads, on the paper the word processor
+    /// keeps in every palette *and* on a dark app surface, for the palest
+    /// and the darkest peer alike.
+    #[test]
+    fn text_stays_legible_under_a_marker_in_both_palettes() {
+        let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
+        let dark = Color::from_rgb8(0x18, 0x18, 0x1b);
+        let ink = (0x1a, 0x1a, 0x1a);
+        let dark_ink = (0xf5, 0xf5, 0xf5);
+
+        for user in ["alice", "agent", "bob", "charlie", "me", "sara"] {
+            for (theme, name) in [(Theme::light(), "light"), (Theme::dark(), "dark")] {
+                let on_paper = contrast(marker_band(user, paper, &theme), ink);
+                assert!(
+                    on_paper >= 4.5,
+                    "{user}: body ink under the marker on paper ({name} theme) \
+                     falls to {on_paper:.2}:1"
+                );
+                let on_dark = contrast(marker_band(user, dark, &theme), dark_ink);
+                assert!(
+                    on_dark >= 4.5,
+                    "{user}: ink under the marker on a dark surface ({name} theme) \
+                     falls to {on_dark:.2}:1"
+                );
+            }
+        }
+    }
+
+    /// Reduce-motion takes the dissolve, not the marker.
+    ///
+    /// A half-faded mark is drawn at full strength when the user has asked
+    /// for less motion — the highlight still says what was written and
+    /// still clears when the span expires; what goes is the animation.
+    #[test]
+    fn reduce_motion_holds_the_marker_instead_of_dissolving_it() {
+        let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
+        let paper_rgb = (0xfa, 0xfa, 0xf8);
+
+        let half = |theme: &Theme| {
+            let ctx = PresenceCtx::empty();
+            let mut scene = Scene::new();
+            ctx.draw_peer_typing(
+                &mut scene,
+                theme,
+                &UserId("alice".to_string()),
+                &[(Rect::new(0.0, 0.0, 40.0, 40.0), 0.25)],
+            );
+            let mut r = OffscreenRenderer::new(40, 40);
+            let rgba = r.render(&scene, paper);
+            let (red, green, blue, _) = OffscreenRenderer::sample(&rgba, 40, 20, 20);
+            (red, green, blue)
+        };
+
+        let motion = Theme::default().with_reduce_motion(false);
+        let still = Theme::default().with_reduce_motion(true);
+
+        let faded = contrast(half(&motion), paper_rgb);
+        let held = contrast(half(&still), paper_rgb);
+        let fresh = contrast(marker_band("alice", paper, &motion), paper_rgb);
+
+        assert!(
+            faded < held,
+            "with motion on, a quarter-aged mark should be weaker than a held one \
+             ({faded:.2} vs {held:.2})"
+        );
+        assert!(
+            (held - fresh).abs() < 0.02,
+            "under reduce-motion an aged mark should read like a fresh one \
+             ({held:.2} vs {fresh:.2})"
+        );
+    }
+
+    /// The marker re-tunes lightness only. A peer's hue — the thing that
+    /// says whose highlight it is, and the thing their caret is coloured by
+    /// — survives it, so the two affordances still name the same person.
+    #[test]
+    fn marker_pigment_keeps_the_peers_hue() {
+        for user in ["alice", "bob", "charlie", "me", "agent", "sara"] {
+            let raw = super::super::user_color(user);
+            let raw = Color::from_rgb8(raw.0, raw.1, raw.2);
+            let pig = marker_pigment(raw);
+
+            let a = raw.to_rgba8();
+            let b = pig.to_rgba8();
+            // Rank order of the channels is what carries hue; a pure
+            // lightness change cannot reorder them.
+            let order = |c: &vello::peniko::color::Rgba8| {
+                let mut v = [(c.r, 0u8), (c.g, 1), (c.b, 2)];
+                v.sort_by_key(|(x, _)| *x);
+                [v[0].1, v[1].1, v[2].1]
+            };
+            assert_eq!(
+                order(&a),
+                order(&b),
+                "{user}: marker pigment changed the hue ({a:?} -> {b:?})"
+            );
         }
     }
 
