@@ -959,8 +959,33 @@ FG = "0xE9ECF2"
 ROLES = {
     "ada": "hosts the room",
     "bob": "joined by invite",
-    "Claude": "admitted to the room",
 }
+
+# The one session this film never shows, and the reason it has a name of
+# its own rather than an absent entry in ROLES.
+#
+# The claim being filmed is that an agent never has to look at a screen —
+# it reads the document, and what it did shows up on the other two
+# desktops the way anybody else's edit does. A shot of *its* desktop
+# argues against that in the one frame meant to prove it, and it is an
+# easy shot to take by accident: the session is right there beside the
+# other two and answers `snapshot` exactly like them.
+#
+# So it is refused twice. `cut` will not accept the name, and the run
+# fails at the end if a single frame turns out to have come from it —
+# because the second check is the one that holds when somebody adds a
+# capture path that does not go through `cut`.
+NEVER_ON_CAMERA = "Claude"
+
+# How long a frame the viewer has to *read* — a token, a name in a
+# composer, a card saying it has been copied — stays up.
+#
+# Long by the standards of the rest of the cut, and deliberately immune
+# to `--record-max-hold`: that cap exists to throw away a session sitting
+# on an unchanged screen while it waits for a sandbox, and a card nobody
+# has had time to read is the opposite case. Frames taken inside `hold`
+# are marked, and trimming skips them. See `Recorder._timeline`.
+READ_HOLD_S = 2.6
 
 FONTS_REGULAR = (
     "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
@@ -1038,8 +1063,11 @@ class Recorder:
         self.max_hold = max_hold
         # How much still picture the cap took out, filled in at compose.
         self.trimmed = 0.0
-        # (taken_at, relative path, session name) in capture order.
-        self.frames: list[tuple[float, str, str]] = []
+        # (taken_at, relative path, session name, deliberately held) in
+        # capture order. The last field marks a frame taken while the
+        # demo was holding on purpose, which is what exempts it from the
+        # still-picture trim.
+        self.frames: list[tuple[float, str, str, bool]] = []
         # How long each snapshot blocked its session. The honest measure
         # of what the camera costs, reported rather than estimated.
         self.blocked: list[float] = []
@@ -1048,6 +1076,13 @@ class Recorder:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._live: Session | None = None
+        # Who the *narrative* is on, which is not the same as who the
+        # camera is on: `hold_off` takes the camera down for a beat that
+        # is run and proven but not filmed, and `_wanted` is what it
+        # comes back up on.
+        self._wanted: Session | None = None
+        self._off = 0
+        self._holding = False
         self._lock = threading.Lock()
         self.started_at = 0.0
         self.stopped_at = 0.0
@@ -1056,7 +1091,7 @@ class Recorder:
 
     def start(self, first: str) -> None:
         os.makedirs(os.path.join(self.dir, "frames"), exist_ok=True)
-        self._live = self.by_name[first]
+        self._live = self._wanted = self.by_name[first]
         self.started_at = time.time()
         self._thread = threading.Thread(target=self._capture, name="capture",
                                         daemon=True)
@@ -1071,6 +1106,7 @@ class Recorder:
                 self._stop.wait(0.02)
                 continue
             began = time.time()
+            held = self._holding
             rel = f"frames/{index:06d}.png"
             try:
                 s.snapshot(os.path.join(self.dir, rel))
@@ -1088,7 +1124,7 @@ class Recorder:
                 continue
             took = time.time() - began
             self.blocked.append(took)
-            self.frames.append((began, rel, s.name))
+            self.frames.append((began, rel, s.name, held))
             index += 1
             self._stop.wait(max(MIN_CAPTURE_GAP_S, self.yield_share * took,
                                 self.interval - took))
@@ -1128,13 +1164,137 @@ class Recorder:
         functions can name their subject without inserting a pause that
         the narrative did not ask for.
         """
+        if name == NEVER_ON_CAMERA:
+            raise RuntimeError(
+                f"{name} is never on camera: an agent with a desktop is the "
+                f"one thing this film must not show. See NEVER_ON_CAMERA.")
         with self._lock:
-            if self._live is not None and self._live.name == name:
+            if self._wanted is not None and self._wanted.name == name:
                 return
-            self._live = self.by_name[name]
+            self._wanted = self.by_name[name]
+            # Noted while the camera is down, and acted on when it comes
+            # back up. No dwell either: nobody is being moved anywhere.
+            if self._off:
+                return
+            self._live = self._wanted
         hold = self.cut_dwell_s if dwell is None else dwell
         if hold > 0:
             time.sleep(hold)
+
+    @contextlib.contextmanager
+    def hold_off(self):
+        """Run a beat without putting it in the film.
+
+        Every beat in this demonstration is run and proven; not every one
+        of them belongs in a one-minute cut. A beat filmed and then
+        thrown away costs the sessions the snapshot time anyway — and
+        snapshotting is most of the filmed compositor's event loop — so
+        the camera comes down instead and the beat runs at full speed.
+
+        This is an edit, and the same kind as a cut: what it can do is
+        leave material out. It cannot put anything in, reorder anything,
+        or make a frame show for longer than its session held it — the
+        frame before a pause is capped by `max_hold` like any other.
+        """
+        with self._lock:
+            self._off += 1
+            self._live = None
+        was = self._live
+        try:
+            yield
+        finally:
+            changed = False
+            with self._lock:
+                self._off -= 1
+                if not self._off:
+                    self._live = self._wanted
+                    changed = self._live is not was
+            # A beat run off camera can name a different session for what
+            # follows. Coming back up on one is a cut like any other and
+            # is paid for like one, or the film jumps between two desktops
+            # with no beat in between to land on.
+            if changed and self.cut_dwell_s > 0:
+                time.sleep(self.cut_dwell_s)
+
+    @contextlib.contextmanager
+    def patience(self, seconds: float):
+        """Film the first `seconds` of a wait, then stop filming it.
+
+        The still-picture trim cannot see a wait for what it is. It
+        compares frames byte for byte, and a screen with a caret blinking
+        in it is a different screen every half second — so a minute spent
+        waiting for something to arrive is a minute of *changing* frames
+        and survives the cap in full. One run of this film spent 180 of
+        its 318 seconds on two waits that had already failed, and every
+        frame in them was legitimately different from the last.
+
+        So the wait is bounded by the camera rather than by the trim.
+        What arrives quickly is filmed arriving; what does not is not sat
+        through. The bound is generous enough to cover the thing working
+        — a viewer sees the result appear — and is only ever reached when
+        it is not.
+        """
+        stopped = threading.Event()
+        dropped = threading.Event()
+
+        def drop_after():
+            if not stopped.wait(seconds):
+                with self._lock:
+                    self._off += 1
+                    self._live = None
+                dropped.set()
+
+        waiter = threading.Thread(target=drop_after, name="patience",
+                                  daemon=True)
+        waiter.start()
+        try:
+            yield
+        finally:
+            stopped.set()
+            waiter.join(timeout=5)
+            if dropped.is_set():
+                print(f"     .   [ camera came down after {seconds:.0f}s of "
+                      f"waiting ]", flush=True)
+                with self._lock:
+                    self._off -= 1
+                    if not self._off:
+                        self._live = self._wanted
+
+    @contextlib.contextmanager
+    def holding(self):
+        """Mark what is filmed in here as a deliberate hold.
+
+        Frames taken inside are exempt from `max_hold`, so a card the
+        demo stopped on to be read survives the trim that removes a
+        session waiting on a sandbox spawn. Both are an unchanging
+        screen; only one of them is dead air.
+        """
+        was = self._holding
+        self._holding = True
+        try:
+            yield
+        finally:
+            self._holding = was
+
+    def hold(self, seconds: float) -> None:
+        """Stop here, on camera, for `seconds`. Really elapsed, really
+        sampled — and kept whole by the trim.
+
+        Nothing at all when the camera is down. A hold buys a viewer time
+        to read something, and an unfilmed beat has no viewer: paying it
+        anyway would add half a minute of wall clock to a run for frames
+        that do not exist.
+        """
+        if seconds <= 0 or self._off:
+            return
+        with self.holding():
+            time.sleep(seconds)
+
+    def camera_is_down(self) -> bool:
+        return self._off > 0
+
+    def frames_from(self, name: str) -> int:
+        return sum(1 for _t, _rel, n, _h in self.frames if n == name)
 
     def dwell(self) -> None:
         """Hold on the moment just reached.
@@ -1172,7 +1332,7 @@ class Recorder:
     def report(self) -> None:
         span = self.stopped_at - self.started_at
         per: dict[str, int] = {}
-        for _, _, name in self.frames:
+        for _t, _rel, name, _held in self.frames:
             per[name] = per.get(name, 0) + 1
         mean_ms, worst_ms = self.snapshot_ms()
         print(f"\ncaptured over {span:.1f}s of demo: {len(self.frames)} frames, "
@@ -1195,6 +1355,39 @@ class Recorder:
                   f"{n / max(1e-6, self.rate()):.1f}s")
         for e in self.errors:
             print(f"  ! {e}")
+
+    def beat_report(self, marks: list[tuple[str, float]], fps: int) -> None:
+        """How many seconds of the finished video each beat accounts for.
+
+        Not wall clock: the sum of the screen time actually given to the
+        frames captured during that beat, after trimming and after any
+        stretch the camera was down for. So it answers the only question
+        that matters when a cut is too long — which beat to take it out
+        of — instead of inviting somebody to guess.
+        """
+        if not marks or not self.frames:
+            return
+        t_start, t_end = self._window()
+        timeline = self._timeline(t_start, t_end, fps)
+        # `_timeline` collapses runs, so walk the frames it kept and
+        # charge each one's screen time to the beat it was taken in.
+        kept = {rel: seconds for rel, _name, seconds in timeline}
+        edges = [t for _title, t in marks] + [float("inf")]
+        spend = [0.0] * len(marks)
+        for taken, rel, _name, _held in self.frames:
+            if rel not in kept:
+                continue
+            for i in range(len(marks)):
+                if edges[i] <= taken < edges[i + 1]:
+                    spend[i] += kept[rel]
+                    break
+        total = sum(spend)
+        print("  of the finished video:")
+        for (title, _t), seconds in zip(marks, spend):
+            share = 100.0 * seconds / total if total else 0.0
+            bar = "#" * int(round(share / 3))
+            print(f"    {seconds:6.1f}s  {share:4.1f}%  {bar:<12} "
+                  f"{title[:52]}")
 
     # -- composition -------------------------------------------------
 
@@ -1233,7 +1426,7 @@ class Recorder:
 
         # How long each frame was the live state, before any editing.
         lived: list[float] = []
-        for i, (t, _rel, _name) in enumerate(frames):
+        for i, (t, _rel, _name, _held) in enumerate(frames):
             begins = t_start if i == 0 else t
             # The last frame was the live state until the camera stopped;
             # it is shown for one tick and the video ends.
@@ -1254,7 +1447,7 @@ class Recorder:
         # nothing is interpolated, and every frame in the file is still a
         # real render shown for no longer than its run was live.
         runs: list[tuple[int, int]] = []          # (index, count)
-        digests = [self._digest(rel) for _t, rel, _n in frames]
+        digests = [self._digest(rel) for _t, rel, _n, _h in frames]
         i = 0
         while i < len(frames):
             j = i + 1
@@ -1263,15 +1456,23 @@ class Recorder:
             while (j < len(frames)
                    and digests[j] == digests[i]
                    and digests[i] is not None
-                   and frames[j][2] == frames[i][2]):
+                   and frames[j][2] == frames[i][2]
+                   # A hold that begins part-way through an unchanging
+                   # screen starts its own run, so the cap lifts exactly
+                   # where the demo asked it to.
+                   and frames[j][3] == frames[i][3]):
                 j += 1
             runs.append((i, j - i))
             i = j
 
         for start, count in runs:
-            _t, rel, name = frames[start]
+            _t, rel, name, held = frames[start]
             was_live = sum(lived[start:start + count])
-            shown = min(was_live, max(tick, cap))
+            # A frame the demo deliberately stopped on is shown for as
+            # long as it was live. The cap is for the other kind of still
+            # picture — a session waiting — and cannot tell the two apart
+            # by looking at the pixels, so it is told.
+            shown = was_live if held else min(was_live, max(tick, cap))
             self.trimmed += was_live - shown
             out.append((rel, name, shown))
         return out
@@ -1437,6 +1638,11 @@ def probe_video(path: str) -> dict:
 
 FAILURES: list[str] = []
 GAPS: list[str] = []
+# (title, wall clock when it started). Only so the report can say how
+# many seconds of the finished video each beat accounts for — which is
+# the question every attempt to shorten this film has had to answer by
+# guessing. See `Recorder.beat_report`.
+BEAT_MARKS: list[tuple[str, float]] = []
 
 RULE = "-" * 70
 
@@ -1460,18 +1666,83 @@ def easing(share: float = 4.0):
 def cut(name: str) -> None:
     """Put `name` on camera for what follows.
 
-    Cuts follow the narrative rather than the clock: to whoever is
-    acting, and to a peer at the moment the point is that the peer sees
-    it. Printed either way, so the transcript documents the intended
-    order of shots even on a run that is not being recorded.
+    Cuts are expensive in a way that has nothing to do with what they
+    cost to make: every one of them asks a viewer who has never seen this
+    system to work out whose screen they are now looking at, and to hold
+    two machines in their head at once. So this cut goes to bob twice —
+    once to watch him redeem the invitation, once at the end for what
+    arrived on his screen without him doing anything — and is on ada
+    for everything in between, including the beats that are *about*
+    bob. Driving a session and filming it are separate: the far side
+    can be opened, joined and read while the camera stays where the story
+    is.
+
+    Printed either way, so the transcript documents the intended order of
+    shots even on a run that is not being recorded.
     """
-    print(f"\n  [ on camera: {name} ]", flush=True)
+    if name == NEVER_ON_CAMERA:
+        raise RuntimeError(
+            f"{name} is never on camera — see NEVER_ON_CAMERA. What the "
+            f"agent does is shown on the screens of the people it does it "
+            f"with, which is the claim; its own desktop is the one shot "
+            f"that would contradict them.")
+    # Said differently while the camera is down, because it is a
+    # different fact: nothing is being shown to anybody, and all this
+    # does is decide what the film comes back up on.
+    down = RECORDER is not None and RECORDER.camera_is_down()
+    print(f"\n  [ {'next up' if down else 'on camera'}: {name} ]", flush=True)
     if RECORDER:
         RECORDER.cut_to(name)
 
 
+@contextlib.contextmanager
+def off_camera(why: str):
+    """Run what follows without filming it.
+
+    For a beat that has to happen — because a later one reads its result,
+    or because it is part of what this run proves — and does not belong
+    in a one-minute cut. It runs at full speed, every claim in it is
+    asserted and printed, and none of it reaches the video.
+    """
+    print(f"\n  [ camera off — {why} ]", flush=True)
+    if RECORDER is None:
+        yield
+        return
+    with RECORDER.hold_off():
+        yield
+    print("\n  [ camera back on ]", flush=True)
+
+
+@contextlib.contextmanager
+def patience(seconds: float):
+    """Give a wait this long on camera, and no longer.
+
+    For the waits that are worth watching succeed and are not worth
+    watching fail: an agent carrying out an instruction, a document
+    crossing a network. See `Recorder.patience`.
+    """
+    if RECORDER is None:
+        yield
+        return
+    with RECORDER.patience(seconds):
+        yield
+
+
+def read_hold(seconds: float = READ_HOLD_S) -> None:
+    """Stop on what is on screen, long enough to read it.
+
+    For the frames that carry words a viewer is supposed to take in — a
+    token, the name an invitation was made out to, a card saying it is on
+    the clipboard. Real elapsed time, sampled like everything else, and
+    exempt from the still-picture trim so the hold survives into the cut.
+    """
+    if RECORDER:
+        RECORDER.hold(seconds)
+
+
 def banner(title: str) -> None:
     print(f"\n{RULE}\n  {title}\n{RULE}", flush=True)
+    BEAT_MARKS.append((title, time.time()))
     if RECORDER:
         RECORDER.dwell()
 
@@ -1859,6 +2130,145 @@ def focus_leftmost_group(s: Session) -> None:
          f"back and both windows are in frame")
 
 
+def frame_one_window(s: Session, app_id: str, prefer: dict | None = None,
+                     share: int = 720) -> None:
+    """Put one window up at a readable width, with the strip around it.
+
+    `frame_both_windows` exists for a beat that has to show two windows
+    at once, and it pays for that: three groups get a third of the strip
+    each, and a third of this strip is a word processor whose styles
+    panel leaves a column of page about as wide as a phone. The last shot
+    of the film is about what is *written* in a document, and it came out
+    with the text clipped mid-word.
+
+    A beat about one window asks for the opposite: that window at close
+    to the width a person would give it, with its neighbours where a
+    scrollable strip actually leaves them — visible at the edges, not
+    squared off into equal thirds. Which is also the more honest picture
+    of the layout model, and the one the strip is for.
+    """
+    # Scrolled to first, then widened, then scrolled to again. Widening
+    # moves every tile, and a tile that has been pushed off the edge has
+    # no pill on screen to click — so the strip is brought to it while
+    # everything is still small enough to be in view, and confirmed
+    # afterwards.
+    focus_app_group(s, app_id, prefer=prefer)
+    resp = s.set_group_width(share)
+    if "err" in resp:
+        note(f"{s.name}: could not widen the strip — "
+             f"{json.dumps(resp['err'])[:120]}")
+    s.settle(0.6)
+    focus_app_group(s, app_id, prefer=prefer)
+    # Measured, not assumed — the same rule the two-window framing keeps.
+    # Focusing a group scrolls it *into view*, which is not the same as
+    # scrolling it *wholly* into view: at 720 permille the shot came out
+    # with the document readable and its right edge past the screen.
+    # Said rather than silently accepted, because the next person to
+    # widen this will otherwise re-find it from the frame.
+    if VIEWPORT:
+        clipped = [w for w in windows_off_screen(s, VIEWPORT) if app_id in w]
+        if clipped:
+            note(f"{s.name}: the framed window is not wholly on screen — "
+                 + "; ".join(clipped))
+
+
+#: How many pixels have to move before a screen counts as having
+#: changed. A text caret blinking on and off is about fifty; a remote
+#: peer's name pill is a bit over a thousand; a line of text arriving in
+#: a document is tens of thousands. Set above the second and far below
+#: the third, so a page that gained a sentence is never confused with a
+#: page that only blinked.
+SCREEN_MOVED_PX = 4000
+
+
+def screen_shot(s: Session, where: str) -> str | None:
+    """Put what `s` is painting on disk, and hand back the path."""
+    try:
+        s.snapshot(where)
+        return where
+    except Exception as exc:  # noqa: BLE001
+        note(f"{s.name}: could not read the screen back ({exc})")
+        return None
+
+
+def pixels_moved(before: str | None, after: str | None) -> int | None:
+    """How many pixels differ between two shots, or None if it could not
+    be worked out.
+
+    The one question a socket cannot answer: did that screen actually
+    change. Comparing the PNGs byte for byte is not it — the two shots
+    either side of this beat came out the same size and different bytes,
+    because a caret had blinked, so a hash says "changed" about a screen
+    on which nothing happened. This decodes and counts instead.
+    """
+    if not before or not after:
+        return None
+    try:
+        from PIL import Image, ImageChops
+    except Exception:                       # noqa: BLE001
+        note("PIL is not available, so the far screen could not be "
+             "compared against what its session answered")
+        return None
+    try:
+        with Image.open(before) as a, Image.open(after) as b:
+            a, b = a.convert("RGB"), b.convert("RGB")
+            if a.size != b.size:
+                return None
+            grey = ImageChops.difference(a, b).convert("L")
+            # A threshold, not an exact match: subpixel text rendering
+            # moves a value by one or two all over a page that has not
+            # changed at all.
+            moved = grey.point(lambda v: 255 if v > 24 else 0)
+            return sum(moved.histogram()[255:])
+    except Exception as exc:                # noqa: BLE001
+        note(f"could not compare the two shots ({exc})")
+        return None
+
+
+def focus_app_group(s: Session, app_id: str,
+                    prefer: dict | None = None) -> bool:
+    """Scroll the strip to the group holding `app_id`, and say whether it
+    worked.
+
+    `focus_leftmost_group` frames a strip; this picks a *subject*. The
+    last shot of the film is about one window — the document two other
+    participants have been writing into — and an even share of the strip
+    with the file manager scrolled up in front of it is a shot of the
+    wrong thing. It has been exactly that: a payoff frame showing an
+    empty folder listing, under a caption about a document.
+
+    Aimed at the tab pill for the same reason as `focus_leftmost_group`:
+    a click in the body reaches the client and selects whatever is under
+    it.
+    """
+    laid = painted_tiles(s)
+    tiles = [t for sid, t in sorted(laid.items()) if t["app_id"] == app_id]
+    if not tiles:
+        note(f"{s.name}: nothing on screen is {app_id}, so the strip is "
+             f"left where it is")
+        return False
+    # By the end of the film two windows on this screen announce the same
+    # app id — the session's own, and the peer's, replicated in. They are
+    # showing the same document, so either would do; `prefer` names the
+    # one the beat has been talking about, so the shot is of the window
+    # the audience watched arrive.
+    want = (prefer or {}).get("surface_id")
+    chosen = next((laid[int(want)] for _ in (0,)
+                   if want is not None and int(want) in laid
+                   and laid[int(want)]["app_id"] == app_id), tiles[0])
+    x, y, w, _h = chosen["rect"]
+    py = y - 18.0
+    if py < TOPBAR_H:
+        # One window filling the strip wears no pill, and 18px above it is
+        # the workspace switcher. Already the only thing on screen, so
+        # there is nothing to scroll to anyway.
+        return True
+    s.click_at(max(4.0, x + min(90.0, w / 2.0)), py)
+    s.settle(0.8)
+    note(f"{s.name}: brought {app_id} up in the strip for the shot")
+    return True
+
+
 def peer_sync_card_up(s: Session) -> bool:
     """Whether the peer-sync card is being painted over the middle of the
     screen.
@@ -2000,8 +2410,9 @@ def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
     host.settle(0.5)
     claim(f"the field took the name {name!r}",
           host.chrome()["peer_sync"]["invite_name"], name)
-    if RECORDER:
-        RECORDER.dwell()
+    # Who it is for, on screen, before anything has been minted. One of
+    # the four frames this beat exists to let somebody read.
+    read_hold()
     if shots and tag:
         host.snapshot(os.path.join(shots, f"{tag}-naming.png"))
 
@@ -2033,9 +2444,11 @@ def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
     if copied != token:
         note(f"the card shows {len(token)} characters; the clipboard holds "
              f"{len(copied or '')}")
-    if RECORDER:
-        RECORDER.dwell()
-        RECORDER.dwell()
+    # The card, whole: whose it is, the short code that reads the same on
+    # both screens, and that it is on the clipboard. This is the frame
+    # the invitation has flashed past in every previous cut, so it is
+    # held for longer than anything else in the film.
+    read_hold(READ_HOLD_S * 2)
     if shots and tag:
         host.snapshot(os.path.join(shots, f"{tag}-copied.png"))
     # The moment it has been read, and not one beat later: it is a modal
@@ -2076,8 +2489,7 @@ def join_room(guest: Session, token: str, via: str,
               guest.overlays()["collaborators"], True)
         if shots and tag:
             guest.snapshot(os.path.join(shots, f"{tag}-panel.png"))
-        if RECORDER:
-            RECORDER.dwell()
+        read_hold()
 
         step("and presses Join")
         seat = guest.named_rect("collab_join")
@@ -2105,8 +2517,7 @@ def join_room(guest: Session, token: str, via: str,
         gap(f"{guest.name}: nothing opened a connect prompt, so there was "
             f"nowhere to put the token")
         return False
-    if RECORDER:
-        RECORDER.dwell()
+    read_hold()
 
     step("he presses Paste")
     pasted_click = guest.click_named("peer_sync_paste")
@@ -2124,8 +2535,9 @@ def join_room(guest: Session, token: str, via: str,
              f"{len(token)}")
     if shots and tag:
         guest.snapshot(os.path.join(shots, f"{tag}-pasted.png"))
-    if RECORDER:
-        RECORDER.dwell()
+    # The same short code, on the other machine, beside the words telling
+    # you to check it matches. Held, for the same reason as above.
+    read_hold(READ_HOLD_S * 2)
 
     step("and Join")
     joined_click = guest.click_named("peer_sync_join")
@@ -2139,6 +2551,7 @@ def join_room(guest: Session, token: str, via: str,
         timeout=15)
     if shots and tag:
         guest.snapshot(os.path.join(shots, f"{tag}-joined.png"))
+    read_hold()
     dismiss_peer_sync_card(guest, "connect")
     return bool(joined)
 
@@ -2744,6 +3157,32 @@ def run_the_agent(agent: Session, room: str, shots: str,
             proc.kill()
             note(f"the agent did not finish within {timeout:.0f}s; "
                  f"see {log_path}")
+            # A bare timeout sends the next person to read a hung
+            # process. The usual cause is upstream of the agent and is
+            # visible in the session's own log: the broker computes an
+            # addressed channel key and then fans out room-wide anyway,
+            # so every app in the room answers the agent's handshake and
+            # it is offered a document from an app it did not ask for.
+            # Said here so it is diagnosed once rather than every time.
+            try:
+                with open(agent.log_path) as fh:
+                    session = fh.read()
+            except OSError:
+                session = ""
+            wide = [ln for ln in session.splitlines()
+                    if "room_wide=true" in ln and "addressed=" in ln]
+            others = [ln for ln in session.splitlines()
+                      if "recv Arrived" in ln
+                      and WORD_PROCESSOR not in ln.split("]")[0]]
+            if wide or others:
+                note("the broker fanned this session's collaboration "
+                     "traffic room-wide while carrying an addressed "
+                     "channel key, so apps the agent did not ask for "
+                     "answered its handshake:")
+                for ln in (wide[-1:] + others[-2:]):
+                    note(f"    {ln.strip()[:200]}")
+                note("that is a broker fix, not an agent or a demo one — "
+                     f"see {agent.log_path}")
             return False
     if code != 0:
         with open(log_path) as fh:
@@ -2824,8 +3263,7 @@ def beat_two(ada: Session, bob: Session, host_ws: dict,
     note(f"the room holds {len(here)} collaborator(s) — an empty roster is "
          f"exactly when the way in matters most, and it is the case that "
          f"used to paint nothing at all")
-    if RECORDER:
-        RECORDER.dwell()
+    read_hold()
     ada.snapshot(os.path.join(shots, "02a-collaborators-empty.png"))
 
     token = invite_from_the_panel(ada, bob.user, shots, "02b")
@@ -2839,32 +3277,46 @@ def beat_two(ada: Session, bob: Session, host_ws: dict,
          "room document then, by the room's own authority, so both "
          "machines can attribute a cursor to a person nobody self-declared")
 
-    # Redeeming is bob's, and it is his screen that changes. The cut
-    # lands on his top bar rather than on his empty desktop: a held shot
-    # of a bare backdrop under a band reading "joined by invite" shows
-    # nothing that supports what the band says.
+    # Redeeming is bob's, and it is his screen that changes — and the
+    # film does not go there for it.
+    #
+    # This used to be a cut, and it is the most tempting one in the whole
+    # storyboard: it is a real gesture on a second machine, and every
+    # step of it is proven below. What it shows is a person pasting a
+    # string into a dialog, which is the least surprising thing in this
+    # system, and it costs the audience a cut out and a cut back at the
+    # point where they are still working out who the first person is.
+    #
+    # What they see instead is ada's roster gaining a member two
+    # beats later, on the screen they are already watching. Every claim
+    # here still holds; the pictures are written to `shots/` and are not
+    # in the cut.
     step("the token travels — by hand, off ada's clipboard")
-    cut("bob")
-    claim("bob joined",
-          join_room(bob, token, via="panel", shots=shots, tag="02c"), True)
-    claim("bob's own state holds ada's room",
-          bob.active_workspace()["room"], host_ws["room"])
-    claim("and his own copy names ada as owner",
-          bob.active_workspace()["owner"], ada.user)
+    with off_camera("bob redeeming the invitation on his own machine — "
+                    "ada's roster gains him on screen shortly"):
+        claim("bob joined",
+              join_room(bob, token, via="panel", shots=shots, tag="02c"), True)
+        claim("bob's own state holds ada's room",
+              bob.active_workspace()["room"], host_ws["room"])
+        claim("and his own copy names ada as owner",
+              bob.active_workspace()["owner"], ada.user)
 
 
 def beat_three(ada: Session, agent: Session, host_ws: dict,
                shots: str) -> None:
     banner("3.  ada invites the agent")
-    cut("ada")
-
+    # No cut anywhere in this beat. It runs off camera (see `run`): it is
+    # the same card the film has just spent fifteen seconds on, made out
+    # to a different name, and the half of it that is actually new — an
+    # agent is a subject in the permission model, not a peer — is a
+    # question asked of the authority gate and answered in this
+    # transcript. There is nothing in it that a second look at the same
+    # modal would show.
     step("he opens the room's people again — bob is in it now")
     via = show_collaborators(ada)
     note(f"opened from {via}")
     claim("the collaborators panel is up", ada.overlays()["collaborators"],
           True)
-    if RECORDER:
-        RECORDER.dwell()
     ada.snapshot(os.path.join(shots, "03a-collaborators-bob.png"))
 
     step("a second invitation — but an agent is not a peer")
@@ -2896,8 +3348,6 @@ def beat_three(ada: Session, agent: Session, host_ws: dict,
     # different kind of participant: it is a subject in the permission
     # model, `agent:<id>`, and its authority is a grant on a scope. Asked
     # of the production gate, which answers about a verb on a scope.
-    cut("ada")
-
     def may_write(app: str) -> bool:
         answer = ada.check_action(AGENT_SUBJECT, app, "SpliceText") \
             .get("answer", {}) or {}
@@ -2939,11 +3389,16 @@ def beat_four(ada: Session, bob: Session, agent: Session,
               host_ws: dict, shots: str) -> None:
     banner("4.  both have joined — and each session can see the others")
 
+    cut("ada")
+
     step("read ada's room back out of the other two")
-    # Neither of these is ada's own state. Each guest independently
-    # reports the room it now holds, so the camera sits on the guest
-    # doing the reporting.
-    cut("bob")
+    # Neither of these is ada's own state — each guest independently
+    # reports the room it now holds — and neither is filmed from the
+    # guest. Asking a far session what it holds is a question, and a
+    # question has no picture: what it produces is a line in this
+    # transcript. The camera stays where the story is, and what bob
+    # holds is *seen* in the last shot of the film rather than described
+    # over a screenshot of his backdrop.
     claim("bob's own copy carries ada's name for the room",
           bob.active_workspace()["name"], host_ws["name"])
     # Read from the agent's session, shot on nobody's: it is asserted
@@ -2957,7 +3412,6 @@ def beat_four(ada: Session, bob: Session, agent: Session,
     # names have to hold up — a roster listing `peer-2` and
     # `peer@11895642303397647149` beside `bob` is three label styles
     # for three participants, and a room nobody can read.
-    cut("ada")
     via = show_collaborators(ada)
     note(f"opened from {via}")
     claim("the collaborators panel is up on ada's screen",
@@ -2997,11 +3451,10 @@ def beat_four(ada: Session, bob: Session, agent: Session,
               "holding a capability in it", agent.user in members, True)
         if agent.user in members:
             note(f"{agent.user} holds {sorted(set(members[agent.user]))} "
-                 f"here, and no cursor: an agent is a participant whose "
-                 f"actions are visible, not a mouse on somebody's screen")
-    if RECORDER:
-        RECORDER.dwell()
-        RECORDER.dwell()
+                 f"here — which is what makes it a member of this room: a "
+                 f"capability, granted by the owner, in the same list the "
+                 f"people are in")
+    read_hold()
     ada.snapshot(os.path.join(shots, "03a-roster.png"))
     close_collaborators(ada)
 
@@ -3021,10 +3474,14 @@ def beat_four(ada: Session, bob: Session, agent: Session,
     # to announce themselves.
     WHERE_Q = (880.0, 520.0)
     WHERE_X = (640.0, 610.0)
-    cut("ada")
     ada.pointer_move(*WHERE_Q)
     ada.settle(0.6)
-    cut("bob")
+    # Moved, not filmed. Both halves of this are one fact seen from two
+    # sides, and one side is enough to put on screen: ada's desktop
+    # carrying bob's cursor, with nothing open on either machine, is
+    # the picture. Cutting to bob to watch him move a mouse shows the
+    # cause of something the audience has already been shown the effect
+    # of.
     bob.pointer_move(*WHERE_X)
     bob.settle(0.6)
 
@@ -3103,11 +3560,36 @@ def beat_four(ada: Session, bob: Session, agent: Session,
                  f"painted where he is not")
     bob.snapshot(os.path.join(shots, "03-bob-joined.png"))
 
-    cut("ada")
     on_ada = wait_for(lambda: seen_by(ada, bob.user), timeout=SYNC_TIMEOUT_S)
     claim("and ada's paints bob's, the other way", bool(on_ada), True)
     if on_ada:
         claim("also at a real position", at_the_origin(on_ada[0]), False)
+        note(f"ada's screen holds {json.dumps(on_ada[0])}")
+    # Whether the agent publishes a pointer of its own is a fact about the
+    # product, and it is read rather than assumed in either direction: an
+    # earlier draft of this beat stated in a comment that it does not, and
+    # a shot from that same run had a pill reading `Claude` in it.
+    agent_seen = seen_by(ada, agent.user)
+    if agent_seen:
+        # Reported, not shot around, and not fixed here: the compositor
+        # restates every session's pointer from its own frame loop, so a
+        # session that has never had a pointer moved through it still
+        # publishes one — and the agent is a session. Nothing in this
+        # script moves it (there is no `agent.pointer_move` anywhere),
+        # which is why this belongs to `shell` rather than to the film.
+        gap("the agent publishes a desktop cursor: a pill reading "
+            f"{agent.user!r} is painted on ada's screen at "
+            f"{json.dumps(agent_seen[0])}. A pointer is for pointing at "
+            f"something you are looking at, and this participant never "
+            f"looks at a screen — its presence should be a caret in the "
+            f"document at the moment it acts, and nothing else. The "
+            f"pointer is level-triggered from the compositor's frame "
+            f"loop, so this is a shell fix, not a demo one")
+    else:
+        note(f"{agent.user} publishes no desktop cursor, which is right: "
+             f"what makes it a member of this room is the capability "
+             f"above, and where it appears is in the document")
+    read_hold()
 
     step("and they stay there without anyone moving")
     # The property that makes this beat filmable, asserted rather than
@@ -3195,14 +3677,25 @@ def beat_five(ada: Session, registry, shots: str) -> dict | None:
     # presented *something*, and what a `ui` app presents first is its
     # splash — so the shot that is supposed to show a word processor
     # arriving on a machine that lacked it was a title and a spinner.
-    ada.settle(2.5)
+    #
+    # 2.5s was not enough of a beat: it produced exactly that shot, a
+    # centred "Word Processor" over a dot spinner, in the frame the
+    # letter's "an app appears with no install step" rests on. Held long
+    # enough for the app to finish starting, and held *on camera* rather
+    # than settled quietly, because an app coming up is worth watching
+    # and this is the moment the beat is for.
+    ada.settle(2.0)
+    if RECORDER:
+        RECORDER.hold(5.0)
+    else:
+        ada.settle(5.0)
     ada.snapshot(os.path.join(shots, "05-word-processor.png"))
     return painted
 
 
 def beat_six(ada: Session, bob: Session, baseline: dict,
-             shots: str) -> str | None:
-    banner("6.  cut to bob — the window is open for him too")
+             opened: list[str], shots: str) -> str | None:
+    banner("6.  bob's screen — the window, and what ada wrote in it")
 
     # Both halves of the rule get asserted, because either alone is easy
     # to satisfy wrongly: the window must arrive, *and* he must not be
@@ -3215,13 +3708,31 @@ def beat_six(ada: Session, bob: Session, baseline: dict,
     # nothing to watch — the success and the failure both came out as
     # silence. What is watched instead is the tab that did not exist
     # when the baseline was taken, which is the window beat 5 opened.
-    cut("bob")
+    #
+    # No cut, and asked *before* beat 7 — because beat 7 has bob open a
+    # word processor on his own machine, and opening an app moves your
+    # focus to it. Asked afterwards, "his view did not move" is measured
+    # across a window he opened himself: it failed exactly that way once,
+    # reporting a replication bug that was a person clicking on their own
+    # computer. The claim is that *somebody else's* window arriving does
+    # not move you, so nothing of his own may happen in between.
+    #
+    # What the film shows is separate and later — see `show_bobs_screen`,
+    # which frames the same screen once it is also carrying the sentence
+    # ada typed.
     before_view = baseline["view"]
     before_groups = baseline["groups"]
-    q_tabs = set(ada.tabs_here())
-    fresh = [t for t in q_tabs if t not in baseline["tabs"]]
-    note(f"ada holds {len(q_tabs)} tab(s); bob holds "
-         f"{len(bob.tabs_here())}; {len(fresh)} opened since the baseline")
+    # Handed in, not diffed here. Since this beat moved after beat 7 there
+    # is a second word processor in the room — the one bob opened on his
+    # own machine — and a tab that is new since the baseline could be
+    # either. Watching *his own* tab arrive in his own tree is a claim
+    # that cannot fail, printed under a heading about replication. What is
+    # watched is the tab ada's machine opened, identified before
+    # bob opened anything.
+    fresh = list(opened)
+    note(f"ada holds {len(ada.tabs_here())} tab(s); bob holds "
+         f"{len(bob.tabs_here())}; the tab under test is the one his "
+         f"machine opened in beat 5, taken before bob opened his own")
 
     # Keep this beat on one of qOS's own apps. Those replicate through
     # the room document and are drawn from it on the far side, which is
@@ -3262,6 +3773,26 @@ def beat_six(ada: Session, bob: Session, baseline: dict,
     return tid
 
 
+def show_bobs_screen(bob: Session, shots: str) -> None:
+    """The shot the film's one excursion was made for.
+
+    Everything in it has already been proven — the window arrived in beat
+    6, the sentence in beat 7 — and neither proof is a picture: both are
+    answers to questions put over a socket. This is where a viewer gets
+    to see the two of them on one screen at the same time, which is the
+    only thing a second machine is worth crossing to.
+
+    Framed rather than merely visited: an even share of the strip, every
+    window whole, and then the document brought up in front. A previous
+    cut ended its excursion on this session's file manager showing an
+    empty folder, under a caption about a document two other participants
+    had just written into.
+    """
+    frame_one_window(bob, WORD_PROCESSOR)
+    read_hold(READ_HOLD_S * 2)
+    bob.snapshot(os.path.join(shots, "06b-bob-window-and-text.png"))
+
+
 def beat_seven(ada: Session, bob: Session, host_ws: dict,
                ada_wp: dict | None, shots: str) -> None:
     banner("7.  ada writes, and bob's screen is asked what it holds")
@@ -3278,10 +3809,22 @@ def beat_seven(ada: Session, bob: Session, host_ws: dict,
         return
 
     step("bob opens the word processor on his own machine")
-    cut("bob")
+    # Off camera, deliberately. Both copies have to be up before either
+    # types — see the settle below — but watching a second machine open
+    # the same app the film has just watched arrive is the same shot
+    # twice, and it costs two cuts to show it.
     # His machine runs its own copy and draws it locally. Nothing is
     # streamed; the two copies share one document.
-    his = bob.launch(WORD_PROCESSOR, search="word processor")
+    # Bounded like every other wait, and for a sharper reason than the
+    # others: `LAUNCH_TIMEOUT_S` is four minutes, deliberately, because a
+    # launch on a loaded machine really can take that long and a harness
+    # that gives up early reports a working system as broken. But those
+    # four minutes are spent on ada's unchanging screen, and one run
+    # spent 250 of its 350 seconds — 72% of the whole film — sitting in
+    # exactly this call while the app it was waiting for never painted.
+    # The wait keeps its full length; only the camera stops attending it.
+    with patience(20.0):
+        his = bob.launch(WORD_PROCESSOR, search="word processor")
     claim("bob's word processor painted", his is not None, True)
     if his is None:
         gap("bob has no word processor open, so there is no far screen "
@@ -3295,6 +3838,16 @@ def beat_seven(ada: Session, bob: Session, host_ws: dict,
     # address before either types, or the first keystrokes go out to
     # nobody and it reads as a transport failure.
     bob.settle(6.0)
+
+    # What bob's screen looks like before a word of it exists. The
+    # claim below is answered over a socket, and a socket cannot tell you
+    # whether the app *drew* anything: a run once passed "bob's own
+    # word processor holds what ada typed" with both pages on his
+    # screen reading "Start writing…" for the whole beat. Assertion
+    # green, screen blank — which is the failure this whole file is
+    # written against, so it is checked rather than hoped for.
+    before_screen = screen_shot(
+        bob, os.path.join(shots, "07a-bob-before-the-text.png"))
 
     step(f"ada types {TYPED_TEXT!r}")
     cut("ada")
@@ -3377,6 +3930,11 @@ def beat_seven(ada: Session, bob: Session, host_ws: dict,
              "downstream of this is about the network")
 
     step("and bob's session is asked what it now holds")
+    # The one excursion in the film, and it stays open across beat 6:
+    # this is the first moment a second machine has anything on it worth
+    # crossing for. Everything before this — his redeeming the invite,
+    # his opening his own copy of the app — happened while the camera
+    # stayed with the person the story is about.
     cut("bob")
     # What is mechanically readable from here is presence: the caret and
     # pointer of the peer who is typing, attributed to his user id, off
@@ -3410,7 +3968,14 @@ def beat_seven(ada: Session, bob: Session, host_ws: dict,
     doc, carried = None, False
     try:
         reader = DocumentReader(bob.collab_json_sock, room, record=None)
-        doc, carried = reader.await_document(TYPED_TEXT, DOC_SYNC_TIMEOUT_S)
+        # Filmed for as long as it usually takes, and no longer. When it
+        # works the sentence turns up on his page in a few seconds and
+        # that is the shot; when it does not, a minute of an unchanged
+        # page under a caption about a document arriving is the worst
+        # thing this film could contain.
+        with patience(10.0):
+            doc, carried = reader.await_document(TYPED_TEXT,
+                                                 DOC_SYNC_TIMEOUT_S)
     except OSError as e:
         gap(f"bob's session has no JSON broker to ask ({e}) — "
             f"looked at {bob.collab_json_sock}")
@@ -3444,7 +4009,35 @@ def beat_seven(ada: Session, bob: Session, host_ws: dict,
             f"read back — this run establishes nothing about beat 7 in "
             f"either direction. See {bob.log_path}")
     bob.settle(2.0)
-    bob.snapshot(os.path.join(shots, "08-bob-received.png"))
+    after_screen = screen_shot(
+        bob, os.path.join(shots, "08-bob-received.png"))
+
+    # The cross-check. Only meaningful when the socket said yes: a
+    # document that never arrived is allowed to leave the screen alone.
+    if carried:
+        moved = pixels_moved(before_screen, after_screen)
+        if moved is None:
+            gap("bob's session answered with the text, and his screen "
+                "could not be compared, so whether his app drew any of "
+                "it is not established by this run")
+        elif moved < SCREEN_MOVED_PX:
+            gap(f"bob's session answered with a document carrying "
+                f"{TYPED_TEXT!r}, and {moved} pixels of his screen moved "
+                f"while it arrived — a blinking caret, and no text. His "
+                f"pages read 'Start writing…' either side of it. So the "
+                f"app that answered is not the app that is drawn: the "
+                f"broker computes an addressed channel key and fans out "
+                f"room-wide anyway (grep `room_wide=true` in "
+                f"{bob.log_path}), so a handshake addressed to the "
+                f"word processor is answered by whatever else is in the "
+                f"room, and this claim passes without his word processor "
+                f"holding anything. It is the same defect that leaves "
+                f"the agent waiting in beat 9, and this is the shot the "
+                f"film crosses to a second machine to get")
+        else:
+            note(f"and {moved} pixels of his screen moved while it "
+                 f"arrived, so the app that answered is the app that is "
+                 f"drawn")
 
 
 #: Where the file view puts its rows, straight off the app's own
@@ -3577,9 +4170,16 @@ def press_the_photo_row(ada: Session, log: LogTail, tile: tuple,
 def beat_eight(ada: Session, files: dict | None, wp: dict | None,
                shots: str) -> None:
     banner("8.  a photograph dragged out of Files and into the document")
+    # Named while the camera is down, so the film comes back up on
+    # ada rather than on the screen the excursion left behind.
     cut("ada")
-
-    # What makes this beat worth filming is not that a picture appears in
+    # Run, asserted, and left out of the cut — see `run`. It is the
+    # longest beat here by a distance, most of that spent moving a
+    # pointer slowly enough for two processes to hand a drag between
+    # them, and none of the claims this film is cut to support is about
+    # drag and drop.
+    #
+    # What makes this beat worth running is not that a picture appears in
     # a document. It is *how* it gets there: Files and the word processor
     # are two sandboxed clients with two different mount namespaces, so
     # the path Files is holding means nothing in the other app's world.
@@ -3895,15 +4495,22 @@ def beat_nine(ada: Session, bob: Session, agent: Session,
             "no list for the agent to act on")
         return
     ada.settle(1.0)
-    if RECORDER:
-        RECORDER.dwell()
+    read_hold()
     ada.type_prose(AGENT_INSTRUCTION)
     ada.settle(1.5)
+    # What he asked for, in his own document, addressed to a participant
+    # by name. Nothing else in the film explains what is about to happen,
+    # so this frame has to be readable.
+    read_hold(READ_HOLD_S * 2)
     ada.snapshot(os.path.join(shots, "11-instruction.png"))
     note(f"the instruction is a line in the document: {AGENT_INSTRUCTION!r}")
 
     step("the agent reads it and carries it out — with no window at all")
-    ran = run_the_agent(agent, host_ws["room"], shots)
+    # The best fifteen seconds in the film when it works — a table
+    # assembling itself in a document nobody is touching — and the worst
+    # two minutes in it when it does not. Bounded accordingly.
+    with patience(15.0):
+        ran = run_the_agent(agent, host_ws["room"], shots)
     if ran is None:
         gap("qos-agent is not built, so the agent could not act on the "
             "document (cargo build -p agent --bin qos-agent)")
@@ -3918,13 +4525,24 @@ def beat_nine(ada: Session, bob: Session, agent: Session,
     # table: a table with the rows empty is what this beat produced
     # before, and it is indistinguishable from success in a transcript
     # that only asks whether a table exists.
-    cut("bob")
+    #
+    # Asked of bob's session and *filmed on ada's*. That a third
+    # participant's edit reached a fourth machine is the strongest form
+    # of the claim and is worth asserting; it is not worth a second
+    # excursion, because the same edit is arriving on the screen already
+    # on camera, in the document the audience has watched being written.
+    # An agent's work showing up in your document the way a colleague's
+    # does is the whole point, and it is a point about *your* screen.
     reader = None
     try:
         reader = DocumentReader(bob.collab_json_sock, host_ws["room"],
                                 record=None)
-        doc, carried = reader.await_document(AGENT_BULLET_PROOF,
-                                             DOC_SYNC_TIMEOUT_S)
+        # A question over a socket, with the camera on a screen it is not
+        # about. Nothing here is worth a minute of film in either
+        # direction.
+        with patience(3.0):
+            doc, carried = reader.await_document(AGENT_BULLET_PROOF,
+                                                 DOC_SYNC_TIMEOUT_S)
     except OSError as e:
         gap(f"bob's session has no JSON broker to ask ({e})")
         doc, carried = None, False
@@ -3941,19 +4559,55 @@ def beat_nine(ada: Session, bob: Session, agent: Session,
     # the strip scrolled back, and every window whole. An accumulation
     # of everything the run happened to open is the picture that argues
     # against the layout this is meant to show off.
-    frame_both_windows(bob, VIEWPORT)
-    if RECORDER:
-        RECORDER.dwell()
-        RECORDER.dwell()
-    bob.snapshot(os.path.join(shots, "12-bob-agent-table.png"))
+    #
+    # …and then pointed at the subject. Framing the strip is not the same
+    # as choosing what the shot is of: an earlier cut ended on a file
+    # manager showing an empty folder, under a caption about a document
+    # two other participants had just written into.
+    frame_one_window(ada, WORD_PROCESSOR, prefer=ada_wp)
+    read_hold(READ_HOLD_S * 2)
+    ada.snapshot(os.path.join(shots, "12-agent-table.png"))
+    bob.snapshot(os.path.join(shots, "12b-bob-agent-table.png"))
 
 
 def run(ada: Session, bob: Session, agent: Session, shots: str,
         registry) -> None:
+    """Every beat, in order — and which of them the camera is up for.
+
+    All nine run and all nine are asserted; the transcript is the same
+    either way. What differs is the cut, and the cut is decided here
+    rather than inside the beats, so the shape of the film is one
+    readable page instead of nineteen scattered decisions.
+
+    The shape is one excursion: ada's screen for the length of the
+    story, out to bob once at the moment his machine is holding
+    something worth crossing for — a window he never opened, carrying a
+    sentence he never typed — and back. Two cuts. The previous version
+    had eleven, and a stranger watching it spent most of them working out
+    whose machine they were on instead of watching what happened on it.
+
+    The other two participants are visible *through* ada's screen
+    rather than by going to theirs: bob arrives as a row in a roster
+    and a cursor on the backdrop, and the agent as a chip in that same
+    roster and then an edit landing in the document on camera. Which is
+    also what collaboration software looks like when it works — you stay
+    on your own screen.
+
+    The beats that are run but not filmed are not filler — they are the
+    proof for claims the film makes elsewhere, or beats good enough to
+    deserve their own minute rather than fifteen seconds of this one.
+    """
     host_ws, files = beat_one(ada, shots)
+    # ada raises the invitation on camera, at length, because it is
+    # the gesture the whole collaboration story hangs off. bob redeeming
+    # it is a person pasting a string into a dialog, and happens off
+    # camera inside the beat.
     beat_two(ada, bob, host_ws, shots)
-    beat_three(ada, agent, host_ws, shots)
-    beat_four(ada, bob, agent, host_ws, shots)
+    with off_camera("the agent's invitation — the same card, a different "
+                    "name on it — and the permission check that follows, "
+                    "which is a question to the authority gate and has no "
+                    "picture"):
+        beat_three(ada, agent, host_ws, shots)
     # Everything bob holds and is looking at *before* the word
     # processor exists anywhere. Beat 6 measures against this rather than
     # against the state it finds when it starts, so "the window crossed
@@ -3963,10 +4617,31 @@ def run(ada: Session, bob: Session, agent: Session, shots: str,
         "view": bob.view_state(),
         "groups": bob.groups_here(),
     }
+    beat_four(ada, bob, agent, host_ws, shots)
     wp = beat_five(ada, registry, shots)
-    beat_six(ada, bob, baseline, shots)
+    # Which tab beat 5 opened, read now — before beat 7 puts a second
+    # word processor in the room and makes "new since the baseline"
+    # ambiguous. Beat 6 is asked about this one specifically.
+    opened = [t for t in ada.tabs_here() if t not in baseline["tabs"]]
+    note(f"beat 5 opened {len(opened)} tab(s) on ada's machine: "
+         f"{opened or 'none'}")
+    # Proven here, seen later. Beat 6 has to run before beat 7 — beat 7
+    # has bob open an app on his own machine, and that moves his own
+    # focus, which is the thing beat 6 asserts nothing did. Both its
+    # claims are answers over a socket rather than pictures, so running
+    # it off camera costs the film nothing.
+    with off_camera("bob's tree, read over a socket: the window is there "
+                    "and his view did not move. His screen is seen holding "
+                    "it, and the sentence, in the excursion below"):
+        beat_six(ada, bob, baseline, opened, shots)
+    # The excursion: beat 7 opens it at its own last step, once his screen
+    # has the sentence on it too, and the shot closes it. Beat 9 cuts back.
     beat_seven(ada, bob, host_ws, wp, shots)
-    beat_eight(ada, files, wp, shots)
+    show_bobs_screen(bob, shots)
+    with off_camera("the photograph dragged between two sandboxes: the "
+                    "longest beat here, and not one of the things this "
+                    "cut is arguing"):
+        beat_eight(ada, files, wp, shots)
     beat_nine(ada, bob, agent, host_ws, wp, shots)
 
 
@@ -4008,25 +4683,29 @@ def main() -> int:
     ap.add_argument("--record-interval", type=float, default=0.0, metavar="S",
                     help="target seconds between snapshots; 0 means as fast "
                          "as the compositor sustains")
-    ap.add_argument("--record-dwell", type=float, default=1.1, metavar="S",
+    ap.add_argument("--record-dwell", type=float, default=0.3, metavar="S",
                     help="seconds to hold on each beat and step while "
-                         "recording, so the video runs long enough to read. "
-                         "Real elapsed time, really sampled — never a held "
-                         "frame standing in for one")
-    ap.add_argument("--record-cut-dwell", type=float, default=1.5, metavar="S",
+                         "recording. Real elapsed time, really sampled — "
+                         "never a held frame standing in for one. Small, "
+                         "because it is paid on every step in the run and "
+                         "the frames that actually have to be *read* ask "
+                         "for their time separately (`read_hold`)")
+    ap.add_argument("--record-cut-dwell", type=float, default=1.2, metavar="S",
                     help="seconds to hold after cutting to a session, so the "
                          "screen you have just been moved to registers "
-                         "before the demo carries on")
-    ap.add_argument("--record-max-hold", type=float, default=1.8, metavar="S",
-                    help="longest one unchanged frame is shown for. A "
-                         "session waiting on a sandbox spawn or a network "
-                         "hop renders the same screen for as long as it "
-                         "waits; this trims that dead air. Nothing is "
-                         "duplicated or interpolated — a frame is only ever "
-                         "shown for less time than it was live. Keep it "
-                         "above --record-dwell, or the holds the demo asks "
-                         "for are trimmed along with the accidental ones. "
-                         "0 keeps the video on wall-clock time")
+                         "before the demo carries on. There are three cuts "
+                         "in the film, so this is cheap and worth having")
+    ap.add_argument("--record-max-hold", type=float, default=0.6, metavar="S",
+                    help="longest one *accidentally* unchanged frame is "
+                         "shown for. A session waiting on a sandbox spawn "
+                         "or a network hop renders the same screen for as "
+                         "long as it waits; this trims that dead air. "
+                         "Nothing is duplicated or interpolated — a frame "
+                         "is only ever shown for less time than it was "
+                         "live. Frames the demo deliberately stopped on "
+                         "(`read_hold`) are exempt, so this can be tight "
+                         "without shortening the card somebody has to "
+                         "read. 0 keeps the video on wall-clock time")
     ap.add_argument("--record-fps", type=int, default=30, metavar="N",
                     help="container frame rate of the composed video; the "
                          "capture rate is whatever was achieved, and frames "
@@ -4256,6 +4935,26 @@ def main() -> int:
     video = None
     if RECORDER:
         RECORDER.report()
+        try:
+            RECORDER.beat_report(BEAT_MARKS, args.record_fps)
+        except Exception as exc:  # noqa: BLE001 — never lose the video for it
+            print(f"  (could not attribute video time to beats: {exc})")
+        # The claim the whole film rests on, checked against the frames
+        # rather than trusted to the beats. `cut` refuses the name, but
+        # `cut` is not the only way `_live` could come to point at that
+        # session, and this is the check that still holds when somebody
+        # adds another way. A statistic reading "Claude 0 frames" is
+        # something a person has to notice; this fails the run.
+        strays = RECORDER.frames_from(NEVER_ON_CAMERA)
+        if strays:
+            FAILURES.append(
+                f"{strays} frame(s) in the recording were captured from "
+                f"{NEVER_ON_CAMERA}'s session — an agent's desktop is the "
+                f"one thing this film must not contain")
+        else:
+            print(f"  no frame came from {NEVER_ON_CAMERA}'s session: what "
+                  f"it did is in the film only where the people it did it "
+                  f"with can see it")
         # Composed after teardown: encoding three tracks is CPU-hungry,
         # and the sessions have nothing left to say by now.
         try:
