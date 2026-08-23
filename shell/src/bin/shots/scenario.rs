@@ -526,12 +526,32 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 eprintln!("scenario: the wheel disc has not laid out yet — paint first?");
                 return;
             }
-            // A third of the way in from the rim, vertically centred:
-            // inside the arc at every rotation, and clear of the
-            // add-workspace button down at the bottom.
-            let from = Point::new(rect.x0 + rect.width() * 0.66, (rect.y0 + rect.y1) / 2.0);
-            driver.move_cursor(from);
-            driver.press();
+            // Continue an existing gesture rather than starting a new
+            // one. Two of these back to back is how a scenario captures
+            // a drag at more than one depth, and pressing again half way
+            // through does not do that: the second press lands on
+            // whichever sector has rotated under the pointer by then,
+            // which the disc reads as *clicking* that workspace, and no
+            // drag starts at all. The release afterwards then has
+            // nothing to settle.
+            let in_flight = driver
+                .host_mut()
+                .sidebar_wheel_mut_for_tests()
+                .and_then(|w| w.drag_from.map(|_| w.last_cursor_pos))
+                .flatten();
+            let from = match in_flight {
+                Some(p) => p,
+                None => {
+                    // A third of the way in from the rim, vertically
+                    // centred: inside the arc at every rotation, and
+                    // clear of the add-workspace button at the bottom.
+                    let p =
+                        Point::new(rect.x0 + rect.width() * 0.66, (rect.y0 + rect.y1) / 2.0);
+                    driver.move_cursor(p);
+                    driver.press();
+                    p
+                }
+            };
             let n = (*steps).max(1);
             for s in 1..=n {
                 let t = s as f64 / n as f64;
@@ -562,13 +582,15 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             driver.step_frames(24);
             driver.relayout();
             for ms in at_ms.iter() {
-                let held = driver
-                    .host_mut()
-                    .sidebar_wheel_mut_for_tests()
-                    .map(|w| w.hold_rotation_at(std::time::Duration::from_millis(*ms)))
-                    .unwrap_or(false);
+                let held = match driver.host_mut().sidebar_wheel_mut_for_tests() {
+                    None => {
+                        eprintln!("scenario: no wheel disc in the tree to sample at {ms} ms");
+                        false
+                    }
+                    Some(w) => w.hold_rotation_at(std::time::Duration::from_millis(*ms)),
+                };
                 if !held {
-                    eprintln!("scenario: no wheel settle in flight to sample at {ms} ms");
+                    eprintln!("scenario: no wheel settle recorded to sample at {ms} ms");
                 }
                 driver.relayout();
                 let name: &'static str =
@@ -2140,11 +2162,15 @@ fn wheel_overscroll_at_the_end() -> Scenario {
         actions: vec![
             Action::Snapshot("00-rest"),
             // Downward from the first workspace is off the top of the
-            // list. 120 px asks for 18°, resistance gives back far less.
-            Action::DragWheelRim { dy: 120.0, steps: 12 },
+            // list. 90 px asks for 13.5°; resistance gives back far less.
+            Action::DragWheelRim { dy: 90.0, steps: 12 },
             Action::Snapshot("01-pulled"),
-            // Five times the pull for nowhere near five times the give.
-            Action::DragWheelRim { dy: 480.0, steps: 24 },
+            // More than three times the pull, for nowhere near three
+            // times the give. Kept inside the disc's own column: the
+            // pointer has to still be over the wheel when the button
+            // comes up, or the release is routed to whatever is under
+            // it instead and the gesture never ends.
+            Action::DragWheelRim { dy: 200.0, steps: 20 },
             Action::Snapshot("02-pulled-hard"),
             Action::MouseRelease,
             Action::SampleWheelSettle { prefix: "03-returning", at_ms: SETTLE_SAMPLES },

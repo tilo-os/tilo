@@ -2490,6 +2490,14 @@ impl SidebarWheelDisc {
             return;
         };
         let mut state = chrome.borrow_mut();
+        if state.tree().active == WorkspaceId(id) {
+            // Already there. Bumping anyway makes the rest of the shell
+            // re-sync against a tree that did not change — and every
+            // gesture that ends where it started does exactly that: a
+            // pull against an end, a drag that comes back, a release
+            // inside the detent it began in.
+            return;
+        }
         state.tree_mut().set_active(WorkspaceId(id));
         state.bump();
     }
@@ -4059,6 +4067,64 @@ mod tests {
             d.active_chip_height(0, chip_w, &theme, &mut tr),
             SECTOR_CHIP_H_ACTIVE,
             "`Home` fits at the full step and must keep it"
+        );
+    }
+
+    /// A gesture that ends where it started must not tell the rest of
+    /// the shell that the workspace changed.
+    ///
+    /// Every pull against an end does exactly that, and the chrome
+    /// revision is what the shell re-syncs the whole tree against — so
+    /// an unconditional write turned a bounce off the end into a full
+    /// re-sync for no change at all.
+    #[test]
+    fn a_gesture_that_lands_where_it_started_does_not_bump_the_chrome() {
+        use crate::shell::chrome_state::ChromeState;
+        use crate::shell::state::WorkspaceTree;
+
+        let tree = WorkspaceTree::bootstrap_demo();
+        let ws_ids: Vec<_> = tree.workspaces.iter().map(|w| w.id).collect();
+        let chrome = ChromeState::new(tree);
+        let spokes: Vec<SpokeLabel> = ws_ids
+            .iter()
+            .map(|id| SpokeLabel { text: "W".into(), workspace_id: Some(id.0) })
+            .collect();
+        let mut d = SidebarWheelDisc::new(spokes).with_chrome(chrome.clone());
+        let visible_w = d.visible_width_px();
+        d.rect = Rect::new(0.0, 0.0, visible_w, d.diameter_px);
+
+        let before = chrome.borrow().revision;
+        let cx = drag_anchor_x(&d);
+        let start_y = d.diameter_px / 2.0;
+        pump(&mut d, cursor_event(cx, start_y));
+        assert!(pump(&mut d, press_event()));
+        // Down from the first workspace: a pull against the top end,
+        // which can only ever come back to where it began.
+        drag_to(&mut d, cx, start_y, 400.0, 30);
+        assert!(pump(&mut d, release_event()));
+        assert_eq!(d.selected_idx(), 0, "the pull cannot have selected anything");
+        assert_eq!(
+            chrome.borrow().revision,
+            before,
+            "a bounce off the end bumped the chrome, forcing a full re-sync for a \
+             workspace that never changed"
+        );
+
+        // A gesture that DOES change the workspace still bumps. Let the
+        // bounce finish first — starting the next drag while the wheel
+        // is still returning means it begins part of a detent from home
+        // and the same pull no longer reaches the next workspace.
+        frames(&mut d, 150);
+        assert!(d.visual_rotation_deg().abs() < 0.1, "the bounce has not finished");
+        pump(&mut d, cursor_event(cx, start_y));
+        assert!(pump(&mut d, press_event()));
+        drag_to(&mut d, cx, start_y, -130.0, 30);
+        assert!(pump(&mut d, release_event()));
+        assert_ne!(d.selected_idx(), 0);
+        assert_ne!(
+            chrome.borrow().revision,
+            before,
+            "an actual workspace change must still bump the chrome"
         );
     }
 
