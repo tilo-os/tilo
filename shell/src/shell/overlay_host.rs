@@ -210,6 +210,14 @@ pub struct ShellOverlayHost {
     /// only on Released so a fast drag doesn't spawn a subprocess per
     /// pixel of motion.
     qs_slider_drag: Option<usize>,
+    /// When the workspace invite link was last copied, so the button can
+    /// confirm it happened.
+    ws_invite_copied_at: Option<Instant>,
+    /// Ribbon segment under the pointer, if any. Paint-only.
+    strip_ribbon_hover: Option<usize>,
+    /// Off-thread reader for the OS state quick settings displays.
+    /// See [`crate::shell::qs_refresh`] for why the reads left the frame.
+    qs_refresh: crate::shell::qs_refresh::QsRefresh,
     ws_settings_was_open: bool,
     /// Interruptible open/close driver for the workspace-settings modal
     /// — like `qs_transition` but for the modal, so it fades + scales
@@ -937,6 +945,9 @@ impl ShellOverlayHost {
             qs_transition: ui::Transition::closed(),
             qs_was_open: false,
             qs_slider_drag: None,
+            ws_invite_copied_at: None,
+            strip_ribbon_hover: None,
+            qs_refresh: crate::shell::qs_refresh::QsRefresh::new(),
             ws_settings_was_open: false,
             ws_settings_transition: ui::Transition::closed(),
             palette_was_visible: false,
@@ -979,6 +990,9 @@ impl ShellOverlayHost {
         actions: Box<dyn crate::shell::qs_actions::QsActions>,
     ) -> Self {
         self.qs_actions = actions;
+        // Replacing where quick settings writes means this host is not
+        // driving the real machine, so it must not read from it either.
+        self.qs_refresh.disable_os_reads();
         self
     }
 
@@ -3988,24 +4002,34 @@ impl ShellOverlayHost {
         self.qs_transition = ui::Transition::open();
     }
 
-    /// Refresh every quick-settings field from the OS by calling the
-    /// matching getter in [`crate::shell::qs_actions`]. Called once on
-    /// the popover's rising-edge open so the user sees live values
-    /// instead of the stale snapshot from last time. Each call is
-    /// best-effort: a missing daemon logs a warning and leaves the
-    /// previous value in place.
-    fn refresh_quick_settings_from_os(&mut self) {
-        use crate::shell::qs_actions as qs;
-        let brightness = qs::log_qs_get("get_brightness", qs::get_brightness());
-        let volume = qs::log_qs_get("get_volume", qs::get_volume());
-        let wifi = qs::log_qs_get("get_wifi", qs::get_wifi());
-        let bluetooth = qs::log_qs_get("get_bluetooth", qs::get_bluetooth());
-        let power = qs::log_qs_get("get_power_profile", qs::get_power_profile());
-        let wifi_nets = qs::log_qs_get("list_wifi_networks", qs::list_wifi_networks());
-        let bt_devices = qs::log_qs_get("list_bt_devices", qs::list_bt_devices());
-
-        if let Some(chrome) = self.chrome.clone() {
+    /// Fold every reading the quick-settings workers have delivered
+    /// into chrome state. Runs once per frame and never blocks: the
+    /// reads themselves happen on a worker (see
+    /// [`crate::shell::qs_refresh`]), because a shell-out on the paint
+    /// path froze the whole desktop for as long as the OS tool took.
+    ///
+    /// Each field is applied only if it was actually read, so a missing
+    /// daemon leaves the previous value on screen rather than blanking
+    /// the panel.
+    fn apply_quick_settings_readings(&mut self) {
+        use crate::shell::qs_refresh::QsReading;
+        let readings = self.qs_refresh.drain();
+        if readings.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        for reading in readings {
             let mut st = chrome.borrow_mut();
+            let (brightness, volume, wifi, bluetooth, power, wifi_nets, bt_devices) = match reading
+            {
+                QsReading::Fast { brightness, volume, wifi, bluetooth, power } => {
+                    (brightness, volume, wifi, bluetooth, power, None, None)
+                }
+                QsReading::WifiNetworks(nets) => (None, None, None, None, None, nets, None),
+                QsReading::BtDevices(devs) => (None, None, None, None, None, None, devs),
+            };
             if let Some(v) = brightness {
                 st.quick_settings.brightness = v;
             }
@@ -4170,6 +4194,60 @@ impl ShellOverlayHost {
         let x1 = self.rect.x1 - 16.0;
         let y0 = self.rect.y0 + 48.0;
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
+    }
+
+    /// The strip ribbon for the active workspace, anchored to the right
+    /// edge of the content area.
+    ///
+    /// The content's right gutter is [`STRIP_TRAILING_GUTTER_PX`] wide
+    /// and holds nothing else, so the ribbon costs no layout: it sits in
+    /// space the strips already leave clear.
+    fn strip_ribbon(&self) -> ui::chrome::shell::StripRibbon {
+        let (count, focused) = self
+            .chrome
+            .as_ref()
+            .map(|c| c.borrow().strip_focus())
+            .unwrap_or((0, 0));
+        ui::chrome::shell::StripRibbon {
+            content: Rect::new(
+                self.rect.x0,
+                self.rect.y0 + crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX as f64,
+                self.rect.x1,
+                self.rect.y1,
+            ),
+            count,
+            focused,
+        }
+    }
+
+    /// Ribbon geometry for integration tests, so a scenario can click a
+    /// strip segment without duplicating the anchoring maths.
+    pub fn strip_ribbon_for_tests(&self) -> ui::chrome::shell::StripRibbon {
+        self.strip_ribbon()
+    }
+
+    /// The workspace-settings "Copy" button next to the invite link.
+    ///
+    /// Shared by the draw pass and the click router. It previously
+    /// existed only inside the draw pass, was never registered as a hit
+    /// rect, and never called the clipboard — a painted rectangle that
+    /// looked like the primary action of the whole tab and did nothing
+    /// when pressed.
+    fn ws_settings_copy_rect(&self) -> Rect {
+        let rect = self.ws_settings_rect();
+        // Mirrors the draw pass: body_y = rect.y0 + 168, invite_y = body_y + 80.
+        let invite_y = rect.y0 + 168.0 + 80.0;
+        Rect::new(rect.x1 - 24.0 - 72.0, invite_y + 20.0, rect.x1 - 24.0, invite_y + 52.0)
+    }
+
+    /// Copy-button geometry for integration tests.
+    pub fn ws_settings_copy_rect_for_tests(&self) -> Rect {
+        self.ws_settings_copy_rect()
+    }
+
+    /// When the invite link was last copied, for integration tests.
+    pub fn ws_invite_copied_at_for_tests(&self) -> Option<Instant> {
+        self.ws_invite_copied_at
     }
 
     /// Public alias for [`Self::quick_settings_rect`] so integration
@@ -5343,6 +5421,15 @@ impl Widget for ShellOverlayHost {
             }
         }
 
+        // Strip ribbon — which strip of this workspace has focus, and
+        // how many there are. Drawn under the popovers so an open panel
+        // sits over it, and hidden while the overview is up because the
+        // overview is not showing strips.
+        if !self.overlay_flags().overview {
+            let ribbon = self.strip_ribbon();
+            ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
+        }
+
         // Quick-settings popover (anchored top-right, no scrim so it reads
         // as a dropdown rather than a modal). Concept wraps this in a
         // `motion.div` with `initial={{ opacity: 0, y: -10, scale: 0.95 }}`
@@ -5350,15 +5437,16 @@ impl Widget for ShellOverlayHost {
         // as "slipping out of the top-right". Detect the open rising edge
         // and play the same motion for `QS_OPEN_ANIM_MS`.
         if flags.quick_settings && !self.qs_was_open {
-            // Rising edge: refresh QS state from the OS. Reads are
-            // inline because each shell-out completes in <50 ms on
-            // typical hardware; if any take longer, the worst case is
-            // a single frame stutter the first time the panel opens.
-            // Failed reads are logged and leave the stale value in
-            // place so a missing daemon doesn't blank the UI.
-            self.refresh_quick_settings_from_os();
+            // Rising edge: ask for fresh OS state, but do not wait for
+            // it. The panel opens on this frame with the last known
+            // values and updates as readings land. The lists behind the
+            // Wi-Fi and Bluetooth drill-ins are deliberately not
+            // requested here — see `qs_refresh`.
+            self.qs_refresh.kick_fast();
         }
         self.qs_was_open = flags.quick_settings;
+        // Apply anything the workers have delivered since the last frame.
+        self.apply_quick_settings_readings();
         // Drive the interruptible transition from the flag. `is_visible`
         // keeps the popover drawn through its close curve so it fades +
         // slides OUT instead of popping.
@@ -5611,10 +5699,23 @@ impl Widget for ShellOverlayHost {
         // Track cursor position so we can hit-test overlay clicks in the
         // absence of position data on MouseInput.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Some(Point::new(
-                position.x / scale_factor,
-                position.y / scale_factor,
-            ));
+            let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor = Some(p);
+            // Ribbon hover. Paint-only, so it is tracked here rather
+            // than routed: a segment thickens under the pointer to say
+            // it is a control, which is most of how the ribbon
+            // advertises that it can be clicked at all.
+            let hover = if self.overlay_flags().overview {
+                None
+            } else {
+                self.strip_ribbon().hit(p)
+            };
+            if hover != self.strip_ribbon_hover {
+                self.strip_ribbon_hover = hover;
+                if let Some(chrome) = self.chrome.clone() {
+                    chrome.borrow_mut().bump();
+                }
+            }
         }
 
         // The portal's file-chooser dialog runs before everything,
@@ -5967,6 +6068,7 @@ impl Widget for ShellOverlayHost {
             let ctrl_down = mstate.control_key();
             let alt_down = mstate.alt_key();
             let is_mod = super_down || ctrl_down;
+            let shift_down = mstate.shift_key();
             // A passphrase field takes the keyboard whole while it is up.
             // Ahead of every chord below, including the palette ones: a
             // password can contain any character, and a `k` in one must
@@ -6230,6 +6332,37 @@ impl Widget for ShellOverlayHost {
                         }
                     }
                 }
+                // Shift+ArrowUp / Shift+ArrowDown (with the same Super
+                // or Ctrl modifier) — move focus between the strips of
+                // the current workspace.
+                //
+                // Strips had no binding at all: the only switch function
+                // in the tree was reachable from a debug-only simulator
+                // that built a scratch copy of the workspace tree and
+                // threw it away, so no key, gesture or click could move
+                // between them. Workspaces already own the unshifted
+                // Up/Down on both modifiers, and strips are a different
+                // level of the same model rather than a variant of the
+                // same move, so they take the shifted pair.
+                if shift_down
+                    && matches!(
+                        logical_key,
+                        Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown)
+                    )
+                {
+                    let dir = if matches!(logical_key, Key::Named(NamedKey::ArrowUp)) {
+                        -1
+                    } else {
+                        1
+                    };
+                    if let Some(chrome) = self.chrome.clone() {
+                        let mut st = chrome.borrow_mut();
+                        if st.switch_strip(dir) {
+                            *handled = true;
+                        }
+                        return;
+                    }
+                }
                 // Cmd+ArrowUp / Cmd+ArrowDown — switch active workspace.
                 if matches!(logical_key, Key::Named(NamedKey::ArrowUp)) {
                     if let Some(chrome) = self.chrome.clone() {
@@ -6480,6 +6613,18 @@ impl Widget for ShellOverlayHost {
         } = event
         {
             if let Some(p) = self.last_cursor {
+                // Strip ribbon: click a segment to focus that strip.
+                // Gated on no overlay owning the pointer, so a click that
+                // happens to land under an open panel goes to the panel.
+                if !self.overlay_flags().overview
+                    && !self.cursor_over_open_overlay(p)
+                    && let Some(i) = self.strip_ribbon().hit(p)
+                    && let Some(chrome) = self.chrome.clone()
+                {
+                    chrome.borrow_mut().focus_strip_index(i);
+                    *handled = true;
+                    return;
+                }
                 if self.palette_visible {
                     // Scope-pill click (runs before outside-click so users
                     // can swap scope without dismissing the palette).
@@ -6679,6 +6824,20 @@ impl Widget for ShellOverlayHost {
                             }
                         }
                         if let Some(level) = pushed_level {
+                            // The list this level shows is fetched here,
+                            // not on panel-open: enumerating networks
+                            // means a Wi-Fi scan, which is by far the
+                            // slowest read in the set and is invisible
+                            // until this drill-in.
+                            match level {
+                                crate::shell::quick_settings::QsLevel::Wifi => {
+                                    self.qs_refresh.kick_wifi_networks()
+                                }
+                                crate::shell::quick_settings::QsLevel::Bluetooth => {
+                                    self.qs_refresh.kick_bt_devices()
+                                }
+                                _ => {}
+                            }
                             let mut st = chrome.borrow_mut();
                             st.quick_settings.push_level(level);
                             st.bump();
@@ -6970,6 +7129,36 @@ impl Widget for ShellOverlayHost {
                             *handled = true;
                             return;
                         }
+                    }
+                    // Copy the workspace invite link. The button was
+                    // painted but never routed, so the most prominent
+                    // control on the General tab did nothing at all when
+                    // pressed.
+                    let on_general = self
+                        .chrome
+                        .as_ref()
+                        .is_some_and(|c| matches!(c.borrow().ws_settings_tab, WsTab::General));
+                    if on_general && self.ws_settings_copy_rect().contains(p)
+                    {
+                        let link = self
+                            .chrome
+                            .as_ref()
+                            .and_then(|c| {
+                                c.borrow()
+                                    .tree()
+                                    .active_workspace()
+                                    .map(crate::shell::workspace_settings::invite_link)
+                            })
+                            .unwrap_or_default();
+                        if !link.is_empty() {
+                            ui::text_selection::clipboard_copy(&link);
+                            self.ws_invite_copied_at = Some(Instant::now());
+                            if let Some(chrome) = self.chrome.clone() {
+                                chrome.borrow_mut().bump();
+                            }
+                        }
+                        *handled = true;
+                        return;
                     }
                     // Click inside the modal: routes to the Name input rect
                     // (begins an edit) or — on any other click inside the
@@ -7392,6 +7581,10 @@ impl Widget for ShellOverlayHost {
             || room_activity_in_flight
             || self.content.needs_animation_frame()
             || sidebar_frame
+            // A reading that lands after the open animation has settled
+            // still has to reach the screen, and the loop idles unless
+            // something says otherwise.
+            || self.qs_refresh.is_in_flight()
     }
 }
 
@@ -7947,12 +8140,18 @@ fn mix_toward(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgb8(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
 }
 
-fn slate_900_tint(theme: &Theme, alpha: f32) -> Color {
-    // `neutral[1]` is slate-900 in the dark ramp (see
-    // `ui::tokens::colors::ColorRamp`). Using the theme token rather
-    // than hard-coding #0f172a keeps the light-theme variant falling back
-    // to its own near-darkest slot automatically.
-    theme.tokens.colors.neutral[1].with_alpha_factor(alpha)
+/// The surface every floating chrome panel is painted on — quick
+/// settings, the collaborators popover, the workspace-settings sheet, the
+/// peer-sync card.
+///
+/// This reached into `neutral[1]` — the ramp slot that happens to be
+/// slate-900 on the dark palette. A ramp slot is a colour; the surface
+/// tokens are a promise about contrast that each theme keeps in its own
+/// way, and only the latter survives a theme its author never saw.
+/// Panels now take the theme's own popover tier, which is what makes
+/// them the same material as the bar they hang off (HIG §9.2).
+fn panel_surface(theme: &Theme, alpha: f32) -> Color {
+    ui::chrome::shell::panel_ground(theme).with_alpha_factor(alpha)
 }
 
 /// Pick the [`crate::shell::search::SearchProvider`] that owns the
@@ -7982,7 +8181,7 @@ fn active_tab_provider_id(
 /// via the returned clone — only the fill token gets the tint.
 fn palette_surface_theme(theme: &Theme, alpha: f32) -> Theme {
     let mut themed = theme.clone();
-    themed.tokens.colors.surfaces.raised = slate_900_tint(theme, alpha);
+    themed.tokens.colors.surfaces.raised = panel_surface(theme, alpha);
     themed
 }
 
@@ -8125,7 +8324,7 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
-        let ground = slate_900_tint(theme, MODAL_SURFACE_ALPHA);
+        let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
         let hover = self.last_cursor.map(|c| rect.contains(c)).unwrap_or(false);
 
         let rr = RoundedRect::from_rect(rect, OVERVIEW_ROW_RADIUS_PX);
@@ -8248,7 +8447,7 @@ impl ShellOverlayHost {
         // The same fill / hairline / lift as the workspace-settings modal:
         // one floating-surface language across the shell's overlays.
         let panel = self.overview_panel_rect();
-        let ground = slate_900_tint(theme, MODAL_SURFACE_ALPHA);
+        let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
         ui::surface::elevation(scene, transform, panel, &tokens.elevation.e4);
         let card_rr = RoundedRect::from_rect(panel, tokens.radii.lg as f64);
         scene.fill(Fill::NonZero, transform, ground, None, &card_rr);
@@ -8598,7 +8797,7 @@ impl ShellOverlayHost {
         if self.overview_max_scroll_y() > 0.5 {
             let fade_y1 = band.y1;
             let fade_y0 = fade_y1 - OVERVIEW_SCROLL_FADE_PX;
-            let ground = slate_900_tint(theme, MODAL_SURFACE_ALPHA);
+            let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
             let grad = vello::peniko::Gradient::new_linear(
                 Point::new(band.x0, fade_y0),
                 Point::new(band.x0, fade_y1),
@@ -8657,14 +8856,14 @@ impl ShellOverlayHost {
         scene.fill(
             Fill::NonZero,
             transform,
-            slate_900_tint(theme, MODAL_SURFACE_ALPHA),
+            panel_surface(theme, MODAL_SURFACE_ALPHA),
             None,
             &card,
         );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::chrome::shell::panel_border(theme),
             None,
             &card,
         );
@@ -8961,20 +9160,28 @@ impl ShellOverlayHost {
             transform * Affine::translate((url_pill.x0 + 12.0, url_pill.y0 + 8.0)),
             None,
         );
-        let copy_btn = Rect::new(
-            rect.x1 - 24.0 - 72.0,
-            invite_y + 20.0,
-            rect.x1 - 24.0,
-            invite_y + 52.0,
-        );
+        let copy_btn = self.ws_settings_copy_rect();
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[5], // indigo-500 — concept WorkspaceSettingsModal.tsx:108 bg-indigo-500
+            colors.accent[5],
             None,
-            &RoundedRect::from_rect(copy_btn, tokens.radii.sm as f64),
+            &RoundedRect::from_rect(
+                copy_btn,
+                ui::chrome::ChromeRole::Control.radius(theme, copy_btn.height()),
+            ),
         );
-        let copy_label = "Copy";
+        // "Copied" replaces the label for a moment after a successful
+        // copy. Without it the button was indistinguishable from a
+        // button that had done nothing, which is what it used to be.
+        let copy_label = if self
+            .ws_invite_copied_at
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(1_600))
+        {
+            "Copied"
+        } else {
+            "Copy"
+        };
         let (cw, _ch) = text_renderer.measure(copy_label, tokens.typography.scale.sm, None);
         text_renderer.draw_text(
             scene,
@@ -9277,7 +9484,7 @@ impl ShellOverlayHost {
         scene.fill(
             Fill::NonZero,
             transform,
-            slate_900_tint(theme, MODAL_SURFACE_ALPHA),
+            panel_surface(theme, MODAL_SURFACE_ALPHA),
             None,
             &card,
         );
@@ -9573,13 +9780,29 @@ impl ShellOverlayHost {
         let rect = self.quick_settings_rect();
         // Concept ref: `QuickSettings.tsx:169` — `rounded-3xl` (24 px).
         // Maps to `tokens.radii.xl` per the token table.
-        let card = RoundedRect::from_rect(rect, tokens.radii.xl as f64);
+        let card = RoundedRect::from_rect(
+            rect,
+            ui::chrome::ChromeRole::Panel.radius(theme, rect.height()),
+        );
+        // Panels are elevated (HIG §9.1). Without this the popover was a
+        // flat tint, which reads as deliberate only on a palette whose
+        // overlay tier is much darker than its ground — i.e. only on
+        // dark. Light and high-contrast had nothing lifting the panel off
+        // the desktop at all.
+        ui::chrome::shell::panel_shadow(
+            scene,
+            transform,
+            rect,
+            ui::chrome::ChromeRole::Panel.radius(theme, rect.height()),
+            theme,
+            1.0,
+        );
         // QuickSettings popover surface — concept §3.1: `bg-slate-900/80
         // backdrop-blur-md`. See visual-gap #3 / [`POPOVER_SURFACE_ALPHA`].
         scene.fill(
             Fill::NonZero,
             transform,
-            slate_900_tint(theme, POPOVER_SURFACE_ALPHA),
+            panel_surface(theme, POPOVER_SURFACE_ALPHA),
             None,
             &card,
         );
@@ -9615,7 +9838,13 @@ impl ShellOverlayHost {
         let white_10 = colors.text_primary.with_alpha_factor(0.10);
         for i in 0..3 {
             let tile = self.quick_settings_action_geometry(i);
-            let tile_rr = RoundedRect::from_rect(tile, 16.0);
+            // Control role: 12 px. This was a literal 16, which is
+            // the one step the radius scale deliberately omits — so
+            // these tiles matched nothing else on screen.
+            let tile_rr = RoundedRect::from_rect(
+                tile,
+                ui::chrome::ChromeRole::Control.radius(theme, tile.height()),
+            );
             // Power tile (i == 2) gets the red-500/20 wash. The fill must
             // expose its r/g/b signature in the encoded scene so the
             // concept-parity spec test detects the red Power glyph.
@@ -9734,7 +9963,7 @@ impl ShellOverlayHost {
         // the concept-parity spec test pins to a closed→open delta of 0.
         //
         // Sub-line label = SSID/device name of whichever entry
-        // `refresh_quick_settings_from_os` marked `connected` (via
+        // the Wi-Fi reading marked `connected` (via
         // `nmcli`/`bluetoothctl`). Falls back to "Not connected" when
         // the radio is on but nothing paired, or the radio is off.
         const NOT_CONNECTED: &str = "Not connected";
@@ -10617,7 +10846,7 @@ impl ShellOverlayHost {
         scene.fill(
             Fill::NonZero,
             transform,
-            slate_900_tint(theme, POPOVER_SURFACE_ALPHA),
+            panel_surface(theme, POPOVER_SURFACE_ALPHA),
             None,
             &card,
         );
