@@ -213,6 +213,14 @@ For exploratory / partial flows, see `scripts/headless-examples/` (full walkthro
 - `full-loop.py` — the end-to-end above
 - `spawn-headless.sh` — shell helper to start the compositor + wait for socket
 
+Alongside those, the `*-proof.py` scripts in the same directory stand up
+**two or three real compositors** with separate identities and homes, put
+them in one room, and assert across them. Reach for one of those when the
+question is about collaboration rather than about one session's chrome —
+`peers-cross-both-ways.py` is the presence regression net (each session
+must paint the other's cursor, under the name the room gave it), and
+`named-peer-proof.py` covers naming through a running app.
+
 If you want to do it by hand without Python, use `socat` (Ncat doesn't have `-q`):
 
 ```bash
