@@ -172,6 +172,57 @@ pub trait Widget {
         false
     }
 
+    /// Perform an accessibility [`Action`](crate::a11y::Action) aimed at one of
+    /// this widget's **synthetic** accessibility nodes — the routed counterpart
+    /// to [`perform_action`](Widget::perform_action).
+    ///
+    /// A widget that paints its own contents (a timeline of clips, a
+    /// spreadsheet grid, a table of rows) has no child widgets to receive an
+    /// action, so it describes its structure through
+    /// [`AccessNode::children`](crate::a11y::AccessNode::children) instead. When
+    /// an assistive technology activates one of those nodes, the host resolves
+    /// the node's id back to `(this widget, key path)` and calls this method, so
+    /// the widget knows **which** element the user meant.
+    ///
+    /// `key_path` names the target relative to this widget: one element per
+    /// level of [`AccessNode::children`](crate::a11y::AccessNode::children)
+    /// nesting — `[row]` for a table row, `[row, cell]` for a cell inside it.
+    /// Each element is the node's [`key`](crate::a11y::AccessNode::key), or its
+    /// ordinal among its siblings when it declared none. An **empty** path means
+    /// the action targets the widget itself.
+    ///
+    /// For an element keyed by identity rather than position, compare the
+    /// incoming key against [`hash_key`](crate::a11y::hash_key) of your own id:
+    ///
+    /// ```ignore
+    /// fn perform_action_at(&mut self, action: &Action, key_path: &[u64], ..) -> bool {
+    ///     let Some(&clip_key) = key_path.first() else { return false };
+    ///     let Some(clip) = self.clips.iter().find(|c| hash_key(&c.id) == clip_key) else {
+    ///         return false;   // stale reference — do nothing, never guess
+    ///     };
+    ///     ...
+    /// }
+    /// ```
+    ///
+    /// Returns `true` if the widget consumed the action. The **default forwards
+    /// to [`perform_action`](Widget::perform_action)**, ignoring the path — so
+    /// every existing widget keeps behaving exactly as it did, and a widget with
+    /// no synthetic children (where the path is always empty) need not override
+    /// this at all. If a widget declines, the host falls back to its generic
+    /// dispatch just as it does for `perform_action`; note that the fallback is
+    /// widget-granular (it moves focus to, or clicks the centre of, the whole
+    /// widget), so a canvas that wants per-element operation must implement this.
+    fn perform_action_at(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        let _ = key_path;
+        self.perform_action(action, state, path)
+    }
+
     /// Whether this widget is interactive. The default is `true`.
     ///
     /// A disabled widget (`false`) must be skipped by keyboard focus
