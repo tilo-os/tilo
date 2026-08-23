@@ -211,6 +211,7 @@ impl Harness {
             let root = automerge::ROOT.clone();
             self.host.refresh_search_results_for_shots(&mut doc, &root);
         }
+        self.host.tick_clear_stale_open_target_for_tests();
         self.host.tick_active_tab_writeback_for_tests();
         self.host.tick_scroll_active_into_view_for_tests();
         // Run the focus-follow pan to its end. It is an eased curve on
@@ -614,5 +615,30 @@ fn clicking_a_rail_segment_travels_to_that_window() {
     assert!(
         h.scroll_x() > home,
         "and bring it into view; the strip is still parked at {home}"
+    );
+}
+
+/// The filter the `+` seeds belongs to the picker it opened. Left
+/// standing it would be invisible state that silently decides what an
+/// unrelated later query is allowed to find.
+#[test]
+fn the_apps_filter_does_not_outlive_the_picker() {
+    let mut h = Harness::new();
+    let plus = h.plus_rect(0);
+    h.click(plus.center());
+    h.tick();
+    assert!(
+        !h.host.palette_kind_filter().is_empty(),
+        "precondition: the + seeded a filter"
+    );
+
+    h.key(Key::Named(NamedKey::Escape), ModifiersState::empty());
+    h.tick();
+    let (visible, ..) = h.host.palette_snapshot();
+    assert!(!visible, "Escape must dismiss the picker");
+    assert!(
+        h.host.palette_kind_filter().is_empty(),
+        "the filter must go with it, got {:?}",
+        h.host.palette_kind_filter()
     );
 }
