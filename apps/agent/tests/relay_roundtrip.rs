@@ -94,6 +94,9 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
         // and the same answer every run.
         model: false,
         model_timeout: Duration::from_secs(1),
+        // `run_until` bounds this test; the wait-for-a-document deadline
+        // belongs to `run`, and is exercised on its own below.
+        await_document: Duration::ZERO,
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
@@ -177,5 +180,74 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
         actors,
         std::collections::HashSet::from([hex::encode("Scribe")]),
         "the agent's commits carry its own actor, so the history strip names it"
+    );
+}
+
+/// A room where nobody answers must end in a diagnosis, not a hang.
+///
+/// The broker matches `(app, room, record)` and drops what does not
+/// match, silently and by design. So the commonest way to misconfigure
+/// an agent — point it at a room but not at the record the app has
+/// open — produces a process that connects, announces, logs that it
+/// joined, and then waits forever. A harness that hits this reports
+/// "the agent did not finish", which names the one part that was
+/// working and sends the reader to `apps/agent`.
+///
+/// The relay used here broadcasts to every peer regardless of route, so
+/// what it reproduces is the *symptom* — nobody answers — rather than
+/// the route mismatch itself, which is the shell broker's to enforce
+/// and to test. What is asserted is the agent's half: a bounded wait,
+/// a failure rather than a success, and a message that names both the
+/// address that went unanswered and the flag that fixes it.
+#[test]
+fn an_unanswered_address_is_reported_rather_than_waited_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("collab.sock");
+    {
+        let sock = sock.clone();
+        std::thread::spawn(move || {
+            ui::collaboration::broker::serve_path(&sock).expect("serve the relay");
+        });
+    }
+    let started = Instant::now();
+    while !sock.exists() {
+        assert!(started.elapsed() < Duration::from_secs(5), "relay never bound");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let cfg = Config {
+        socket: Some(sock.clone()),
+        app_id: APP.into(),
+        cluster: Uuid::new_v4(),
+        // The shape of the mistake: a room that exists, on a record
+        // nobody in it is looking at.
+        record: Some("file:/var/workspace/Demo/nobody-has-this.docx".into()),
+        name: "Scribe".into(),
+        pace: Duration::from_millis(10),
+        once: true,
+        model: false,
+        model_timeout: Duration::from_secs(1),
+        await_document: Duration::from_millis(1500),
+    };
+    let mut session = Session::connect(cfg).expect("agent connects");
+
+    let began = Instant::now();
+    let err = session
+        .run()
+        .expect_err("an unanswered address must not report success");
+    let waited = began.elapsed();
+
+    assert!(
+        waited < Duration::from_secs(10),
+        "the agent waited {waited:?} — the deadline did not bound it"
+    );
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("nobody-has-this.docx"),
+        "the diagnosis must name the record that went unanswered: {msg}"
+    );
+    assert!(
+        msg.contains("--record"),
+        "the diagnosis must name the flag that fixes it: {msg}"
     );
 }
