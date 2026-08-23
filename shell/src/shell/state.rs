@@ -6429,32 +6429,64 @@ pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
     assigned
 }
 
+/// The collaborators that describe the room on screen.
+///
+/// Two lists can answer that, and on a guest they say different things,
+/// so which one is read is not a detail.
+///
+/// [`WorkspaceTree::collaborators`] is the live answer.
+/// [`crate::shell::peer_presence::PeerPresence::refresh_roster`]
+/// recomputes it every frame from the *active* workspace's room — out of
+/// the names the room document carries and the peers that have taken
+/// part in that document, which is the only evidence a participant who
+/// never moves a pointer leaves anywhere. It is therefore about this
+/// workspace by construction, and never stale by more than the frame it
+/// is restated on.
+///
+/// [`Workspace::collaborators`] is the older, event-driven list. On a
+/// guest it holds one row that nothing afterwards revisits: the peer
+/// that invited it, under a session handle rather than a name, written
+/// when the invite was redeemed
+/// ([`crate::network::invite::accept_invite_token`]) because a signed
+/// token carries no name to write.
+///
+/// Preferring the workspace's list — which every surface here used to —
+/// pinned a guest's roster to exactly that placeholder: one avatar,
+/// initialled out of `p<hex>`, that nobody else joining the room could
+/// add to, because the list being read is not the one anybody joins. A
+/// host never redeems an invite, so its workspace list stays empty, it
+/// fell through to the live roster, and the room looked right from the
+/// one side anyone had checked.
+///
+/// So the live roster wins wherever there is one, and the workspace's
+/// own list answers when there is not — a session with no network, a
+/// test fixture, the demo tree.
+pub fn active_room_roster(tree: &WorkspaceTree) -> &[Collaborator] {
+    if tree.collaborators.iter().any(|c| c.id != "me") {
+        return &tree.collaborators;
+    }
+    tree.active_workspace()
+        .map(|w| w.collaborators.as_slice())
+        .unwrap_or(&[])
+}
+
 /// Shared peer-count helper for the active workspace.
 ///
-/// Counts collaborators on the active workspace excluding the local user
-/// (`id == "me"`); falls back to the tree-level roster (also `me`-filtered)
-/// when the active workspace has no peers of its own. This matches the
-/// precedence already applied by `TopBarChrome::sync_from_tree` and lets
-/// `SidebarWheelChrome::sync_from_tree` reuse the same arithmetic for the
+/// Counts the peers [`active_room_roster`] reports, excluding the local
+/// user (`id == "me"`). Lets `TopBarChrome::sync_from_tree` and
+/// `SidebarWheelChrome::sync_from_tree` share one arithmetic for the
 /// active card so the two chromes never disagree (audit `B-10`).
 ///
-/// Note: callers that need per-workspace counts for *non-active* workspaces
-/// must keep their own filtered count — the fallback only fires for the
-/// active workspace.
+/// Note: callers that need per-workspace counts for *non-active*
+/// workspaces must keep their own filtered count — this one is about
+/// the room on screen.
 pub fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
     // Somebody named but not yet arrived is not counted. This drives the
     // avatar cluster's `+N` chip and the wheel disc's presence dot, and
     // both are claims that people are *in* the workspace — an invitation
     // that has not been redeemed is not one of them.
     let present = |c: &&Collaborator| c.id != "me" && !c.invited;
-    let active = tree.active_workspace();
-    let per_ws = active
-        .map(|w| w.collaborators.iter().filter(present).count())
-        .unwrap_or(0);
-    if per_ws > 0 {
-        return per_ws;
-    }
-    tree.collaborators.iter().filter(present).count()
+    active_room_roster(tree).iter().filter(present).count()
 }
 
 #[cfg(test)]

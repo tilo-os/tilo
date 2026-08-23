@@ -476,12 +476,26 @@ impl FrameBuilder {
     /// The roster refresh runs whether or not the fold found anything:
     /// somebody who joined and has not moved their pointer publishes
     /// nothing, and they are in the room all the same.
+    ///
+    /// A roster that changed also bumps the chrome revision. The widgets
+    /// that draw the room's people — the avatar stack, the wheel-disc
+    /// dots, the collaborators panel — re-read the tree on that edge and
+    /// on nothing else, and `refresh_roster` writes straight through the
+    /// tree handle without touching the chrome. So a peer arriving asked
+    /// for a repaint of a stack that had not been told to look again,
+    /// and the bar stayed at whoever was in the room the last time
+    /// something unrelated happened to bump: the person who joined
+    /// second never appeared until a keystroke or a window put them
+    /// there.
     pub fn pump_peer_presence(&mut self) -> bool {
         let Some(relay) = self.peer_presence.as_ref() else {
             return false;
         };
         let moved = relay.pump(&mut self.presence);
         let roster_changed = relay.refresh_roster(&self.presence);
+        if roster_changed {
+            self.chrome.borrow_mut().bump();
+        }
         moved || roster_changed
     }
 
@@ -1234,5 +1248,105 @@ mod tests {
                 snap_b.get(key)
             );
         }
+    }
+
+    /// Somebody arriving in the room has to reach the bar that draws
+    /// them.
+    ///
+    /// The roster's version of the bug above, and it hid behind it. The
+    /// widgets that paint the room's people — the avatar stack, the
+    /// wheel-disc dots, the collaborators panel — re-read the tree only
+    /// when the chrome revision moves, and `refresh_roster` writes the
+    /// roster straight through the tree handle from the frame loop
+    /// without touching the chrome. So an arrival asked for a repaint of
+    /// a stack that had not been told to look again: the bar kept
+    /// whoever was in the room the last time something unrelated
+    /// bumped, and the second person to join a room appeared only once a
+    /// keystroke or a window happened to do it for them. On a desktop
+    /// where nobody is typing — which is the desktop this is filmed on —
+    /// that is never.
+    ///
+    /// Both halves, because either alone is satisfied by a wrong fix: an
+    /// arrival must bump, and an idle pass with nothing new must not, or
+    /// the shell rebuilds its widget tree forever and the machine never
+    /// goes quiet.
+    #[test]
+    fn a_peer_arriving_tells_the_bar_to_look_again() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        let mut fb = FrameBuilder::new((1600, 900));
+        let (tree_handle, room) = {
+            let chrome = fb.chrome();
+            let handle = chrome.tree_handle();
+            let room = {
+                let mut tree = chrome.tree_mut();
+                let active = tree.active;
+                tree.adopt_ownerless_workspaces(&"quinten".to_string());
+                tree.room_of(active).expect("the active workspace has a room")
+            };
+            (handle, room)
+        };
+
+        // A real network and a real broker: the relay under test is the
+        // production one, and `refresh_roster` writes through this very
+        // tree handle.
+        let net = std::sync::Arc::new(
+            crate::shell::network::ShellNetwork::spawn(tree_handle, &tmp.path().join("peer-key"))
+                .expect("a network over a tempdir keypair"),
+        );
+        let broker = crate::shell::collab_broker::spawn(tmp.path().join("collab.sock"))
+            .expect("a broker on a tempdir socket");
+        fb.set_peer_presence(crate::shell::peer_presence::PeerPresence::attach(
+            &broker,
+            std::sync::Arc::clone(&net),
+            vec![room.to_string()],
+        ));
+
+        // The room names somebody, and settle so the naming is not what
+        // the assertion below is reading.
+        let guest = libp2p::identity::Keypair::ed25519_from_bytes([7u8; 32])
+            .expect("32 bytes is a keypair")
+            .public()
+            .to_peer_id();
+        {
+            let chrome = fb.chrome();
+            let mut tree = chrome.tree_mut();
+            assert!(
+                tree.name_peer(room, &"quinten".to_string(), &guest.to_base58(), "Xaver"),
+                "the room's administrator may name a peer in it",
+            );
+        }
+        fb.pump_peer_presence();
+        let named = fb.chrome_revision();
+
+        // …and then they turn up, recorded the way `handle_from` records
+        // it: the transport-authenticated handle, no pointer involved.
+        {
+            let mut replica = net.replica.lock().expect("replica");
+            replica
+                .participants
+                .entry(room)
+                .or_default()
+                .insert(crate::network::behaviour::peer_liveness_handle(&guest));
+        }
+
+        assert!(
+            fb.pump_peer_presence(),
+            "a peer taking part in the room changes who is in it",
+        );
+        assert!(
+            fb.chrome_revision() > named,
+            "somebody arrived and nothing told the bar to re-read the \
+             roster, so their avatar would never be drawn",
+        );
+
+        // And an idle pass says nothing, or the desktop repaints forever.
+        let settled = fb.chrome_revision();
+        fb.pump_peer_presence();
+        assert_eq!(
+            fb.chrome_revision(),
+            settled,
+            "a pass where nobody arrived must leave the revision alone",
+        );
     }
 }
