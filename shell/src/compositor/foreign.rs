@@ -1819,14 +1819,32 @@ mod tests {
         );
     }
 
+    /// A surface asks for frames until it has drawn, and after that only
+    /// when a newer one is waiting.
+    ///
+    /// The first half is the rule `0b3e2451c` ("Keep asking about a
+    /// window that has not drawn, so it cannot be stranded") set out to
+    /// establish, and this test predates it — it used to assert the
+    /// opposite. A client whose first buffer has not arrived is the one
+    /// case where nothing else will wake the paint loop, so a widget
+    /// that fell silent there left the window blank for good.
+    ///
+    /// The second half is why the rule is not simply "always": an app
+    /// that has something on screen and nothing newer to show must not
+    /// hold the paint loop awake.
     #[test]
-    fn widget_reports_animation_frame_only_while_a_new_frame_is_pending() {
+    fn widget_asks_for_frames_until_it_has_drawn_then_only_for_a_pending_one() {
         let id = sid(7);
         store().forget(id);
         let mut w = ForeignSurfaceWidget::new(id, "org.example.app".into());
+        // A 1×1 tab, so the 1×1 frame below is a frame that *fits* it —
+        // which is what being presented waits for, rather than merely a
+        // frame having landed.
+        w.rect = Rect::new(0.0, 0.0, 1.0, 1.0);
         assert!(
-            !w.needs_animation_frame(),
-            "no frames yet: nothing to repaint for"
+            w.needs_animation_frame(),
+            "nothing presented yet: a widget that stopped asking here would \
+             never be woken to paint the window's first frame"
         );
         store().publish_rgba(id, &[255, 0, 0, 255], 1, 1);
         assert!(
@@ -1834,6 +1852,7 @@ mod tests {
             "a fresh frame requests a repaint"
         );
         assert!(w.refresh_cache(), "cache picks up the new frame");
+        assert!(w.presented(), "a frame that fits the tab is on screen");
         assert!(
             !w.needs_animation_frame(),
             "once drawn, an idle client must not keep the paint loop awake"
