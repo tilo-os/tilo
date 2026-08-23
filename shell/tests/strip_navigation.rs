@@ -18,6 +18,7 @@
 //! reimplements what production does.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use shell::shell::build_nirios_overlay_host_with_chrome;
 use shell::shell::chrome_state::Chrome;
@@ -44,12 +45,23 @@ const H: f32 = 800.0;
 /// the wrong reason.
 const HALF_DISPLAY_PERMILLE: u16 = 500;
 
-/// Three groups on one strip, two tabs each.
-fn three_group_tree() -> (WorkspaceTree, StripId, [GroupId; 3], [[u64; 2]; 3]) {
+/// How many window groups the fixture strip holds.
+///
+/// Enough that travelling to the far end pushes the near end entirely
+/// off screen. With three, the whole strip is only slightly wider than
+/// the viewport and the first group still pokes in at maximum scroll —
+/// so "the strip moved" and "the strip moved enough to change what you
+/// can see" would be indistinguishable.
+const GROUPS: usize = 5;
+
+/// Windows on one strip, two tabs per group.
+fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
     let ws_id = WorkspaceId::new();
     let strip_id = StripId::new();
-    let groups: [GroupId; 3] = [1001, 1002, 1003];
-    let tabs: [[u64; 2]; 3] = [[11, 12], [21, 22], [31, 32]];
+    let groups: Vec<GroupId> = (0..GROUPS).map(|i| 1001 + i as u64).collect();
+    let tabs: Vec<[u64; 2]> = (0..GROUPS)
+        .map(|i| [(i as u64 + 1) * 10 + 1, (i as u64 + 1) * 10 + 2])
+        .collect();
 
     let mk_tab = |id: u64, label: &str| Tab {
         id,
@@ -107,13 +119,13 @@ struct Harness {
     taffy: TaffyTree<()>,
     child: NodeId,
     strip: StripId,
-    groups: [GroupId; 3],
-    tabs: [[u64; 2]; 3],
+    groups: Vec<GroupId>,
+    tabs: Vec<[u64; 2]>,
 }
 
 impl Harness {
     fn new() -> Self {
-        let (tree, strip, groups, tabs) = three_group_tree();
+        let (tree, strip, groups, tabs) = strip_tree();
         let (host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
         let mut h = Harness {
             host,
@@ -201,6 +213,14 @@ impl Harness {
         }
         self.host.tick_active_tab_writeback_for_tests();
         self.host.tick_scroll_active_into_view_for_tests();
+        // Run the focus-follow pan to its end. It is an eased curve on
+        // wall time, and a harness that stepped it at whatever speed the
+        // test happens to run at would assert against a frame in the
+        // middle of it — sometimes indistinguishable from no pan at all.
+        // `tick_snap_at` takes the clock as an argument for exactly this.
+        if let Some(row) = self.host.group_row_mut_for_tests(self.strip) {
+            row.tick_snap_at(Instant::now() + Duration::from_secs(2));
+        }
         self.lay_out();
     }
 
@@ -279,25 +299,6 @@ impl Harness {
             .find(|(sid, _)| *sid == self.strip.0)
             .map(|(_, x)| x)
             .expect("the strip under test must report a pan offset")
-    }
-
-    /// Park the strip away from home the way a user who has travelled
-    /// along it is parked, through the production pan
-    /// `scroll_active_group_into_view` uses.
-    fn park_at_last_group(&mut self) -> f64 {
-        let last = self.groups[2];
-        let row = self
-            .host
-            .group_row_mut_for_tests(self.strip)
-            .expect("strip row must be live");
-        row.scroll_group_into_view(last);
-        self.lay_out();
-        let parked = self.scroll_x();
-        assert!(
-            parked > 0.0,
-            "the fixture must be able to park away from home, got scroll_x = {parked}"
-        );
-        parked
     }
 
     /// The `+` chip's rect on group `idx`, in screen space.
@@ -428,13 +429,16 @@ fn super_right_walks_the_whole_strip() {
     let mut h = Harness::new();
     assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
 
-    let expected = [
-        (h.groups[0], h.tabs[0][1]),
-        (h.groups[1], h.tabs[1][0]),
-        (h.groups[1], h.tabs[1][1]),
-        (h.groups[2], h.tabs[2][0]),
-        (h.groups[2], h.tabs[2][1]),
-    ];
+    // Every window on the strip, in visual order — the sequence the
+    // chord is claimed to walk. Built from the fixture so the assertion
+    // cannot drift out of step with it.
+    let expected: Vec<(GroupId, u64)> = h
+        .groups
+        .iter()
+        .zip(h.tabs.iter())
+        .flat_map(|(&g, ids)| [(g, ids[0]), (g, ids[1])])
+        .skip(1)
+        .collect();
     for (step, want) in expected.iter().enumerate() {
         h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
         h.tick();
@@ -453,18 +457,18 @@ fn super_right_walks_the_whole_strip() {
 #[test]
 fn super_left_is_the_inverse_and_neither_wraps() {
     let mut h = Harness::new();
-    // Walk to the far end.
-    for _ in 0..8 {
+    // Walk past the far end.
+    for _ in 0..GROUPS * 2 + 3 {
         h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
         h.tick();
     }
     assert_eq!(
         h.active_window(),
-        (h.groups[2], h.tabs[2][1]),
+        (h.groups[GROUPS - 1], h.tabs[GROUPS - 1][1]),
         "pushing past the end must clamp at the last window, not wrap"
     );
 
-    for _ in 0..8 {
+    for _ in 0..GROUPS * 2 + 3 {
         h.key(Key::Named(NamedKey::ArrowLeft), ModifiersState::SUPER);
         h.tick();
     }
@@ -481,11 +485,11 @@ fn super_left_is_the_inverse_and_neither_wraps() {
 fn stepping_to_an_offscreen_window_pans_the_strip() {
     let mut h = Harness::new();
     let home = h.scroll_x();
-    // Group 2 is entirely off the right of the viewport at rest.
+    // The last group is entirely off the right of the viewport at rest.
     let g2 = h
         .host
-        .group_at_for_tests(h.strip, 2)
-        .expect("group 2 must be live")
+        .group_at_for_tests(h.strip, GROUPS - 1)
+        .expect("the last group must be live")
         .get_rect();
     let row_right = h
         .host
@@ -494,16 +498,18 @@ fn stepping_to_an_offscreen_window_pans_the_strip() {
         .x1;
     assert!(
         g2.x0 > row_right,
-        "fixture must start with group 2 off screen (group {g2:?}, viewport ends {row_right})"
+        "fixture must start with its last group off screen (group {g2:?}, viewport ends {row_right})"
     );
 
-    // Two tabs per group, so the fourth step is the first one that
-    // leaves the two groups the viewport can already reach.
-    for _ in 0..4 {
+    for _ in 0..GROUPS * 2 {
         h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
         h.tick();
     }
-    assert_eq!(h.active_window().0, h.groups[2], "focus must have reached group 2");
+    assert_eq!(
+        h.active_window().0,
+        h.groups[GROUPS - 1],
+        "focus must have reached the last group"
+    );
     assert!(
         h.scroll_x() > home,
         "the strip must follow focus off screen; still parked at {home}"
@@ -543,5 +549,70 @@ fn a_horizontal_swipe_and_the_chord_are_one_operation() {
         by_key.0,
         h.active_window().0,
         "the fixture must carry the walk across a group boundary"
+    );
+}
+
+// =====================================================================
+// The rail: the thing that says there is more strip.
+// =====================================================================
+
+/// The rail reports what the strip holds and which part of it is on
+/// screen — the fact whose absence produced "how do I change windows?".
+#[test]
+fn the_rail_maps_the_strip_and_marks_what_is_on_screen() {
+    let mut h = Harness::new();
+    let rail = h.host.strip_rail_for_tests();
+    assert_eq!(rail.count, GROUPS, "one segment per window group");
+    assert!(rail.is_meaningful(), "three groups is worth drawing");
+    assert_eq!(rail.focused, 0, "focus starts on the first group");
+    assert_eq!(
+        rail.visible,
+        vec![0, 1],
+        "at rest the viewport holds groups 0 and 1; the third is the \
+         one the rail exists to advertise"
+    );
+
+    // Travel to the far end and the lit run follows.
+    for _ in 0..GROUPS * 2 {
+        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+        h.tick();
+    }
+    let rail = h.host.strip_rail_for_tests();
+    assert_eq!(rail.focused, GROUPS - 1, "focus reached the last group");
+    assert!(
+        rail.visible.contains(&(GROUPS - 1)),
+        "the group the user travelled to must read as on screen, got {:?}",
+        rail.visible
+    );
+    assert!(
+        !rail.visible.contains(&0),
+        "the group they left behind must not, got {:?}",
+        rail.visible
+    );
+}
+
+/// And it is a control: clicking a segment goes there, including to a
+/// window that is off screen — which is the one pointer action that is
+/// allowed to pan the strip, because its target may not be visible.
+#[test]
+fn clicking_a_rail_segment_travels_to_that_window() {
+    let mut h = Harness::new();
+    let home = h.scroll_x();
+    let seg = h
+        .host
+        .strip_rail_for_tests()
+        .hit_rect(GROUPS - 1)
+        .expect("the rail must offer a target for the last group");
+    h.click(seg.center());
+    h.tick();
+
+    assert_eq!(
+        h.active_window().0,
+        h.groups[GROUPS - 1],
+        "clicking the last segment must focus the last group"
+    );
+    assert!(
+        h.scroll_x() > home,
+        "and bring it into view; the strip is still parked at {home}"
     );
 }
