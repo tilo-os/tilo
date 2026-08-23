@@ -24,7 +24,18 @@ jobs:
       # First, because the fedora container ships neither node (which
       # actions/checkout needs) nor the Rust build deps. capnproto is required by
       # runtime-collab's build.rs; the Vulkan driver lets the GPU tests run headless.
-      - name: Install deps (node for checkout, capnproto for runtime-collab, build + Vulkan)
+      #
+      # bubblewrap and rust-analyzer are here because tests need them, not
+      # the build. Both are subjects rather than tools: `bwrap` is how a qOS
+      # app runs at all, so the launcher's egress and room-confinement suites
+      # and the compositor's sandbox check are exercising the real thing, and
+      # the code editor's language-server suite drives a real rust-analyzer
+      # against a real project. Each of those refuses to skip when its
+      # subject is absent — correctly, since a sandbox test that quietly
+      # passes on a host with no sandbox is worse than no test. Installing
+      # them is what lets those refusals mean something. Verified in this
+      # image: `bwrap --unshare-all` works unprivileged inside the container.
+      - name: Install deps (node for checkout, capnproto for runtime-collab, build + Vulkan, bwrap + rust-analyzer for the tests)
         run: |
           dnf install -y \
             nodejs \
@@ -41,6 +52,7 @@ jobs:
             fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
             nasm \
             vulkan-loader mesa-vulkan-drivers \
+            bubblewrap rust-analyzer \
           && dnf clean all
 
       - name: Checkout
