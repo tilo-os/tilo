@@ -595,6 +595,10 @@ pub enum ShotScenario {
     /// Zoomed in and scrolled into the middle of the timeline, so the
     /// horizontal scrollbar is showing part-way along its track.
     Scrolled,
+    /// The keyboard-shortcut sheet open over the editor.
+    HelpSheet,
+    /// The go-to-timecode field open with a partly-typed time.
+    GotoTimecode,
     /// A timeline clip's context menu open (cut / copy / duplicate / split /
     /// delete).
     ClipMenu,
@@ -666,6 +670,8 @@ impl ShotScenario {
             "keyframes" => ShotScenario::Keyframes,
             "markers" => ShotScenario::Markers,
             "keymenu" => ShotScenario::KeyMenu,
+            "help" => ShotScenario::HelpSheet,
+            "goto" => ShotScenario::GotoTimecode,
             _ => return None,
         })
     }
@@ -3648,6 +3654,8 @@ impl VideoEditorApp {
     fn apply_shot_scenario(&mut self, state: &mut AutoCommit) {
         match self.shot_scenario {
             ShotScenario::Live => {}
+            ShotScenario::HelpSheet => self.show_help = true,
+            ShotScenario::GotoTimecode => self.goto_entry = Some("1:30".into()),
             ShotScenario::SelectedFilters => {
                 // Select the graded drone clip on V1 and park the playhead a
                 // few seconds in (past its fade-in) so the inspector shows a
@@ -5406,12 +5414,17 @@ impl VideoEditorApp {
     /// progress. It traps focus while open (see `Widget::traps_focus`).
     fn a11y_export_dialog(&self) -> AccessNode {
         let mut kids = vec![
+            // The same honest size line the dialog paints. On a box whose
+            // encoders ignore their bitrate target this withholds the megabyte
+            // figure rather than stating a confident wrong number — and a
+            // reader must get that caveat too, not a tidier fiction.
             AccessNode::new(Role::StaticText)
-                .with_name("Destination")
+                .with_name("Output")
                 .with_value(format!(
-                    "{}, {}",
+                    "{}, {}, {}",
                     self.export.resolution.label(),
-                    self.export.container.label()
+                    self.export.container.label(),
+                    self.export.estimate_label(&self.project),
                 ))
                 .with_key(0),
             AccessNode::new(Role::Button)
@@ -5456,7 +5469,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
         "Playback",
         &[
             ("Space", "Play / pause"),
-            ("J / K / L", "Shuttle back, stop, forward"),
+            ("J / K / L", "Shuttle back / stop / fwd"),
             ("Home / End", "Jump to start / end"),
             (", / .", "Previous / next marker"),
             ("G", "Go to timecode"),
@@ -5469,8 +5482,8 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
             ("S", "Split at playhead"),
             ("M", "Add marker"),
             ("T", "Add title"),
-            ("Delete", "Delete selected (Shift: ripple)"),
-            ("Arrows", "Nudge selection, or step playhead"),
+            ("Delete", "Delete (Shift: ripple)"),
+            ("Arrows", "Nudge, or step playhead"),
         ],
     ),
     (
@@ -8700,8 +8713,8 @@ impl VideoEditorApp {
         // Two columns on anything wide enough, one on a narrow window, so the
         // sheet is readable rather than clipped at the phone-ish sizes the rest
         // of the editor already adapts to.
-        let two_col = self.rect.width() >= 720.0;
-        let w = if two_col { 640.0 } else { (self.rect.width() - 48.0).max(280.0) };
+        let two_col = self.rect.width() >= 780.0;
+        let w = if two_col { 700.0 } else { (self.rect.width() - 48.0).max(280.0) };
         let h = if two_col { 420.0 } else { (self.rect.height() - 48.0).max(320.0) };
         let card = Rect::from_center_size(self.rect.center(), (w, h));
         fill_rrect(scene, tf, c.surfaces.raised, card, 14.0);
@@ -8725,7 +8738,7 @@ impl VideoEditorApp {
                     break;
                 }
                 text_w(scene, tr, tf, combo, 12.0, c.accent[6], x, y, TextWeight::Bold);
-                text(scene, tr, tf, what, 12.0, c.text_primary, x + 110.0_f64.min(col_w * 0.45), y);
+                text(scene, tr, tf, what, 12.0, c.text_primary, x + 120.0_f64.min(col_w * 0.45), y);
                 y += 19.0;
             }
             y += 10.0;
@@ -8743,7 +8756,7 @@ impl VideoEditorApp {
         let c = &theme.tokens.colors;
         let w = 260.0_f64.min(self.rect.width() - 32.0);
         let card = Rect::from_center_size(
-            Point::new(self.rect.center().x, r.transport.center().y),
+            Point::new(self.rect.center().x, r.transport.y0 - 46.0),
             (w, 76.0),
         );
         fill_rrect(scene, tf, c.surfaces.raised, card, 12.0);
