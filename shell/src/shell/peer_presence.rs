@@ -541,6 +541,11 @@ pub fn fold_inbound(
                 y: entry.point.1 as f32,
             },
         );
+        // Set here rather than on entry to the loop: every `continue`
+        // above is a frame that was rejected — a room this session is
+        // not in, a key that did not parse — and reporting those as a
+        // landing would repaint on traffic that changed nothing.
+        any = true;
     }
     any
 }
@@ -1087,23 +1092,36 @@ mod tests {
         assert_eq!(peers[0].0, UserId("peer@7".into()));
     }
 
-    /// The fold has to hand back the room and the person, not just the
-    /// fact that something moved. The roster is built from these, and a
-    /// `bool` was exactly enough to draw a cursor and not enough to say
-    /// who was in the room — which is how the avatar stack stayed empty
-    /// through a session with two real peers pointing at each other.
+    /// A folded frame files the sender under the room it names, spelled
+    /// by the handle the transport authenticated.
+    ///
+    /// Deliberately not the `"bob"` the frame announced. A sending
+    /// session's word for who is at it is a claim, not evidence, and a
+    /// peer that can announce its own name can announce anybody's —
+    /// beside a caret editing a document whose access that same room
+    /// governs. What a room calls somebody is a governance fact its
+    /// authority writes into the room document; the fold only ever
+    /// records which session was heard from.
     #[test]
-    fn a_folded_frame_reports_the_room_and_the_person_it_came_from() {
+    fn a_folded_frame_files_the_sender_under_the_room_it_named() {
         let room = "3f2b1c00-0000-4000-8000-000000000001";
         let mut presence = PresenceCtx::default();
-        let seen = fold_inbound(vec![arrived("bob", 7, room, (1.0, 2.0))], &mut presence);
+        let any = fold_inbound(
+            vec![arrived("bob", 7, room, (1.0, 2.0))],
+            &mut presence,
+            &unnamed,
+            &any_room,
+        );
+        assert!(any, "a frame in a room this session is in lands");
+        let peers = presence
+            .pointers
+            .get(&PresenceKey::Workspace { id: room.into() })
+            .expect("a pointer in the room it named");
         assert_eq!(
-            seen,
-            vec![PeerSighting {
-                room: room.into(),
-                peer: 7,
-                user: "bob".into(),
-            }],
+            peers.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>(),
+            vec![UserId("peer@7".into())],
+            "the sender is the session the transport authenticated, \
+             not the name that session announced for itself",
         );
     }
 
@@ -1122,7 +1140,20 @@ mod tests {
             point: (3.0, 4.0),
             ts: 0,
         };
-        assert!(fold_inbound(vec![entry], &mut presence).is_empty());
+        fold_inbound(vec![entry], &mut presence, &unnamed, &any_room);
+        // The fold's `bool` answers "repaint?", and a tab-scoped
+        // pointer is a real move, so it may well be true. The property
+        // that matters is narrower: a frame that names no room must not
+        // file anybody *under* one, or a roster built from these would
+        // put peers in whichever room happened to be active.
+        assert!(
+            !presence
+                .pointers
+                .keys()
+                .any(|k| matches!(k, PresenceKey::Workspace { .. })),
+            "a frame naming no room put somebody in one: {:?}",
+            presence.pointers.keys().collect::<Vec<_>>(),
+        );
     }
 
     #[test]
