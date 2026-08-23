@@ -187,33 +187,83 @@ impl PresenceCtx {
         let color = color_for(self, user, theme);
         // The caret bar itself.
         scene.fill(Fill::NonZero, transform, color, None, &caret_rect);
-
-        // Chip anchored to the caret's top, mapped into scene space so it
-        // rides with the caret under any transform.
-        let tokens = &theme.tokens;
-        let label_size = tokens.typography.scale.xs;
-        let pad_x = 5.0_f64;
-        let pad_y = 1.5_f64;
-        let (tw, _th) = text_renderer.measure(name, label_size, None);
-        let chip_w = tw as f64 + pad_x * 2.0;
-        let chip_h = label_size as f64 + pad_y * 2.0;
-        // Top-left corner of the caret in local space; the chip sits just
-        // above it (a 2px gap) and left-aligns to the caret.
-        let cx = caret_rect.x0;
-        let cy = caret_rect.y0 - chip_h - 2.0;
-        let chip_rect = Rect::new(cx, cy, cx + chip_w, cy + chip_h);
-        let chip = RoundedRect::from_rect(chip_rect, tokens.radii.sm as f64);
-        // Solid fill in the peer's colour so the chip reads as "them".
-        scene.fill(Fill::NonZero, transform, color, None, &chip);
-        // Label ink: white or near-black for contrast against the colour.
-        let ink = contrast_ink(color);
-        text_renderer.draw_text(
+        // The chip sits just above the caret's top, left-aligned to it.
+        draw_name_chip(
             scene,
+            theme,
+            text_renderer,
+            transform,
+            color,
             name,
-            label_size,
-            ink,
-            transform * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
+            caret_rect.x0,
+            caret_rect.y0,
+        );
+    }
+
+    /// Outline `rect` in the peer's colour — "this peer has *this object*
+    /// selected". The counterpart to [`Self::draw_peer_selection`] for
+    /// content that is an object rather than a run of text: a clip on a
+    /// timeline, a file in a grid, a shape on a canvas.
+    ///
+    /// A wash plus a ring rather than either alone. The wash on its own is
+    /// too easily read as the app's own hover state; the ring on its own
+    /// disappears against a busy fill — and a peer's selection is the one
+    /// thing that has to stay legible *over* whatever the object is showing.
+    /// Both are the peer's colour, the same colour their pointer and caret
+    /// carry, so the three read as one person.
+    ///
+    /// `rect` is in the caller's local coordinates and `transform` maps it
+    /// into scene space, so the outline is drawn from the very geometry the
+    /// object itself was drawn from — never a re-derived approximation.
+    pub fn draw_peer_outline(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        transform: Affine,
+        user: &UserId,
+        rect: Rect,
+        radius: f64,
+    ) {
+        let color = color_for(self, user, theme);
+        let shape = RoundedRect::from_rect(rect, radius);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            color.with_alpha_factor(0.18),
             None,
+            &shape,
+        );
+        scene.stroke(&Stroke::new(2.0), transform, color, None, &shape);
+    }
+
+    /// [`Self::draw_peer_outline`] with the peer's name chipped above the
+    /// object's top-left corner, so a selection says *who* without needing
+    /// a hover or a roster lookup. Mirrors
+    /// [`Self::draw_peer_caret_labeled`] — one chip design for every "this
+    /// is where that person is" affordance.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_peer_outline_labeled(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        transform: Affine,
+        user: &UserId,
+        name: &str,
+        rect: Rect,
+        radius: f64,
+    ) {
+        self.draw_peer_outline(scene, theme, transform, user, rect, radius);
+        let color = color_for(self, user, theme);
+        draw_name_chip(
+            scene,
+            theme,
+            text_renderer,
+            transform,
+            color,
+            name,
+            rect.x0,
+            rect.y0,
         );
     }
 
@@ -637,6 +687,49 @@ fn peer_of(cursor: &super::RemoteCursor) -> PeerCursor {
 
 /// Pick black or white ink for text drawn on top of `bg`, by relative
 /// luminance — so a name chip label stays readable on any peer colour.
+/// Paint a peer's name in a small rounded chip in their colour, anchored so
+/// its bottom-left corner sits just above `(anchor_x, anchor_top)` — the
+/// top-left of whatever the chip is naming.
+///
+/// One implementation for every "this is where that person is" affordance
+/// (a caret, a selected object), because two chip designs on one screen
+/// read as two different kinds of thing when they are the same kind of
+/// thing. Drawn through `transform` so the chip rides with what it labels.
+#[allow(clippy::too_many_arguments)]
+fn draw_name_chip(
+    scene: &mut Scene,
+    theme: &Theme,
+    text_renderer: &mut TextRenderer,
+    transform: Affine,
+    color: Color,
+    name: &str,
+    anchor_x: f64,
+    anchor_top: f64,
+) {
+    let tokens = &theme.tokens;
+    let label_size = tokens.typography.scale.xs;
+    let pad_x = 5.0_f64;
+    let pad_y = 1.5_f64;
+    let (tw, _th) = text_renderer.measure(name, label_size, None);
+    let chip_w = tw as f64 + pad_x * 2.0;
+    let chip_h = label_size as f64 + pad_y * 2.0;
+    // A 2px gap above the thing being named.
+    let cy = anchor_top - chip_h - 2.0;
+    let chip_rect = Rect::new(anchor_x, cy, anchor_x + chip_w, cy + chip_h);
+    let chip = RoundedRect::from_rect(chip_rect, tokens.radii.sm as f64);
+    // Solid fill in the peer's colour so the chip reads as "them".
+    scene.fill(Fill::NonZero, transform, color, None, &chip);
+    // Label ink: white or near-black for contrast against the colour.
+    text_renderer.draw_text(
+        scene,
+        name,
+        label_size,
+        contrast_ink(color),
+        transform * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
+        None,
+    );
+}
+
 fn contrast_ink(bg: Color) -> Color {
     let c = bg.to_rgba8();
     // Rec. 601 luma on the 0..255 channels.
@@ -923,6 +1016,92 @@ mod tests {
         assert!(
             cg > cr && cg > cb,
             "chip should be emerald (peer color), got ({cr},{cg},{cb})"
+        );
+    }
+
+    /// A peer's selected object gets both halves: a ring on the boundary
+    /// and a wash across the middle. Either alone fails somewhere — a bare
+    /// wash reads as the app's own hover, a bare ring vanishes over a busy
+    /// fill — so both are asserted, and the ring is asserted to be the
+    /// *stronger* of the two or it is not a boundary any more.
+    ///
+    /// "charlie" is emerald (0x10, 0xb9, 0x81), so both should read G-dominant.
+    #[test]
+    fn peer_outline_rings_the_object_and_washes_its_middle() {
+        let ctx = PresenceCtx::empty();
+        let theme = Theme::default();
+        let mut scene = Scene::new();
+        let user = UserId("charlie".to_string());
+        ctx.draw_peer_outline(
+            &mut scene,
+            &theme,
+            Affine::IDENTITY,
+            &user,
+            Rect::new(20.0, 20.0, 100.0, 80.0),
+            4.0,
+        );
+
+        let mut r = OffscreenRenderer::new(120, 120);
+        let rgba = r.render(&scene, Color::BLACK);
+
+        // The ring, on the left edge at mid-height.
+        let (er, eg, eb, _a) = OffscreenRenderer::sample(&rgba, 120, 20, 50);
+        assert!(
+            eg > er && eg > eb && eg > 100,
+            "the outline edge should be charlie's emerald, got ({er},{eg},{eb})"
+        );
+
+        // The wash, in the middle, well away from any edge.
+        let (wr, wg, wb, _a) = OffscreenRenderer::sample(&rgba, 120, 60, 50);
+        assert!(
+            wg > wr && wg > wb && wg > 0,
+            "the interior should carry a wash of the same colour, got ({wr},{wg},{wb})"
+        );
+        assert!(
+            eg > wg,
+            "the edge must read stronger than the wash or it is not a boundary: \
+             edge G={eg}, wash G={wg}"
+        );
+    }
+
+    /// The named variant puts the same chip above the object that
+    /// `draw_peer_caret_labeled` puts above a caret — one chip design, so a
+    /// person's caret and their selected object read as the same person.
+    #[test]
+    fn a_labelled_outline_chips_the_peers_name_above_the_object() {
+        let ctx = PresenceCtx::empty();
+        let theme = Theme::default();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let user = UserId("charlie".to_string());
+        ctx.draw_peer_outline_labeled(
+            &mut scene,
+            &theme,
+            &mut tr,
+            Affine::IDENTITY,
+            &user,
+            "Charlie",
+            Rect::new(30.0, 40.0, 100.0, 80.0),
+            4.0,
+        );
+
+        let mut r = OffscreenRenderer::new(140, 140);
+        let rgba = r.render(&scene, Color::BLACK);
+
+        // The chip fill, a few pixels above the object's top edge, at its
+        // left x — the same anchoring the labelled caret uses.
+        let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 140, 31, 33);
+        assert!(ca > 0, "expected an opaque chip above the object, got alpha {ca}");
+        assert!(
+            cg > cr && cg > cb,
+            "the chip should be the peer's emerald, got ({cr},{cg},{cb})"
+        );
+
+        // And the object is still outlined underneath it.
+        let (er, eg, eb, _a) = OffscreenRenderer::sample(&rgba, 140, 30, 60);
+        assert!(
+            eg > er && eg > eb && eg > 100,
+            "the outline should still be drawn, got ({er},{eg},{eb})"
         );
     }
 
