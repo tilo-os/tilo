@@ -2134,6 +2134,38 @@ def windows_overlapping(s: Session) -> list[str]:
     return out
 
 
+#: How much of the strip one group takes, for the whole film.
+#:
+#: Set once, before the first frame, and never changed again. It used to
+#: be set per beat — a group takes about three quarters of the strip by
+#: default, so opening a second window put it mostly past the right edge
+#: and the beat then evened the shares out to bring it back. That worked,
+#: and it did it *on camera*: every window jumped to a new size and
+#: position a second after the app appeared, which reads as a glitch and
+#: undoes the impression that the window opened where it belonged.
+#:
+#: 500 is half each, which is what two groups need on a 1920 output —
+#: measured, not guessed: two 500-permille groups land at 291..1091 and
+#: 1099..1899 beside the wheel disc, both whole.
+FILM_GROUP_SHARE = 500
+
+
+def establish_strip(s: Session) -> None:
+    """Fix this session's group proportions before it is filmed.
+
+    Called during setup, off camera. Every later beat then only ever
+    *scrolls* the strip, which a viewer reads as navigation — never
+    resizes it, which they read as a fault.
+    """
+    resp = s.set_group_width(FILM_GROUP_SHARE)
+    if "err" in resp:
+        note(f"{s.name}: could not set the strip's proportions - "
+             f"{json.dumps(resp['err'])[:120]}")
+    else:
+        note(f"{s.name}: strip set to {FILM_GROUP_SHARE} permille per group "
+             f"for the whole film; no beat resizes on camera")
+
+
 def frame_both_windows(s: Session, viewport: tuple[int, int] | None = None) -> None:
     """Put the whole strip in frame: even shares, and scrolled back.
 
@@ -2169,26 +2201,19 @@ def frame_both_windows(s: Session, viewport: tuple[int, int] | None = None) -> N
     take "the gesture was performed" for an answer.
     """
     groups = max(1, len(s.groups_here()))
-    attempts = [1000 // groups, 900 // groups, 800 // groups]
-    for share in attempts:
-        share = max(120, min(1000, share))
-        resp = s.set_group_width(share)
-        if "err" in resp:
-            note(f"{s.name}: could not even out the strip — "
-                 f"{json.dumps(resp['err'])[:120]}")
-            break
-        s.settle(0.6)
-        focus_leftmost_group(s)
-        if not viewport:
-            return
-        wrong = windows_off_screen(s, viewport) + windows_overlapping(s)
-        if not wrong:
-            note(f"{s.name}: {groups} group(s) at {share} permille of the "
-                 f"strip — every window is wholly on screen and none is "
-                 f"behind another")
-            return
-        note(f"{s.name}: not framed yet at {share} permille "
-             f"({'; '.join(wrong)}) — narrowing and re-framing")
+    # Scrolled, not resized. The proportions were set once by
+    # `establish_strip` before filming began; changing them here is what
+    # made every window visibly jump a second after an app opened.
+    focus_leftmost_group(s)
+    s.settle(0.6)
+    if not viewport:
+        return
+    wrong = windows_off_screen(s, viewport) + windows_overlapping(s)
+    if not wrong:
+        note(f"{s.name}: {groups} group(s) at {FILM_GROUP_SHARE} permille "
+             f"- every window is wholly on screen and none is behind "
+             f"another")
+        return
 
     if viewport:
         wrong = windows_off_screen(s, viewport) + windows_overlapping(s)
@@ -2527,7 +2552,7 @@ def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
         return None
     claim("and nothing was minted before it was answered",
           host.chrome()["peer_sync"]["invite_token"], None)
-    host.type_text(name)
+    host.type_prose(name)
     host.settle(0.5)
     claim(f"the field took the name {name!r}",
           host.chrome()["peer_sync"]["invite_name"], name)
@@ -3757,7 +3782,7 @@ def beat_five(quinten: Session, registry, shots: str) -> dict | None:
     quinten.key("k")
     quinten.modifiers()
     quinten.settle(0.4)
-    quinten.type_text("word processor")
+    quinten.type_prose("word processor")
     quinten.settle(1.2)
     pal = quinten.palette()
     rows = pal.get("rows") or []
@@ -4002,7 +4027,7 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     # one into the page and tries again — and the transcript says which
     # of the two actually wrote the text, because they are different
     # claims about how usable the app is.
-    quinten.type_text(TYPED_TEXT)
+    quinten.type_prose(TYPED_TEXT)
     quinten.settle(1.5)
 
     def quinten_holds() -> bool:
@@ -4051,7 +4076,7 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
                  f"clicking {[round(v) for v in at]}")
             quinten.click_at(*at)
             quinten.settle(1.2)
-            quinten.type_text(TYPED_TEXT)
+            quinten.type_prose(TYPED_TEXT)
             quinten.settle(1.0)
             typed_here = quinten_holds()
     quinten.snapshot(os.path.join(shots, "07-quinten-typed.png"))
@@ -5056,6 +5081,10 @@ def main() -> int:
         # Only once all three answer: a track that starts before its
         # session does is a track of a blank screen. Opens on the host,
         # which is where the first beat opens too.
+        # The strip's proportions, before the first frame. Set here and
+        # never again, so no beat resizes a window on camera.
+        for s_ in sessions:
+            establish_strip(s_)
         if RECORDER:
             RECORDER.start(quinten.name)
         # The registry quinten fetches from in beat 5. Its config dir is
