@@ -47,6 +47,15 @@ struct Params {
     xform_b: vec4<f32>,
     // The visible source rect after cropping: x/y left,top — z/w right,bottom
     crop: vec4<f32>,
+    // Colour key — x: active, y: tolerance, z: softness, w: spill
+    key_a: vec4<f32>,
+    // xyz: the key colour in RGB, w: unused
+    key_b: vec4<f32>,
+    // Shape mask — x: shape (0 off, 1 rect, 2 ellipse),
+    // y/z: centre offset from the frame centre, w: rotation in radians
+    mask_a: vec4<f32>,
+    // x/y: full extent as a fraction of the frame, z: feather, w: invert
+    mask_b: vec4<f32>,
     // per effect — x: kind, y: amount
     effects: array<vec4<f32>, 8>,
 };
@@ -111,6 +120,97 @@ fn representative(uv: vec2<f32>, base: vec3<f32>) -> vec3<f32> {
         c = mix(c, mix(base, vec3<f32>(0.0), 0.15), 0.6);
     }
     return c;
+}
+
+// BT.709 chroma of an RGB triple, each component in -0.5..0.5. Mirrors
+// `ChromaKey::chroma` on the host, which is what makes the CPU matte and
+// this one the same matte.
+fn chroma(c: vec3<f32>) -> vec2<f32> {
+    let y = dot(c, LUMA);
+    return vec2<f32>((c.b - y) / 1.8556, (c.r - y) / 1.5748);
+}
+
+// How much of `c` survives the colour key: 0 removed, 1 kept. Distance is
+// measured in the chroma plane only, so the lit and the shadowed parts of
+// one green screen key identically — which an RGB distance cannot do.
+fn key_cover(c: vec3<f32>) -> f32 {
+    if (p.key_a.x < 0.5) {
+        return 1.0;
+    }
+    let d = length(chroma(c) - chroma(p.key_b.rgb));
+    let lo = max(p.key_a.y, 0.0);
+    let hi = lo + max(p.key_a.z, 0.0);
+    if (d <= lo) {
+        return 0.0;
+    }
+    if (d >= hi) {
+        return 1.0;
+    }
+    let u = (d - lo) / (hi - lo);
+    return u * u * (3.0 - 2.0 * u);
+}
+
+// Pull the key colour's chroma back out of what survived, leaving its
+// brightness alone: the green bounced onto a subject standing near the
+// screen goes, and the subject's exposure does not move.
+fn despill(c: vec3<f32>) -> vec3<f32> {
+    let amount = clamp(p.key_a.w, 0.0, 1.0);
+    if (p.key_a.x < 0.5 || amount <= 1e-6) {
+        return c;
+    }
+    let k = chroma(p.key_b.rgb);
+    let klen = length(k);
+    if (klen < 1e-6) {
+        return c;
+    }
+    let u = k / klen;
+    let pc = chroma(c);
+    // Only the component pointing *at* the key is spill; chroma leaning
+    // the other way is left alone.
+    let along = dot(pc, u);
+    if (along <= 0.0) {
+        return c;
+    }
+    let q = pc - amount * along * u;
+    let y = dot(c, LUMA);
+    let r = y + 1.5748 * q.y;
+    let b = y + 1.8556 * q.x;
+    let g = (y - 0.2126 * r - 0.0722 * b) / 0.7152;
+    return clamp(vec3<f32>(r, g, b), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// How much of the frame point `uv` the shape mask keeps. The mask lives in
+// frame space, so it composes with the layer transform rather than being
+// carried by it — a layer can move behind a stationary hole.
+fn mask_cover(uv: vec2<f32>, fa: f32) -> f32 {
+    let shape = i32(p.mask_a.x + 0.5);
+    if (shape == 0) {
+        return 1.0;
+    }
+    let d = uv - vec2<f32>(0.5) - p.mask_a.yz;
+    // Rotate in aspect-corrected space, or a rotated shape comes out sheared.
+    let a = vec2<f32>(d.x * fa, d.y);
+    let ang = -p.mask_a.w;
+    let ca = cos(ang);
+    let sn = sin(ang);
+    let r = vec2<f32>(a.x * ca - a.y * sn, a.x * sn + a.y * ca);
+    let half_ = vec2<f32>(max(abs(p.mask_b.x) * 0.5 * fa, 1e-6),
+                          max(abs(p.mask_b.y) * 0.5, 1e-6));
+    let q = r / half_;
+    // A feather of zero would make the edge a hard step, which aliases; the
+    // floor keeps it one narrow band wide instead.
+    let f = clamp(p.mask_b.z, 1e-3, 1.0);
+    var inside = 0.0;
+    if (shape == 1) {
+        inside = (1.0 - smoothstep(1.0 - f, 1.0, abs(q.x)))
+               * (1.0 - smoothstep(1.0 - f, 1.0, abs(q.y)));
+    } else {
+        inside = 1.0 - smoothstep(1.0 - f, 1.0, length(q));
+    }
+    if (p.mask_b.w > 0.5) {
+        return 1.0 - inside;
+    }
+    return inside;
 }
 
 // A travelling soft edge. Returns how much of the incoming layer is
@@ -209,11 +309,21 @@ fn cs_layer(@builtin(global_invocation_id) gid: vec3<u32>) {
         col = representative(clamp(fit, vec2<f32>(0.0), vec2<f32>(1.0)), p.palette.rgb);
     }
 
+    // The keyer runs on the source picture, before anything is graded onto
+    // it: that is the order a keyer sits in on a real desk, and it is why
+    // grading a keyed clip afterwards cannot re-open the matte.
+    cov = cov * key_cover(col);
+    col = despill(col);
+
     col = grade_rgb(col, p.grade.x, p.grade.y, p.grade.z);
     let n = min(i32(p.palette.w + 0.5), MAX_EFFECTS);
     for (var i = 0; i < n; i = i + 1) {
         col = apply_effect(col, p.effects[i].x, p.effects[i].y, uv);
     }
+    // The shape mask is the last thing to cut coverage before the
+    // transition's own: it limits where this layer lands in the frame,
+    // whatever the layer's picture turned out to be.
+    cov = cov * mask_cover(uv, fa);
     if (p.src.z > 0.5) {
         cov = cov * wipe_mask(uv, p.src.w, p.wipe.x, p.wipe.y);
     }

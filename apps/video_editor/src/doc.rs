@@ -200,6 +200,8 @@ impl VideoDoc {
         );
         let _ = doc.put(&obj, "speed_rate", c.speed.rate);
         let _ = doc.put(&obj, "speed_reverse", c.speed.reverse);
+        let _ = doc.put(&obj, "key", serde_json::to_string(&c.key).unwrap_or_default());
+        let _ = doc.put(&obj, "mask", serde_json::to_string(&c.mask).unwrap_or_default());
         let _ = doc.put(&obj, "anim", serde_json::to_string(&c.anim).unwrap_or_default());
         let _ = doc.put(
             &obj,
@@ -397,7 +399,8 @@ impl VideoDoc {
                         .unwrap_or_default(),
                     // Each of these is absent in a document written before it
                     // existed, and each default restores the old behaviour:
-                    // identity geometry, normal speed, no curves, no markers.
+                    // identity geometry, normal speed, no key, no mask, no
+                    // curves, no markers.
                     transform: Self::get_str(doc, &obj, "transform")
                         .and_then(|s| serde_json::from_str(&s).ok())
                         .unwrap_or_default(),
@@ -405,6 +408,12 @@ impl VideoDoc {
                         rate: Self::get_f64(doc, &obj, "speed_rate").unwrap_or(1.0),
                         reverse: Self::get_bool(doc, &obj, "speed_reverse"),
                     },
+                    key: Self::get_str(doc, &obj, "key")
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .unwrap_or_default(),
+                    mask: Self::get_str(doc, &obj, "mask")
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .unwrap_or_default(),
                     anim: Self::get_str(doc, &obj, "anim")
                         .and_then(|s| serde_json::from_str(&s).ok())
                         .unwrap_or_default(),

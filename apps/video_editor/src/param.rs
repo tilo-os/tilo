@@ -112,12 +112,28 @@ pub enum Param {
     PosX,
     PosY,
     Rotation,
+    /// Colour-key tolerance: how wide a band of chroma is removed.
+    KeyTolerance,
+    /// Width of the key's soft edge.
+    KeySoftness,
+    /// How much of the key colour is pulled out of what survives.
+    KeySpill,
+    /// Mask centre, offset from the frame centre in frame widths/heights.
+    MaskX,
+    MaskY,
+    /// Mask extent, as a fraction of the frame.
+    MaskW,
+    MaskH,
+    /// Mask rotation, degrees.
+    MaskRotation,
+    /// Softness of the mask edge.
+    MaskFeather,
     EffectAmount(u32),
 }
 
 impl Param {
     /// Every parameter that is not tied to a list index, for menus.
-    pub const SIMPLE: [Param; 10] = [
+    pub const SIMPLE: [Param; 19] = [
         Param::Opacity,
         Param::Volume,
         Param::Brightness,
@@ -128,6 +144,15 @@ impl Param {
         Param::PosX,
         Param::PosY,
         Param::Rotation,
+        Param::KeyTolerance,
+        Param::KeySoftness,
+        Param::KeySpill,
+        Param::MaskX,
+        Param::MaskY,
+        Param::MaskW,
+        Param::MaskH,
+        Param::MaskRotation,
+        Param::MaskFeather,
     ];
 
     pub fn as_str(self) -> String {
@@ -142,6 +167,15 @@ impl Param {
             Param::PosX => "pos_x".into(),
             Param::PosY => "pos_y".into(),
             Param::Rotation => "rotation".into(),
+            Param::KeyTolerance => "key_tolerance".into(),
+            Param::KeySoftness => "key_softness".into(),
+            Param::KeySpill => "key_spill".into(),
+            Param::MaskX => "mask_x".into(),
+            Param::MaskY => "mask_y".into(),
+            Param::MaskW => "mask_w".into(),
+            Param::MaskH => "mask_h".into(),
+            Param::MaskRotation => "mask_rotation".into(),
+            Param::MaskFeather => "mask_feather".into(),
             Param::EffectAmount(i) => format!("effect{i}"),
         }
     }
@@ -158,6 +192,15 @@ impl Param {
             Param::PosX => "Position X".into(),
             Param::PosY => "Position Y".into(),
             Param::Rotation => "Rotation".into(),
+            Param::KeyTolerance => "Key tolerance".into(),
+            Param::KeySoftness => "Key softness".into(),
+            Param::KeySpill => "Spill removal".into(),
+            Param::MaskX => "Mask X".into(),
+            Param::MaskY => "Mask Y".into(),
+            Param::MaskW => "Mask width".into(),
+            Param::MaskH => "Mask height".into(),
+            Param::MaskRotation => "Mask rotation".into(),
+            Param::MaskFeather => "Mask feather".into(),
             Param::EffectAmount(i) => format!("Effect {} amount", i + 1),
         }
     }
@@ -174,6 +217,15 @@ impl Param {
             "pos_x" => Param::PosX,
             "pos_y" => Param::PosY,
             "rotation" => Param::Rotation,
+            "key_tolerance" => Param::KeyTolerance,
+            "key_softness" => Param::KeySoftness,
+            "key_spill" => Param::KeySpill,
+            "mask_x" => Param::MaskX,
+            "mask_y" => Param::MaskY,
+            "mask_w" => Param::MaskW,
+            "mask_h" => Param::MaskH,
+            "mask_rotation" => Param::MaskRotation,
+            "mask_feather" => Param::MaskFeather,
             other => {
                 let n = other.strip_prefix("effect")?;
                 Param::EffectAmount(n.parse().ok()?)
@@ -186,9 +238,10 @@ impl Param {
     /// constraint.
     pub fn ui_range(self) -> (f64, f64) {
         match self {
-            Param::Rotation => (-180.0, 180.0),
+            Param::Rotation | Param::MaskRotation => (-180.0, 180.0),
             Param::ScaleX | Param::ScaleY => (0.0, 4.0),
-            Param::PosX | Param::PosY => (-1.0, 1.0),
+            Param::PosX | Param::PosY | Param::MaskX | Param::MaskY => (-1.0, 1.0),
+            Param::MaskW | Param::MaskH => (0.0, 2.0),
             _ => (0.0, 1.0),
         }
     }
