@@ -93,9 +93,33 @@ impl MediaFrameSource {
     /// Index `project`'s decodable media and open nothing yet — sessions are
     /// created on first use and pruned when they go idle.
     pub fn new(project: &Project, fetch: Fetch) -> Self {
+        Self {
+            sources: Self::index(project),
+            pool: SessionPool::for_editor(),
+            software: SessionPool::new(
+                EngineConfig::default().software_only().silent(),
+                2,
+                Duration::from_secs(30),
+            ),
+            demoted: HashSet::new(),
+            converters: Vec::new(),
+            slot: 0,
+            last: HashMap::new(),
+            served: HashMap::new(),
+            rolling: HashSet::new(),
+            fetch,
+            timeout: media::DEFAULT_FRAME_TIMEOUT,
+        }
+    }
+
+    /// Which of `project`'s media this source can decode, and how fast each
+    /// runs — the frame cache buckets by real frames, so the rate matters.
+    fn index(project: &Project) -> HashMap<MediaId, (media::Source, f64)> {
         let mut sources = HashMap::new();
         for item in &project.media {
-            if !item.kind.is_visual() {
+            // A title's picture is generated, not decoded, so it never wants
+            // a pipeline.
+            if !item.kind.is_visual() || item.kind.is_generated() {
                 continue;
             }
             let resolved = item.source();
@@ -107,23 +131,43 @@ impl MediaFrameSource {
             let fps = if item.fps > 1.0 { item.fps } else { 30.0 };
             sources.insert(item.id, (crate::media::engine_source(&resolved.abs_path), fps));
         }
-        Self {
-            pool: SessionPool::for_editor(),
-            software: SessionPool::new(
-                EngineConfig::default().software_only().silent(),
-                2,
-                Duration::from_secs(30),
-            ),
-            demoted: HashSet::new(),
-            sources,
-            converters: Vec::new(),
-            slot: 0,
-            last: HashMap::new(),
-            served: HashMap::new(),
-            rolling: HashSet::new(),
-            fetch,
-            timeout: media::DEFAULT_FRAME_TIMEOUT,
+        sources
+    }
+
+    /// Re-index against `project` in place, keeping every open session.
+    ///
+    /// Rebuilding the whole source instead would tear down the pipelines and
+    /// the YUV converters on every import — the two most expensive things it
+    /// owns — so the editor holds one of these for its lifetime and calls
+    /// this when the media bin changes. Cached pictures for media that has
+    /// gone are dropped; everything still present keeps its session.
+    pub fn set_project(&mut self, project: &Project) {
+        self.sources = Self::index(project);
+        self.last.retain(|id, _| self.sources.contains_key(id));
+        self.served.retain(|id, _| self.sources.contains_key(id));
+        self.rolling.retain(|id| self.sources.contains_key(id));
+        self.demoted.retain(|id| self.sources.contains_key(id));
+    }
+
+    /// A cheap signature of what [`set_project`](Self::set_project) would
+    /// index, so a caller can skip the re-index when nothing has changed.
+    pub fn project_signature(project: &Project) -> u64 {
+        // FNV-1a over each decodable item's id and path. Order-independent
+        // (the per-item hashes are summed) because the bin's order is not
+        // part of what this source cares about.
+        let mut acc: u64 = 0;
+        for item in &project.media {
+            if !item.kind.is_visual() || item.kind.is_generated() {
+                continue;
+            }
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            for b in item.id.as_bytes().iter().chain(item.path.as_bytes()) {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x1000_0000_01b3);
+            }
+            acc = acc.wrapping_add(h);
         }
+        acc
     }
 
     /// How long an `Exact` fetch waits for a picture before giving up.
