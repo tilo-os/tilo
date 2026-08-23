@@ -325,9 +325,11 @@ impl PeerPresence {
         }
     }
 
-    /// Fold everything that arrived from other hosts into `presence`.
-    /// Returns whether anything did, so the frame loop can treat a
-    /// peer moving as a reason to repaint.
+    /// Fold everything that arrived from other hosts into `presence`,
+    /// returning whether anything landed — a peer moved, which is a
+    /// reason to repaint. Who is *in* the room is a separate question,
+    /// answered level-triggered by `refresh_roster`, because somebody
+    /// who joined and never moved a pointer publishes nothing here.
     pub fn pump(&self, presence: &mut PresenceCtx) -> bool {
         let drained: Vec<_> = {
             let Ok(mut buf) = self.inbound.lock() else {
@@ -539,7 +541,6 @@ pub fn fold_inbound(
                 y: entry.point.1 as f32,
             },
         );
-        any = true;
     }
     any
 }
@@ -1084,6 +1085,44 @@ mod tests {
             .expect("a pointer in this room");
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].0, UserId("peer@7".into()));
+    }
+
+    /// The fold has to hand back the room and the person, not just the
+    /// fact that something moved. The roster is built from these, and a
+    /// `bool` was exactly enough to draw a cursor and not enough to say
+    /// who was in the room — which is how the avatar stack stayed empty
+    /// through a session with two real peers pointing at each other.
+    #[test]
+    fn a_folded_frame_reports_the_room_and_the_person_it_came_from() {
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let mut presence = PresenceCtx::default();
+        let seen = fold_inbound(vec![arrived("bob", 7, room, (1.0, 2.0))], &mut presence);
+        assert_eq!(
+            seen,
+            vec![PeerSighting {
+                room: room.into(),
+                peer: 7,
+                user: "bob".into(),
+            }],
+        );
+    }
+
+    /// A pointer scoped to a tab says which tab someone is over. It does
+    /// not name a room, so it must not put anybody on a room's roster —
+    /// a roster built from unscoped frames would file peers under
+    /// whichever room happened to be active.
+    #[test]
+    fn a_frame_that_names_no_room_yields_no_sighting() {
+        let mut presence = PresenceCtx::default();
+        let entry = InboundPresence {
+            peer: 9,
+            user: "carol".into(),
+            key: serde_json::to_string(&PresenceKey::Tab { id: "2a".into() })
+                .expect("a tab key serialises"),
+            point: (3.0, 4.0),
+            ts: 0,
+        };
+        assert!(fold_inbound(vec![entry], &mut presence).is_empty());
     }
 
     #[test]

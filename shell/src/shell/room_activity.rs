@@ -1968,15 +1968,10 @@ mod tests {
         // touched the document. They must not appear as contributors — the
         // people row answers "who changed this", not "who is in the room".
         let (mut tree, _, _) = busy_room();
-        tree.collaborators.push(crate::shell::state::Collaborator {
-            id: "ghost".into(),
-            name: "Never Edited".into(),
-            active_tab: None,
-            cursor_color: None,
-            avatar: None,
-            role_id: None,
-            invited: false,
-        });
+        tree.collaborators.push(crate::shell::state::Collaborator::new(
+            "ghost",
+            "Never Edited",
+        ));
         let pane = pane_over(&mut tree);
         assert!(
             !pane.contributors().iter().any(|c| c == "Never Edited"),

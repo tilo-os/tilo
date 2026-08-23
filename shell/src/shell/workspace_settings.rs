@@ -94,6 +94,15 @@ impl WsTab {
 }
 
 /// The WorkspaceSettings modal state.
+/// The workspace's invite URL.
+///
+/// One definition: the settings modal used to format this string in two
+/// places, once here and once inline in the compositor's draw pass, with
+/// a comment explaining that the widget was not reachable from there.
+pub fn invite_link(ws: &Workspace) -> String {
+    format!("quickdesktop://invite/{}", u64::from(ws.id))
+}
+
 pub struct WorkspaceSettings {
     pub ws_id: WorkspaceId,
     pub active_tab: WsTab,
@@ -166,7 +175,7 @@ impl WorkspaceSettings {
     /// Return a `quickdesktop://invite/{id}` link for this workspace. The
     /// TopBar's "Invite" button copies this to the clipboard.
     pub fn invite_link(&self, ws: &Workspace) -> String {
-        format!("quickdesktop://invite/{}", u64::from(ws.id))
+        invite_link(ws)
     }
 
     // -----------------------------------------------------------------
@@ -794,13 +803,41 @@ pub fn scope_label(scope: &Scope) -> String {
         Scope::Workspace => "this workspace".to_string(),
         Scope::Room(_) => "this room".to_string(),
         Scope::App(app) => format!("the {app} app"),
-        Scope::FsPath(path) => format!("files under {path}"),
+        Scope::FsPath(path) => fs_scope_label(path),
         Scope::Device(device) => device_label(device).to_string(),
         Scope::NetHost(host) if host == "*" => "any network host".to_string(),
         Scope::NetHost(host) => format!("network host {host}"),
         Scope::Action { app, action } => format!("“{action}” in {app}"),
         Scope::ResourceType(kind) => format!("every {}", artifact_kind_label(kind)),
         Scope::ResourceInstance(id) => format!("one document ({})", short_id(&id.0.to_string())),
+    }
+}
+
+/// A filesystem scope, phrased the way a person would say it.
+///
+/// Workspace files are *projected* at [`WORKSPACE_FILES_PATH`] by the FUSE
+/// driver. That mount point is a fact about where the OS keeps the bytes, not
+/// about what the user is agreeing to, and a permission row — the one place a
+/// person is asked to make a security decision — is the worst place to spend
+/// their attention on it. "Edit files under /var/workspace" asks the reader to
+/// work out that the path is the workspace; "Edit workspace files" just says
+/// it. HIG §4: no internal or implementation labels in user-facing chrome.
+///
+/// Paths outside the projection keep their location. They are places the user
+/// chose, not plumbing, and on a permissions surface *which* directory is
+/// being handed over is the substance of the decision — collapsing
+/// `/home/ada/taxes` to "“taxes”" would hide the thing the row exists to
+/// disclose.
+fn fs_scope_label(path: &str) -> String {
+    // Tolerate a trailing slash so `/var/workspace/` is the root, not an
+    // unnamed child of it.
+    let trimmed = path.trim_end_matches('/');
+    if trimmed == WORKSPACE_FILES_PATH {
+        return "workspace files".to_string();
+    }
+    match trimmed.strip_prefix(&format!("{WORKSPACE_FILES_PATH}/")) {
+        Some(rest) if !rest.is_empty() => format!("\u{201c}{rest}\u{201d} in this workspace"),
+        _ => format!("files under {trimmed}"),
     }
 }
 
@@ -1304,6 +1341,15 @@ pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> Cap
         if ws.revoke_as(actor, &id) {
             edit.revoked.push(id);
         }
+    }
+    // And off the roster. Revoking every capability someone holds is
+    // what removes them from the room; leaving their avatar in the
+    // top-bar stack afterwards would keep announcing a participant the
+    // owner has just shown the door. Only when a revoke actually
+    // happened — an actor without authority changes nothing, and must
+    // not be able to erase someone from the chrome by asking.
+    if !edit.revoked.is_empty() {
+        ws.collaborators.retain(|c| c.id != member.as_str());
     }
     edit
 }
@@ -2677,12 +2723,97 @@ mod permissions_pane_tests {
         .expect("owner grants");
         let layout = permissions_pane_layout(&ws, pane());
         let row = &layout.rows[0];
-        assert_eq!(row.allows, "Edit files under /var/workspace");
+        assert_eq!(row.allows, "Edit workspace files");
         assert_eq!(row.expiry, "Session");
         assert_eq!(
             row.granted_by.as_deref(),
             Some("granted by owner-user"),
             "grant_as records the grantor; the row shows it"
+        );
+    }
+
+    /// No capability line a person reads may name the mount point workspace
+    /// files are projected at.
+    ///
+    /// `/var/workspace` is where the FUSE driver puts the bytes. It says
+    /// nothing about what is being granted, and on a permissions surface it
+    /// spends the reader's attention on plumbing at exactly the moment they
+    /// are being asked to make a security decision (HIG §4). Swept over every
+    /// scope kind, not just the two the panel happens to show today, so a new
+    /// scope cannot reintroduce the leak through a different branch.
+    #[test]
+    fn no_capability_line_leaks_the_workspace_mount_point() {
+        use collab_types::role::ArtifactKind;
+        let scopes = vec![
+            Scope::Workspace,
+            Scope::Room("r".into()),
+            Scope::App("firefox".into()),
+            Scope::FsPath(WORKSPACE_FILES_PATH.into()),
+            Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/")),
+            Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design")),
+            Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design/drafts")),
+            Scope::Device("camera".into()),
+            Scope::NetHost("*".into()),
+            Scope::NetHost("example.com".into()),
+            Scope::Action { app: "notes".into(), action: "export".into() },
+            Scope::ResourceType(ArtifactKind::Note),
+        ];
+        let verbs = [
+            Verb::Read,
+            Verb::Write,
+            Verb::Admin,
+            Verb::Comment,
+            Verb::Invite,
+        ];
+        for scope in &scopes {
+            for verb in verbs {
+                let cap = CapOverride::grant(Subject::app("a"), scope.clone(), verb);
+                let line = capability_allows(&cap);
+                assert!(
+                    !line.contains(WORKSPACE_FILES_PATH),
+                    "the permission line {line:?} names {WORKSPACE_FILES_PATH} \
+                     — where the OS keeps workspace files is not what the user \
+                     is being asked to agree to",
+                );
+                assert!(
+                    !line.contains("/var/"),
+                    "the permission line {line:?} exposes a system path",
+                );
+                assert!(
+                    !line.is_empty(),
+                    "every scope must still describe itself; {scope:?} produced \
+                     an empty line",
+                );
+            }
+        }
+    }
+
+    /// The projection root and a path inside it read as different things, so
+    /// "all your workspace files" is never confusable with "one folder".
+    /// A permission row that blurred the two would understate what is being
+    /// granted.
+    #[test]
+    fn workspace_scopes_distinguish_the_root_from_a_folder_inside_it() {
+        let root = CapOverride::grant(
+            Subject::app("a"),
+            Scope::FsPath(WORKSPACE_FILES_PATH.into()),
+            Verb::Write,
+        );
+        let sub = CapOverride::grant(
+            Subject::app("a"),
+            Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design")),
+            Verb::Write,
+        );
+        assert_eq!(capability_allows(&root), "Edit workspace files");
+        assert_eq!(
+            capability_allows(&sub),
+            "Edit \u{201c}design\u{201d} in this workspace",
+        );
+        assert_ne!(
+            capability_allows(&root),
+            capability_allows(&sub),
+            "granting every workspace file must not read the same as granting \
+             one folder in it",
         );
     }
 

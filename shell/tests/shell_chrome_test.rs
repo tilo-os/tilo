@@ -676,10 +676,10 @@ fn right_click_on_tile_opens_default_context_menu() {
 }
 
 // ---------------------------------------------------------------------------
-// Visual gap #12 — overview header typography pinned to ≥ 32 px so the
-// "Workspaces" h1 always reads as large/bold (Tailwind `text-4xl` = 36 px
-// in the concept). Regression guard: if someone later drops the header
-// back down to `scale.x3l`/`base`, this catches it before screenshots drift.
+// The overview opens by naming the room you are in, and that name is the
+// largest thing on the panel — it answers the first question the surface
+// exists to answer. Pinned at ≥ 32 px so a later step down to
+// `scale.x3l`/`base` is caught here rather than in a screenshot review.
 // ---------------------------------------------------------------------------
 #[test]
 fn overview_header_font_size_is_at_least_32px() {
@@ -691,6 +691,6 @@ fn overview_header_font_size_is_at_least_32px() {
     let size = host.overview_header_font_size(&theme);
     assert!(
         size >= 32.0,
-        "overview header font size must be ≥ 32 px to match concept's text-4xl; got {size}"
+        "the current room's name must be set at ≥ 32 px; got {size}"
     );
 }

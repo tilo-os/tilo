@@ -424,15 +424,23 @@ impl ApplicationHandler for Inner {
             size.height,
             wgpu::PresentMode::AutoVsync,
         )) {
-            Ok(mut s) => {
-                s.config.format = s.config.format.add_srgb_suffix();
-                let dh = &render_cx.devices[s.dev_id];
-                s.surface.configure(&dh.device, &s.config);
-                // vello's `create_surface` built a `TextureBlitter` for the
-                // pre-srgb format; wgpu 29's TextureBlitter pipeline must
-                // match the render pass's target format exactly, so we
-                // rebuild it against the now-sRGB swap-chain format.
-                s.blitter = wgpu::util::TextureBlitter::new(&dh.device, s.config.format);
+            Ok(s) => {
+                // Present in the format vello picked, which is deliberately
+                // NOT an `*Srgb` one.
+                //
+                // vello renders into an intermediate texture whose contents
+                // are already sRGB-encoded (`peniko::Color` is an
+                // `AlphaColor<Srgb>`), then blits that texture to the
+                // swap-chain. Forcing the swap-chain to `*Srgb` makes the
+                // blit encode those values a second time, and every surface
+                // in the shell arrives on screen far too light: the window
+                // card's (22,23,27) presents as #53555B, and the desktop
+                // reads as washed-out slate rather than near-black.
+                //
+                // The offscreen renderer uses `Rgba8Unorm` and skips the
+                // conversion, which is why captures looked correct while the
+                // live window did not - and why the two were not, in fact,
+                // the identical output the docs claim.
                 s
             }
             Err(e) => {
