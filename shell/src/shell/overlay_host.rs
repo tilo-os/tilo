@@ -12823,6 +12823,19 @@ mod palette_dispatch_tests {
             "the receiving side must offer Paste, got {names:?}"
         );
         assert!(names.contains(&"join"), "and still Join, got {names:?}");
+
+        // Half a token — what the field holds while somebody is typing
+        // one by hand, and the one state no end-to-end run reaches,
+        // because a paste arrives whole. The card summarises it rather
+        // than spelling it out, so this is the path through
+        // `elide_token`, and a card that panicked here would take the
+        // compositor with it.
+        chrome.borrow_mut().peer_sync_connect_input = Some("e".repeat(400));
+        let names = draw_and_collect_peer_sync_buttons(&mut h);
+        assert!(
+            names.contains(&"join") && names.contains(&"paste"),
+            "a field holding something unfinished still offers both, got {names:?}"
+        );
     }
 
     fn draw_and_collect_peer_sync_buttons(h: &mut ShellOverlayHost) -> Vec<&'static str> {
