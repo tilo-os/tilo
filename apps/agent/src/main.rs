@@ -46,6 +46,12 @@ struct Cli {
     /// the network.
     #[arg(long, default_value_t = 9000)]
     model_timeout_ms: u64,
+    /// How long to wait for the room to answer with the document before
+    /// giving up and naming the address nobody answered on. `0` waits
+    /// forever, which is right when the document may not be open yet and
+    /// wrong in a script.
+    #[arg(long, default_value_t = 60_000)]
+    await_document_ms: u64,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -67,6 +73,7 @@ fn main() -> anyhow::Result<()> {
         once: cli.once,
         model: !cli.no_model,
         model_timeout: Duration::from_millis(cli.model_timeout_ms),
+        await_document: Duration::from_millis(cli.await_document_ms),
     };
     let mut session = Session::connect(cfg)?;
     session.run()
