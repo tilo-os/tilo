@@ -3013,18 +3013,25 @@ impl ShellOverlayHost {
         true
     }
 
-    /// Drop a stale [`OpenTarget::Here`] once the palette is gone.
+    /// Drop a stale [`OpenTarget::Here`] and any kind filter once the
+    /// palette is gone.
     ///
-    /// The target is one-shot by contract — it aims exactly one launch at
-    /// exactly one group. Anything that dismisses the palette (Esc, an
-    /// outside click, activating a result) ends that window of intent, and
-    /// there are enough such paths that clearing at each of them would
-    /// rot. Reconciling here, once per frame against the single fact that
-    /// matters, cannot miss one.
+    /// Both are one-shot by contract. The target aims exactly one launch
+    /// at exactly one group; the filter narrows exactly one picker to
+    /// exactly one sort of answer. Anything that dismisses the palette
+    /// (Esc, an outside click, activating a result) ends that window of
+    /// intent, and there are enough such paths that clearing at each of
+    /// them would rot. Reconciling here, once per frame against the
+    /// single fact that matters, cannot miss one.
+    ///
+    /// A filter that outlived its picker would be the worse of the two:
+    /// it is invisible until the palette is next opened, and then it
+    /// silently decides what an unrelated query is allowed to find.
     fn clear_stale_open_target(&mut self) {
         if self.palette_visible {
             return;
         }
+        self.active_kind_filter.clear();
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
@@ -3033,6 +3040,12 @@ impl ShellOverlayHost {
             st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
             st.bump();
         }
+    }
+
+    /// Test-only one-shot: retire a dismissed palette's aim and filter.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_clear_stale_open_target_for_tests(&mut self) {
+        self.clear_stale_open_target();
     }
 
     /// Drop a passphrase buffer the user walked away from.
