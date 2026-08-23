@@ -914,6 +914,26 @@ pub struct Workspace {
 /// the local user's account name.
 pub type UserId = String;
 
+/// What a role is called on screen, beside the name that holds it.
+///
+/// Lower-case because it is a tag next to a name — the same shape the
+/// roster's `agent` tag has — and not a sentence. One mapping, shared
+/// by every surface that shows a role, so the chip beside a person and
+/// the chip beside an agent cannot come to spell the same authority two
+/// different ways.
+pub fn role_label(role: CapRole) -> &'static str {
+    match role {
+        CapRole::Owner => "owner",
+        CapRole::Editor => "editor",
+        CapRole::Commenter => "commenter",
+        CapRole::Viewer => "viewer",
+        // Not "no role". A blocked member is still in the room's
+        // directory — that is the whole point of the state, and a row
+        // that said nothing would read as an ordinary participant.
+        CapRole::Denied => "blocked",
+    }
+}
+
 /// The id of the person sitting at this machine.
 ///
 /// Derived from the device identity when one is provisioned, so a
