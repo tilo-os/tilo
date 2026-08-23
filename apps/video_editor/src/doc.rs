@@ -526,6 +526,7 @@ mod tests {
                 palette: 0,
                 path: "media/Imported.mp4".into(),
                 hydration: Hydration::Local,
+                ..Default::default()
             },
         );
         assert!(
