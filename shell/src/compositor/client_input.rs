@@ -116,8 +116,22 @@ pub struct ClientInput {
     /// Surface the pointer is currently inside (and therefore focused on
     /// at the seat), or `None` when the pointer is over chrome.
     pointer_focus: Option<u64>,
-    /// Last known cursor position in global (output) coordinates.
-    cursor: (f64, f64),
+    /// Last known cursor position in global (output) coordinates, or
+    /// `None` until the pointer has actually been somewhere.
+    ///
+    /// The distinction is not bookkeeping. Peer presence is published
+    /// level-triggered from the frame loop, so whatever this says is
+    /// announced to the room on every pass. A plain `(0.0, 0.0)` here
+    /// is indistinguishable from a pointer resting in the top-left
+    /// corner, and a session that has never had one moved through it
+    /// would therefore put a cursor on every peer's screen for
+    /// somebody who is not there — permanently, for a session that
+    /// never moves a mouse at all.
+    ///
+    /// Written in exactly one place: the `CursorMoved` arm of
+    /// [`route_input`], which every source of motion goes through — a
+    /// real seat, the test-control socket, a peer's injected input.
+    cursor: Option<(f64, f64)>,
     /// Implicit pointer grab owner, latched on the first button press and
     /// released when the last button comes up. Without this a drag that
     /// starts on a client and leaves its tile would silently switch to the
@@ -300,7 +314,24 @@ impl ClientInput {
     }
 
     /// Last cursor position the router observed, in global coordinates.
+    ///
+    /// Falls back to the origin, because the hit-testing and drag
+    /// callers want a point rather than a question: there is nowhere
+    /// else for them to look. Use [`Self::pointer_position`] wherever
+    /// "has never been anywhere" is a different answer from "is at the
+    /// origin" — publishing this session's pointer to its peers is.
     pub fn cursor(&self) -> (f64, f64) {
+        self.cursor.unwrap_or_default()
+    }
+
+    /// Where the pointer is, or `None` if it has never been anywhere.
+    ///
+    /// The honest form of [`Self::cursor`], for the one caller that
+    /// must tell the two apart. A pointer is for pointing at something,
+    /// so a session that has never moved one has nothing to say about
+    /// where it is — and saying the origin instead is a cursor painted
+    /// where nobody is.
+    pub fn pointer_position(&self) -> Option<(f64, f64)> {
         self.cursor
     }
 }
@@ -1614,7 +1645,7 @@ pub fn route_input(
     let captured = chrome_captures_input(fb);
     match event {
         WindowEvent::CursorMoved { position, .. } => {
-            state.client_input.cursor = (position.x, position.y);
+            state.client_input.cursor = Some((position.x, position.y));
             let hit = current_pointer_target(state, fb, captured);
             deliver_pointer(state, hit);
             // During a chrome drag the file manager keeps drawing the ghost
@@ -1622,7 +1653,7 @@ pub fn route_input(
             hit.is_some() && state.selection.chrome_drag.is_none()
         }
         WindowEvent::CursorLeft { .. } => {
-            let global = state.client_input.cursor;
+            let global = state.client_input.cursor();
             state.forward_client_pointer_motion(global, None);
             state.client_input.grab = None;
             state.client_input.buttons_down = 0;
@@ -1803,7 +1834,7 @@ pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
         target: "shell::selection",
         grab = ?state.client_input.grab,
         captured = chrome_captures_input(fb),
-        cursor = ?state.client_input.cursor,
+        cursor = ?state.client_input.cursor(),
         paths = ?pending.paths,
         "files drag pending"
     );
@@ -1822,7 +1853,7 @@ pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
     let hit = {
         let chrome = fb.chrome();
         let tree = chrome.tree();
-        foreign_tile_at(&tree, fb.host(), state.client_input.cursor)
+        foreign_tile_at(&tree, fb.host(), state.client_input.cursor())
             .filter(|h| state.client_input.surfaces.contains_key(&h.surface_id))
     };
     let Some(hit) = hit else {
@@ -1851,7 +1882,7 @@ pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
         .set(Some(crate::compositor::drag_feedback::label_for_paths(&drag.paths)));
     state.selection.chrome_drag = Some(drag);
     let serial = mint_serial(state);
-    let location = SmithayPoint::from(state.client_input.cursor);
+    let location = SmithayPoint::from(state.client_input.cursor());
     // The gesture began on chrome, so there is no surface focus to record;
     // the grab learns its target from the motion delivered right after.
     let start = smithay::input::pointer::GrabStartData {
@@ -1879,7 +1910,7 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
             }
             let chrome = fb.chrome();
             let tree = chrome.tree();
-            foreign_tile_at(&tree, fb.host(), state.client_input.cursor)
+            foreign_tile_at(&tree, fb.host(), state.client_input.cursor())
                 .filter(|h| state.client_input.surfaces.contains_key(&h.surface_id))
         }
         // A grab owned by the chrome keeps the client out of the loop even
@@ -1898,7 +1929,7 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
             }
             let chrome = fb.chrome();
             let tree = chrome.tree();
-            foreign_tile_at(&tree, fb.host(), state.client_input.cursor)
+            foreign_tile_at(&tree, fb.host(), state.client_input.cursor())
                 .filter(|h| state.client_input.surfaces.contains_key(&h.surface_id))
         }
         Some(PointerOwner::Client(surface_id)) => {
@@ -1917,7 +1948,7 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
             }
             let chrome = fb.chrome();
             let tree = chrome.tree();
-            foreign_tile_at(&tree, fb.host(), state.client_input.cursor)
+            foreign_tile_at(&tree, fb.host(), state.client_input.cursor())
                 .filter(|h| state.client_input.surfaces.contains_key(&h.surface_id))
         }
     }
@@ -1926,7 +1957,7 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
 /// Push the current cursor position at `hit` (or clear client focus when
 /// `None`), producing the enter / motion / leave sequence.
 fn deliver_pointer(state: &mut State, hit: Option<TileHit>) {
-    let global = state.client_input.cursor;
+    let global = state.client_input.cursor();
     let target = hit.map(|h| (h.surface_id, (h.rect.x0, h.rect.y0)));
     if state.selection.dnd_active {
         tracing::debug!(
@@ -2854,6 +2885,54 @@ mod tests {
 
     /// A `State` with a live seat, one peer holding write access to
     /// `surface`, and that surface on screen with the keyboard.
+    /// A session nobody has pointed at holds no pointer position, and
+    /// holds one the instant a real motion is routed through.
+    ///
+    /// Both halves of the production path in one place: `route_input`
+    /// is the only writer of this field, and `pointer_position` is what
+    /// the frame loop publishes to the room from. They are asserted
+    /// together because the two accessors disagree *by design* —
+    /// `cursor()` answers the origin for a pointer that has never been
+    /// anywhere, since the hit-testing callers need a point and have
+    /// nowhere else to get one. The origin is also a perfectly good
+    /// place to point, so that answer is safe to route input with and
+    /// unsafe to broadcast: publishing it announced a cursor, in the
+    /// corner of every peer's screen, for somebody who was not there.
+    #[test]
+    fn a_pointer_that_has_never_moved_has_no_position() {
+        let mut state = state_sharing(9_000_101);
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mods = Modifiers::default();
+
+        assert!(
+            state.client_input.pointer_position().is_none(),
+            "nothing has moved a pointer through this session, so it has no position to report",
+        );
+        assert_eq!(
+            state.client_input.cursor(),
+            (0.0, 0.0),
+            "while the routing accessor still answers the origin - the very confusion the other one exists to prevent",
+        );
+
+        // The one thing that gives a session a pointer, through the
+        // function every source of motion goes through.
+        route_input(
+            &mut state,
+            &mut fb,
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(640.0, 610.0),
+            },
+            &mods,
+        );
+
+        assert_eq!(
+            state.client_input.pointer_position(),
+            Some((640.0, 610.0)),
+            "and once it has been somewhere, that is where it is",
+        );
+    }
+
     fn state_sharing(surface: u64) -> crate::compositor::state::State {
         use crate::network::input_firewall::ShellView;
         use crate::network::streaming::StreamingShare;
