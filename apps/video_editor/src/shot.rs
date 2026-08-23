@@ -169,14 +169,23 @@ mod tests {
         fingerprint(&scene)
     }
 
-    /// Two builds of one scenario must describe the same picture exactly.
+    /// Every build of one scenario must describe the same picture exactly.
     ///
-    /// This is the check that would have caught the bin highlighting a
-    /// different row each run: the opening selection was taken from the
-    /// document's map-key order, which is re-rolled every run because the ids
-    /// are fresh, and a differently-highlighted row is a different scene.
+    /// Three builds rather than two, because the failures this exists for do
+    /// not show every time: the project's collections arrive from the document
+    /// in map-key order, the ids are minted fresh each run, and two random
+    /// orders of a handful of clips agree often enough that a single pair
+    /// proves little. Three independent builds make an accidental agreement
+    /// unlikely enough to trust.
+    ///
+    /// It has caught two real ones. The bin used to highlight a different row
+    /// each run, because the opening selection was taken from that same
+    /// map-key order. And the timeline used to draw its clips in a different
+    /// order each run, which is the same set of shapes emitted in a different
+    /// sequence -- identical counts, identical stream lengths, different
+    /// bytes, and a capture nobody could diff.
     #[test]
-    fn a_scenario_composes_the_same_scene_twice() {
+    fn a_scenario_composes_the_same_scene_every_time() {
         for scenario in [
             ShotScenario::Live,
             ShotScenario::Markers,
@@ -184,9 +193,14 @@ mod tests {
             ShotScenario::JustSplit,
             ShotScenario::Effects,
         ] {
-            let a = print_of(scenario, (1280, 800));
-            let b = print_of(scenario, (1280, 800));
-            assert_eq!(a, b, "{scenario:?} composed two different scenes");
+            let first = print_of(scenario, (1280, 800));
+            for again in 1..3 {
+                assert_eq!(
+                    first,
+                    print_of(scenario, (1280, 800)),
+                    "{scenario:?} composed a different scene on build {again}",
+                );
+            }
         }
     }
 
