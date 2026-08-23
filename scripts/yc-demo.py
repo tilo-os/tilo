@@ -2202,6 +2202,14 @@ def windows_overlapping(s: Session) -> list[str]:
 #: 1099..1899 beside the wheel disc, both whole.
 FILM_GROUP_SHARE = 500
 
+#: How far `frame_both_windows` may narrow the groups to get everything
+#: into frame before it gives up and says so. `WIDTH_NARROW_PERMILLE` in
+#: the toolkit, which is a third of the strip — under that a window is
+#: too small to read on film, and shrinking further would buy a frame
+#: nobody can see anything in. A shot that will not fit above this floor
+#: is a shot the beat should decline rather than fake.
+NARROW_SHARE_FLOOR = 333
+
 
 def establish_strip(s: Session) -> None:
     """Fix this session's group proportions before it is filmed.
@@ -2217,6 +2225,28 @@ def establish_strip(s: Session) -> None:
     else:
         note(f"{s.name}: strip set to {FILM_GROUP_SHARE} permille per group "
              f"for the whole film; no beat resizes on camera")
+
+
+def horizontal_overflow(s: Session,
+                        viewport: tuple[int, int]) -> tuple[float, float]:
+    """`(widest group, how far the strip runs off the side)`, in pixels.
+
+    Read off the rects rather than parsed back out of the sentences
+    `windows_off_screen` writes for people. Those sentences also carry
+    `below the screen`, and a strip narrowed in response to a window
+    being too *tall* gets narrower every attempt while never addressing
+    the thing that is wrong.
+    """
+    w, _ = viewport
+    widest, over = 1.0, 0.0
+    for f in s.foreign_frames():
+        r = f.get("rect") or {}
+        if not r.get("w"):
+            continue
+        x0 = r.get("x", 0.0)
+        widest = max(widest, r["w"])
+        over = max(over, -x0, (x0 + r["w"]) - w)
+    return widest, max(0.0, over)
 
 
 def frame_both_windows(s: Session, viewport: tuple[int, int] | None = None) -> None:
@@ -2254,29 +2284,75 @@ def frame_both_windows(s: Session, viewport: tuple[int, int] | None = None) -> N
     take "the gesture was performed" for an answer.
     """
     groups = max(1, len(s.groups_here()))
-    # Scrolled, not resized. The proportions were set once by
-    # `establish_strip` before filming began; changing them here is what
-    # made every window visibly jump a second after an app opened.
+    # The share first, then the scroll — in that order, and both before
+    # the settle, so the strip makes one movement rather than two.
+    #
+    # This used to be scroll-only, on the reasoning that the proportions
+    # were already set once by `establish_strip` and re-setting them here
+    # is what made windows visibly jump a second after an app opened.
+    # Both halves of that were wrong. `set_group_widths` only walks the
+    # groups that exist when it is called, so a share set before filming
+    # governs nothing opened afterwards; and a group opened by a route
+    # that does not go through `Session.launch` — beat 5 fetches its app
+    # through the palette and installs it — takes the launch default of
+    # `WIDTH_NORMAL_PERMILLE`, two thirds. Measured: two thirds of a
+    # 1596px usable strip is 1065px, which puts the second window's right
+    # edge 247px past a 1920px frame. That is exactly the `247px past the
+    # right` this printed underneath a claim that both windows were whole.
+    #
+    # Re-applying is a no-op for a group already at the film share, so
+    # the jump it was avoiding only happens where the alternative is a
+    # window hanging off the side of the picture.
+    s.set_group_width(FILM_GROUP_SHARE)
     focus_leftmost_group(s)
     s.settle(0.6)
     if not viewport:
         return
+    share = FILM_GROUP_SHARE
     wrong = windows_off_screen(s, viewport) + windows_overlapping(s)
     if not wrong:
-        note(f"{s.name}: {groups} group(s) at {FILM_GROUP_SHARE} permille "
+        note(f"{s.name}: {groups} group(s) at {share} permille "
              f"- every window is wholly on screen and none is behind "
              f"another")
         return
 
-    if viewport:
+    # Narrowed and re-framed until it holds or the attempts run out —
+    # which the docstring above has always described and the code did
+    # not do. What stood here measured the strip twice and reported the
+    # same answer both times.
+    #
+    # The step is measured rather than guessed: the overflow is known in
+    # pixels, so the share that would have fitted is arithmetic on the
+    # widest group. A floor of `WIDTH_NARROW_PERMILLE` stops this
+    # shrinking windows into unreadability to satisfy a frame — below
+    # that the honest answer is that the shot does not fit, and the beat
+    # should say so rather than film something too small to read.
+    for _ in range(3):
+        widest, over = horizontal_overflow(s, viewport)
+        if over <= 0.0:
+            # Overlapping rather than off-screen: narrowing cannot help,
+            # because the groups already fit and are simply stacked.
+            break
+        step = max(10, int(share * (over / widest)) + 5)
+        share = share - step
+        if share < NARROW_SHARE_FLOOR:
+            break
+        s.set_group_width(share)
+        focus_leftmost_group(s)
+        s.settle(0.6)
         wrong = windows_off_screen(s, viewport) + windows_overlapping(s)
-        if wrong:
-            gap(f"{s.name}: the strip is not filmable at "
-                f"{FILM_GROUP_SHARE} permille per group — "
-                + "; ".join(wrong))
-        else:
-            note(f"{s.name}: every window is wholly on screen and none is "
-                 f"behind another")
+        if not wrong:
+            note(f"{s.name}: {groups} group(s) at {share} permille — "
+                 f"narrowed from {FILM_GROUP_SHARE} to fit the frame; "
+                 f"every window is wholly on screen")
+            return
+
+    if wrong:
+        gap(f"{s.name}: the strip is not filmable at {share} permille "
+            f"per group — " + "; ".join(wrong))
+    else:
+        note(f"{s.name}: every window is wholly on screen and none is "
+             f"behind another")
 
 
 def focus_leftmost_group(s: Session) -> None:
