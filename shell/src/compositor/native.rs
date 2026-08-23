@@ -380,7 +380,40 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 })
             })
             .collect();
-        serde_json::json!({ "pointers": rows })
+        // Who the collaborators panel is listing, from the function
+        // that paints it.
+        //
+        // A pointer is not a roster. The two answer different
+        // questions — "is somebody moving a mouse in this room" and
+        // "who is in it" — and a harness with only the first cannot
+        // tell a peer the panel is showing from one it is not. A demo
+        // did read `peers()["roster"]`, on every run it ever made, and
+        // got an empty list back because nothing emitted the key: the
+        // one assertion aimed at this surface was passing by never
+        // reaching it.
+        //
+        // Derived from `collaborator_roster_rows` rather than
+        // re-walked here, so what a harness reads and what a person
+        // sees cannot drift apart.
+        let chrome = self.fb.chrome();
+        let roster: Vec<serde_json::Value> =
+            crate::shell::overlay_host::collaborator_roster_rows(&chrome.tree())
+                .into_iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "label": row.label,
+                        "role": row.role,
+                        // Kept separate from the label for the reason
+                        // the panel keeps the tag separate from the
+                        // name: a reader that had to infer which of
+                        // these is a person would sometimes infer
+                        // wrong, and that is the one mistake this
+                        // surface must not invite.
+                        "is_agent": row.is_agent,
+                    })
+                })
+                .collect();
+        serde_json::json!({ "pointers": rows, "roster": roster })
     }
 
     fn workspace_tree_json(&self) -> serde_json::Value {
