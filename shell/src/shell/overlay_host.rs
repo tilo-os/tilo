@@ -372,6 +372,13 @@ pub struct ShellOverlayHost {
     /// dropdown. Populated by `draw_collaborators` and zeroed whenever the
     /// dropdown is not painted, so a click during the close cannot trip it.
     collab_activity_row_rect: Rect,
+    /// Hit rects of the Invite / Join buttons in the collaborator
+    /// dropdown. Zeroed on the same terms as the activity row, and also
+    /// whenever the local user may not invite here — a button that is
+    /// not painted must not be clickable, and the capability decides
+    /// both together so the two can never disagree.
+    collab_invite_row_rect: Rect,
+    collab_join_row_rect: Rect,
 }
 
 /// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
@@ -385,6 +392,19 @@ pub enum PeerSyncAction {
     /// `ShellNetwork::issue_invite(active_ws, listening_addr)` and
     /// drop the resulting token onto the system clipboard.
     IssueInvite,
+    /// Mint an invite and put it on the clipboard in the same step.
+    ///
+    /// What the collaborators panel's Invite button emits, as distinct
+    /// from the palette's row. Somebody who reached for a button
+    /// labelled Invite has already said what the token is for, and
+    /// making them then locate a Copy button on the card that appears
+    /// is a second gesture serving one intent — the gesture that got
+    /// skipped on camera, because it is the one nobody thinks to make.
+    ///
+    /// The card still shows the token in full and still carries its own
+    /// Copy button: for a second copy, and for a session whose
+    /// clipboard is not available.
+    IssueInviteAndCopy,
     /// User invoked `/connect`. Opens the token-input prompt
     /// ([`ShellOverlayHost::draw_peer_sync`]); submitting it sends a
     /// [`PeerSyncRequest::AcceptInvite`] through the bridge.
@@ -823,6 +843,13 @@ const COLLAB_FOOTER_H: f64 = 40.0;
 /// Height reserved for the broker-unavailable line when the dropdown
 /// also has participants to list beneath it.
 const COLLAB_WARNING_H: f64 = 24.0;
+/// Height of the Invite / Join band above the "Room activity" row.
+///
+/// The dropdown answers "who is in this room". Adding somebody to it,
+/// and joining somebody else's, are the two acts that change the
+/// answer — so they belong on the surface that shows it, and not only
+/// in a palette a person has to know the name of a command to reach.
+const COLLAB_ACTIONS_H: f64 = 40.0;
 
 pub const POPOVER_SURFACE_ALPHA: f32 = 0.80;
 
@@ -992,6 +1019,8 @@ impl ShellOverlayHost {
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
             collab_activity_row_rect: Rect::ZERO,
+            collab_invite_row_rect: Rect::ZERO,
+            collab_join_row_rect: Rect::ZERO,
         }
     }
 
@@ -1444,9 +1473,11 @@ impl ShellOverlayHost {
             return;
         }
         for action in actions {
+            let copy_after_mint = action == PeerSyncAction::IssueInviteAndCopy;
             match action {
-                PeerSyncAction::IssueInvite => {
+                PeerSyncAction::IssueInvite | PeerSyncAction::IssueInviteAndCopy => {
                     let outcome = self.peer_sync_call(PeerSyncRequest::IssueInvite);
+                    let minted = outcome.is_ok();
                     if let Some(chrome) = self.chrome.clone() {
                         let mut st = chrome.borrow_mut();
                         match outcome {
@@ -1461,6 +1492,12 @@ impl ShellOverlayHost {
                             }
                         }
                         st.bump();
+                    }
+                    // Only after a mint that produced something. Copying
+                    // on a failed invite would overwrite whatever the
+                    // clipboard held and then report success for it.
+                    if copy_after_mint && minted {
+                        self.copy_invite_token();
                     }
                 }
                 PeerSyncAction::PromptConnect => {
@@ -3562,6 +3599,26 @@ impl ShellOverlayHost {
             .collect()
     }
 
+    /// The collaborator dropdown's Invite / Join buttons, as painted on
+    /// the last frame.
+    ///
+    /// The stored rects rather than a recomputation: a name that
+    /// resolves has to mean "this was on screen", and geometry computed
+    /// on demand would answer for a dropdown that is shut. Both are
+    /// `Rect::ZERO` while the panel is closed or the local user may not
+    /// invite here, and `register_chrome_rects` drops zero-area entries
+    /// — so a scenario that clicks `collab_invite` fails when the
+    /// button is not really there, instead of clicking the origin.
+    pub fn collaborators_action_rects_for_tests(&self) -> (Rect, Rect) {
+        (self.collab_invite_row_rect, self.collab_join_row_rect)
+    }
+
+    /// The "Room activity" row at the foot of the same dropdown, on the
+    /// same terms.
+    pub fn collaborators_activity_rect_for_tests(&self) -> Rect {
+        self.collab_activity_row_rect
+    }
+
     /// Revoke-button rects painted by [`Self::draw_ws_settings`] while
     /// the Permissions tab is active, each keyed by the capability id it
     /// revokes. Empty whenever the modal is closed or another tab is
@@ -4345,15 +4402,76 @@ impl ShellOverlayHost {
         // + COLLAB_FOOTER_H for the "Room activity" row: the dropdown answers
         // "who is in this room", and "what has happened in this room" is the
         // question you ask next.
-        let popover_h: f64 = 48.0 + warning_h + rows * 36.0 + 16.0 + COLLAB_FOOTER_H;
+        // + COLLAB_ACTIONS_H for Invite / Join, but only when this user may
+        // actually invite. Reserving the band unconditionally would leave a
+        // strip of empty popover under the roster for everyone who cannot,
+        // which reads as a control that failed to paint.
+        let actions_h = if self.may_invite_here() {
+            COLLAB_ACTIONS_H
+        } else {
+            0.0
+        };
+        let popover_h: f64 =
+            48.0 + warning_h + rows * 36.0 + 16.0 + actions_h + COLLAB_FOOTER_H;
         let x1 = self.rect.x1 - 16.0;
         let y0 = self.rect.y0 + 48.0;
         Rect::new(
             x1 - popover_w,
             y0,
             x1,
-            y0 + popover_h.min(420.0 + COLLAB_FOOTER_H),
+            y0 + popover_h.min(420.0 + actions_h + COLLAB_FOOTER_H),
         )
+    }
+
+    /// May the local user invite into the room they are looking at?
+    ///
+    /// The same question the palette's `peer.invite` row is filtered on,
+    /// asked through the same policy (`required_capability` →
+    /// [`Workspace::allows`]) rather than re-decided here. A second
+    /// opinion about who may invite is a second security boundary, and
+    /// the one that disagrees is the one that is wrong.
+    ///
+    /// Fail-closed at every missing piece: no chrome, no workspace, or
+    /// peer-sync not running in this session all answer "no", because a
+    /// button that mints nothing is worse than no button.
+    fn may_invite_here(&self) -> bool {
+        use crate::shell::search::action_api::{ActionVisibility, ResourceRef};
+        use crate::shell::search::visibility::CapabilityVisibility;
+
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let st = chrome.borrow();
+        if !st.peer_sync_enabled {
+            return false;
+        }
+        let tree = st.tree();
+        let Some(workspace) = tree.active_workspace() else {
+            return false;
+        };
+        let actor = workspace.actor_for_person(&st.local_user_id);
+        CapabilityVisibility::new(workspace, actor).can_see(
+            &ResourceRef::new("actions", "peer.invite"),
+            &crate::shell::search::ResourceKind::Action,
+        )
+    }
+
+    /// Rects of the Invite / Join buttons, mirroring what
+    /// [`Self::draw_collaborators_footer`] paints. Both are `Rect::ZERO`
+    /// when this user may not invite, so the band is absent from the
+    /// geometry rather than present and inert.
+    fn collaborators_action_row_rects(&self) -> (Rect, Rect) {
+        if !self.may_invite_here() {
+            return (Rect::ZERO, Rect::ZERO);
+        }
+        let r = self.collaborators_rect();
+        let y0 = r.y1 - COLLAB_FOOTER_H - COLLAB_ACTIONS_H + 6.0;
+        let y1 = y0 + 28.0;
+        let gap = 8.0;
+        let half = (r.width() - 16.0 - gap) / 2.0;
+        let invite = Rect::new(r.x0 + 8.0, y0, r.x0 + 8.0 + half, y1);
+        let join = Rect::new(invite.x1 + gap, y0, r.x1 - 8.0, y1);
+        (invite, join)
     }
 
     /// Rect of the "Room activity" row at the foot of the collaborator
@@ -5519,6 +5637,8 @@ impl Widget for ShellOverlayHost {
             self.draw_collaborators(scene, transform, text_renderer, theme);
         } else {
             self.collab_activity_row_rect = Rect::ZERO;
+            self.collab_invite_row_rect = Rect::ZERO;
+            self.collab_join_row_rect = Rect::ZERO;
         }
 
         // Room-activity sheet. Above the dropdowns (it is a surface you read,
@@ -6529,6 +6649,40 @@ impl Widget for ShellOverlayHost {
                     return;
                 }
                 if flags.collaborators {
+                    // Invite / Join before the activity row and before the
+                    // outside-click close, so a click that lands on a button
+                    // performs it rather than dismissing the surface it is
+                    // painted on. Both rects are zero unless the button was
+                    // painted, so this cannot fire for a band that is not
+                    // there — the capability decides the paint and the hit
+                    // together.
+                    let invite = self.collab_invite_row_rect;
+                    if invite.area() > 0.0 && invite.contains(p) {
+                        if let Some(chrome) = self.chrome.clone() {
+                            let mut st = chrome.borrow_mut();
+                            st.push_peer_sync_request(PeerSyncAction::IssueInviteAndCopy);
+                            // The card carries the token, and it is what the
+                            // user now has to read. Leaving the dropdown up
+                            // would put a menu over the thing the click was
+                            // for — the same reason `room.activity.open`
+                            // closes it.
+                            st.overlays.collaborators = false;
+                            st.bump();
+                        }
+                        *handled = true;
+                        return;
+                    }
+                    let join = self.collab_join_row_rect;
+                    if join.area() > 0.0 && join.contains(p) {
+                        if let Some(chrome) = self.chrome.clone() {
+                            let mut st = chrome.borrow_mut();
+                            st.push_peer_sync_request(PeerSyncAction::PromptConnect);
+                            st.overlays.collaborators = false;
+                            st.bump();
+                        }
+                        *handled = true;
+                        return;
+                    }
                     let row = self.collab_activity_row_rect;
                     if row.area() > 0.0 && row.contains(p) {
                         if let Some(chrome) = self.chrome.clone() {
@@ -10983,6 +11137,63 @@ impl ShellOverlayHost {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
+
+        // Invite / Join. Both are the palette's peer-sync rows, put where
+        // a person looking at the room's people will look for them: the
+        // palette is how you reach a command whose name you already know,
+        // and this is how you find out the command exists at all.
+        //
+        // Invite is the filled one because it is the act this surface is
+        // usually opened to perform; Join is outlined because it is the
+        // other machine's half of the same gesture, and a room you are
+        // already in is not one you join.
+        let (invite, join) = self.collaborators_action_row_rects();
+        self.collab_invite_row_rect = invite;
+        self.collab_join_row_rect = join;
+        if invite.area() > 0.0 {
+            let btn_size = tokens.typography.scale.sm;
+            for (rect, label, filled) in [(invite, "Invite", true), (join, "Join", false)] {
+                let shape = RoundedRect::from_rect(rect, tokens.radii.sm as f64);
+                if filled {
+                    scene.fill(Fill::NonZero, transform, colors.accent[5], None, &shape);
+                } else {
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        colors.surface_white_5,
+                        None,
+                        &shape,
+                    );
+                    scene.stroke(
+                        &vello::kurbo::Stroke::new(1.0),
+                        transform,
+                        colors.border_standard,
+                        None,
+                        &shape,
+                    );
+                }
+                let (tw, th) = text_renderer.measure_weighted(
+                    label,
+                    btn_size,
+                    None,
+                    TextWeight::Medium,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    label,
+                    btn_size,
+                    colors.text_primary,
+                    transform
+                        * Affine::translate((
+                            rect.center().x - tw as f64 / 2.0,
+                            rect.center().y - th as f64 / 2.0,
+                        )),
+                    None,
+                    TextWeight::Medium,
+                );
+            }
+        }
+
         let row = self.collaborators_activity_row_rect();
         self.collab_activity_row_rect = row;
         let sep = vello::kurbo::Line::new(
@@ -13385,6 +13596,193 @@ mod tests {
             h.host.collab_activity_row_rect,
             Rect::ZERO,
             "a stale footer rect is a click target the user cannot see"
+        );
+    }
+
+    /// Make the local user the owner of every room, which is what a real
+    /// session does on the way up (`ChromeState::add_workspace` →
+    /// `WorkspaceTree::adopt_ownerless_workspaces`) and what
+    /// `bootstrap_demo` leaves undone.
+    ///
+    /// Without it nobody administers the room, so nobody may invite into
+    /// it — correctly, but it is not a state a session is ever in, and a
+    /// test that relies on it would pass for a reason that has nothing
+    /// to do with what it claims to check.
+    fn adopt_rooms(h: &Harness) {
+        let st = h.chrome.borrow();
+        let user = st.local_user_id.clone();
+        st.tree_mut().adopt_ownerless_workspaces(&user);
+    }
+
+    /// The dropdown's subject is who is in this room, and the two acts
+    /// that change the answer are adding somebody and joining somebody
+    /// else's room. Before this it offered neither: it listed people and
+    /// the only route to inviting one was a palette command whose name
+    /// you had to already know, which is not a route a person on a
+    /// desktop takes.
+    #[test]
+    fn collaborator_dropdown_offers_invite_and_join() {
+        let mut h = build_harness();
+        adopt_rooms(&h);
+        h.chrome.borrow_mut().peer_sync_enabled = true;
+        h.chrome.borrow_mut().overlays.collaborators = true;
+        paint(&mut h);
+
+        let (invite, join) = h.host.collaborators_action_rects_for_tests();
+        assert!(invite.area() > 0.0, "Invite painted a hit target");
+        assert!(join.area() > 0.0, "Join painted a hit target");
+        assert!(
+            invite.x1 <= join.x0,
+            "the two buttons do not overlap: {invite:?} / {join:?}"
+        );
+        let panel = h.host.collaborators_rect();
+        for (name, r) in [("Invite", invite), ("Join", join)] {
+            assert!(
+                panel.contains(r.center()) && panel.contains(r.origin()),
+                "{name} is inside the popover it is painted on"
+            );
+        }
+        assert!(
+            invite.y1 <= h.host.collaborators_activity_row_rect().y0,
+            "the actions band sits above the Room activity row rather than over it"
+        );
+    }
+
+    /// Clicking Invite is one gesture, so it produces one outcome: a
+    /// token, on the clipboard, with the card saying so. Splitting it
+    /// into "mint" and "now find the Copy button" is how the copy came
+    /// to be skipped — the second half is the half nobody thinks to do.
+    #[test]
+    fn collaborator_invite_button_mints_and_copies() {
+        let mut h = build_harness();
+        adopt_rooms(&h);
+        h.chrome.borrow_mut().peer_sync_enabled = true;
+        h.chrome.borrow_mut().overlays.collaborators = true;
+        paint(&mut h);
+        let (invite, _) = h.host.collaborators_action_rects_for_tests();
+        assert!(invite.area() > 0.0, "there is a button to press");
+
+        let mods = Modifiers::default();
+        let _ = pump(&mut h, &cursor_moved_at(invite.center()), &mods);
+        let handled = pump(&mut h, &left_button_pressed(), &mods);
+        assert!(handled, "the button claimed the click");
+
+        assert_eq!(
+            h.chrome.borrow_mut().take_peer_sync_requests(),
+            vec![PeerSyncAction::IssueInviteAndCopy],
+            "the click asks for a mint *and* a copy"
+        );
+        assert!(
+            !h.chrome.borrow().overlays.collaborators,
+            "the dropdown closed, so the token card is what the user is left looking at"
+        );
+    }
+
+    /// The other machine's half of the same gesture.
+    #[test]
+    fn collaborator_join_button_opens_the_connect_prompt() {
+        let mut h = build_harness();
+        adopt_rooms(&h);
+        h.chrome.borrow_mut().peer_sync_enabled = true;
+        h.chrome.borrow_mut().overlays.collaborators = true;
+        paint(&mut h);
+        let (_, join) = h.host.collaborators_action_rects_for_tests();
+        assert!(join.area() > 0.0, "there is a button to press");
+
+        let mods = Modifiers::default();
+        let _ = pump(&mut h, &cursor_moved_at(join.center()), &mods);
+        let handled = pump(&mut h, &left_button_pressed(), &mods);
+        assert!(handled, "the button claimed the click");
+
+        assert_eq!(
+            h.chrome.borrow_mut().take_peer_sync_requests(),
+            vec![PeerSyncAction::PromptConnect],
+            "the click opens the prompt that consumes a token"
+        );
+    }
+
+    /// Peer sync off means nothing in this session can mint a token, so
+    /// a button offering to is a button that lies. The room is adopted
+    /// first so peer-sync is the *only* thing missing — a test that also
+    /// happened to fail the capability check would prove nothing about
+    /// the flag it names.
+    #[test]
+    fn collaborator_actions_are_absent_when_peer_sync_is_off() {
+        let mut h = build_harness();
+        adopt_rooms(&h);
+        assert!(!h.chrome.borrow().peer_sync_enabled);
+        h.chrome.borrow_mut().overlays.collaborators = true;
+        paint(&mut h);
+
+        assert_eq!(
+            h.host.collaborators_action_rects_for_tests(),
+            (Rect::ZERO, Rect::ZERO),
+            "a session that cannot mint offers no button that says it can"
+        );
+        assert_no_peer_sync_work_from_a_click_in_the_panel(&mut h);
+    }
+
+    /// And the capability, which is the half that matters: somebody who
+    /// does not administer this room may not add people to it, and the
+    /// gate has to remove the *hit target* rather than only the paint. A
+    /// rect that outlives the button it belongs to is a control the user
+    /// cannot see and can still press.
+    #[test]
+    fn collaborator_actions_are_absent_without_the_invite_capability() {
+        let mut h = build_harness();
+        {
+            // Owned by somebody else, and the local user holds no grant
+            // here — the ordinary position of a guest in a room.
+            let st = h.chrome.borrow();
+            let mut tree = st.tree_mut();
+            for ws in &mut tree.workspaces {
+                ws.set_owner("somebody-else".to_string());
+            }
+        }
+        // Peer sync *is* on, so the transport is not the reason.
+        h.chrome.borrow_mut().peer_sync_enabled = true;
+        h.chrome.borrow_mut().overlays.collaborators = true;
+        paint(&mut h);
+
+        assert_eq!(
+            h.host.collaborators_action_rects_for_tests(),
+            (Rect::ZERO, Rect::ZERO),
+            "a guest is not offered the room's membership controls"
+        );
+        assert_no_peer_sync_work_from_a_click_in_the_panel(&mut h);
+    }
+
+    /// A click anywhere inside the popover asks the network for nothing.
+    fn assert_no_peer_sync_work_from_a_click_in_the_panel(h: &mut Harness) {
+        let panel = h.host.collaborators_rect();
+        let mods = Modifiers::default();
+        let _ = pump(h, &cursor_moved_at(panel.center()), &mods);
+        let _ = pump(h, &left_button_pressed(), &mods);
+        assert!(
+            h.chrome.borrow_mut().take_peer_sync_requests().is_empty(),
+            "a click in a panel with no buttons queued no peer-sync work"
+        );
+    }
+
+    /// Same rule as the footer row: the rects must not survive the
+    /// dropdown closing, or empty space where a button used to be stays
+    /// clickable.
+    #[test]
+    fn collaborator_action_rects_are_cleared_when_the_dropdown_closes() {
+        let mut h = build_harness();
+        adopt_rooms(&h);
+        h.chrome.borrow_mut().peer_sync_enabled = true;
+        h.chrome.borrow_mut().overlays.collaborators = true;
+        paint(&mut h);
+        let (invite, join) = h.host.collaborators_action_rects_for_tests();
+        assert!(invite.area() > 0.0 && join.area() > 0.0);
+
+        h.chrome.borrow_mut().overlays.collaborators = false;
+        paint(&mut h);
+        assert_eq!(
+            h.host.collaborators_action_rects_for_tests(),
+            (Rect::ZERO, Rect::ZERO),
+            "stale action rects are click targets the user cannot see"
         );
     }
 
