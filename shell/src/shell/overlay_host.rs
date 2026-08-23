@@ -2585,6 +2585,55 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Tell exactly one window group on screen that the keyboard is
+    /// aimed at it.
+    ///
+    /// The tree has always persisted an `active_group` pointer per strip
+    /// and an `active_strip` pointer per workspace — that pair decides
+    /// where a new window lands, what Ctrl+K scopes to, and which tab
+    /// takes a keystroke. None of it was drawn. In a strip of
+    /// non-overlapping windows there is no z-order to infer focus from,
+    /// so three side-by-side windows looked identical while only one of
+    /// them would receive what the user typed.
+    ///
+    /// Runs every frame rather than edge-triggered on a change: it is a
+    /// handful of bool writes across the groups already in memory, and
+    /// making it a pure function of the tree means focus cannot be left
+    /// latched on a group that a resync spliced in, moved between
+    /// strips, or rebuilt.
+    fn mark_focused_group(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        // Which strip owns focus, resolved exactly the way
+        // `publish_strip_viewport` resolves it — including the fallback
+        // to the first strip, so a workspace whose pointer was never
+        // seeded still lights one window instead of none.
+        let focused: Option<(StripId, GroupId)> = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            tree.active_workspace()
+                .and_then(|ws| {
+                    tree.active_strip
+                        .get(&ws.id)
+                        .copied()
+                        .filter(|id| ws.strips.iter().any(|s| s.id == *id))
+                        .or_else(|| ws.strips.first().map(|s| s.id))
+                })
+                .and_then(|sid| tree.active_group_for(sid).map(|gid| (sid, gid)))
+        };
+        for (&strip_id, &ptr) in self.group_row_ptrs.iter() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in row.groups.iter_mut() {
+                g.set_focused(focused == Some((strip_id, g.id)));
+            }
+        }
+    }
+
     /// Publish the active strip's laid-out geometry on the chrome, so an
     /// "open this" path can consult it — see [`crate::shell::placement`].
     ///
@@ -4849,6 +4898,10 @@ impl Widget for ShellOverlayHost {
         // Runs after `harvest_active_tab_writeback` so a focus change made
         // this frame is already reflected in `active_group`.
         self.scroll_active_group_into_view();
+        // Light the group that pointer names. Same ordering rationale as
+        // the scroll reconciler above: `active_group` is settled for this
+        // frame by the time both of them read it.
+        self.mark_focused_group();
         // Cross-strip tab drag-drop (#151): drain any `GroupRow` that
         // published a cross-strip detach during this frame's events and
         // splice the dragged tab into whichever strip's row contains the
