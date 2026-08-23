@@ -16,47 +16,54 @@ Quinten types a flat draft and one line addressed to Claude. Then
 the catalogue the word processor exports, and carries it out — and
 Xaver's session is asked what *his* copy says.
 
-# STATUS: this does not pass yet, and the reason is not the agent
+# What counts as proof here
 
-As of writing, the agent half works and the second session does not.
-Quinten's page gets its title and headings with Claude's caret pill on
-it; Xaver's page is unchanged, instruction line and all, while Xaver's
-*presence* shows up on Quinten's screen and Quinten's on Xaver's. A room
-that looks alive while nothing in it is shared is a known shape of
-defect here; do not read a failure of this script as a defect in the
-agent until the two apps are shown to share a document at all.
-
-Read that last part carefully, because this script's setup hides it:
-both sessions open the **same file off disk**, so the two pages agreeing
+Both sessions open the **same file off disk**, so the two pages agreeing
 *before* the agent runs proves nothing whatsoever about replication.
 They would agree if the room did not exist. The only moment that tests
 the room is the agent's edit, which exists in one app's document and has
 to cross to the other.
 
-# What counts as proof here, and what does not
+So the payoff is read out of Xaver's own app rather than left to the
+frames. A late joiner announces the same `(app, room, record)` the word
+processor announced and sends `Presence { Arrived }`; every toolkit
+answers that with its whole document. What comes back is produced *by
+the app running in that session, out of the document it is holding* —
+not the wire being read back to itself.
 
-Xaver's screen is the evidence, and this file does not claim what it
-shows. It captures his screen twice — before the agent runs and after —
-and says to go and look at them.
+Two things are asserted about it and neither is worth anything alone:
 
-There is deliberately no text assertion about Xaver's copy, because
-there is no honest one available. The obvious one does not work: the
-shell's search providers read the bodies of the shell's *own* text apps
-out of its tab documents, and a packaged app keeps its document in the
-app process, so they cannot answer for the word processor at all.
-Comparing his two frames byte for byte does not work either — a blinking
-caret changes them. So this script checks what it genuinely can (both
-apps painted, the agent chose from the catalogue and exited clean) and
-refuses to call the run a pass on the strength of it.
+  * the draft's title is still there — a blob that does not carry it is
+    not the document, and "the instruction is gone" from a document that
+    was never the draft is a claim about nothing;
+  * the line addressed to Claude is gone, and the headings the agent
+    made are there.
+
+That second half is what tests the room, and the disk is the control:
+the agent removes the instruction in a replica living in a third
+process and never saves, so the file the two apps opened still carries
+the line — which this script checks. An app that no longer holds it did
+not read that from the disk.
+
+The frames are still worth opening. They are no longer the only
+evidence.
 
 # If the edit never arrives
 
-Launch both apps from the palette (this script does). An app started
-through the catalogue's install-and-open path is known to come up
-without connecting to collaboration, while presence still crosses — so
-the room looks alive and nothing is shared. If a run fails with both
-apps painted and presence crossing, check each session's log for
-`collab connected` before suspecting the agent.
+Check whether the machine was busy before suspecting the room. These
+are heavyweight debug binaries and the compositor renders in software
+here; on a box already running a large build this fails at step 3 with
+"the word processor never painted" and the app's own log is *empty*,
+because it never got far enough to write to it. That is starvation, not
+a defect — `uptime` first. The same load makes the agent sit forever
+waiting for a document that is still loading, which is why it now
+bounds that wait and names the address instead (`--await-document-ms`).
+
+An app started through the catalogue's install-and-open path has also
+been seen to come up without connecting to collaboration while presence
+still crosses — so the room looks alive and nothing is shared. If a run
+fails with both apps painted and presence crossing, check each session's
+log for `collab connected` before suspecting the agent.
 
 Usage:
   ./agent-second-session-proof.py [--keep] [--no-model]
@@ -76,14 +83,65 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 from reaper import die_with_parent, track
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-SHELL = REPO / "target" / "debug" / "shell"
-AGENT = REPO / "target" / "debug" / "qos-agent"
-WORD_PROCESSOR = REPO / "target" / "debug" / "word-processor"
+
+
+PROFILES = ("demo", "debug")
+
+
+def _tool(name: str) -> pathlib.Path | None:
+    """The newest build of `name` across the profiles this repo uses.
+
+    For the standalone tools only. They speak JSON over a Unix socket
+    and share no linkage with anything, so the newest is simply the
+    most current answer.
+    """
+    found = [p for p in (REPO / "target" / prof / name
+                         for prof in PROFILES) if p.exists()]
+    return max(found, key=lambda p: p.stat().st_mtime) if found else None
+
+
+def _matched_pair() -> tuple[pathlib.Path | None, pathlib.Path | None]:
+    """The compositor and the app, from **one** profile.
+
+    These two are not interchangeable across profiles: they share the
+    toolkit and the Wayland/collaboration surface between them, and a
+    demo-profile app against a debug-profile shell died on its first
+    frame with `Io error: Broken pipe` — which reads as "the app never
+    painted", i.e. as a fault in the app or the room rather than in the
+    pairing. Choose a profile that has both, newest first, and say
+    which one was chosen so a run is never ambiguous about what it
+    exercised.
+    """
+    best: tuple[float, pathlib.Path, pathlib.Path] | None = None
+    for prof in PROFILES:
+        shell = REPO / "target" / prof / "shell"
+        app = REPO / "target" / prof / "word-processor"
+        if not (shell.exists() and app.exists()):
+            continue
+        age = min(shell.stat().st_mtime, app.stat().st_mtime)
+        if best is None or age > best[0]:
+            best = (age, shell, app)
+    return (best[1], best[2]) if best else (None, None)
+
+
+def _pair_from(profile: str) -> tuple[pathlib.Path | None, pathlib.Path | None]:
+    """The compositor and the app from one named profile, or `(None, None)`."""
+    shell = REPO / "target" / profile / "shell"
+    app = REPO / "target" / profile / "word-processor"
+    return (shell, app) if shell.exists() and app.exists() else (None, None)
+
+
+SHELL, WORD_PROCESSOR = _matched_pair()
+AGENT = _tool("qos-agent")
+# Decodes an Automerge blob to the strings it holds. Without it there is
+# no honest way to answer "does this document say that" — see `_strings`.
+DOC_TEXT = _tool("qos-doc-text")
 
 APP = "dev.qos.word-processor"
 APPLICATIONS = "applications"
@@ -103,6 +161,15 @@ Two suppliers remain single-sourced and that has not moved since March.
 
 Claude: make this a proper document
 """
+
+# The first line, used as a positive control: a blob that does not carry
+# it is not the draft, and "the instruction is absent" from a document
+# that was never the draft is worth nothing.
+TITLE = "Quarterly review"
+# The instruction the agent consumes. Matched on its tail rather than the
+# whole line because the agent's name is a prefix a caret pill also
+# carries, and the claim is about the *instruction* being carried out.
+INSTRUCTION_TAIL = "make this a proper document"
 
 failures: list[str] = []
 
@@ -316,6 +383,141 @@ def body_carries(sess: Session, token: str) -> bool:
     return False
 
 
+class DocumentReader:
+    """Ask one session's word processor what its document actually says.
+
+    The compositor cannot answer this. `state_dump` knows a foreign
+    surface exists and painted; it has no idea what is written on it,
+    and the shell's search providers only read the shell's *own* text
+    apps. So this asks the app, in the app's own protocol: it speaks the
+    length-prefixed JSON `CollabRequest`/`CollabEvent` the toolkit
+    speaks, announces the same `(app_id, cluster_id, record)` address
+    the word processor announced, and sends the one frame every toolkit
+    answers with its whole document — `Presence { Arrived }`, the same
+    handshake `qos-agent` opens with.
+
+    What comes back is therefore produced *by the app running in that
+    session, out of the document that app is holding*. It is not the
+    wire being read back to itself.
+
+    The address has to match exactly. The broker's `delivers_to` makes
+    the record the innermost test and it fails closed both ways, so a
+    reader that announces no record is not a reader of an app that
+    announced one — it is a reader of a different, empty conversation,
+    and it reports a blank page as confidently as a real one.
+    """
+
+    # The presence scope the toolkit answers on. Same constant the agent
+    # uses; a different scope is a different conversation and gets no reply.
+    SCOPE = "word-processor"
+
+    def __init__(self, sock_path: str, room: str, record: str | None,
+                 handle: str = "readback") -> None:
+        self.frames: list[dict] = []
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(10.0)
+        self.sock.connect(sock_path)
+        self._send({"Hello": {"app_id": APP, "cluster_id": room,
+                              "record": record, "handle": handle}})
+        self._send({"Presence": {"key": {"Workspace": {"id": self.SCOPE}},
+                                 "payload": "Arrived"}})
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _send(self, obj: dict) -> None:
+        body = json.dumps(obj).encode()
+        self.sock.sendall(len(body).to_bytes(4, "little") + body)
+
+    def _read(self) -> None:
+        try:
+            f = self.sock.makefile("rb")
+            while True:
+                hdr = f.read(4)
+                if not hdr or len(hdr) < 4:
+                    return
+                body = f.read(int.from_bytes(hdr, "little"))
+                if not body:
+                    return
+                try:
+                    self.frames.append(json.loads(body.decode()))
+                except Exception:
+                    pass
+        except Exception:                   # the session went away
+            pass
+
+    def close(self) -> None:
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+    def documents(self) -> list[bytes]:
+        """Every whole-document frame somebody in the room answered with."""
+        return [bytes(m["CRDTUpdate"]["data"])
+                for m in list(self.frames) if "CRDTUpdate" in m]
+
+    def await_settled(self, must_have: str, must_lack: str, timeout: float):
+        """Wait for a document that says `must_have` and not `must_lack`.
+
+        Both halves are needed and neither is sufficient. `must_lack`
+        alone is what an empty page, a wrong address and a dropped
+        connection all look like, so on its own it proves nothing at
+        all; `must_have` is the positive control that says the blob
+        being searched really is the draft. Only a document with one and
+        not the other is the agent's edit having arrived.
+
+        More than one participant answers `Arrived` with a full
+        document on this address, so every frame is searched rather
+        than the newest — reading only the last one reports somebody
+        else's copy as the app's.
+
+        Returns `(ok, strings_of_the_best_frame)`.
+        """
+        deadline = time.time() + timeout
+        last: list[str] = []
+        while time.time() < deadline:
+            for blob in self.documents():
+                lines = _strings(blob)
+                body = "\n".join(lines)
+                if must_have in body:
+                    last = lines
+                    if must_lack not in body:
+                        return True, lines
+            time.sleep(0.5)
+        return False, last
+
+
+def _strings(blob: bytes) -> list[str]:
+    """Every string an Automerge blob holds, as `<path>\\t<text>` lines.
+
+    Not a byte search. Automerge DEFLATE-compresses each column of a
+    change chunk once it is over a few hundred bytes, so a phrase a
+    person typed is genuinely in the document and genuinely absent from
+    its bytes — a harness that grepped the bytes reported an empty page
+    for a document that had the sentence in it, and failed that way
+    whatever had gone wrong.
+
+    Block kinds are stored as plain string values (`BLOCK_KIND`), so
+    this shows structure as well as prose: after the agent's pass the
+    dump carries `heading` where it carried `paragraph`.
+    """
+    if DOC_TEXT is None:
+        return []
+    try:
+        done = subprocess.run([str(DOC_TEXT), "-"], input=blob,
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if done.returncode != 0:
+        return []
+    return done.stdout.decode(errors="replace").splitlines()
+
+
+def headings(lines: list[str]) -> int:
+    """How many blocks in this dump are headings rather than paragraphs."""
+    return sum(1 for ln in lines if ln.rsplit("\t", 1)[-1].strip() == "heading")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="An agent's edit, on somebody else's screen.")
     ap.add_argument("--keep", action="store_true", help="leave the sessions running")
@@ -323,13 +525,33 @@ def main() -> int:
                     help="decide by keyword instead of asking a model")
     ap.add_argument("--shots", default=None, metavar="DIR",
                     help="where the two screenshots go (default: under the session root)")
+    ap.add_argument("--profile", default="auto", choices=("auto", *PROFILES),
+                    help="which build of the compositor and the app to run "
+                         "(they must match; default: the newest profile that "
+                         "has both). Pin one when another build is rewriting "
+                         "the other profile underneath the run.")
     args = ap.parse_args()
 
-    for binary, what in ((SHELL, "shell"), (AGENT, "qos-agent")):
-        if not binary.exists():
-            print(f"missing {what} at {binary}")
+    global SHELL, WORD_PROCESSOR
+    if args.profile != "auto":
+        SHELL, WORD_PROCESSOR = _pair_from(args.profile)
+        if SHELL is None:
+            print(f"target/{args.profile} has no shell + word-processor pair")
+            return 2
+
+    for binary, what in ((SHELL, "shell"), (AGENT, "qos-agent"),
+                         (WORD_PROCESSOR, "word-processor")):
+        if binary is None:
+            print(f"missing {what} in target/demo and target/debug")
             print("build it:  cargo build -p shell -p agent -p word-processor")
             return 2
+    if DOC_TEXT is None:
+        print("missing qos-doc-text in target/demo and target/debug")
+        print("build it:  cargo build -p qdoc --bin qos-doc-text")
+        return 2
+    for binary, what in ((SHELL, "shell"), (AGENT, "qos-agent"),
+                         (WORD_PROCESSOR, "word-processor")):
+        print(f"  {what}: {binary}")
 
     # AF_UNIX paths cap near 108 bytes and a session binds several sockets
     # under its root, so a long prefix fails the compositor's own bind and
@@ -399,6 +621,33 @@ def main() -> int:
         check("xaver's screen before the agent was captured", xaver.snapshot(before_png),
               before_png)
 
+        # The baseline, read out of xaver's own app. Everything claimed
+        # after the agent runs is a change from *this*, measured the same
+        # way, so "it was already like that" is not available as an
+        # explanation of the result.
+        record = f"file:{brief}"
+        base = DocumentReader(xaver.broker, room, record, handle="baseline")
+        try:
+            deadline = time.time() + 30
+            before_lines: list[str] = []
+            while time.time() < deadline:
+                for blob in base.documents():
+                    lines = _strings(blob)
+                    if any(INSTRUCTION_TAIL in ln for ln in lines):
+                        before_lines = lines
+                        break
+                if before_lines:
+                    break
+                time.sleep(0.5)
+        finally:
+            base.close()
+        if not check("xaver's app answered with the draft", bool(before_lines),
+                     "no document frame carried the draft"):
+            return 1
+        before_headings = headings(before_lines)
+        check("and it is a flat draft — no headings in it yet",
+              before_headings == 0, f"{before_headings} heading block(s)")
+
         print("\n[5] the agent joins quinten's session and chooses")
         argv = [str(AGENT), "--socket", quinten.broker, "--workspace", room,
                 "--record", f"file:{brief}",
@@ -439,25 +688,50 @@ def main() -> int:
         x_png = os.path.join(shots, "xaver-after.png")
         check("quinten's screen was captured", quinten.snapshot(q_png), q_png)
         check("xaver's screen after the agent was captured", xaver.snapshot(x_png), x_png)
+        print("\n[7] what xaver's own app says it is holding")
+        # The payoff, and the only step that tests the room at all.
+        #
+        # Both apps opened the same file, so their agreeing *beforehand*
+        # proves nothing — they would agree with no room at all. What
+        # cannot be explained that way is the instruction line going
+        # away: the agent removed it in a replica that lives in a third
+        # process, never saved, and the file on disk still has the line
+        # in it. If xaver's app no longer holds it, it did not read that
+        # from the disk. It came through the room.
+        reader = DocumentReader(xaver.broker, room, record, handle="readback")
+        try:
+            ok, after_lines = reader.await_settled(
+                must_have=TITLE, must_lack=INSTRUCTION_TAIL, timeout=60)
+        finally:
+            reader.close()
+
+        check("xaver's document still holds the draft it started from",
+              any(TITLE in ln for ln in after_lines), TITLE)
+        check("the line addressed to the agent is gone from xaver's copy", ok,
+              "still present" if after_lines else "no document frame arrived")
+        after_headings = headings(after_lines)
+        check("and his copy carries the headings the agent made",
+              after_headings > before_headings,
+              f"{before_headings} before, {after_headings} after")
+        # The file the two apps opened is untouched, which is what makes
+        # the two claims above about the room rather than about a disk.
+        on_disk = open(brief, errors="replace").read()
+        check("the file on disk still carries the instruction, unsaved",
+              INSTRUCTION_TAIL in on_disk,
+              "the app saved, so disk is no longer a control")
+
         print(f"\n  xaver before: {before_png}")
         print(f"  xaver after:  {x_png}")
         print(f"  quinten:      {q_png}")
-        print("\nThe frames are the evidence and this script does not claim it for")
-        print("them: open the two xaver frames and see whether his page changed.")
+        print("\nThe frames are evidence too, and worth opening: the claims above")
+        print("are about what the apps hold, and a person still has to look at")
+        print("whether xaver's page renders it.")
 
         if failures:
             print(f"\nFAILED ({len(failures)}): " + "; ".join(failures))
             return 1
-
-        # Everything this script can check has passed, and the thing it
-        # exists to show is not among them. Saying PASS here would be
-        # claiming Xaver's screen changed, which only the frames can say
-        # — and on the runs so far it has not.
-        print("\nINCONCLUSIVE — the checkable steps all passed.")
-        print("Whether the agent's edit reached xaver is in the frames, not here.")
-        print("If his page is unchanged, look at whether the two apps ever shared")
-        print("a document: they open the same file, so agreeing beforehand is not")
-        print("evidence of a room, and the agent is the last thing to suspect.")
+        print("\nPASS — the agent's edit is in xaver's copy, and xaver's session")
+        print("never ran the agent, typed the change, or re-read the file.")
         return 0
     finally:
         if agent is not None and agent.poll() is None:
