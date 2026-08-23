@@ -45,7 +45,7 @@ use ui::{CommandEntry, CommandPalette};
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::notification::NotificationStack;
 use crate::shell::state::{
-    Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
+    Capability, GRANT_ALWAYS, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
 };
 use crate::shell::workspace_settings::{
     CapEdit, EXPIRY_CHOICES, draw_members_pane, draw_permissions_pane,
@@ -610,7 +610,7 @@ fn lay_out_chip_strip(
     };
 
     let mut rects = vec![Rect::ZERO; natural.len()];
-    let mut place = |row: usize, ids: &[usize], widths: &[f64], rects: &mut Vec<Rect>| {
+    let place = |row: usize, ids: &[usize], widths: &[f64], rects: &mut Vec<Rect>| {
         let cy = band.y0 + row as f64 * row_h + row_h / 2.0;
         let mut x = band.x0;
         for (slot, &id) in ids.iter().enumerate() {
@@ -7117,6 +7117,17 @@ impl Widget for ShellOverlayHost {
     }
 
     fn needs_animation_frame(&self) -> bool {
+        self.needs_animation_frame_at(Instant::now())
+    }
+
+}
+
+impl ShellOverlayHost {
+    /// [`Widget::needs_animation_frame`] against a caller-supplied
+    /// clock, so a test can pin the same instant it started a
+    /// transition at and assert about the animation rather than about
+    /// how busy the machine was between two statements.
+    fn needs_animation_frame_at(&self, now: Instant) -> bool {
         // Continuous redraws while any of:
         //   - overview crossfade (transition_started)
         //   - workspace slide-swap (ws_slide_started)
@@ -7125,7 +7136,6 @@ impl Widget for ShellOverlayHost {
         // is in flight. `tick_*` methods clear their own flags once the
         // animation duration has fully elapsed, so at rest this returns
         // false and the app event loop can go idle.
-        let now = Instant::now();
         let qs_in_flight = self.qs_transition.is_animating(now);
         let ws_settings_in_flight = self.ws_settings_transition.is_animating(now);
         let palette_in_flight = self.palette_transition.is_animating(now);
@@ -11651,17 +11661,33 @@ mod modal_curve_tests {
     fn palette_open_transition_pumps_frames_and_is_visible() {
         use ui::widget::Container;
         let mut h = ShellOverlayHost::new(Box::new(Container::new()));
-        assert!(!h.palette_transition.is_visible(Instant::now()));
+        // One instant for the whole test. Reading the clock afresh per
+        // assertion made this a statement about machine load: the open
+        // runs for MODAL_OPEN_ANIM_MS, so a scheduler stall longer than
+        // that between starting it and asking whether it was running
+        // let it finish first, and the last assertion flipped. That is
+        // an ordinary stall in a loaded parallel run, and it is what
+        // made this test flaky.
+        let now = Instant::now();
+        assert!(!h.palette_transition.is_visible(now));
         // Drive the open transition the way `draw` does.
-        h.palette_transition.set_open(
+        h.palette_transition.set_open_at(
             true,
             Duration::from_millis(MODAL_OPEN_ANIM_MS),
             ui::Curve::EaseOut,
+            now,
         );
-        assert!(h.palette_transition.is_visible(Instant::now()));
+        assert!(h.palette_transition.is_visible(now));
         assert!(
-            h.needs_animation_frame(),
+            h.needs_animation_frame_at(now),
             "an in-flight palette open must pump redraws"
+        );
+        // The pinned clock has teeth: asked past the animation window
+        // the same host reports settled, so the assertion above is
+        // reading the curve rather than returning true unconditionally.
+        assert!(
+            !h.needs_animation_frame_at(now + Duration::from_millis(MODAL_OPEN_ANIM_MS + 50)),
+            "a settled palette must let the event loop go idle"
         );
     }
 
@@ -13951,9 +13977,28 @@ mod peer_cursor_tests {
 
     /// The key the collaboration layer publishes a workspace's pointers
     /// under, and the one `draw_real_peers` looks them up by.
+    ///
+    /// Derived from the workspace's **room**, because that is what an
+    /// app actually publishes under: the launcher passes the room in as
+    /// `--workspace-id`, the sandbox sees it as `QOS_WORKSPACE_ID`, and
+    /// the toolkit addresses presence to it. `WorkspaceId` is a
+    /// per-machine handle, and `room` is explicitly not a function of
+    /// it, so keying by the handle names a key no app ever writes —
+    /// `peer_draw_ops` then reports zero for every input, real peer
+    /// included, and the two no-peer assertions below pass while
+    /// proving nothing. That is not hypothetical: it is what this
+    /// helper did until the production lookup moved to the room. Read
+    /// the room off the tree rather than restating a literal, so the
+    /// next such move breaks the fixture loudly instead of silently.
     fn active_key(tree: &WorkspaceTree) -> PresenceKey {
+        let room = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == tree.active)
+            .expect("the seed's active workspace is in the tree")
+            .room;
         PresenceKey::Workspace {
-            id: format!("{}", tree.active.raw()),
+            id: room.to_string(),
         }
     }
 
