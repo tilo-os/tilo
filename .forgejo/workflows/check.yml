@@ -97,4 +97,14 @@ jobs:
           # debuginfo (no effect on pass/fail) — full coverage, bounded RAM.
           CARGO_BUILD_JOBS: "4"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: cargo test --workspace --locked --no-fail-fast
+          # A wayland socket has to be bound somewhere, and smithay's
+          # `ListeningSocket::bind_auto` puts it in the runtime dir. There is
+          # no login session in this container to set one, so the compositor's
+          # handshake tests failed with `RuntimeDirNotSet` before reaching
+          # anything they check. Providing the directory lets them bind a real
+          # socket and run for real.
+          XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+        run: |
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          cargo test --workspace --locked --no-fail-fast
