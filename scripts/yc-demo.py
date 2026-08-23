@@ -3916,7 +3916,13 @@ def beat_four(quinten: Session, xaver: Session, agent: Session,
         return abs(float(row.get("x", 0.0))) < 1.0 and \
             abs(float(row.get("y", 0.0))) < 1.0
 
-    on_xaver = wait_for(lambda: seen_by(xaver, quinten.user), timeout=SYNC_TIMEOUT_S)
+    # Bounded on camera, not in the claim: a cursor that is going to
+    # cross has crossed within a few seconds, and the alternative is
+    # filming an empty desktop for twenty-five under a caption about a
+    # cursor appearing on it.
+    with patience(4.0):
+        on_xaver = wait_for(lambda: seen_by(xaver, quinten.user),
+                            timeout=SYNC_TIMEOUT_S)
     claim("xaver's session paints quinten's cursor on an empty desktop",
           bool(on_xaver), True)
     if on_xaver:
@@ -3948,7 +3954,9 @@ def beat_four(quinten: Session, xaver: Session, agent: Session,
                  f"painted where he is not")
     xaver.snapshot(os.path.join(shots, "03-xaver-joined.png"))
 
-    on_quinten = wait_for(lambda: seen_by(quinten, xaver.user), timeout=SYNC_TIMEOUT_S)
+    with patience(4.0):
+        on_quinten = wait_for(lambda: seen_by(quinten, xaver.user),
+                              timeout=SYNC_TIMEOUT_S)
     claim("and quinten's paints xaver's, the other way", bool(on_quinten), True)
     if on_quinten:
         claim("also at a real position", at_the_origin(on_quinten[0]), False)
@@ -4357,7 +4365,16 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
             if reader is not None:
                 reader.close()
 
-    typed_here = quinten_holds()
+    # Asked with the camera down. The words are already visibly on the
+    # page — that is the shot that just happened — and this only settles
+    # whether they reached the *document* or merely the screen, which
+    # decides how a later failure is described rather than being
+    # something to watch. On camera it was up to twenty seconds of a
+    # still page after the typing finished, and beat seven ran to
+    # sixty-six against a budget of seventy-five for the whole film.
+    with off_camera("his own app is asked whether the words reached its "
+                    "document, which decides what a later failure means"):
+        typed_here = quinten_holds()
     if typed_here:
         note("typed straight into the open document — the app had the "
              "caret in the page already, and nothing had to be aimed")
@@ -4420,7 +4437,13 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
         return [r for r in rows
                 if quinten.user in (r.get("name"), r.get("user"))] or None
 
-    seen = wait_for(quinten_present, timeout=SYNC_TIMEOUT_S)
+    # Filmed for as long as it is worth watching succeed. His pointer and
+    # caret are either already on xaver's screen — which is the shot —
+    # or they are not coming, and twenty-five seconds of an unchanged
+    # screen is not the second thing. The full timeout still applies to
+    # the claim; only the camera gives up early.
+    with patience(4.0):
+        seen = wait_for(quinten_present, timeout=SYNC_TIMEOUT_S)
     if seen:
         claim("xaver's screen carries quinten while he is typing",
               bool(seen), True)
