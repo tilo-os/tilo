@@ -460,6 +460,22 @@ const SPOKE_ANGLE_STEP_DEG: f32 = 5.5;
 /// one of them too small to carry a name.
 const SECTORS_ACROSS_BAND: usize = 5;
 
+/// Floor and ceiling on the derived spoke gap, in degrees.
+///
+/// The floor is a safety property, not a taste one: [`slot_reach`]
+/// divides the visible sweep by the gap, so a gap approaching zero asks
+/// for an unbounded number of slots. A degenerate band — a few pixels
+/// tall, which any transient layout can produce — drove the gap to
+/// nearly nothing and the slot loop to billions of iterations, which
+/// presents as the process wedging at full CPU with nothing drawn.
+const MIN_SPOKE_GAP_DEG: f32 = 1.5;
+const MAX_SPOKE_GAP_DEG: f32 = 90.0;
+
+/// Hard cap on slots either side of centre. No band needs this many;
+/// it exists so a geometry nobody anticipated degrades into a wheel
+/// that looks wrong rather than a compositor that stops responding.
+const MAX_SLOT_REACH: i32 = 64;
+
 /// Pixels of accumulated wheel scroll required to advance one
 /// workspace. The wheel uses *discrete detents*: scroll input
 /// accumulates as raw pixels and every `WHEEL_DETENT_PX` worth of
@@ -782,7 +798,12 @@ impl SidebarWheelDisc {
             // No layout yet — early frames and hand-built test discs.
             return SPOKE_ANGLE_STEP_DEG;
         };
-        span / n.min(SECTORS_ACROSS_BAND) as f32
+        let gap = span / n.min(SECTORS_ACROSS_BAND) as f32;
+        if gap.is_finite() {
+            gap.clamp(MIN_SPOKE_GAP_DEG, MAX_SPOKE_GAP_DEG)
+        } else {
+            SPOKE_ANGLE_STEP_DEG
+        }
     }
 
     /// How much angle the visible band covers, or `None` before the
@@ -1137,11 +1158,17 @@ impl SidebarWheelDisc {
 /// case: `spoke_gap_deg` widens to 360° there so the wheel cannot scroll
 /// past its only entry, and one slot is the whole disc.
 fn slot_reach(sweep_rad: f64, gap_deg: f64) -> i32 {
-    if gap_deg >= 180.0 {
-        0
-    } else {
-        (sweep_rad.to_degrees() / gap_deg).ceil() as i32 + 1
+    // A non-positive or non-finite gap has no meaningful slot count, and
+    // dividing by it saturates the cast to `i32::MAX` — which the caller
+    // then walks, one slot at a time.
+    if !gap_deg.is_finite() || gap_deg <= 0.0 || gap_deg >= 180.0 {
+        return 0;
     }
+    let reach = (sweep_rad.to_degrees() / gap_deg).ceil();
+    if !reach.is_finite() {
+        return 0;
+    }
+    (reach as i32).saturating_add(1).clamp(0, MAX_SLOT_REACH)
 }
 
 /// Point on the circle of radius `r` about `c` at `angle` radians,
