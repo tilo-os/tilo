@@ -427,8 +427,13 @@ fn age_label(age: i64, absolute: &str) -> String {
         1 => "1 day ago".to_string(),
         2..=6 => format!("{age} days ago"),
         7..=13 => "1 week ago".to_string(),
-        14..=59 => format!("{} weeks ago", age / 7),
-        60..=364 => {
+        // Weeks stop at 29, not 59: a month is the unit a person reaches
+        // for once there is a whole one to name, and "8 weeks ago" is not
+        // how anyone says "2 months ago". The `.max(1)` below is the tell
+        // that this boundary was always meant to sit at 30 — at 60 it can
+        // never fire, since 60/30 is already 2.
+        14..=29 => format!("{} weeks ago", age / 7),
+        30..=364 => {
             let months = (age / 30).max(1);
             if months == 1 { "1 month ago".to_string() } else { format!("{months} months ago") }
         }
