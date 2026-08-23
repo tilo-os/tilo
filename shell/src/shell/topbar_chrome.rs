@@ -1597,8 +1597,7 @@ impl Widget for TopBarChrome {
         }
 
         // Avatar stack click target. Spans from the left-most circle to the
-        // right of the stack (rx before drawing). Empty collaborators still
-        // get a zero-sized rect so the click handler short-circuits.
+        // right of the stack (rx before drawing).
         let slot_count =
             self.collaborator_initials.len() + if self.collaborator_overflow > 0 { 1 } else { 0 };
         if slot_count > 0 {
@@ -1610,7 +1609,63 @@ impl Widget for TopBarChrome {
             self.avatar_stack_rect =
                 Rect::new(leftmost_cx - 9.0, y_mid - 11.0, stack_right_x, y_mid + 11.0);
         } else {
-            self.avatar_stack_rect = Rect::ZERO;
+            // An empty roster is exactly when this control matters most.
+            // Clicking the stack is how the room's people are opened, and
+            // a stack of nobody used to paint nothing and publish
+            // `Rect::ZERO` — so the one person who needs the control, the
+            // one about to invite the *first* collaborator, was the one
+            // person it was not there for. The panel behind it could then
+            // only be reached by its address, which is not a gesture.
+            //
+            // So the slot keeps its geometry and says what it is for. The
+            // ring is dashed and the chip is unfilled because an empty
+            // seat is not a person: a filled chip in the avatar row would
+            // read as a participant nobody added. The verb is spelled out
+            // beside it because a bare `+` in a top bar is a guess.
+            let label = "Invite";
+            let label_size = tokens.typography.scale.xs;
+            let (label_w, label_h) =
+                text_renderer.measure_weighted(label, label_size, None, TextWeight::Medium);
+            let chip_r = 7.5_f64;
+            let pill_x1 = stack_right_x + 2.0;
+            let chip_cx = pill_x1 - 6.0 - chip_r;
+            let label_x = chip_cx - chip_r - 6.0 - label_w as f64;
+            let pill = Rect::new(label_x - 10.0, center_y - 12.0, pill_x1, center_y + 12.0);
+            let pill_rr = RoundedRect::from_rect(pill, tokens.radii.sm as f64);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.surfaces.raised,
+                None,
+                &pill_rr,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                label_size,
+                colors.text_dim,
+                transform * Affine::translate((label_x, center_y - label_h as f64 / 2.0)),
+                None,
+                TextWeight::Medium,
+            );
+            let chip = vello::kurbo::Circle::new(Point::new(chip_cx, center_y), chip_r);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
+                transform,
+                colors.border_standard,
+                None,
+                &chip,
+            );
+            let plus = Rect::new(chip_cx - 5.0, center_y - 5.0, chip_cx + 5.0, center_y + 5.0);
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                plus,
+                ui::icons::Icon::Plus,
+                colors.text_dim,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            self.avatar_stack_rect = pill;
         }
 
         // End of cache build — splice the freshly-encoded local scene
@@ -1999,6 +2054,122 @@ mod tests {
             "avatar→tray gap must be ≥ 8 px (got {gap:.2}); avatar.x1={}, tray.x0={}",
             avatar.x1,
             tray.x0,
+        );
+    }
+
+    /// Inviting the *first* person is the one moment the avatar stack
+    /// has nobody to draw, and it used to answer that by publishing
+    /// `Rect::ZERO` — so the control for "open the room's people"
+    /// vanished at exactly the moment somebody wanted it, and the panel
+    /// behind it could only be reached by its address. An empty roster
+    /// has to still be something a person can point at and click.
+    #[test]
+    fn empty_roster_still_offers_a_clickable_invite_affordance() {
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: Default::default(),
+            active_group: Default::default(),
+            collaborators: Vec::new(),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+
+        let mut bar = TopBarChrome::from_tree(&tree);
+        let chrome = crate::shell::chrome_state::ChromeState::new(tree);
+        bar = bar.with_chrome(chrome.clone());
+
+        let theme = Theme::default();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+        let vp = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(40.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                vp,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1600.0),
+                    height: taffy::AvailableSpace::Definite(40.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .unwrap();
+        bar.apply_layout(&taffy, node, Point::ORIGIN);
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+        assert!(
+            bar.collaborator_initials().is_empty() && bar.collaborator_overflow() == 0,
+            "this test is about the empty case and the roster is not empty",
+        );
+        let stack = bar.avatar_stack_rect;
+        assert!(
+            stack.area() > 0.0,
+            "an empty roster still has to offer a control to click",
+        );
+        let bar_rect = bar.get_rect();
+        assert!(
+            stack.y0 >= bar_rect.y0 && stack.y1 <= bar_rect.y1,
+            "the affordance sits inside the bar: {stack:?} vs {bar_rect:?}",
+        );
+        let tray = bar.tray_pill_rect();
+        assert!(
+            stack.x1 <= tray.x0,
+            "the affordance stays left of the tray pill: stack.x1={}, tray.x0={}",
+            stack.x1,
+            tray.x0,
+        );
+
+        // And it is wired to the thing it looks like: clicking opens the
+        // room's people, which is what the stack does when it has some.
+        assert!(!chrome.borrow().overlays.collaborators);
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = winit::event::Modifiers::default();
+        let mut focus: Option<NodeId> = None;
+        for event in [
+            WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(
+                    stack.center().x,
+                    stack.center().y,
+                ),
+            },
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+        ] {
+            let mut handled = false;
+            bar.handle_event(
+                &event,
+                1.0,
+                &modifiers,
+                &mut doc,
+                &doc_root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+        }
+        assert!(
+            chrome.borrow().overlays.collaborators,
+            "clicking the empty-roster affordance opened the collaborators panel",
         );
     }
 
