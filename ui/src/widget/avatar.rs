@@ -196,7 +196,7 @@ impl Avatar {
             scene,
             &initials,
             text_size,
-            Color::WHITE,
+            Self::initial_ink(color),
             transform * Affine::translate((tx, ty)),
             None,
             TextWeight::Semibold,
@@ -210,6 +210,29 @@ impl Avatar {
     /// neighbour and the surface behind: the visible annulus between the chip
     /// edge and the ring edge is the separator. The fill + initials render
     /// inside `rect` exactly as [`Avatar::draw_at`] (white, semibold, 0.4×).
+    /// The colour a monogram is legible in against `fill`.
+    ///
+    /// Identity colours are picked to tell people apart, not to sit
+    /// under white text, and the light half of any palette is bright
+    /// enough that a white initial on it is unreadable — the failure
+    /// the HIG names as "an illegible low-contrast label on a coloured
+    /// fill". Relative luminance decides: dark chips keep the white
+    /// monogram, light ones take a near-black ink.
+    ///
+    /// sRGB relative luminance (Rec. 709 coefficients) on the raw
+    /// channels. The gamma-correct form moves the threshold by a couple
+    /// of palette entries and costs three powf per glyph; this is the
+    /// same call every toolkit makes for the same reason.
+    pub fn initial_ink(fill: Color) -> Color {
+        let c = fill.to_rgba8();
+        let l = 0.2126 * c.r as f32 + 0.7152 * c.g as f32 + 0.0722 * c.b as f32;
+        if l > 140.0 {
+            Color::from_rgb8(0x14, 0x16, 0x1a)
+        } else {
+            Color::WHITE
+        }
+    }
+
     pub fn draw_ringed_at(
         scene: &mut Scene,
         transform: Affine,
@@ -362,7 +385,7 @@ impl Avatar {
             scene,
             &self.initials,
             text_size,
-            Color::WHITE,
+            Self::initial_ink(bg),
             transform * Affine::translate((tx, ty)),
             None,
             TextWeight::Semibold,
@@ -775,6 +798,40 @@ mod tests {
             0,
             "draw_overflow_at with count 0 must paint nothing",
         );
+    }
+
+    /// A monogram has to be readable on whatever identity colour it
+    /// lands on. Identity palettes span both halves of the value range,
+    /// and a white letter on the light half is the "illegible label on a
+    /// coloured fill" the HIG names — so the ink follows the fill.
+    #[test]
+    fn a_monogram_takes_readable_ink_for_its_fill() {
+        let white = Color::WHITE;
+        let black = Color::from_rgb8(0x14, 0x16, 0x1a);
+        // Dark identity colours keep the white monogram.
+        for dark in [
+            Color::from_rgb8(0x3b, 0x82, 0xf6), // blue
+            Color::from_rgb8(0xa8, 0x55, 0xf7), // purple
+            Color::from_rgb8(0x00, 0x00, 0x00),
+        ] {
+            assert_eq!(
+                Avatar::initial_ink(dark),
+                white,
+                "a dark chip keeps white initials: {dark:?}"
+            );
+        }
+        // Light ones take the dark ink instead of vanishing.
+        for light in [
+            Color::from_rgb8(0x6e, 0xe7, 0xb7), // mint
+            Color::from_rgb8(0xfd, 0xe0, 0x47), // yellow
+            Color::WHITE,
+        ] {
+            assert_eq!(
+                Avatar::initial_ink(light),
+                black,
+                "a light chip must not keep white initials: {light:?}"
+            );
+        }
     }
 
     /// A zero-size rect is a no-op for `draw_at` (no panic, no draw).

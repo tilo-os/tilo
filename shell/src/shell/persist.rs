@@ -263,6 +263,79 @@ fn schema_version_in(path: &Path) -> Option<u32> {
 mod tests {
     use super::*;
 
+    /// Presence must not survive the process that observed it.
+    ///
+    /// `Workspace::collaborators` is the roster the top-bar avatar
+    /// stack, the wheel-disc dots and the collaborators overlay all
+    /// paint. Every row on it was put there by something that said a
+    /// person is *here now*: an invite this machine accepted, or a
+    /// presence frame off the wire. None of that outlives the shell —
+    /// the sessions are gone, their libp2p connections are gone, and the
+    /// `session` handle each row was retirable by is `#[serde(default)]`
+    /// and comes back as `None`.
+    ///
+    /// So a persisted roster paints people who are not there, and paints
+    /// them identically to people who are. That is the same fabrication
+    /// as seeding a demo peer at bootstrap, sourced from disk instead of
+    /// from a literal, and it is permanent: nothing can take those rows
+    /// off again.
+    ///
+    /// The roster is safe to drop because it carries no authority.
+    /// Durable membership lives on `Workspace::capabilities` and
+    /// `Workspace::owner`, which this test holds fixed to prove the two
+    /// are not being confused for each other.
+    #[test]
+    fn a_persisted_roster_does_not_come_back_as_presence() {
+        use crate::shell::state::Collaborator;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+
+        let mut original = WorkspaceTree::bootstrap_default();
+        let room = original.active_workspace().expect("active workspace").room;
+        // Two people genuinely present in this process, through the
+        // production entry points.
+        assert!(original.note_peer_present(room, 0x11, "alice"));
+        assert!(original.admit_collaborator_in_room(
+            room,
+            Collaborator::new("bob", "Bob").with_cursor_color("#f97316"),
+        ));
+        let owner_before = original.active_workspace().unwrap().owner.clone();
+        let caps_before = original.active_workspace().unwrap().capabilities.len();
+
+        save_tree_to(&original, &path).expect("save");
+        let (loaded, notice) = load_or_default(&path);
+        assert!(notice.is_none(), "a file this build just wrote must load");
+
+        for ws in &loaded.workspaces {
+            assert!(
+                ws.collaborators.is_empty(),
+                "workspace {:?} came back from disk showing {:?} — nobody \
+                 is connected to a shell that has only just started, and \
+                 these rows can never be retired because the sessions \
+                 they named are gone",
+                ws.name,
+                ws.collaborators,
+            );
+        }
+
+        // Membership is durable and must be untouched by that.
+        let after = loaded
+            .workspaces
+            .iter()
+            .find(|w| w.room == room)
+            .expect("the room survives the round trip");
+        assert_eq!(
+            after.owner, owner_before,
+            "dropping presence must not disturb who owns the workspace"
+        );
+        assert_eq!(
+            after.capabilities.len(),
+            caps_before,
+            "dropping presence must not disturb granted capabilities"
+        );
+    }
+
     /// C-2 regression: `WorkspaceTree::doc` is `#[serde(skip)]`, so a
     /// JSON-only load leaves the automerge backing doc empty. Peer-sync
     /// then ships nothing on restart. `load_or_default` must seed the
