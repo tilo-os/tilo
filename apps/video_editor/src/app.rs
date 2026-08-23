@@ -332,6 +332,9 @@ pub enum ShotScenario {
     ClipMenu,
     /// A rubber-band selection mid-sweep across a lane.
     Marquee,
+    /// A composed frame: a clip inset into a corner, a title in the lower
+    /// third, named markers on the ruler.
+    Composed,
 }
 
 impl ShotScenario {
@@ -369,6 +372,7 @@ impl ShotScenario {
             "scrolled" => ShotScenario::Scrolled,
             "clipmenu" => ShotScenario::ClipMenu,
             "marquee" => ShotScenario::Marquee,
+            "composed" => ShotScenario::Composed,
             _ => return None,
         })
     }
@@ -1069,6 +1073,10 @@ impl VideoEditorApp {
         };
         match m.kind {
             MediaKind::Audio => format!("Audio · {dur}"),
+            // A title is drawn at whatever the project frame is, so it has
+            // no size of its own. That is not the same as "we could not
+            // read the size", which is what an unreadable file gets.
+            MediaKind::Text => format!("Title · {dur}"),
             _ if m.height == 0 => format!("size unknown · {dur}"),
             _ => format!("{}p · {}", m.height, dur),
         }
@@ -2587,6 +2595,60 @@ impl VideoEditorApp {
                 // the grade is unmistakable in the capture.
                 self.set_filter(state, FilterField::Saturation, 0.72);
                 self.zoom = 30.0;
+            }
+            ShotScenario::Composed => {
+                // Everything geometry made possible, arranged through the
+                // production model: an inset over the spine, a title in the
+                // lower third, and markers on the ruler.
+                self.playhead = 23.0;
+                self.zoom = 26.0;
+                if let Some(c) = self.project.top_video_clip_at(23.0) {
+                    let cid = c.id;
+                    if let Some(c) = self.project.clip_mut(cid) {
+                        c.transform = crate::model::Transform::pip(0.34, (1.0, -1.0), 0.04);
+                    }
+                    self.selection.select_only(cid);
+                }
+                let title = MediaItem {
+                    id: Uuid::new_v4(),
+                    name: "Coastline".into(),
+                    kind: MediaKind::Text,
+                    duration: 8.0,
+                    palette: 4,
+                    path: String::new(),
+                    hydration: crate::media::Hydration::Local,
+                    text: Some(crate::model::TextSource {
+                        content: "COASTLINE\nepisode two".into(),
+                        size: 0.14,
+                        align: crate::model::TextAlign::Left,
+                        ..crate::model::TextSource::default()
+                    }),
+                    ..Default::default()
+                };
+                let tid = title.id;
+                self.project.media.push(title);
+                if let Some(v2) = self
+                    .project
+                    .tracks
+                    .iter()
+                    .find(|t| t.kind == TrackKind::Video && t.index == 2)
+                    .map(|t| t.id)
+                {
+                    if let Some(cid) = self.project.add_clip(v2, tid, 34.0) {
+                        if let Some(c) = self.project.clip_mut(cid) {
+                            c.transform = crate::model::Transform {
+                                scale_x: 0.6,
+                                scale_y: 0.6,
+                                pos_x: -0.1,
+                                pos_y: 0.27,
+                                ..Default::default()
+                            };
+                        }
+                    }
+                }
+                self.project.add_marker(9.0, "act two", 3);
+                self.project.add_marker(21.0, "sunset", 5);
+                VideoDoc::write_project(state, &self.project);
             }
             ShotScenario::JustSplit => {
                 // Select the interview body clip and split it at the playhead,
@@ -5132,6 +5194,28 @@ impl VideoEditorApp {
                 stroke_line(scene, tf, with_alpha(c.border_standard, 0.4), x, r.lanes.y0, x, r.timeline.y1, 1.0);
             }
             t += tick_step;
+        }
+
+        // --- markers ---
+        // Every marker on one absolute timeline: the project's own, plus
+        // each clip's rebased onto where that clip sits. A flag on the
+        // ruler with a hairline down the lanes, so a marked instant can be
+        // lined up against every track at once.
+        for (at, marker, on_clip) in self.project.all_markers() {
+            let x = self.time_to_x(at, &r.lanes);
+            if x < r.ruler.x0 - 1.0 || x > r.ruler.x1 {
+                continue;
+            }
+            let col = clip_color(theme, marker.palette);
+            stroke_line(scene, tf, with_alpha(col, 0.55), x, r.lanes.y0, x, r.timeline.y1, 1.0);
+            // A clip's marker is drawn as a smaller tick than a project
+            // one: it belongs to the footage, not to the timeline.
+            let h = if on_clip.is_some() { 6.0 } else { 10.0 };
+            let flag = Rect::new(x, r.ruler.y1 - h, x + 3.0, r.ruler.y1);
+            fill_rect(scene, tf, col, flag);
+            if on_clip.is_none() && !marker.name.is_empty() {
+                text(scene, tr, tf, &marker.name, 9.0, col, x + 6.0, r.ruler.y1 - 11.0);
+            }
         }
 
         // --- lanes + headers + clips ---

@@ -398,6 +398,87 @@ impl Driver {
         build_tree_update(self.root.as_ref(), &self.node_map, self.focused, 1.0).nodes
     }
 
+    /// The id of the exported accessibility node whose accessible name is
+    /// `name` — the handle a headless test uses to address an element that has
+    /// no widget of its own (a table row, a clip on a timeline track).
+    ///
+    /// Returns `None` when nothing carries that name this frame, which is a
+    /// meaningful failure: an element a test cannot name is one a screen-reader
+    /// user cannot find either.
+    pub fn a11y_node_named(&self, name: &str) -> Option<accesskit::NodeId> {
+        self.a11y_nodes()
+            .into_iter()
+            .find(|(_, n)| n.label().as_deref() == Some(name))
+            .map(|(id, _)| id)
+    }
+
+    /// The accessibility node the exported tree currently marks focused — what
+    /// a screen reader would be sitting on. For a canvas widget this is the
+    /// element inside it, not the widget, so a test can assert where the user
+    /// actually is.
+    pub fn a11y_focus(&self) -> Option<(accesskit::NodeId, accesskit::Node)> {
+        let update = build_tree_update(self.root.as_ref(), &self.node_map, self.focused, 1.0);
+        let focus = update.focus;
+        update.nodes.into_iter().find(|(id, _)| *id == focus)
+    }
+
+    /// Perform an accessibility [`Action`](crate::a11y::Action) on an exported
+    /// node, exactly as an assistive technology would.
+    ///
+    /// This is the headless counterpart of
+    /// [`App::dispatch_a11y_action`](crate::app::App::dispatch_a11y_action) and
+    /// deliberately takes the same route: resolve the id against the live tree,
+    /// then hand the owning widget the action *plus the key path naming the
+    /// element*, so a synthetic node is operated rather than the widget that
+    /// painted it. Without this a canvas app could be described in a headless
+    /// test but not driven by one, which caps how well it can be verified at
+    /// all.
+    ///
+    /// `Err` when the id names nothing in the current frame — a stale reference
+    /// is reported, never quietly retargeted at whatever now occupies the slot.
+    pub fn perform_a11y_action(
+        &mut self,
+        target: accesskit::NodeId,
+        action: &crate::a11y::Action,
+    ) -> Result<(), String> {
+        use crate::accesskit_bridge::{resolve_node_id, A11yTarget};
+        let resolved = resolve_node_id(self.root.as_ref(), &self.node_map, target)
+            .ok_or_else(|| format!("no accessibility node {target:?} in the current frame"))?;
+        let (taffy_id, key_path) = match resolved {
+            A11yTarget::Root => return Err("the window root cannot be operated".into()),
+            A11yTarget::Widget(id) => (id, Vec::new()),
+            A11yTarget::Synthetic { owner, key_path } => (owner, key_path),
+        };
+        // Focusing an element inside a widget also moves the keyboard to that
+        // widget, matching the App: the widget moves its own cursor, the host
+        // moves the focus.
+        if !key_path.is_empty() && matches!(action, crate::a11y::Action::Focus) {
+            self.set_focused(Some(taffy_id));
+        }
+        let &p = self
+            .node_map
+            .get(&taffy_id)
+            .ok_or_else(|| format!("widget {taffy_id:?} is not laid out"))?;
+        let handled = unsafe {
+            (*p).perform_action_at(action, &key_path, &mut self.state.doc, &self.state.root)
+        };
+        if !handled {
+            match action {
+                crate::a11y::Action::Focus => self.set_focused(Some(taffy_id)),
+                // Fall back the way the App does: a click at the widget's
+                // centre. Widget-granular by nature — it cannot reach inside a
+                // canvas, which is why `perform_action_at` exists.
+                crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck => {
+                    let c = unsafe { (*p).get_rect() }.center();
+                    self.click_at(c.x, c.y);
+                }
+                _ => {}
+            }
+        }
+        self.relayout();
+        Ok(())
+    }
+
     /// Tab through the entire focus order from the top, returning the
     /// accessible `(role, name)` a screen reader would announce at each stop.
     /// One assertion proves both that every control is reachable by keyboard
@@ -947,5 +1028,194 @@ mod tests {
         let json = driver.dump_json();
         assert!(json.contains("greeting"), "{json}");
         assert!(json.contains("hello"), "{json}");
+    }
+}
+
+#[cfg(test)]
+mod a11y_driver_tests {
+    use super::*;
+    use crate::a11y::{AccessNode, AccessState, Action, Role};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A canvas widget: paints its own contents, exposes them only as synthetic
+    /// accessibility nodes, and implements only the routed action hook. The
+    /// shape a timeline or a spreadsheet grid takes.
+    struct Strip {
+        items: Vec<&'static str>,
+        cursor: usize,
+        focused: bool,
+        activated: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl Widget for Strip {
+        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _t: &crate::theme::Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let n = taffy.new_leaf(taffy::Style::default()).unwrap();
+            node_map.insert(n, self as *mut dyn Widget);
+            n
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: vello::kurbo::Point) {}
+        fn draw(
+            &mut self,
+            _sc: &mut Scene,
+            _tr: vello::kurbo::Affine,
+            _tx: &mut crate::text_render::TextRenderer,
+            _th: &crate::theme::Theme,
+            _pr: &PresenceCtx,
+        ) {
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut automerge::AutoCommit,
+            _p: &automerge::ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _n: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &str {
+            "Strip"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::new(0.0, 0.0, 300.0, 80.0)
+        }
+        fn is_focusable(&self) -> bool {
+            true
+        }
+        fn set_focus(&mut self, f: bool) {
+            self.focused = f;
+        }
+        fn is_focused(&self) -> bool {
+            self.focused
+        }
+        fn accessibility(&self) -> Option<AccessNode> {
+            Some(
+                AccessNode::new(Role::Canvas)
+                    .with_name("Strip")
+                    .with_state(AccessState::new().focusable(true).focused(self.focused))
+                    .with_children(
+                        self.items
+                            .iter()
+                            .enumerate()
+                            .map(|(i, id)| {
+                                AccessNode::new(Role::ListItem)
+                                    .with_name(*id)
+                                    .with_hashed_key(*id)
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(true)
+                                            .focused(i == self.cursor),
+                                    )
+                            })
+                            .collect(),
+                    ),
+            )
+        }
+        fn perform_action_at(
+            &mut self,
+            action: &Action,
+            key_path: &[u64],
+            _s: &mut automerge::AutoCommit,
+            _p: &automerge::ObjId,
+        ) -> bool {
+            let Some(&key) = key_path.first() else { return false };
+            let Some(i) = self
+                .items
+                .iter()
+                .position(|id| crate::a11y::hash_key(id) == key)
+            else {
+                return false;
+            };
+            match action {
+                Action::Focus => {
+                    self.cursor = i;
+                    true
+                }
+                Action::Activate => {
+                    self.cursor = i;
+                    self.activated.borrow_mut().push(self.items[i].into());
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
+
+    fn driver() -> (Driver, Rc<RefCell<Vec<String>>>) {
+        let activated: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let strip = Strip {
+            items: vec!["alpha", "beta", "gamma"],
+            cursor: 0,
+            focused: false,
+            activated: activated.clone(),
+        };
+        (
+            Driver::new(State::new(), Box::new(strip), (800, 600)),
+            activated,
+        )
+    }
+
+    #[test]
+    fn a_headless_test_can_name_an_element_that_has_no_widget() {
+        let (d, _a) = driver();
+        for name in ["alpha", "beta", "gamma"] {
+            assert!(
+                d.a11y_node_named(name).is_some(),
+                "an element a test cannot name is one a screen-reader user cannot find"
+            );
+        }
+        assert_eq!(d.a11y_node_named("delta"), None);
+    }
+
+    #[test]
+    fn a_headless_test_can_activate_one_element_inside_a_canvas() {
+        // The whole point: before, a canvas could be described in a headless
+        // test but only clicked at coordinates, which activates whatever
+        // happens to sit there.
+        let (mut d, activated) = driver();
+        let beta = d.a11y_node_named("beta").unwrap();
+        d.perform_a11y_action(beta, &Action::Activate).unwrap();
+        assert_eq!(*activated.borrow(), vec!["beta".to_string()]);
+
+        let gamma = d.a11y_node_named("gamma").unwrap();
+        d.perform_a11y_action(gamma, &Action::Activate).unwrap();
+        assert_eq!(
+            *activated.borrow(),
+            vec!["beta".to_string(), "gamma".to_string()]
+        );
+    }
+
+    #[test]
+    fn focusing_an_element_moves_the_exported_focus_onto_it() {
+        let (mut d, _a) = driver();
+        let gamma = d.a11y_node_named("gamma").unwrap();
+        d.perform_a11y_action(gamma, &Action::Focus).unwrap();
+
+        let (id, node) = d.a11y_focus().expect("something is focused");
+        assert_eq!(id, gamma, "the reader sits on the element, not the canvas");
+        assert_eq!(node.label(), Some("gamma"));
+    }
+
+    #[test]
+    fn an_id_that_names_nothing_is_reported_not_silently_retargeted() {
+        let (mut d, activated) = driver();
+        let real = d.a11y_node_named("alpha").unwrap();
+        let stale = accesskit::NodeId(real.0 ^ 0xdead_beef);
+        let err = d
+            .perform_a11y_action(stale, &Action::Activate)
+            .expect_err("a stale id must be an error, not a guess");
+        assert!(err.contains("no accessibility node"), "got {err}");
+        assert!(activated.borrow().is_empty());
     }
 }
