@@ -415,19 +415,25 @@ mod tests {
     fn binding_reuses_ui_state_undo() {
         let mut s = ui::State::new();
         let mut ed = EditorDoc::bind(&mut s.doc, &s.root);
-        s.commit_action(None, None); // checkpoint after schema init
+        // Checkpoint and revert the way the host does: attributed to the local
+        // user. Undo is author-scoped, so an anonymous checkpoint is one this
+        // user's own Ctrl+Z steps straight past.
+        let local_author = ui::collaboration::local_user_id();
+        s.commit_action_authored(None, None, Some(local_author.clone())); // after schema init
 
         {
             let mut dm = ed.edit(&mut s.doc);
             MarkdownCodec.import(b"# Title\n\nHello\n", &mut dm).unwrap();
         }
-        s.commit_action(None, None);
+        s.commit_action_authored(None, None, Some(local_author.clone()));
         assert_eq!(first_text(&ed.snapshot(&s.doc)), Some("Title".to_string()));
 
-        s.undo(None, None);
+        s.undo_as(Some(&local_author), None, None)
+            .expect("the local user's checkpoint is theirs to undo");
         assert_eq!(ed.snapshot(&s.doc).blocks.len(), 0, "undo reverts to the empty schema");
 
-        s.redo(None, None);
+        s.redo_as(Some(&local_author), None, None)
+            .expect("and theirs to redo");
         assert_eq!(first_text(&ed.snapshot(&s.doc)), Some("Title".to_string()));
     }
 
