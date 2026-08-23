@@ -249,7 +249,7 @@ impl Default for QuickSettingsState {
             wifi: true,
             bluetooth: false,
             nav_stack: vec![QsLevel::Root],
-            // Empty until `refresh_quick_settings_from_os` runs — nmcli /
+            // Empty until the Wi-Fi / Bluetooth drill-in asks for it — nmcli /
             // bluetoothctl populate live lists on the popover's rising
             // edge. Starting empty keeps the "no fake content" contract:
             // a fresh boot never shows a network it isn't actually seeing.
@@ -1058,6 +1058,65 @@ impl ChromeState {
 
     /// Switch to the workspace at the given direction (±1). Returns true
     /// if the active workspace changed.
+    /// Strips of the active workspace, and which one has focus.
+    ///
+    /// Returns `(count, focused_index)`. The focused index falls back to
+    /// 0 when the tree has not stamped `active_strip` for this workspace
+    /// — the ribbon has to draw something, and the first strip is what a
+    /// workspace with no stamped focus behaves as.
+    pub fn strip_focus(&self) -> (usize, usize) {
+        let tree = self.tree();
+        let Some(ws) = tree.active_workspace() else {
+            return (0, 0);
+        };
+        let count = ws.strips.len();
+        let focused = tree
+            .active_strip
+            .get(&ws.id)
+            .and_then(|sid| ws.strips.iter().position(|s| s.id == *sid))
+            .unwrap_or(0);
+        (count, focused)
+    }
+
+    /// Move focus to the strip at `index` in the active workspace.
+    /// Returns whether focus actually moved.
+    pub fn focus_strip_index(&mut self, index: usize) -> bool {
+        let (changed, name) = {
+            let mut tree = self.tree_mut();
+            let Some(ws) = tree.active_workspace() else {
+                return false;
+            };
+            let ws_id = ws.id;
+            let Some(strip) = ws.strips.get(index) else {
+                return false;
+            };
+            let sid = strip.id;
+            let name = strip.name.clone();
+            let prev = tree.active_strip.get(&ws_id).copied();
+            if prev == Some(sid) {
+                return false;
+            }
+            tree.active_strip.insert(ws_id, sid);
+            (true, name)
+        };
+        let _ = name;
+        if changed {
+            self.bump();
+        }
+        changed
+    }
+
+    /// Move strip focus by `dir` within the active workspace. Clamps at
+    /// the ends rather than wrapping, matching workspace switching.
+    pub fn switch_strip(&mut self, dir: i32) -> bool {
+        let (count, focused) = self.strip_focus();
+        if count == 0 {
+            return false;
+        }
+        let next = (focused as i64 + dir.signum() as i64).clamp(0, count as i64 - 1) as usize;
+        self.focus_strip_index(next)
+    }
+
     pub fn switch_workspace(&mut self, dir: i32) -> bool {
         let changed = {
             let mut tree = self.tree_mut();
@@ -1068,17 +1127,6 @@ impl ChromeState {
             }
         };
         if changed {
-            // Smoke-test the notification system: every successful
-            // workspace switch pushes a transient toast naming the
-            // new active workspace. Any subsystem can call
-            // `push_notification`; this is just the canonical first
-            // consumer so the system is visibly exercised.
-            let new_name = self
-                .tree()
-                .active_workspace()
-                .map(|ws| ws.name.clone())
-                .unwrap_or_else(|| "(unnamed)".to_string());
-            self.push_notification(format!("Switched to workspace {new_name}"), String::new());
             self.bump();
         }
         changed
@@ -1646,5 +1694,76 @@ mod active_tab_tests {
             "the display label 'Editor' must no longer be a grant key: {:?}",
             grants
         );
+    }
+
+    /// Strip focus is real state that moves, and the ribbon reads it.
+    ///
+    /// Before this there was no production path that changed the focused
+    /// strip at all: the only switch function was reachable from a
+    /// debug-only simulator that built a throwaway copy of the tree, and
+    /// `Shell::active_strip_index` returned a hardcoded 0. A workspace
+    /// with four strips reported the same answer as one with a single
+    /// strip.
+    #[test]
+    fn switching_strips_moves_focus_and_clamps_at_the_ends() {
+        let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let mut st = cell.borrow_mut();
+        {
+            let mut tree = st.tree_mut();
+            let ws = tree.active_workspace_mut().expect("a workspace");
+            let base = ws.strips.len();
+            for n in 0..3 {
+                let id = StripId(9000 + n as u64);
+                ws.strips.push(Strip::new(id, format!("Extra {n}")));
+            }
+            assert!(base + 3 >= 4, "fixture needs at least four strips");
+        }
+        st.bump();
+
+        let (count, focused) = st.strip_focus();
+        assert!(count >= 4, "fixture should hold at least four strips, saw {count}");
+        assert_eq!(focused, 0, "a fresh workspace focuses its first strip");
+
+        assert!(st.switch_strip(1), "moving down a strip should change focus");
+        assert_eq!(st.strip_focus().1, 1);
+
+        assert!(st.switch_strip(1));
+        assert_eq!(st.strip_focus().1, 2);
+
+        assert!(st.switch_strip(-1));
+        assert_eq!(st.strip_focus().1, 1);
+
+        // Clamps rather than wrapping, matching workspace switching.
+        while st.switch_strip(-1) {}
+        assert_eq!(st.strip_focus().1, 0);
+        assert!(!st.switch_strip(-1), "focus wrapped past the first strip");
+
+        while st.switch_strip(1) {}
+        assert_eq!(st.strip_focus().1, count - 1);
+        assert!(!st.switch_strip(1), "focus wrapped past the last strip");
+    }
+
+    /// Clicking a ribbon segment focuses that exact strip, not a
+    /// neighbour, for every segment in the ribbon.
+    #[test]
+    fn focusing_a_strip_by_index_selects_that_strip() {
+        let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let mut st = cell.borrow_mut();
+        {
+            let mut tree = st.tree_mut();
+            let ws = tree.active_workspace_mut().expect("a workspace");
+            for n in 0..3 {
+                ws.strips.push(Strip::new(StripId(9100 + n as u64), format!("S{n}")));
+            }
+        }
+        let (count, _) = st.strip_focus();
+        for i in 0..count {
+            st.focus_strip_index(i);
+            assert_eq!(st.strip_focus().1, i, "focusing index {i} landed elsewhere");
+        }
+        // Out of range is a no-op, not a panic and not a silent clamp.
+        let before = st.strip_focus().1;
+        assert!(!st.focus_strip_index(count + 5));
+        assert_eq!(st.strip_focus().1, before);
     }
 }

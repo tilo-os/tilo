@@ -850,6 +850,48 @@ impl WindowGroup {
         true
     }
 
+    /// Close the tab the user is looking at, exactly as clicking its `✕`
+    /// does: `TabBar::start_closing` snapshots the pill, shifts active-id
+    /// to a neighbour and publishes `pending_close`, which this group's
+    /// `handle_event` drains into the host fade on the next dispatch.
+    ///
+    /// Exists because close was pointer-only. The `✕` is painted only
+    /// while a pill is active, hovered or pressed, so on an inactive tab
+    /// it takes a hover to discover and a second gesture to hit — no
+    /// route at all for someone driving by keyboard. Returns `false` when
+    /// the group has no live tab to close.
+    pub fn request_close_active_tab(&mut self) -> bool {
+        let id = self.bar.active_id();
+        self.request_close_tab(id)
+    }
+
+    /// Drain a right-click on one of this group's tab pills: the tab it
+    /// landed on, and where to anchor the menu. The shell raises the menu
+    /// — the toolkit only reports the intent.
+    pub fn take_tab_context_menu(&mut self) -> Option<(u64, Point)> {
+        self.bar.take_context_menu()
+    }
+
+    /// Close `tab_id` in this group, whether or not it is the active tab
+    /// — the route a context menu raised over a specific pill takes.
+    /// Same production path as [`Self::request_close_active_tab`].
+    ///
+    /// Drains the bar's `pending_close` here rather than leaving it for
+    /// the next `handle_event`. A `✕` press publishes it mid-dispatch, so
+    /// this group's own `handle_event` picks it up microseconds later; a
+    /// chord or a menu pick arrives from outside the pointer dispatch and
+    /// would otherwise leave the host un-faded until some unrelated event
+    /// happened to reach this group.
+    pub fn request_close_tab(&mut self, tab_id: u64) -> bool {
+        if !self.bar.start_closing(tab_id) {
+            return false;
+        }
+        if let Some(close_id) = self.bar.take_close() {
+            self.closing_hosts.entry(close_id).or_insert_with(Instant::now);
+        }
+        true
+    }
+
     /// True while this group's `TabBar` has a drag in flight. Exposed so
     /// the parent `GroupRow` can paint inter-group drop-zone indicators
     /// while any child is dragging.
@@ -2180,7 +2222,9 @@ mod tests {
         // the press arm in `TabBar::handle_event` does a fresh hit-test
         // against `max_rects[i].contains(last_cursor)`, so the rect must
         // be populated by `apply_layout` before we drive the click.
-        let theme = Theme::dark();
+        // Reduce-motion so the pill's reveal lands in one layout pass
+        // rather than easing open across frames this test does not pump.
+        let theme = Theme::dark().with_reduce_motion(true);
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
@@ -2190,8 +2234,31 @@ mod tests {
         taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
         g.apply_layout(&taffy, group_node, Point::ZERO);
 
+        // A pill only carries a maximize chip once it has opened to make
+        // room for one, so hover it first — exactly the move a user has
+        // to make to see the chip at all — and re-run the pill walk.
+        let pill = g.bar.tab_rects()[0];
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        let mut handled = false;
+        let mut focus_target = None;
+        g.handle_event(
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
+            },
+            1.0, &winit::event::Modifiers::default(),
+            &mut state, &root_id, &mut handled, &mut focus_target,
+            group_node, &taffy,
+        );
+        g.apply_layout(&taffy, group_node, Point::ZERO);
+
         // Aim the synthetic cursor at the centre of tab 0's maximize rect.
         let max_rect = g.bar.max_rects()[0];
+        assert!(
+            max_rect.area() > 0.0,
+            "an opened pill must carry a maximize chip to click",
+        );
         let click_pt = max_rect.center();
 
         let moved = WindowEvent::CursorMoved {
@@ -2204,10 +2271,6 @@ mod tests {
             button: MouseButton::Left,
         };
 
-        let mut state = automerge::AutoCommit::new();
-        let root_id = automerge::ROOT;
-        let mut handled = false;
-        let mut focus_target = None;
         // Seed last_cursor on the icon — the bar's press arm uses the
         // cached cursor for its fresh hit-test.
         g.handle_event(

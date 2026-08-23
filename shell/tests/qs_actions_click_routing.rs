@@ -398,34 +398,20 @@ fn power_profile_chip_click_routes_to_set_power_profile() {
 }
 
 #[test]
-fn wifi_drill_in_row_click_routes_to_connect_wifi() {
+fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
     let tree = minimal_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
     host = host.with_qs_actions(Box::new(recorder.clone()));
 
-    // Drill into the Wi-Fi list, holding the result of a scan.
-    //
-    // The panel does not invent networks: `wifi_networks` is empty until
-    // `refresh_quick_settings_from_os` fills it from `nmcli` on the
-    // popover's rising edge, and there is no `nmcli` in a test process.
-    // So the fixture writes what a completed scan writes — two rows, the
-    // second one the currently-connected network — and the assertion
-    // below names the SSID of the row it clicked, which is the part of
-    // the routing that can actually be wrong.
+    // Two rows: a secured network we are not on, and the one we are
+    // already connected to. They take different branches, and this
+    // previously asserted only that clicking the first called
+    // `connect_wifi` — which stopped being true when the pane grew a
+    // passphrase prompt, and the test had been red since.
     let scanned = vec![
-        WifiNetwork {
-            ssid: "hallway-2g".into(),
-            signal: 71,
-            secure: true,
-            connected: false,
-        },
-        WifiNetwork {
-            ssid: "studio-5g".into(),
-            signal: 92,
-            secure: true,
-            connected: true,
-        },
+        WifiNetwork { ssid: "hallway-2g".into(), signal: 71, secure: true, connected: false },
+        WifiNetwork { ssid: "studio-5g".into(), signal: 92, secure: true, connected: true },
     ];
     {
         let mut st = chrome.borrow_mut();
@@ -439,16 +425,143 @@ fn wifi_drill_in_row_click_routes_to_connect_wifi() {
     let (taffy, host_node) = layout_host(&mut host);
     let rect = host.quick_settings_rect_for_tests();
     let click_x = rect.x0 + rect.width() / 2.0;
-    // Row 0 of the list: header is 56 px tall, rows are 56 px, so +28
-    // lands mid-row.
-    let click_y = rect.y0 + 56.0 + 28.0;
-    click_at(&mut host, &taffy, host_node, click_x, click_y);
+    // Header is 56 px, rows are 56 px, so +28 into a row lands mid-row.
+    let row_y = |i: usize| rect.y0 + 56.0 + i as f64 * 56.0 + 28.0;
 
+    // Row 0 — secured, not joined. Joining needs a passphrase, so the
+    // pane must ask for one rather than firing a connect that would
+    // fail silently.
+    click_at(&mut host, &taffy, host_node, click_x, row_y(0));
+    {
+        let st = chrome.borrow();
+        let prompt = st
+            .quick_settings
+            .wifi_password
+            .as_ref()
+            .expect("clicking a secured network must open the passphrase prompt");
+        assert_eq!(
+            prompt.ssid, scanned[0].ssid,
+            "the prompt must name the network that was clicked"
+        );
+    }
+    assert!(
+        recorder.0.calls().is_empty(),
+        "no connect may be attempted before the passphrase is entered; got {:?}",
+        recorder.0.calls()
+    );
+
+    // Dismiss the prompt, then click row 1 — already connected, so no
+    // passphrase is needed and the click connects directly.
+    {
+        let mut st = chrome.borrow_mut();
+        st.quick_settings.wifi_password = None;
+        st.bump();
+    }
+    click_at(&mut host, &taffy, host_node, click_x, row_y(1));
     let calls = recorder.0.calls();
     assert!(
-        calls.contains(&format!("connect_wifi({})", scanned[0].ssid)),
-        "clicking the first Wi-Fi row must connect to that row's SSID \
+        calls.contains(&format!("connect_wifi({})", scanned[1].ssid)),
+        "clicking a network that needs no passphrase must connect to it \
          ({}); got {calls:?}",
-        scanned[0].ssid,
+        scanned[1].ssid
+    );
+}
+
+#[test]
+fn workspace_settings_copy_button_copies_the_invite_link() {
+    use shell::shell::chrome_state::WsTab;
+
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    {
+        let mut st = chrome.borrow_mut();
+        st.overlays.ws_settings = true;
+        st.ws_settings_tab = WsTab::General;
+        st.bump();
+    }
+    let (taffy, host_node) = layout_host(&mut host);
+    host.force_ws_settings_settled();
+    // Paint once so the modal's geometry is populated the way it is in
+    // a real frame before any click arrives.
+    let _ = &taffy;
+
+    let btn = host.ws_settings_copy_rect_for_tests();
+    assert!(btn.area() > 0.0, "the Copy button has no geometry to click");
+    assert!(
+        host.ws_invite_copied_at_for_tests().is_none(),
+        "nothing should have been copied before the click"
+    );
+
+    let c = btn.center();
+    click_at(&mut host, &taffy, host_node, c.x, c.y);
+
+    assert!(
+        host.ws_invite_copied_at_for_tests().is_some(),
+        "clicking Copy did not run the copy path — the button is painted but not routed"
+    );
+}
+
+/// A click that misses the Copy button does not copy. Guards against a
+/// hit rect widened until it swallows the rest of the tab.
+#[test]
+fn a_click_beside_the_copy_button_does_not_copy() {
+    use shell::shell::chrome_state::WsTab;
+
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    {
+        let mut st = chrome.borrow_mut();
+        st.overlays.ws_settings = true;
+        st.ws_settings_tab = WsTab::General;
+        st.bump();
+    }
+    let (taffy, host_node) = layout_host(&mut host);
+    host.force_ws_settings_settled();
+
+    let btn = host.ws_settings_copy_rect_for_tests();
+    // Well left of the button, still inside the modal body.
+    let p = Point::new(btn.x0 - 160.0, btn.center().y);
+    click_at(&mut host, &taffy, host_node, p.x, p.y);
+
+    assert!(
+        host.ws_invite_copied_at_for_tests().is_none(),
+        "a click beside the Copy button copied anyway"
+    );
+}
+
+/// Clicking a strip-ribbon segment moves strip focus through the
+/// production click path.
+///
+/// The ribbon's own geometry is unit-tested in `ui`, but geometry that
+/// nothing routes is exactly the defect the ws-settings Copy button was.
+/// This drives a real click at a real segment and asserts the tree's
+/// `active_strip` moved.
+#[test]
+fn clicking_a_strip_ribbon_segment_moves_focus() {
+    let mut tree = minimal_tree();
+    let ws_id = tree.workspaces[0].id;
+    for n in 0..2u64 {
+        tree.workspaces[0]
+            .strips
+            .push(Strip { id: StripId(700 + n), name: format!("S{n}"), window_groups: vec![] });
+    }
+    let first = tree.workspaces[0].strips[0].id;
+    tree.active_strip.insert(ws_id, first);
+
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (taffy, host_node) = layout_host(&mut host);
+
+    let ribbon = host.strip_ribbon_for_tests();
+    assert_eq!(ribbon.count, 3, "fixture should present three strips");
+    assert_eq!(ribbon.focused, 0, "focus starts on the first strip");
+
+    let target = ribbon.hit_rect(2).expect("third segment has a target");
+    let c = target.center();
+    click_at(&mut host, &taffy, host_node, c.x, c.y);
+
+    let (_, focused) = chrome.borrow().strip_focus();
+    assert_eq!(
+        focused, 2,
+        "clicking the third ribbon segment must focus the third strip"
     );
 }
