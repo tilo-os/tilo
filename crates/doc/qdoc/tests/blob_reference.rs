@@ -74,6 +74,57 @@ fn a_saved_document_carries_the_reference_and_not_the_bytes() {
 }
 
 #[test]
+fn the_mime_survives_in_a_document_that_also_has_text() {
+    // The minimal case is not the case a reader meets. A real document
+    // has paragraphs and block structure around the image, and Automerge
+    // encodes a bigger document differently — so a needle proven on a
+    // document containing nothing but a blob is not yet proven on one
+    // somebody has been writing in.
+    let mut doc = Document::new();
+    let p = doc.insert_block(None, "paragraph");
+    doc.splice_text(&p, 0, 0, "Doors at seven, room seats 240.");
+    for line in ["Doors: 18:00", "Sound check: 18:30"] {
+        let b = doc.insert_block(Some(&p), "list_item");
+        doc.splice_text(&b, 0, 0, line);
+    }
+    let hash = doc.put_blob(&png());
+    // The block that references it. The descriptor `put_blob` wrote is
+    // what carries the mime, so the reference attr is not what this
+    // test turns on — the block is here so the document has the shape a
+    // reader meets.
+    let _img = doc.insert_block(Some(&p), "image");
+
+    let saved = doc.save();
+    assert!(
+        contains(&saved, b"image/png"),
+        "the mime is not findable in a {}-byte document with text in it",
+        saved.len()
+    );
+    // The hash is deliberately *not* asserted here, and that is the
+    // finding this test exists to record.
+    //
+    // In a document containing nothing but a blob it is plain ASCII in
+    // the saved bytes. Add paragraphs around it and it stops being
+    // findable: it is a map key, and Automerge encodes keys differently
+    // once the document is large enough to be worth compressing. So a
+    // scan for the hash works on a toy document and fails on a real one
+    // — the worst shape a check can have. Anything looking for an image
+    // reference in bytes off the wire should look for the mime, which
+    // is a scalar value and survives both.
+    assert!(
+        !contains(&saved, &[0xA5u8; 64]),
+        "the image's bytes are in a document with text in it"
+    );
+    // Loading it back is how the hash is meant to be reached.
+    let reopened = Document::load(&saved).expect("a saved document reloads");
+    assert_eq!(
+        reopened.blob(&hash).as_deref(),
+        Some(png().as_slice()),
+        "the reference no longer resolves once the document has text in it"
+    );
+}
+
+#[test]
 fn the_descriptor_travels_with_the_reference() {
     // The intrinsic size has to cross too. Without it a peer whose bytes
     // have not arrived guesses a size, and every paragraph below the
