@@ -1176,6 +1176,298 @@ impl StripRibbon {
     }
 }
 
+/// A map of the windows along one strip, and where on it the user is
+/// standing.
+///
+/// The counterpart of [`StripRibbon`], for the axis that had nothing.
+/// A strip is a horizontal run of window groups wider than the display,
+/// so at any moment most of it is off screen — and nothing on screen said
+/// so. A user looking at two windows had no way to tell whether that was
+/// the whole workspace or the middle of six, and therefore no reason to
+/// look for a way to travel. That is the state a live session produced
+/// the question "how do I change windows / scroll left to right in a
+/// strip?" from.
+///
+/// Three facts, in the order they matter:
+///
+///   * **How many windows this strip holds** — one segment each. This is
+///     the fact that makes travel worth attempting.
+///   * **Which one has focus** — the long, bright segment.
+///   * **Which ones are on screen right now** — the middle weight. This
+///     is what turns the rail into a position readout rather than a
+///     count: the lit run slides as the strip pans.
+///
+/// It is a control, not a readout: clicking a segment focuses that
+/// window. A user who cannot yet name the gesture can still get where
+/// they are going by pointing at the map, which is the whole reason the
+/// rail is clickable rather than decorative.
+///
+/// Bottom edge, because the disc owns the left and the strip ribbon owns
+/// the right — one level of the model per edge, so the control alone says
+/// what a gesture is about to change.
+#[derive(Clone, Debug)]
+pub struct StripRail {
+    /// Content rect the rail is anchored to the bottom edge of.
+    pub content: Rect,
+    /// How many window groups this strip holds.
+    pub count: usize,
+    /// Index of the focused group.
+    pub focused: usize,
+    /// Indices currently at least partly on screen. Empty before the
+    /// first layout pass has anything to report.
+    pub visible: Vec<usize>,
+}
+
+/// Thickness of the rail. Matches [`RIBBON_SEG_W`] on its own axis, so
+/// the two controls read as the same object turned ninety degrees.
+pub const RAIL_SEG_H: f64 = 6.0;
+/// Length of a segment for a group that does not have focus.
+pub const RAIL_SEG_W: f64 = 22.0;
+/// Length of the focused segment. Longer, so focus survives a palette
+/// that has no colour to spare — the same reason the ribbon's focused
+/// segment is taller.
+pub const RAIL_SEG_W_FOCUSED: f64 = 40.0;
+/// Gap between segments. Sized like the ribbon's so each segment's hit
+/// rect claims half the gap either side and adjacent targets tile
+/// without overlapping.
+pub const RAIL_GAP: f64 = RAIL_HIT_H - RAIL_SEG_W;
+/// Distance from the content's bottom edge to the rail.
+pub const RAIL_MARGIN: f64 = 10.0;
+/// Minimum pointer target (HIG §9.6) across the rail's short axis.
+pub const RAIL_HIT_H: f64 = 32.0;
+
+/// Weight of a segment whose group is off screen.
+const RAIL_ABSENT_ALPHA: u8 = 40;
+/// Weight of a segment whose group is on screen but not focused.
+const RAIL_PRESENT_ALPHA: u8 = 110;
+/// Weight of a hovered segment, whether or not its group is on screen.
+const RAIL_HOVER_ALPHA: u8 = 160;
+/// Weight of the focused segment.
+const RAIL_FOCUSED_ALPHA: u8 = 224;
+
+/// Body of one rail segment.
+///
+/// Four explicitly ordered weights against the desktop's own ground, for
+/// the reason [`ribbon_fill`] records at length: [`Colors::lift`] has
+/// nothing to move toward on the high-contrast palette, where
+/// `surfaces.base` and `surfaces.raised` are both pure black, so a tier
+/// system that derives its steps can invert. Ordering weights by hand
+/// keeps focus the brightest mark on every palette.
+fn rail_fill(theme: &Theme, focused: bool, hover: bool, present: bool) -> Color {
+    let alpha = if focused {
+        RAIL_FOCUSED_ALPHA
+    } else if hover {
+        RAIL_HOVER_ALPHA
+    } else if present {
+        RAIL_PRESENT_ALPHA
+    } else {
+        RAIL_ABSENT_ALPHA
+    };
+    Colors::hairline_on(theme.tokens.colors.surfaces.base, alpha)
+}
+
+impl StripRail {
+    /// Whether the rail has anything to say. One window is not a strip
+    /// you can travel along, and a single segment would be noise.
+    pub fn is_meaningful(&self) -> bool {
+        self.count >= 2
+    }
+
+    /// Total width the whole rail occupies.
+    pub fn extent(&self) -> f64 {
+        if self.count == 0 {
+            return 0.0;
+        }
+        let focused = if self.focused < self.count { 1 } else { 0 };
+        let plain = self.count - focused;
+        plain as f64 * RAIL_SEG_W
+            + focused as f64 * RAIL_SEG_W_FOCUSED
+            + (self.count.saturating_sub(1)) as f64 * RAIL_GAP
+    }
+
+    /// Rect of segment `i`, or `None` if out of range.
+    pub fn segment_rect(&self, i: usize) -> Option<Rect> {
+        if i >= self.count {
+            return None;
+        }
+        let y1 = self.content.y1 - RAIL_MARGIN;
+        let y0 = y1 - RAIL_SEG_H;
+        let mut x = self.content.center().x - self.extent() / 2.0;
+        for k in 0..i {
+            x += if k == self.focused { RAIL_SEG_W_FOCUSED } else { RAIL_SEG_W };
+            x += RAIL_GAP;
+        }
+        let w = if i == self.focused { RAIL_SEG_W_FOCUSED } else { RAIL_SEG_W };
+        Some(Rect::new(x, y0, x + w, y1))
+    }
+
+    /// Pointer target for segment `i` — widened to the minimum target
+    /// size across the rail's short axis and half the gap either side,
+    /// so the rail is clickable rather than merely visible.
+    pub fn hit_rect(&self, i: usize) -> Option<Rect> {
+        let seg = self.segment_rect(i)?;
+        let cy = seg.center().y;
+        Some(Rect::new(
+            seg.x0 - RAIL_GAP / 2.0,
+            cy - RAIL_HIT_H / 2.0,
+            seg.x1 + RAIL_GAP / 2.0,
+            cy + RAIL_HIT_H / 2.0,
+        ))
+    }
+
+    /// Which segment, if any, contains `p`.
+    pub fn hit(&self, p: Point) -> Option<usize> {
+        if !self.is_meaningful() {
+            return None;
+        }
+        (0..self.count).find(|i| self.hit_rect(*i).is_some_and(|r| r.contains(p)))
+    }
+
+    /// Paint the rail. `hover` is the segment under the pointer.
+    pub fn draw(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        hover: Option<usize>,
+        alpha: f32,
+    ) {
+        if !self.is_meaningful() || alpha <= 0.0 {
+            return;
+        }
+        for i in 0..self.count {
+            let Some(seg) = self.segment_rect(i) else { continue };
+            let present = self.visible.contains(&i);
+            let shape =
+                RoundedRect::from_rect(seg, ChromeRole::Selector.radius(theme, seg.height()));
+            let fill = rail_fill(theme, i == self.focused, hover == Some(i), present);
+            scene.fill(Fill::NonZero, transform, fill.with_alpha_factor(alpha), None, &shape);
+            let tier = selection_tier(
+                theme,
+                SelectionState::new(i == self.focused, hover == Some(i), false),
+            );
+            if let Some(edge) = tier.border {
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    edge.with_alpha_factor(alpha),
+                    None,
+                    &shape,
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod rail_tests {
+    use super::*;
+
+    fn rail(count: usize, focused: usize, visible: Vec<usize>) -> StripRail {
+        StripRail {
+            content: Rect::new(0.0, 40.0, 1600.0, 900.0),
+            count,
+            focused,
+            visible,
+        }
+    }
+
+    /// One window is not a strip you can travel along.
+    #[test]
+    fn a_single_group_draws_no_rail() {
+        assert!(!rail(1, 0, vec![0]).is_meaningful());
+        assert!(rail(2, 0, vec![0]).is_meaningful());
+        assert!(rail(1, 0, vec![0]).hit(Point::new(800.0, 884.0)).is_none());
+    }
+
+    /// Segments tile left to right without overlapping, and the focused
+    /// one is the long one.
+    #[test]
+    fn segments_run_in_order_with_the_focused_one_longest() {
+        let r = rail(4, 2, vec![1, 2]);
+        let rects: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
+        for pair in rects.windows(2) {
+            assert!(
+                pair[0].x1 <= pair[1].x0,
+                "segments must not overlap: {:?} then {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        assert!(
+            rects[2].width() > rects[0].width(),
+            "the focused segment must be longer than an unfocused one"
+        );
+        assert!(
+            rects.iter().all(|s| (s.y1 - (r.content.y1 - RAIL_MARGIN)).abs() < f64::EPSILON),
+            "every segment sits on the rail's baseline"
+        );
+    }
+
+    /// Focus is the strongest mark on every palette, and a group that is
+    /// off screen is fainter than one that is on it. Both orderings are
+    /// what let the rail be read as a position rather than a count.
+    ///
+    /// [`Colors::hairline_on`] resolves the direction to move once per
+    /// ground, so on a given palette all four weights are the same
+    /// colour and differ only in alpha — the assertion checks exactly
+    /// that (a weight that came out a different colour would not be
+    /// comparable by alpha at all) and then that the alphas rise. This
+    /// is the ordering the ribbon's own notes record going wrong on
+    /// high-contrast, where `surfaces.base` and `surfaces.raised` are
+    /// both pure black and a derived tier system inverts.
+    #[test]
+    fn weights_stay_ordered_on_every_palette() {
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high-contrast", Theme::high_contrast()),
+        ] {
+            let weights = [
+                ("off-screen", rail_fill(&theme, false, false, false)),
+                ("on-screen", rail_fill(&theme, false, false, true)),
+                ("hover", rail_fill(&theme, false, true, true)),
+                ("focused", rail_fill(&theme, true, false, true)),
+            ];
+            let rgb = |c: Color| {
+                let p = c.to_rgba8();
+                (p.r, p.g, p.b)
+            };
+            for (label, c) in &weights[1..] {
+                assert_eq!(
+                    rgb(*c),
+                    rgb(weights[0].1),
+                    "{name}: the {label} weight resolved to a different colour than \
+                     off-screen, so the four are not one ramp"
+                );
+            }
+            let alphas: Vec<u8> = weights.iter().map(|(_, c)| c.to_rgba8().a).collect();
+            assert!(
+                alphas.windows(2).all(|w| w[0] < w[1]),
+                "{name}: rail weights must rise off-screen < on-screen < hover < focused, \
+                 got {alphas:?}"
+            );
+        }
+    }
+
+    /// Every segment is reachable by pointer at the HIG's minimum target
+    /// size, and a click near a boundary belongs to exactly one of them.
+    #[test]
+    fn hit_targets_tile_and_clear_the_minimum_size() {
+        let r = rail(5, 0, vec![0, 1]);
+        for i in 0..5 {
+            let hit = r.hit_rect(i).unwrap();
+            assert!(
+                hit.height() >= RAIL_HIT_H,
+                "segment {i}'s target is {} tall, below the minimum {RAIL_HIT_H}",
+                hit.height()
+            );
+            let c = hit.center();
+            assert_eq!(r.hit(c), Some(i), "segment {i} must claim its own centre");
+        }
+    }
+}
+
 #[cfg(test)]
 mod ribbon_tests {
     use super::*;

@@ -199,6 +199,9 @@ pub struct ShellOverlayHost {
     ws_invite_copied_at: Option<Instant>,
     /// Ribbon segment under the pointer, if any. Paint-only.
     strip_ribbon_hover: Option<usize>,
+    /// Segment of the strip rail under the pointer, if any. Paint-only,
+    /// same as [`Self::strip_ribbon_hover`].
+    strip_rail_hover: Option<usize>,
     /// Off-thread reader for the OS state quick settings displays.
     /// See [`crate::shell::qs_refresh`] for why the reads left the frame.
     qs_refresh: crate::shell::qs_refresh::QsRefresh,
@@ -1213,6 +1216,7 @@ impl ShellOverlayHost {
             qs_slider_drag: None,
             ws_invite_copied_at: None,
             strip_ribbon_hover: None,
+            strip_rail_hover: None,
             qs_refresh: crate::shell::qs_refresh::QsRefresh::new(),
             ws_settings_was_open: false,
             ws_settings_transition: ui::Transition::closed(),
@@ -4954,6 +4958,110 @@ impl ShellOverlayHost {
         self.strip_ribbon()
     }
 
+    /// The rail that maps the active strip: one segment per window
+    /// group, the focused one marked, and the ones currently on screen
+    /// lit.
+    ///
+    /// Reads the live [`GroupRow`] rather than the tree, because the
+    /// question "which of these can I see" is answered by the layout —
+    /// the tree knows the order and nothing about the viewport.
+    fn strip_rail(&self) -> ui::chrome::shell::StripRail {
+        let content = Rect::new(
+            self.rect.x0,
+            self.rect.y0 + crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX as f64,
+            self.rect.x1,
+            self.rect.y1,
+        );
+        let empty = ui::chrome::shell::StripRail {
+            content,
+            count: 0,
+            focused: 0,
+            visible: Vec::new(),
+        };
+        let Some(chrome) = self.chrome.as_ref() else {
+            return empty;
+        };
+        let (strip_id, order) = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            let Some(sid) = tree.active_workspace().and_then(|ws| {
+                tree.active_strip
+                    .get(&ws.id)
+                    .copied()
+                    .filter(|id| ws.strips.iter().any(|s| s.id == *id))
+                    .or_else(|| ws.strips.first().map(|s| s.id))
+            }) else {
+                return empty;
+            };
+            let order: Vec<GroupId> = tree
+                .active_workspace()
+                .and_then(|ws| ws.strips.iter().find(|s| s.id == sid))
+                .map(|s| s.window_groups.iter().map(|g| g.id).collect())
+                .unwrap_or_default();
+            (sid, order)
+        };
+        if order.is_empty() {
+            return empty;
+        }
+        let focused = chrome
+            .borrow()
+            .tree()
+            .active_group_for(strip_id)
+            .and_then(|g| order.iter().position(|&id| id == g))
+            .unwrap_or(0);
+        let Some(&ptr) = self.group_row_ptrs.get(&strip_id) else {
+            return ui::chrome::shell::StripRail {
+                content,
+                count: order.len(),
+                focused,
+                visible: Vec::new(),
+            };
+        };
+        // SAFETY: see field doc on `group_row_ptrs`.
+        let row: &GroupRow = unsafe { &*ptr };
+        let onscreen = row.onscreen_group_ids();
+        let visible = order
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| onscreen.contains(id))
+            .map(|(i, _)| i)
+            .collect();
+        ui::chrome::shell::StripRail {
+            content,
+            count: order.len(),
+            focused,
+            visible,
+        }
+    }
+
+    /// Rail geometry for integration tests, so a scenario can click a
+    /// segment without duplicating the anchoring maths.
+    pub fn strip_rail_for_tests(&self) -> ui::chrome::shell::StripRail {
+        self.strip_rail()
+    }
+
+    /// The group a rail segment stands for, and the strip it is on.
+    fn strip_rail_target(&self, segment: usize) -> Option<(StripId, GroupId)> {
+        let chrome = self.chrome.as_ref()?;
+        let st = chrome.borrow();
+        let tree = st.tree();
+        let ws = tree.active_workspace()?;
+        let sid = tree
+            .active_strip
+            .get(&ws.id)
+            .copied()
+            .filter(|id| ws.strips.iter().any(|s| s.id == *id))
+            .or_else(|| ws.strips.first().map(|s| s.id))?;
+        let group = ws
+            .strips
+            .iter()
+            .find(|s| s.id == sid)?
+            .window_groups
+            .get(segment)?
+            .id;
+        Some((sid, group))
+    }
+
     /// The workspace-settings "Copy" button next to the invite link.
     ///
     /// Shared by the draw pass and the click router. It previously
@@ -6216,6 +6324,12 @@ impl Widget for ShellOverlayHost {
         if !self.overlay_flags().overview {
             let ribbon = self.strip_ribbon();
             ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
+            // Strip rail — how many windows this strip holds, which one
+            // has focus, and which of them the viewport is currently
+            // over. Same reasoning as the ribbon for why it hides under
+            // the overview: the overview is not showing a strip.
+            let rail = self.strip_rail();
+            rail.draw(scene, transform, theme, self.strip_rail_hover, 1.0);
         }
 
         // Quick-settings popover (anchored top-right, no scrim so it reads
@@ -6503,8 +6617,14 @@ impl Widget for ShellOverlayHost {
             } else {
                 self.strip_ribbon().hit(p)
             };
-            if hover != self.strip_ribbon_hover {
+            let rail_hover = if self.overlay_flags().overview {
+                None
+            } else {
+                self.strip_rail().hit(p)
+            };
+            if hover != self.strip_ribbon_hover || rail_hover != self.strip_rail_hover {
                 self.strip_ribbon_hover = hover;
+                self.strip_rail_hover = rail_hover;
                 if let Some(chrome) = self.chrome.clone() {
                     chrome.borrow_mut().bump();
                 }
@@ -7454,6 +7574,20 @@ impl Widget for ShellOverlayHost {
                     && let Some(chrome) = self.chrome.clone()
                 {
                     chrome.borrow_mut().focus_strip_index(i);
+                    *handled = true;
+                    return;
+                }
+                // Strip rail: click a segment to go to that window. The
+                // rail addresses windows that are not on screen, so this
+                // is the one pointer path that does pan the strip —
+                // picking a segment you cannot see has to bring it into
+                // view to have meant anything.
+                if !self.overlay_flags().overview
+                    && !self.cursor_over_open_overlay(p)
+                    && let Some(i) = self.strip_rail().hit(p)
+                    && let Some((strip, group)) = self.strip_rail_target(i)
+                {
+                    self.focus_group_on_strip(strip, group);
                     *handled = true;
                     return;
                 }

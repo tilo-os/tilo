@@ -551,6 +551,27 @@ impl GroupRow {
             .collect()
     }
 
+    /// The ids of the groups the user can actually see right now.
+    ///
+    /// Read off the laid-out rects rather than the canvas spans, because
+    /// this answers a different question. The canvas spans are derived
+    /// from stored widths so a freshly-spliced group has one before
+    /// taffy has run, which is what the placement rule needs; "can I see
+    /// it" is a question about the pixels, and the two diverge whenever
+    /// layout has not yet caught up with a width. A group with no rect
+    /// yet simply reads as not-on-screen for the one frame it takes to
+    /// get one.
+    pub fn onscreen_group_ids(&self) -> Vec<u64> {
+        self.groups
+            .iter()
+            .filter(|g| {
+                let r = g.get_rect();
+                r.width() > 0.0 && r.x1 > self.rect.x0 && r.x0 < self.rect.x1
+            })
+            .map(|g| g.id)
+            .collect()
+    }
+
     /// The slice of the strip's canvas currently on screen, in the same
     /// space [`Self::group_canvas_spans`] reports. A group is on screen
     /// exactly when its span overlaps this one: screen-x is canvas-x
