@@ -199,9 +199,18 @@ AGENT_SCOPE = f"app:{WORD_PROCESSOR}"
 # instant bursts. The viewer saw text appear without seeing it typed,
 # which is the one thing the beat is for.
 #
-# 55 ms is around 60 words a minute: quick, clearly deliberate, and slow
-# enough that the caret is visibly ahead of the words.
-TYPING_PACE = 0.055
+# 144 ms a character is about sixty words a minute — sixty in the usual
+# sense of five characters to a word, so three hundred characters a
+# minute, five a second.
+#
+# This said 55 ms and claimed the same figure, which was not close: the
+# per-character delay is only part of an interval, and once the pauses
+# below and the jitter factor are counted, 55 ms types at a hundred and
+# twenty-four words a minute. Twice the intended speed, asserted in a
+# comment and never worked out. The arithmetic is
+# `(chars * pace + sum(pauses)) * mean(jitter)`, and it is worth
+# redoing here rather than adjusting by eye if any of the three moves.
+TYPING_PACE = 0.144
 
 # Where hands actually slow down. A person does not type at one rate —
 # they pause fractionally after a word and longer after a sentence.
@@ -263,13 +272,30 @@ def _typing_jitter(who: str):
 # Now there is one document. He writes his notes; his colleague receives
 # them; later he asks the agent about them. The prose and the bullets
 # disagree with each other on purpose — see `AGENT_PROSE`.
-TYPED_TEXT = ("Doors open at seven and the room seats two hundred "
-              "and forty.\n\n- Doors: 18:00\nSound check: 18:30\n"
-              "Seating: 240\n")
+#
+# Shorter than it reads, on purpose. Typed at a true sixty words a
+# minute this is thirteen seconds; the longer version it replaced was
+# twenty-two, which is a third of the whole film spent watching one
+# person type. The cut came out of the wording and not out of the pace,
+# because the pace is the part a viewer can tell is faked.
+#
+# `seven` against `18:00` is the disagreement the agent is expected to
+# notice — the one thing in here that is not just filler to be
+# reformatted, and the reason the instruction in beat 9 is worth giving.
+TYPED_TEXT = ("Doors at seven, room seats 240.\n\n"
+              "- Doors: 18:00\nSound check: 18:30\n")
 
 #: The distinctive fragment the crossing is checked on. Short, and
 #: nothing else in the document contains it.
-TYPED_PROOF = "seats two hundred"
+TYPED_PROOF = "room seats 240"
+
+# Checked here rather than discovered as a crossing that fails against a
+# document which is in fact perfectly correct. Rewording `TYPED_TEXT`
+# and leaving this behind is a one-line change that breaks a beat
+# somewhere else entirely, and it has already happened once.
+assert TYPED_PROOF in TYPED_TEXT, (
+    f"the crossing is checked on {TYPED_PROOF!r}, which is not in the "
+    f"text anyone types: {TYPED_TEXT!r}")
 
 # Characters a US layout only produces with shift held, and the key that
 # carries each one. `Session.type_prose` presses a real Shift across
@@ -1914,13 +1940,36 @@ def read_hold(seconds: float = READ_HOLD_S) -> None:
 
 
 def banner(title: str) -> None:
+    global _STEP_STARTED
+    now = time.time()
+    if _STEP_STARTED is not None and RECORDER:
+        took = now - _STEP_STARTED
+        if took >= 4.0:
+            print(f"      ({took:.1f}s on the step above)", flush=True)
+    _STEP_STARTED = None
     print(f"\n{RULE}\n  {title}\n{RULE}", flush=True)
     BEAT_MARKS.append((title, time.time()))
     if RECORDER:
         RECORDER.dwell()
 
 
+#: Wall-clock at the last `step`, so each one can report what the one
+#: before it cost. A per-beat total says which beat is too long; it does
+#: not say which sentence inside it is, and the answer has twice now been
+#: a wait that nobody meant to leave on camera rather than the thing the
+#: beat is about.
+_STEP_STARTED: float | None = None
+_STEP_TEXT: str = ""
+
+
 def step(text: str) -> None:
+    global _STEP_STARTED, _STEP_TEXT
+    now = time.time()
+    if _STEP_STARTED is not None and RECORDER:
+        took = now - _STEP_STARTED
+        if took >= 4.0:
+            print(f"      ({took:.1f}s on the step above)", flush=True)
+    _STEP_STARTED, _STEP_TEXT = now, text
     print(f"\n  {text}", flush=True)
     if RECORDER:
         RECORDER.dwell()
