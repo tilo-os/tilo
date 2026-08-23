@@ -130,14 +130,26 @@ fn chroma(c: vec3<f32>) -> vec2<f32> {
     return vec2<f32>((c.b - y) / 1.8556, (c.r - y) / 1.5748);
 }
 
+// Chroma normalised by brightness. Plain Cb/Cr scale with exposure, so a
+// shadowed patch of one green screen would sit far from a lit patch of the
+// same cloth; dividing by luma removes that term and lets one tolerance
+// cover the whole screen. Below `DARK_FLOOR` the division stops, because
+// the chroma left in near-black is noise and amplifying it would key it.
+// Mirrors `ChromaKey::norm_chroma` on the host.
+const DARK_FLOOR: f32 = 0.06;
+
+fn norm_chroma(c: vec3<f32>) -> vec2<f32> {
+    return chroma(c) / max(dot(c, LUMA), DARK_FLOOR);
+}
+
 // How much of `c` survives the colour key: 0 removed, 1 kept. Distance is
-// measured in the chroma plane only, so the lit and the shadowed parts of
+// measured in normalised chroma only, so the lit and the shadowed parts of
 // one green screen key identically — which an RGB distance cannot do.
 fn key_cover(c: vec3<f32>) -> f32 {
     if (p.key_a.x < 0.5) {
         return 1.0;
     }
-    let d = length(chroma(c) - chroma(p.key_b.rgb));
+    let d = length(norm_chroma(c) - norm_chroma(p.key_b.rgb));
     let lo = max(p.key_a.y, 0.0);
     let hi = lo + max(p.key_a.z, 0.0);
     if (d <= lo) {

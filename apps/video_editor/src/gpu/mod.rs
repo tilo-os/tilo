@@ -1459,4 +1459,393 @@ mod tests {
             "playhead 2s into a clip cut at 4s asks the source for 6s, got {seen:?}",
         );
     }
+
+    // ----------------------------------------------------------------------
+    // Colour key and shape mask, on the real compute pass.
+    //
+    // These are compositing features, so what has to be proved is not that a
+    // number reached a uniform but that the layer *underneath* becomes
+    // visible where the top layer was cut. Every test here stacks two clips
+    // with different pictures and reads back the frame.
+    // ----------------------------------------------------------------------
+
+    /// A [`FrameSource`] that paints each media its own picture, so a
+    /// two-layer stack can be told apart pixel by pixel.
+    fn per_media(
+        w: u32,
+        h: u32,
+        paint: impl Fn(Uuid, f64, f64) -> [u8; 4] + Send + 'static,
+    ) -> CpuFrames<impl FnMut(Uuid, f64) -> Option<CpuFrame>> {
+        let mut cache: HashMap<Uuid, std::sync::Arc<Vec<u8>>> = HashMap::new();
+        CpuFrames::new(move |media, _t| {
+            let rgba = cache.entry(media).or_insert_with(|| {
+                let mut buf = vec![0u8; (w * h * 4) as usize];
+                for y in 0..h {
+                    for x in 0..w {
+                        let u = (x as f64 + 0.5) / w as f64;
+                        let v = (y as f64 + 0.5) / h as f64;
+                        let c = paint(media, u, v);
+                        let i = ((y * w + x) * 4) as usize;
+                        buf[i..i + 4].copy_from_slice(&c);
+                    }
+                }
+                std::sync::Arc::new(buf)
+            });
+            Some(CpuFrame { width: w, height: h, rgba: rgba.clone(), identity: 0 })
+        })
+    }
+
+    /// Two square clips stacked V1 under V2, both covering the playhead.
+    /// Returns `(project, under_clip, over_clip, under_media, over_media)`.
+    fn stacked() -> (Project, Uuid, Uuid, Uuid, Uuid) {
+        let mut p = Project::new("stack");
+        let mut add_media = |p: &mut Project, name: &str| {
+            let id = Uuid::new_v4();
+            p.media.push(MediaItem {
+                id,
+                name: name.into(),
+                kind: MediaKind::Video,
+                duration: 30.0,
+                width: 32,
+                height: 32,
+                fps: 30.0,
+                palette: 2,
+                path: crate::media::workspace_path("s.mp4"),
+                hydration: crate::media::Hydration::Local,
+                ..Default::default()
+            });
+            id
+        };
+        let under_m = add_media(&mut p, "under");
+        let over_m = add_media(&mut p, "over");
+        let v1 = track(&mut p, 1);
+        let v2 = track(&mut p, 2);
+        let under = p.add_clip(v1, under_m, 0.0).unwrap();
+        let over = p.add_clip(v2, over_m, 0.0).unwrap();
+        p.clip_mut(under).unwrap().out_point = 10.0;
+        p.clip_mut(over).unwrap().out_point = 10.0;
+        (p, under, over, under_m, over_m)
+    }
+
+    /// The key green the presets offer, as bytes, and the red beneath it.
+    const PLATE: [u8; 4] = [15, 184, 51, 255];
+    const BENEATH: [u8; 4] = [210, 40, 40, 255];
+    /// The "subject" standing on the plate: an orange bar down the middle.
+    const SUBJECT: [u8; 4] = [235, 130, 30, 255];
+
+    fn is_reddish(c: Rgb) -> bool {
+        c.r > 0.5 && c.r > c.g + 0.2 && c.r > c.b + 0.2
+    }
+
+    /// A stack whose lower layer is flat red and whose upper layer is the
+    /// key green with an orange bar across its middle third.
+    fn plate_over_red()
+    -> (Project, Uuid, CpuFrames<impl FnMut(Uuid, f64) -> Option<CpuFrame>>) {
+        let (p, _under, over, under_m, _over_m) = stacked();
+        let src = per_media(32, 32, move |media, _u, v| {
+            if media == under_m {
+                BENEATH
+            } else if (0.4..0.6).contains(&v) {
+                SUBJECT
+            } else {
+                PLATE
+            }
+        });
+        (p, over, src)
+    }
+
+    #[test]
+    fn without_a_key_the_upper_layer_hides_the_one_beneath() {
+        // The control the two keyed tests below are read against: with no
+        // key, the plate covers everything and nothing red survives.
+        let (p, _over, mut src) = plate_over_red();
+        let mut c = compositor();
+        let buf = c.frame(&p, 1.0, 64, 64, &mut src);
+        for y in [4, 20, 60] {
+            assert!(
+                !is_reddish(px(&buf, 64, 32, y)),
+                "unkeyed, the layer beneath must not show at y={y}: {:?}",
+                px(&buf, 64, 32, y),
+            );
+        }
+        assert!(is_green(px(&buf, 64, 32, 4)), "the plate is what is on screen");
+    }
+
+    #[test]
+    fn keying_the_plate_reveals_the_layer_beneath_and_keeps_the_subject() {
+        let (mut p, over, mut src) = plate_over_red();
+        p.clip_mut(over).unwrap().key = crate::model::ChromaKey {
+            enabled: true,
+            color: [
+                PLATE[0] as f64 / 255.0,
+                PLATE[1] as f64 / 255.0,
+                PLATE[2] as f64 / 255.0,
+            ],
+            tolerance: 0.25,
+            softness: 0.1,
+            spill: 0.0,
+        };
+        let mut c = compositor();
+        let buf = c.frame(&p, 1.0, 64, 64, &mut src);
+        // Above and below the bar the plate is gone, so V1's red shows.
+        for y in [4, 60] {
+            let got = px(&buf, 64, 32, y);
+            assert!(
+                is_reddish(got),
+                "the keyed plate must let the layer beneath through at y={y}: {got:?}",
+            );
+        }
+        // Across the bar the subject is untouched — a key that ate the
+        // subject would pass the check above and still be useless.
+        let bar = px(&buf, 64, 32, 32);
+        assert!(
+            bar.r > 0.6 && bar.g > 0.3 && bar.g < 0.75 && bar.b < 0.3,
+            "the subject survives the key: {bar:?}",
+        );
+    }
+
+    /// The exposure invariance, proved where it matters: on the composite.
+    /// A plate lit unevenly — bright at the top, a fifth of that at the
+    /// bottom — has to key all the way down, on **one** tolerance.
+    ///
+    /// The tolerance here is deliberately tight: it is what a clean plate
+    /// needs and no more. A keyer measuring absolute Cb/Cr puts the dim
+    /// rows several times that distance from the key and keeps them, so a
+    /// slack tolerance would let one pass while looking like it had proved
+    /// something.
+    #[test]
+    fn an_unevenly_lit_plate_keys_top_to_bottom() {
+        let (p, _under, over, under_m, _over_m) = stacked();
+        let mut src = per_media(32, 32, move |media, _u, v| {
+            if media == under_m {
+                return BENEATH;
+            }
+            // Full exposure at the top down to a fifth of it at the bottom.
+            let gain = 1.0 - 0.8 * v;
+            [
+                (PLATE[0] as f64 * gain) as u8,
+                (PLATE[1] as f64 * gain) as u8,
+                (PLATE[2] as f64 * gain) as u8,
+                255,
+            ]
+        });
+        let mut p = p;
+        p.clip_mut(over).unwrap().key = crate::model::ChromaKey {
+            enabled: true,
+            color: [
+                PLATE[0] as f64 / 255.0,
+                PLATE[1] as f64 / 255.0,
+                PLATE[2] as f64 / 255.0,
+            ],
+            tolerance: 0.12,
+            softness: 0.05,
+            spill: 0.0,
+        };
+        let mut c = compositor();
+        let buf = c.frame(&p, 1.0, 64, 64, &mut src);
+        for y in [2, 16, 32, 48, 58] {
+            let got = px(&buf, 64, 32, y);
+            assert!(
+                is_reddish(got),
+                "the plate keys at every exposure; y={y} was {got:?} — an absolute \
+                 chroma distance would have kept the shadowed rows",
+            );
+        }
+    }
+
+    #[test]
+    fn spill_removal_takes_the_key_hue_off_the_subject() {
+        let (p, _under, over, under_m, _over_m) = stacked();
+        // A subject washed with green light, over red.
+        let tinted: [u8; 4] = [160, 150, 95, 255];
+        let mut src = per_media(32, 32, move |media, _u, _v| {
+            if media == under_m { BENEATH } else { tinted }
+        });
+        let key = |spill: f64| crate::model::ChromaKey {
+            enabled: true,
+            color: [
+                PLATE[0] as f64 / 255.0,
+                PLATE[1] as f64 / 255.0,
+                PLATE[2] as f64 / 255.0,
+            ],
+            // Wide enough to be keying, but nowhere near the tinted subject.
+            tolerance: 0.2,
+            softness: 0.05,
+            spill,
+        };
+        let mut c = compositor();
+        let mut p = p;
+        p.clip_mut(over).unwrap().key = key(0.0);
+        let plain = px(&c.frame(&p, 1.0, 64, 64, &mut src), 64, 32, 32);
+        p.clip_mut(over).unwrap().key = key(1.0);
+        let clean = px(&c.frame(&p, 1.0, 64, 64, &mut src), 64, 32, 32);
+
+        assert!(
+            !is_reddish(plain) && !is_reddish(clean),
+            "the subject is kept either way — spill removal is not a matte",
+        );
+        // Green comes down relative to the other two channels.
+        let cast = |c: Rgb| c.g - (c.r + c.b) / 2.0;
+        assert!(
+            cast(clean) < cast(plain) - 0.02,
+            "spill removal pulls the green cast down: {:.3} → {:.3}",
+            cast(plain),
+            cast(clean),
+        );
+        assert!(
+            (clean.luma() - plain.luma()).abs() < 0.05,
+            "and leaves the exposure alone: {:.3} → {:.3}",
+            plain.luma(),
+            clean.luma(),
+        );
+    }
+
+    #[test]
+    fn an_ellipse_mask_cuts_the_upper_layer_to_a_disc() {
+        let (p, _under, over, under_m, _over_m) = stacked();
+        let mut src = per_media(32, 32, move |media, _u, _v| {
+            if media == under_m { BENEATH } else { [40, 200, 90, 255] }
+        });
+        let mut p = p;
+        p.clip_mut(over).unwrap().mask = crate::model::Mask {
+            shape: crate::model::MaskShape::Ellipse,
+            w: 0.5,
+            h: 0.5,
+            feather: 0.05,
+            ..crate::model::Mask::default()
+        };
+        let mut c = compositor();
+        let buf = c.frame(&p, 1.0, 64, 64, &mut src);
+        assert!(is_green(px(&buf, 64, 32, 32)), "inside the disc the upper layer shows");
+        for (x, y) in [(2, 2), (61, 2), (2, 61), (61, 61), (32, 2)] {
+            assert!(
+                is_reddish(px(&buf, 64, x, y)),
+                "outside the disc the layer beneath shows at ({x},{y}): {:?}",
+                px(&buf, 64, x, y),
+            );
+        }
+    }
+
+    #[test]
+    fn inverting_the_mask_swaps_which_layer_is_where() {
+        let (p, _under, over, under_m, _over_m) = stacked();
+        let mut src = per_media(32, 32, move |media, _u, _v| {
+            if media == under_m { BENEATH } else { [40, 200, 90, 255] }
+        });
+        let mut p = p;
+        p.clip_mut(over).unwrap().mask = crate::model::Mask {
+            shape: crate::model::MaskShape::Ellipse,
+            w: 0.5,
+            h: 0.5,
+            feather: 0.05,
+            invert: true,
+            ..crate::model::Mask::default()
+        };
+        let mut c = compositor();
+        let buf = c.frame(&p, 1.0, 64, 64, &mut src);
+        assert!(is_reddish(px(&buf, 64, 32, 32)), "the centre is now the hole");
+        assert!(is_green(px(&buf, 64, 2, 2)), "and the corner keeps the upper layer");
+    }
+
+    /// A rect and an ellipse of one size have to composite differently, or
+    /// the shape control does nothing. They differ exactly at the corners
+    /// of the box.
+    #[test]
+    fn a_rect_mask_is_not_the_same_composite_as_an_ellipse() {
+        let (p, _under, over, under_m, _over_m) = stacked();
+        let mut src = per_media(32, 32, move |media, _u, _v| {
+            if media == under_m { BENEATH } else { [40, 200, 90, 255] }
+        });
+        let base = crate::model::Mask {
+            w: 0.8,
+            h: 0.8,
+            feather: 0.02,
+            ..crate::model::Mask::default()
+        };
+        let mut c = compositor();
+        let mut p = p;
+        // Just inside the corner of the 0.8-wide box.
+        let (x, y) = (55, 55);
+        p.clip_mut(over).unwrap().mask =
+            crate::model::Mask { shape: crate::model::MaskShape::Rect, ..base };
+        let rect = px(&c.frame(&p, 1.0, 64, 64, &mut src), 64, x, y);
+        p.clip_mut(over).unwrap().mask =
+            crate::model::Mask { shape: crate::model::MaskShape::Ellipse, ..base };
+        let ellipse = px(&c.frame(&p, 1.0, 64, 64, &mut src), 64, x, y);
+        assert!(is_green(rect), "the rect reaches its own corner: {rect:?}");
+        assert!(is_reddish(ellipse), "the ellipse does not: {ellipse:?}");
+    }
+
+    #[test]
+    fn feathering_a_mask_puts_a_real_ramp_at_its_edge() {
+        let (p, _under, over, under_m, _over_m) = stacked();
+        let mut src = per_media(32, 32, move |media, _u, _v| {
+            if media == under_m { BENEATH } else { [40, 200, 90, 255] }
+        });
+        let mut c = compositor();
+        let mut p = p;
+        let base = crate::model::Mask {
+            shape: crate::model::MaskShape::Rect,
+            w: 0.6,
+            h: 2.0,
+            ..crate::model::Mask::default()
+        };
+        // Recover the blend fraction column by column from the green
+        // channel, whose two endpoints are known, and count the columns
+        // that are genuinely part-way between the layers. Reading the mix
+        // itself rather than asking "which colour family is this" is what
+        // makes a one-pixel edge and a ten-pixel ramp distinguishable.
+        let (lo, hi) = (40.0 / 255.0, 200.0 / 255.0);
+        let ramp = |buf: &[u8]| {
+            (0..64)
+                .filter(|x| {
+                    let t = (px(buf, 64, *x, 32).g - lo) / (hi - lo);
+                    (0.05..0.95).contains(&t)
+                })
+                .count()
+        };
+        p.clip_mut(over).unwrap().mask = crate::model::Mask { feather: 0.005, ..base };
+        let hard = ramp(&c.frame(&p, 1.0, 64, 64, &mut src));
+        p.clip_mut(over).unwrap().mask = crate::model::Mask { feather: 0.5, ..base };
+        let soft = ramp(&c.frame(&p, 1.0, 64, 64, &mut src));
+        assert!(
+            hard <= 4,
+            "an unfeathered edge is a cut, not a ramp: {hard} columns of blend",
+        );
+        assert!(
+            soft > hard + 8,
+            "feathering widens the ramp: {hard} → {soft} columns of blend",
+        );
+    }
+
+    /// The reason both of these are parameters rather than plain fields: a
+    /// mask has to be able to follow a subject across a shot.
+    #[test]
+    fn a_keyframed_mask_is_in_a_different_place_in_each_second() {
+        let (p, _under, over, under_m, _over_m) = stacked();
+        let mut src = per_media(32, 32, move |media, _u, _v| {
+            if media == under_m { BENEATH } else { [40, 200, 90, 255] }
+        });
+        let mut p = p;
+        {
+            let c = p.clip_mut(over).unwrap();
+            c.mask = crate::model::Mask {
+                shape: crate::model::MaskShape::Ellipse,
+                w: 0.4,
+                h: 0.4,
+                feather: 0.05,
+                ..crate::model::Mask::default()
+            };
+            c.set_key_at(crate::param::Param::MaskX, 0.0, -0.3, crate::param::Interp::Linear);
+            c.set_key_at(crate::param::Param::MaskX, 4.0, 0.3, crate::param::Interp::Linear);
+        }
+        let mut c = compositor();
+        let early = c.frame(&p, 0.0, 64, 64, &mut src);
+        let late = c.frame(&p, 4.0, 64, 64, &mut src);
+        // Left of centre early, right of centre late.
+        assert!(is_green(px(&early, 64, 13, 32)), "the disc starts on the left");
+        assert!(is_reddish(px(&early, 64, 51, 32)), "and not on the right");
+        assert!(is_reddish(px(&late, 64, 13, 32)), "by the end it has left the left");
+        assert!(is_green(px(&late, 64, 51, 32)), "and arrived on the right");
+    }
 }
