@@ -3409,22 +3409,22 @@ def beat_two(quinten: Session, xaver: Session, host_ws: dict,
     # gains a member and the audience is asked to believe a join
     # happened somewhere they could not see.
     #
-    # It is also the one cut to Xaver in the film, so it carries his
-    # introduction. Removing it left him as a name on somebody else's
-    # screen until well past the halfway mark.
     step("the token travels — by hand, off quinten's clipboard")
-    # A person reads a code, moves to another machine, and types or
-    # pastes it. Instant redemption reads as staged, because it is: two
-    # sessions on one box with a shared clipboard. The pause is the
-    # honest depiction of a hop this demo cannot actually perform.
-    quinten.settle(2.5)
-    cut("xaver")
-    claim("xaver joined",
-          join_room(xaver, token, via="panel", shots=shots, tag="02c"), True)
-    if RECORDER:
-        RECORDER.dwell()
-    with off_camera("the two assertions under the join, which are "
-                    "answered over a socket rather than shown"):
+    # He does not redeem it the instant it is minted. That reads as
+    # staged, because it is: two sessions on one machine sharing a
+    # clipboard. A person reads a code, crosses to another machine, and
+    # enters it — and the seconds that takes are seconds the room sits
+    # there waiting, which is both the truth and room for a voice-over.
+    #
+    # The redemption itself stays off camera. Watching somebody paste a
+    # string into a dialog is the least surprising thing in this system,
+    # and the beat that matters is his arrival on the roster of the
+    # screen already being watched.
+    quinten.settle(4.0)
+    with off_camera("xaver redeeming the invitation on his own machine — "
+                    "quinten's roster gains him on screen shortly"):
+        claim("xaver joined",
+              join_room(xaver, token, via="panel", shots=shots, tag="02c"), True)
         claim("xaver's own state holds quinten's room",
               xaver.active_workspace()["room"], host_ws["room"])
         claim("and his own copy names quinten as owner",
