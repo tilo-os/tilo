@@ -15984,6 +15984,7 @@ dependencies = [
  "gstreamer",
  "gstreamer-app",
  "media",
+ "png 0.18.1",
  "qos-actions",
  "serde",
  "serde_json",
