@@ -74,6 +74,22 @@ const SCROLLBAR_INSET: f64 = 3.0;
 /// room to show a frame and the pane says so instead.
 const MIN_CANVAS: f64 = 48.0;
 /// Below this the transport has no room for a scrubber and draws none.
+/// Where the history buttons sit, as an offset into the transport strip:
+/// just past the five transport circles, which end at +205.
+const HISTORY_X: f64 = 214.0;
+const HISTORY_W: f64 = 30.0;
+/// Where everything right of the history buttons begins.
+const TRANSPORT_RIGHT_X: f64 = HISTORY_X + HISTORY_W * 2.0 + 14.0;
+/// And where it begins when the strip is too narrow to hold them.
+const TRANSPORT_PLAIN_X: f64 = 220.0;
+/// The narrowest transport strip that can carry the history buttons *and*
+/// still leave the playhead timecode room to be drawn whole beside them.
+///
+/// Below this the buttons go rather than the time: the time is the reading
+/// the user cannot get anywhere else on the strip, and undo has a keyboard
+/// shortcut that a narrow window does not take away.
+const HISTORY_MIN_STRIP_W: f64 = TRANSPORT_RIGHT_X + 100.0;
+
 const MIN_SCRUBBER_W: f64 = 90.0;
 /// Above this a longer bar buys no precision and just looks stretched.
 const MAX_SCRUBBER_W: f64 = 560.0;
@@ -692,6 +708,9 @@ pub enum ShotScenario {
     /// The inspector scrolled to the geometry and rate sections, on a clip
     /// that is inset, re-timed and keyframed.
     Geometry,
+    /// A keyed and masked clip with both sections open: the key's colour
+    /// swatches and its three sliders, and an ellipse mask's geometry.
+    KeyAndMask,
     /// A title clip selected, with its words, size, alignment and colour
     /// showing, and the marker list under them.
     TitleClip,
@@ -735,6 +754,7 @@ impl ShotScenario {
                 | ShotScenario::ClipMenu
                 | ShotScenario::Marquee
                 | ShotScenario::Geometry
+                | ShotScenario::KeyAndMask
                 | ShotScenario::TitleClip
                 | ShotScenario::Keyframes
                 | ShotScenario::Markers
@@ -761,6 +781,7 @@ impl ShotScenario {
             "marquee" => ShotScenario::Marquee,
             "composed" => ShotScenario::Composed,
             "geometry" => ShotScenario::Geometry,
+            "keymask" => ShotScenario::KeyAndMask,
             "title" => ShotScenario::TitleClip,
             "keyframes" => ShotScenario::Keyframes,
             "markers" => ShotScenario::Markers,
@@ -818,6 +839,12 @@ pub struct VideoEditorApp {
     /// so a `--shots` capture / preload shows the clip in the preview, not just
     /// the bin. Off for a plain portal import (which lands in the bin only).
     auto_place_imports: bool,
+    /// The history the host owns, as much of it as a widget is allowed to
+    /// see: whether undo and redo are available right now, and a channel to
+    /// ask for one. The stacks stay with the host — this only carries the
+    /// answer, so a control drawn from it can never offer an undo that
+    /// Ctrl+Z would decline.
+    undo: ui::UndoAccess,
     /// Real preview decoder. Only driven under `--features decode`, where it
     /// decodes the true frame of the clip under the playhead through GStreamer.
     #[cfg(feature = "decode")]
@@ -1126,6 +1153,7 @@ impl VideoEditorApp {
             pending_imports: Vec::new(),
             auto_place_imports: false,
             #[cfg(feature = "decode")]
+            undo: ui::UndoAccess::default(),
             preview_decoder: preview::PreviewDecoder::new(),
             #[cfg(feature = "decode")]
             frame_source: None,
@@ -1646,13 +1674,51 @@ impl VideoEditorApp {
         ]
     }
 
+    /// The history buttons, immediately right of the transport cluster.
+    ///
+    /// Drawn as ghost squares rather than as the transport's filled circles,
+    /// because they are not transport: nothing here moves the playhead. They
+    /// share the row because that is where the strip's other one-press verbs
+    /// already are.
+    ///
+    /// Empty when the strip is too narrow to hold them without reaching into
+    /// the readout — the same rule the readout itself follows, and the reason
+    /// the scrubber starts where it does.
+    fn history_buttons(&self, r: &Regions) -> Vec<(ui::UndoRequest, Rect)> {
+        if r.transport.width() < HISTORY_MIN_STRIP_W {
+            return Vec::new();
+        }
+        let cy = r.transport.y0 + 20.0;
+        let x0 = r.transport.x0 + HISTORY_X;
+        let mk = |i: f64, v: ui::UndoRequest| {
+            let x = x0 + i * (HISTORY_W + 4.0);
+            (v, Rect::new(x, cy - 13.0, x + HISTORY_W, cy + 13.0))
+        };
+        vec![mk(0.0, ui::UndoRequest::Undo), mk(1.0, ui::UndoRequest::Redo)]
+    }
+
+    /// Where everything right of the transport cluster starts: past the
+    /// history buttons when the strip is showing them, and where it always
+    /// used to be when it is not.
+    ///
+    /// One answer for the scrubber and the readout, because two would let
+    /// the buttons and the timecode drift onto each other — which is
+    /// precisely what happened the first time they were laid out apart.
+    fn transport_content_x(&self, r: &Regions) -> f64 {
+        if self.history_buttons(r).is_empty() {
+            TRANSPORT_PLAIN_X
+        } else {
+            TRANSPORT_RIGHT_X
+        }
+    }
+
     /// The transport scrubber's track. `Rect::ZERO` when the transport is too
     /// narrow to hold one — below roughly a 500px window the old unclamped
     /// arithmetic produced an *inverted* rect (x0 > x1) and drew the knob
     /// outside its own track. Capped at [`MAX_SCRUBBER_W`] so a very wide
     /// window does not stretch a 6px knob across three thousand pixels of bar.
     fn scrubber_rect(&self, r: &Regions) -> Rect {
-        let left = r.transport.x0 + 220.0;
+        let left = r.transport.x0 + self.transport_content_x(r);
         let right = r.transport.x1 - 16.0;
         if right - left < MIN_SCRUBBER_W {
             return Rect::ZERO;
@@ -3684,8 +3750,11 @@ impl VideoEditorApp {
                 l.key_enable = Some(Rect::new(x0, y, x1, y + 26.0));
                 y += 34.0;
                 if clip.key.enabled {
+                    // The caption's own line, then the swatches under it —
+                    // the same 20px the Crop caption takes, so the two read
+                    // as one convention rather than two.
                     l.key_color_y = y;
-                    y += 18.0;
+                    y += 20.0;
                     let sw = 26.0;
                     for (i, (_, col)) in crate::model::KEY_PRESETS.iter().enumerate() {
                         let sx = x0 + i as f64 * (sw + 5.0);
@@ -4184,6 +4253,56 @@ impl VideoEditorApp {
                 }
                 // Past the levels, onto the geometry and rate sections.
                 self.inspector_scroll = (self.inspector_max_scroll(r) * 0.62).max(0.0);
+            }
+            ShotScenario::KeyAndMask => {
+                if let Some(c) = self.project.top_video_clip_at(23.0) {
+                    let cid = c.id;
+                    self.selection.select_only(cid);
+                    self.playhead = 23.0;
+                    if let Some(c) = self.project.clip_mut(cid) {
+                        c.key = crate::model::ChromaKey {
+                            enabled: true,
+                            color: crate::model::KEY_PRESETS[0].1,
+                            tolerance: 0.28,
+                            softness: 0.14,
+                            spill: 0.55,
+                        };
+                        c.mask = crate::model::Mask {
+                            shape: crate::model::MaskShape::Ellipse,
+                            x: 0.08,
+                            y: -0.05,
+                            w: 0.62,
+                            h: 0.7,
+                            rotation: 0.0,
+                            feather: 0.22,
+                            invert: false,
+                        };
+                        // Keyed, so the rows read as animated and the clip
+                        // body carries its diamonds.
+                        let start = c.start;
+                        c.set_key_at(Param::MaskX, start + 0.4, -0.2, Interp::Ease);
+                        c.set_key_at(Param::MaskX, start + 3.0, 0.24, Interp::Ease);
+                    }
+                }
+                // The two sections sit below the levels and the geometry.
+                // Fold what is above them away *and* scroll their header to
+                // the top of the panel, so the capture shows both whole
+                // rather than however much happened to fit.
+                self.collapsed.insert(Section::Transform);
+                self.collapsed.insert(Section::Speed);
+                self.inspector_scroll = 0.0;
+                let head = self
+                    .inspector_layout(r)
+                    .sections
+                    .iter()
+                    .find(|(s, _)| *s == Section::Key)
+                    .map(|(_, rect)| rect.y0);
+                if let Some(y) = head {
+                    // Land the header a little below the panel's top edge:
+                    // flush against it, its own row is clipped.
+                    let want = y - r.inspector.y0 - 22.0;
+                    self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
+                }
             }
             ShotScenario::TitleClip => {
                 // Build the title through the model the app itself uses, then
@@ -5141,6 +5260,13 @@ impl Widget for VideoEditorApp {
             return Some(CursorIcon::Default);
         }
         // Transport.
+        if self
+            .history_buttons(&r)
+            .iter()
+            .any(|(w, rect)| rect.contains(point) && self.undo.status().can(*w))
+        {
+            return Some(CursorIcon::Pointer);
+        }
         if self.transport_buttons(&r).iter().any(|(_, rect)| rect.contains(point)) {
             return Some(CursorIcon::Pointer);
         }
@@ -5265,6 +5391,18 @@ impl Widget for VideoEditorApp {
     /// bracketing it (Ctrl+Z reverts it OS-wide). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
+    }
+
+    /// The host's reading of the history, which is what the strip's undo and
+    /// redo buttons are drawn from. Scoped to this author exactly as Ctrl+Z
+    /// is, so the buttons and the shortcut can never disagree about whether
+    /// there is anything to go back to.
+    fn set_undo_status(&mut self, status: &ui::UndoStatus) {
+        self.undo.publish(status);
+    }
+
+    fn take_undo_request(&mut self) -> Option<ui::UndoRequest> {
+        self.undo.take_request()
     }
     fn is_focusable(&self) -> bool {
         true
@@ -5676,7 +5814,7 @@ impl VideoEditorApp {
     /// The five transport buttons, named.
     fn a11y_transport(&self) -> AccessNode {
         let cursor = self.focus.pane == Pane::Transport;
-        let buttons: Vec<AccessNode> = TRANSPORT_NAMES
+        let mut buttons: Vec<AccessNode> = TRANSPORT_NAMES
             .iter()
             .enumerate()
             .map(|(i, (action, name))| {
@@ -5698,6 +5836,25 @@ impl VideoEditorApp {
                     })
             })
             .collect();
+        // Undo / redo, exported only when the strip actually drew them, and
+        // reporting `disabled` exactly when the verb is unavailable. A
+        // control that cannot act must not be focusable — undoing the last
+        // action empties the stack under the control you are standing on,
+        // and a focus ring left on a dead button is how that reads wrong.
+        for (which, _) in self.history_buttons(&self.regions()) {
+            let can = self.undo.status().can(which);
+            buttons.push(
+                AccessNode::new(Role::Button)
+                    .with_name(which.title())
+                    .with_description(self.undo.status().description(which))
+                    .with_key(ui::a11y::hash_key(&which.verb()))
+                    .with_state(AccessState {
+                        focusable: can,
+                        disabled: !can,
+                        ..Default::default()
+                    }),
+            );
+        }
         let mut node = self.a11y_pane(Pane::Transport, buttons);
         // The playhead is a live readout: it changes without focus moving, so
         // it rides on the pane as a value the reader can re-read on demand.
@@ -6393,6 +6550,21 @@ impl VideoEditorApp {
     fn a11y_transport_action(&mut self, action: &ui::a11y::Action, rest: &[u64]) -> bool {
         use ui::a11y::{hash_key, Action};
         let Some(&key) = rest.first() else { return false };
+        // History first: its keys are hashed from the verb, so they cannot
+        // collide with the transport's positional ones.
+        for which in [ui::UndoRequest::Undo, ui::UndoRequest::Redo] {
+            if hash_key(&which.verb()) != key {
+                continue;
+            }
+            return match action {
+                Action::Focus => true,
+                // `request` refuses an unavailable verb, so activating a node
+                // the tree reported disabled does nothing rather than
+                // pretending to.
+                Action::Activate => self.undo.request(which),
+                _ => false,
+            };
+        }
         let Some(i) = (0..TRANSPORT_NAMES.len()).find(|i| hash_key(i) == key) else {
             return false;
         };
@@ -7013,6 +7185,15 @@ impl VideoEditorApp {
         for (action, rect) in self.transport_buttons(r) {
             if rect.contains(p) {
                 self.transport_action(action);
+                return;
+            }
+        }
+        // History. `request` refuses when the verb is unavailable, which is
+        // the same test the drawing makes — there is no second availability
+        // rule here to drift from the first.
+        for (which, rect) in self.history_buttons(r) {
+            if rect.contains(p) {
+                self.undo.request(which);
                 return;
             }
         }
@@ -7714,15 +7895,14 @@ impl VideoEditorApp {
             }
         }
         // Whether this Open is throwing a timeline away. If it is, the notice
-        // says the way back — the editor is undoable and nothing on screen
-        // ever said so, which makes an accidental Open feel final when it is
-        // not. Undo itself is host-owned (the toolkit brackets the boundary
-        // this dispatch records), so what the app can honestly offer is the
-        // key, at the moment it matters.
+        // says the way back, because an accidental Open otherwise feels final
+        // when it is not. It now names the control rather than only the key:
+        // the transport strip carries a real Undo button, and this dispatch
+        // records the boundary it reverts.
         let replaced = !self.project_is_empty();
         let mut notice = Self::opened_notice(&path, &project);
         if replaced {
-            notice.push_str(" · Ctrl+Z to go back");
+            notice.push_str(" · Undo to go back");
         }
         self.project_notice = Some(notice);
 
@@ -8995,6 +9175,27 @@ impl VideoEditorApp {
             let col = if is_play { on_fill(theme, bg).1 } else { c.text_primary };
             self.draw_transport_icon(scene, tf, action, rect.center(), col);
         }
+        // Undo / redo. Ghost squares rather than the transport's filled
+        // circles: nothing here moves the playhead, and the difference in
+        // shape is what says so before the icon is read.
+        for (which, rect) in self.history_buttons(r) {
+            let can = self.undo.status().can(which);
+            let icon = match which {
+                ui::UndoRequest::Undo => ui::icons::Icon::Undo2,
+                ui::UndoRequest::Redo => ui::icons::Icon::Redo2,
+            };
+            let face = ui::widget::ButtonFace::new(rect, "")
+                .ghost()
+                .icon(icon)
+                .radius(6.0)
+                .accessible_name(which.title())
+                // A control that cannot act must not light up under the
+                // pointer — a hover state on a dead button reads as one
+                // that is about to work.
+                .hovered(rect.contains(self.last_mouse) && can)
+                .disabled(!can);
+            ui::widget::Button::paint(scene, tf, tr, theme, &face);
+        }
         // Timecode readout. Each part is drawn only when it fits *whole*
         // inside the transport: a number the pane edge cuts mid-digit does not
         // read as a clipped number, it reads as a shorter one — "00:42:00"
@@ -9013,7 +9214,7 @@ impl VideoEditorApp {
         let (bw, _) = tr.measure_weighted(&big, 18.0, None, TextWeight::Bold);
         let (tw, _) = tr.measure(&total, 13.0, None);
         let (mw, _) = tr.measure(&meta, 11.5, None);
-        let fit = readout_fit(r.transport, bw as f64, tw as f64, mw as f64);
+        let fit = readout_fit(r.transport, self.transport_content_x(r), bw as f64, tw as f64, mw as f64);
         if let Some(x) = fit.big_x {
             text_w(scene, tr, tf, &big, 18.0, c.text_primary, x, r.transport.y0 + 8.0, TextWeight::Bold);
         }
@@ -9459,7 +9660,7 @@ impl VideoEditorApp {
             );
         }
         if l.key_color_y > 0.0 {
-            text(scene, tr, tf, "Key colour", 11.5, c.text_dim, x0, l.key_color_y + 11.0);
+            text(scene, tr, tf, "Key colour", 11.5, c.text_dim, x0, l.key_color_y);
         }
         for (col, rect) in &l.key_colors {
             let on = clip
@@ -10659,9 +10860,20 @@ struct ReadoutFit {
     meta_x: Option<f64>,
 }
 
-fn readout_fit(transport: Rect, big_w: f64, total_w: f64, meta_w: f64) -> ReadoutFit {
+fn readout_fit(
+    transport: Rect,
+    content_x: f64,
+    big_w: f64,
+    total_w: f64,
+    meta_w: f64,
+) -> ReadoutFit {
     let right_edge = transport.x1 - 12.0;
-    let big_x = transport.x0 + 220.0;
+    // `content_x` is where the caller says the strip's right-hand content
+    // may begin — past the history buttons when they are showing. Taking it
+    // as an argument rather than assuming an offset is what keeps the
+    // buttons and the timecode off each other; laid out apart, the readout
+    // drew straight over them.
+    let big_x = transport.x0 + content_x;
     let mut fit = ReadoutFit::default();
     // Nothing at all when even the playhead time would overrun.
     if big_x + big_w > right_edge {
@@ -13707,29 +13919,85 @@ mod tests {
         // Widths in the neighbourhood of the real measurements: an 18px bold
         // "00:23:00" is ~74px, the "/  00:42:00" tail ~62px, the meta ~96px.
         let (big, total, meta) = (74.0, 62.0, 96.0);
-        // Roomy: all three, in order, none overlapping.
-        let wide = readout_fit(Rect::new(0.0, 0.0, 700.0, 58.0), big, total, meta);
-        assert_eq!(wide.big_x, Some(220.0));
-        assert_eq!(wide.total_x, Some(298.0));
+        // On a wide strip the readout starts past the history buttons.
+        let wide = readout_fit(
+            Rect::new(0.0, 0.0, 700.0, 58.0),
+            TRANSPORT_RIGHT_X,
+            big,
+            total,
+            meta,
+        );
+        assert_eq!(wide.big_x, Some(TRANSPORT_RIGHT_X));
+        assert_eq!(wide.total_x, Some(TRANSPORT_RIGHT_X + big + 4.0));
         assert!(wide.meta_x.unwrap() > wide.total_x.unwrap() + total);
-        // The 900x700 case: the pane holds the playhead time but not the
-        // total, so the total goes rather than arriving as "00:4".
-        let mid = readout_fit(Rect::new(268.0, 0.0, 600.0, 58.0), big, total, meta);
+        // The 900x700 case: too narrow for the history buttons, so the
+        // readout gets the space back and the playhead time still fits. The
+        // total does not, and goes rather than arriving as "00:4".
+        let mid = readout_fit(
+            Rect::new(268.0, 0.0, 600.0, 58.0),
+            TRANSPORT_PLAIN_X,
+            big,
+            total,
+            meta,
+        );
         assert_eq!(mid.big_x, Some(488.0), "the playhead time still fits");
         assert_eq!(mid.total_x, None, "and the total is dropped, not clipped");
         assert_eq!(mid.meta_x, None);
         // Narrower still: nothing is drawn rather than a fragment of a time.
-        let tight = readout_fit(Rect::new(0.0, 0.0, 260.0, 58.0), big, total, meta);
+        let tight = readout_fit(
+            Rect::new(0.0, 0.0, 260.0, 58.0),
+            TRANSPORT_PLAIN_X,
+            big,
+            total,
+            meta,
+        );
         assert_eq!(tight, ReadoutFit::default());
-        // Whatever is drawn always ends inside the pane.
+        // Whatever is drawn always ends inside the pane, at either offset.
         for w in [200.0_f64, 260.0, 300.0, 420.0, 500.0, 700.0, 1200.0] {
-            let t = Rect::new(0.0, 0.0, w, 58.0);
-            let f = readout_fit(t, big, total, meta);
-            for (x, width) in [(f.big_x, big), (f.total_x, total), (f.meta_x, meta)] {
-                if let Some(x) = x {
-                    assert!(x + width <= t.x1, "{w}px: a part overruns the transport");
+            for content_x in [TRANSPORT_PLAIN_X, TRANSPORT_RIGHT_X] {
+                let t = Rect::new(0.0, 0.0, w, 58.0);
+                let f = readout_fit(t, content_x, big, total, meta);
+                for (x, width) in [(f.big_x, big), (f.total_x, total), (f.meta_x, meta)] {
+                    if let Some(x) = x {
+                        assert!(x + width <= t.x1, "{w}px: a part overruns the transport");
+                    }
                 }
             }
+        }
+    }
+
+    /// The history buttons are the first thing to go when the strip runs out
+    /// of room, because the playhead time is the reading nothing else on the
+    /// strip carries — and undo keeps its keyboard shortcut either way.
+    ///
+    /// Laid out unconditionally they pushed the timecode off a 900px window
+    /// entirely, which is a worse trade than hiding two buttons.
+    #[test]
+    fn a_narrow_transport_gives_up_the_history_buttons_before_the_timecode() {
+        for w in [420.0_f64, 500.0, 640.0, 760.0, 900.0, 1100.0, 1280.0, 1920.0] {
+            let mut app = VideoEditorApp::new_demo();
+            app.rect = Rect::new(0.0, 0.0, w, 800.0);
+            let r = app.regions();
+            let hist = app.history_buttons(&r);
+            let content = app.transport_content_x(&r);
+            if hist.is_empty() {
+                assert_eq!(content, TRANSPORT_PLAIN_X, "{w}px: the space comes back");
+                continue;
+            }
+            assert_eq!(content, TRANSPORT_RIGHT_X, "{w}px");
+            // Every button is inside the strip, and clear of the space the
+            // readout and the scrubber then start in.
+            for (which, rect) in &hist {
+                assert!(
+                    rect.x0 >= r.transport.x0 && rect.x1 <= r.transport.x0 + content,
+                    "{w}px: {which:?} at {rect:?} is not inside its own slot",
+                );
+            }
+            // And there is still room left for the playhead time beside them.
+            assert!(
+                r.transport.x1 - (r.transport.x0 + content) >= 88.0,
+                "{w}px: the buttons left the timecode nowhere to go",
+            );
         }
     }
 
@@ -14813,6 +15081,128 @@ mod tests {
             l.sections.iter().any(|(s, _)| *s == Section::Transform),
             "but keeps its header, so it can be unfolded again",
         );
+    }
+
+    /// The editor could only ever *say* "Ctrl+Z to go back"; there was no
+    /// API for a widget to read the history, so there was no button to
+    /// press. These prove the one it now draws is honest about when it can
+    /// act — and that it cannot act at any other time.
+    #[test]
+    fn the_history_buttons_are_dead_until_the_host_says_otherwise() {
+        let (mut app, _doc) = app_and_doc();
+        let r = app.regions();
+        let rects = app.history_buttons(&r);
+        assert_eq!(rects.len(), 2, "undo and redo both get a slot");
+        // Nothing published yet: an empty history, so neither can act.
+        for (which, rect) in &rects {
+            assert!(!app.undo.status().can(*which), "{which:?} starts unavailable");
+            assert!(
+                r.transport.contains(rect.center()),
+                "{which:?} is inside the transport strip: {rect:?}",
+            );
+        }
+        // And they do not overlap the transport circles or the scrubber.
+        for (_, t) in app.transport_buttons(&r) {
+            for (_, h) in &rects {
+                assert!(
+                    t.x1 <= h.x0 || h.x1 <= t.x0,
+                    "a history button overlaps a transport button: {h:?} vs {t:?}",
+                );
+            }
+        }
+        let scrub = app.scrubber_rect(&r);
+        for (_, h) in &rects {
+            assert!(h.x1 <= scrub.x0, "the scrubber starts clear of them: {h:?} {scrub:?}");
+        }
+    }
+
+    #[test]
+    fn pressing_undo_asks_the_host_only_when_there_is_something_to_undo() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (_, rect) = app.history_buttons(&r)[0];
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        assert_eq!(
+            app.take_undo_request(),
+            None,
+            "with nothing to undo the button raises no request at all",
+        );
+        // Once the host says there is, the same press does.
+        app.set_undo_status(&ui::UndoStatus {
+            can_undo: true,
+            undo_summary: Some("2 fields".into()),
+            ..Default::default()
+        });
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        assert_eq!(app.take_undo_request(), Some(ui::UndoRequest::Undo));
+        assert_eq!(app.take_undo_request(), None, "and the request is taken once");
+        // Redo is still unavailable, and its button still refuses.
+        let (_, redo) = app.history_buttons(&r)[1];
+        click(&mut app, &mut doc, redo.center().x, redo.center().y);
+        assert_eq!(app.take_undo_request(), None, "redo is separately gated");
+    }
+
+    /// The accessibility node must report `disabled` exactly when the verb is
+    /// unavailable, and must not be focusable then: undoing the last action
+    /// empties the stack under the control the user is standing on, and a
+    /// focus ring left on a dead button is how that reads wrong.
+    #[test]
+    fn the_undo_node_reports_disabled_exactly_when_it_cannot_act() {
+        let (mut app, _doc) = app_and_doc();
+        let find = |app: &VideoEditorApp, name: &str| {
+            fn walk(n: &AccessNode, name: &str, out: &mut Option<AccessNode>) {
+                if n.name.as_deref() == Some(name) {
+                    *out = Some(n.clone());
+                }
+                for k in &n.children {
+                    walk(k, name, out);
+                }
+            }
+            let mut found = None;
+            walk(&app.a11y_transport(), name, &mut found);
+            found.unwrap_or_else(|| panic!("{name} is in the transport tree"))
+        };
+
+        let node = find(&app, "Undo");
+        assert!(node.state.disabled, "an empty history disables the node");
+        assert!(!node.state.focusable, "and takes it out of the focus order");
+        assert_eq!(
+            node.description.clone().unwrap_or_default(),
+            "Nothing to undo",
+            "the reader hears the honest reason, not a described action",
+        );
+
+        app.set_undo_status(&ui::UndoStatus {
+            can_undo: true,
+            undo_summary: Some("2 fields".into()),
+            ..Default::default()
+        });
+        let node = find(&app, "Undo");
+        assert!(!node.state.disabled);
+        assert!(node.state.focusable);
+        let d = node.description.clone().unwrap_or_default().to_string();
+        assert!(d.contains("2 fields"), "and hears what it would revert: {d:?}");
+        // Redo has not become available just because undo did.
+        assert!(find(&app, "Redo").state.disabled);
+    }
+
+    #[test]
+    fn activating_the_undo_node_raises_the_same_request_a_click_does() {
+        let (mut app, _doc) = app_and_doc();
+        app.set_undo_status(&ui::UndoStatus { can_undo: true, ..Default::default() });
+        let key = ui::a11y::hash_key(&ui::UndoRequest::Undo.verb());
+        assert!(app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
+        assert_eq!(app.take_undo_request(), Some(ui::UndoRequest::Undo));
+        // With the history empty again the same activation refuses.
+        app.set_undo_status(&ui::UndoStatus::empty());
+        assert!(!app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
+        assert_eq!(app.take_undo_request(), None);
+        // And the transport's own buttons still work, so the new key lookup
+        // has not shadowed them.
+        let play = ui::a11y::hash_key(&2usize);
+        let before = app.playing;
+        assert!(app.a11y_transport_action(&ui::a11y::Action::Activate, &[play]));
+        assert_ne!(app.playing, before, "play/pause still activates");
     }
 
     /// The whole point of gating these two sections' controls: an unkeyed,
