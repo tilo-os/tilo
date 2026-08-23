@@ -2703,6 +2703,14 @@ impl WordProcessorWidget {
         }
     }
 
+    /// Bring the block the caret sits in into view. Used by the document-edge
+    /// motions, which can land the caret pages away from the current scroll
+    /// position; line-relative motion never leaves the visible block.
+    fn scroll_caret_into_view(&mut self) {
+        let bid = self.inner.caret().block.clone();
+        self.scroll_to_block(&bid);
+    }
+
     fn find_jump(&mut self, delta: i32, state: &AutoCommit) {
         if self.find_matches.is_empty() {
             return;
@@ -6570,14 +6578,27 @@ impl Widget for WordProcessorWidget {
                         }
                         motion = true;
                     }
+                    // Home/End are line-relative; with Control they are
+                    // document-wide (and scroll the destination into view,
+                    // which can be a page away).
                     Key::Named(NamedKey::Home) => {
                         self.extend_or_clear(shift);
-                        self.inner.move_home();
+                        if ctrl {
+                            self.inner.move_doc_start(state);
+                            self.scroll_caret_into_view();
+                        } else {
+                            self.inner.move_home();
+                        }
                         motion = true;
                     }
                     Key::Named(NamedKey::End) => {
                         self.extend_or_clear(shift);
-                        self.inner.move_end(state);
+                        if ctrl {
+                            self.inner.move_doc_end(state);
+                            self.scroll_caret_into_view();
+                        } else {
+                            self.inner.move_end(state);
+                        }
                         motion = true;
                     }
                     Key::Named(NamedKey::Space) => {
@@ -9430,10 +9451,135 @@ mod tests {
 
     /// Drive a real named-key press (e.g. Escape) through `handle_event`.
     fn press_named(wp: &mut WordProcessorWidget, state: &mut ui::State, key: NamedKey) {
+        press_named_mods(wp, state, key, Modifiers::default());
+    }
+
+    // ---- document-edge caret motion (Ctrl+Home / Ctrl+End) -------------------
+
+    fn ctrl_held() -> Modifiers {
+        Modifiers::from(winit::keyboard::ModifiersState::CONTROL)
+    }
+
+    fn ctrl_shift_held() -> Modifiers {
+        Modifiers::from(winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT)
+    }
+
+    /// Ordered block ids straight out of the document, so caret assertions name
+    /// concrete blocks rather than "wherever the caret happens to be".
+    fn block_ids(wp: &WordProcessorWidget, state: &ui::State) -> Vec<String> {
+        let c = wp.model().containers.clone().unwrap();
+        qdoc::model::blocks_in_order(&state.doc, &c)
+    }
+
+    /// A three-paragraph document, caret left in the middle one at offset 3.
+    /// Returns the ordered block ids.
+    fn three_paragraph_doc(wp: &mut WordProcessorWidget, state: &mut ui::State) -> Vec<String> {
+        wp.model_mut().insert_str(&mut state.doc, "first paragraph");
+        wp.model_mut().enter(&mut state.doc);
+        wp.model_mut().insert_str(&mut state.doc, "the middle paragraph is the longest one");
+        wp.model_mut().enter(&mut state.doc);
+        wp.model_mut().insert_str(&mut state.doc, "last");
+        pipeline_draw(wp, state, 1000, 700);
+        assert_eq!(
+            wp.model().block_texts(&state.doc),
+            vec![
+                "first paragraph".to_string(),
+                "the middle paragraph is the longest one".to_string(),
+                "last".to_string(),
+            ],
+            "fixture is a three-paragraph document"
+        );
+        let ids = block_ids(wp, state);
+        wp.model_mut().set_caret(Caret { block: ids[1].clone(), offset: 3 });
+        ids
+    }
+
+    /// Ctrl+End is document motion, not line motion: from the middle paragraph
+    /// the caret lands at the last position of the LAST block.
+    #[test]
+    fn ctrl_end_moves_the_caret_to_the_end_of_the_document() {
+        let (mut state, mut wp) = bound();
+        let ids = three_paragraph_doc(&mut wp, &mut state);
+
+        press_named_mods(&mut wp, &mut state, NamedKey::End, ctrl_held());
+
+        let caret = wp.model().caret().clone();
+        assert_eq!(
+            caret,
+            Caret { block: ids[2].clone(), offset: "last".chars().count() },
+            "Ctrl+End leaves the block it started in and lands at the document end"
+        );
+        assert!(!wp.model().has_selection(), "Ctrl+End without Shift collapses any selection");
+    }
+
+    /// Ctrl+Home is the mirror: the first position of the FIRST block.
+    #[test]
+    fn ctrl_home_moves_the_caret_to_the_start_of_the_document() {
+        let (mut state, mut wp) = bound();
+        let ids = three_paragraph_doc(&mut wp, &mut state);
+
+        press_named_mods(&mut wp, &mut state, NamedKey::Home, ctrl_held());
+
+        assert_eq!(
+            wp.model().caret().clone(),
+            Caret { block: ids[0].clone(), offset: 0 },
+            "Ctrl+Home lands at the start of the first block"
+        );
+        assert!(!wp.model().has_selection(), "Ctrl+Home without Shift collapses any selection");
+    }
+
+    /// Shift+Ctrl+End selects from the caret to the end of the document — the
+    /// whole span, across blocks, not just the tail of the current line.
+    #[test]
+    fn shift_ctrl_end_selects_to_the_end_of_the_document() {
+        let (mut state, mut wp) = bound();
+        let ids = three_paragraph_doc(&mut wp, &mut state);
+
+        press_named_mods(&mut wp, &mut state, NamedKey::End, ctrl_shift_held());
+
+        let (from, to) = wp.model().selection_span(&state.doc).expect("Shift+Ctrl+End leaves a selection");
+        assert_eq!(from, Caret { block: ids[1].clone(), offset: 3 }, "the selection starts where the caret was");
+        assert_eq!(
+            to,
+            Caret { block: ids[2].clone(), offset: "last".chars().count() },
+            "and runs to the end of the last block"
+        );
+    }
+
+    /// The fix must not over-reach: a plain End still stops at the end of the
+    /// block the caret is in, and never jumps to the end of the document.
+    #[test]
+    fn plain_end_still_stops_at_the_end_of_the_line() {
+        let (mut state, mut wp) = bound();
+        let ids = three_paragraph_doc(&mut wp, &mut state);
+
+        press_named(&mut wp, &mut state, NamedKey::End);
+
+        let caret = wp.model().caret().clone();
+        assert_eq!(
+            caret,
+            Caret {
+                block: ids[1].clone(),
+                offset: "the middle paragraph is the longest one".chars().count(),
+            },
+            "plain End stays on its own line"
+        );
+        assert_ne!(caret.block, ids[2], "plain End does not run to the document end");
+
+        // And plain Home is likewise still line-relative.
+        press_named(&mut wp, &mut state, NamedKey::Home);
+        assert_eq!(
+            wp.model().caret().clone(),
+            Caret { block: ids[1].clone(), offset: 0 },
+            "plain Home stays on its own line"
+        );
+    }
+
+    /// As [`press_named`], but with modifiers held (Ctrl / Shift).
+    fn press_named_mods(wp: &mut WordProcessorWidget, state: &mut ui::State, key: NamedKey, mods: Modifiers) {
         use winit::keyboard::{NativeKeyCode, PhysicalKey};
         let taffy: TaffyTree<()> = TaffyTree::new();
         let node = NodeId::new(0);
-        let mods = Modifiers::default();
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };

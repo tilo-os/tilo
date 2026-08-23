@@ -2402,6 +2402,24 @@ impl WordProcessor {
         self.caret.offset = self.block_len(state, &self.caret.block);
     }
 
+    /// Move the caret to the very start of the document: offset 0 of the first
+    /// block (Ctrl+Home). Region-aware, like the other movers — in a header or
+    /// footer it is that region's first block.
+    pub fn move_doc_start(&mut self, state: &AutoCommit) {
+        if let Some(first) = self.ordered_blocks(state).first().cloned() {
+            self.caret = Caret { block: first, offset: 0 };
+        }
+    }
+
+    /// Move the caret to the very end of the document: the last position of the
+    /// last block (Ctrl+End). Region-aware, like [`Self::move_doc_start`].
+    pub fn move_doc_end(&mut self, state: &AutoCommit) {
+        if let Some(last) = self.ordered_blocks(state).last().cloned() {
+            let offset = self.block_len(state, &last);
+            self.caret = Caret { block: last, offset };
+        }
+    }
+
     /// Move the caret up/down by `delta` blocks (block-granular Up/Down).
     pub fn move_block_relative(&mut self, state: &AutoCommit, delta: i32) {
         let blocks = self.ordered_blocks(state);
