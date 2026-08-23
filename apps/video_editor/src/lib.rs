@@ -31,6 +31,7 @@ pub mod export;
 pub mod gpu;
 pub mod media;
 pub mod model;
+pub mod param;
 pub mod portal;
 pub mod preview;
 pub mod probe;

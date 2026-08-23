@@ -83,6 +83,22 @@ pub struct ClipData {
     /// (add / remove / reorder an effect) replays byte-identically.
     #[serde(default)]
     pub effects: Vec<crate::model::ClipEffect>,
+    /// Geometry: crop, scale, rotation, position, anchor. Absent on the
+    /// wire for a peer that predates it, which `serde(default)` reads as
+    /// the identity aspect-fit — the placement that peer is already
+    /// drawing, so the two do not diverge visually.
+    #[serde(default)]
+    pub transform: crate::model::Transform,
+    /// Playback rate and direction. Defaults to normal speed.
+    #[serde(default)]
+    pub speed: crate::model::Speed,
+    /// Keyframe curves, carried whole: adding, moving or deleting a key is
+    /// a new clip write, so a curve edit replays as one atomic change.
+    #[serde(default)]
+    pub anim: crate::param::ClipAnimation,
+    /// Clip-local markers.
+    #[serde(default)]
+    pub markers: Vec<crate::model::Marker>,
 }
 
 impl ClipData {
@@ -103,8 +119,12 @@ impl ClipData {
             saturation: c.filters.saturation,
             fade_in: c.fade_in,
             fade_out: c.fade_out,
-            transition_duration: 0.0,
+            transition_duration: c.transition_duration,
             effects: c.effects.clone(),
+            transform: c.transform,
+            speed: c.speed,
+            anim: c.anim.clone(),
+            markers: c.markers.clone(),
         }
     }
 
@@ -130,8 +150,12 @@ impl ClipData {
             },
             fade_in: self.fade_in,
             fade_out: self.fade_out,
-            transition_duration: 0.0,
+            transition_duration: self.transition_duration,
             effects: self.effects.clone(),
+            transform: self.transform,
+            speed: self.speed,
+            anim: self.anim.clone(),
+            markers: self.markers.clone(),
         })
     }
 }
@@ -192,6 +216,11 @@ pub struct MediaData {
     pub palette: u8,
     pub path: String,
     pub hydration: String,
+    /// A title's text and styling. `None` for every decoded source, and
+    /// absent on the wire for a peer that predates titles — which reads as
+    /// `None`, i.e. an ordinary reference.
+    #[serde(default)]
+    pub text: Option<crate::model::TextSource>,
 }
 
 impl MediaData {
@@ -207,6 +236,7 @@ impl MediaData {
             palette: m.palette,
             path: m.path.clone(),
             hydration: m.hydration.as_str().to_string(),
+            text: m.text.clone(),
         }
     }
 
@@ -222,6 +252,7 @@ impl MediaData {
             palette: self.palette,
             path: self.path.clone(),
             hydration: crate::media::Hydration::from_str(&self.hydration),
+            text: self.text.clone(),
         })
     }
 }
@@ -233,6 +264,10 @@ pub struct ProjectMeta {
     pub fps: f64,
     pub width: u32,
     pub height: u32,
+    /// Timeline markers, in absolute seconds. They live with the project
+    /// settings because that is the document map they are stored in.
+    #[serde(default)]
+    pub markers: Vec<crate::model::Marker>,
 }
 
 impl ProjectMeta {
@@ -242,6 +277,7 @@ impl ProjectMeta {
             fps: p.fps,
             width: p.width,
             height: p.height,
+            markers: p.markers.clone(),
         }
     }
 
@@ -250,6 +286,7 @@ impl ProjectMeta {
         p.fps = self.fps;
         p.width = self.width;
         p.height = self.height;
+        p.markers = self.markers.clone();
         p
     }
 }
