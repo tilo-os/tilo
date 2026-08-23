@@ -506,6 +506,203 @@ pub fn sample_project() -> Project {
 mod tests {
     use super::*;
 
+    use crate::model::{Speed, TextAlign, TextSource, Transform};
+    use crate::param::{Interp, Param};
+
+    /// Write `p` and read it straight back — the round-trip every peer
+    /// makes, and the one an autosaved project makes on reopen.
+    fn round_trip(p: &Project) -> Project {
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, p);
+        VideoDoc::load_project(&doc)
+    }
+
+    /// A project with one clip, so a field can be set on it and chased
+    /// through the document.
+    fn one_clip() -> (Project, Uuid) {
+        let mut p = Project::new("rt");
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "v.mp4".into(),
+            kind: MediaKind::Video,
+            duration: 30.0,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            path: "media/v.mp4".into(),
+            hydration: Hydration::Local,
+            ..Default::default()
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(crate::model::Track {
+            id: tid,
+            name: "V1".into(),
+            index: 1,
+            ..Default::default()
+        });
+        let cid = p.add_clip(tid, mid, 0.0).expect("media exists");
+        (p, cid)
+    }
+
+    #[test]
+    fn a_transform_survives_the_document() {
+        let (mut p, cid) = one_clip();
+        let want = Transform {
+            scale_x: 0.4,
+            scale_y: 0.55,
+            pos_x: -0.2,
+            pos_y: 0.31,
+            rotation: -14.5,
+            anchor_x: 0.1,
+            anchor_y: 0.9,
+            crop_left: 0.05,
+            crop_right: 0.06,
+            crop_top: 0.07,
+            crop_bottom: 0.08,
+        };
+        p.clip_mut(cid).unwrap().transform = want;
+        let back = round_trip(&p);
+        assert_eq!(back.clip(cid).unwrap().transform, want);
+    }
+
+    #[test]
+    fn speed_survives_the_document_in_both_directions() {
+        let (mut p, cid) = one_clip();
+        p.clip_mut(cid).unwrap().speed = Speed::new(2.5, true);
+        let back = round_trip(&p);
+        let got = back.clip(cid).unwrap();
+        assert_eq!(got.speed, Speed::new(2.5, true));
+        assert_eq!(got.duration(), p.clip(cid).unwrap().duration());
+    }
+
+    #[test]
+    fn keyframe_curves_survive_the_document_with_their_interpolation() {
+        let (mut p, cid) = one_clip();
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.set_key_at(Param::Opacity, 0.0, 0.0, Interp::Ease);
+            c.set_key_at(Param::Opacity, 3.0, 1.0, Interp::Hold);
+            c.set_key_at(Param::PosX, 1.0, -0.5, Interp::Linear);
+        }
+        let back = round_trip(&p);
+        let got = back.clip(cid).unwrap();
+        assert!(got.anim.is_animated(Param::Opacity));
+        assert!(got.anim.is_animated(Param::PosX));
+        let keys = &got.anim.track(Param::Opacity).unwrap().keys;
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].interp, Interp::Ease, "the shape of the curve comes back too");
+        assert_eq!(keys[1].interp, Interp::Hold);
+        // And the sampled value is identical, which is what actually matters.
+        for t in [0.0, 0.7, 1.5, 2.9, 5.0] {
+            assert_eq!(
+                got.param_at(Param::Opacity, t),
+                p.clip(cid).unwrap().param_at(Param::Opacity, t),
+                "the curve reads the same at {t}s",
+            );
+        }
+    }
+
+    #[test]
+    fn markers_survive_on_both_the_project_and_the_clip() {
+        let (mut p, cid) = one_clip();
+        p.add_marker(4.0, "act two", 3);
+        p.clip_mut(cid).unwrap().add_marker(2.0, "beat", 5).expect("inside");
+        let back = round_trip(&p);
+        assert_eq!(back.markers.len(), 1);
+        assert_eq!(back.markers[0].name, "act two");
+        assert_eq!(back.markers[0].palette, 3);
+        let cm = &back.clip(cid).unwrap().markers;
+        assert_eq!(cm.len(), 1);
+        assert_eq!(cm[0].name, "beat");
+        assert_eq!(cm[0].t, 2.0, "still clip-local");
+    }
+
+    #[test]
+    fn a_title_survives_the_document_with_its_styling() {
+        let mut p = Project::new("t");
+        let mid = Uuid::new_v4();
+        let text = TextSource {
+            content: "Two\nlines".into(),
+            size: 0.22,
+            color: [0.9, 0.1, 0.4, 0.8],
+            align: TextAlign::Right,
+            font: "Some Family".into(),
+            bold: false,
+            italic: true,
+            backdrop: 0.35,
+        };
+        p.media.push(MediaItem {
+            id: mid,
+            name: "Title".into(),
+            kind: MediaKind::Text,
+            duration: 5.0,
+            text: Some(text.clone()),
+            ..Default::default()
+        });
+        let back = round_trip(&p);
+        let m = back.media(mid).expect("the title is in the bin");
+        assert_eq!(m.kind, MediaKind::Text);
+        assert_eq!(m.text.as_ref(), Some(&text));
+    }
+
+    #[test]
+    fn clearing_a_title_replicates_as_a_change_rather_than_as_silence() {
+        // Turning a title back into a plain reference has to *remove* the
+        // text, or a peer that already has it would keep drawing it.
+        let mut p = Project::new("t");
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "Title".into(),
+            kind: MediaKind::Text,
+            text: Some(TextSource::new("gone soon")),
+            ..Default::default()
+        });
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, &p);
+        assert!(VideoDoc::load_project(&doc).media(mid).unwrap().text.is_some());
+
+        p.media[0].text = None;
+        p.media[0].kind = MediaKind::Video;
+        VideoDoc::upsert_media(&mut doc, &p.media[0]);
+        assert_eq!(
+            VideoDoc::load_project(&doc).media(mid).unwrap().text,
+            None,
+            "the title's text is gone from the document, not merely ignored",
+        );
+    }
+
+    #[test]
+    fn a_document_written_before_any_of_this_still_loads_unchanged() {
+        // The compatibility contract: every new key is absent in an older
+        // document, and every default is the behaviour that document had.
+        let (p, cid) = one_clip();
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, &p);
+        // Strip the new keys, leaving exactly what an older peer wrote.
+        let clips = VideoDoc::map(&mut doc, "clips");
+        let obj = VideoDoc::ensure_child(&mut doc, &clips, &cid.to_string());
+        for key in ["transform", "speed_rate", "speed_reverse", "anim", "markers"] {
+            let _ = doc.delete(&obj, key);
+        }
+        let media = VideoDoc::map(&mut doc, "media");
+        let mobj = VideoDoc::ensure_child(&mut doc, &media, &p.media[0].id.to_string());
+        let _ = doc.delete(&mobj, "text");
+        let proj = VideoDoc::map(&mut doc, "project");
+        let _ = doc.delete(&proj, "markers");
+
+        let back = VideoDoc::load_project(&doc);
+        let c = back.clip(cid).expect("the clip still loads");
+        assert!(c.transform.is_identity(), "no geometry means the aspect-fit placement");
+        assert!(c.speed.is_normal(), "no speed means normal speed");
+        assert!(c.anim.is_empty(), "no curves");
+        assert!(c.markers.is_empty());
+        assert!(back.markers.is_empty());
+        assert_eq!(back.media(p.media[0].id).unwrap().text, None);
+        assert_eq!(c.duration(), p.clip(cid).unwrap().duration(), "and the same length");
+    }
+
     #[test]
     fn a_document_holding_only_imported_media_is_not_empty() {
         // Import writes the `media` map and nothing else. A document in that
