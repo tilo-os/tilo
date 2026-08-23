@@ -997,6 +997,11 @@ impl<Row: 'static> Widget for DataTable<Row> {
         // pair it with the text the reader reads off the screen.
         let row_count = self.view.len();
         let col_count = self.columns.len();
+        // The keyboard cursor (Up/Down move it, Enter activates it) is the
+        // table's *active descendant*: when the table holds keyboard focus, the
+        // export layer puts the reader on that row rather than on the table as a
+        // whole, so arrowing down reads each row instead of repeating "table".
+        let cursor = if self.selectable { selected_pos } else { None };
         let rows: Vec<AccessNode> = (0..row_count)
             .map(|ri| {
                 let selected = self.selectable && self.selection.is_selected(ri);
@@ -1014,6 +1019,11 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     .with_position(ri + 1, row_count)
                     .with_state(AccessState {
                         selected,
+                        // Rows are addressed by position, so they carry no
+                        // explicit key: their ordinal *is* the identity the user
+                        // means, and it stays correct across a re-sort.
+                        focusable: self.selectable,
+                        focused: cursor == Some(ri),
                         ..Default::default()
                     })
                     .with_children(cells)
@@ -1021,6 +1031,59 @@ impl<Row: 'static> Widget for DataTable<Row> {
             .collect();
         node = node.with_children(rows);
         Some(node)
+    }
+
+    /// Route an assistive technology's action to the **row** it was aimed at.
+    ///
+    /// The table paints its own rows and cells, so they reach an AT as synthetic
+    /// nodes rather than as child widgets; without this, an AT could describe
+    /// row 4 but activating it would land a click in the middle of the table.
+    /// `key_path` is `[row]` for a row and `[row, column]` for a cell — the
+    /// table acts on the row either way, since a cell has no independent
+    /// behaviour here.
+    ///
+    /// Rows carry no explicit key, so the path element is the row's display
+    /// index (its ordinal among the table's synthetic children), which is the
+    /// same index `on_row_click` / `on_activate` report.
+    fn perform_action_at(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+        state: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+        // Empty path: the table itself, not a row — nothing table-specific to do.
+        let Some(&row_key) = key_path.first() else {
+            return self.perform_action(action, state, path);
+        };
+        // A read-only table's rows aren't operable.
+        if !self.selectable {
+            return false;
+        }
+        let row = row_key as usize;
+        // An id an AT held across a change can name a row that no longer
+        // exists. Drop it — acting on whatever now sits at that index would
+        // operate on the wrong record.
+        if row >= self.view.len() {
+            return false;
+        }
+        match action {
+            // The host moves keyboard focus to the table; we move our own
+            // cursor to the requested row, which is the half only we can do.
+            Action::Focus => {
+                self.selection.move_to(row, false);
+                true
+            }
+            Action::Activate | Action::ToggleCheck => {
+                self.selection.move_to(row, false);
+                if let Some(cb) = &mut self.on_activate {
+                    cb(row);
+                }
+                true
+            }
+            _ => false,
+        }
     }
 }
 
