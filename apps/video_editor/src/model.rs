@@ -366,6 +366,34 @@ impl ChromaKey {
         ((rgb[2] - y) / 1.8556, (rgb[0] - y) / 1.5748)
     }
 
+    /// Below this brightness a pixel's hue stops meaning anything — the
+    /// chroma left in near-black is noise — so the normalisation stops
+    /// dividing and lets those pixels fall out of the key rather than
+    /// amplifying their noise into it.
+    pub const DARK_FLOOR: f64 = 0.06;
+
+    /// Chroma normalised by brightness.
+    ///
+    /// Plain Cb/Cr scale with exposure: a shadowed patch of a green screen
+    /// has the same *hue* as a lit one and a much smaller Cb/Cr, so an
+    /// absolute chroma distance keys the lit cloth and keeps the shadows —
+    /// the classic green-screen failure. Dividing by luma removes the
+    /// exposure term, so one tolerance covers the whole cloth.
+    pub fn norm_chroma(rgb: [f64; 3]) -> (f64, f64) {
+        let y = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]).max(Self::DARK_FLOOR);
+        let (cb, cr) = Self::chroma(rgb);
+        (cb / y, cr / y)
+    }
+
+    /// How far `rgb` sits from the key colour in the space the matte is
+    /// cut in. `tolerance` and `softness` are measured in these units, so
+    /// this is the number to reason about when choosing either.
+    pub fn distance(&self, rgb: [f64; 3]) -> f64 {
+        let (pb, pr) = Self::norm_chroma(rgb);
+        let (kb, kr) = Self::norm_chroma(self.color);
+        ((pb - kb).powi(2) + (pr - kr).powi(2)).sqrt()
+    }
+
     /// How much of a pixel survives this key: 0 = removed, 1 = kept.
     ///
     /// The CPU twin of the shader's keyer, so a matte can be reasoned about
@@ -374,9 +402,7 @@ impl ChromaKey {
         if !self.is_active() {
             return 1.0;
         }
-        let (pb, pr) = Self::chroma(rgb);
-        let (kb, kr) = Self::chroma(self.color);
-        let d = ((pb - kb).powi(2) + (pr - kr).powi(2)).sqrt();
+        let d = self.distance(rgb);
         let lo = self.tolerance.max(0.0);
         let hi = lo + self.softness.max(0.0);
         if d <= lo {
@@ -1888,6 +1914,330 @@ impl Project {
         let id = clip.id;
         self.clips.push(clip);
         id
+    }
+}
+
+#[cfg(test)]
+mod key_and_mask_tests {
+    use super::*;
+    use crate::param::{Interp, Param};
+
+    const GREEN: [f64; 3] = [0.06, 0.72, 0.20];
+
+    fn keyer() -> ChromaKey {
+        ChromaKey { enabled: true, ..ChromaKey::default() }
+    }
+
+    #[test]
+    fn an_inactive_key_removes_nothing_at_all() {
+        let off = ChromaKey::default();
+        assert!(!off.enabled);
+        assert_eq!(off.coverage(GREEN), 1.0, "a key that is off keeps its own colour");
+        // On, but wound to zero tolerance: still nothing, and it says so.
+        let zero = ChromaKey { enabled: true, tolerance: 0.0, ..ChromaKey::default() };
+        assert!(!zero.is_active());
+        assert_eq!(zero.coverage(GREEN), 1.0);
+    }
+
+    #[test]
+    fn the_key_colour_goes_and_an_unrelated_colour_stays() {
+        let k = keyer();
+        assert_eq!(k.coverage(GREEN), 0.0, "the colour being keyed is removed outright");
+        for keep in [[0.9, 0.5, 0.15], [0.8, 0.1, 0.7], [0.1, 0.2, 0.9]] {
+            assert_eq!(k.coverage(keep), 1.0, "{keep:?} is nothing like the key");
+        }
+    }
+
+    /// The reason the key measures chroma and not RGB distance: one green
+    /// screen is never one green. A lit patch and a shadowed patch of the
+    /// same cloth are far apart in RGB and close together in hue, and both
+    /// have to key.
+    #[test]
+    fn brightness_does_not_change_whether_a_colour_keys() {
+        let k = keyer();
+        for gain in [0.2_f64, 0.35, 0.6, 1.0, 1.35] {
+            let shade = [
+                (GREEN[0] * gain).clamp(0.0, 1.0),
+                (GREEN[1] * gain).clamp(0.0, 1.0),
+                (GREEN[2] * gain).clamp(0.0, 1.0),
+            ];
+            assert_eq!(
+                k.coverage(shade),
+                0.0,
+                "green at {gain}× exposure is still the same green: {shade:?}",
+            );
+        }
+        // And an RGB-distance keyer would have kept the dark one: prove the
+        // shades really are far apart in plain RGB, so the invariance above
+        // is the keyer's doing and not an accident of the numbers.
+        let dark = [GREEN[0] * 0.2, GREEN[1] * 0.2, GREEN[2] * 0.2];
+        let rgb_gap: f64 = GREEN
+            .iter()
+            .zip(&dark)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        assert!(rgb_gap > 0.3, "the two shades are {rgb_gap:.2} apart in RGB");
+    }
+
+    /// The one place brightness *does* decide the matte: near black there
+    /// is no reliable hue left, so those pixels are kept rather than having
+    /// their noise amplified into the key.
+    #[test]
+    fn near_black_falls_out_of_the_key_instead_of_keying_on_noise() {
+        let k = keyer();
+        assert_eq!(k.coverage([0.0, 0.0, 0.0]), 1.0, "black is not a colour to key on");
+        let almost = [GREEN[0] * 0.02, GREEN[1] * 0.02, GREEN[2] * 0.02];
+        assert!(
+            k.coverage(almost) > 0.0,
+            "a near-black pixel is not confidently green: {almost:?}",
+        );
+    }
+
+    #[test]
+    fn softness_gives_the_edge_partial_coverage_rather_than_a_step() {
+        // A green diluted halfway toward grey: near the key but not on it.
+        let edge = [
+            (GREEN[0] + 0.5) / 2.0,
+            (GREEN[1] + 0.5) / 2.0,
+            (GREEN[2] + 0.5) / 2.0,
+        ];
+        // Place the band around wherever that colour actually falls, read
+        // off the keyer itself rather than recomputed here — a test that
+        // re-derives the distance would pass while the keyer was wrong.
+        let d = keyer().distance(edge);
+        assert!(d > 0.05, "the diluted green is off the key: {d:.3}");
+        let hard = ChromaKey { tolerance: d * 0.5, softness: 0.0, ..keyer() };
+        let soft = ChromaKey { tolerance: d * 0.5, softness: d, ..keyer() };
+        assert_eq!(hard.coverage(edge), 1.0, "with no softness the edge is a step");
+        let partial = soft.coverage(edge);
+        assert!(
+            partial > 0.0 && partial < 1.0,
+            "softness must give the edge a partial matte, got {partial}",
+        );
+        // And the far side of the soft band is still fully kept.
+        assert_eq!(soft.coverage([0.5, 0.5, 0.5]), 1.0, "neutral grey is nowhere near");
+    }
+
+    #[test]
+    fn despill_pulls_the_key_hue_out_without_moving_brightness() {
+        let k = ChromaKey { spill: 1.0, ..keyer() };
+        // A skin-ish tone with a wash of the key green over it.
+        let tinted = [0.62, 0.58, 0.36];
+        let clean = k.despilled(tinted);
+        let luma = |c: [f64; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        assert!(
+            (luma(clean) - luma(tinted)).abs() < 0.02,
+            "brightness is left alone: {:.3} → {:.3}",
+            luma(tinted),
+            luma(clean),
+        );
+        let toward_key = |c: [f64; 3]| {
+            let (kb, kr) = ChromaKey::chroma(k.color);
+            let n = (kb * kb + kr * kr).sqrt();
+            let (pb, pr) = ChromaKey::chroma(c);
+            (pb * kb + pr * kr) / n
+        };
+        assert!(
+            toward_key(clean) < toward_key(tinted) - 1e-3,
+            "the key hue is reduced: {:.4} → {:.4}",
+            toward_key(tinted),
+            toward_key(clean),
+        );
+    }
+
+    #[test]
+    fn despill_leaves_a_colour_leaning_away_from_the_key_untouched() {
+        let k = ChromaKey { spill: 1.0, ..keyer() };
+        // Magenta is the opposite side of the chroma plane from green.
+        let magenta = [0.7, 0.1, 0.6];
+        assert_eq!(k.despilled(magenta), magenta);
+    }
+
+    #[test]
+    fn a_mask_that_is_off_covers_everything() {
+        let m = Mask::default();
+        assert!(!m.is_active());
+        for (u, v) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)] {
+            assert_eq!(m.coverage(u, v, 16.0 / 9.0), 1.0);
+        }
+    }
+
+    #[test]
+    fn an_ellipse_keeps_its_centre_and_drops_its_corners() {
+        let m = Mask { shape: MaskShape::Ellipse, w: 0.5, h: 0.5, feather: 0.1, ..Mask::default() };
+        assert!((m.coverage(0.5, 0.5, 1.0) - 1.0).abs() < 1e-9, "dead centre is kept");
+        assert_eq!(m.coverage(0.02, 0.02, 1.0), 0.0, "a frame corner is outside it");
+        assert_eq!(m.coverage(0.98, 0.5, 1.0), 0.0, "so is the far edge");
+    }
+
+    /// A rect and an ellipse of the same extent must not be the same mask —
+    /// they differ exactly at the corners of the box, which is the only
+    /// place the shape choice shows.
+    #[test]
+    fn a_rect_keeps_the_corners_an_ellipse_of_the_same_size_drops() {
+        let base = Mask { w: 0.8, h: 0.8, feather: 0.02, ..Mask::default() };
+        let rect = Mask { shape: MaskShape::Rect, ..base };
+        let ellipse = Mask { shape: MaskShape::Ellipse, ..base };
+        // Just inside the box's corner: inside the rect, outside the ellipse
+        // (the ellipse's radius there is sqrt(2) of its half-extent).
+        let (u, v) = (0.5 + 0.36, 0.5 + 0.36);
+        assert!(rect.coverage(u, v, 1.0) > 0.9, "the rect keeps its corner");
+        assert_eq!(ellipse.coverage(u, v, 1.0), 0.0, "the ellipse does not");
+    }
+
+    #[test]
+    fn feather_ramps_the_edge_instead_of_cutting_it() {
+        let sharp = Mask { shape: MaskShape::Ellipse, w: 0.6, h: 0.6, feather: 0.001, ..Mask::default() };
+        let soft = Mask { feather: 0.6, ..sharp };
+        // Two thirds of the way out along the radius.
+        let (u, v) = (0.5 + 0.3 * 0.8, 0.5);
+        assert!((sharp.coverage(u, v, 1.0) - 1.0).abs() < 1e-6, "unfeathered, still fully inside");
+        let ramped = soft.coverage(u, v, 1.0);
+        assert!(
+            ramped > 0.0 && ramped < 1.0,
+            "feathered, the same point is part-way through the edge: {ramped}",
+        );
+    }
+
+    #[test]
+    fn inverting_a_mask_swaps_what_it_keeps() {
+        let m = Mask { shape: MaskShape::Ellipse, w: 0.5, h: 0.5, feather: 0.1, ..Mask::default() };
+        let holed = Mask { invert: true, ..m };
+        assert!((m.coverage(0.5, 0.5, 1.0) + holed.coverage(0.5, 0.5, 1.0) - 1.0).abs() < 1e-9);
+        assert_eq!(holed.coverage(0.5, 0.5, 1.0), 0.0, "the centre is now the hole");
+        assert_eq!(holed.coverage(0.02, 0.02, 1.0), 1.0, "and the corner is kept");
+    }
+
+    #[test]
+    fn moving_a_mask_moves_what_it_keeps() {
+        let centred = Mask { shape: MaskShape::Ellipse, w: 0.3, h: 0.3, ..Mask::default() };
+        let right = Mask { x: 0.3, ..centred };
+        assert_eq!(right.coverage(0.5, 0.5, 1.0), 0.0, "the centre is no longer inside");
+        assert!(right.coverage(0.8, 0.5, 1.0) > 0.9, "but the point it moved to is");
+    }
+
+    /// A rotated rect has to actually rotate. On a wide frame that only
+    /// works if the rotation happens in aspect-corrected space — otherwise
+    /// the shape shears and a 90° turn is not the same rect stood on end.
+    #[test]
+    fn a_rotated_rect_turns_rather_than_shearing() {
+        let fa = 16.0 / 9.0;
+        let tall = Mask { shape: MaskShape::Rect, w: 0.12, h: 0.8, feather: 0.02, ..Mask::default() };
+        let turned = Mask { rotation: 90.0, ..tall };
+        // A point out along the frame's x axis: outside the upright sliver,
+        // inside it once the sliver is laid on its side. The distance is
+        // scaled by the frame aspect so it matches the shape's own units.
+        let u = 0.5 + 0.3 / fa;
+        assert_eq!(tall.coverage(u, 0.5, fa), 0.0, "outside the narrow upright bar");
+        assert!(turned.coverage(u, 0.5, fa) > 0.9, "inside it once turned on its side");
+        // And the ends of the upright bar are now outside it.
+        assert_eq!(turned.coverage(0.5, 0.5 + 0.3, fa), 0.0);
+    }
+
+    #[test]
+    fn a_mask_fitted_over_a_pip_lands_on_the_pip() {
+        // A quarter-size picture tucked into the top-right corner.
+        let t = Transform::pip(0.3, (1.0, -1.0), 0.04);
+        let m = Mask::over(MaskShape::Ellipse, &t, 16.0 / 9.0, 16.0 / 9.0);
+        assert_eq!(m.shape, MaskShape::Ellipse);
+        assert!((m.x - t.pos_x).abs() < 1e-9, "centred on where the picture went");
+        assert!((m.y - t.pos_y).abs() < 1e-9);
+        assert!((m.w - 0.3).abs() < 1e-6, "and sized to it: {}", m.w);
+        assert!((m.h - 0.3).abs() < 1e-6);
+        // The middle of the inset picture is inside the fitted mask, and the
+        // middle of the frame — where a default mask would have gone — is not.
+        assert!(m.coverage(0.5 + m.x, 0.5 + m.y, 16.0 / 9.0) > 0.9);
+        assert_eq!(m.coverage(0.5, 0.5, 16.0 / 9.0), 0.0);
+    }
+
+    /// A source narrower than the frame is letterboxed at the identity
+    /// transform, so a mask fitted over it must be narrower than the frame
+    /// too — not the full width the frame would suggest.
+    #[test]
+    fn fitting_over_a_narrow_source_follows_the_aspect_fit() {
+        let m = Mask::over(MaskShape::Rect, &Transform::default(), 1.0, 16.0 / 9.0);
+        assert!((m.w - 9.0 / 16.0).abs() < 1e-6, "pillarboxed to the source's aspect: {}", m.w);
+        assert!((m.h - 1.0).abs() < 1e-6, "and full height");
+    }
+
+    fn keyed_clip() -> Clip {
+        Clip {
+            id: Uuid::new_v4(),
+            start: 2.0,
+            in_point: 0.0,
+            out_point: 6.0,
+            key: ChromaKey {
+                enabled: true,
+                tolerance: 0.2,
+                softness: 0.1,
+                spill: 0.4,
+                ..ChromaKey::default()
+            },
+            mask: Mask { shape: MaskShape::Ellipse, ..Mask::default() },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn key_and_mask_read_their_constants_when_nothing_is_animated() {
+        let c = keyed_clip();
+        assert_eq!(c.key_at(3.0), c.key);
+        assert_eq!(c.mask_at(3.0), c.mask);
+    }
+
+    /// The whole reason these are parameters: a mask that cannot move
+    /// cannot follow a subject, and a key that cannot ramp cannot be
+    /// eased in over a shot.
+    #[test]
+    fn keying_a_mask_makes_it_travel_with_the_playhead() {
+        let mut c = keyed_clip();
+        // Clip-local 0 and 4 — the clip starts at timeline 2.0.
+        c.set_key_at(Param::MaskX, 2.0, -0.4, Interp::Linear);
+        c.set_key_at(Param::MaskX, 6.0, 0.4, Interp::Linear);
+        assert!((c.mask_at(2.0).x + 0.4).abs() < 1e-9, "at the head it is left");
+        assert!(c.mask_at(4.0).x.abs() < 1e-9, "half way it is centred");
+        assert!((c.mask_at(6.0).x - 0.4).abs() < 1e-9, "at the tail it is right");
+        // The shape and the invert flag are not animatable and must survive.
+        assert_eq!(c.mask_at(4.0).shape, MaskShape::Ellipse);
+        // And nothing else on the mask drifted.
+        assert!((c.mask_at(4.0).w - c.mask.w).abs() < 1e-9);
+    }
+
+    #[test]
+    fn keying_the_tolerance_ramps_the_matte_open() {
+        let mut c = keyed_clip();
+        c.set_key_at(Param::KeyTolerance, 2.0, 0.0, Interp::Linear);
+        c.set_key_at(Param::KeyTolerance, 6.0, 0.5, Interp::Linear);
+        assert!(!c.key_at(2.0).is_active(), "at the head the key removes nothing");
+        assert!((c.key_at(4.0).tolerance - 0.25).abs() < 1e-9);
+        assert!(c.key_at(6.0).is_active(), "by the tail it is keying");
+        // The key colour is not a curve and must come through untouched.
+        assert_eq!(c.key_at(4.0).color, c.key.color);
+        assert!(c.key_at(4.0).enabled);
+    }
+
+    #[test]
+    fn every_new_parameter_reads_and_writes_the_field_it_names() {
+        let mut c = keyed_clip();
+        for (p, v) in [
+            (Param::KeyTolerance, 0.31),
+            (Param::KeySoftness, 0.17),
+            (Param::KeySpill, 0.62),
+            (Param::MaskX, -0.22),
+            (Param::MaskY, 0.44),
+            (Param::MaskW, 0.71),
+            (Param::MaskH, 1.3),
+            (Param::MaskRotation, 37.0),
+            (Param::MaskFeather, 0.09),
+        ] {
+            c.set_param_const(p, v);
+            assert_eq!(c.param_const(p), Some(v), "{p:?} round-trips through its field");
+            assert!((c.param_at(p, 5.0) - v).abs() < 1e-12, "{p:?} reads back at the playhead");
+        }
+        // The writes landed on the right structures, not on each other.
+        assert!((c.key.tolerance - 0.31).abs() < 1e-12);
+        assert!((c.mask.rotation - 37.0).abs() < 1e-12);
     }
 }
 
