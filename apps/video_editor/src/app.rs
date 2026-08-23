@@ -414,9 +414,11 @@ impl NumField {
             NumField::CropLeft | NumField::CropRight | NumField::CropTop | NumField::CropBottom => {
                 (0.0, 0.9)
             }
-            // A key's tolerance runs the full chroma span it is measured
-            // against, so the far stop keys everything and the near stop
-            // keys nothing — both are legible states rather than dead ends.
+            // Tolerance is measured in normalised chroma, where a clean
+            // plate keys somewhere under 0.3 and the far stop takes out
+            // everything sharing the key's half of the colour wheel. The
+            // near stop keys nothing, which is a legible state, not a dead
+            // end — it is what a key ramped on from zero starts at.
             NumField::KeyTolerance | NumField::KeySoftness => (0.0, 1.0),
             NumField::KeySpill => (0.0, 1.0),
             NumField::MaskX | NumField::MaskY => (-1.0, 1.0),
