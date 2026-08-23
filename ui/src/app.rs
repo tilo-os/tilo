@@ -531,7 +531,23 @@ impl App {
             last_stable_metadata: None,
             collab_manager: CollaborationManager::new(),
             local_author: crate::collaboration::local_user_id(),
-            presence_ctx: PresenceCtx::empty(),
+            presence_ctx: {
+                // What a frame this app publishes comes back stamped
+                // with when the broker fans it to another app the same
+                // person has open. Both of the broker's own answers,
+                // in its order of preference: the handle announced on
+                // `Hello`, then the app id it falls back to when
+                // nothing announced one — which is what two windows of
+                // one unnamed app share. Anything not on this list is
+                // somebody else and gets painted.
+                let mut ctx = PresenceCtx::empty();
+                ctx.set_own_identity(
+                    crate::collaboration::presence_handle_env()
+                        .into_iter()
+                        .chain(std::iter::once(crate::collaboration::local_user_id().0)),
+                );
+                ctx
+            },
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
             followed_peer: None,
