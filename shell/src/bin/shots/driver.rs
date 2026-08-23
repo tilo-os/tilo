@@ -292,6 +292,17 @@ impl ShellDriver {
     /// path (legacy `--scenes`) where state mutations between scenes
     /// can affect the structural layout (overlay reservations).
     pub fn paint_settled(&mut self) -> Scene {
+        // A live frame is `pump_apps` → paint (see
+        // `compositor::native`); the capture path was paint alone. So
+        // every reconciler the host runs from `Widget::update` — the
+        // active-tab writeback, the focused-group marking, the
+        // scroll-into-view, the cross-strip dispatch — was absent from
+        // every screenshot this tool has ever produced, and a state
+        // that only settles on the pump could not be reviewed from a
+        // capture at all. Pump first, so what is captured is what a
+        // frame does.
+        let root = self.root_obj.clone();
+        self.fb.pump_apps(&mut self.state, &root);
         self.fb.paint_settled()
     }
 }
