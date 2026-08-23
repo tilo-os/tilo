@@ -79,7 +79,7 @@ REAL_HOME = os.path.expanduser("~")
 # calls itself could have been read off the guest's own presence frames,
 # and a name a peer announces about itself is exactly what this room
 # refuses to believe. This one exists nowhere but in ada's typing.
-INVITED_AS = "bob Bauer"
+INVITED_AS = "bob"
 
 failures: list[str] = []
 
