@@ -967,44 +967,72 @@ impl ShellDriver {
             // the next keystroke, so it has to be painted.
             "two-groups-focus" => {
                 use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+                let half = WindowWidth::Fraction(500);
+                let mut placed = None;
                 self.with_chrome(|st| {
-                    let mut sibling = None;
                     {
                         let mut tree = st.tree_mut();
+                        let mut sibling = None;
                         let mut strip_id = None;
-                        if let Some(ws) = tree.active_workspace_mut() {
-                            if let Some(strip) = ws.strips.first_mut() {
-                                for g in strip.window_groups.iter_mut() {
-                                    g.width = WindowWidth::Fraction(500);
-                                }
-                                let gid = 9101u64;
-                                let tid = 9111u64;
-                                strip.window_groups.push(WindowGroup {
-                                    id: gid,
-                                    tabs: vec![Tab {
-                                        id: tid,
-                                        title: "Settings".to_string(),
-                                        tile: TileContent::Stub {
-                                            kind: shell::shell::state::AppKind::Settings,
-                                            label: "Settings".to_string(),
-                                        },
-                                    }],
-                                    active_tab: tid,
-                                    width: WindowWidth::Fraction(500),
-                                    maximized: false,
-                                });
-                                strip_id = Some(strip.id);
-                                sibling = Some(gid);
+                        if let Some(strip) = tree
+                            .active_workspace_mut()
+                            .and_then(|ws| ws.strips.first_mut())
+                        {
+                            for g in strip.window_groups.iter_mut() {
+                                g.width = half;
                             }
+                            let gid = 9101u64;
+                            let tid = 9111u64;
+                            strip.window_groups.push(WindowGroup {
+                                id: gid,
+                                tabs: vec![Tab {
+                                    id: tid,
+                                    title: "Settings".to_string(),
+                                    tile: TileContent::Stub {
+                                        kind: shell::shell::state::AppKind::Settings,
+                                        label: "Settings".to_string(),
+                                    },
+                                }],
+                                active_tab: tid,
+                                width: half,
+                                maximized: false,
+                            });
+                            strip_id = Some(strip.id);
+                            sibling = Some(gid);
                         }
                         // Focus the newly-added right-hand window, so the
                         // scene shows the signal moving off the default.
                         if let (Some(sid), Some(gid)) = (strip_id, sibling) {
                             tree.set_active_group(sid, gid);
+                            placed = Some(sid);
                         }
                     }
                     st.bump();
                 });
+                // Widths, like the maximize flag, only reach the widget
+                // tree at construction — and the tree was built before
+                // this ran. Halve the live groups too, or the scene
+                // renders one full-width window with its sibling parked
+                // off the right edge, which is not the configuration the
+                // scene exists to show.
+                if let Some(sid) = placed {
+                    if let Some(row) = self.host_mut().group_row_mut_for_tests(sid) {
+                        for g in row.groups.iter_mut() {
+                            g.set_width(half.to_ui());
+                        }
+                    }
+                }
+                // The pushed group only becomes a widget when the strip
+                // resync runs, which happens on the next painted frame —
+                // and the group latches its 420 ms arrival fade off the
+                // wall clock the moment it is spliced in. Paint once to
+                // let it arrive, wait the curve out, and leave the
+                // caller's own `paint_settled` to capture the resting
+                // configuration the scene is named for. Without this the
+                // right-hand window renders at a few percent alpha,
+                // indistinguishable from the desktop.
+                let _ = self.paint_settled();
+                std::thread::sleep(std::time::Duration::from_millis(600));
             }
             "multi-strip" => {
                 // Three strips in the active workspace, with focus on
