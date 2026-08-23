@@ -3749,6 +3749,22 @@ impl WordProcessorWidget {
     /// * **Paragraph style** — the named-style editor: a style picker plus
     ///   property rows that mutate the *style* (every block of that style
     ///   updates live). Distinct from the toolbar's direct character formatting.
+    /// Whether the styles panel is actually reserved and drawn this frame.
+    ///
+    /// The panel is a contextual aid to the document, so it yields when the
+    /// window is too narrow for it to stay the minority: below twice its own
+    /// width it would take half the window or more, leaving the document —
+    /// the thing the app exists to show — as the smaller half. A 1280-wide
+    /// display split three ways gives each app ~426px, where a fixed 250px
+    /// panel is 59% of the window.
+    ///
+    /// `styles_panel_open` stays the user's preference and is what the
+    /// toolbar toggle reflects; this is whether the layout can honour it.
+    /// Widening the window brings the panel straight back.
+    fn styles_panel_visible(&self) -> bool {
+        self.styles_panel_open && self.rect.width() > 2.0 * STYLES_PANEL_W
+    }
+
     fn draw_styles_panel(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, panel: Rect) {
         let cc = self.chrome;
         self.panel_rect = panel;
@@ -4501,7 +4517,7 @@ impl Widget for WordProcessorWidget {
         let history_top = (layout_bar_top - history_h).max(full.y0 + tb_h);
         // Reserve the styles panel out of the canvas so the page re-centers in the
         // remaining width (and scrolled content never paints under the panel).
-        let canvas_right = if self.styles_panel_open {
+        let canvas_right = if self.styles_panel_visible() {
             (full.x1 - STYLES_PANEL_W).max(full.x0 + 1.0)
         } else {
             full.x1
@@ -5692,7 +5708,7 @@ impl Widget for WordProcessorWidget {
         }
 
         // Contextual styles panel on the right (between toolbar and layout bar).
-        if self.styles_panel_open {
+        if self.styles_panel_visible() {
             let panel = Rect::new(canvas_right, full.y0 + tb_h, full.x1, layout_bar_top);
             self.draw_styles_panel(scene, transform, text_renderer, panel);
         } else {
@@ -10730,6 +10746,86 @@ mod tests {
             },
             1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
         );
+    }
+
+    /// Type a mixed-case string through the production `handle_event`
+    /// keyboard path, then read the document back through the production
+    /// `materialize` path.
+    ///
+    /// This guards two *distinct* failures that a rendered frame showed
+    /// and no test caught. The first is the document coming back empty
+    /// after a scripted typing run — nothing the driver sent ever reached
+    /// the CRDT, which made every downstream "the peer sees what was
+    /// typed" claim vacuously true over an empty string. The second is
+    /// the document coming back lowercased: a key source that resolves a
+    /// character to a bare keycode loses the shift, so `Hello World`
+    /// lands as `hello world`. Asserting an exact mixed-case string
+    /// catches both; asserting merely "non-empty" catches only the first.
+    #[test]
+    fn typed_text_lands_in_the_document_with_its_capitals() {
+        let (mut state, mut wp) = bound();
+        assert_eq!(
+            body_text(&wp, &state).concat(),
+            "",
+            "a fresh document starts empty, so the assertion below is about \
+             what typing added and nothing else",
+        );
+
+        const TYPED: &str = "Hello World";
+        for ch in TYPED.chars() {
+            type_char(&mut wp, &mut state, ch);
+        }
+
+        assert_eq!(
+            body_text(&wp, &state).concat(),
+            TYPED,
+            "the document holds exactly the characters that were typed, \
+             capitals included",
+        );
+    }
+
+    /// A document editor shows the document. The contextual styles panel
+    /// is an aid to that, not a co-equal half of the window: at every
+    /// width the shell can hand this app, the canvas left for the
+    /// document must be wider than the panel.
+    ///
+    /// Regression guard for a frame in which the panel — which opens by
+    /// default — took roughly half of a tiled word-processor window, so
+    /// the thing the app exists to show was the smaller half of it.
+    ///
+    /// Measured on the *canvas*, not on `page_rect`: the page sheet is a
+    /// fixed nominal width that stays ~816px however narrow the window
+    /// gets (it is clipped and scrolled, not shrunk), so comparing it
+    /// against the panel would pass at every width and prove nothing.
+    /// `panel_rect` and `rect` are both written by the production draw
+    /// pass, and `panel_rect.x0` *is* the canvas's right edge.
+    #[test]
+    fn the_document_canvas_is_wider_than_the_styles_panel_at_every_tile_width() {
+        // Widths a one-, two- and three-column strip hands an app on
+        // ordinary displays — a 1280-wide screen split three ways is the
+        // narrow end, and is where the panel currently wins.
+        for (w, h) in [(1400_u32, 900_u32), (960, 800), (640, 700), (426, 700)] {
+            let (mut state, mut wp) = bound();
+            pipeline_draw(&mut wp, &mut state, w, h);
+            assert!(
+                wp.styles_panel_open,
+                "precondition: the default-open panel is the one under test",
+            );
+            assert!(
+                !wp.outline_open,
+                "precondition: the left-hand outline pane is closed, so the \
+                 canvas is bounded only by the panel under test",
+            );
+            let panel = wp.panel_rect.width();
+            let canvas = wp.rect.width() - panel;
+            assert!(
+                canvas > panel,
+                "at {w}x{h} the canvas left for the document ({canvas:.0}px) \
+                 must be wider than the styles panel ({panel:.0}px) — an \
+                 editor whose subject is the smaller half of its own window \
+                 is showing the wrong thing",
+            );
+        }
     }
 
     /// Autosave: typing past the edit threshold (through the production keyboard
