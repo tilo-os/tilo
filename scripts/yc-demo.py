@@ -52,6 +52,7 @@ open, and nothing about `--release` changes.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import base64
 import json
@@ -78,6 +79,24 @@ from reaper import die_with_parent, track   # noqa: E402
 KEEP_SESSIONS = False
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _doc_text_bin() -> str | None:
+    """The Automerge decoder a document assertion needs.
+
+    A saved document is DEFLATE-compressed per column, so there is no
+    honest way to answer "does this hold that sentence" without decoding
+    it. Absent, the beats that ask are reported as gaps rather than
+    quietly answered wrong.
+    """
+    for profile in ("demo", "debug"):
+        path = os.path.join(REPO, "target", profile, "qos-doc-text")
+        if os.path.exists(path):
+            return path
+    return None
+
+
+DOC_TEXT = _doc_text_bin()
 
 # The action the agent invokes, as a stable `(provider, id)` address from
 # the shell's own action provider — the same registry that feeds the
@@ -795,6 +814,10 @@ class Recorder:
         self.by_name = {s.name: s for s in sessions}
         self.dir = directory
         self.interval = interval
+        # The share of the last snapshot's cost handed back to the
+        # compositor before taking the next one. Raised, per beat,
+        # around anything this film measures — see `easing`.
+        self.yield_share = CAPTURE_YIELD
         self.dwell_s = dwell
         self.cut_dwell_s = cut_dwell
         # The longest one unchanged frame is shown for. See `_timeline`.
@@ -853,8 +876,33 @@ class Recorder:
             self.blocked.append(took)
             self.frames.append((began, rel, s.name))
             index += 1
-            self._stop.wait(max(MIN_CAPTURE_GAP_S, CAPTURE_YIELD * took,
+            self._stop.wait(max(MIN_CAPTURE_GAP_S, self.yield_share * took,
                                 self.interval - took))
+
+    # -- getting out of the way --------------------------------------
+
+    @contextlib.contextmanager
+    def easing(self, share: float):
+        """Take the camera off the compositor's back for a moment.
+
+        A snapshot of a 1920x1080 surface costs this build ~0.14s, and
+        the pacing floor is 0.04s, so the filmed compositor spends about
+        78% of its event loop inside `snapshot`. That is fine for
+        watching, and wrong for anything the demo *measures*: an install
+        timed through the camera came out at 21s against a real median
+        of 7.8s, and a viewer with a stopwatch would have read the
+        camera's overhead as the product's speed.
+
+        So a measured beat asks for a larger share of the loop to be
+        left alone. It still films — a beat nobody can see is worse than
+        a slow number — just at a lower frame rate for its duration.
+        """
+        was = self.yield_share
+        self.yield_share = share
+        try:
+            yield
+        finally:
+            self.yield_share = was
 
     # -- the cut -----------------------------------------------------
 
@@ -1177,6 +1225,16 @@ RULE = "-" * 70
 # competing with the screen underneath, so what the recording takes from
 # these calls is timing — how long to hold — and nothing else.
 RECORDER: Recorder | None = None
+
+
+@contextlib.contextmanager
+def easing(share: float = 4.0):
+    """Film a measured beat without the camera in its numbers."""
+    if RECORDER is None:
+        yield
+        return
+    with RECORDER.easing(share):
+        yield
 
 
 def cut(name: str) -> None:
@@ -1505,6 +1563,12 @@ class DocumentReader:
             docs = self.documents()
             if docs:
                 newest = docs[-1]
+            # Every frame, not just the newest one. More than one
+            # participant answers `Arrived` with a full document on this
+            # address — the agent does too — so the newest frame is not
+            # necessarily the app's, and reading only that one reports
+            # another participant's document as the app's empty page.
+            #
             # A delta carries the text too, and does when the far app was
             # already attached while it was typed. Both kinds are worth
             # searching; only a document is worth reporting a size for.
@@ -1514,134 +1578,41 @@ class DocumentReader:
                     continue
                 seen.add(key)
                 if _carries(blob, needle):
-                    return (newest if newest is not None else blob), True
+                    return blob, True
             time.sleep(0.5)
         return newest, False
 
 
 def _carries(blob: bytes, needle: str) -> bool:
-    """Whether an Automerge blob contains `needle` as stored text.
+    """Whether an Automerge blob holds `needle` as text.
 
-    Automerge keeps a text object's characters as UTF-8 in a value
-    column, so a phrase spliced into a document is present in the saved
-    bytes — that is what makes this readable without an Automerge
-    binding. Columns above a size threshold are DEFLATE'd, so any span
-    that inflates is searched as well rather than being reported as an
-    absence.
+    Not a byte search. Automerge DEFLATE-compresses each column of a
+    change chunk once it is over a few hundred bytes, so a phrase a
+    person typed is genuinely in the document and genuinely absent from
+    its bytes — and a harness that grepped the bytes reported an empty
+    page for a document that had the sentence in it. Worse, it failed
+    the same way whatever went wrong, so a correct document read as a
+    sync failure and sent people looking at the network.
+
+    A per-keystroke delta cannot match either: it carries one character,
+    and no single character is a 33-character phrase. That is a real
+    absence rather than a misreading, and the document frames are where
+    the answer is.
+
+    Decoding is delegated to `qos-doc-text`, which walks the object
+    graph, so this needs no knowledge of the app's schema. Without that
+    binary there is no honest answer available, and saying so beats
+    guessing from bytes.
     """
-    want = needle.encode()
-    if want in blob:
-        return True
-    # Only then the compressed spans, and only the plausible ones: a
-    # zlib stream starts 0x78 followed by one of four check bytes, which
-    # takes the candidate count from "every byte" to a handful. Bounded
-    # anyway — this runs inside a polling loop, and a scan that costs
-    # more than the hop it is watching for would time the beat out
-    # itself.
-    for start in range(min(len(blob), 1 << 20)):
-        if blob[start] != 0x78 or start + 1 >= len(blob):
-            continue
-        if blob[start + 1] not in (0x01, 0x5E, 0x9C, 0xDA):
-            continue
-        try:
-            if want in zlib.decompressobj().decompress(blob[start:], 1 << 24):
-                return True
-        except zlib.error:
-            continue
-    return False
-
-
-# --------------------------------------------------------------------
-# the app stores each session sees
-# --------------------------------------------------------------------
-#
-# "This machine does not have the word processor" is the whole of beat 5,
-# so it has to be a fact about a real install root rather than a claim
-# the script makes. Each session gets its own `registry.toml`, composed
-# from the machine's: quinten's has the word processor's entry removed,
-# and the others keep it. Nothing is copied but the index — the entries
-# carry absolute payload roots, so the payloads stay where they are.
-
-
-def registry_entries(path: str) -> dict[str, str]:
-    """Split a `registry.toml` into one verbatim text block per app.
-
-    Text rather than parsed: an entry carries hashes and a publisher key,
-    and round-tripping those through a hand-rolled TOML writer is a good
-    way to install something that no longer verifies.
-    """
+    if not DOC_TEXT:
+        return False
     try:
-        with open(path) as fh:
-            body = fh.read()
-    except OSError:
-        return {}
-    entries: dict[str, str] = {}
-    for chunk in body.split("[[entry]]"):
-        if not chunk.strip():
-            continue
-        ident = None
-        for line in chunk.splitlines():
-            if line.startswith("id = "):
-                ident = line.split("=", 1)[1].strip().strip('"')
-                break
-        if ident:
-            entries[ident] = "[[entry]]" + chunk.rstrip() + "\n"
-    return entries
-
-
-def compose_registry(apps_dir: str, entries: dict[str, str],
-                     drop: tuple[str, ...] = ()) -> None:
-    os.makedirs(apps_dir, exist_ok=True)
-    kept = [v for k, v in sorted(entries.items()) if k not in drop]
-    with open(os.path.join(apps_dir, "registry.toml"), "w") as fh:
-        fh.write("\n".join(kept))
-
-
-def installed_ids(apps_dir: str) -> list[str]:
-    """What this session's install root actually holds, read off disk."""
-    return sorted(registry_entries(os.path.join(apps_dir, "registry.toml")))
-
-
-def a_real_png(width: int = 320, height: int = 200) -> bytes:
-    """A picture with something in it.
-
-    Written out rather than embedded so the image on screen is worth
-    looking at: a 1x1 pixel proves the plumbing and shows the camera
-    nothing.
-    """
-    import struct
-    import zlib
-
-    rows = bytearray()
-    for y in range(height):
-        rows.append(0)  # filter: none
-        for x in range(width):
-            rows += bytes((
-                40 + (x * 160) // width,
-                70 + (y * 150) // height,
-                150 + ((x + y) * 90) // (width + height),
-            ))
-
-    def chunk(tag: bytes, payload: bytes) -> bytes:
-        return (struct.pack(">I", len(payload)) + tag + payload
-                + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF))
-
-    return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(bytes(rows), 9))
-            + chunk(b"IEND", b""))
-
-
-def stage_home(path: str) -> str:
-    """A home of this session's own, with the demo's folder in it."""
-    demo = os.path.join(path, "Demo")
-    os.makedirs(demo, exist_ok=True)
-    with open(os.path.join(demo, "photo.png"), "wb") as fh:
-        fh.write(a_real_png())
-    with open(os.path.join(demo, "brief.md"), "w") as fh:
-        fh.write("# Launch plan\n\n- Venue - The Hall\n- Date - 3 Sep\n")
-    return path
-
+        done = subprocess.run([DOC_TEXT, "-", "--contains", needle],
+                              input=blob, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
 
 class Registry:
     """A signed registry on loopback, serving one real `.qpkg`.
@@ -1982,19 +1953,24 @@ def beat_five(quinten: Session, registry, shots: str) -> dict | None:
 
     step("he presses Enter — fetch, verify, unpack, run")
     before = {f.get("surface_id") for f in quinten.foreign_frames()}
-    quinten.key("Enter")
-    began = time.time()
-    painted = None
-    deadline = time.time() + LAUNCH_TIMEOUT_S * 2
-    while time.time() < deadline:
-        for f in quinten.foreign_frames():
-            if f.get("surface_id") not in before and f.get("frame_seq", 0) > 0:
-                painted = f
+    # The one number in this film a viewer might time with a stopwatch,
+    # so the camera gets out of the way while it is being taken. The
+    # poll below queues behind the camera too, which is why it loosens
+    # as well.
+    with easing(4.0):
+        quinten.key("Enter")
+        began = time.time()
+        painted = None
+        deadline = time.time() + LAUNCH_TIMEOUT_S * 2
+        while time.time() < deadline:
+            for f in quinten.foreign_frames():
+                if f.get("surface_id") not in before and f.get("frame_seq", 0) > 0:
+                    painted = f
+                    break
+            if painted:
                 break
-        if painted:
-            break
-        time.sleep(0.75)
-    took = time.time() - began
+            time.sleep(0.25)
+        took = time.time() - began
     claim("the word processor was fetched and opened", painted is not None, True)
     if painted is None:
         note(f"see {quinten.log_path}")
