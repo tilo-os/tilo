@@ -118,6 +118,10 @@ pub struct Driver {
     /// the widget whose `is_focused()` is still set (widget instances survive
     /// a relayout; their taffy ids do not).
     focused: Option<NodeId>,
+    /// Identity the driver's commits and undos are attributed to. Mirrors
+    /// [`crate::app::App`]'s `local_author` so a scenario exercises the same
+    /// author-scoped history a user does.
+    author: crate::permissions::UserId,
     /// Per-pass frame profiler, installed by the perf harness via
     /// [`Driver::begin_profiling`]. `None` on a normal (persistence) run, so
     /// [`Driver::relayout`] and [`Driver::send`] pay nothing. When set, each
@@ -145,10 +149,77 @@ impl Driver {
             modifiers: winit::event::Modifiers::default(),
             viewport,
             focused: None,
+            author: crate::collaboration::local_user_id(),
             profiler: None,
         };
         d.relayout();
         d
+    }
+
+    /// Undo the last action, the way the live host does — through
+    /// [`State::undo_as`](crate::state::State::undo_as) with this driver's
+    /// author. Returns whether anything was undone.
+    ///
+    /// The driver's one undo door: `Ctrl+Z` and an
+    /// [`UndoButton`](crate::widget::UndoButton) both arrive here, so a
+    /// scenario cannot pass against a path the user never takes.
+    pub fn perform_undo(&mut self) -> bool {
+        let author = self.author.clone();
+        let done = self.state.undo_as(Some(&author), None, None).is_some();
+        if done {
+            self.relayout();
+        }
+        done
+    }
+
+    /// Redo the last undone action. The mirror of [`Self::perform_undo`].
+    pub fn perform_redo(&mut self) -> bool {
+        let author = self.author.clone();
+        let done = self.state.redo_as(Some(&author), None, None).is_some();
+        if done {
+            self.relayout();
+        }
+        done
+    }
+
+    /// What the history can do right now — the value published to the widget
+    /// tree each relayout.
+    pub fn undo_status(&mut self) -> crate::undo::UndoStatus {
+        let author = self.author.clone();
+        self.state.undo_status(Some(&author))
+    }
+
+    /// Perform any undo/redo the widget tree asked for. Returns whether
+    /// anything happened.
+    fn drain_undo_requests(&mut self) -> bool {
+        let mut requests = Vec::new();
+        for &w_ptr in self.node_map.values() {
+            // SAFETY: same invariant as every other `node_map` dereference in
+            // this driver — pointers are valid until the next `relayout`.
+            let w = unsafe { &mut *w_ptr };
+            if let Some(req) = w.take_undo_request() {
+                requests.push(req);
+            }
+        }
+        let mut acted = false;
+        for req in requests {
+            acted |= match req {
+                crate::undo::UndoRequest::Undo => self.perform_undo(),
+                crate::undo::UndoRequest::Redo => self.perform_redo(),
+            };
+        }
+        acted
+    }
+
+    /// Hand the live undo status to every laid-out widget, so a control
+    /// renders and reports the same truth it would live.
+    fn publish_undo_status(&mut self) {
+        let status = self.undo_status();
+        for &w_ptr in self.node_map.values() {
+            // SAFETY: as in `drain_undo_requests`.
+            let w = unsafe { &mut *w_ptr };
+            w.set_undo_status(&status);
+        }
     }
 
     /// Drive a record-aware app: the live document is a record's, and the
@@ -271,6 +342,11 @@ impl Driver {
         }
         self.root_node = root_node;
         self.child_node = child;
+
+        // After layout (so a control built this pass is in `node_map`) and
+        // before draw and any accessibility read — a shot must show the
+        // enabled state the user would see.
+        self.publish_undo_status();
 
         let t_draw = self.profiler.as_ref().map(|_| std::time::Instant::now());
         self.scene.reset();
@@ -541,9 +617,16 @@ impl Driver {
         // one, so undo boundaries and any commit-time CRDT writes happen the
         // way they do live.
         if self.root.needs_commit() {
-            self.state.commit_action(None, None);
+            // Authored, as `App::commit_action` is. An anonymous entry is
+            // invisible to author-scoped undo, so a scenario that pressed
+            // Ctrl+Z would find nothing where the user finds their last edit.
+            self.state
+                .commit_action_authored(None, None, Some(self.author.clone()));
             self.root.on_commit();
         }
+        // An Undo/Redo control the widget tree activated during that event.
+        // Same route the live host takes: the widget asks, the host performs.
+        self.drain_undo_requests();
         self.relayout();
     }
 
@@ -592,6 +675,16 @@ impl Driver {
     pub fn key(&mut self, spec: &str) {
         if spec == "Tab" {
             self.tab(self.modifiers.state().shift_key());
+            return;
+        }
+        // History bindings are the host's, not the focused widget's — resolved
+        // through `undo::shortcut`, the one table the live host reads.
+        let mods = self.modifiers.state();
+        if let Some(req) = crate::undo::shortcut(spec, mods.control_key(), mods.shift_key()) {
+            match req {
+                crate::undo::UndoRequest::Undo => self.perform_undo(),
+                crate::undo::UndoRequest::Redo => self.perform_redo(),
+            };
             return;
         }
         let key = parse_key(spec);

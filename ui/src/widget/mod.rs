@@ -476,6 +476,36 @@ pub trait Widget {
         None
     }
 
+    /// Host → widget: the live state of the undo history, published once per
+    /// frame to every laid-out widget.
+    ///
+    /// A widget only ever receives `&mut AutoCommit`, which carries the
+    /// document but not its history — so without this a control could not tell
+    /// whether there was anything to undo, and every app was reduced to
+    /// printing the shortcut and hoping. Store the status (embed an
+    /// [`UndoAccess`](crate::undo::UndoAccess)) and read it back in `draw`, in
+    /// [`is_enabled`](Widget::is_enabled), and in
+    /// [`accessibility`](Widget::accessibility) — which only gets `&self`, and
+    /// is exactly where the disabled state has to be honest.
+    ///
+    /// The host sweeps its `node_map`, so this reaches a widget at any depth
+    /// with no container forwarding. Default: ignore it.
+    fn set_undo_status(&mut self, _status: &crate::undo::UndoStatus) {}
+
+    /// Widget → host: an undo or redo the user asked for.
+    ///
+    /// The host drains this after each event and performs it through
+    /// [`App::perform_undo`](crate::app::App::perform_undo) /
+    /// [`App::perform_redo`](crate::app::App::perform_redo) — the same methods
+    /// the Ctrl+Z key handler calls, so a button and the shortcut are one
+    /// implementation and cannot drift.
+    ///
+    /// Rising-edge: reading MUST clear it, so one activation is one undo.
+    /// Default: nothing requested.
+    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
+        None
+    }
+
     fn accepts_drop(&self, _payload: &DragPayload) -> bool { false }
     fn on_drop(&mut self, _payload: DragPayload, _state: &mut AutoCommit, _path: &ObjId) {}
     fn wants_pointer_capture(&self) -> bool { false }
@@ -777,6 +807,7 @@ pub mod popover;          pub use popover::Popover;
 pub mod modal_dialog;     pub use modal_dialog::ModalDialog;
 pub mod modal_prompt;     pub use modal_prompt::PromptBody;
 pub mod toolbar;          pub use toolbar::Toolbar;
+pub mod undo_button;      pub use undo_button::UndoButton;
 pub mod breadcrumb;       pub use breadcrumb::Breadcrumb;
 pub mod avatar;           pub use avatar::Avatar;
 pub mod badge;            pub use badge::Badge;
