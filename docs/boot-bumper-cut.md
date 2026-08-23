@@ -18,15 +18,27 @@ Four things, in order, and nothing else:
 2. **The greeter**, long enough to actually read: the qOS card, `tester`
    already in the username field, the password field focused. Target
    **3 seconds**, slowed if the recording is faster than that.
-3. **The login landing** — the form goes away and the desktop arrives. **End
-   here.** Cut at the instant the desktop paints, not after it.
+3. **The filled login form — and end there.** Credentials in, the primary
+   action visible, before anything is submitted.
 
-Roughly **7 seconds** total. It is a bumper, not a chapter.
+Roughly **5 seconds** total. It is a bumper, not a chapter.
 
-**Do not hold the desktop.** The scripted demo opens on an empty desktop, so a
-bumper that ends by sitting on one shows the same picture twice across a cut —
-which reads as a stall rather than as an arrival. Ending on the transition also
-puts the boot's only real payoff last.
+**Do not show the desktop at all**, and do not run into the authenticating
+state. Two separate reasons, both found by watching the assembled cut rather
+than the pieces:
+
+- The demo opens on an empty desktop of its own. A bumper that ends on one
+  shows the same picture on both sides of a cut, which reads as a stall — and
+  worse, the two desktops come from *different builds*, so the design visibly
+  changes across the join. Ending before any desktop means the demo's is the
+  first one, and the cut reads as the login having worked.
+- The authenticating state is where the old greeter's defects live: the
+  doubled status line and the internal session name. Ending on it makes the
+  worst frame in the recording the last thing anybody sees.
+
+Once a recording exists from an image carrying the rebuilt greeter, the second
+reason goes away and the landing can come back if it earns its seconds. The
+first does not: the demo's desktop should still be the first desktop.
 
 ## What to remove
 
