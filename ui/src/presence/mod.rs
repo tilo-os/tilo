@@ -11,8 +11,8 @@ pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 // downstream apps (terminal, settings, file-explorer) can call it from
 // their per-frame draw without depending on the shell.
 pub use render::{
-    PeerCursor, PillPlacement, PillRequest, draw_peer_cursors, draw_remote_cursors,
-    draw_remote_presence, layout_peer_pills,
+    PeerCursor, PillPlacement, PillRequest, contrast_ink, draw_peer_cursors,
+    draw_remote_cursors, draw_remote_presence, layout_peer_pills,
 };
 
 /// How long a peer's "just typed" highlight lingers before it has fully
@@ -104,6 +104,51 @@ pub fn user_color(user_id: &str) -> (u8, u8, u8) {
 /// lightness, so neighbours differ in brightness as well as hue and
 /// nothing is dark enough to sink into the desktop or pale enough to
 /// wash out on a white page.
+/// # Before widening this
+///
+/// Two people in a room can now land on the same entry — colour is a pure
+/// function of identity, so that every host agrees, and the price of that
+/// agreement is that collisions are possible rather than stepped past. About
+/// one pair in `PEER_PALETTE.len()`, so a three-person room collides roughly
+/// one time in eight. More entries is the obvious answer and it is not as
+/// simple as appending hues, for a reason that is worth having measured
+/// before anyone tries.
+///
+/// **This palette is wider for cursors than it is for highlights.** A peer's
+/// typing marker runs the colour through `marker_pigment`, which rescales it
+/// to a fixed luminance so that no peer's wash is a stain and no other peer's
+/// is invisible. That normalisation is exactly what undoes a lightness
+/// difference: two entries that differ mainly in lightness converge once it
+/// has run. Measured as CIELAB ΔE between the bands they paint on the word
+/// processor's paper, the closest pairs here are `#6366f1`/`#9071f4` at 8.5
+/// and `#3a84df`/`#7190f4` at 10.0 — *closer* as markers than they are as raw
+/// colours (11.2 and 11.6), because the second tier's whole distinction is
+/// the lightness the pigment strips out. So the 24 entries below are about 12
+/// to 14 confidently distinct highlights, not 24.
+///
+/// The consequence for widening: a third lightness tier on the same hue
+/// anchors would buy collision-headroom for cursors and pills and **none at
+/// all** for markers — two people would highlight in the same colour while
+/// their cursors differed, which is worse than an honest tie because it
+/// misattributes rather than merely repeating. Real headroom needs more
+/// *hues*, and the twelve anchors here are already spaced at 30° with
+/// adjacent tier members as close as 12.6°. Going narrower has to be paid for
+/// somewhere else — a perceptually even hue walk rather than an even one,
+/// most likely.
+///
+/// Whatever is added has to keep carrying body text. That is no longer a
+/// judgement call: `text_stays_legible_under_a_marker_in_both_palettes` and
+/// `every_peers_marker_is_about_as_strong_as_every_others` walk **every**
+/// entry of this array through the real painter, on paper and on a dark
+/// surface, in both themes. A hue that cannot make a legible wash fails them
+/// on arrival. Five entries already sit close to that edge — `#6366f1`,
+/// `#893adf`, `#ec4899`, `#df3a42` and `#9071f4` have their luminance carried
+/// by the low-weight blue and red channels, so they saturate before reaching
+/// the pigment's target and paint a band darker than everyone else's. They
+/// still pass; there is not much room below them.
+///
+/// Label contrast is no longer a constraint on the entries: a pill picks its
+/// ink with `contrast_ink` rather than assuming white.
 pub const PEER_PALETTE: [(u8, u8, u8); 24] = [
     (0xf9, 0x73, 0x16), // orange-500 — pinned for "bob"
     (0xdf, 0xdc, 0x3a),

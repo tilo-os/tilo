@@ -759,7 +759,14 @@ fn peer_of(cursor: &super::RemoteCursor) -> PeerCursor {
 
 /// Pick black or white ink for text drawn on top of `bg`, by relative
 /// luminance — so a name chip label stays readable on any peer colour.
-fn contrast_ink(bg: Color) -> Color {
+///
+/// Public because every surface that fills a shape with a peer's colour and
+/// then writes a name on it needs the same answer. The palette spans a 16:1
+/// luminance range — it has to, or peers would not be told apart — so a fixed
+/// white label is unreadable on rather more than half of it: eleven of the
+/// twenty-four entries put white below 2:1, and the palest reaches 1.24:1.
+/// There is no one ink that works, which is why this is a function.
+pub fn contrast_ink(bg: Color) -> Color {
     let c = bg.to_rgba8();
     // Rec. 601 luma on the 0..255 channels.
     let luma = 0.299 * c.r as f32 + 0.587 * c.g as f32 + 0.114 * c.b as f32;
@@ -1404,6 +1411,31 @@ mod tests {
         (red, green, blue)
     }
 
+    /// [`marker_band`] for an explicit colour rather than an id, so a test can
+    /// walk every entry in [`super::super::PEER_PALETTE`] instead of the
+    /// handful of ids that happen to hash onto one. Goes in through
+    /// `set_color_override`, which is the same door the shell uses to seed a
+    /// peer's colour, so this is still the production painter.
+    fn marker_band_for(rgb: (u8, u8, u8), paper: Color, theme: &Theme) -> (u8, u8, u8) {
+        let mut ctx = PresenceCtx::empty();
+        let user = UserId("peer".to_string());
+        ctx.set_color_override(
+            user.clone(),
+            &format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2),
+        );
+        let mut scene = Scene::new();
+        ctx.draw_peer_typing(
+            &mut scene,
+            theme,
+            &user,
+            &[(Rect::new(0.0, 0.0, 40.0, 40.0), 1.0)],
+        );
+        let mut r = OffscreenRenderer::new(40, 40);
+        let rgba = r.render(&scene, paper);
+        let (red, green, blue, _) = OffscreenRenderer::sample(&rgba, 40, 20, 20);
+        (red, green, blue)
+    }
+
     /// WCAG relative luminance of a sampled band.
     fn lum(c: (u8, u8, u8)) -> f32 {
         relative_luminance(Color::from_rgb8(c.0, c.1, c.2))
@@ -1433,10 +1465,14 @@ mod tests {
         let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
         let paper_rgb = (0xfa, 0xfa, 0xf8);
 
-        let peers = ["alice", "bob", "charlie", "me", "agent", "dave", "erin", "sara"];
-        let strengths: Vec<(f32, &str)> = peers
+        let strengths: Vec<(f32, String)> = super::super::PEER_PALETTE
             .iter()
-            .map(|u| (contrast(marker_band(u, paper, &theme), paper_rgb), *u))
+            .map(|rgb| {
+                (
+                    contrast(marker_band_for(*rgb, paper, &theme), paper_rgb),
+                    format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2),
+                )
+            })
             .collect();
 
         for (s, u) in &strengths {
@@ -1471,18 +1507,22 @@ mod tests {
         let ink = (0x1a, 0x1a, 0x1a);
         let dark_ink = (0xf5, 0xf5, 0xf5);
 
-        for user in ["alice", "agent", "bob", "charlie", "me", "sara"] {
+        // Every colour a peer can be drawn in, not the handful of ids that
+        // happen to hash onto one — a palette entry nobody has landed on yet
+        // is still a legibility promise.
+        for rgb in super::super::PEER_PALETTE {
             for (theme, name) in [(Theme::light(), "light"), (Theme::dark(), "dark")] {
-                let on_paper = contrast(marker_band(user, paper, &theme), ink);
+                let hex = format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2);
+                let on_paper = contrast(marker_band_for(rgb, paper, &theme), ink);
                 assert!(
                     on_paper >= 4.5,
-                    "{user}: body ink under the marker on paper ({name} theme) \
+                    "{hex}: body ink under the marker on paper ({name} theme) \
                      falls to {on_paper:.2}:1"
                 );
-                let on_dark = contrast(marker_band(user, dark, &theme), dark_ink);
+                let on_dark = contrast(marker_band_for(rgb, dark, &theme), dark_ink);
                 assert!(
                     on_dark >= 4.5,
-                    "{user}: ink under the marker on a dark surface ({name} theme) \
+                    "{hex}: ink under the marker on a dark surface ({name} theme) \
                      falls to {on_dark:.2}:1"
                 );
             }
