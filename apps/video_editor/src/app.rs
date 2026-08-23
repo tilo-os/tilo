@@ -140,6 +140,20 @@ const PROJECT_BTN_MIN_W: f64 = 120.0;
 /// does not have is a file of their own.
 const PROJECT_UNSAVED: &str = "Unsaved changes";
 
+/// The preview's and the inspector's empty states, in one place each so the
+/// painted words and the spoken ones cannot drift apart. They did: the
+/// inspector said "No clip selected / Click a clip in the timeline" on screen
+/// and "Nothing selected. Select a clip on the timeline to edit it." to a
+/// reader, which is two descriptions of one state.
+const PREVIEW_EMPTY_TITLE: &str = "No clip at playhead";
+const PREVIEW_EMPTY_HINT: &str = "Move the playhead over a clip to see it";
+const INSPECTOR_EMPTY_TITLE: &str = "No clip selected";
+const INSPECTOR_EMPTY_HINT: &str = "Click a clip in the timeline to edit it";
+
+/// Height of the inspector's own "INSPECTOR" heading row, which the empty
+/// state starts below.
+const INSPECTOR_HEADER_H: f64 = 26.0;
+
 /// Below this window width the inspector collapses to an overlay flap from
 /// the right, exactly as the bin does from the left.
 ///
@@ -4566,6 +4580,7 @@ impl Widget for VideoEditorApp {
         if self.show_help {
             self.draw_help_sheet(scene, transform, tr, theme, &r);
         }
+        self.draw_file_drop_invite(scene, transform, tr, theme);
         self.draw_project_notice(scene, transform, tr, theme, &r);
         if self.pending_open.is_some() {
             self.draw_discard_dialog(scene, transform, tr, theme);
@@ -5489,8 +5504,12 @@ impl VideoEditorApp {
         if clip.is_none() && self.project.clips.is_empty() {
             return self.a11y_pane(
                 Pane::Inspector,
+                // The painted empty state's own words. It used to phrase this
+                // differently from the screen, which is one state described
+                // two ways — and the reader's version has to be the same
+                // claim, not a neater one.
                 vec![AccessNode::new(Role::StaticText)
-                    .with_name("Nothing selected. Select a clip on the timeline to edit it.")
+                    .with_name(format!("{INSPECTOR_EMPTY_TITLE}. {INSPECTOR_EMPTY_HINT}."))
                     .with_key(0)],
             );
         }
@@ -7256,7 +7275,18 @@ impl VideoEditorApp {
                 project.name = n;
             }
         }
-        self.project_notice = Some(Self::opened_notice(&path, &project));
+        // Whether this Open is throwing a timeline away. If it is, the notice
+        // says the way back — the editor is undoable and nothing on screen
+        // ever said so, which makes an accidental Open feel final when it is
+        // not. Undo itself is host-owned (the toolkit brackets the boundary
+        // this dispatch records), so what the app can honestly offer is the
+        // key, at the moment it matters.
+        let replaced = !self.project_is_empty();
+        let mut notice = Self::opened_notice(&path, &project);
+        if replaced {
+            notice.push_str(" · Ctrl+Z to go back");
+        }
+        self.project_notice = Some(notice);
 
         self.actions.dispatch(
             doc,
@@ -7900,6 +7930,44 @@ impl VideoEditorApp {
         }
     }
 
+    /// Invite an external file drop, over the whole window.
+    ///
+    /// `DroppedFile` is accepted anywhere in the window, so the invitation has
+    /// to cover the same ground the handler does. Highlighting the media bin
+    /// alone said "drop here", which is narrower than the truth, and when the
+    /// bin was collapsed to a closed flap it said nothing at all — a drop that
+    /// would have worked looked like one that would not.
+    fn draw_file_drop_invite(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.file_hovering {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let w = self.rect;
+        fill_rect(scene, tf, with_alpha(c.accent[5], 0.10), w);
+        stroke_rrect(scene, tf, c.accent[5], w.inset(-4.0), 10.0, 3.0);
+        // One label, centred on the window, on a plate so it stays readable
+        // over the timeline and the preview alike.
+        let hint = "Drop to import";
+        let (hw, _) = tr.measure_weighted(hint, 15.0, None, TextWeight::Semibold);
+        let ctr = w.center();
+        let plate = Rect::new(
+            ctr.x - hw as f64 / 2.0 - 18.0,
+            ctr.y - 20.0,
+            ctr.x + hw as f64 / 2.0 + 18.0,
+            ctr.y + 20.0,
+        );
+        fill_rrect(scene, tf, c.surfaces.raised, plate, 10.0);
+        stroke_rrect(scene, tf, c.accent[5], plate, 10.0, 1.5);
+        let baseline = text_baseline(plate, 15.0, tr);
+        text_w(scene, tr, tf, hint, 15.0, c.accent[5], plate.x0 + 18.0, baseline, TextWeight::Semibold);
+    }
+
     /// The last thing that happened to the project file, on a strip under the
     /// topbar. Full width and above the panes, because it is not about the bin
     /// or the timeline — and because a save that failed must not be findable
@@ -8047,14 +8115,11 @@ impl VideoEditorApp {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.raised, r.bin);
         stroke_line(scene, tf, c.border_standard, r.bin.x1, r.bin.y0, r.bin.x1, r.bin.y1, 1.0);
-        // Invite an external file drop while the OS is hovering one over us.
-        if self.file_hovering {
-            fill_rect(scene, tf, with_alpha(c.accent[5], 0.10), r.bin);
-            stroke_rrect(scene, tf, c.accent[5], r.bin.inset(-3.0), 8.0, 2.0);
-            let hint = "Drop to import";
-            let (hw, _) = tr.measure_weighted(hint, 13.0, None, TextWeight::Semibold);
-            text_w(scene, tr, tf, hint, 13.0, c.accent[5], r.bin.center().x - hw as f64 / 2.0, r.bin.center().y, TextWeight::Semibold);
-        }
+        // The drop invitation is NOT drawn here any more — see
+        // `draw_file_drop_invite`. It used to highlight only this pane, which
+        // promised less than the app accepts (a drop lands anywhere in the
+        // window) and vanished entirely when the bin was a closed flap, so on
+        // a narrow window a drop that would have worked looked impossible.
         text_w(scene, tr, tf, "MEDIA BIN", 11.0, c.text_dim, r.bin.x0 + 14.0, r.bin.y0 + 14.0, TextWeight::Semibold);
         // A title is the one source you make rather than import, so the bin
         // offers it beside the count instead of leaving `MediaKind::Text`
@@ -8369,16 +8434,31 @@ impl VideoEditorApp {
             _ => false,
         };
         if !showed_real {
-            // No compositor on this box (no usable adapter). Say so rather
-            // than inventing a picture.
-            if self.project.top_video_clip_at(self.playhead).is_none() {
-                let (tw, _) = tr.measure("No clip at playhead", 14.0, None);
-                text(scene, tr, tf, "No clip at playhead", 14.0, c.text_dim, canvas.center().x - tw as f64 / 2.0, canvas.center().y - 8.0);
+            // Nothing to composite, or nothing to composite *with*. Both are
+            // said in words rather than papered over with an invented picture,
+            // and both go through the shared empty state so the preview reads
+            // like every other empty surface in the fleet instead of like a
+            // stray caption on a black rectangle.
+            let (icon, title, hint) = if self.project.top_video_clip_at(self.playhead).is_none() {
+                (ui::icons::Icon::Film, PREVIEW_EMPTY_TITLE, PREVIEW_EMPTY_HINT)
             } else {
-                let msg = "Preview needs a GPU adapter";
-                let (tw, _) = tr.measure(msg, 13.0, None);
-                text(scene, tr, tf, msg, 13.0, c.text_dim, canvas.center().x - tw as f64 / 2.0, canvas.center().y - 7.0);
-            }
+                // Not an empty state — a capability the box does not have.
+                // Same treatment, different words, and it must not suggest
+                // there is anything to do about it here.
+                (ui::icons::Icon::Monitor, "Preview needs a GPU adapter", "The timeline and export still work")
+            };
+            ui::widget::EmptyState::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                canvas,
+                Some(icon),
+                title,
+                Some(hint),
+                None,
+                Point::new(f64::MIN, f64::MIN),
+            );
         }
         // HUD overlays: the playhead's time, and nothing else.
         //
@@ -8639,12 +8719,36 @@ impl VideoEditorApp {
 
         let selected = self.selected().and_then(|id| self.project.clip(id).cloned());
         let Some(clip) = selected else {
-            text(scene, tr, tf, "No clip selected", 13.0, c.text_dim, x0, top + 60.0);
-            text(scene, tr, tf, "Click a clip in the timeline", 11.5, c.text_dim, x0, top + 82.0);
             // The markers still belong to the project, so they stay reachable
             // with nothing selected. Everything else here edits a clip.
             let l = self.inspector_layout(r);
             let blank = Clip::default();
+            // The empty state gets the room above the first section header,
+            // not the whole pane — the sections below are real controls and
+            // must not be drawn through.
+            let floor = l
+                .sections
+                .first()
+                .map(|(_, rect)| rect.y0 - 8.0)
+                .unwrap_or(r.inspector.y1);
+            let area = Rect::new(x0, top + INSPECTOR_HEADER_H, x1, floor.max(top + INSPECTOR_HEADER_H));
+            // The shared empty state, so this pane says nothing is selected in
+            // the same voice — icon, title, one line of what to do — that the
+            // rest of the fleet uses. It was a pair of bare left-aligned lines
+            // that read as a label for the sections beneath them rather than
+            // as the state of the pane.
+            ui::widget::EmptyState::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                area,
+                Some(ui::icons::Icon::Layers),
+                INSPECTOR_EMPTY_TITLE,
+                Some(INSPECTOR_EMPTY_HINT),
+                None,
+                Point::new(f64::MIN, f64::MIN),
+            );
             for (s, rect) in &l.sections {
                 self.draw_section_header(scene, tf, tr, theme, *rect, *s, &blank, None);
             }
@@ -10484,6 +10588,93 @@ mod tests {
             focused.value().map(|v| v.to_string()),
             Some(last_span),
             "and it is the same clip, in the same place, not a lookalike"
+        );
+    }
+
+    #[test]
+    fn an_id_held_across_a_delete_still_operates_the_clip_it_named() {
+        // The one that observes identity keying, where the sibling test
+        // (which re-resolves by name) cannot.
+        //
+        // A screen reader holds node ids across repaints — that is the whole
+        // point of an id. Deleting an EARLIER clip on the same track shifts
+        // every later clip's ordinal, so an id derived from position now names
+        // a different clip. That is worse than a dangling id: it silently
+        // operates the wrong element. With `with_hashed_key(clip.id)` the held
+        // id still resolves to the clip it named.
+        //
+        // Proven by reverting: swapping the clip's identity key for its
+        // ordinal makes this fail (the held id lands on the neighbour that
+        // moved up), while the by-name test keeps passing.
+        let mut d = a11y_driver();
+        // Every clip node, with the track its own spoken value names, so the
+        // pair we pick is genuinely two clips on ONE track — which is the
+        // arrangement where deleting the earlier one renumbers the later one.
+        let clip_nodes = |d: &ui::headless::Driver| -> Vec<(ui::accesskit::NodeId, String, String)> {
+            d.a11y_nodes()
+                .into_iter()
+                .filter_map(|(id, n)| {
+                    let v = n.value()?.to_string();
+                    (n.role() == ui::accesskit::Role::ListItem && v.contains(" long, on "))
+                        .then(|| (id, n.label().unwrap_or_default().to_string(), v))
+                })
+                .collect()
+        };
+        let track_of = |value: &str| -> String {
+            value.rsplit_once(" long, on ").map(|(_, t)| t.to_string()).unwrap_or_default()
+        };
+
+        let before = clip_nodes(&d);
+        let (track, group) = {
+            let mut chosen: Option<(String, Vec<(ui::accesskit::NodeId, String, String)>)> = None;
+            for (id, name, value) in &before {
+                let t = track_of(value);
+                let same: Vec<_> = before
+                    .iter()
+                    .filter(|(_, _, v)| track_of(v) == t)
+                    .cloned()
+                    .collect();
+                if same.len() >= 2 {
+                    chosen = Some((t, same));
+                    break;
+                }
+                let _ = (id, name);
+            }
+            chosen.expect("the sample project has a track carrying several clips")
+        };
+        assert!(group.len() >= 2, "{track} carries at least two clips");
+        let (earlier_id, earlier_name, _) = group.first().cloned().unwrap();
+        let (held_id, held_name, held_value) = group.last().cloned().unwrap();
+        assert_ne!(earlier_name, held_name);
+
+        // Delete the earlier clip. Every later clip on that track shifts up.
+        d.perform_a11y_action(earlier_id, &ui::a11y::Action::Activate).unwrap();
+        d.key("Delete");
+        let after = clip_nodes(&d);
+        assert_eq!(
+            after.len(),
+            before.len() - 1,
+            "the delete really happened — without this the rest passes vacuously",
+        );
+        assert!(
+            !after.iter().any(|(id, _, _)| *id == earlier_id),
+            "the deleted clip's node is gone",
+        );
+
+        // Now use the id held from BEFORE the delete — never re-resolved.
+        d.perform_a11y_action(held_id, &ui::a11y::Action::Activate)
+            .expect("an id held across the delete still resolves");
+        let (_, focused) = d.a11y_focus().expect("something is focused");
+        assert_eq!(
+            focused.label(),
+            Some(held_name.as_str()),
+            "the held id must operate the clip it named, not whichever clip \
+             slid into that position",
+        );
+        assert_eq!(
+            focused.value().map(|v| v.to_string()),
+            Some(held_value),
+            "and it is that same clip, with the same span, on the same track",
         );
     }
 
