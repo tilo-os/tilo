@@ -1076,23 +1076,39 @@ fn a_webm_export_carries_the_timelines_real_audio() {
 /// Where in the decoded audio the right channel changes tone, in seconds, or
 /// `None` when it never does.
 ///
-/// Found as the boundary between the last window still dominated by the early
-/// tone and the first dominated by the late one. Short windows, so the
-/// boundary is located to about their width rather than smeared across a
-/// long one.
+/// The window that best splits the track into "early tone before, late tone
+/// after" — the boundary maximising how many windows fall on the side they
+/// should. Taking the last early-dominant window instead would be at the
+/// mercy of a single flipped window in a codec's padding at the tail, which
+/// is not a hypothetical: AAC's trailing frames read as late-dominant and
+/// put the landmark a whole second out.
 fn tone_switch_secs(right: &[f32]) -> Option<f64> {
-    let win = (FIXTURE_RATE as f64 * 0.01) as usize; // 10ms
-    let dominant_late: Vec<bool> = right
+    let win = (FIXTURE_RATE as f64 * 0.005) as usize; // 5ms
+    let late: Vec<bool> = right
         .chunks_exact(win)
         .map(|b| goertzel(b, RIGHT_HZ_LATE) > goertzel(b, RIGHT_HZ_EARLY))
         .collect();
-    // The first late-dominant window with no early-dominant window after it:
-    // a lone flipped window in the middle of the early tone is noise, not the
-    // landmark.
-    let last_early = dominant_late.iter().rposition(|&late| !late)?;
-    let first_late = last_early + 1;
-    (first_late < dominant_late.len())
-        .then(|| first_late as f64 * win as f64 / FIXTURE_RATE as f64)
+    if late.len() < 4 {
+        return None;
+    }
+    let total_late = late.iter().filter(|&&l| l).count();
+    // Both tones have to actually be present, or there is no step to find and
+    // the best boundary would be a meaningless end of the track.
+    if total_late == 0 || total_late == late.len() {
+        return None;
+    }
+    // score(k) = early-dominant windows before k + late-dominant from k on,
+    // rolled forward rather than recomputed.
+    let mut score = total_late as i64;
+    let (mut best, mut best_k) = (score, 0usize);
+    for (k, &l) in late.iter().enumerate() {
+        score += if l { -1 } else { 1 };
+        if score > best {
+            best = score;
+            best_k = k + 1;
+        }
+    }
+    Some(best_k as f64 * win as f64 / FIXTURE_RATE as f64)
 }
 
 /// Where the sound sits in time relative to the picture.
@@ -1102,19 +1118,24 @@ fn tone_switch_secs(right: &[f32]) -> Option<f64> {
 /// timeline position is fixed by the frame clock the export counts with, so
 /// audio landing at the wrong second *is* the two streams disagreeing.
 ///
-/// Measured in **both** containers, which is what makes the reading
-/// attributable. A lossy codec has priming samples of its own, and AAC's are
-/// not fully compensated on this round trip — the track comes back 2.048s long
-/// for a 2s timeline, one AAC frame of padding at each end. Opus in WebM is
-/// delay-compensated and comes back at exactly 2.000s. If the *export* were
-/// misplacing audio, both would be displaced together; a displacement in one
-/// container and not the other is that container's codec. So the two are
-/// asserted at their own tolerances and the difference between them is
-/// asserted too — that last is the part that no codec delay can explain away.
+/// Measured in **both** containers, because they can see different things.
 ///
-/// This still cannot resolve a fraction of a block, which is the size of the
-/// half-block offset `mix_block` once had; that one is pinned in the mixer's
-/// own tests, where no codec sits in between.
+/// Opus in WebM is delay-compensated end to end: the landmark comes back at
+/// exactly the second the fixture put it, and the track at exactly 2.000s, so
+/// its reading is the export's own placement with nothing added. That is the
+/// instrument here, and it is sharp — reinstating the half-block read offset
+/// `mix_block` once had moves it from +0 ms to -15 ms, which this catches.
+///
+/// AAC in MP4 cannot be read that way. Its priming is not compensated on this
+/// round trip: the track comes back 2.048s long for a 2s timeline and the
+/// landmark lands 45 ms late with everything working correctly. So it gets a
+/// band wide enough for that, and catches gross displacement only.
+///
+/// The spread between the two is asserted as well. It says nothing about a
+/// shift they share — that is what the Opus reading is for — but a container
+/// whose audio is placed differently from the other's, when both are fed by
+/// one mixer through one set of timestamps, has something wrong with it that
+/// neither absolute reading need show.
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn the_exported_audio_sits_where_the_timeline_puts_it() {
@@ -1148,12 +1169,14 @@ fn the_exported_audio_sits_where_the_timeline_puts_it() {
 
     for (container, at, secs) in &found {
         let offset_ms = (at - SWITCH_SECS) * 1000.0;
-        // Opus is delay-compensated end to end, so its landmark is the
-        // export's own placement with nothing added. AAC's priming is not
-        // compensated on this path, so it gets the wider band — and both are
-        // far tighter than the displacement a mis-fed audio branch produces.
+        // Opus adds no delay of its own, so its band is tight: measured at
+        // +0 ms working and -15 ms with the mixer's old half-block read
+        // offset put back, and 10 ms sits between those with two of the 5 ms
+        // detection windows to spare. AAC's own priming puts its landmark
+        // 45 ms late when everything is right, so its band has to cover that
+        // and it catches only gross displacement.
         let (limit_ms, limit_len) = match container {
-            Container::WebM => (25.0, 0.02),
+            Container::WebM => (10.0, 0.02),
             _ => (80.0, 0.08),
         };
         assert!(
@@ -1170,15 +1193,15 @@ fn the_exported_audio_sits_where_the_timeline_puts_it() {
         );
     }
 
-    // The part no codec delay explains: the two containers must agree on
-    // where the landmark is, to within their own priming. An export that fed
-    // its audio branch from the wrong point in the timeline would shift both
-    // equally — and that common shift is exactly what comparing them removes.
+    // Both containers are fed by one mixer through one set of timestamps, so
+    // beyond their own priming they must agree about where a timeline instant
+    // is. Measured at 45 ms apart, which is AAC's priming; a container-
+    // specific fault would widen it.
     let spread_ms = (found[0].1 - found[1].1).abs() * 1000.0;
     println!("landmark spread between containers: {spread_ms:.1} ms");
     assert!(
         spread_ms < 80.0,
         "the two containers disagree by {spread_ms:.1} ms about where the same timeline \
-         instant is, which no codec priming accounts for",
+         instant is, more than the priming of either accounts for",
     );
 }
