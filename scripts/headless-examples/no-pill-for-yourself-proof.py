@@ -119,6 +119,16 @@ class Session:
             "NIRIOS_HEADLESS_SIZE": "1280x800",
             "LC_ALL": "en_US.UTF-8",
             "LANG": "en_US.UTF-8",
+            # Makes a `ui` app say on the session log when a peer's
+            # arrival reached it. That line is this rig's witness that
+            # presence actually crossed between the two apps — see
+            # `presence_traffic`.
+            "QUICK_COLLAB_DEBUG": "1",
+            # The self-recognition line is `debug!` — it sits on a path
+            # that also carries pointer traffic, so it is not something
+            # to emit at `info`. An explicit RUST_LOG in the caller's
+            # environment still wins.
+            "RUST_LOG": os.environ.get("RUST_LOG", "info,ui::presence=debug"),
         }
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
@@ -159,6 +169,22 @@ class Session:
 
     def state(self) -> dict:
         return self.call({"op": "state_dump"})["state"]
+
+    def chrome(self) -> dict:
+        return self.state()["chrome"]
+
+    def tree(self) -> dict:
+        return self.state()["workspace_tree"]
+
+    def active_room(self):
+        tree = self.tree()
+        for w in tree.get("workspaces") or []:
+            if w.get("id") == tree.get("active"):
+                return w.get("room")
+        return None
+
+    def invoke(self, ident: str, provider: str = "actions") -> dict:
+        return self.call({"op": "actions_invoke", "provider": provider, "id": ident})
 
     def peers(self) -> dict:
         return self.state().get("peers") or {}
@@ -223,6 +249,40 @@ def launch_and_paint(session: Session, app: str, timeout: float = 120.0) -> dict
     return None
 
 
+def presence_traffic(session: Session) -> list[str]:
+    """Lines proving one app received the other's presence.
+
+    A `ui` app logs this when a participant arrives on a scope it is
+    watching, and it logs it *because* the arrival still has to be
+    answered with the document — the half of the frame that must keep
+    working while the painted half stops. So the line is evidence the
+    rig delivered the very frame that used to become a pill, and it
+    cannot be produced by a session that published nothing.
+    """
+    try:
+        text = open(session.log_path, errors="replace").read()
+    except OSError:
+        return []
+    return [ln for ln in text.splitlines()
+            if "recv Arrived" in ln or "replying full state" in ln]
+
+
+def rule_fired(session: Session) -> list[str]:
+    """Lines where an app recognised an arrival as its own participant.
+
+    The positive half of the claim. Absence of a pill is also what a
+    session that was sent nothing looks like, and the first version of
+    this file passed against a binary carrying the bug for exactly that
+    reason — the pill it missed was drawn by the app, inside its own
+    window, where the compositor's presence store cannot see it.
+    """
+    try:
+        text = open(session.log_path, errors="replace").read()
+    except OSError:
+        return []
+    return [ln for ln in text.splitlines() if "own participant" in ln]
+
+
 def mentions_self(rows: list) -> list:
     """Presence rows that name this session's own participant.
 
@@ -257,7 +317,25 @@ def main() -> int:
             note(f"see {session.log_path}")
             return 1
 
-        print("\n[2] two apps, one person")
+        print("\n[2] a room to be alone in")
+        # Presence is scoped to a room and an unminted workspace has
+        # none: an app in one publishes nothing at all, which is a
+        # desktop where this bug cannot appear and a test that would
+        # pass without ever reaching the thing it is aiming at.
+        #
+        # Minting is also what writes this machine's own name into the
+        # room — the host names itself when it mints, and that name is
+        # what the pill later reads.
+        session.invoke("peer.invite")
+        token = wait_for(lambda: session.chrome()["peer_sync"]["invite_token"], timeout=30)
+        if not check("the workspace has a room", bool(token)):
+            note(f"no room means no presence at all; see {session.log_path}")
+            return 1
+        session.call({"op": "key", "key": "Escape"})
+        room = session.active_room()
+        note(f"room {room}")
+
+        print("\n[3] two apps, one person")
         for app in APPS:
             frame = launch_and_paint(session, app)
             if not check(f"{app.rsplit('.', 1)[-1]} painted", bool(frame),
@@ -266,17 +344,34 @@ def main() -> int:
                 return 1
 
         # Both apps announce and publish under one identity, and the
-        # overlay is in the same room. Give the fan-out a moment to
-        # deliver, and move the pointer so that any pointer-driven
-        # presence has actually happened rather than merely being
-        # possible — a rule that only holds because nothing was
-        # published is not a rule.
-        session.move_to(640.0, 400.0)
-        time.sleep(3.0)
-        session.move_to(700.0, 430.0)
+        # overlay subscribes to the same room. Drift the pointer across
+        # both tiles so pointer presence has actually been published
+        # rather than merely being possible — a rule that holds only
+        # because nothing was ever sent is not a rule.
+        for x, y in ((320.0, 400.0), (360.0, 420.0), (900.0, 400.0), (940.0, 420.0)):
+            session.move_to(x, y)
+            time.sleep(1.5)
         time.sleep(3.0)
 
-        print("\n[3] what the desktop is painting")
+        print("\n[4] presence was in fact published")
+        # The witness this rig cannot do without. Once the rule holds,
+        # a session alone in a room paints nobody — and an empty
+        # presence store is exactly what a rig that never delivered a
+        # frame also produces. Passing on that would be a test that
+        # cannot tell "fixed" from "never looked", which is how the
+        # first version of this file passed against a binary carrying
+        # the bug.
+        traffic = presence_traffic(session)
+        check("the session's apps published presence into the room",
+              bool(traffic), (traffic[-1][:160] if traffic else
+                              "nothing in the log — the rig proved nothing"))
+
+        fired = rule_fired(session)
+        check("an app recognised the arrival as its own participant",
+              bool(fired), (fired[-1][:160] if fired else
+                            "the rule never fired — an empty screen proves nothing"))
+
+        print("\n[5] what the desktop is painting")
         rows = session.pointers()
         note(f"presence rows: {json.dumps(rows)[:400]}")
         mine = mentions_self(rows)
@@ -287,7 +382,7 @@ def main() -> int:
         check("the roster does not list the owner as a collaborator",
               not listed, json.dumps(listed)[:200] if listed else "")
 
-        print("\n[4] the pixels")
+        print("\n[6] the pixels")
         shot = os.path.join(out, "one-person-two-windows.png")
         check("screenshot written", session.snapshot(shot), shot)
         note("look at it: no pill anywhere may read " + WHO)
