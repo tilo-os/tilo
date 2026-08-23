@@ -21,6 +21,11 @@
 //!                   export render through, so they cannot disagree.
 //!   * [`audio`]   — which clips are audible at an instant, and the mix.
 //!   * [`export`]  — export presets + the (GStreamer-gated) render pipeline.
+//!   * [`shot`]    — composing a `--shots` frame, and the fingerprint that
+//!                   proves two runs of a scenario describe one picture.
+//!   * [`presence`] — who else is in the edit: the presence keys for the
+//!                   timeline domain, what this editor publishes about
+//!                   where its user is, and how it draws everyone else.
 //!   * [`app`]     — the root [`app::VideoEditorApp`] widget: media bin,
 //!                   preview + transport, multi-track timeline, inspector,
 //!                   export dialog — all drawn into one Vello scene.
@@ -39,9 +44,11 @@ pub mod media;
 pub mod model;
 pub mod param;
 pub mod portal;
+pub mod presence;
 pub mod preview;
 pub mod project_file;
 pub mod probe;
+pub mod shot;
 pub mod thumbnail;
 pub mod timecode;
 pub mod waveform;
