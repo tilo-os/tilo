@@ -16,7 +16,8 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 
 use video_editor::export::{
-    Container, ExportSettings, ExportStatus, FrameRate, Resolution, begin_export, output_path,
+    Container, ExportSettings, ExportStatus, FrameRate, Resolution, begin_export, encode_chain,
+    output_path, selected_encoders, video_codec,
 };
 use video_editor::model::{
     MediaItem, MediaKind, Project, TextAlign, TextSource, Track, TrackKind, Transform,
@@ -195,9 +196,20 @@ fn mean_abs_diff(a: &[[u8; 3]], b: &[[u8; 3]]) -> f64 {
 /// Run a real export and return the file it wrote. The destination comes
 /// from the project's own name, so no process-wide state is touched.
 fn export(project: &Project) -> std::path::PathBuf {
+    export_as(project, Container::Mp4)
+}
+
+/// [`export`] to a chosen container, so the same fidelity checks can be run
+/// against a chain built from different elements.
+fn export_as(project: &Project, container: Container) -> std::path::PathBuf {
+    // Say which encoder this machine resolved to, so the result is read
+    // against what actually ran rather than an assumption about it. On a box
+    // with no hardware H.264 encoder this prints the software fallback, which
+    // is the honest reading of the run.
+    println!("encoders: {}", selected_encoders(container).describe());
     let settings = ExportSettings {
         resolution: Resolution::P720,
-        container: Container::Mp4,
+        container,
         frame_rate: FrameRate::F30,
     };
     let expected = output_path(&settings, project);
@@ -218,6 +230,74 @@ fn tidy(path: &std::path::Path) {
     if std::env::var_os("QOS_VE_EXPORT_DIR").is_none() {
         std::fs::remove_file(path).ok();
     }
+}
+
+/// The WebM chain, end to end.
+///
+/// Every other test here exports MP4, so until now nothing decoded a file
+/// produced by the *other* encoder — a different element, a differently named
+/// bitrate property (`target-bitrate`, not `bitrate`) and a different muxer.
+/// A mistake anywhere in that branch would have reached a user before it
+/// reached a test.
+///
+/// The checks are the ones the MP4 test makes, for the same reason: a
+/// container-shaped file full of synthesized bands passes a magic-byte check
+/// and fails this one.
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn the_webm_chain_encodes_the_real_footage_too() {
+    let clip = demo_clip();
+    let project = project_over(&clip, 1.0, &format!("ve webm {}", std::process::id()));
+    let out = export_as(&project, Container::WebM);
+    assert_eq!(
+        out.extension().and_then(|e| e.to_str()),
+        Some("webm"),
+        "the WebM export writes a .webm file: {}",
+        out.display(),
+    );
+
+    // Whatever encoder was picked for this container, it must be one that
+    // writes the codec the container carries — and it must have been given the
+    // bitrate under the property it actually names.
+    let (sel, _, _) = encode_chain(Container::WebM);
+    assert!(
+        video_codec(Container::WebM)
+            .candidates()
+            .iter()
+            .any(|c| c.element == sel.spec.element),
+        "WebM selected {}, which does not encode VP8",
+        sel.spec.element,
+    );
+
+    let source = decode_frame(&clip, 0.0);
+    let exported = decode_frame(&out, 0.0);
+
+    let source_detail = horizontal_detail(&source);
+    let export_detail = horizontal_detail(&exported);
+    let diff = mean_abs_diff(&source, &exported);
+    println!(
+        "webm horizontal detail  source={source_detail:.2}  export={export_detail:.2}\n\
+         mean abs difference source vs export = {diff:.2}",
+    );
+
+    assert!(
+        export_detail > 1.0,
+        "the exported WebM frame is flat along every row (detail {export_detail:.2}) — that \
+         is the synthesized-gradient signature, not decoded footage",
+    );
+    assert!(
+        export_detail > source_detail * 0.25,
+        "the exported WebM frame carries only {:.0}% of the source's horizontal detail \
+         ({export_detail:.2} vs {source_detail:.2}) — it is not the real picture",
+        export_detail / source_detail * 100.0,
+    );
+    assert!(
+        diff < 60.0,
+        "the exported WebM frame does not resemble the source frame \
+         (mean abs difference {diff:.2})",
+    );
+
+    tidy(&out);
 }
 
 #[test]
