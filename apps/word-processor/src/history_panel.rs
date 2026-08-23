@@ -609,7 +609,10 @@ mod tests {
         let mut s = three_version_doc();
         let mut panel = HistoryPanel::new();
         panel.refresh(&mut s.doc);
-        assert_eq!(panel.version_count(), 3, "schema init plus two edits");
+        // Two edits, and only two. The schema genesis is a change in the graph
+        // but nobody authored it, so it is not a revision — listing it would put
+        // a version in the pane belonging to no one.
+        assert_eq!(panel.version_count(), 2, "the two edits, and nothing else");
         let summaries: Vec<&str> = panel.entries().iter().map(|e| e.summary.as_str()).collect();
         assert!(
             summaries.contains(&"+5 -0 chars") && summaries.contains(&"+7 -0 chars"),
@@ -632,7 +635,9 @@ mod tests {
         assert_eq!(body(&s), "first second");
 
         let versions_before = panel.version_count();
-        let target = panel.entries()[1].id;
+        // Row 0 is the first edit: the schema genesis is not a row, because
+        // nobody authored it.
+        let target = panel.entries()[0].id;
         assert!(restore_to(&mut s.doc, &target), "restore writes something");
         // The host commits — this is what `needs_commit()` triggers in the app.
         s.commit_action(None, None);
@@ -658,7 +663,8 @@ mod tests {
         let mut s = three_version_doc();
         let mut panel = HistoryPanel::new();
         panel.refresh(&mut s.doc);
-        let target = panel.entries()[1].id;
+        // Row 0 is the first edit — see `restore_brings_back_old_text_as_a_new_version`.
+        let target = panel.entries()[0].id;
 
         panel.preview = build_preview(&mut s.doc, &target, panel.scrubber.entries());
         assert_eq!(panel.preview_text(), Some("first"));
@@ -993,8 +999,14 @@ mod tests {
         // work, and nothing after it.
         let v = panel.versions()[1].clone();
         let boundary = panel.entries()[v.end].id;
+        // `v.end` indexes the pane's rows, which are not the document's changes:
+        // rows the pane does not show (the schema genesis, a group-name marker)
+        // are changes all the same. Ask what version this row *is* rather than
+        // assuming the two lists line up.
+        let boundary_version = ui::version_index_for_entry(&mut s.doc, &boundary)
+            .expect("the boundary row names a version");
         let expected = {
-            let snap = qdoc::history::materialize_at(&mut s.doc, v.end).unwrap();
+            let snap = qdoc::history::materialize_at(&mut s.doc, boundary_version).unwrap();
             snap.blocks.first().map(|b| b.text.clone()).unwrap_or_default()
         };
         assert_ne!(expected, live, "the boundary is a different state");

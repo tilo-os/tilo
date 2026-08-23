@@ -106,6 +106,19 @@ impl UndoLog {
             self.last_heads = doc.get_heads();
             true
         } else {
+            // Nothing to undo, but the baseline still has to be moved up.
+            //
+            // `last_heads` is not "the last thing I did", it is "where the next
+            // action starts from". Changes reach a document by routes other than
+            // a local commit — a peer's ops merged in, a document adopted from a
+            // record, the shared schema genesis — and every one of them advances
+            // the heads without going through here. Leaving the baseline behind
+            // puts all of that *inside* the next action's bracket, so undoing one
+            // keystroke reverts the remote edits and the schema along with it.
+            //
+            // `load_incremental` already re-baselines for the one route that goes
+            // through `State`; this covers the rest.
+            self.last_heads = doc.get_heads();
             false
         }
     }

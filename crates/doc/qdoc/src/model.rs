@@ -340,6 +340,21 @@ fn write_schema(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     }
 }
 
+/// Whether `actor` wrote the schema rather than any of the document's content.
+///
+/// Nobody edits as the genesis actor, so a change it authored is not a revision
+/// and must not be shown as one: a version history that lists it attributes a
+/// revision to a person who does not exist.
+pub fn is_schema_genesis_actor(actor: &automerge::ActorId) -> bool {
+    actor.to_bytes() == GENESIS_ACTOR
+}
+
+/// The schema genesis actor as hex, for comparing against a recorded
+/// `actor_hex`. See [`is_schema_genesis_actor`].
+pub fn schema_genesis_actor_hex() -> String {
+    automerge::ActorId::from(GENESIS_ACTOR).to_hex_string()
+}
+
 /// Container keys that a document is expected to reach exactly one object
 /// through. Used by [`shadowed_containers`].
 const CONTAINER_KEYS: &[&str] = &[
