@@ -143,32 +143,15 @@ struct RevealAnim {
     started: Instant,
 }
 
-/// Whether a pill casts a drop shadow this frame. It never does.
-///
-/// Selection is a **lift**, not an elevation — a chosen tab is not floating
-/// above the bar, it is picked on it. That is the rule
-/// [`crate::chrome::shell::selection_tier`] is written around, and the strip
-/// simply never followed it: it kept four stacked black rings per pill from
-/// the mockup it was transliterated from, which composite to roughly a third
-/// of black under every pill with a body.
-///
-/// Gating them on having a body was a partial fix — it stopped idle pills
-/// sitting on a smear of shadow with no surface on top — but it could not fix
-/// the hovered one, which has a body by definition. Measured on the light
-/// preset the rings drop the ground under a hovered pill by about 50 levels
-/// while that pill's own film moves it by 2, so what a person saw when they
-/// pointed at a tab was, almost entirely, its shadow. Under the old opaque
-/// active pill the rings were simply hidden; the moment its body became
-/// glass they showed straight through it, which is the same thing
-/// [`crate::chrome::shell::paint_panel_elevation`] exists to stop happening
-/// to translucent panels.
-///
-/// What reports that a pill is a surface is now its own lit edge, which is
-/// cheaper, survives a light theme, and does not darken the label it sits
-/// under.
-pub(crate) fn casts_shadow(_look: &PillAppearance) -> bool {
-    false
-}
+
+/// A tab pill casts no shadow, and there is no predicate here deciding that
+/// per frame any more. Selection is a lift, not an elevation — a chosen tab
+/// is picked on the bar, not floating above it — so the absence is a
+/// property of the material, and it is asserted where the material is
+/// painted: see `chrome::shell`'s
+/// `the_material_paints_a_body_an_edge_and_a_rim_and_nothing_else`, which
+/// counts the strip's actual paint operations. A predicate returning
+/// `false` would only have restated itself.
 
 /// A tab whose close button was clicked and is now fading out. Kept
 /// in `TabBar::closing_tabs` alongside the still-live `tabs` vec so the
@@ -4001,45 +3984,6 @@ mod tests {
         }
     }
 
-    /// No pill casts a shadow, in any state, on any theme.
-    ///
-    /// Selection is a lift, not an elevation: a chosen tab is picked on the
-    /// bar, not floating above it. The strip used to lay four stacked black
-    /// rings under every pill with a body, which is a third of black, and
-    /// gating them on having a body only ever fixed the idle case. A hovered
-    /// pill has a body by definition, and on the light preset the rings move
-    /// the ground under it by about 50 levels while its own film moves it by
-    /// 2 — so what a person saw when they pointed at a tab was its shadow.
-    ///
-    /// Asserted as an invariant rather than left to the render because the
-    /// failure is invisible on the dark theme the strip is usually looked at
-    /// on, which is exactly how it survived this long.
-    #[test]
-    fn no_pill_casts_a_shadow_in_any_state() {
-        for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            for (name, look) in [
-                ("idle", pill_appearance(&theme, false, false, false)),
-                ("hovered", pill_appearance(&theme, false, true, false)),
-                ("active", pill_appearance(&theme, true, false, false)),
-                ("pressed", pill_appearance(&theme, false, false, true)),
-                ("active+hover", pill_appearance(&theme, true, true, false)),
-            ] {
-                assert!(
-                    !casts_shadow(&look),
-                    "{}: a {name} pill casts a shadow — elevation is a \
-                     different vocabulary from selection, and under a \
-                     translucent body the rings show straight through",
-                    theme.name,
-                );
-            }
-        }
-    }
-
-    /// Pressed (mouse down on a pill) must visibly compress the pill
-    /// chrome with a subtle scale-down so the click reads as tactile
-    /// feedback. The press also raises the pill into the active visual
-    /// tier (fill + border + glow) so the user sees instant
-    /// "you clicked here" feedback before the activation propagates.
     #[test]
     fn pressed_pill_uses_active_visuals_and_scales_down() {
         let theme = Theme::dark();
