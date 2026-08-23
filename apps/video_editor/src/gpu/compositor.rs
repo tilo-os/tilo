@@ -23,9 +23,9 @@ use super::{FrameSource, SourceTexture};
 /// `composite.wgsl`.
 pub const MAX_SHADER_EFFECTS: usize = 8;
 
-/// Bytes of the uniform struct in `composite.wgsl`: twelve `vec4<f32>`
+/// Bytes of the uniform struct in `composite.wgsl`: thirteen `vec4<f32>`
 /// headers plus the effect array.
-const PARAMS_BYTES: usize = (12 + MAX_SHADER_EFFECTS) * 16;
+const PARAMS_BYTES: usize = (13 + MAX_SHADER_EFFECTS) * 16;
 
 /// Where on the target the composited frame lands, in target pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,12 +61,29 @@ struct Accum {
     views: [wgpu::TextureView; 2],
 }
 
+/// The baked tone curves for one composite: `LUT_SIZE` entries across, one
+/// row per layer.
+///
+/// It is rebuilt only when some layer actually carries a curve — a timeline
+/// nobody has graded allocates and uploads nothing, and its layers bind the
+/// 1×1 dummy at the LUT slot instead.
+struct Lut {
+    rows: u32,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    /// The bytes currently on the GPU, so a held playhead re-uploads
+    /// nothing. A curve only changes when the user shapes it or an animated
+    /// mix moves, both of which change these bytes.
+    uploaded: Vec<u8>,
+}
+
 /// The single compositor used by the preview and the export.
 #[derive(Default)]
 pub struct VideoCompositor {
     gpu: Option<Gpu>,
     accum: Option<Accum>,
     uniform: Option<(wgpu::Buffer, u32)>,
+    lut: Option<Lut>,
     /// Draws title layers. A title's picture comes from the document, not
     /// from a decoder, so the compositor makes it itself rather than asking
     /// the frame source — which is what lets a title render with no media
@@ -133,6 +150,78 @@ impl VideoCompositor {
         self.uniform = Some((buffer, stride));
     }
 
+    /// Bake every layer's tone curve into one `LUT_SIZE × layers` texture,
+    /// returning `true` when at least one layer has a curve to look up.
+    ///
+    /// A layer with no curve still gets a row — the identity ramp — so the
+    /// row index is simply the layer index and there is no mapping to keep
+    /// in step. Its uniform says `lut.x = 0` regardless, so that row is
+    /// never read.
+    fn ensure_lut(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layers: &[Layer],
+    ) -> bool {
+        use crate::curve::LUT_SIZE;
+        if layers.iter().all(|l| l.curve.is_identity()) {
+            return false;
+        }
+        let rows = layers.len().max(1) as u32;
+        let mut bytes = Vec::with_capacity(LUT_SIZE * 4 * rows as usize);
+        for l in layers {
+            bytes.extend_from_slice(&l.curve.bake());
+        }
+        // `layers` is never empty on this branch (an empty stack has no
+        // curve), but the texture must still have the row it was sized for.
+        bytes.resize(LUT_SIZE * 4 * rows as usize, 255);
+
+        if self.lut.as_ref().is_none_or(|l| l.rows != rows) {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("video-composite-lut"),
+                size: wgpu::Extent3d {
+                    width: LUT_SIZE as u32,
+                    height: rows,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.lut = Some(Lut { rows, texture, view, uploaded: Vec::new() });
+        }
+        let lut = self.lut.as_mut().expect("built above");
+        // Re-upload only when the baked bytes actually differ, so holding a
+        // playhead over a graded clip costs one comparison.
+        if lut.uploaded != bytes {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &lut.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(LUT_SIZE as u32 * 4),
+                    rows_per_image: Some(rows),
+                },
+                wgpu::Extent3d {
+                    width: LUT_SIZE as u32,
+                    height: rows,
+                    depth_or_array_layers: 1,
+                },
+            );
+            lut.uploaded = bytes;
+        }
+        true
+    }
+
     /// Composite the timeline at `playhead` into `target`, inside
     /// `viewport`. `sources` resolves each layer's picture; a layer whose
     /// source yields nothing falls back to its deterministic
@@ -195,6 +284,12 @@ impl VideoCompositor {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(target),
+                },
+                // The present pass copies a finished frame; it never grades,
+                // so the LUT slot takes the dummy.
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&gpu.dummy),
                 },
             ],
         });
@@ -336,6 +431,7 @@ impl VideoCompositor {
         self.ensure_accum(device, w, h);
         // One slot per layer plus one for the present pass.
         self.ensure_uniform(device, stride, layers.len() + 1);
+        let has_lut = self.ensure_lut(device, queue, layers);
 
         // Resolve every layer's picture up front: `sources` may want the
         // device, and holding the borrow across the pass loop would clash
@@ -353,6 +449,13 @@ impl VideoCompositor {
         let gpu = self.gpu.as_ref().expect("gpu built above");
         let accum = self.accum.as_ref().expect("accum built above");
         let (buffer, _) = self.uniform.as_ref().expect("uniform built above");
+        // Every pass binds something at the LUT slot so one bind group
+        // layout serves them all; with no curve anywhere that is the 1×1
+        // dummy, and no uniform names a row.
+        let lut_view: &wgpu::TextureView = match (has_lut, self.lut.as_ref()) {
+            (true, Some(l)) => &l.view,
+            _ => &gpu.dummy,
+        };
 
         // With no layers at all the frame is letterbox black; a single
         // clearing pass still has to run so the accumulation is not stale.
@@ -432,6 +535,11 @@ impl VideoCompositor {
                         0.0,
                     ];
                 }
+                // A curve is a baked table this layer looks up; an identity
+                // one is left inactive so the shader takes no lookup at all.
+                if has_lut && !l.curve.is_identity() {
+                    params.lut = [1.0, i as f32, 0.0, 0.0];
+                }
                 if l.mask.is_active() {
                     let m = &l.mask;
                     params.mask_a = [
@@ -486,6 +594,10 @@ impl VideoCompositor {
                         binding: 4,
                         resource: wgpu::BindingResource::TextureView(&accum.views[dst]),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(lut_view),
+                    },
                 ],
             }));
         }
@@ -535,6 +647,7 @@ struct Params {
     key_b: [f32; 4],
     mask_a: [f32; 4],
     mask_b: [f32; 4],
+    lut: [f32; 4],
     effects: [[f32; 4]; MAX_SHADER_EFFECTS],
 }
 
@@ -558,6 +671,8 @@ impl Default for Params {
             key_b: [0.0; 4],
             mask_a: [0.0; 4],
             mask_b: [0.0; 4],
+            // No baked tone curve: the shader takes no lookup at all.
+            lut: [0.0; 4],
             effects: [[0.0; 4]; MAX_SHADER_EFFECTS],
         }
     }
@@ -585,6 +700,7 @@ impl Params {
         put(self.key_b, &mut out, &mut at);
         put(self.mask_a, &mut out, &mut at);
         put(self.mask_b, &mut out, &mut at);
+        put(self.lut, &mut out, &mut at);
         for e in self.effects {
             put(e, &mut out, &mut at);
         }
@@ -644,6 +760,18 @@ fn build_gpu(device: &wgpu::Device) -> Gpu {
                     access: wgpu::StorageTextureAccess::WriteOnly,
                     format: wgpu::TextureFormat::Rgba8Unorm,
                     view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            // The baked tone-curve table: read with `textureLoad`, never
+            // sampled, so it is unfilterable as far as the layout cares.
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
                 },
                 count: None,
             },
