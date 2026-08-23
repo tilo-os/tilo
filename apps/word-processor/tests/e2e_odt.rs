@@ -62,16 +62,25 @@ fn open_edit_save_reload_odt() {
 fn undo_reverts_word_processor_edit() {
     // The host App snapshots on commit_action and restores on undo; the word
     // processor only needs to edit the shared doc + signal commits.
+    //
+    // Both halves are authored, because the host authors them and undo is
+    // author-scoped: an anonymous checkpoint undone anonymously agrees with
+    // itself and with nothing the user does. Recording anonymously here and
+    // undoing anonymously would pass while a real Ctrl+Z skipped this edit.
+    let local_author = ui::collaboration::local_user_id();
     let mut s = ui::State::new();
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut s.doc, &s.root);
-    s.commit_action(None, None); // baseline: one empty paragraph
+    s.commit_action_authored(None, None, Some(local_author.clone())); // baseline
 
     wp.model_mut().insert_str(&mut s.doc, "hello");
-    s.commit_action(None, None);
+    s.commit_action_authored(None, None, Some(local_author.clone()));
     assert_eq!(wp.model().block_texts(&s.doc), vec!["hello".to_string()]);
 
-    s.undo(None, None);
+    assert!(
+        s.undo_as(Some(&local_author), None, None).is_some(),
+        "the author's own undo must find the checkpoint the host recorded for them",
+    );
     assert_eq!(wp.model().block_texts(&s.doc), vec![String::new()], "undo reverts the edit");
 }
 
