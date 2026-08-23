@@ -7487,6 +7487,174 @@ mod synthetic_node_dispatch_tests {
         assert_eq!(*activated.borrow(), vec!["outro".to_string()]);
     }
 
+    // ---- The retained semantic tree (agent / CLI / headless route) --------
+
+    /// Find the semantic node for a clip by its accessible name.
+    fn semantic_clip(app: &App, name: &str) -> crate::a11y_tree::SemanticId {
+        app.semantic_tree()
+            .find_by_name(name)
+            .map(|n| n.id.clone())
+            .unwrap_or_else(|| panic!("no semantic node named {name}"))
+    }
+
+    #[test]
+    fn a_synthetic_semantic_node_carries_how_to_reach_it() {
+        let activated: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut app = App::new(State::new(), Box::new(Timeline::new(activated)));
+        app.init_layout();
+        app.refresh_semantic_tree();
+
+        let owner = app
+            .node_map
+            .keys()
+            .next()
+            .copied()
+            .map(u64::from)
+            .expect("the timeline was laid out");
+
+        let id = semantic_clip(&app, "outro");
+        let node = app.semantic_tree().node(&id).unwrap();
+        let sref = node
+            .synthetic_ref
+            .as_ref()
+            .expect("a synthetic node must say how to reach it, or it cannot be driven");
+        assert_eq!(sref.owner_taffy_id, owner);
+        assert_eq!(
+            sref.key_path,
+            vec![crate::a11y::hash_key(&"outro")],
+            "the path is the clip's own identity key"
+        );
+        assert_eq!(
+            node.widget_taffy_id, None,
+            "it is not a widget, so it must not claim a widget id"
+        );
+
+        // The owning widget, by contrast, is addressed by its taffy id alone.
+        let canvas = app.semantic_tree().find_by_name("Timeline").unwrap();
+        assert_eq!(canvas.widget_taffy_id, Some(owner));
+        assert!(canvas.synthetic_ref.is_none());
+    }
+
+    #[test]
+    fn invoking_a_verb_on_a_synthetic_node_drives_that_element() {
+        // The gap this closes: the node advertised an "activate" affordance and
+        // invoking it silently did nothing.
+        let activated: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut app = App::new(State::new(), Box::new(Timeline::new(activated.clone())));
+        app.init_layout();
+        app.refresh_semantic_tree();
+
+        let id = semantic_clip(&app, "outro");
+        assert!(
+            app.semantic_tree().node(&id).unwrap().action("activate").is_some(),
+            "the clip advertises an activate affordance"
+        );
+
+        assert_eq!(app.invoke_semantic_action(&id, "activate", None), Ok(true));
+        assert_eq!(
+            *activated.borrow(),
+            vec!["outro".to_string()],
+            "invoking the affordance must reach that clip"
+        );
+    }
+
+    #[test]
+    fn focusing_a_synthetic_node_by_name_moves_the_exported_focus() {
+        // The semantic route and the AccessKit route must agree: focusing "intro"
+        // by name has to put the reader on the same node an AT would land on.
+        let activated: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut app = App::new(State::new(), Box::new(Timeline::new(activated)));
+        app.init_layout();
+        app.refresh_semantic_tree();
+
+        let id = semantic_clip(&app, "intro");
+        assert_eq!(app.invoke_semantic_action(&id, "focus", None), Ok(true));
+
+        let update = app.build_a11y_tree_update(1.0);
+        let (_, focused) = update
+            .nodes
+            .iter()
+            .find(|(nid, _)| *nid == update.focus)
+            .expect("focus names a node in the update");
+        assert_eq!(
+            focused.label(),
+            Some("intro"),
+            "the semantic route must move the reader's cursor like the AT route does"
+        );
+    }
+
+    #[test]
+    fn a_synthetic_semantic_id_follows_its_element_across_a_reorder() {
+        // An agent that resolved "outro" in one frame and invokes it in the next
+        // must still hit that clip, not whichever one took its slot.
+        let activated: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut app = App::new(State::new(), Box::new(Timeline::new(activated.clone())));
+        app.init_layout();
+        app.refresh_semantic_tree();
+        let before = semantic_clip(&app, "outro");
+
+        {
+            let w = app.node_map.values().next().copied().unwrap();
+            let t = unsafe { &mut *(w as *mut Timeline) };
+            t.clips = vec!["outro", "intro", "interview"];
+        }
+        app.refresh_semantic_tree();
+
+        assert_eq!(
+            semantic_clip(&app, "outro"),
+            before,
+            "the semantic id belongs to the clip, not to the slot"
+        );
+        assert_eq!(app.invoke_semantic_action(&before, "activate", None), Ok(true));
+        assert_eq!(*activated.borrow(), vec!["outro".to_string()]);
+    }
+
+    #[test]
+    fn a_table_rows_semantic_id_is_its_position() {
+        // A row has no identity of its own, so it is keyed by position — "row 2"
+        // is what the user means — and that path is what reaches the table.
+        let (mut app, fired) = table_app();
+        app.refresh_semantic_tree();
+
+        let row = app
+            .semantic_tree()
+            .iter()
+            .find(|n| n.role == Role::Row)
+            .map(|n| n.id.clone())
+            .expect("rows reach the semantic tree");
+        let sref = app
+            .semantic_tree()
+            .node(&row)
+            .unwrap()
+            .synthetic_ref
+            .clone()
+            .expect("a row must be reachable");
+        assert_eq!(sref.key_path.len(), 1, "a row is one level below the table");
+
+        let index = sref.key_path[0] as usize;
+        assert_eq!(app.invoke_semantic_action(&row, "activate", None), Ok(true));
+        assert_eq!(
+            *fired.borrow(),
+            vec![index],
+            "the affordance activated the row its key path named"
+        );
+    }
+
+    #[test]
+    fn a_node_with_nothing_behind_it_reports_that_it_was_not_driven() {
+        // The window root carries no widget and no synthetic ref. Invoking a verb
+        // there must answer "no", not pretend it did something.
+        let activated: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut app = App::new(State::new(), Box::new(Timeline::new(activated)));
+        app.init_layout();
+        app.refresh_semantic_tree();
+
+        let root = app.semantic_tree().root().clone();
+        let node = app.semantic_tree().node(&root).unwrap();
+        assert!(node.widget_taffy_id.is_none() && node.synthetic_ref.is_none());
+        assert_eq!(app.invoke_semantic_action(&root, "activate", None), Ok(false));
+    }
+
     #[test]
     fn every_row_reaches_the_tree_as_a_focusable_node() {
         let (app, _fired) = table_app();
