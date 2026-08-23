@@ -535,6 +535,11 @@ pub struct PresenceCtx {
     /// local viewport to a chosen peer. Cleared for a peer on
     /// [`Self::unregister_peer`].
     views: HashMap<UserId, crate::view::ViewSubset>,
+    /// The identities this session publishes its own presence under —
+    /// what a frame it sent comes back stamped with. See
+    /// [`Self::set_own_identity`]; empty means "unknown", which
+    /// suppresses nobody.
+    own: std::collections::HashSet<UserId>,
 }
 
 impl PresenceCtx {
@@ -569,6 +574,63 @@ impl PresenceCtx {
 
 impl PresenceCtx {
     pub fn empty() -> Self { Self::default() }
+
+    /// Declare the identities a frame *this* session published comes
+    /// back stamped with, so its own presence is never painted as
+    /// somebody else's.
+    ///
+    /// Two apps one person has open are two connections and **one
+    /// participant** — the broker says so outright, and resolves both
+    /// to a single identity before it stamps their presence. It then
+    /// fans each one's frames to the other, because a sibling app is a
+    /// legitimate audience for them: `Arrived` is how a joiner asks the
+    /// room for the document, and both a second window and `qos-agent`
+    /// depend on being answered. What must not happen is the *painting*
+    /// of that arrival, which puts a pill bearing the owner's own name
+    /// over the owner's own document.
+    ///
+    /// The roster has always refused this — `room_roster` drops the
+    /// local handle before it builds a row, on the grounds that a host
+    /// self-names at mint time and must not read that back as a peer.
+    /// This is the same rule on the path that paints.
+    ///
+    /// The discriminator is the **participant**, not the process and
+    /// not the app: two windows of one app are one person, and so are a
+    /// word processor and a file manager side by side. An agent editing
+    /// the same document joins under an identity of its own, so it
+    /// keeps its caret — an app participant with no window is still
+    /// somebody else.
+    ///
+    /// Blank entries are dropped. An env var set to `""` is what a
+    /// launcher produces when the variable it meant to forward was
+    /// itself unset, and taking it literally would make every unnamed
+    /// participant "me" and empty the room.
+    ///
+    /// Unset — or set to something the broker did not in fact stamp —
+    /// the rule simply does not fire and everybody is painted. That
+    /// direction is deliberate: a spurious pill for yourself is a
+    /// blemish, a missing pill for a real collaborator is a lie about
+    /// who is in the room.
+    pub fn set_own_identity<I, S>(&mut self, ids: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.own = ids
+            .into_iter()
+            .filter(|s| !s.as_ref().trim().is_empty())
+            .map(|s| UserId(s.as_ref().to_string()))
+            .collect();
+    }
+
+    /// Whether `user_id` is this session's own participant — i.e. a
+    /// frame it published, handed back to it by the broker's fan-out.
+    pub fn is_own_identity(&self, user_id: &str) -> bool {
+        if self.own.is_empty() || user_id.trim().is_empty() {
+            return false;
+        }
+        self.own.contains(&UserId(user_id.to_string()))
+    }
 
     pub fn register_presence(&mut self, key: &PresenceKey, user: UserId) {
         let list = self.here.entry(key.clone()).or_default();
@@ -927,6 +989,13 @@ impl PresenceCtx {
         alpha: f32,
         owner: PointerOwner,
     ) {
+        // The cursor stream is a second door into the same pill
+        // (`CollabEvent::RemoteCursorMoved` reaches here without going
+        // through `apply_remote_presence`). A guard on one door and not
+        // the other leaves the bug reachable.
+        if self.is_own_identity(&user_id) {
+            return;
+        }
         let uid = UserId(user_id.clone());
         let (r, g, b) = self.color_for(&uid);
         let color = [
@@ -1039,6 +1108,28 @@ impl PresenceCtx {
         payload: crate::collaboration::PresencePayload,
     ) -> RemotePresenceEffect {
         use crate::collaboration::PresencePayload::*;
+
+        // A frame this session published, handed back to it: another
+        // app the same person has open. Nothing about it is painted —
+        // see [`Self::set_own_identity`] — but `Arrived` still has to
+        // be answered, because it is the request a joiner makes for the
+        // document rather than a thing to draw. Suppressing the pill
+        // must not suppress the handshake.
+        if self.is_own_identity(&user_id) {
+            // Following yourself is not a thing, and a View broadcast
+            // rides inside the key rather than the payload.
+            if key.as_view().is_some() {
+                return RemotePresenceEffect::None;
+            }
+            return match payload {
+                // A Tab-keyed arrival moves a focus dot; only a scope
+                // arrival is a join asking to be sent the document.
+                Arrived if !matches!(key, PresenceKey::Tab { .. }) => {
+                    RemotePresenceEffect::PeerArrived
+                }
+                _ => RemotePresenceEffect::None,
+            };
+        }
 
         // A View broadcast rides inside the routing key, not the payload
         // (the subset has no `PresencePayload` variant). Recognise it here,
@@ -1755,5 +1846,157 @@ mod string_id_wrapper_tests {
         assert_eq!(ctx.caret_for(&key, &UserId("bob".into())), Some(7));
         assert_eq!(ctx.remote_cursors.len(), 1);
         assert_eq!(ctx.remote_cursors[0].user_id, "bob");
+    }
+}
+
+/// A session must not paint its own participant, and must go on
+/// painting everybody else. Both halves are asserted here: the second
+/// is the one that keeps a fix in this area from hiding the room.
+#[cfg(test)]
+mod own_identity_tests {
+    use super::*;
+    use crate::collaboration::PresencePayload;
+
+    fn room() -> PresenceKey {
+        PresenceKey::Workspace { id: "room-1".into() }
+    }
+
+    fn mine() -> PresenceCtx {
+        let mut ctx = PresenceCtx::empty();
+        ctx.set_own_identity(["quinten"]);
+        ctx
+    }
+
+    /// Two apps one person has open resolve to one participant, so
+    /// both publish under the same identity and the broker hands each
+    /// one's frames to the other. Painting that draws the owner a pill
+    /// bearing their own name, over their own document.
+    #[test]
+    fn a_session_does_not_paint_a_pill_for_itself() {
+        let mut ctx = mine();
+        ctx.apply_remote_presence(
+            "quinten".into(),
+            room(),
+            PresencePayload::Pointer { x: 120.0, y: 90.0 },
+        );
+        ctx.apply_remote_presence("quinten".into(), room(), PresencePayload::Caret { pos: 7 });
+
+        assert!(
+            ctx.remote_cursors.is_empty(),
+            "painted a cursor pill for this session's own identity: {:?}",
+            ctx.remote_cursors,
+        );
+        assert_eq!(ctx.pointer_for(&room(), &UserId("quinten".into())), None);
+        assert_eq!(ctx.caret_for(&room(), &UserId("quinten".into())), None);
+        assert!(ctx.peers_on(&room()).is_empty());
+    }
+
+    /// The control. A second *person* is a second participant, and the
+    /// self-rule may not touch them — hiding a real collaborator is the
+    /// worse of the two failures by a distance.
+    #[test]
+    fn another_person_is_still_painted() {
+        let mut ctx = mine();
+        ctx.apply_remote_presence(
+            "peer@77".into(),
+            room(),
+            PresencePayload::Pointer { x: 12.0, y: 34.0 },
+        );
+        ctx.apply_remote_presence("peer@77".into(), room(), PresencePayload::Caret { pos: 3 });
+
+        assert_eq!(ctx.pointer_for(&room(), &UserId("peer@77".into())), Some((12.0, 34.0)));
+        assert_eq!(ctx.caret_for(&room(), &UserId("peer@77".into())), Some(3));
+        assert_eq!(ctx.remote_cursors.len(), 1);
+        assert_eq!(ctx.remote_cursors[0].user_id, "peer@77");
+    }
+
+    /// A document legitimately has more than one app participant: the
+    /// agent joins as one and publishes a caret as it edits, with no
+    /// window anywhere. It announces an identity of its own, so the
+    /// rule leaves it alone — the test is the participant, not the
+    /// process and not the presence of a window.
+    #[test]
+    fn an_agent_in_the_same_document_is_still_painted() {
+        let mut ctx = mine();
+        ctx.apply_remote_presence("agent".into(), room(), PresencePayload::Caret { pos: 11 });
+        assert_eq!(ctx.caret_for(&room(), &UserId("agent".into())), Some(11));
+    }
+
+    /// `Arrived` is not only a thing to draw — it is how a joiner asks
+    /// the room for the document, and a second window of the same app
+    /// depends on the answer. Suppressing the pill must not suppress
+    /// the handshake.
+    #[test]
+    fn a_sibling_arriving_still_gets_the_document() {
+        let mut ctx = mine();
+        assert_eq!(
+            ctx.apply_remote_presence("quinten".into(), room(), PresencePayload::Arrived),
+            RemotePresenceEffect::PeerArrived,
+            "a sibling that arrived must still be answered with state",
+        );
+        assert!(
+            ctx.peers_on(&room()).is_empty(),
+            "answering a sibling must not also list it as somebody else",
+        );
+    }
+
+    /// A session that does not know what it is called suppresses
+    /// nobody. The rule fails open on purpose.
+    #[test]
+    fn an_unnamed_session_suppresses_nobody() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.apply_remote_presence(
+            "quinten".into(),
+            room(),
+            PresencePayload::Pointer { x: 1.0, y: 2.0 },
+        );
+        assert_eq!(ctx.remote_cursors.len(), 1);
+    }
+
+    /// A blank handle is what a launcher produces when the variable it
+    /// meant to forward was itself unset. Taking it literally would
+    /// make every unnamed participant "me" and empty the room.
+    #[test]
+    fn a_blank_identity_is_not_an_identity() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.set_own_identity(["", "   "]);
+        assert!(!ctx.is_own_identity(""));
+        ctx.apply_remote_presence("".into(), room(), PresencePayload::Pointer { x: 1.0, y: 2.0 });
+        assert_eq!(ctx.remote_cursors.len(), 1);
+    }
+
+    /// The cursor stream reaches the same pill without passing through
+    /// `apply_remote_presence`. A guard on one door and not the other
+    /// leaves the bug reachable.
+    #[test]
+    fn the_cursor_stream_honours_the_same_rule() {
+        let mut ctx = mine();
+        ctx.upsert_remote_cursor("quinten".into(), [5.0, 5.0], None);
+        assert!(ctx.remote_cursors.is_empty());
+        ctx.upsert_remote_cursor("peer@77".into(), [5.0, 5.0], None);
+        assert_eq!(ctx.remote_cursors.len(), 1);
+    }
+
+    /// Following yourself is not a thing. A `View` broadcast stamped
+    /// with this session's own identity is neither stored nor reported
+    /// as a reason to move the viewport.
+    #[test]
+    fn a_session_does_not_follow_its_own_view() {
+        let mut ctx = mine();
+        let subset = crate::view::ViewSubset {
+            scroll: vec![10.0],
+            open_resource: None,
+            viewport: crate::view::ViewRect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 },
+            view_mode: None,
+        };
+        assert_eq!(
+            ctx.apply_remote_presence(
+                "quinten".into(),
+                PresenceKey::view(&subset),
+                PresencePayload::Arrived,
+            ),
+            RemotePresenceEffect::None,
+        );
+        assert!(ctx.peer_view(&UserId("quinten".into())).is_none());
     }
 }
