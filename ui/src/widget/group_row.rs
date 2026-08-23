@@ -3972,6 +3972,65 @@ mod tests {
         );
     }
 
+    /// Two windows never occupy the same place on a strip.
+    ///
+    /// `group_canvas_spans` is the function the shell reads to decide
+    /// where a launch lands (`ShellOverlayHost::publish_strip_viewport`
+    /// feeds it to `placement::placement_for_new_window`), so a strip
+    /// whose spans overlap would seat a new window on top of one that is
+    /// already there. This guards a frame that showed two word-processor
+    /// windows stacked at 100% overlap — an outcome nothing in the strip
+    /// layer asserted against, despite this being the only geometry the
+    /// placement rule ever sees.
+    ///
+    /// Every pair is compared, not just neighbours: a single negative
+    /// step would show up between adjacent spans, but two groups sharing
+    /// an origin shows up only under a full pairwise sweep.
+    #[test]
+    fn no_two_groups_on_a_strip_share_horizontal_space() {
+        for (count, viewport) in [(2usize, 1280.0_f64), (3, 1280.0), (4, 900.0), (8, 1200.0)] {
+            let (row, _t, _r) = make_overflow_row(count, viewport);
+            let spans = row.group_canvas_spans();
+            assert_eq!(
+                spans.len(),
+                count,
+                "every group on a {count}-group strip gets a span",
+            );
+
+            let mut ids: Vec<u64> = spans.iter().map(|(id, _, _)| *id).collect();
+            ids.sort_unstable();
+            let distinct = {
+                let mut d = ids.clone();
+                d.dedup();
+                d.len()
+            };
+            assert_eq!(
+                distinct, count,
+                "a strip holds {count} distinct groups, not the same one twice \
+                 (ids: {ids:?})",
+            );
+
+            for (i, (id, l, r)) in spans.iter().enumerate() {
+                assert!(
+                    r > l,
+                    "group {id} (index {i}) occupies a positive width, got \
+                     {l:.1}..{r:.1}",
+                );
+            }
+            for (i, (a_id, a_l, a_r)) in spans.iter().enumerate() {
+                for (b_id, b_l, b_r) in spans.iter().skip(i + 1) {
+                    assert!(
+                        a_r <= b_l || b_r <= a_l,
+                        "groups {a_id} ({a_l:.0}..{a_r:.0}) and {b_id} \
+                         ({b_l:.0}..{b_r:.0}) overlap on a {count}-group strip \
+                         at viewport {viewport} — that is two windows drawn in \
+                         one place",
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn drop_in_visible_trailing_area_creates_new_group_at_end() {
         // After a horizontal scroll has shifted the strip, a release

@@ -3471,6 +3471,54 @@ mod command_path_tests {
         assert!(!w.entries_snapshot().iter().any(|e| e.name == ".secret"), "toggled back off");
     }
 
+    /// A file manager pointed at a directory that has files in it lists
+    /// those files.
+    ///
+    /// Asserts the *exact* set rather than "contains one of them". The
+    /// frame this guards showed "This folder is empty" over a directory
+    /// that held five entries, and an `.iter().any(|e| e.name == …)`
+    /// probe for a single name — the shape every other listing test in
+    /// this file uses — would still have passed on a listing that had
+    /// lost the other four.
+    ///
+    /// The empty-state banner is a draw-only side effect with no
+    /// accessor, so the assertions are on the two conditions that gate
+    /// it (a non-empty `entries`, no error) plus the item count the same
+    /// view renders in its footer.
+    #[test]
+    fn a_populated_directory_lists_exactly_its_contents() {
+        let d = tempfile::tempdir().unwrap();
+        let names = ["alpha.txt", "beta.md", "delta.rs", "epsilon.png", "gamma.odt"];
+        for n in names {
+            std::fs::write(d.path().join(n), b"x").unwrap();
+        }
+
+        let (mut w, _cfg) = hermetic();
+        w.navigate(d.path().to_path_buf());
+
+        assert_eq!(
+            w.error_message(),
+            None,
+            "a directory that reads cleanly reports no error",
+        );
+
+        let mut listed: Vec<String> = w.entries_snapshot().iter().map(|e| e.name.clone()).collect();
+        listed.sort();
+        let mut expected: Vec<String> = names.iter().map(|s| (*s).to_string()).collect();
+        expected.sort();
+        assert_eq!(
+            listed, expected,
+            "every file in the directory is listed, and nothing else is",
+        );
+
+        let (count, _path) = w.footer_text();
+        assert_eq!(
+            count,
+            names.len(),
+            "the footer counts the same entries the list shows",
+        );
+    }
+
     #[test]
     fn scroll_position_survives_a_structural_rebuild_but_resets_on_navigation() {
         // The real fix: selecting a row / re-sorting rebuilds the whole
