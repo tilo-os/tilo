@@ -185,17 +185,40 @@ never affected, which is why presence crossed while the page stayed
 blank, and why this read as a routing bug for days. Frames now carry a
 kind tag.
 
-**It does not work yet on the path this demo actually takes.** Quinten's
-word processor is the one from beat 5 — installed, then opened — and it
-logs `collab connected=false`, while Xaver's, opened from the palette,
-logs `true`. Same asymmetry across four runs. A peer's caret arrives and
-paints; the document never does.
+**The `connected=false` asymmetry is fixed.** Quinten's word processor is
+the one from beat 5 — installed, then opened — and it used to log
+`collab connected=false` where Xaver's, opened from the palette, logged
+`true`. The capnp server held no network handle, so a sandboxed app
+could not publish at all. Merged 2026-08-23.
 
-That is a product bug, not a demo one: installing an app and opening it
-is what a person does the first time they use anything, and on that path
-collaboration fails *quietly* — presence works, so the room looks alive
-while nothing is shared. Under fix. This beat is not claimed until a
-frame shows the text arriving on the other machine.
+**What replaced it: the answer is right and the screen is still blank.**
+Run `target/v2` asserts `xaver's own word processor holds what quinten
+typed` and passes — and `target/v2/shots/06b-xaver-window-and-text.png`,
+taken on his screen seconds later, has both his pages reading
+"Start writing…". His screen does not change by one *pixel* across the
+whole beat — `06-xaver-window.png` and `08-xaver-received.png` differ as
+files (the PNG encoder is not deterministic) and decode identically:
+zero pixels moved, against 535,205 for a page that really did gain the
+text.
+
+The cause is a broker fan-out. It computes an addressed channel key and
+then routes room-wide anyway — visible as `room_wide=true` beside
+`addressed=<room>#app:dev.qos.word-processor` in any session log — so a
+handshake addressed to the word processor is answered by whatever else
+is in the room. `[app dev.qos.file-explorer] recv Arrived; replying full
+state 4904B` is the file manager answering for a document it does not
+own. The reader therefore gets the text from an app that is not the one
+drawn, and the claim passes without Xaver's word processor holding
+anything.
+
+The same defect hangs beat 9: the agent addresses the word processor,
+every app in the room answers, and it waits out its timeout. Both are
+one broker fix.
+
+`scripts/yc-demo.py` now hashes Xaver's screen before and after and
+raises a gap when the socket says yes and not a pixel moved — so this
+cannot pass silently again. **This beat is not claimed until a frame
+shows the text on the other machine**, which no frame yet does.
 
 ## 8 · An image into the document ✅ — run, but not in this cut
 

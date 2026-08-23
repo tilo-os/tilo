@@ -2161,20 +2161,56 @@ def frame_one_window(s: Session, app_id: str, prefer: dict | None = None,
     focus_app_group(s, app_id, prefer=prefer)
 
 
-def screen_digest(s: Session, where: str) -> str | None:
-    """A hash of what `s` is painting right now, or None.
+#: How many pixels have to move before a screen counts as having
+#: changed. A text caret blinking on and off is about fifty; a remote
+#: peer's name pill is a bit over a thousand; a line of text arriving in
+#: a document is tens of thousands. Set above the second and far below
+#: the third, so a page that gained a sentence is never confused with a
+#: page that only blinked.
+SCREEN_MOVED_PX = 4000
 
-    Used to ask the one question a socket cannot answer: did anything on
-    that screen change. The compositor encodes the same scene to the same
-    PNG, so equal bytes mean the screen did not move — carets included,
-    which is what makes this worth doing rather than approximating.
-    """
+
+def screen_shot(s: Session, where: str) -> str | None:
+    """Put what `s` is painting on disk, and hand back the path."""
     try:
         s.snapshot(where)
-        with open(where, "rb") as f:
-            return hashlib.sha1(f.read()).hexdigest()
+        return where
     except Exception as exc:  # noqa: BLE001
         note(f"{s.name}: could not read the screen back ({exc})")
+        return None
+
+
+def pixels_moved(before: str | None, after: str | None) -> int | None:
+    """How many pixels differ between two shots, or None if it could not
+    be worked out.
+
+    The one question a socket cannot answer: did that screen actually
+    change. Comparing the PNGs byte for byte is not it — the two shots
+    either side of this beat came out the same size and different bytes,
+    because a caret had blinked, so a hash says "changed" about a screen
+    on which nothing happened. This decodes and counts instead.
+    """
+    if not before or not after:
+        return None
+    try:
+        from PIL import Image, ImageChops
+    except Exception:                       # noqa: BLE001
+        note("PIL is not available, so the far screen could not be "
+             "compared against what its session answered")
+        return None
+    try:
+        with Image.open(before) as a, Image.open(after) as b:
+            a, b = a.convert("RGB"), b.convert("RGB")
+            if a.size != b.size:
+                return None
+            grey = ImageChops.difference(a, b).convert("L")
+            # A threshold, not an exact match: subpixel text rendering
+            # moves a value by one or two all over a page that has not
+            # changed at all.
+            moved = grey.point(lambda v: 255 if v > 24 else 0)
+            return sum(moved.histogram()[255:])
+    except Exception as exc:                # noqa: BLE001
+        note(f"could not compare the two shots ({exc})")
         return None
 
 
@@ -3790,7 +3826,7 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     # screen reading "Start writing…" for the whole beat. Assertion
     # green, screen blank — which is the failure this whole file is
     # written against, so it is checked rather than hoped for.
-    before_screen = screen_digest(
+    before_screen = screen_shot(
         xaver, os.path.join(shots, "07a-xaver-before-the-text.png"))
 
     step(f"quinten types {TYPED_TEXT!r}")
@@ -3953,29 +3989,35 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
             f"read back — this run establishes nothing about beat 7 in "
             f"either direction. See {xaver.log_path}")
     xaver.settle(2.0)
-    after_screen = screen_digest(
+    after_screen = screen_shot(
         xaver, os.path.join(shots, "08-xaver-received.png"))
 
     # The cross-check. Only meaningful when the socket said yes: a
     # document that never arrived is allowed to leave the screen alone.
-    if carried and before_screen and after_screen:
-        if before_screen == after_screen:
-            gap("xaver's session answered with a document carrying "
-                f"{TYPED_TEXT!r}, and his screen did not change by one "
-                f"pixel while it arrived — his two pages read "
-                f"'Start writing…' before and after. So the app that "
-                f"answered is not the app on screen. The broker fans an "
-                f"addressed channel key out room-wide (see the "
-                f"`room_wide=true` lines in {xaver.log_path}), so a "
-                f"handshake addressed to the word processor is answered "
-                f"by whatever else is in the room — which makes this "
-                f"claim pass without his word processor holding "
-                f"anything. Broker fix, and the one that matters most "
-                f"here: this is the shot the film crosses to a second "
-                f"machine for")
+    if carried:
+        moved = pixels_moved(before_screen, after_screen)
+        if moved is None:
+            gap("xaver's session answered with the text, and his screen "
+                "could not be compared, so whether his app drew any of "
+                "it is not established by this run")
+        elif moved < SCREEN_MOVED_PX:
+            gap(f"xaver's session answered with a document carrying "
+                f"{TYPED_TEXT!r}, and {moved} pixels of his screen moved "
+                f"while it arrived — a blinking caret, and no text. His "
+                f"pages read 'Start writing…' either side of it. So the "
+                f"app that answered is not the app that is drawn: the "
+                f"broker computes an addressed channel key and fans out "
+                f"room-wide anyway (grep `room_wide=true` in "
+                f"{xaver.log_path}), so a handshake addressed to the "
+                f"word processor is answered by whatever else is in the "
+                f"room, and this claim passes without his word processor "
+                f"holding anything. It is the same defect that leaves "
+                f"the agent waiting in beat 9, and this is the shot the "
+                f"film crosses to a second machine to get")
         else:
-            note("and his screen changed while it arrived, so the app "
-                 "that answered is the app that is drawn")
+            note(f"and {moved} pixels of his screen moved while it "
+                 f"arrived, so the app that answered is the app that is "
+                 f"drawn")
 
 
 #: Where the file view puts its rows, straight off the app's own
