@@ -6388,45 +6388,68 @@ impl WorkspaceTree {
 
 /// What colour each person on `roster` is drawn in.
 ///
-/// One function because there is one answer. A peer's cursor is coloured
-/// by [`ui::presence::assign_peer_colors`], which settles the whole room
-/// at once so two people whose ids hash onto the same palette entry do
-/// not end up the same colour; the avatars used to be coloured by
-/// [`ui::presence::user_color`] directly, which is the unsettled hash the
-/// room assignment exists to correct. That gap is visible on screen and
-/// it is worse than either half alone: someone whose cursor is orange and
-/// whose avatar is pink reads as two participants.
+/// One function because there is one answer, and the answer is a pure
+/// function of *who the person is* — nothing about who else happens to
+/// be in the room, and nothing about which session is asking. An
+/// explicit [`Collaborator::cursor_color`] is a decision that person
+/// made and outranks the computed colour; otherwise the identity hashes
+/// onto [`ui::presence::PEER_PALETTE`] via [`ui::presence::user_color`].
 ///
-/// An explicit [`Collaborator::cursor_color`] is a decision a person made
-/// and outranks anything computed — the same precedence
-/// `OverlayHost::visible_peers` applies — so those colours are held back
-/// from the assignment rather than competing with it.
+/// That is deliberately the same rule, in the same order, as
+/// [`ui::presence::PresenceCtx::color_for`] — the function that colours
+/// a remote cursor on the desktop. Stating it twice is a hazard, so the
+/// two are pinned together by a test that seeds a real `PresenceCtx`
+/// through `sync_tab_presence_from_tree` and compares. A person whose
+/// cursor is orange and whose avatar is pink reads as two participants,
+/// and that is the failure this alignment exists to prevent.
 ///
-/// The local user is included in the set the room settles over even
-/// though they are never in the avatar stack: every host in a room sees
-/// the same membership that way (the others, plus itself), so every host
-/// computes the same assignment and a person is one colour on every
-/// screen.
+/// # Why not settle the room
+///
+/// This used to hand the roster to [`ui::presence::assign_peer_colors`],
+/// which walks a room in sorted order and steps anyone who collides on
+/// to the next free palette entry. That buys a real property — no two
+/// people in one room ever share a colour — and it cannot be kept, for
+/// two reasons found by measuring a live three-session room:
+///
+/// * **It is not the same room on every screen.** Sessions learn about
+///   each other at different moments, so mid-join two hosts hold rosters
+///   that overlap without matching. A colour chosen by position among
+///   the people *this* session knows about therefore moves when somebody
+///   unrelated arrives. One participant read emerald on one desktop and
+///   cyan on another — one step along the ring — because one host had
+///   heard from a peer that collided with him and the other had not.
+///
+/// * **The cursor never went through it.** The settling was introduced
+///   to make avatars agree with cursors, but `color_for` is a plain
+///   per-identity lookup, so the two surfaces agreed only while nothing
+///   collided and diverged exactly when a tie had to be broken — which
+///   is the only case either mechanism was for.
+///
+/// So the property traded away is collision-freedom: two people in one
+/// room can now be painted the same colour, roughly one pair in
+/// [`ui::presence::PEER_PALETTE`]`.len()`. That is an honest failure —
+/// the name on the pill still says who is who — and it is the same
+/// failure the desktop's cursors have always had. Recovering it without
+/// giving cross-session agreement back means widening the palette so
+/// collisions stop happening, which is a `ui` change, not one here.
+///
+/// The local user is not in the roster and is not added to it. The
+/// roster answers "who else is here"; mixing the local user in is what
+/// made the sets differ across sessions in the first place, since a peer
+/// is spelled `peer@<handle>` by every host that hears it while a
+/// session knows itself by a display name.
 pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
-    let mut explicit: HashMap<String, (u8, u8, u8)> = HashMap::new();
-    for c in roster {
-        if let Some(rgb) = c.cursor_color.as_deref().and_then(ui::presence::parse_hex_color) {
-            explicit.insert(c.id.clone(), rgb);
-        }
-    }
-    let local = local_user_id();
-    let mut ids: Vec<&str> = roster
+    roster
         .iter()
-        .filter(|c| !explicit.contains_key(&c.id))
-        .map(|c| c.id.as_str())
-        .collect();
-    if !explicit.contains_key(&local) {
-        ids.push(local.as_str());
-    }
-    let reserved: Vec<(u8, u8, u8)> = explicit.values().copied().collect();
-    let mut assigned = ui::presence::assign_peer_colors(&ids, &reserved);
-    assigned.extend(explicit);
-    assigned
+        .map(|c| {
+            let rgb = c
+                .cursor_color
+                .as_deref()
+                .and_then(ui::presence::parse_hex_color)
+                .unwrap_or_else(|| ui::presence::user_color(&c.id));
+            (c.id.clone(), rgb)
+        })
+        .collect()
 }
 
 /// The collaborators that describe the room on screen.
@@ -6808,47 +6831,163 @@ mod bootstrap_tests {
         );
     }
 
+    /// Two people whose ids land on the same palette entry, and a third
+    /// who does not. Real 64-bit handles rather than friendly names,
+    /// because `peer@<handle>` is what a roster actually carries.
+    ///
+    /// `EARLY` sorts before `SHARED` and shares its natural colour, so
+    /// any scheme that settles a room by walking sorted ids will move
+    /// `SHARED` on a session that can see `EARLY` and leave it alone on
+    /// one that cannot. That is the whole mechanism of the defect, in
+    /// three constants.
+    const SHARED: &str = "peer@548826014839375280";
+    const EARLY: &str = "peer@13630592132760172438";
+    const OTHER: &str = "peer@15970126346341786989";
+
+    /// The same person has to be the same colour on every screen in the
+    /// room, and the rooms two sessions can see are not the same room.
+    ///
+    /// Sessions do not learn about each other simultaneously. A peer
+    /// that has published presence to one host and not yet to another
+    /// leaves the two hosts holding rosters that overlap without
+    /// matching — which is the normal state of a room mid-join, not an
+    /// edge case. Any colour derived from a person's *position* among
+    /// the people a session happens to know about therefore moves when
+    /// somebody unrelated arrives.
+    ///
+    /// Measured on a three-session rig: the same participant read
+    /// emerald on one desktop and cyan on another, one step apart on the
+    /// ring, because one of the two had heard from a peer that collided
+    /// with him and the other had not. Colour is how you tell people
+    /// apart in a shared document; it is worth nothing if two people
+    /// looking at the same document see different assignments.
+    #[test]
+    fn two_sessions_paint_a_shared_participant_the_same_colour() {
+        // The fixture's premise, stated rather than assumed: these two
+        // ids genuinely collide. If the hash or the palette ever changes
+        // this fails loudly instead of quietly testing nothing.
+        assert_eq!(
+            ui::presence::user_color(SHARED),
+            ui::presence::user_color(EARLY),
+            "fixture is stale: {SHARED} and {EARLY} no longer collide, so \
+             this test would pass without exercising anything"
+        );
+
+        // One session has heard from `EARLY`; the other has not yet.
+        // Both can see `SHARED` and `OTHER`, so the rosters overlap in
+        // more than the person under test.
+        let seen_early = vec![
+            Collaborator::new(EARLY, "Ada"),
+            Collaborator::new(OTHER, "quinten"),
+            Collaborator::new(SHARED, "Xaver"),
+        ];
+        let not_yet = vec![
+            Collaborator::new(OTHER, "quinten"),
+            Collaborator::new(SHARED, "Xaver"),
+        ];
+
+        let a = roster_colors(&seen_early);
+        let b = roster_colors(&not_yet);
+
+        assert_eq!(
+            a.get(SHARED),
+            b.get(SHARED),
+            "Xaver is {:?} on a session that has heard from one more peer \
+             and {:?} on one that has not. Both are looking at the same \
+             room and the same person.",
+            a.get(SHARED),
+            b.get(SHARED),
+        );
+    }
+
+    /// A session's own name is not one of the people it is colouring.
+    ///
+    /// The roster answers "who else is here", so the local user is not
+    /// in it. Mixing them in anyway is what made the sets differ across
+    /// sessions even when everybody could see everybody: a peer is
+    /// spelled `peer@<handle>` by every host that hears it, but a
+    /// session knows *itself* by a display name, so three hosts settled
+    /// their palettes over three different sets and disagreed about
+    /// people all three could see.
+    #[test]
+    fn a_sessions_own_name_is_not_in_the_room_it_colours() {
+        let roster = vec![
+            Collaborator::new(SHARED, "Xaver"),
+            Collaborator::new(OTHER, "quinten"),
+        ];
+        let colors = roster_colors(&roster);
+        let ids: std::collections::BTreeSet<&str> =
+            colors.keys().map(String::as_str).collect();
+        let expected: std::collections::BTreeSet<&str> =
+            roster.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids, expected,
+            "the colour map must describe exactly the roster it was given; \
+             an extra key is a person the room is holding a colour for who \
+             is not in it"
+        );
+    }
+
     /// Roster avatars and peer cursors have to be the same colour for
     /// the same person. They are drawn by different code in different
     /// files; this pins them to one answer.
+    ///
+    /// Asserted against the path that actually paints a remote cursor —
+    /// the shell seeds a [`ui::presence::PresenceCtx`] from the tree via
+    /// `sync_tab_presence_from_tree`, and `PresenceCtx::color_for` is
+    /// what `upsert_remote_cursor` reads. This used to re-derive the
+    /// expected colour by calling `assign_peer_colors` here, which is a
+    /// reimplementation of a function no cursor has ever gone through:
+    /// the two surfaces could disagree and the test could not see it.
     #[test]
-    fn roster_colours_match_what_the_room_settles_for_cursors() {
+    fn a_persons_avatar_is_the_colour_their_cursor_is_drawn_in() {
+        // `carol` hashes onto `alice`'s pinned pink — the collision case,
+        // which is the only one where the two paths could ever differ.
         let roster = vec![
             Collaborator::new("alice", "Alice"),
             Collaborator::new("bob", "Bob"),
             Collaborator::new("carol", "Carol"),
         ];
-        let mine = roster_colors(&roster);
+        assert_eq!(
+            ui::presence::user_color("carol"),
+            ui::presence::user_color("alice"),
+            "fixture is stale: carol no longer collides with alice"
+        );
 
-        // What the cursor overlay computes for the same room: everyone
-        // in it, the local user included.
-        let local = local_user_id();
-        let mut ids: Vec<&str> = roster.iter().map(|c| c.id.as_str()).collect();
-        ids.push(local.as_str());
-        let cursors = ui::presence::assign_peer_colors(&ids, &[]);
+        let avatars = roster_colors(&roster);
+
+        // The real seeding, over the real tree field the shell writes.
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.collaborators = roster.clone();
+        let mut ctx = ui::presence::PresenceCtx::default();
+        crate::shell::sync_tab_presence_from_tree(&tree, &mut ctx);
 
         for c in &roster {
             assert_eq!(
-                mine.get(&c.id),
-                cursors.get(c.id.as_str()),
+                avatars.get(&c.id).copied(),
+                Some(ctx.color_for(&ui::permissions::UserId(c.id.clone()))),
                 "{}'s avatar and cursor must be the same colour",
                 c.id
             );
         }
-        // `carol` hashes onto `alice`'s pinned pink; the room has to
-        // have moved one of them, or two people are one colour.
-        assert_ne!(
-            mine.get("alice"),
-            mine.get("carol"),
-            "two people in one room must not be painted the same colour"
-        );
     }
 
     /// An explicit roster colour is a decision someone made, and it
-    /// outranks the assignment — and is held back from it, so nobody
-    /// else is computed onto it.
+    /// outranks the computed one — on the avatar and on the cursor
+    /// alike, which is the point: a person who picks a colour picks it
+    /// for both surfaces or they have picked nothing.
+    ///
+    /// It is no longer *held back* from everyone else. Dodging a taken
+    /// colour is the same room-settling this file now refuses, and it
+    /// fails the same two ways: it depends on which explicit choices a
+    /// given session happens to be able to see, and the cursor path does
+    /// not dodge, so an avatar that dodged stopped matching its own
+    /// cursor. `two_sessions_paint_a_shared_participant_the_same_colour`
+    /// states the property that replaced it. So a computed colour can
+    /// now land on somebody's chosen one — see `roster_colors` for the
+    /// full statement of the trade.
     #[test]
-    fn an_explicit_roster_colour_wins_and_is_not_reused() {
+    fn an_explicit_roster_colour_wins_on_both_surfaces() {
         let pink = (0xec, 0x48, 0x99);
         let roster = vec![
             Collaborator::new("bob", "Bob").with_cursor_color("#ec4899"),
@@ -6856,10 +6995,25 @@ mod bootstrap_tests {
         ];
         let colors = roster_colors(&roster);
         assert_eq!(colors.get("bob"), Some(&pink), "bob asked for pink");
-        assert_ne!(
-            colors.get("alice"),
-            Some(&pink),
-            "alice's pinned pink is taken, so the room must move her"
+
+        // And his cursor honours the same request, through the real
+        // seeding rather than a restatement of it.
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.collaborators = roster.clone();
+        let mut ctx = ui::presence::PresenceCtx::default();
+        crate::shell::sync_tab_presence_from_tree(&tree, &mut ctx);
+        assert_eq!(
+            ctx.color_for(&ui::permissions::UserId("bob".into())),
+            pink,
+            "bob's cursor must honour the colour bob chose"
+        );
+
+        // Alice did not choose, so she is her identity's colour and
+        // nothing else — the same on every screen in the room.
+        assert_eq!(
+            colors.get("alice").copied(),
+            Some(ui::presence::user_color("alice")),
+            "a person who chose nothing is coloured by who they are"
         );
     }
 
