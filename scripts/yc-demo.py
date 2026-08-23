@@ -249,7 +249,27 @@ def _typing_jitter(who: str):
 
 # What quinten types into the document, and what xaver's session is then
 # asked whether it holds.
-TYPED_TEXT = "the same document on both machines"
+# What quinten writes in beat 7 — and it is the *same* writing the agent
+# is later asked about, rather than a separate sentence typed to prove
+# crossing and then abandoned.
+#
+# It used to be "the same document on both machines", which said what
+# the beat was demonstrating instead of being a thing a person would
+# write. Beat 9 then typed a second, unrelated block — the event notes —
+# so the film contained two acts of writing, the first of which existed
+# only to be checked. At sixty words a minute that is eight seconds of
+# somebody typing a caption about the demo they are in.
+#
+# Now there is one document. He writes his notes; his colleague receives
+# them; later he asks the agent about them. The prose and the bullets
+# disagree with each other on purpose — see `AGENT_PROSE`.
+TYPED_TEXT = ("Doors open at seven and the room seats two hundred "
+              "and forty.\n\n- Doors: 18:00\nSound check: 18:30\n"
+              "Seating: 240\n")
+
+#: The distinctive fragment the crossing is checked on. Short, and
+#: nothing else in the document contains it.
+TYPED_PROOF = "seats two hundred"
 
 # Characters a US layout only produces with shift held, and the key that
 # carries each one. `Session.type_prose` presses a real Shift across
@@ -4170,7 +4190,7 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     before_screen = screen_shot(
         xaver, os.path.join(shots, "07a-xaver-before-the-text.png"))
 
-    step(f"quinten types {TYPED_TEXT!r}")
+    step("quinten writes the notes for the evening")
     cut("quinten")
     # No click first, and that is the point rather than an omission.
     #
@@ -4203,7 +4223,7 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
         try:
             reader = DocumentReader(quinten.collab_json_sock, room,
                                     record=None, handle="control")
-            _doc, found = reader.await_document(TYPED_TEXT, 20.0)
+            _doc, found = reader.await_document(TYPED_PROOF, 20.0)
             return bool(found)
         except OSError as e:
             note(f"quinten's own session could not be asked ({e})")
@@ -4303,7 +4323,7 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
         # page under a caption about a document arriving is the worst
         # thing this film could contain.
         with patience(10.0):
-            doc, carried = reader.await_document(TYPED_TEXT,
+            doc, carried = reader.await_document(TYPED_PROOF,
                                                  DOC_SYNC_TIMEOUT_S)
     except OSError as e:
         gap(f"xaver's session has no JSON broker to ask ({e}) — "
@@ -4323,11 +4343,11 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
               carried, True)
         if carried:
             note(f"answered with a {len(doc)} byte document carrying "
-                 f"{TYPED_TEXT!r} — produced by his app out of the "
+                 f"{TYPED_PROOF!r} — produced by his app out of the "
                  f"document it holds, not read back off the wire")
         else:
             note(f"his app answered with {len(doc)} bytes and none of it "
-                 f"is {TYPED_TEXT!r}: the two apps are attached and "
+                 f"is {TYPED_PROOF!r}: the two apps are attached and "
                  f"answer each other's handshake, and their documents "
                  f"are still two documents. Presence crosses, the "
                  f"document does not, and nothing on his screen shows "
@@ -4381,7 +4401,7 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
                        "drawn; check which channel the handshake was "
                        "answered on")
             gap(f"xaver's session answered with a document carrying "
-                f"{TYPED_TEXT!r}, and {moved} pixels of his screen moved "
+                f"{TYPED_PROOF!r}, and {moved} pixels of his screen moved "
                 f"while it arrived — a blinking caret, and no text. "
                 f"{because}. This is the shot the film crosses to a "
                 f"second machine to get. See {xaver.log_path}")
@@ -4867,8 +4887,13 @@ def beat_nine(quinten: Session, xaver: Session, agent: Session,
     # The prose first, then the bullets that contradict it. Order
     # matters: the agent reads the page it is given, and a disagreement
     # it can only see half of is one it cannot raise.
-    if not type_into_the_document(quinten, quinten_wp,
-                                  AGENT_PROSE + AGENT_BULLETS):
+    # The notes are already there — he wrote them in beat 7 and his
+    # colleague watched them arrive. Typing them a second time here made
+    # the agent's beat mostly a typing beat: a hundred and thirty
+    # characters at a readable pace before anything interesting happened.
+    #
+    # What is typed now is the one line the beat is actually about.
+    if not type_into_the_document(quinten, quinten_wp, ""):
         gap("nothing could be typed into quinten's document, so there is "
             "no list for the agent to act on")
         return
