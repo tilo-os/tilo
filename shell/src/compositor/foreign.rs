@@ -647,8 +647,14 @@ impl ForeignFrameStore {
         });
     }
 
-    /// Record that the last capture failed and drop the stale frame, so
-    /// the tile shows the reason instead of the previous image.
+    /// Record that the last capture failed and drop the stale frame.
+    ///
+    /// Two things read it. The window stops waiting — a surface with a
+    /// failure against it has something to say, so it is shown at once
+    /// rather than held back for a frame that is not coming. And the words
+    /// it shows are chosen by [`ForeignSurfaceWidget::unshowable_text`],
+    /// which says that the window cannot be shown and leaves `reason` here
+    /// for whoever is debugging rather than whoever is waiting.
     pub fn note_failure(&self, id: SurfaceId, reason: String) {
         self.with_entry(id, |e| {
             e.rgba.clear();
@@ -722,6 +728,36 @@ impl ForeignFrameStore {
     pub fn is_presented(&self, id: SurfaceId) -> bool {
         let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         guard.get(&id).is_some_and(|e| e.presented)
+    }
+
+    /// Whether the tile standing in for `id` should say that its app is
+    /// on its way: nothing has been presented, and it has been waiting
+    /// longer than [`OPENING_DELAY`].
+    ///
+    /// Read by [`ForeignSurfaceWidget::opening`], which is what the
+    /// window group consults before deciding to paint the card that holds
+    /// the window's place. The latched `presented` wins, so this goes
+    /// false on the frame the app has something to show and never comes
+    /// back — a placeholder the person has watched go away must not
+    /// return.
+    pub fn is_opening(&self, id: SurfaceId) -> bool {
+        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .get(&id)
+            .is_some_and(|e| !e.presented && e.first_seen.elapsed() >= OPENING_DELAY)
+    }
+
+    /// Test-only: pretend this surface was first heard of `age` ago, so a
+    /// test can reach the far side of a delay without sleeping through
+    /// it. Creates the entry if it does not exist, which is what a
+    /// freshly-adopted toplevel amounts to.
+    #[cfg(test)]
+    pub fn backdate_first_seen(&self, id: SurfaceId, age: Duration) {
+        self.with_entry(id, |e| {
+            e.first_seen = Instant::now()
+                .checked_sub(age)
+                .expect("age is a test constant, well inside the clock's range");
+        });
     }
 
     /// Reason the last capture failed, if any.
@@ -832,6 +868,16 @@ impl ForeignFrameStore {
     }
 }
 
+/// How long a window's place is held in silence before the card saying
+/// what is coming to it is put there.
+///
+/// An app already on this machine can be on screen well inside a quarter
+/// of a second, and an indicator that appears and disappears in that time
+/// is a flicker rather than information — nobody has begun to wonder yet.
+/// Past it the wait is long enough to be a wait, and an empty space where
+/// a window was asked for reads as nothing having happened.
+const OPENING_DELAY: Duration = Duration::from_millis(250);
+
 /// How long a surface may take to produce a frame that fits its tab
 /// before its window is shown regardless.
 ///
@@ -885,6 +931,15 @@ pub struct ForeignSurfaceWidget {
     /// Stable, human-addressable name so `FrameBuilder::widget_registry`
     /// (and therefore the shell's click/rect resolver) can find the tile.
     test_id: String,
+    /// The app's own name, resolved on the frame that first needs it.
+    ///
+    /// Only the placeholder below reads it, and the placeholder is the
+    /// rare path — an app that never showed a frame anyone could use. The
+    /// lookup consults this session's launches and then the installed
+    /// manifests, so it is not something to repeat on every rebuild of
+    /// the widget tree, and not something to pay for at all on the tiles
+    /// that never fail.
+    name: std::cell::OnceCell<String>,
 }
 
 impl ForeignSurfaceWidget {
@@ -896,7 +951,36 @@ impl ForeignSurfaceWidget {
             cached: None,
             cached_seq: 0,
             test_id: format!("foreign-surface-{surface_id}"),
+            name: std::cell::OnceCell::new(),
         }
+    }
+
+    /// The app's name, as the tab above this surface says it.
+    fn display_name(&self) -> &str {
+        self.name
+            .get_or_init(|| crate::compositor::tab_binding::tab_label_for_foreign(&self.app_id))
+    }
+
+    /// What a window says when it has gone up with nothing in it.
+    ///
+    /// Reached two ways, and both are the end of somebody's wait: a
+    /// capture failed, or the app was given every second it could have and
+    /// still never produced a frame that fits its tab. It has to be a
+    /// visible end either way — a window that quietly stays blank, or that
+    /// quietly disappears, leaves a person watching for something that is
+    /// not coming.
+    ///
+    /// So it says what happened, in the words that person would use, under
+    /// the app's own name. Why a particular buffer could not be shown is a
+    /// fact about buffers: it is kept in [`ForeignFrameStore::last_error`]
+    /// for whoever needs it, and it is not put on a card somebody is
+    /// reading to find out whether their app opened.
+    fn unshowable_text(&self) -> (String, String) {
+        let detail = match store().last_error(self.surface_id) {
+            Some(_) => "This window can't be shown.",
+            None => "This app isn't responding.",
+        };
+        (self.display_name().to_string(), detail.to_string())
     }
 
     pub fn surface_id(&self) -> SurfaceId {
@@ -1068,14 +1152,7 @@ impl Widget for ForeignSurfaceWidget {
             }
         }
 
-        // No frame yet (or the last capture failed). Say so — a blank tile
-        // that silently hides an unsupported buffer is exactly the failure
-        // mode this module must not have.
-        let headline = self.app_id.clone();
-        let detail = match store().last_error(self.surface_id) {
-            Some(err) => err,
-            None => "waiting for first frame".to_string(),
-        };
+        let (headline, detail) = self.unshowable_text();
         let on_card = theme.tokens.colors.neutral[1];
         let on_card_dim = theme.tokens.colors.neutral[4];
         let size = theme.tokens.typography.scale.xl;
@@ -1129,6 +1206,13 @@ impl Widget for ForeignSurfaceWidget {
     /// and this widget is rebuilt whenever the tab tree is.
     fn presented(&self) -> bool {
         store().mark_presented(self.surface_id, self.rect)
+    }
+
+    /// Whether this is a window's place being held for an app that has
+    /// been asked for and has not drawn. See [`Widget::opening`] and
+    /// [`ForeignFrameStore::is_opening`].
+    fn opening(&self) -> bool {
+        store().is_opening(self.surface_id)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -1427,6 +1511,121 @@ mod tests {
 
     /// A tab is 1200x800. These are the sizes a client hands us.
     const TILE: Rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+
+    /// An app already on this machine can be on screen almost at once,
+    /// and for that first fraction of a second saying "on its way" would
+    /// be a card that appears and disappears before anyone has read it.
+    /// Nothing is the right thing to show while the wait is that short.
+    #[test]
+    fn a_surface_just_heard_of_is_not_yet_worth_saying_anything_about() {
+        let id = sid(50);
+        store().forget(id);
+        store().note_placement(id, TILE);
+        assert!(
+            !store().is_opening(id),
+            "an app that may still open in a blink must not flash an \
+             indicator on its way past",
+        );
+        store().forget(id);
+    }
+
+    /// Past the delay the wait is a wait, and an empty space where a
+    /// window was asked for reads as nothing having happened.
+    #[test]
+    fn a_surface_still_starting_after_the_delay_says_so() {
+        let id = sid(51);
+        store().forget(id);
+        store().backdate_first_seen(id, OPENING_DELAY + Duration::from_millis(50));
+        assert!(
+            store().is_opening(id),
+            "the person is watching an empty desktop for a window they \
+             asked for, and nothing on screen accounts for it",
+        );
+        store().forget(id);
+    }
+
+    /// And it stops the instant there is a window, without coming back.
+    ///
+    /// A placeholder someone has already watched go away must not return
+    /// — that is a window blinking into a card and out again, which is
+    /// worse to watch than the wait it was covering.
+    #[test]
+    fn a_surface_that_has_been_shown_is_never_opening_again() {
+        let id = sid(52);
+        store().forget(id);
+        store().backdate_first_seen(id, OPENING_DELAY + Duration::from_millis(50));
+        assert!(store().is_opening(id), "precondition: it was still starting");
+        store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
+        assert!(store().mark_presented(id, TILE), "precondition: it presented");
+        assert!(
+            !store().is_opening(id),
+            "the window is on screen; nothing may still be saying it is on \
+             its way",
+        );
+        store().forget(id);
+    }
+
+    /// What a person reads on a window's own card is the app's name.
+    ///
+    /// Never the wayland app-id: `dev.qos.file-explorer` is a machine
+    /// identifier the user did not choose and does not recognise, and it
+    /// is what used to be on screen for the whole of a cold open.
+    #[test]
+    fn a_card_in_a_windows_place_names_the_app_not_its_id() {
+        let w = ForeignSurfaceWidget::new(sid(53), "dev.qos.never-launched-fixture".into());
+        let name = w.display_name();
+        assert_eq!(
+            name, "Never Launched Fixture",
+            "a window's card must carry the app's name; got {name:?}",
+        );
+        assert!(
+            !name.contains("dev.qos."),
+            "a reverse-DNS package id reached a card somebody is reading",
+        );
+    }
+
+    /// A window that has gone up with nothing in it says so, in words a
+    /// person would use.
+    ///
+    /// This is the last thing standing between somebody and a window that
+    /// is never going to fill in, so it has to name the app they asked for
+    /// and tell them what happened — and it has to do that without any of
+    /// the vocabulary of the thing that went wrong. "waiting for first
+    /// frame" over a package id was on screen for the whole of a cold open
+    /// once; a person reading it learns neither which app it is nor
+    /// whether to keep waiting.
+    #[test]
+    fn a_window_that_cannot_be_shown_says_so_in_plain_words() {
+        let id = sid(54);
+        store().forget(id);
+        let w = ForeignSurfaceWidget::new(id, "dev.qos.never-launched-fixture".into());
+
+        let (headline, detail) = w.unshowable_text();
+        assert_eq!(headline, "Never Launched Fixture", "the app's own name");
+        assert_eq!(detail, "This app isn't responding.");
+
+        // A capture that failed is a different thing to say, and the
+        // reason it failed is still not the person's problem to read.
+        store().note_failure(id, "unsupported dmabuf modifier 0x0100000000000001".into());
+        let (headline, detail) = w.unshowable_text();
+        assert_eq!(headline, "Never Launched Fixture");
+        assert_eq!(detail, "This window can't be shown.");
+
+        for (field, text) in [("headline", &headline), ("detail", &detail)] {
+            let lower = text.to_lowercase();
+            for jargon in [
+                "frame", "buffer", "surface", "dmabuf", "modifier", "wayland",
+                "toplevel", "dev.qos", "install",
+            ] {
+                assert!(
+                    !lower.contains(jargon),
+                    "the {field} on a window somebody is reading says {jargon:?}: \
+                     {text:?}",
+                );
+            }
+        }
+        store().forget(id);
+    }
 
     /// The window does not go up until there is a window to look at.
     #[test]

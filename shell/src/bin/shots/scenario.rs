@@ -1206,8 +1206,8 @@ const HALF_WIDTH_PERMILLE: u16 = 500;
 ///
 /// The scrollable strip is the compositor's whole spatial model, and
 /// nothing else in the catalogue shows it doing its job: the placement
-/// scenarios open *foreign* toplevels, which render as an empty
-/// "waiting for first frame" card until a real client attaches a buffer,
+/// scenarios open *foreign* toplevels, which hold their window's place
+/// with a card naming the app until a real client attaches a buffer,
 /// and every hosted-app scenario has one window in the strip. So this
 /// one opens Notes, Files, Terminal and Editor — each drawing its own
 /// content in-process — as four separate windows, then travels focus
