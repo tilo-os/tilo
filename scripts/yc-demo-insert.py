@@ -1,34 +1,54 @@
 #!/usr/bin/env python3
-"""One take of an image going into the document, recorded end to end.
+"""One take of a photograph going into the document, by hand, on film.
 
 The storyboard's beat is a drag: a picture is dragged out of Files and
-dropped into the word processor. This script is the recording half of it
-— it stages the scene, drives the gesture, watches for the payoff and
-stops itself. The drag's client half (a `wl_data_source` out of a `ui`
-app, so the compositor has a client drag to promote) is owned elsewhere;
-until it lands there is nothing on screen to pick up.
+dropped into the word processor. This script is the recording half of
+it. Everything is staged before a window appears; you drag the file;
+it stops itself when the picture lands.
 
-    ./scripts/yc-demo-insert.py --self-test
+    ./scripts/yc-demo-insert.py              # you do the dragging
+    ./scripts/yc-demo-insert.py --self-test  # it drags, to prove the rig
+    ./scripts/yc-demo-insert.py --dry-run    # staging only, headless
 
-What it does, in order: stages a home with an image in it, raises a D-Bus
-session and a portal frontend of its own, starts one compositor in a
-window sized to what the window manager will grant, launches the word
-processor *and* Files into two groups side by side, seeds the document
-with a line so the image lands into something, counts down, records off
-the compositor's own `snapshot` op, watches the session log for the image
-reaching the document, holds a few seconds so the landing is on film,
-stops by itself and writes a 1920x1080 clip.
+What you do: one drag. Files is already open on a home with
+`harbour.png` in it, the row is already selected, the document beside it
+already has a line in it, and the window comes to the front after a
+countdown. Press on the highlighted row, pull it across onto the page,
+let go. The counter runs while you do it and the take ends on its own a
+few seconds after the picture appears.
+
+What it does, in order: stages a home with the photograph in it, raises
+a D-Bus session of its own, starts one compositor in a window sized to
+what the window manager will grant, launches the word processor *and*
+Files into two groups side by side, checks both are wholly on screen,
+types a line into the document, selects the photograph's row so the
+first press is yours rather than spent focusing a window, counts down,
+records off the compositor's own `snapshot` op, watches the session log
+for the picture reaching the document, holds a few seconds so the
+landing is on film, stops by itself, verifies the image really is in the
+document and writes a 1920x1080 clip.
 
 Re-runnable. Every run is its own directory, its own sockets and its own
 timestamped video, so a bad take costs nothing but running it again.
+
+  Nothing here is granted access to anything
+  ------------------------------------------
+  There is no file-access grant in this script and it does not need one,
+  which is the whole point of the beat. Files reads its own file at the
+  start of the gesture, because it has the authority to read what it is
+  showing; the compositor brokers a pipe; the receiving toolkit spools
+  the bytes into its own directory. The word processor is never given a
+  path into the home, and could not resolve one if it were — it has its
+  own mount namespace.
 
   How the payoff is detected
   --------------------------
   Off the compositor's own log, not off pixels. The word processor
   reports every change to its document as `[app] broadcast doc delta
   <N>B`, and an image is stored in the document as its own bytes under a
-  BLAKE3 hash — so inserting the staged PNG produces a delta of ~98,000
-  bytes where a keystroke produces ~100. Measured, both numbers.
+  BLAKE3 hash — so inserting the staged PNG produces a delta the size of
+  the file where a keystroke produces ~100 bytes. Both measured; the
+  threshold is derived from the file rather than written down.
 
   What capture does and does not cost
   -----------------------------------
@@ -95,13 +115,11 @@ _spec.loader.exec_module(yc)
 # is found on the X server.
 WINDOW_TITLE = "nirios"
 
-# The chooser is the shell's own `ui::widget::FilePicker`, mounted into
-# the workspace overlay by `overlay_host.rs`. It carries a `file_picker`
-# test id, but the overlay host draws it without registering a named
-# target, so it never appears in `list_targets` — verified by diffing the
-# registry either side of a dialog opening: 44 names before, the same 44
-# after. What this script watches instead is the compositor's own log;
-# see `SessionLog`.
+# Why the log rather than the widget registry: a file row belongs to
+# Files, and a client's widgets are not in the compositor's registry, so
+# there is no name to watch and no rect to read. Both processes narrate
+# the gesture into the session log instead, and that is what
+# `yc.LogTail` reads.
 
 #: Height a window manager is assumed to add above the client area. Only
 #: used where the work area cannot be read; the point is to ask for a
@@ -560,19 +578,21 @@ def countdown(seconds: int, instruction: str, quiet: bool = False) -> None:
 
 
 def app_tile(session, surface_id=None) -> list | None:
-    """The rect of a client tile on screen.
+    """The rect of a client tile on screen, by surface.
 
-    With `surface_id`, the tile belonging to *that* client — which is the
-    only way to tell two windows apart once there are two, since every
-    app announces the same wayland app-id and the tile's name carries the
-    surface rather than the app. `launch` returns the surface it saw
-    paint, so the caller already holds the right id.
+    Read off `foreign_frames` — the placement the compositor is painting
+    — rather than out of the widget registry. The registry files the same
+    tile under two names, `foreign-surface-<id>` and
+    `foreign-surface-<id>[<tab>]`, and which of them exists depends on
+    whether the compositor knows the tab yet. This used to exclude any
+    name ending in `]`, so on a run where only the tabbed spelling was
+    registered it found nothing at all and the document was silently
+    never seeded — the take then rolled on an empty page.
     """
-    want = (f"foreign-surface-{surface_id}" if surface_id is not None
-            else "foreign-surface-")
-    name = next((n for n in session.target_names()
-                 if want in n and not n.endswith("]")), None)
-    return session.named_rect(name) if name else None
+    for sid, tile in yc.painted_tiles(session).items():
+        if surface_id is None or sid == int(surface_id):
+            return list(tile["rect"])
+    return None
 
 
 def focus_the_app(session, surface_id=None) -> bool:
@@ -595,12 +615,13 @@ def focus_the_app(session, surface_id=None) -> bool:
 
 
 #: Typed into the document during setup, so the image lands *into* a
-#: document rather than onto an empty page. A blank page behind a file
-#: dialog says nothing about where the file is going.
-#: ASCII only. The `type` op sends one key per character, and anything
-#: outside it (an em dash, a colon typed as a chord) is silently dropped
-#: — the first version of this line arrived on screen with two holes in
-#: it.
+#: document rather than onto an empty page. An empty page says nothing
+#: about where the picture is going.
+#:
+#: ASCII only, and typed with `type_prose` rather than `type`: a client
+#: resolves each keycode through the seat's xkb state, so without a real
+#: Shift held across them every capital here would arrive lowercase and
+#: the line would read as a typo on camera.
 OPENING_LINE = "Launch plan. The venue, the date, and a photo of the room."
 
 
@@ -614,7 +635,13 @@ def seed_the_document(session, surface_id=None) -> bool:
     """
     if not focus_the_app(session, surface_id):
         return False
-    session.type_text(OPENING_LINE)
+    session.type_prose(OPENING_LINE)
+    # And a blank line under it for the photograph to land on. The word
+    # processor moves its caret to wherever the pointer was when the file
+    # was released, so without an empty line to aim at the picture goes
+    # in wherever along the sentence he happened to let go — which is the
+    # middle of a word about as often as not.
+    session.key("Enter")
     session.settle(1.0)
     return True
 
@@ -660,196 +687,141 @@ def drag(session, start: tuple[float, float], end: tuple[float, float],
     pointer_button(session, False)
 
 
-def pick_from_chooser(session, viewport: tuple[int, int] | None = None) -> None:
-    """Select `photo.png` and confirm — for the self-test only.
+def the_two_tiles(session) -> tuple[tuple | None, tuple | None]:
+    """Where Files and the word processor are actually being painted.
 
-    By keyboard, not by coordinate. The dialog handles ArrowDown/ArrowUp
-    and Enter itself (`ui/src/widget/file_picker.rs:905`), so two Downs
-    move the selection past the `Demo` folder onto the file and Enter
-    opens it — with nothing depending on arithmetic about where a row
-    landed at this particular window size, which is what a coordinate
-    version got wrong twice.
-
-    Keys reach it at all only because the chooser now captures input;
-    before that fix they went to the app behind the dialog.
+    Off `foreign_frames`, so this is the placement the compositor is
+    drawing rather than a name that might be registered twice or not at
+    all.
     """
-    vw, vh = viewport or (1600, 900)
-    # `file_picker_rect` centres a box of min(62% of width, 900) by
-    # min(72% of height, 640) in the viewport (`overlay_host.rs:7284`).
-    # The offsets below are measured off captured frames at two
-    # different window sizes and hold at both.
-    w = min(max(vw * 0.62, 420.0), 900.0, vw)
-    h = min(max(vh * 0.72, 320.0), 640.0, vh)
-    x0, y0 = (vw - w) / 2.0, (vh - h) / 2.0
-
-    # Pointer, not keyboard. Measured: while the camera is running,
-    # pointer clicks land every time — the sweep that opens this dialog
-    # has never missed — but a keypress does not, and an Enter that never
-    # arrives leaves `commit_open` with an empty selection, which is
-    # `Cancelled`. That is exactly the failure this take kept hitting:
-    # the row visibly highlighted, then the dialog closed with nothing
-    # inserted and no error anywhere, because the confirm never landed.
-    session.click_at(x0 + 72, y0 + 109)          # the photo.png row
-    time.sleep(1.0)
-    session.click_at(x0 + 839, y0 + 612)         # Open
+    files = word = None
+    for t in yc.painted_tiles(session).values():
+        if t["app_id"] == yc.FILES_APP:
+            files = t["rect"]
+        elif t["app_id"] == yc.WORD_PROCESSOR:
+            word = t["rect"]
+    return files, word
 
 
-def self_test_click(session, log_path: str,
-                    viewport: tuple[int, int] | None = None) -> None:
+def select_the_photo(session, log) -> bool:
+    """Leave the photograph's row selected and Files focused.
+
+    Two things this buys, both of which the person would otherwise have
+    to spend a gesture on. The first click on an unfocused client is
+    consumed by the focus change and never reaches the app, so without
+    this his press would select the row instead of starting the drag.
+    And a highlighted row is the demo pointing at what to pick up.
+
+    The row is found the same way the automated take finds it — by
+    pressing and reading the app's own account of what it hit — so it
+    cannot leave the wrong row selected and call it done.
+    """
+    files, _ = the_two_tiles(session)
+    if not files:
+        return False
+    listing = yc.expected_listing(session.home)
+    held = yc.press_the_photo_row(session, log, files, yc.PHOTO_NAME, listing)
+    # A press with no travel is a click: the row is selected, and the
+    # drag the app armed is disarmed by the release.
+    pointer_button(session, False)
+    session.settle(0.4)
+    return held is not None
+
+
+def drag_the_photo(session, log) -> str:
+    """Perform the gesture this script exists to have performed by hand.
+
+    For `--self-test` only. It is the same sequence the nine-beat film
+    drives, and it is here so the whole rig — staging, capture, the watch
+    loop, the teardown — can be proved without a person.
+    """
+    files, word = the_two_tiles(session)
+    if not files or not word:
+        return "no-windows"
+    listing = yc.expected_listing(session.home)
+    held = yc.press_the_photo_row(session, log, files, yc.PHOTO_NAME, listing)
+    if held is None:
+        pointer_button(session, False)
+        return "no-row"
+    hx, hy = held
+    # Past the app's drag threshold slowly, while the button is down —
+    # that is when Files opens its data source and the compositor takes
+    # the gesture over.
+    for step_px in (4, 10, 18, 30):
+        session.pointer_move(hx + step_px, hy - step_px * 0.4)
+        time.sleep(0.12)
+    wx, wy, ww, wh = word
+    # Below all the text, onto the blank line the seeding left there:
+    # the word processor clamps the drop to the nearest line, and an
+    # empty one has no character to land in the middle of. Left of
+    # centre keeps it off the styles panel, which the drop handler
+    # ignores entirely.
+    drop = (wx + ww * 0.30, wy + wh * 0.55)
+    x0, y0 = hx + 30, hy - 12
+    for i in range(1, 27):
+        t = i / 26
+        session.pointer_move(x0 + (drop[0] - x0) * t, y0 + (drop[1] - y0) * t)
+        time.sleep(0.05)
+    time.sleep(0.4)
+    pointer_button(session, False)
+    return "dropped"
+
+
+def self_test_drag(session, log_path: str) -> None:
     """Stand in for the hand this script cannot supply.
 
-    Aims at the toolbar's image button the only way anything can: at
-    pixels. A client's widgets are not in the compositor's registry, so
-    there is no name — the button is swept for along the toolbar row and
-    the sweep stops the moment the compositor's own log says a file
-    dialog opened. Self-validating: it cannot report a hit it did not get.
-
-    The offsets come from captured frames, and they are *absolute
-    offsets from the tile's top-left corner* rather than fractions of its
-    size: the toolbar is left-aligned, so the button sits about 631px in
-    and about 36px down whether the tile is 874 or 1308 wide. Sweeping by
-    fraction — which this did first — walks straight past it the moment
-    the tile changes width. The image button is also the one control on
-    the row that opens a file dialog, so nothing else can produce a false
-    positive. Buttons it passes over on the way are formatting toggles;
-    in a self-test that is noise, not damage.
-
-    It runs on a thread of its own so the watch loop is already counting
-    while these arrive, exactly as it would be with a person.
+    On a thread of its own, so the watch loop is already counting while
+    the gesture arrives — exactly as it would be with a person.
     """
     import threading
 
-    # Its own reader: `SessionLog.read` consumes what it returns, so
-    # sharing one with the watch loop would have the two threads stealing
-    # each other's events.
-    log = SessionLog(log_path)
-    log.read()
-
-    def opened(seconds: float) -> bool:
-        deadline = time.time() + seconds
-        while time.time() < deadline:
-            log.read()
-            if log.OPENED in log.text:
-                return True
-            time.sleep(0.25)
-        return False
+    # Its own reader: `read` consumes what it returns, so sharing one
+    # with the watch loop would have the two stealing each other's lines.
+    log = yc.LogTail(log_path)
+    log.catch_up()
 
     def drive() -> None:
-        time.sleep(1.0)
-        rect = app_tile(session)
-        if not rect:
-            return
-        x0, y0, w, _h = rect
-        # One aimed click, not a sweep. The offset is measured off
-        # captured frames and holds at both tile widths seen so far; the
-        # toolbar is left-aligned, so it does not move when the tile
-        # does. A sweep would work too, but on camera it clicks its way
-        # across Bold, Italic and Table on the way — visible formatting
-        # changes the demo did not ask for — and spends ten seconds of
-        # dead air doing it.
-        session.click_at(x0 + 631, y0 + 36)
-        if not opened(4.0):
-            # Only if the aimed click missed: a short search around it,
-            # which is still quieter than sweeping the whole row.
-            for dy in (32, 40, 28, 44):
-                for dx in (631, 623, 639, 615, 647):
-                    if dx > w:
-                        continue
-                    session.click_at(x0 + dx, y0 + dy)
-                    if opened(1.0):
-                        break
-                else:
-                    continue
-                break
-        if log.OPENED not in log.text:
-            return
         time.sleep(1.5)
-        pick_from_chooser(session, viewport)
+        outcome = drag_the_photo(session, log)
+        if outcome != "dropped":
+            print(f"\n  --self-test: the gesture did not start ({outcome})")
 
     threading.Thread(target=drive, daemon=True).start()
 
 
-class SessionLog:
-    """The compositor's own log, read as it is written.
+def wait_for_the_drop(log, recorder, timeout: float,
+                      dwell: float, landed_bytes: int) -> str:
+    """Watch until the photograph is in the document, then hold and stop.
 
-    Two events in it are exactly what this script needs to watch, and
-    both are the session reporting on itself rather than this script
-    inferring anything from pixels:
-
-    - `portal: file dialog opened` — the overlay host mounting the
-      chooser (`overlay_host.rs:2986`). That is the click having landed.
-    - `[app] broadcast doc delta <N>B` — the *word processor* saying its
-      own document changed by N bytes. An image is stored in the document
-      as its own bytes under a BLAKE3 hash, so inserting a 98 KB PNG
-      makes a delta two orders of magnitude larger than a keystroke's.
-
-    Watching the log rather than the widget registry is not a shortcut:
-    the chooser does not appear in `list_targets` at all (verified — it
-    is drawn by the overlay host without registering a named target), so
-    the registry cannot see it, and a screenshot can only be looked at by
-    a person. This is the compositor's own account of what it did.
-    """
-
-    OPENED = "portal: file dialog opened"
-    DELTA = re.compile(r"broadcast doc delta (\d+)B")
-
-    def __init__(self, path: str) -> None:
-        self.path = path
-        self.at = 0
-        self.text = ""
-
-    def read(self) -> str:
-        """Everything appended since the last read."""
-        try:
-            with open(self.path, "rb") as fh:
-                fh.seek(self.at)
-                chunk = fh.read()
-                self.at = fh.tell()
-        except OSError:
-            return ""
-        fresh = chunk.decode(errors="replace")
-        self.text += fresh
-        return fresh
-
-    def dialog_opened(self, fresh: str) -> bool:
-        return self.OPENED in fresh
-
-    def biggest_delta(self, fresh: str) -> int:
-        return max((int(m) for m in self.DELTA.findall(fresh)), default=0)
-
-
-def wait_for_the_click(log: SessionLog, recorder, timeout: float,
-                       dwell: float, landed_bytes: int) -> str:
-    """Watch until the image is in the document, then hold and stop.
-
-    Three outcomes, kept apart because they are different facts: the
-    image landed, the chooser opened but nothing arrived before the clock
-    ran out (cancelled, or the pick did not take), or the chooser never
-    opened at all and the click never landed.
+    Three outcomes, kept apart because they are different facts: it
+    landed; it was picked up but nothing arrived before the clock ran
+    out; or it was never picked up at all. Each of them means a different
+    thing went wrong, and saying "it did not work" for all three would
+    send the next run looking in the wrong place.
 
     Reading a log file is not input: nothing in here touches the session,
     so the camera and the person have the compositor to themselves.
     """
     deadline = time.time() + timeout
-    opened_at = None
+    carried_at = None
     last_print = 0.0
     while time.time() < deadline:
         fresh = log.read()
-        if opened_at is None and log.dialog_opened(fresh):
-            opened_at = time.time()
-            sys.stdout.write("\r  the file chooser is up — pick photo.png, "
-                             "then Open            \n")
+        if carried_at is None and yc.LogTail.PROMOTED in fresh:
+            carried_at = time.time()
+            sys.stdout.write("\r  you are carrying it — let go over the "
+                             "page                    \n")
             sys.stdout.flush()
-        if opened_at is not None and log.biggest_delta(fresh) >= landed_bytes:
-            print(f"\n  the image is in the document; holding {dwell:.0f}s "
-                  f"so it is on film")
+        if log.biggest_delta(fresh) >= landed_bytes:
+            print(f"\n  the photograph is in the document; holding "
+                  f"{dwell:.0f}s so it is on film")
             time.sleep(dwell)
             return "landed"
         now = time.time()
         if now - last_print >= 1.0:
             last_print = now
-            state = ("picking the file" if opened_at
-                     else "waiting for your click")
+            state = ("carrying it" if carried_at
+                     else "waiting for you to pick it up")
             sys.stdout.write(
                 f"\r  recording {now - recorder.started_at:5.0f}s   "
                 f"{len(recorder.frames):5d} frames   {state}   "
@@ -857,7 +829,7 @@ def wait_for_the_click(log: SessionLog, recorder, timeout: float,
             sys.stdout.flush()
         time.sleep(0.3)
     print()
-    return "no-image" if opened_at else "no-click"
+    return "no-drop" if carried_at else "no-drag"
 
 
 def main() -> int:
@@ -901,11 +873,17 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true",
                     help="leave the session running afterwards")
     ap.add_argument("--self-test", action="store_true",
-                    help="prove the rig with no hands: sweeps the "
-                         "toolbar for the image button, stopping when the "
-                         "compositor's log says a dialog opened, then picks "
-                         "the file. Exercises the whole chain; only says "
-                         "nothing about how easy the button is to hit")
+                    help="prove the rig with no hands: performs the drag "
+                         "itself, aiming by pressing and reading back what "
+                         "the app says it grabbed. Exercises the whole "
+                         "chain; says nothing about how easy the row is to "
+                         "grab with a mouse")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="stage everything headless, check it, and stop. "
+                         "No window, no X server, no recording — so it can "
+                         "be run over ssh, on a busy machine, or just to "
+                         "see whether the scene still composes before "
+                         "committing a take to it")
     args = ap.parse_args()
 
     # ---- preflight ------------------------------------------------
@@ -925,13 +903,15 @@ def main() -> int:
               "  cargo build --profile demo -p shell --bin shell",
               file=sys.stderr)
         return 2
-    if not os.environ.get("DISPLAY"):
+    if not args.dry_run and not os.environ.get("DISPLAY"):
         print("no DISPLAY. This take needs a window you can click in, which "
               "needs an X server (XWayland counts). Run it from a terminal "
-              "on your desktop rather than over ssh.", file=sys.stderr)
+              "on your desktop rather than over ssh, or use --dry-run to "
+              "check the staging without one.", file=sys.stderr)
         return 2
-    missing = [t for t in ("xdotool", "wmctrl", "ffmpeg", "ffprobe")
-               if shutil.which(t) is None]
+    missing = [] if args.dry_run else [
+        t for t in ("xdotool", "wmctrl", "ffmpeg", "ffprobe")
+        if shutil.which(t) is None]
     if missing:
         print(f"missing: {', '.join(missing)}", file=sys.stderr)
         return 2
@@ -956,17 +936,24 @@ def main() -> int:
     run_dir = os.path.join(args.out, "quinten")
     apps_dir = os.path.join(run_dir, "qos-apps")
     yc.compose_registry(apps_dir, entries)
-    home = yc.stage_home(os.path.join(run_dir, "home"))
+    # Under HOMES_ROOT, not under the run directory. Files draws the
+    # directory it is showing component by component, and a home inside
+    # the checkout renders on camera as
+    # `… › quickdesktop › .claude › worktrees › yc-demo › target › …` —
+    # which tells a viewer they are looking at a harness, and which
+    # tooling built it. `HOMES_ROOT` reads as a machine's own.
+    home = yc.stage_home(os.path.join(yc.HOMES_ROOT, "quinten"))
 
-    # The image, twice: once in the folder the story is about and once at
-    # the top of the home, so it is in front of him whichever directory
-    # the chooser opens in. Bigger than the nine-beat film's, because
-    # here it has to read on screen from across a room.
-    png = yc.a_real_png(640, 400)
-    photo = os.path.join(home, "Demo", "photo.png")
-    for path in (photo, os.path.join(home, "photo.png")):
-        with open(path, "wb") as fh:
-            fh.write(png)
+    # The photograph, where `stage_home` puts it: at the top of the home,
+    # which is the directory Files opens on, and in Pictures. It has to
+    # be *visible in the window he is dragging out of*, and a file in a
+    # folder he would have to navigate into first is not.
+    #
+    # This used to write its own copy into `home/Demo/`, a directory
+    # `stage_home` does not create — so the run died with a
+    # FileNotFoundError before a window ever appeared.
+    photo = os.path.join(home, yc.PHOTO_NAME)
+    png = open(photo, "rb").read()
 
     # The packaging chain, by path rather than off PATH, so the run uses
     # the binaries built for it. Without `qos-launcher` in particular an
@@ -994,7 +981,12 @@ def main() -> int:
     runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
     pid = os.getpid()
     yc.KEEP_SESSIONS = args.keep
-    session = WindowedSession(
+    # A dry run is the same staging with no window in it: the plain
+    # headless session, so it needs no X server and cannot put anything
+    # on anybody's screen. Everything the take depends on — the two apps,
+    # the layout, the seeded line, the selected row — is the same code
+    # either way, which is what makes it worth running.
+    session = (yc.Session if args.dry_run else WindowedSession)(
         "quinten", "quinten", run_dir,
         # Short: AF_UNIX caps sun_path near 108 bytes and a run directory
         # deep in a worktree blows straight past it.
@@ -1007,11 +999,19 @@ def main() -> int:
     # close to the video's own resolution as this screen allows. Falls
     # back to the video size where there is no work area to read (which
     # is also the right answer on a bare X server with no panel).
-    if args.windowed:
+    if args.dry_run:
+        session.size = f"{yc.VIDEO_W}x{yc.VIDEO_H - yc.BAND_H}"
+    elif args.windowed:
         session.window_size = None
     else:
         area = work_area() or (yc.VIDEO_W, yc.VIDEO_H)
         session.window_size = f"{area[0]}x{area[1]}"
+    # No peer gossip. This take is one person and one machine, and mdns
+    # finds every other qOS session running here — another agent's
+    # harness, a demo left open — and paints its cursor and name pill
+    # over the document. On camera that reads as a collaborator nobody
+    # invited.
+    session.peer_sync = False
     yc.SESSIONS = [session]
 
     print(f"compositor:     {shell_bin}")
@@ -1027,39 +1027,45 @@ def main() -> int:
     os.makedirs(record_dir, exist_ok=True)
 
     # Yours, so it can be put back in front while this sets up.
-    terminal = active_window()
+    terminal = None if args.dry_run else active_window()
 
     recorder = None
     wid = None
     outcome = "not reached"
     rc = 0
-    instruction = ("Click the picture icon in the toolbar, "
-                   "pick photo.png, press Open.")
+    instruction = (f"Drag the highlighted {yc.PHOTO_NAME} onto the page "
+                   f"on the right.")
     bus = None
     frontend = None
     try:
         # ---- stage ------------------------------------------------
         print("\nsetting up:")
-        raised = private_session_bus(run_dir, session.runtime_dir)
-        if raised:
+        # A dry run puts nothing on screen, so it has no notifications to
+        # keep off anybody's bus and no reason to raise one.
+        raised = (None if args.dry_run
+                  else private_session_bus(run_dir, session.runtime_dir))
+        if args.dry_run:
+            pass
+        elif raised:
             session.bus_address, bus = raised
             print(f"  private session bus    pid {bus.pid} "
-                  f"(the file-chooser portal has no rival on it)")
+                  f"(its notifications stay off your desktop's bus)")
         else:
             print("  ! no dbus-daemon, so this session shares your desktop's "
-                  "bus. If anything else already owns the qOS portal name, "
-                  "the file chooser will never open — see the compositor log "
-                  "for 'another process already owns'.")
+                  "bus. Harmless here — nothing in this take asks the "
+                  "portal for anything — but its notifications will land "
+                  "on your desktop.")
         session.start()
         session.wait_ready(timeout=180.0)
-        wid = find_window(session.proc.pid)
-        if wid is None:
+        wid = None if args.dry_run else find_window(session.proc.pid)
+        if wid is None and not args.dry_run:
             raise RuntimeError(
                 "the compositor started but never mapped an X window. "
                 "Without one there is nothing to click on; see "
                 f"{session.log_path}")
         print(f"  compositor up          pid {session.proc.pid}, "
-              f"window {window_size(wid)}")
+              + (f"window {window_size(wid)}" if wid is not None
+                 else f"headless at {session.size}"))
 
         # Deliberately no fullscreen. The window was created at the size
         # the window manager will actually grant, so it is never resized
@@ -1076,25 +1082,13 @@ def main() -> int:
                 f"{session.log_path}")
         # Out of sight for the rest of the setup. It comes back — at the
         # size it already is — when the camera rolls.
-        hide_window(wid)
-        # The frontend, now the compositor owns the backend name it will
-        # be routed to. Before the app launches, so the first thing it
-        # asks for is answered.
-        if session.bus_address:
-            frontend = portal_frontend(run_dir, session.bus_address,
-                                       session.runtime_dir)
-            if frontend is None:
-                print("  ! no xdg-desktop-portal frontend to run "
-                      f"({PORTAL_FRONTEND}), so the app's Insert image has "
-                      "nothing to ask. The chooser will not open.")
-            elif owns_name(session.bus_address,
-                           "org.freedesktop.portal.Desktop"):
-                print(f"  file dialogs routed    to this compositor "
-                      f"(frontend pid {frontend.pid})")
-            else:
-                print("  ! the portal frontend never claimed "
-                      "org.freedesktop.portal.Desktop; the chooser will not "
-                      f"open. See {os.path.join(run_dir, 'portal.log')}")
+        if wid is not None:
+            hide_window(wid)
+        # No portal frontend is raised any more. This take used to drive
+        # the OS file chooser, which meant a whole D-Bus service had to
+        # be up and had to win a well-known name before the app asked
+        # for anything — three ways for the setup to fail before the
+        # camera rolled. A drag asks nobody for anything.
 
         # Your terminal back in front, so the rest of the setup and the
         # countdown can be read. A raise, never a resize.
@@ -1102,39 +1096,15 @@ def main() -> int:
             raise_window(terminal)
 
         room = session.active_workspace()["room"]
-        # The app has to be able to *read* what it is handed. The portal
-        # gives a sandboxed caller a host path — the compositor says so
-        # itself at startup, "the document store cannot reach sandboxed
-        # apps" — and the word processor runs under bwrap, so without a
-        # grant the pick completes and the app then logs "could not read
-        # image ...: No such file or directory" and nothing arrives in
-        # the document. Measured, not guessed: that is exactly what
-        # happened until this line existed.
-        #
-        # Granted before the launch because the sandbox is built when the
-        # app spawns; a grant made afterwards binds nothing. It is the
-        # same production path a person's "allow" goes through
-        # (`Workspace::grant_as`), scoped to the one staged folder.
-        granted = session.grant(f"app:{yc.WORD_PROCESSOR}", f"fs:{home}",
-                                "read")
-        if "err" in granted:
-            print(f"  ! the folder grant was refused ({granted['err']}); the "
-                  f"app will not be able to read the file it is handed")
-        else:
-            print(f"  folder readable by it  {home}")
-        painted = session.launch(yc.WORD_PROCESSOR, search="word")
-        if painted is None:
-            raise RuntimeError(
-                "the word processor did not open, so there is nothing to "
-                f"drop an image into. See {session.log_path}")
-        print(f"  word processor up      surface "
-              f"{painted.get('surface_id')} at frame {painted.get('frame_seq')}")
+        # No grant, and deliberately none. The word processor is never
+        # handed a path into this home — Files reads its own file when
+        # the gesture starts and the bytes cross a pipe the compositor
+        # brokers — so there is nothing here for a capability to permit.
+        # The chooser route needed one; this is what replaced it.
 
-        # Files, in a group of its own. Without `place_next_window` the
-        # placement rule tabs a new window into the focused group, and a
-        # tab is not a second window on screen — which is the whole
-        # precondition for dragging something from one to the other.
-        session.place_next_window(yc.FILES_APP)
+        # Files first, so it is the left-hand window: the gesture reads
+        # left to right, and `frame_both_windows` scrolls the strip back
+        # by focusing the leftmost group.
         files = session.launch(yc.FILES_APP, search="files")
         if files is None:
             raise RuntimeError(
@@ -1142,21 +1112,57 @@ def main() -> int:
                 f"See {session.log_path}")
         print(f"  files up               surface "
               f"{files.get('surface_id')} at frame {files.get('frame_seq')}")
-        # Two groups, equal shares. A group takes about three quarters of
-        # its strip by default, so two never fit and the second is
-        # scrolled off screen.
-        session.set_group_width(500)
-        session.settle(1.2)
-        # Focused *and* written in, here rather than by him: the click
-        # that focuses a window is spent doing that and never reaches the
-        # app, so without this his first click on the button would
-        # silently do nothing — and an empty page behind the dialog shows
-        # nothing about where the image is going.
+
+        # The document, in a group of its own. Without
+        # `place_next_window` the placement rule tabs a new window into
+        # the focused group, and a tab is not a second window on screen —
+        # which is the whole precondition for dragging between them.
+        session.place_next_window(yc.WORD_PROCESSOR)
+        painted = session.launch(yc.WORD_PROCESSOR, search="word")
+        if painted is None:
+            raise RuntimeError(
+                "the word processor did not open, so there is nothing to "
+                f"drop a photograph into. See {session.log_path}")
+        print(f"  word processor up      surface "
+              f"{painted.get('surface_id')} at frame {painted.get('frame_seq')}")
+
+        # Both windows being *painted*, before anything is staged against
+        # them. `frame_seq` and a laid-out rect arrive seconds before the
+        # shell composites the tile, and in that window the compositor
+        # answers every question with plausible geometry while a snapshot
+        # comes back as an empty desktop. A take rolled then would film
+        # the backdrop.
+        unpainted = yc.wait_until_painted(session)
+        print("  windows painted        "
+              + ("yes" if not unpainted
+                 else f"NO — {unpainted} never presented"))
+
+        # Even shares and the strip scrolled back, then checked: a window
+        # hanging off an edge is one the gesture would cross out of, and
+        # it is worth saying so here rather than discovering it on film.
+        viewport = tuple(int(v) for v in session.size.lower().split("x"))
+        yc.frame_both_windows(session, viewport)
+        session.settle(0.8)
+        clipped = yc.windows_off_screen(session, viewport)
+        print("  both windows in frame  "
+              + ("yes" if not clipped else "NO — " + "; ".join(clipped)))
+
         wp_surface = painted.get("surface_id")
-        files_surface = files.get("surface_id")
         print(f"  document ready         "
               f"{'yes' if seed_the_document(session, wp_surface) else 'no'}")
-        print(f"  image staged           {photo}")
+
+        # The row he is going to drag, selected — which also leaves Files
+        # focused. Both matter: the first click on an unfocused client is
+        # spent on the focus change and never reaches the app, so without
+        # this his press would select the row instead of picking it up;
+        # and a highlighted row is the demo pointing at what to grab.
+        staging_log = yc.LogTail(session.log_path)
+        staging_log.catch_up()
+        picked = select_the_photo(session, staging_log)
+        print(f"  {yc.PHOTO_NAME + ' selected':<22} "
+              + ("yes" if picked else
+                 "NO — the row was not found; he will have to click it"))
+        print(f"  photograph staged      {photo} ({len(png)} bytes)")
 
         # What the recording will actually be made of — the compositor's
         # own render, which is the thing that matters, not the X server's
@@ -1168,16 +1174,75 @@ def main() -> int:
                  f"  (not {yc.VIDEO_W}x{yc.VIDEO_H}: frames get scaled and "
                  f"letterboxed into the video)"))
 
+        if args.dry_run:
+            # Everything a take depends on, checked and named, with no
+            # window and no camera. What it cannot check is the one thing
+            # only a hand can do, and it says so rather than implying the
+            # gesture was tested.
+            shot = session.snapshot(os.path.join(args.out, "staged.png"))
+            files_rect, wp_rect = the_two_tiles(session)
+            print("\nstaged, headless:")
+            print(f"  files at               "
+                  f"{[round(v) for v in files_rect] if files_rect else None}")
+            print(f"  document at            "
+                  f"{[round(v) for v in wp_rect] if wp_rect else None}")
+            print(f"  home listed as         "
+                  f"{yc.expected_listing(session.home)}")
+            print(f"  frame                  {shot}")
+            ready = bool(files_rect and wp_rect and not clipped
+                         and not unpainted and picked)
+            print(f"\n{'ready for a take' if ready else 'NOT ready'}: two "
+                  f"windows{'' if ready else ' were not'} side by side and "
+                  f"wholly on screen, a line in the document and "
+                  f"{yc.PHOTO_NAME} selected in Files.")
+            if not args.self_test:
+                print("  the gesture itself is not exercised here — add "
+                      "--self-test to drive it, or just run it and drag.")
+                outcome = "dry-run"
+                return 0 if ready else 1
+
+            # `--dry-run --self-test`: the whole chain except the window
+            # and the camera. It drives the same gesture and runs the
+            # same watch loop the take does, so the parts a person cannot
+            # be asked to re-test — the aim, the promotion, the payoff
+            # detector, the read-back — are exercised on every machine
+            # that can run a compositor, including one with no X server.
+            print("\ndriving the gesture:")
+            watch = yc.LogTail(session.log_path)
+            watch.catch_up()
+
+            class _NoCamera:
+                """The counter's shape, with nothing behind it."""
+                started_at = time.time()
+                frames: list = []
+
+            self_test_drag(session, session.log_path)
+            outcome = wait_for_the_drop(watch, _NoCamera(), args.timeout,
+                                        1.0, max(4000, len(png) // 2))
+            session.snapshot(os.path.join(args.out, "dropped.png"))
+            print(f"  outcome: {outcome}")
+            if outcome == "landed":
+                carried, size_bytes = yc.image_is_in_the_document(
+                    session, room, png)
+                print(f"  in the document: {carried}"
+                      + (f" ({size_bytes} bytes)" if size_bytes else ""))
+                ready = ready and carried
+            else:
+                ready = False
+            return 0 if ready else 1
+
         # ---- countdown, while the terminal is still in front -------
         if args.self_test:
-            print("\n  --self-test: no hands. The toolbar row is swept for "
-                  "the image button and the sweep stops when the log says a "
-                  "dialog opened, so it cannot claim a hit it did not get.")
+            print("\n  --self-test: no hands. The gesture is driven from "
+                  "here, aimed by pressing and reading back what the app "
+                  "says it grabbed, so it cannot claim a row it did not "
+                  "hit.")
         countdown(max(0, args.countdown), instruction,
                   quiet=args.self_test)
 
         # ---- roll -------------------------------------------------
-        raise_window(wid)
+        if wid is not None:
+            raise_window(wid)
         if not args.self_test:
             notify(f"Recording. {instruction}")
         recorder = yc.Recorder([session], record_dir, interval=0.0,
@@ -1186,16 +1251,16 @@ def main() -> int:
         yc.RECORDER = recorder
         # Start reading the log from here, so nothing the setup logged is
         # mistaken for something he did.
-        watch = SessionLog(session.log_path)
-        watch.read()
+        watch = yc.LogTail(session.log_path)
+        watch.catch_up()
         recorder.start(session.name)
         if args.self_test:
-            self_test_click(session, session.log_path, rendered)
-        # Half the image's own size: a keystroke's delta is a few hundred
-        # bytes, and the image is ~100 KB, so there is nothing in between
-        # for this to confuse.
-        outcome = wait_for_the_click(watch, recorder, args.timeout,
-                                     args.dwell, max(4000, len(png) // 2))
+            self_test_drag(session, session.log_path)
+        # Half the photograph's own size: a keystroke's delta is a few
+        # hundred bytes and the file is ~150 KB, so there is nothing in
+        # between for this to confuse.
+        outcome = wait_for_the_drop(watch, recorder, args.timeout,
+                                    args.dwell, max(4000, len(png) // 2))
         recorder.stop()
         if not args.self_test:
             notify("Take finished. Writing the clip.", urgency="low")
@@ -1267,17 +1332,20 @@ def main() -> int:
 
     print("\n" + "=" * 70)
     print(f"outcome: {outcome}")
-    if outcome == "no-click":
-        print("  the file chooser never opened, so nothing was filmed but a "
-              "document sitting there. The control is the one toolbar "
-              "button with no text on it — a small photo icon, between the "
-              "table control and the styles control. Run it again.")
+    if outcome == "no-drag":
+        print(f"  nothing was ever picked up, so nothing was filmed but two "
+              f"windows sitting there. The row to press on is the "
+              f"highlighted {yc.PHOTO_NAME} in the left window; press on it "
+              f"and keep the button down while you move, or it is a click "
+              f"and the row is only selected again. Run it again.")
         rc = 1
-    elif outcome == "no-image":
-        print(f"  the chooser opened but no image reached the document "
-              f"before the {args.timeout:.0f}s ran out — cancelled, or the "
-              f"pick did not take. Run it again; --timeout takes a bigger "
-              f"number if you just needed longer.")
+    elif outcome == "no-drop":
+        print(f"  it was picked up — the chip with the file's name was on "
+              f"screen — but nothing reached the document before the "
+              f"{args.timeout:.0f}s ran out. Either it was let go outside "
+              f"the page, or it was let go over the styles panel on the "
+              f"right rather than the paper. Run it again; --timeout takes "
+              f"a bigger number if you just needed longer.")
         rc = 1
     if video:
         print(f"video:   {video['path']}")
