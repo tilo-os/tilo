@@ -756,6 +756,18 @@ impl FrameBuilder {
         for (which, rect) in host.peer_sync_prompt_rects_for_tests() {
             put(format!("peer_sync_{which}"), rect);
         }
+        // The collaborator dropdown's own controls. Named so a scenario
+        // clicks the button a person clicks, rather than invoking the
+        // action behind it — a click proves the control is painted,
+        // hit-testable and wired, and an invocation proves only the
+        // third of those.
+        let (collab_invite, collab_join) = host.collaborators_action_rects_for_tests();
+        put("collab_invite".into(), collab_invite);
+        put("collab_join".into(), collab_join);
+        put(
+            "collab_room_activity".into(),
+            host.collaborators_activity_rect_for_tests(),
+        );
     }
 }
 
