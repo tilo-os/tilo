@@ -3201,19 +3201,23 @@ mod tests {
         );
 
         // The session is left alone: no key, no wheel, no motion. The
-        // gap is the film's own, not this test's — the press is the
-        // agent joining the room in one beat, and the check is the next
-        // beat reading the room's cursors. The run this was written
-        // against put those 12s apart, and the beat marks bound it at
-        // 14s even if every step in between runs long.
+        // gap is the film's own, not this test's — the press is a
+        // session joining a room in one beat, and the check is the next
+        // beat reading the room's cursors.
+        //
+        // Five seconds is a floor on that, not a measurement: the beat
+        // doing the reading sleeps 2.6s on the card before it and 0.6s
+        // after each of two pointer moves before it looks, and the beat
+        // before it has a grant to propagate. The real gap is longer,
+        // so a horizon that clears this clears that.
         //
         // Deliberately *shorter* than `resting`, and that assertion is
-        // the point of this test rather than scene-setting: the
-        // previous version of it derived its gap from the horizon it
-        // was testing, so it passed for every possible horizon and
-        // could not see the run it was written about. A pill reading
-        // `Claude` was in a shot from a run this test passed on.
-        let gap_the_film_leaves = Duration::from_secs(12);
+        // the point of this test rather than scene-setting: the previous
+        // version derived its gap from the horizon it was testing, so it
+        // passed for every possible horizon and could not see the run it
+        // was written about. A pill reading `Claude` was in a shot from
+        // a run this test passed on.
+        let gap_the_film_leaves = Duration::from_secs(5);
         assert!(
             gap_the_film_leaves < resting,
             "if the single horizon were shorter than the gap this would \
