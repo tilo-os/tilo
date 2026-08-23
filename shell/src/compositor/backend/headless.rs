@@ -55,6 +55,8 @@ pub struct HeadlessBackend {
     /// Latest painted RGBA frame, kept so test_control's `snapshot`
     /// command can write a PNG without re-rendering.
     last_frame: Vec<u8>,
+    /// Whether the one startup `Redraw` has been handed over yet.
+    emitted_first_redraw: bool,
 }
 
 impl HeadlessBackend {
@@ -84,6 +86,7 @@ impl HeadlessBackend {
             outputs,
             events: Vec::new(),
             last_frame: Vec::new(),
+            emitted_first_redraw: false,
         })
     }
 
@@ -155,13 +158,21 @@ impl Backend for HeadlessBackend {
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
         // The headless backend has no input devices and no display
-        // events. To keep the compositor's frame-pacing loop alive
-        // (it's driven by backend events), emit a single
-        // `BackendEvent::Redraw` per tick. The compositor's main loop
-        // already calls `frame_builder.paint()` unconditionally each
-        // iteration, so the `Redraw` is here for ledger parity with
-        // the winit path rather than a paint trigger.
-        self.events.push(BackendEvent::Redraw);
+        // events, so it emits one `BackendEvent::Redraw` at startup to
+        // get the first frame on screen, and nothing after that.
+        //
+        // It used to emit one per tick. That was written when the main
+        // loop painted unconditionally, so the event was inert — but the
+        // loop now only paints when something changed, and a synthetic
+        // event every tick means something always has. Headless ran at a
+        // permanent 60 fps with an idle desktop, and any measurement
+        // taken through it reported a compositor that never rests.
+        // Emitting nothing lets the loop's own pacing and keepalive
+        // drive it, exactly as under winit.
+        if !self.emitted_first_redraw {
+            self.emitted_first_redraw = true;
+            self.events.push(BackendEvent::Redraw);
+        }
         for ev in self.events.drain(..) {
             callback(ev);
         }
