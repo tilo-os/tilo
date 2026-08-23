@@ -8104,10 +8104,27 @@ mod undo_control_tests {
         assert_eq!(body(&via_control), "hello");
     }
 
+    /// Every pending request in the live tree, drained the way the host does.
+    fn pending_requests(app: &mut App) -> Vec<crate::undo::UndoRequest> {
+        let mut out = Vec::new();
+        for &w_ptr in app.node_map.values() {
+            let w = unsafe { &mut *w_ptr };
+            if let Some(req) = w.take_undo_request() {
+                out.push(req);
+            }
+        }
+        out
+    }
+
     /// Activating a control the host has said is unavailable must do nothing —
     /// not silently undo something else.
+    ///
+    /// Asserted at the widget boundary, not only on the document: the host's
+    /// own `redo_as` would decline an impossible verb anyway, so a test that
+    /// checked only the document would pass with the control's refusal removed
+    /// and prove nothing about it.
     #[test]
-    fn activating_an_unavailable_control_performs_no_undo() {
+    fn activating_an_unavailable_control_produces_no_request_at_all() {
         let mut app = app_with_history_controls();
         type_action(&mut app, "hello");
         app.publish_undo_status();
@@ -8115,11 +8132,25 @@ mod undo_control_tests {
         // Redo is unavailable: nothing has been undone.
         let redo_id = exported_id(&app, "Redo");
         app.dispatch_a11y_action(redo_id, &Action::Activate);
-        assert!(
-            !app.drain_undo_requests(),
-            "an unavailable verb must not reach the host"
+        assert_eq!(
+            pending_requests(&mut app),
+            Vec::new(),
+            "an unavailable verb must not even reach the host as a request"
         );
+        assert!(!app.drain_undo_requests());
         assert_eq!(body(&app), "hello", "and the document is untouched");
+
+        // The same activation on the same control, once the verb is real,
+        // does produce a request — so the assertion above is about
+        // availability and not about the activation route being inert.
+        assert!(app.perform_undo());
+        app.publish_undo_status();
+        let redo_id = exported_id(&app, "Redo");
+        app.dispatch_a11y_action(redo_id, &Action::Activate);
+        assert_eq!(
+            pending_requests(&mut app),
+            vec![crate::undo::UndoRequest::Redo]
+        );
     }
 
     /// The status must reach a control nested behind a container that knows
@@ -8158,36 +8189,42 @@ mod undo_control_tests {
     fn publishing_between_keystrokes_does_not_split_the_pending_edit() {
         let mut app = app_with_history_controls();
 
-        // An edit in progress: written, not yet committed — exactly the state
-        // a text field is in between keystrokes.
-        let obj = app
-            .state
-            .doc
-            .put_object(&ROOT, "body", ObjType::Text)
-            .unwrap();
-        app.state.doc.splice_text(&obj, 0, 0, "hel").unwrap();
-
-        // Frames go by while the user is still typing.
+        // A first action, so the history has something to describe. Without
+        // one there is no span to diff and the frames below would touch the
+        // document at all — the hazard only exists once a summary is derivable.
+        type_action(&mut app, "hello");
         app.publish_undo_status();
-        app.publish_undo_status();
-
-        app.state.doc.splice_text(&obj, 3, 0, "lo").unwrap();
-        app.publish_undo_status();
-
-        // Now the widget signals the boundary, as a text field does.
-        app.commit_action();
-        assert_eq!(body(&app), "hello");
-
-        app.publish_undo_status();
-        assert!(
-            !exported(&app, "Undo").is_disabled(),
-            "the edit must have produced an undo entry"
+        assert_eq!(
+            exported(&app, "Undo").description().as_deref(),
+            Some("Undo: +5 -0 chars"),
+            "the status really is being derived, so a diff really would run"
         );
-        assert!(app.perform_undo(), "and undoing it must work");
+
+        // Now a second edit in progress: written, not yet committed — exactly
+        // the state a text field is in between keystrokes.
+        let obj = match app.state.doc.get(&ROOT, "body") {
+            Ok(Some((_, obj))) => obj,
+            _ => panic!("body must exist"),
+        };
+        app.state.doc.splice_text(&obj, 5, 0, " wor").unwrap();
+        app.publish_undo_status();
+        app.state.doc.splice_text(&obj, 9, 0, "ld").unwrap();
+        app.publish_undo_status();
+
+        // The widget signals the boundary, as a text field does.
+        app.commit_action();
+        assert_eq!(body(&app), "hello world");
+
+        app.publish_undo_status();
+        assert!(app.perform_undo(), "the second edit must be undoable");
         assert_eq!(
             body(&app),
-            "",
-            "one undo reverts the whole edit, not part of it"
+            "hello",
+            "one undo reverts the second edit and only that — a frame that \
+             published between the keystrokes must not have committed part of \
+             it as an untracked change"
         );
+        assert!(app.perform_undo(), "the first edit is still undoable");
+        assert_eq!(body(&app), "");
     }
 }

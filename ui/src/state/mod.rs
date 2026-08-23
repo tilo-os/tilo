@@ -1300,6 +1300,22 @@ mod tests {
             "an empty commit is not a history change"
         );
 
+        // The author-less paths are separate methods with their own stack
+        // handling; walk them too, or a missing bump there ships unseen.
+        let mut anon = State::new();
+        anon.doc.put(&automerge::ROOT, "k", 1).unwrap();
+        anon.commit_action(None, None);
+        let anon_committed = anon.history_revision();
+        anon.undo(None, None).unwrap();
+        let anon_undone = anon.history_revision();
+        assert_ne!(anon_undone, anon_committed, "plain undo moves the revision");
+        anon.redo(None, None).unwrap();
+        assert_ne!(
+            anon.history_revision(),
+            anon_undone,
+            "plain redo moves the revision"
+        );
+
         // Swapping the document resets the stacks; the revision must still
         // move, so a status cached against the old document is not reused.
         let mut other = automerge::AutoCommit::new();
