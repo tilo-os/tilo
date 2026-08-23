@@ -196,7 +196,7 @@ mod tests {
     use super::*;
     use crate::model::{
         ClipEffect, EffectKind, Filters, MediaItem, MediaKind, Project, Track, TrackKind,
-        Transition,
+        Transform, Transition,
     };
     use crate::preview::{Rgb, palette_rgb};
     use uuid::Uuid;
@@ -249,6 +249,313 @@ mod tests {
             locked: false, solo: false,
         });
         id
+    }
+
+    /// A [`FrameSource`] handing every layer the same known picture, so a
+    /// test can assert on *where the picture landed* rather than on a
+    /// stand-in fill. `paint(u, v) -> (r, g, b, a)` in 0..255.
+    fn painted(
+        w: u32,
+        h: u32,
+        paint: impl Fn(f64, f64) -> [u8; 4] + 'static,
+    ) -> CpuFrames<impl FnMut(Uuid, f64) -> Option<CpuFrame>> {
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let u = (x as f64 + 0.5) / w as f64;
+                let v = (y as f64 + 0.5) / h as f64;
+                let c = paint(u, v);
+                let i = ((y * w + x) * 4) as usize;
+                rgba[i..i + 4].copy_from_slice(&c);
+            }
+        }
+        let shared = std::sync::Arc::new(rgba);
+        CpuFrames::new(move |_media, _t| {
+            Some(CpuFrame {
+                width: w,
+                height: h,
+                rgba: shared.clone(),
+                identity: 0,
+            })
+        })
+    }
+
+    /// A flat mid-green picture, square, so a transform's effect on it is
+    /// unambiguous: green means "the clip is here", black means "it is not".
+    fn green() -> CpuFrames<impl FnMut(Uuid, f64) -> Option<CpuFrame>> {
+        painted(32, 32, |_u, _v| [40, 200, 90, 255])
+    }
+
+    fn is_green(c: Rgb) -> bool {
+        c.g > 0.5 && c.g > c.r + 0.2 && c.g > c.b + 0.2
+    }
+    fn is_black(c: Rgb) -> bool {
+        c.luma() < 0.06
+    }
+
+    /// A one-clip project whose media is square, so the identity transform
+    /// aspect-fits it to the full height of a square frame.
+    fn square_clip() -> (Project, Uuid) {
+        let mut p = Project::new("t");
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "sq".into(),
+            kind: MediaKind::Video,
+            duration: 30.0,
+            width: 32,
+            height: 32,
+            fps: 30.0,
+            palette: 2,
+            path: crate::media::workspace_path("sq.mp4"),
+            hydration: crate::media::Hydration::Local,
+            ..Default::default()
+        });
+        let t = track(&mut p, 1);
+        let cid = p.add_clip(t, mid, 0.0).unwrap();
+        p.clip_mut(cid).unwrap().out_point = 10.0;
+        (p, cid)
+    }
+
+    #[test]
+    fn the_identity_transform_still_fills_the_frame() {
+        // The whole geometry feature has to be free at rest: an untouched
+        // clip must composite exactly as it did before there was a
+        // transform at all.
+        let (p, _) = square_clip();
+        let mut c = compositor();
+        let buf = c.frame(&p, 1.0, 64, 64, &mut green());
+        for (x, y) in [(2, 2), (32, 32), (61, 61), (2, 61)] {
+            assert!(
+                is_green(px(&buf, 64, x, y)),
+                "identity fills the frame; ({x},{y}) was {:?}",
+                px(&buf, 64, x, y),
+            );
+        }
+    }
+
+    #[test]
+    fn scaling_down_shrinks_the_picture_and_leaves_black_around_it() {
+        let (mut p, cid) = square_clip();
+        p.clip_mut(cid).unwrap().transform = Transform {
+            scale_x: 0.5,
+            scale_y: 0.5,
+            ..Transform::default()
+        };
+        let mut c = compositor();
+        let buf = c.frame(&p, 1.0, 64, 64, &mut green());
+        // Half scale on a square source in a square frame: the picture
+        // occupies the middle half, x and y in 16..48.
+        assert!(is_green(px(&buf, 64, 32, 32)), "the centre still has picture");
+        assert!(is_green(px(&buf, 64, 20, 32)), "just inside the left edge");
+        assert!(is_black(px(&buf, 64, 8, 32)), "well outside is black");
+        assert!(is_black(px(&buf, 64, 32, 4)), "and above it");
+        assert!(is_black(px(&buf, 64, 60, 60)), "and the corner");
+    }
+
+    #[test]
+    fn position_moves_the_picture_by_frame_widths() {
+        let (mut p, cid) = square_clip();
+        // A quarter-size clip pushed a quarter of the frame to the right
+        // and a quarter up.
+        p.clip_mut(cid).unwrap().transform = Transform {
+            scale_x: 0.25,
+            scale_y: 0.25,
+            pos_x: 0.25,
+            pos_y: -0.25,
+            ..Transform::default()
+        };
+        let mut c = compositor();
+        let buf = c.frame(&p, 1.0, 64, 64, &mut green());
+        // Centre of the clip: 0.5 + 0.25 = 0.75 across, 0.5 - 0.25 = 0.25
+        // down → pixel (48, 16).
+        assert!(
+            is_green(px(&buf, 64, 48, 16)),
+            "the clip sits up and to the right; got {:?}",
+            px(&buf, 64, 48, 16),
+        );
+        assert!(is_black(px(&buf, 64, 32, 32)), "and no longer at the centre");
+        assert!(is_black(px(&buf, 64, 16, 48)), "nor opposite it");
+    }
+
+    #[test]
+    fn a_corner_pip_lands_in_that_corner_and_only_there() {
+        let (mut p, cid) = square_clip();
+        // Bottom-left, a fifth of the frame, with a small margin.
+        p.clip_mut(cid).unwrap().transform = Transform::pip(0.2, (-1.0, 1.0), 0.03);
+        let mut c = compositor();
+        let buf = c.frame(&p, 1.0, 64, 64, &mut green());
+        // pos = -(0.5 - 0.1 - 0.03) = -0.37 → centre at 0.13 across, 0.87
+        // down → pixel (8, 55).
+        assert!(
+            is_green(px(&buf, 64, 8, 55)),
+            "the inset sits bottom-left; got {:?}",
+            px(&buf, 64, 8, 55),
+        );
+        for (x, y) in [(32, 32), (55, 8), (55, 55), (8, 8)] {
+            assert!(
+                is_black(px(&buf, 64, x, y)),
+                "a picture-in-picture covers only its corner; ({x},{y}) was {:?}",
+                px(&buf, 64, x, y),
+            );
+        }
+    }
+
+    #[test]
+    fn rotating_a_quarter_turn_moves_the_source_left_half_to_the_top() {
+        // Half red, half blue, split down the middle. A clockwise quarter
+        // turn must put the left (red) half on top.
+        let (mut p, cid) = square_clip();
+        let mut src = painted(32, 32, |u, _v| {
+            if u < 0.5 { [220, 40, 40, 255] } else { [40, 40, 220, 255] }
+        });
+        let mut c = compositor();
+        let flat = c.frame(&p, 1.0, 64, 64, &mut src);
+        let left = px(&flat, 64, 12, 32);
+        assert!(left.r > left.b + 0.2, "unrotated, red is on the left: {left:?}");
+
+        p.clip_mut(cid).unwrap().transform =
+            Transform { rotation: 90.0, ..Transform::default() };
+        let turned = c.frame(&p, 1.0, 64, 64, &mut src);
+        let top = px(&turned, 64, 32, 12);
+        let bottom = px(&turned, 64, 32, 52);
+        assert!(
+            top.r > top.b + 0.2,
+            "a clockwise quarter turn puts the source's left half on top: {top:?}",
+        );
+        assert!(
+            bottom.b > bottom.r + 0.2,
+            "and its right half at the bottom: {bottom:?}",
+        );
+    }
+
+    #[test]
+    fn cropping_cuts_the_edge_off_without_moving_what_remains() {
+        let (mut p, cid) = square_clip();
+        let mut c = compositor();
+        let full = c.frame(&p, 1.0, 64, 64, &mut green());
+        assert!(is_green(px(&full, 64, 4, 32)), "uncropped, the left edge has picture");
+
+        // Cut the left third away.
+        p.clip_mut(cid).unwrap().transform =
+            Transform { crop_left: 1.0 / 3.0, ..Transform::default() };
+        let cropped = c.frame(&p, 1.0, 64, 64, &mut green());
+        assert!(
+            is_black(px(&cropped, 64, 4, 32)),
+            "the cropped-away third is gone; got {:?}",
+            px(&cropped, 64, 4, 32),
+        );
+        assert!(
+            is_green(px(&cropped, 64, 32, 32)),
+            "what is left of the picture has not moved",
+        );
+        assert!(is_green(px(&cropped, 64, 60, 32)), "including its right edge");
+    }
+
+    #[test]
+    fn a_transformed_layer_lets_the_one_beneath_it_show_through() {
+        // The point of geometry on a layer stack: an inset clip must reveal
+        // what is under it, not letterbox it away.
+        let mut p = Project::new("t");
+        let under = Uuid::new_v4();
+        let over = Uuid::new_v4();
+        for (id, pal) in [(under, 0u8), (over, 3u8)] {
+            p.media.push(MediaItem {
+                id,
+                name: "m".into(),
+                kind: MediaKind::Video,
+                duration: 30.0,
+                width: 32,
+                height: 32,
+                fps: 30.0,
+                palette: pal,
+                path: crate::media::workspace_path("m.mp4"),
+                hydration: crate::media::Hydration::Projected,
+                ..Default::default()
+            });
+        }
+        let v1 = track(&mut p, 1);
+        let v2 = track(&mut p, 2);
+        let lower = p.add_clip(v1, under, 0.0).unwrap();
+        let upper = p.add_clip(v2, over, 0.0).unwrap();
+        p.clip_mut(lower).unwrap().out_point = 10.0;
+        p.clip_mut(upper).unwrap().out_point = 10.0;
+        p.clip_mut(upper).unwrap().transform = Transform::pip(0.3, (1.0, -1.0), 0.04);
+
+        let mut c = compositor();
+        // No sources at all: both layers draw their representative fill, so
+        // this also proves the stand-in respects the transform — a
+        // picture-in-picture reads as one in a hermetic capture.
+        let buf = c.frame(&p, 1.0, 64, 64, &mut NoSources);
+        let centre = px(&buf, 64, 32, 40);
+        let inset = px(&buf, 64, 51, 13);
+        let lower_pal = palette_rgb(0);
+        let upper_pal = palette_rgb(3);
+        // Compare which palette each region is nearer to.
+        let near = |c: Rgb, a: Rgb, b: Rgb| {
+            let d = |x: Rgb, y: Rgb| {
+                (x.r - y.r).abs() + (x.g - y.g).abs() + (x.b - y.b).abs()
+            };
+            d(c, a) < d(c, b)
+        };
+        assert!(
+            near(centre, lower_pal, upper_pal),
+            "the centre shows the lower clip, not the inset: {centre:?}",
+        );
+        assert!(
+            near(inset, upper_pal, lower_pal),
+            "the inset corner shows the upper clip: {inset:?}",
+        );
+    }
+
+    #[test]
+    fn a_source_with_alpha_is_cut_by_it_and_video_never_is() {
+        // A title's transparent margin must let the layer beneath through;
+        // a decoded video frame that happens to carry zero alpha must not
+        // vanish.
+        let mut p = Project::new("t");
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "title".into(),
+            kind: MediaKind::Text,
+            duration: 10.0,
+            width: 32,
+            height: 32,
+            fps: 30.0,
+            palette: 1,
+            path: String::new(),
+            hydration: crate::media::Hydration::Local,
+            text: Some(crate::model::TextSource::new("hi")),
+            ..Default::default()
+        });
+        let t = track(&mut p, 1);
+        let cid = p.add_clip(t, mid, 0.0).unwrap();
+        p.clip_mut(cid).unwrap().out_point = 5.0;
+
+        // Opaque green in the left half, fully transparent in the right.
+        let mut src = painted(32, 32, |u, _v| {
+            if u < 0.5 { [40, 200, 90, 255] } else { [40, 200, 90, 0] }
+        });
+        let mut c = compositor();
+        let buf = c.frame(&p, 1.0, 64, 64, &mut src);
+        assert!(is_green(px(&buf, 64, 16, 32)), "the opaque half draws");
+        assert!(
+            is_black(px(&buf, 64, 48, 32)),
+            "the transparent half does not; got {:?}",
+            px(&buf, 64, 48, 32),
+        );
+
+        // The same picture on a video source keeps its transparent half,
+        // because video alpha is not honoured.
+        p.media[0].kind = MediaKind::Video;
+        p.media[0].text = None;
+        let buf = c.frame(&p, 1.0, 64, 64, &mut src);
+        assert!(
+            is_green(px(&buf, 64, 48, 32)),
+            "a video frame is opaque whatever its alpha channel says; got {:?}",
+            px(&buf, 64, 48, 32),
+        );
     }
 
     #[test]
