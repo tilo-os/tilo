@@ -7312,6 +7312,12 @@ impl VideoEditorApp {
                 self.recents = crate::project_file::recents::remember(&self.recents, &path);
                 self.project_notice = Some(format!("Saved to {}", path.display()));
                 self.project_path = Some(path);
+                // The document's heads as they are *now*, not the copy `sync`
+                // cached at the start of the frame. Saving from a key press
+                // that followed an edit in the same frame would otherwise
+                // stamp the pre-edit heads and leave the project reading as
+                // unsaved the instant after it was written.
+                self.doc_heads = doc.get_heads();
                 self.saved_heads = Some(self.doc_heads.clone());
                 // A save that was only standing in the way of an open now
                 // lets it through.
@@ -11604,6 +11610,35 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         assert!(app.project_is_dirty(), "the document moved on, so the badge is back");
         assert!(app.project_status_line().contains("unsaved changes"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_save_in_the_same_frame_as_the_edit_still_settles_the_badge() {
+        // `sync` caches the document's heads once per frame. A save that
+        // stamped that cached copy, rather than the document as it stands,
+        // would record the pre-edit state — so the project would read as
+        // unsaved the instant after being written, and the next Ctrl+S would
+        // write an identical file to prove it.
+        let dir = scratch("sameframe");
+        let path = dir.join("S.qvp");
+        let (mut app, mut doc) = app_and_doc();
+        app.write_project_to(&mut doc, path.clone());
+        assert!(!app.project_is_dirty());
+
+        // Edit and save with no `sync` in between — the frame boundary the
+        // cached heads would have been refreshed at.
+        let target = app.project.top_video_clip_at(10.0).unwrap().id;
+        app.selection.select_only(target);
+        app.playhead = 12.0;
+        key_press(&mut app, &mut doc, "s", false);
+        app.save_project(&mut doc);
+        assert!(!app.project_is_dirty(), "the save settled it");
+
+        // And the file really holds the edit, not the state before it.
+        assert_eq!(crate::project_file::load(&path).unwrap().clips.len(), 8);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(!app.project_is_dirty(), "and it stays settled across the frame");
         std::fs::remove_dir_all(&dir).ok();
     }
 
