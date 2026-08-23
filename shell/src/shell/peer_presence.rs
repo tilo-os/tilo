@@ -1434,6 +1434,23 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Put the fixture's workspace on screen.
+    ///
+    /// `WorkspaceTree::default()` starts with no workspaces and an
+    /// `active` that names none, and `append_empty_workspace` does not
+    /// move it — which is fine for the tests above, whose sessions
+    /// address rooms by name. The roster is different: it is a
+    /// statement about the room the user is *looking at*, and a real
+    /// session always has one. So the fixture has to say which, the way
+    /// a live tree always does.
+    fn looking_at_its_room(tree: &mut WorkspaceTree) {
+        tree.active = tree
+            .workspaces
+            .first()
+            .expect("the fixture makes a workspace")
+            .id;
+    }
+
     /// A session's own view of who is in the room it is looking at,
     /// read the way the roster and the top bar read it.
     fn roster_of(tree: &crate::shell::state::WorkspaceTreeHandle) -> Vec<(String, Option<String>)> {
@@ -1476,7 +1493,9 @@ mod two_sessions {
         let guest_peer = peer_id(21);
         let host_peer = peer_id(22);
         let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
-        let guest_tree = guest_joining(&mut host_tree, room);
+        let mut guest_tree = guest_joining(&mut host_tree, room);
+        looking_at_its_room(&mut host_tree);
+        looking_at_its_room(&mut guest_tree);
         let host_handle = host_tree.shared();
         let guest_handle = guest_tree.shared();
 
@@ -1529,7 +1548,9 @@ mod two_sessions {
         let guest_peer = peer_id(31);
         let host_peer = peer_id(32);
         let (mut host_tree, room) = host_naming(&[]);
-        let guest_tree = guest_joining(&mut host_tree, room);
+        let mut guest_tree = guest_joining(&mut host_tree, room);
+        looking_at_its_room(&mut host_tree);
+        looking_at_its_room(&mut guest_tree);
         let host_handle = host_tree.shared();
         let guest_handle = guest_tree.shared();
 
@@ -1567,7 +1588,9 @@ mod two_sessions {
         let host_peer = peer_id(42);
         // Both ends named, which is what `issue_invite` leaves behind.
         let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob"), (&host_peer, OWNER)]);
-        let guest_tree = guest_joining(&mut host_tree, room);
+        let mut guest_tree = guest_joining(&mut host_tree, room);
+        looking_at_its_room(&mut host_tree);
+        looking_at_its_room(&mut guest_tree);
         let host_handle = host_tree.shared();
         let guest_handle = guest_tree.shared();
 
@@ -1606,7 +1629,8 @@ mod two_sessions {
         let host_peer = peer_id(51);
         let guest_peer = peer_id(52);
         let (mut host_tree, room) = host_naming(&[(&host_peer, OWNER)]);
-        let guest_tree = guest_joining(&mut host_tree, room);
+        let mut guest_tree = guest_joining(&mut host_tree, room);
+        looking_at_its_room(&mut guest_tree);
         let guest_handle = guest_tree.shared();
 
         let dir = std::env::temp_dir().join(format!("qos-roster-guest-{}", std::process::id()));
