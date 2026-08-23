@@ -68,13 +68,24 @@ The palette offers apps this machine does not have yet in the same rows as the
 ones it does. Installing verifies an ed25519 signature and a BLAKE3 digest,
 then runs it.
 
-Timed, on twelve clean sessions: a median of **6.7s** from the keystroke to
-the app's own first frame, spread 5.0–9.5s — roughly a quarter fetching, two
-quarters verifying and unpacking, one quarter starting and painting. That is
-a 446 MB debug package over a loopback registry, on a machine that was busy;
-most of it is the package's size, not the mechanism. So say "a few seconds",
-never "instant" — a viewer can time this one off the recording.
-Re-measure with `scripts/headless-examples/install-open-timing.py`.
+Timed, on five clean sessions: a median of **1.87s** from the keystroke to the
+app's own first frame, spread 1.81–2.18s. That is a 24 MB package over a
+loopback registry, on a machine carrying a load average of 5.5.
+
+Fetching and verifying have stopped being the story: 0.07s to fetch, 0.10s to
+check the ed25519 signature and the BLAKE3 digest and unpack, and 1.70s — over
+nine tenths of the wait — for the app itself to start and paint its first
+frame. Shrinking the package further buys almost nothing now; the remaining
+second and a half is the word processor's own startup.
+
+It read as 6.7s, and on a busy machine 16–21s, for as long as the payload was
+a 449 MB **debug** build — the packaging was moving and hashing eighteen times
+the bytes it needed to. Build it with `scripts/demo-apps-live.sh`, which packs
+an optimised profile by default; `QOS_DEMO_PROFILE=debug` reproduces the old
+number if you want to see it.
+
+Say "about two seconds", never "instant" — a viewer can time this one off the
+recording. Re-measure with `scripts/headless-examples/install-open-timing.py`.
 
 ## 6 · Cut to Xaver — the window opens there too ✅
 
