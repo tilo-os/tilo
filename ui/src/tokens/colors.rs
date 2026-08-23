@@ -204,6 +204,15 @@ pub struct Colors {
 /// difference at a glance rather than a shade you have to compare.
 pub const CATEGORICAL_LEN: usize = 6;
 
+/// Total hue sweep of the categorical series, centred on the accent. Wide
+/// enough to tell six workspaces apart, narrow enough that the last one is
+/// still the same family as the first.
+const CATEGORICAL_HUE_ARC_DEG: f32 = 70.0;
+
+/// How far the series walks in lightness across its span. Carries most of
+/// the separation, and unlike hue it survives a desaturated theme.
+const CATEGORICAL_LIGHT_SPREAD: f32 = 0.13;
+
 impl Colors {
     /// A categorical colour series grown from the theme's own accent.
     ///
@@ -229,8 +238,25 @@ impl Colors {
     pub fn categorical(&self, idx: usize) -> Color {
         let base = self.accent[ACCENT_PRIMARY_IDX];
         let (h, s, l) = rgb_to_hsl(base);
-        let turn = (idx % CATEGORICAL_LEN) as f32 / CATEGORICAL_LEN as f32;
-        hsl_to_rgb((h + turn * 360.0).rem_euclid(360.0), s, l)
+        let i = idx % CATEGORICAL_LEN;
+        // Fan around the accent, do not walk the wheel.
+        //
+        // Rotating a full 360/N per entry made every hue reachable, which
+        // is exactly the problem: from a blue accent the second workspace
+        // landed on purple and the third on pink — colours with nothing to
+        // do with the theme, indistinguishable in kind from the hardcoded
+        // palette this replaced. Sweeping a bounded arc keeps the whole
+        // series recognisably one family, and the separation the eye
+        // actually needs comes from lightness as much as hue.
+        // Index 0 is the accent itself; the rest alternate outward from it
+        // (+1, -1, +2, -2, …) so the first workspace a user sees is their
+        // own accent and later ones fan symmetrically either side.
+        let k = (i + 1) / 2;
+        let sign = if i % 2 == 1 { 1.0 } else { -1.0 };
+        let step = sign * k as f32 / (CATEGORICAL_LEN / 2) as f32; // -1 … +1
+        let hue = (h + step * CATEGORICAL_HUE_ARC_DEG / 2.0).rem_euclid(360.0);
+        let light = (l + step * CATEGORICAL_LIGHT_SPREAD).clamp(0.22, 0.78);
+        hsl_to_rgb(hue, s, light)
     }
 }
 
@@ -855,13 +881,36 @@ mod tests {
             for i in 0..CATEGORICAL_LEN {
                 let a = c.categorical(i);
                 let b = c.categorical((i + 1) % CATEGORICAL_LEN);
-                let dh = (hue(a) - hue(b)).abs();
-                let sep = dh.min(360.0 - dh);
+                // Distinguishable — by whatever combination of hue and
+                // lightness the theme affords, not by hue alone. Hue-only
+                // separation is what drove the series around the whole
+                // wheel and produced colours foreign to the theme.
+                let d = |x: Color, y: Color| {
+                    let (dr, dg, db) = (
+                        x.r() as f32 - y.r() as f32,
+                        x.g() as f32 - y.g() as f32,
+                        x.b() as f32 - y.b() as f32,
+                    );
+                    (2.0 * dr * dr + 4.0 * dg * dg + 3.0 * db * db).sqrt()
+                };
                 assert!(
-                    sep > 40.0,
-                    "{name}: workspaces {i} and {} are only {sep:.0}° of hue apart \
-                     — adjacent sectors would read as the same colour",
-                    (i + 1) % CATEGORICAL_LEN
+                    d(a, b) > 28.0,
+                    "{name}: workspaces {i} and {} are only {:.0} apart — \
+                     adjacent sectors would read as the same colour",
+                    (i + 1) % CATEGORICAL_LEN,
+                    d(a, b)
+                );
+
+                // …and still this theme's family. This is the property the
+                // old hue-only rule gave up: it let the series reach any
+                // colour at all, which is how a blue accent produced a
+                // purple workspace.
+                let dh_acc = (hue(a) - hue(c.accent[ACCENT_PRIMARY_IDX])).abs();
+                let from_accent = dh_acc.min(360.0 - dh_acc);
+                assert!(
+                    from_accent <= CATEGORICAL_HUE_ARC_DEG / 2.0 + 1.0,
+                    "{name}: workspace colour {i} sits {from_accent:.0}° from the \
+                     accent — outside the theme's own family"
                 );
 
                 // Visible against the ground the theme actually paints.
