@@ -298,6 +298,32 @@ fn synthetic_node_id(parent: AkNodeId, key: u64) -> AkNodeId {
     AkNodeId(h.finish() | SYNTHETIC_ID_BIT)
 }
 
+/// The key path to the **active descendant** a widget nominates — the first
+/// node in its synthetic subtree marked
+/// [`focused`](crate::a11y::AccessState::focused) — or `None` when it nominates
+/// none.
+///
+/// [`build_tree_update`] uses the same rule to aim the exported focus. This is
+/// the other half: the host uses it to aim *keyboard* activation at the element
+/// the user is on, so a canvas widget implements
+/// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at) once
+/// and gets both the assistive-technology and the Enter/arrow paths, instead of
+/// having to implement `perform_action` again for the keyboard.
+pub fn active_descendant_path(access: &AccessNode) -> Option<Vec<u64>> {
+    fn walk(children: &[AccessNode], path: &mut Vec<u64>) -> bool {
+        for (ordinal, child) in children.iter().enumerate() {
+            path.push(child.key.unwrap_or(ordinal as u64));
+            if child.state.focused || walk(&child.children, path) {
+                return true;
+            }
+            path.pop();
+        }
+        false
+    }
+    let mut path = Vec::new();
+    walk(&access.children, &mut path).then_some(path)
+}
+
 /// Where an [`accesskit::NodeId`] points in the live widget tree. Produced by
 /// [`resolve_node_id`], which is how an incoming `ActionRequest` is turned back
 /// into something the app can act on.
@@ -1516,6 +1542,53 @@ mod tests {
             resolve_node_id(&root, &node_map, ROOT_ID),
             Some(A11yTarget::Root),
         );
+    }
+
+    #[test]
+    fn active_descendant_path_names_the_marked_node_the_same_way_focus_does() {
+        // The keyboard path and the exported focus must agree on which element
+        // the user is on; if they disagreed, Enter would activate something
+        // other than what the reader just announced.
+        let mut root = TestWidget::new(Some(
+            AccessNode::new(Role::Canvas)
+                .with_name("Timeline")
+                .with_state(AccessState::new().focusable(true))
+                .with_children(vec![
+                    AccessNode::new(Role::Group).with_name("Track 1").with_children(vec![
+                        clip("Intro", false),
+                        clip("Interview", true),
+                    ]),
+                    AccessNode::new(Role::Group).with_name("Track 2"),
+                ]),
+        ));
+        let access = Widget::accessibility(&root).unwrap();
+
+        // Second clip of the first track: [track 0, clip 1].
+        assert_eq!(active_descendant_path(&access), Some(vec![0, 1]));
+
+        // And it names the very node the exported focus lands on.
+        let (_taffy, node_map, _n) = lay_out(&mut root);
+        let canvas_taffy = taffy_id_of(&node_map, Role::Canvas);
+        let update = build_tree_update(&root, &node_map, Some(canvas_taffy), 1.0);
+        assert_eq!(
+            resolve_node_id(&root, &node_map, update.focus),
+            Some(A11yTarget::Synthetic {
+                owner: canvas_taffy,
+                key_path: vec![0, 1],
+            }),
+            "keyboard target and reader focus must be the same element"
+        );
+    }
+
+    #[test]
+    fn a_widget_that_marks_nothing_has_no_active_descendant() {
+        // An ordinary widget must yield an empty target so the keyboard path
+        // keeps addressing the widget itself.
+        let plain = AccessNode::new(Role::Button).with_name("Save");
+        assert_eq!(active_descendant_path(&plain), None);
+
+        let unmarked = canvas(vec![clip("a", false), clip("b", false)]);
+        assert_eq!(active_descendant_path(&unmarked), None);
     }
 
     #[test]
