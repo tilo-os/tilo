@@ -101,6 +101,38 @@ struct PendingAdoption {
     app_id: Option<String>,
 }
 
+/// What the pointer's current position is evidence of.
+///
+/// A cursor drawn on a peer's screen asserts that somebody is pointing
+/// at that spot. Where that assertion comes from matters, because the
+/// two ways a pointer arrives somewhere decay at completely different
+/// rates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerEvidence {
+    /// Somebody moved the pointer here — or worked the wheel with a
+    /// hand on it — and left it here. The strongest claim a position
+    /// can carry: there is a cursor sitting at that spot on their
+    /// screen, and it stays there whether or not they touch anything
+    /// again. Reading a page for half a minute is exactly this.
+    Resting,
+    /// The last thing the pointer did here was press a button.
+    ///
+    /// The weakest claim, and the shape this whole distinction exists
+    /// for: a press is an actuation, and an actuation frequently
+    /// destroys the thing it acted on. A pointer parked on a **Join**
+    /// button after the invite card it lived on has been dismissed is
+    /// pointing at nothing at all, and it will go on pointing at
+    /// nothing for as long as anything keeps the session's idle clock
+    /// warm.
+    ///
+    /// This is not a claim about *who* pressed it. A hand resting on a
+    /// mouse emits motion on the least tremor, so a person who clicked
+    /// and stayed puts the pointer back to [`Self::Resting`] on the
+    /// next event — before anybody could notice. What does not do that
+    /// is a press with nothing on the other end of it.
+    Actuated,
+}
+
 /// Per-compositor state for routing local input into client surfaces.
 ///
 /// Lives on [`State`] because the seat lives there; the run loop reaches
@@ -151,6 +183,31 @@ pub struct ClientInput {
     /// Stamped in [`route_input`], which its own comment names as the
     /// one function every local input goes through.
     last_input: Option<Instant>,
+    /// What the pointer last *did*, which is what its position is
+    /// evidence of.
+    ///
+    /// [`Self::last_input`] answers whether anybody is at this session.
+    /// It cannot answer the question a desktop cursor actually asks,
+    /// because the two come apart in one specific shape: a pointer is
+    /// moved onto a control, the button goes down, the control does
+    /// its work and *disappears* — a modal dismissed, a menu closed, a
+    /// dialog accepted — and the position that is left behind points at
+    /// something that is no longer there. A press is an actuation, and
+    /// an actuation routinely destroys its own target.
+    ///
+    /// So the two are weighed differently. A pointer somebody *moved*
+    /// and left is a cursor genuinely sitting on their screen, and it
+    /// keeps the full idle horizon. A pointer whose last word was a
+    /// press has the weakest claim any position can have, and it is
+    /// asked to prove itself again much sooner. Nothing here is about
+    /// who or what is driving the session: a person's mouse emits
+    /// motion on the least contact, so a hand still on the device
+    /// re-arms the long horizon on the very next event, and a session
+    /// with nothing on the other end of it does not.
+    ///
+    /// `None` until the pointer has done anything at all, which is the
+    /// same state as [`Self::cursor`] being `None`.
+    pointer_evidence: Option<PointerEvidence>,
     /// Implicit pointer grab owner, latched on the first button press and
     /// released when the last button comes up. Without this a drag that
     /// starts on a client and leaves its tile would silently switch to the
@@ -374,10 +431,44 @@ impl ClientInput {
     /// Any input revives it on the next frame, so the failure mode is a
     /// cursor that is briefly missing for somebody genuinely idle —
     /// never a stale one that cannot be got rid of.
-    pub fn live_pointer(&self, now: Instant, idle: Duration) -> Option<(f64, f64)> {
+    ///
+    /// One horizon was not enough, and the reason is worth stating: an
+    /// idle horizon generous enough for a person who moved their mouse
+    /// and is now reading is far longer than a whole beat of the film
+    /// this was found in, so a pointer left on a **Join** button was
+    /// still comfortably inside it when the next beat photographed it.
+    /// The horizon was not too long — it was being asked a question it
+    /// cannot answer.
+    ///
+    /// So there are two. `resting` is for a pointer somebody moved and
+    /// left, which is a cursor genuinely sitting on their screen.
+    /// `actuated` is the much shorter one for a pointer whose last word
+    /// was a button press, whose target is routinely destroyed by the
+    /// press itself. See [`PointerEvidence`].
+    pub fn live_pointer(
+        &self,
+        now: Instant,
+        resting: Duration,
+        actuated: Duration,
+    ) -> Option<(f64, f64)> {
         let at = self.cursor?;
         let last = self.last_input?;
-        (now.saturating_duration_since(last) < idle).then_some(at)
+        let horizon = match self.pointer_evidence {
+            // A press, and nothing since. Asked to prove itself again
+            // almost immediately, because the control it was aimed at
+            // may not exist any more.
+            Some(PointerEvidence::Actuated) => actuated,
+            // Moved and left, or a position from before this
+            // distinction existed: the full idle horizon, so somebody
+            // reading their screen keeps their cursor.
+            Some(PointerEvidence::Resting) | None => resting,
+        };
+        (now.saturating_duration_since(last) < horizon).then_some(at)
+    }
+
+    /// What the pointer's position is currently evidence of.
+    pub fn pointer_evidence(&self) -> Option<PointerEvidence> {
+        self.pointer_evidence
     }
 
     /// When input last reached this session, if it ever has.
@@ -395,9 +486,15 @@ impl ClientInput {
     /// `route_input` really writes both is proved separately, against
     /// the real event, in this module's own tests.
     #[cfg(test)]
-    pub(crate) fn note_input_for_test(&mut self, at: Option<(f64, f64)>, when: Instant) {
+    pub(crate) fn note_input_for_test(
+        &mut self,
+        at: Option<(f64, f64)>,
+        when: Instant,
+        evidence: PointerEvidence,
+    ) {
         self.cursor = at;
         self.last_input = Some(when);
+        self.pointer_evidence = Some(evidence);
     }
 }
 
@@ -1719,6 +1816,10 @@ pub fn route_input(
     match event {
         WindowEvent::CursorMoved { position, .. } => {
             state.client_input.cursor = Some((position.x, position.y));
+            // Moved here and left here: a cursor really is sitting at
+            // this spot on this session's screen, and it stays there
+            // whether or not anything happens next.
+            state.client_input.pointer_evidence = Some(PointerEvidence::Resting);
             let hit = current_pointer_target(state, fb, captured);
             deliver_pointer(state, hit);
             // During a chrome drag the file manager keeps drawing the ghost
@@ -1759,6 +1860,13 @@ pub fn route_input(
             } else {
                 state.client_input.buttons_down = state.client_input.buttons_down.saturating_sub(1);
             }
+            // The pointer's last word here was a press. Whatever it hit
+            // may be gone by the next frame — a card dismissed, a menu
+            // closed — so the position stops vouching for itself
+            // shortly unless something moves the pointer again. Any
+            // motion at all puts it back to `Resting`, which is what a
+            // hand still on a mouse produces immediately.
+            state.client_input.pointer_evidence = Some(PointerEvidence::Actuated);
             // A chrome drag's release is the drop: the server-side grab
             // smithay holds only ends on a button event, whether or not a
             // client is under the pointer (no client → cancelled).
@@ -1788,6 +1896,12 @@ pub fn route_input(
             consumed && !chrome_drag
         }
         WindowEvent::MouseWheel { delta, .. } => {
+            // A wheel does not move the pointer, but it is a hand on the
+            // device at that spot — the same evidence a motion carries,
+            // so it restores the full horizon rather than leaving a
+            // pointer that was clicked and then scrolled on the short
+            // one.
+            state.client_input.pointer_evidence = Some(PointerEvidence::Resting);
             // Niri parity: an Alt-modified wheel is a compositor
             // navigation gesture, grabbed before client forwarding like
             // every shell chord, so it works with the cursor over a
@@ -3027,69 +3141,130 @@ mod tests {
         let mut state = state_sharing(9_000_102);
         let mut fb = FrameBuilder::new((1920, 1014));
         let mods = Modifiers::default();
-        let idle = Duration::from_secs(10);
+        // The two horizons the frame loop passes. Named locally at the
+        // production values' *shape* — one long, one short — so this
+        // asserts the split rather than the numbers.
+        let resting = Duration::from_secs(15);
+        let actuated = Duration::from_secs(3);
 
-        // Exactly what pressing Join does: the pointer goes to the
-        // button and the button is pressed. Nothing after this touches
-        // the session again.
+        // Exactly what pressing Join does, all three events: the pointer
+        // travels to the button, the button goes down, the button comes
+        // up. Nothing after this touches the session again.
+        //
+        // Routed rather than written, because the bug was never in the
+        // fields — it was in what the frame loop asked of them, and the
+        // press is the half every previous fixture left out. A fixture
+        // that only moves the pointer records `Resting`, which is a
+        // different session from the one that was photographed.
         route_input(
             &mut state,
             &mut fb,
             &WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(1178.31, 582.0),
+                position: winit::dpi::PhysicalPosition::new(1156.0, 588.0),
             },
             &mods,
         );
+        for pressed_state in [ElementState::Pressed, ElementState::Released] {
+            route_input(
+                &mut state,
+                &mut fb,
+                &WindowEvent::MouseInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    state: pressed_state,
+                    button: winit::event::MouseButton::Left,
+                },
+                &mods,
+            );
+        }
         let pressed = state
             .client_input
             .last_input()
-            .expect("routing a motion records that somebody was here");
+            .expect("routing a press records that somebody was here");
 
         assert_eq!(
             state.client_input.pointer_position(),
-            Some((1178.31, 582.0)),
+            Some((1156.0, 588.0)),
             "the position is real - it is where the press landed",
         );
         assert_eq!(
-            state.client_input.live_pointer(pressed, idle),
-            Some((1178.31, 582.0)),
-            "and at the moment of the press this session is pointing there",
+            state.client_input.pointer_evidence(),
+            Some(PointerEvidence::Actuated),
+            "and what it is evidence of is a press, which is the whole \
+             difference between this session and one somebody moved a \
+             mouse across",
+        );
+        assert_eq!(
+            state.client_input.live_pointer(pressed, resting, actuated),
+            Some((1156.0, 588.0)),
+            "at the moment of the press this session is pointing there",
         );
 
-        // The session is left alone. No key, no wheel, no motion.
-        let later = pressed + idle + Duration::from_secs(1);
+        // The session is left alone: no key, no wheel, no motion. The
+        // gap is the film's own, not this test's — the press is the
+        // agent joining the room in one beat, and the check is the next
+        // beat reading the room's cursors. The run this was written
+        // against put those 12s apart, and the beat marks bound it at
+        // 14s even if every step in between runs long.
+        //
+        // Deliberately *shorter* than `resting`, and that assertion is
+        // the point of this test rather than scene-setting: the
+        // previous version of it derived its gap from the horizon it
+        // was testing, so it passed for every possible horizon and
+        // could not see the run it was written about. A pill reading
+        // `Claude` was in a shot from a run this test passed on.
+        let gap_the_film_leaves = Duration::from_secs(12);
+        assert!(
+            gap_the_film_leaves < resting,
+            "if the single horizon were shorter than the gap this would \
+             need no fixing; it is not, which is why one horizon cannot \
+             do this job",
+        );
+        let at_the_check = pressed + gap_the_film_leaves;
         assert_eq!(
             state.client_input.pointer_position(),
-            Some((1178.31, 582.0)),
+            Some((1156.0, 588.0)),
             "where the pointer was put does not stop being true",
         );
         assert_eq!(
-            state.client_input.live_pointer(later, idle),
+            state.client_input.live_pointer(at_the_check, resting, actuated),
             None,
-            "but nobody is pointing at that button any more, so the session has nothing to announce",
+            "but the control it was aimed at was dismissed several beats \
+             ago and nobody has been near this session since, so it has \
+             nothing to announce about where it is pointing",
         );
 
-        // Anything at all brings it back, on the next frame.
+        // A person who clicked and stayed is not affected by any of
+        // this: a hand on a mouse emits motion at the least contact,
+        // and one event is enough to put the position back on the long
+        // horizon. This is the fail-open half - a missing cursor for
+        // somebody who is really there would be worse than the pill.
         route_input(
             &mut state,
             &mut fb,
-            &WindowEvent::MouseWheel {
+            &WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
-                delta: winit::event::MouseScrollDelta::LineDelta(0.0, -1.0),
-                phase: winit::event::TouchPhase::Moved,
+                position: winit::dpi::PhysicalPosition::new(1157.0, 588.0),
             },
             &mods,
         );
-        let revived = state
+        let moved = state
             .client_input
             .last_input()
-            .expect("a wheel is input too");
-        assert!(revived > pressed, "the stamp moved forward");
+            .expect("a motion is input too");
         assert_eq!(
-            state.client_input.live_pointer(revived, idle),
-            Some((1178.31, 582.0)),
-            "somebody is here again, and their pointer is where they left it",
+            state.client_input.pointer_evidence(),
+            Some(PointerEvidence::Resting),
+            "the pointer is resting where they left it, not sitting on a \
+             press",
+        );
+        assert_eq!(
+            state
+                .client_input
+                .live_pointer(moved + gap_the_film_leaves, resting, actuated),
+            Some((1157.0, 588.0)),
+            "so their cursor survives the same gap that retired the \
+             press - somebody reading their screen keeps it",
         );
     }
 

@@ -108,7 +108,7 @@ use crate::compositor::test_control::{
 };
 use crate::compositor::{BackendKind, parse_backend_from_args};
 use crate::shell::overlay_host::PeerSyncRequest;
-use crate::shell::peer_presence::POINTER_IDLE;
+use crate::shell::peer_presence::{POINTER_ACTUATED_IDLE, POINTER_IDLE};
 
 /// Env-var name for the Phase 7 CI test introspection hook. When set to a
 /// writable path, [`run`] serializes the shell `WorkspaceTree` to that path
@@ -3236,11 +3236,30 @@ pub fn run() -> ! {
             // desktop at a control that had long since been dismissed.
             //
             // `live_pointer` is the question the room is actually
-            // asking. Any input at all answers it again immediately.
+            // asking, and it weighs the two ways a pointer arrives
+            // somewhere differently. A pointer somebody *moved* and
+            // left keeps the full idle horizon, because a cursor really
+            // is sitting there while they read. A pointer whose last
+            // word was a *press* is asked to prove itself again within
+            // seconds, because a press routinely destroys the control it
+            // acted on — and one press on a **Join** button is how a
+            // session enters a room at all.
+            //
+            // One horizon could not do both. In the run this was
+            // measured on, the press had to be retired inside about
+            // eight seconds while a person who had moved their mouse
+            // had to survive nearly seven, and tuning a single number
+            // into a gap that narrow is a coin toss, not a fix. Any
+            // motion at all — the least contact with a real mouse —
+            // puts a position back on the long horizon.
             relay.set_cursor_position(
                 state
                     .client_input
-                    .live_pointer(std::time::Instant::now(), POINTER_IDLE),
+                    .live_pointer(
+                        std::time::Instant::now(),
+                        POINTER_IDLE,
+                        POINTER_ACTUATED_IDLE,
+                    ),
             );
             let (rooms, here) = {
                 let chrome = frame_builder.chrome_handle();
