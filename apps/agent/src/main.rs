@@ -41,10 +41,19 @@ struct Cli {
     /// reproducible and needs no network — and says so in its log.
     #[arg(long)]
     no_model: bool,
-    /// How long a model may take to choose before the keyword vocabulary
-    /// decides instead. Short on purpose: an instruction must never wait on
-    /// the network.
-    #[arg(long, default_value_t = 9000)]
+    /// How long a model may take to decide before the keyword vocabulary
+    /// decides instead. The work must never wait on the network
+    /// indefinitely — but it does have to wait long enough.
+    ///
+    /// This was 9000, set when the decision was a one-of-three pick that
+    /// came back in under a second. Drafting a table is a real reading of
+    /// the document and takes around eight, which put the deadline inside
+    /// the spread: the call would land in time most runs and not in
+    /// others, and a run that misses falls back to the keyword table —
+    /// silently producing the very output the model is there to better,
+    /// while the log still says a model was asked. A margin that wide is
+    /// cheap; being on the wrong side of it during a demonstration is not.
+    #[arg(long, default_value_t = 30_000)]
     model_timeout_ms: u64,
     /// How long to wait for the room to produce something addressed to
     /// this agent before giving up and saying what it did see — nobody

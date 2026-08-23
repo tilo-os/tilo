@@ -20,8 +20,134 @@ pub enum Instruction {
     Caption,
     /// Make the first line a title.
     Heading,
+    /// Write out the facts above the instruction as a table the model
+    /// drafted — the columns, the row order, and what was left out are its
+    /// reading of the document, not a split on separators.
+    RunSheet(TableDraft),
     /// Something outside the vocabulary; the agent says so in the document.
     Unknown(String),
+}
+
+/// A table the model drafted: **content, never operations.**
+///
+/// This is the one place a model's own words reach the document, and the
+/// boundary is what makes that safe to allow. What arrives here is text for
+/// cells. What does not, and cannot, arrive here is a block id, a range to
+/// delete, a choice of which blocks go away, or an action name — the agent
+/// decides all of that from the document, and dispatches it through the
+/// word processor's exported actions exactly as the toolbar would.
+///
+/// So the failure a bad answer can cause is a table that reads poorly. It
+/// is not a document the model rewrote, because nothing here can name a
+/// thing to rewrite.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TableDraft {
+    /// The column headings, which become the table's first row.
+    pub headers: Vec<String>,
+    /// The body rows, each the same width as `headers`.
+    pub rows: Vec<Vec<String>>,
+    /// One line to put under the table — what the model noticed and the
+    /// table itself cannot say. `None` when there was nothing to add.
+    pub note: Option<String>,
+}
+
+/// Bounds on a drafted table.
+///
+/// Not defensive decoration: this content is generated, and the document
+/// it lands in is shared and persistent. The caps are what stop a
+/// pathological answer from being a pathological document — and they are
+/// checked before the first action is dispatched, so a draft that breaks
+/// them changes nothing at all rather than landing half-written.
+const MAX_COLS: usize = 6;
+const MAX_ROWS: usize = 20;
+const MAX_CELL_CHARS: usize = 120;
+const MAX_NOTE_CHARS: usize = 240;
+
+impl TableDraft {
+    /// Whether this is a table the app can be asked to write, and if not,
+    /// why — in words that go in a log rather than the document.
+    ///
+    /// Every row must be exactly as wide as the header. A ragged answer is
+    /// refused rather than padded: padding invents a claim about which
+    /// column a value belongs to, and the whole point of this table is
+    /// that the columns mean something.
+    pub fn check(&self) -> Result<(), String> {
+        if self.headers.is_empty() {
+            return Err("it has no columns".to_string());
+        }
+        if self.headers.len() > MAX_COLS {
+            return Err(format!(
+                "it has {} columns and the most that may be written is {MAX_COLS}",
+                self.headers.len()
+            ));
+        }
+        if self.rows.is_empty() {
+            return Err("it has no rows".to_string());
+        }
+        if self.rows.len() > MAX_ROWS {
+            return Err(format!(
+                "it has {} rows and the most that may be written is {MAX_ROWS}",
+                self.rows.len()
+            ));
+        }
+        for (i, row) in self.rows.iter().enumerate() {
+            if row.len() != self.headers.len() {
+                return Err(format!(
+                    "row {} has {} cells and the header has {}",
+                    i + 1,
+                    row.len(),
+                    self.headers.len()
+                ));
+            }
+        }
+        for cell in self.headers.iter().chain(self.rows.iter().flatten()) {
+            if cell.chars().count() > MAX_CELL_CHARS {
+                return Err(format!(
+                    "a cell is {} characters and the most that may be written is {MAX_CELL_CHARS}",
+                    cell.chars().count()
+                ));
+            }
+        }
+        if self.headers.iter().all(|h| h.trim().is_empty())
+            && self.rows.iter().flatten().all(|c| c.trim().is_empty())
+        {
+            return Err("every cell in it is blank".to_string());
+        }
+        if let Some(n) = &self.note {
+            if n.chars().count() > MAX_NOTE_CHARS {
+                return Err(format!(
+                    "the note is {} characters and the most that may be written is {MAX_NOTE_CHARS}",
+                    n.chars().count()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The table as it will be written: the header row, then the body.
+    pub fn grid(&self) -> Vec<Vec<String>> {
+        let mut g = vec![self.headers.clone()];
+        g.extend(self.rows.iter().cloned());
+        g
+    }
+
+    /// The note, trimmed, if there is one worth writing.
+    pub fn note_text(&self) -> Option<&str> {
+        self.note
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+    }
+}
+
+/// Why an answer did not become an instruction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// The id is not one the app exports. Nothing is dispatched.
+    NotExported(String),
+    /// The id is exported, but the content that came with it cannot be
+    /// written as it stands.
+    Unusable(String),
 }
 
 impl Instruction {
@@ -67,17 +193,45 @@ impl Instruction {
     /// document instead of guessing. Anything else outside the catalogue is
     /// `None`, and the caller falls back rather than acting on it.
     pub fn from_id(id: &str, rest: &str) -> Option<Instruction> {
+        Self::from_answer(id, rest, None).ok()
+    }
+
+    /// The full gate: a catalogue id, plus whatever content the model
+    /// drafted to go with it.
+    ///
+    /// Both halves are checked here and nothing is dispatched until both
+    /// pass. The id must be one the app exports; the content must be
+    /// something the app can write. An entry that needs content and did
+    /// not get any is [`Refused::Unusable`] rather than silently doing the
+    /// deterministic thing instead — a run that quietly downgrades to the
+    /// keyword vocabulary while reporting success is the failure this
+    /// whole module exists to make visible.
+    pub fn from_answer(
+        id: &str,
+        rest: &str,
+        table: Option<TableDraft>,
+    ) -> Result<Instruction, Refused> {
         if id == NOTHING_FITS {
-            return Some(Instruction::Unknown(rest.to_string()));
+            return Ok(Instruction::Unknown(rest.to_string()));
         }
         if !CATALOGUE.iter().any(|c| c.id == id) {
-            return None;
+            return Err(Refused::NotExported(id.to_string()));
         }
         match id {
-            "table" => Some(Instruction::Table),
-            "caption" => Some(Instruction::Caption),
-            "heading" => Some(Instruction::Heading),
-            _ => None,
+            "table" => Ok(Instruction::Table),
+            "caption" => Ok(Instruction::Caption),
+            "heading" => Ok(Instruction::Heading),
+            "runsheet" => {
+                let draft = table.ok_or_else(|| {
+                    Refused::Unusable("it came with no table to write".to_string())
+                })?;
+                draft.check().map_err(Refused::Unusable)?;
+                Ok(Instruction::RunSheet(draft))
+            }
+            // Unreachable while the catalogue and this match agree, and
+            // `every_catalogue_id_maps_to_an_instruction_and_nothing_else_does`
+            // is what keeps them agreeing.
+            _ => Err(Refused::NotExported(id.to_string())),
         }
     }
 
@@ -131,6 +285,22 @@ pub const CATALOGUE: &[Capability] = &[
                   title, and promote the section labels under it to headings.",
         actions: &["SetParagraphStyle", "RemoveBlocks"],
     },
+    Capability {
+        id: "runsheet",
+        summary: "Draft the notes above the instruction into a table yourself, and \
+                  supply it in `table`. Choose the columns — as few as the facts \
+                  need, and none that would sit mostly empty. Put the rows in the \
+                  order they actually belong in rather than the order they were \
+                  written. Fold in anything stated only in the prose around them. \
+                  Leave out anything that is not that kind of fact entirely: drop \
+                  the row, rather than keeping it with a blank or a placeholder \
+                  in the column it does not have. Then check the result against \
+                  the rest of the document and against what you know: if anything \
+                  contradicts itself, cannot be right, or would not work in \
+                  practice, say so in one line in `note` and leave the facts as \
+                  they were — do not silently correct them.",
+        actions: &["InsertTable", "SpliceText", "InsertParagraph", "RemoveBlocks"],
+    },
 ];
 
 /// The actions a capability dispatches, built with the word processor's own
@@ -150,6 +320,12 @@ pub fn dispatched(id: &str) -> Vec<WordProcessorAction> {
         ],
         "heading" => vec![
             wp::set_paragraph_style_action(vec![block()], "heading", Some(1), None),
+            wp::remove_blocks_action(vec![block()]),
+        ],
+        "runsheet" => vec![
+            wp::insert_table_action("block", 1, 1),
+            wp::splice_text_action(wp::RegionKind::Body, "block", 0, 0, ""),
+            wp::insert_paragraph_action("block", ""),
             wp::remove_blocks_action(vec![block()]),
         ],
         _ => Vec::new(),
@@ -469,14 +645,36 @@ mod tests {
         }
     }
 
+    /// A well-formed drafted table, for entries that call for content.
+    fn sample_draft() -> TableDraft {
+        TableDraft {
+            headers: vec!["Time".into(), "What".into()],
+            rows: vec![vec!["18:00".into(), "Doors".into()]],
+            note: Some("Sound check is listed after doors open.".into()),
+        }
+    }
+
     #[test]
     fn every_catalogue_id_maps_to_an_instruction_and_nothing_else_does() {
+        // Every offered id must be actionable — either on its own, or once
+        // it is given the content that entry asks for. What none of them
+        // may be is `NotExported`, which would mean the catalogue offers
+        // the model something this gate would then refuse.
         for cap in CATALOGUE {
-            assert!(
-                Instruction::from_id(cap.id, "asked").is_some(),
-                "{} is offered but maps to no instruction",
-                cap.id
-            );
+            match Instruction::from_answer(cap.id, "asked", None) {
+                Ok(_) => {}
+                Err(Refused::Unusable(_)) => {
+                    // It wants content. With content it must work.
+                    assert!(
+                        Instruction::from_answer(cap.id, "asked", Some(sample_draft())).is_ok(),
+                        "{} is offered but is unusable even with a well-formed table",
+                        cap.id
+                    );
+                }
+                Err(Refused::NotExported(_)) => {
+                    panic!("{} is offered to the model but maps to no instruction", cap.id)
+                }
+            }
         }
         assert_eq!(
             Instruction::from_id(NOTHING_FITS, "juggle"),
@@ -484,6 +682,123 @@ mod tests {
         );
         assert_eq!(Instruction::from_id("InsertTable", "x"), None);
         assert_eq!(Instruction::from_id("wander off", "x"), None);
+    }
+
+    #[test]
+    fn a_drafted_table_is_checked_before_any_of_it_is_written() {
+        // The good case: exactly as wide as its header, and it becomes an
+        // instruction carrying the content.
+        let ok = sample_draft();
+        assert_eq!(ok.check(), Ok(()));
+        assert_eq!(
+            Instruction::from_answer("runsheet", "asked", Some(ok.clone())),
+            Ok(Instruction::RunSheet(ok.clone()))
+        );
+        // The header is the first row, so what gets written is the header
+        // plus the body and nothing is silently dropped.
+        assert_eq!(
+            ok.grid(),
+            vec![
+                vec!["Time".to_string(), "What".to_string()],
+                vec!["18:00".to_string(), "Doors".to_string()],
+            ]
+        );
+
+        let bad = |d: TableDraft| {
+            let e = d.check();
+            assert!(e.is_err(), "{d:?} should not be writable");
+            // Whatever the reason, it is refused as unusable rather than
+            // treated as an id the app does not export — the two send a
+            // reader to different places.
+            assert!(matches!(
+                Instruction::from_answer("runsheet", "asked", Some(d)),
+                Err(Refused::Unusable(_))
+            ));
+        };
+
+        // Ragged: a row that does not match the header is refused, never
+        // padded — padding would invent which column a value sits in.
+        bad(TableDraft {
+            headers: vec!["Time".into(), "What".into()],
+            rows: vec![vec!["18:00".into()]],
+            note: None,
+        });
+        bad(TableDraft::default());
+        bad(TableDraft {
+            headers: vec!["A".into()],
+            rows: vec![],
+            note: None,
+        });
+        // Blank all the way through says nothing and would land as an
+        // empty grid in a shared document.
+        bad(TableDraft {
+            headers: vec![" ".into()],
+            rows: vec![vec!["".into()]],
+            note: None,
+        });
+        // The caps: a generated table lands in a persistent document, so
+        // there is a size past which it is refused whole.
+        bad(TableDraft {
+            headers: (0..MAX_COLS + 1).map(|i| i.to_string()).collect(),
+            rows: vec![(0..MAX_COLS + 1).map(|i| i.to_string()).collect()],
+            note: None,
+        });
+        bad(TableDraft {
+            headers: vec!["A".into()],
+            rows: (0..MAX_ROWS + 1).map(|i| vec![i.to_string()]).collect(),
+            note: None,
+        });
+        bad(TableDraft {
+            headers: vec!["A".into()],
+            rows: vec![vec!["x".repeat(MAX_CELL_CHARS + 1)]],
+            note: None,
+        });
+        bad(TableDraft {
+            headers: vec!["A".into()],
+            rows: vec![vec!["ok".into()]],
+            note: Some("n".repeat(MAX_NOTE_CHARS + 1)),
+        });
+
+        // Naming the entry without drafting anything is unusable too: it
+        // must not quietly fall through to the deterministic table.
+        assert!(matches!(
+            Instruction::from_answer("runsheet", "asked", None),
+            Err(Refused::Unusable(_))
+        ));
+    }
+
+    #[test]
+    fn a_drafted_table_can_carry_only_text_for_cells() {
+        // The shape of the payload is the security boundary: there is
+        // nowhere in it to put a block id, a range, or an action name, so
+        // the worst a bad answer can produce is a poor table. This is a
+        // structural claim, so it is asserted structurally — if a field
+        // is ever added that names part of the document, this stops
+        // compiling and someone has to think about it.
+        let TableDraft {
+            headers: _,
+            rows: _,
+            note: _,
+        } = TableDraft::default();
+    }
+
+    #[test]
+    fn a_note_is_only_written_when_there_is_something_in_it() {
+        let with = TableDraft {
+            note: Some("  Sound check is after doors.  ".into()),
+            ..sample_draft()
+        };
+        assert_eq!(with.note_text(), Some("Sound check is after doors."));
+        let blank = TableDraft {
+            note: Some("   ".into()),
+            ..sample_draft()
+        };
+        assert_eq!(blank.note_text(), None);
+        let none = TableDraft {
+            note: None,
+            ..sample_draft()
+        };
+        assert_eq!(none.note_text(), None);
     }
 
     #[test]
