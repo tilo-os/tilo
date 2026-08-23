@@ -1412,6 +1412,332 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
+
+    use crate::param::{Interp, Param};
+
+    /// A one-clip project: a 20s source placed whole at t=0.
+    fn speed_fixture() -> (Project, ClipId) {
+        let mut p = Project::new("s");
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "v.mp4".into(),
+            kind: MediaKind::Video,
+            duration: 20.0,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            ..Default::default()
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track { id: tid, name: "V1".into(), index: 1, ..Default::default() });
+        let cid = p.add_clip(tid, mid, 0.0).expect("media exists");
+        (p, cid)
+    }
+
+    #[test]
+    fn speed_divides_the_timeline_length_and_leaves_the_source_window_alone() {
+        let (mut p, cid) = speed_fixture();
+        let c = p.clip_mut(cid).unwrap();
+        assert_eq!(c.duration(), 20.0, "normal speed is the source window");
+        assert_eq!(c.set_speed(2.0, false), 10.0, "2x halves the timeline length");
+        assert_eq!(c.source_span(), 20.0, "but the source window is untouched");
+        assert_eq!(c.set_speed(0.5, false), 40.0, "and half speed doubles it");
+        assert_eq!(c.end(), 40.0, "which moves the clip's right edge");
+    }
+
+    #[test]
+    fn the_source_time_map_follows_the_rate_and_the_direction() {
+        let (mut p, cid) = speed_fixture();
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.in_point = 2.0;
+            c.out_point = 12.0;
+        }
+        let at = |p: &Project, t: f64| p.clip(cid).unwrap().source_time(t);
+        assert_eq!(at(&p, 0.0), 2.0, "the head shows the in-point");
+        assert_eq!(at(&p, 3.0), 5.0, "and 3s in is 3s of source");
+
+        p.clip_mut(cid).unwrap().set_speed(2.0, false);
+        assert_eq!(at(&p, 0.0), 2.0, "the head is still the in-point");
+        assert_eq!(at(&p, 3.0), 8.0, "but at 2x, 3s in is 6s of source");
+
+        p.clip_mut(cid).unwrap().set_speed(1.0, true);
+        assert_eq!(at(&p, 0.0), 12.0, "reversed, the head shows the out-point");
+        assert_eq!(at(&p, 3.0), 9.0, "and it walks back through the source");
+        assert_eq!(at(&p, 100.0), 2.0, "held at the in-point rather than running past it");
+    }
+
+    #[test]
+    fn a_clip_never_reads_outside_its_own_window() {
+        let (mut p, cid) = speed_fixture();
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.in_point = 4.0;
+            c.out_point = 6.0;
+            c.set_speed(4.0, false);
+        }
+        let c = p.clip(cid).unwrap();
+        assert_eq!(c.duration(), 0.5, "a 2s window at 4x is half a second");
+        assert_eq!(c.source_time(0.49), 5.96, "still inside the window");
+        assert_eq!(c.source_time(9.0), 6.0, "and past the end it holds the out-point");
+    }
+
+    #[test]
+    fn splitting_a_sped_up_clip_cuts_the_right_source_frame() {
+        let (mut p, cid) = speed_fixture();
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.out_point = 12.0;
+            c.set_speed(3.0, false);
+        }
+        // 12s of source at 3x is 4s of timeline; split at 1s in.
+        assert_eq!(p.clip(cid).unwrap().duration(), 4.0);
+        let right = p.split_clip(cid, 1.0).expect("inside the clip");
+        let left = p.clip(cid).unwrap();
+        let right = p.clip(right).unwrap();
+        assert_eq!(left.out_point, 3.0, "one timeline second at 3x is three source seconds");
+        assert_eq!(right.in_point, 3.0, "and the tail picks up exactly there");
+        assert_eq!(right.start, 1.0);
+        assert!(
+            (left.duration() + right.duration() - 4.0).abs() < 1e-9,
+            "the halves still add up to the original length",
+        );
+    }
+
+    #[test]
+    fn splitting_a_reversed_clip_cuts_from_the_other_end() {
+        let (mut p, cid) = speed_fixture();
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.in_point = 0.0;
+            c.out_point = 8.0;
+            c.set_speed(1.0, true);
+        }
+        // Reversed, the timeline runs 8 → 0 through the source.
+        let right = p.split_clip(cid, 2.0).expect("inside the clip");
+        let left = p.clip(cid).unwrap();
+        let right = p.clip(right).unwrap();
+        assert_eq!(left.in_point, 6.0, "the head half plays source 8 → 6");
+        assert_eq!(left.out_point, 8.0);
+        assert_eq!(right.out_point, 6.0, "and the tail picks up at 6 going down");
+        assert_eq!(right.in_point, 0.0);
+    }
+
+    #[test]
+    fn trimming_a_sped_up_clip_moves_the_start_by_timeline_seconds() {
+        let (mut p, cid) = speed_fixture();
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.start = 10.0;
+            c.in_point = 0.0;
+            c.out_point = 8.0;
+            c.set_speed(2.0, false);
+        }
+        // Pull the in-point 2 source-seconds later. At 2x that is one
+        // timeline second, so the clip's left edge moves by one, not two.
+        p.trim_in(cid, 2.0);
+        let c = p.clip(cid).unwrap();
+        assert_eq!(c.in_point, 2.0);
+        assert_eq!(c.start, 11.0, "the left edge moved by the timeline seconds trimmed away");
+        assert_eq!(c.duration(), 3.0, "6s of source at 2x");
+    }
+
+    // --- keyframes --------------------------------------------------------
+
+    #[test]
+    fn a_parameter_reads_its_constant_until_it_is_keyed() {
+        let (mut p, cid) = speed_fixture();
+        p.clip_mut(cid).unwrap().opacity = 0.4;
+        assert_eq!(
+            p.clip(cid).unwrap().param_at(Param::Opacity, 3.0),
+            0.4,
+            "with no curve, the field is the value at every instant",
+        );
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.set_key_at(Param::Opacity, 0.0, 0.0, Interp::Linear);
+            c.set_key_at(Param::Opacity, 10.0, 1.0, Interp::Linear);
+        }
+        let c = p.clip(cid).unwrap();
+        assert_eq!(c.param_at(Param::Opacity, 0.0), 0.0, "now the curve wins");
+        assert!((c.param_at(Param::Opacity, 5.0) - 0.5).abs() < 1e-9);
+        assert_eq!(c.opacity, 0.4, "and the constant is still there underneath");
+    }
+
+    #[test]
+    fn keyframe_times_are_relative_to_the_clip_so_moving_it_carries_them() {
+        let (mut p, cid) = speed_fixture();
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.set_key_at(Param::Opacity, 0.0, 0.0, Interp::Linear);
+            c.set_key_at(Param::Opacity, 4.0, 1.0, Interp::Linear);
+        }
+        let before = p.clip(cid).unwrap().param_at(Param::Opacity, 2.0);
+        p.move_clip(cid, 30.0);
+        let after = p.clip(cid).unwrap().param_at(Param::Opacity, 32.0);
+        assert_eq!(before, after, "the same point in the clip has the same value");
+        assert!((before - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn splitting_preserves_the_animated_value_on_both_sides_of_the_cut() {
+        let (mut p, cid) = speed_fixture();
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.out_point = 8.0;
+            c.set_key_at(Param::Opacity, 0.0, 0.0, Interp::Linear);
+            c.set_key_at(Param::Opacity, 8.0, 1.0, Interp::Linear);
+        }
+        let at_cut = p.clip(cid).unwrap().param_at(Param::Opacity, 3.0);
+        let right = p.split_clip(cid, 3.0).expect("inside");
+        assert!(
+            (p.clip(cid).unwrap().param_at(Param::Opacity, 3.0) - at_cut).abs() < 1e-9,
+            "the head half ends on the value it had at the cut",
+        );
+        assert!(
+            (p.clip(right).unwrap().param_at(Param::Opacity, 3.0) - at_cut).abs() < 1e-9,
+            "and the tail half starts on it",
+        );
+        // And each half still animates rather than freezing.
+        let tail = p.clip(right).unwrap();
+        assert!(tail.param_at(Param::Opacity, 7.0) > at_cut, "the tail keeps rising");
+    }
+
+    #[test]
+    fn the_grade_and_the_transform_read_through_the_same_door() {
+        let (mut p, cid) = speed_fixture();
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.filters.brightness = 0.3;
+            c.transform.scale_x = 0.8;
+            c.set_key_at(Param::Brightness, 0.0, 0.1, Interp::Linear);
+            c.set_key_at(Param::Brightness, 4.0, 0.9, Interp::Linear);
+            c.set_key_at(Param::ScaleX, 0.0, 1.0, Interp::Hold);
+            c.set_key_at(Param::ScaleX, 4.0, 2.0, Interp::Linear);
+        }
+        let c = p.clip(cid).unwrap();
+        assert!((c.filters_at(2.0).brightness - 0.5).abs() < 1e-9, "the graded axis animates");
+        assert_eq!(
+            c.filters_at(2.0).contrast, 0.5,
+            "an unkeyed axis keeps its constant",
+        );
+        assert_eq!(c.transform_at(2.0).scale_x, 1.0, "a held key does not ramp");
+        assert_eq!(c.transform_at(4.0).scale_x, 2.0);
+        assert_eq!(c.transform_at(2.0).scale_y, 1.0, "an unkeyed channel is its constant");
+    }
+
+    #[test]
+    fn an_effects_intensity_can_be_keyed_and_a_missing_effect_is_ignored() {
+        let (mut p, cid) = speed_fixture();
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.add_effect(EffectKind::Vignette);
+            c.set_key_at(Param::EffectAmount(0), 0.0, 0.0, Interp::Linear);
+            c.set_key_at(Param::EffectAmount(0), 4.0, 1.0, Interp::Linear);
+            // A curve on an effect the stack does not have.
+            c.set_key_at(Param::EffectAmount(7), 0.0, 0.5, Interp::Linear);
+        }
+        let c = p.clip(cid).unwrap();
+        let mid = c.effects_at(2.0);
+        assert_eq!(mid.len(), 1, "the orphan curve adds no effect");
+        assert!((mid[0].amount - 0.5).abs() < 1e-9, "the real one animates: {mid:?}");
+        assert_eq!(c.param_const(Param::EffectAmount(7)), None, "and has no constant either");
+    }
+
+    // --- markers ----------------------------------------------------------
+
+    #[test]
+    fn markers_live_on_the_project_and_on_clips_and_merge_onto_one_timeline() {
+        let (mut p, cid) = speed_fixture();
+        p.clip_mut(cid).unwrap().start = 10.0;
+        p.add_marker(5.0, "intro", 1);
+        p.add_marker(1.0, "slate", 2);
+        assert_eq!(
+            p.markers.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec!["slate", "intro"],
+            "project markers are kept in time order",
+        );
+        // A clip marker is stored clip-local but reads back absolute.
+        p.clip_mut(cid).unwrap().add_marker(13.0, "beat", 3).expect("inside the clip");
+        assert_eq!(p.clip(cid).unwrap().markers[0].t, 3.0, "stored relative to the clip");
+        let all = p.all_markers();
+        let times: Vec<f64> = all.iter().map(|(t, _, _)| *t).collect();
+        assert_eq!(times, vec![1.0, 5.0, 13.0], "and merges onto one absolute timeline");
+        assert_eq!(all[2].2, Some(cid), "carrying which clip it belongs to");
+    }
+
+    #[test]
+    fn a_clip_marker_outside_the_clip_is_refused_rather_than_clamped() {
+        let (mut p, cid) = speed_fixture();
+        assert!(
+            p.clip_mut(cid).unwrap().add_marker(999.0, "nope", 0).is_none(),
+            "a marker past the clip is not silently pinned to its end",
+        );
+        assert!(p.clip(cid).unwrap().markers.is_empty());
+    }
+
+    #[test]
+    fn next_and_previous_marker_do_not_wrap() {
+        let mut p = Project::new("m");
+        p.add_marker(2.0, "a", 0);
+        p.add_marker(8.0, "b", 0);
+        assert_eq!(p.next_marker(0.0).map(|m| m.t), Some(2.0));
+        assert_eq!(p.next_marker(2.0).map(|m| m.t), Some(8.0), "strictly after");
+        assert_eq!(p.next_marker(8.0).map(|m| m.t), None, "no wrap at the end");
+        assert_eq!(p.prev_marker(8.0).map(|m| m.t), Some(2.0));
+        assert_eq!(p.prev_marker(0.0).map(|m| m.t), None, "nor at the start");
+    }
+
+    #[test]
+    fn a_split_hands_each_half_the_markers_inside_it() {
+        let (mut p, cid) = speed_fixture();
+        p.clip_mut(cid).unwrap().out_point = 10.0;
+        for (t, name) in [(2.0, "early"), (7.0, "late")] {
+            p.clip_mut(cid).unwrap().add_marker(t, name, 0).expect("inside");
+        }
+        let right = p.split_clip(cid, 5.0).expect("inside");
+        assert_eq!(
+            p.clip(cid).unwrap().markers.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec!["early"],
+        );
+        let tail = p.clip(right).unwrap();
+        assert_eq!(tail.markers.len(), 1);
+        assert_eq!(tail.markers[0].name, "late");
+        assert_eq!(tail.markers[0].t, 2.0, "rebased onto the tail's own start");
+    }
+
+    // --- transform --------------------------------------------------------
+
+    #[test]
+    fn the_default_transform_is_the_identity_and_a_pip_is_not() {
+        let t = Transform::default();
+        assert!(t.is_identity());
+        assert!(!t.is_cropped());
+        assert_eq!(t.crop_rect(), (0.0, 0.0, 1.0, 1.0), "nothing cropped away");
+        let pip = Transform::pip(0.25, (1.0, -1.0), 0.05);
+        assert!(!pip.is_identity());
+        assert!(pip.pos_x > 0.0 && pip.pos_y < 0.0, "top-right: {pip:?}");
+        assert!((pip.scale_x - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_crop_that_would_meet_itself_still_leaves_a_sliver() {
+        let t = Transform { crop_left: 0.8, crop_right: 0.8, ..Transform::default() };
+        let (l, _, r, _) = t.crop_rect();
+        assert!(r > l, "a fully cropped rect would make the inside-test meaningless: {l}..{r}");
+    }
+
+    #[test]
+    fn speed_is_clamped_to_something_playable_and_labels_itself() {
+        assert_eq!(Speed::new(0.0, false).rate(), MIN_SPEED);
+        assert_eq!(Speed::new(1e9, false).rate(), MAX_SPEED);
+        assert_eq!(Speed::new(2.0, false).label(), "2×");
+        assert_eq!(Speed::new(0.5, true).label(), "0.50× rev");
+        assert!(Speed::default().is_normal());
+        assert_eq!(Speed::new(2.0, true).signed(), -2.0);
+    }
+
     use super::*;
 
     fn project_with_clip() -> (Project, MediaId, TrackId, ClipId) {
