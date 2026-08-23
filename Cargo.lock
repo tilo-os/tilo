@@ -13218,6 +13218,7 @@ dependencies = [
  "pollster",
  "postcard",
  "qdoc",
+ "qos-actions",
  "qos-bluez",
  "qos-callstream",
  "qos-desktop-entry",

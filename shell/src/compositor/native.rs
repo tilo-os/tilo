@@ -53,12 +53,26 @@ fn params_json(
     params
         .iter()
         .map(|p| {
-            serde_json::json!({
+            let mut obj = serde_json::json!({
                 "name": p.name,
                 "type": p.ty.label(),
                 "required": p.required,
                 "description": p.description,
-            })
+            });
+            // Only when the parameter actually restricts its values. Binding
+            // enforces `choices`, so a descriptor that stayed silent about
+            // them would refuse a caller for a rule it never published — the
+            // exact gap this surface exists to close. No action in this crate
+            // declares choices today, so the emitted object is unchanged.
+            if !p.choices.is_empty() {
+                obj["choices"] = serde_json::Value::Array(
+                    p.choices
+                        .iter()
+                        .map(|c| serde_json::Value::String(c.to_string()))
+                        .collect(),
+                );
+            }
+            obj
         })
         .collect()
 }
@@ -615,8 +629,7 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         // does not fit is refused with the document untouched, and the
         // refusal names the parameter — which is the only thing a caller
         // with no screen has to correct against.
-        let values = test_control::arg_values_from_json(args)?;
-        ActionArgs::bind(selected.params(), values)
+        ActionArgs::bind_json(selected.params(), args)
             .map_err(|e| test_control::ActionRefusal::invalid_arguments(e.to_string()))?;
         Ok(serde_json::json!({
             "provider": provider,
@@ -1037,18 +1050,11 @@ fn execute_planned_action(
                     // landed on a different action under the same
                     // address; arguments checked against the previous one
                     // would be an assurance about something else.
-                    let bound = test_control::arg_values_from_json(args)
-                        .map_err(|r| InvokeFailure {
-                            code: r.code.to_string(),
-                            message: r.message,
-                        })
-                        .and_then(|values| {
-                            selected
-                                .invoke(&mut ctx.doc, &ctx.root_obj, &chrome_handle, values)
-                                .map_err(|e| InvokeFailure {
-                                    code: e.code().to_string(),
-                                    message: e.to_string(),
-                                })
+                    let bound = selected
+                        .invoke_json(&mut ctx.doc, &ctx.root_obj, &chrome_handle, args)
+                        .map_err(|e| InvokeFailure {
+                            code: e.code().to_string(),
+                            message: e.to_string(),
                         });
                     if let Err(failure) = bound {
                         // Logged for whoever reads the journal, and
