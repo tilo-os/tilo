@@ -3179,8 +3179,14 @@ pub fn run() -> ! {
         // when an invite is accepted, and the subscription has to follow
         // it there or the session stops hearing the room it just joined.
         let peers_moved = if let Some(relay) = frame_builder.peer_presence() {
-            let (cx, cy) = state.client_input.cursor();
-            relay.set_cursor(cx, cy);
+            // The pointer as the input state actually knows it, which
+            // for a session that has never had one moved through it is
+            // "nowhere" rather than the origin. `cursor()` would answer
+            // the origin here, and this publisher is level-triggered:
+            // it would announce that non-position to the room on every
+            // frame, and every peer would paint a cursor for somebody
+            // who is not there.
+            relay.set_cursor_position(state.client_input.pointer_position());
             let (rooms, here) = {
                 let chrome = frame_builder.chrome_handle();
                 let chrome = chrome.borrow();
