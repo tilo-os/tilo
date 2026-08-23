@@ -496,3 +496,394 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
         "the diagnosis must name the flag that fixes it: {msg}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// A page with a hole in its history
+// ---------------------------------------------------------------------------
+
+/// The page the demo's ninth beat is written on, built change by change,
+/// plus the replica a peer is left holding when exactly one of those
+/// changes never reaches it.
+///
+/// Returns `(whole, truncated)` — the page as its author has it, and the
+/// bytes a peer that missed the photograph answers a handshake with.
+///
+/// The missed change is a 146 KB image, which is not an arbitrary pick:
+/// `shell::shell::network` refuses to publish an app snapshot over
+/// `MAX_APP_SNAPSHOT_BYTES` (14 KiB), because gossipsub caps an RPC at
+/// 64 KiB and the publish path writes bytes as JSON at up to four
+/// characters each. So a photograph dropped into a shared page is a
+/// change that provably cannot cross a room, while every keystroke after
+/// it names that change as an ancestor and can.
+fn seed_document_with_a_hole() -> (AutoCommit, Vec<u8>) {
+    let mut doc = AutoCommit::new();
+    doc.set_actor(automerge::ActorId::from("quinten".as_bytes()));
+    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+
+    // What every replica agrees on before the big change.
+    let opening = {
+        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let p = dm.insert_block(None, "paragraph");
+        dm.splice_text(&p, 0, 0, "the same document on both machines");
+        p
+    };
+    doc.commit();
+    let base = doc.save();
+
+    // The change that does not fit down the pipe.
+    let image = {
+        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let img = dm.insert_block(Some(&opening), "image");
+        let hash = dm.put_blob(&vec![0x7Au8; 146 * 1024]);
+        dm.set_attr(&img, "blob", hash.as_str());
+        img
+    };
+    doc.commit();
+    // Dropped on purpose: this is the frame the cap refuses.
+    let refused = doc.save_incremental();
+    assert!(
+        refused.len() > 14 * 1024,
+        "the dropped change has to be one the cap would really refuse, or \
+         this seeds a hole that could not happen: {} bytes",
+        refused.len()
+    );
+
+    // Everything typed after it — the list, then the line addressed to the
+    // agent. Each of these names the image change as an ancestor.
+    let mut tail: Vec<Vec<u8>> = Vec::new();
+    let mut after = image;
+    for line in ["Doors: 18:00", "Sound check: 18:30", "Seating: 240"] {
+        {
+            let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let b = dm.insert_block(Some(&after), "list_item");
+            dm.set_attr(&b, "ordered", false);
+            dm.splice_text(&b, 0, 0, line);
+            after = b;
+        }
+        doc.commit();
+        tail.push(doc.save_incremental());
+    }
+    {
+        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let p = dm.insert_block(Some(&after), "paragraph");
+        dm.splice_text(&p, 0, 0, "Scribe: turn the bullets into a table");
+    }
+    doc.commit();
+    tail.push(doc.save_incremental());
+
+    // The peer: the opening, every later keystroke, and not the
+    // photograph in between.
+    let mut lagging = AutoCommit::load(&base).expect("the base loads");
+    for delta in &tail {
+        lagging
+            .load_incremental(delta)
+            .expect("a change with an unmet dependency is queued, not refused");
+    }
+    (doc, lagging.save())
+}
+
+/// The shape the demo hung in: the only peer that answers is holding a
+/// page that stops short of the instruction, and the agent takes it for
+/// the document.
+///
+/// Automerge will not apply a change whose ancestors it lacks — it queues
+/// it — so a replica missing one change in the middle materialises as the
+/// page *before* that change, however many later changes it is carrying.
+/// The word processor in the agent's own session was in exactly that
+/// state: it answered with 3663 bytes of a page that ended above the
+/// bullets. The agent adopted it, found nothing addressed to it, and went
+/// quiet — it asked again only while it had no document at all, and its
+/// one deadline covered the same case. The harness killed it two minutes
+/// later and reported that the agent had not finished, which names the
+/// only part that was working.
+///
+/// Asserted here: the agent notices, and says so, in bounded time.
+/// Whether it can then do the work depends on somebody in the room
+/// holding the whole page, which is the next test.
+#[test]
+fn a_page_missing_an_ancestor_is_not_mistaken_for_the_whole_page() {
+    let (whole, truncated) = seed_document_with_a_hole();
+
+    // Preconditions, checked rather than assumed: were Automerge ever to
+    // apply changes with unmet dependencies, this would seed a complete
+    // page and the test would pass while proving nothing.
+    {
+        assert!(
+            blocks(&whole).iter().any(|x| x.text.starts_with("Scribe:")),
+            "the author's own page must carry the instruction"
+        );
+        let mut lagging = AutoCommit::load(&truncated).expect("the peer's page loads");
+        let seen = blocks(&lagging);
+        assert!(
+            !seen.iter().any(|x| x.text.starts_with("Scribe:")),
+            "the peer's page must stop short of the instruction: {:?}",
+            seen.iter().map(|x| (x.kind.clone(), x.text.clone())).collect::<Vec<_>>()
+        );
+        assert!(
+            !lagging.get_missing_deps(&[]).is_empty(),
+            "the peer's page must be provably missing an ancestor"
+        );
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("collab.sock");
+    {
+        let sock = sock.clone();
+        std::thread::spawn(move || {
+            ui::collaboration::broker::serve_path(&sock).expect("serve the relay");
+        });
+    }
+    let started = Instant::now();
+    while !sock.exists() {
+        assert!(started.elapsed() < Duration::from_secs(5), "relay never bound");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let room = Uuid::new_v4();
+
+    // The word processor in the agent's own session: up, in the room, and
+    // answering every handshake — with a page it cannot see all of.
+    let mut peer = UnixStream::connect(&sock).expect("peer connects");
+    write_frame(
+        &mut peer,
+        &serde_json::to_vec(&CollabRequest::Hello {
+            app_id: APP.into(),
+            cluster_id: room,
+            record: None,
+            handle: Some("quinten".into()),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    peer.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    let lagging_peer = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(25);
+        while Instant::now() < deadline {
+            let Some(frame) = read_frame(&mut peer) else {
+                continue;
+            };
+            if let Ok(CollabEvent::RemotePresenceUpdate {
+                payload: PresencePayload::Arrived,
+                ..
+            }) = serde_json::from_slice::<CollabEvent>(&frame)
+            {
+                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                    data: truncated.clone(),
+                })
+                .unwrap();
+                let _ = write_frame(&mut peer, &snap);
+            }
+        }
+    });
+
+    let cfg = Config {
+        socket: Some(sock.clone()),
+        app_id: APP.into(),
+        cluster: room,
+        record: None,
+        name: "Scribe".into(),
+        pace: Duration::from_millis(10),
+        once: true,
+        model: false,
+        model_timeout: Duration::from_secs(1),
+        await_document: Duration::from_secs(3),
+    };
+    let mut session = Session::connect(cfg).expect("agent connects");
+    let ran = std::thread::spawn(move || session.run());
+
+    // Bounded from outside, so "it is still waiting" fails as a result
+    // rather than as a hung test binary.
+    let give_up = Instant::now() + Duration::from_secs(20);
+    while !ran.is_finished() && Instant::now() < give_up {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        ran.is_finished(),
+        "the agent is still waiting on a page it can prove it is not \
+         seeing all of — this is the silence the harness reported as \
+         'the agent did not finish'"
+    );
+    let err = ran
+        .join()
+        .expect("the agent thread must not panic")
+        .expect_err("a page it cannot see all of is not a run that succeeded");
+    let msg = format!("{err:#}");
+    // Shown under `--nocapture`: what the agent actually says is the
+    // whole point of this test, and a reader should be able to see it
+    // without making the test fail on purpose.
+    println!("the agent gave up saying:\n  {msg}");
+    assert!(
+        msg.contains("ancestor"),
+        "the diagnosis must name the hole in the history rather than the \
+         address, which was fine: {msg}"
+    );
+    let _ = lagging_peer.join();
+}
+
+/// The peer that answers first is not necessarily the peer that has the
+/// page.
+///
+/// The agent used to stop asking the moment it held *a* document, so the
+/// first answer decided the run. When that answer comes from a replica
+/// that is behind — an app still opening its file, or one missing a
+/// change nobody will ever be able to send it — nothing else in the loop
+/// can change the outcome.
+///
+/// The room here holds both: a lagging word processor that answers every
+/// handshake at once with the short page, and the peer holding the whole
+/// page, which says nothing for the first few seconds. Nobody sends
+/// anything unprompted, so asking again is the only way the agent ever
+/// sees the instruction.
+#[test]
+fn it_keeps_asking_until_something_is_addressed_to_it() {
+    let (mut whole, truncated) = seed_document_with_a_hole();
+
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("collab.sock");
+    {
+        let sock = sock.clone();
+        std::thread::spawn(move || {
+            ui::collaboration::broker::serve_path(&sock).expect("serve the relay");
+        });
+    }
+    let started = Instant::now();
+    while !sock.exists() {
+        assert!(started.elapsed() < Duration::from_secs(5), "relay never bound");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let room = Uuid::new_v4();
+
+    // The one that is behind, and always first.
+    let mut lagging = UnixStream::connect(&sock).expect("the lagging peer connects");
+    write_frame(
+        &mut lagging,
+        &serde_json::to_vec(&CollabRequest::Hello {
+            app_id: APP.into(),
+            cluster_id: room,
+            record: None,
+            handle: Some("behind".into()),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    // The one that has the page, silent to begin with.
+    let mut holder = UnixStream::connect(&sock).expect("the holder connects");
+    write_frame(
+        &mut holder,
+        &serde_json::to_vec(&CollabRequest::Hello {
+            app_id: APP.into(),
+            cluster_id: room,
+            record: None,
+            handle: Some("quinten".into()),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+
+    lagging.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    holder.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    let lagging_thread = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(40);
+        while Instant::now() < deadline {
+            let Some(frame) = read_frame(&mut lagging) else {
+                continue;
+            };
+            if let Ok(CollabEvent::RemotePresenceUpdate {
+                payload: PresencePayload::Arrived,
+                ..
+            }) = serde_json::from_slice::<CollabEvent>(&frame)
+            {
+                let snap = serde_json::to_vec(&CollabRequest::SyncCRDT {
+                    data: truncated.clone(),
+                })
+                .unwrap();
+                let _ = write_frame(&mut lagging, &snap);
+            }
+        }
+    });
+
+    let cfg = Config {
+        socket: Some(sock.clone()),
+        app_id: APP.into(),
+        cluster: room,
+        record: None,
+        name: "Scribe".into(),
+        pace: Duration::from_millis(10),
+        once: true,
+        model: false,
+        model_timeout: Duration::from_secs(1),
+        await_document: Duration::ZERO,
+    };
+    let agent = std::thread::spawn(move || {
+        let mut s = Session::connect(cfg).expect("agent connects");
+        s.run_until(Instant::now() + Duration::from_secs(40))
+            .expect("agent session")
+    });
+
+    // The holder ignores everything for the first few seconds — by which
+    // time an agent that asks only until it has *a* document has long
+    // since settled for the short page — and answers every handshake
+    // after that.
+    let quiet_until = Instant::now() + Duration::from_millis(2500);
+    let deadline = Instant::now() + Duration::from_secs(40);
+    let mut done = false;
+    while Instant::now() < deadline && !done {
+        let Some(frame) = read_frame(&mut holder) else {
+            continue;
+        };
+        let Ok(event) = serde_json::from_slice::<CollabEvent>(&frame) else {
+            continue;
+        };
+        match event {
+            CollabEvent::RemotePresenceUpdate {
+                payload: PresencePayload::Arrived,
+                ..
+            } => {
+                if Instant::now() < quiet_until {
+                    continue;
+                }
+                let snap =
+                    serde_json::to_vec(&CollabRequest::SyncCRDT { data: whole.save() }).unwrap();
+                let _ = write_frame(&mut holder, &snap);
+            }
+            CollabEvent::CRDTIncremental { data } => {
+                if whole.load_incremental(&data).is_ok() {
+                    let b = blocks(&whole);
+                    if b.iter().any(|x| x.kind == "cell")
+                        && !b.iter().any(|x| x.text.starts_with("Scribe:"))
+                    {
+                        done = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        agent.join().expect("the agent thread must not panic"),
+        "the agent reports having acted"
+    );
+    assert!(
+        done,
+        "the whole page never became a table — the agent settled for the \
+         first answer it was given and stopped asking; blocks: {:?}",
+        blocks(&whole)
+            .iter()
+            .map(|b| (b.kind.clone(), b.text.clone()))
+            .collect::<Vec<_>>()
+    );
+    let cells: Vec<String> = blocks(&whole)
+        .iter()
+        .filter(|x| x.kind == "cell")
+        .map(|x| x.text.clone())
+        .collect();
+    assert!(
+        cells.iter().any(|c| c == "Sound check"),
+        "the bullets' text is in the cells: {cells:?}"
+    );
+    let _ = lagging_thread.join();
+}

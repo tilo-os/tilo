@@ -46,10 +46,12 @@ struct Cli {
     /// the network.
     #[arg(long, default_value_t = 9000)]
     model_timeout_ms: u64,
-    /// How long to wait for the room to answer with the document before
-    /// giving up and naming the address nobody answered on. `0` waits
-    /// forever, which is right when the document may not be open yet and
-    /// wrong in a script.
+    /// How long to wait for the room to produce something addressed to
+    /// this agent before giving up and saying what it did see — nobody
+    /// answered, the page that answered is missing history it was built
+    /// on, or the page is whole and simply says nothing to this name.
+    /// `0` waits forever, which is right for an agent left running in a
+    /// room and wrong in a script.
     #[arg(long, default_value_t = 60_000)]
     await_document_ms: u64,
 }

@@ -146,10 +146,28 @@ DOC_TEXT = _tool("qos-doc-text")
 APP = "dev.qos.word-processor"
 APPLICATIONS = "applications"
 
-# A flat draft: no markup at all, a title line, two section labels, prose
-# under each. Nothing here names an action — which one answers the last
-# line is the model's to choose.
-DRAFT = """Quarterly review
+# Two endings, each a draft and one line addressed to Claude. Nothing in
+# either names an action: with a model, which exported action answers the
+# line is chosen from the catalogue the word processor publishes; without
+# one, the keyword vocabulary decides.
+#
+# `structure` needs a model. Nothing in "make this a proper document" is
+# a word the keyword vocabulary knows, so `--no-model` reaches the
+# agent's apology rather than the work, and the run cannot pass however
+# well the room is working. `table` is the demo's own beat and the
+# keyword path answers it, which is what makes an offline, no-network
+# run of this proof mean something.
+#
+# `title` is a positive control: a blob that does not carry it is not the
+# draft, and "the instruction is absent" from a document that was never
+# the draft is worth nothing. `tail` is matched instead of the whole
+# instruction line because the agent's name is also the prefix of a caret
+# pill, and the claim is about the *instruction* being carried out.
+# `kind` is the block kind the agent's work leaves behind — the thing
+# that has to appear in xaver's copy for the edit to have crossed.
+ENDINGS = {
+    "structure": {
+        "draft": """Quarterly review
 
 Revenue
 
@@ -160,16 +178,32 @@ Risks
 Two suppliers remain single-sourced and that has not moved since March.
 
 Claude: make this a proper document
-"""
+""",
+        "title": "Quarterly review",
+        "tail": "make this a proper document",
+        "kind": "heading",
+        "made": "the headings the agent made",
+        "flat": "no headings in it yet",
+    },
+    "table": {
+        "draft": """Launch plan
 
-# The first line, used as a positive control: a blob that does not carry
-# it is not the draft, and "the instruction is absent" from a document
-# that was never the draft is worth nothing.
-TITLE = "Quarterly review"
-# The instruction the agent consumes. Matched on its tail rather than the
-# whole line because the agent's name is a prefix a caret pill also
-# carries, and the claim is about the *instruction* being carried out.
-INSTRUCTION_TAIL = "make this a proper document"
+- Venue - The Hall
+- Date - 3 Sep
+- Budget - 1200
+
+Claude: turn the bullets into a table
+""",
+        "title": "Launch plan",
+        "tail": "turn the bullets into a table",
+        "kind": "cell",
+        "made": "the table the agent made",
+        "flat": "no table in it yet",
+    },
+}
+
+# Set by `main` from `--ending`.
+ENDING = ENDINGS["structure"]
 
 # What `launch_word_processor` returns when the app is up and
 # collaborating but has not produced a frame. Distinct from `None`
@@ -541,9 +575,9 @@ def _strings(blob: bytes) -> list[str]:
     return done.stdout.decode(errors="replace").splitlines()
 
 
-def headings(lines: list[str]) -> int:
-    """How many blocks in this dump are headings rather than paragraphs."""
-    return sum(1 for ln in lines if ln.rsplit("\t", 1)[-1].strip() == "heading")
+def blocks_of_kind(lines: list[str], kind: str) -> int:
+    """How many blocks in this dump are of `kind` — `heading`, `cell`, …"""
+    return sum(1 for ln in lines if ln.rsplit("\t", 1)[-1].strip() == kind)
 
 
 def main() -> int:
@@ -558,9 +592,20 @@ def main() -> int:
                          "(they must match; default: the newest profile that "
                          "has both). Pin one when another build is rewriting "
                          "the other profile underneath the run.")
+    ap.add_argument("--ending", default="structure", choices=sorted(ENDINGS),
+                    help="which instruction to write into the draft: a flat "
+                         "draft asked for its structure, or bullets asked "
+                         "for a table. Only 'table' is answerable without a "
+                         "model, so pair --no-model with it.")
     args = ap.parse_args()
 
-    global SHELL, WORD_PROCESSOR
+    global ENDING, SHELL, WORD_PROCESSOR
+    ENDING = ENDINGS[args.ending]
+    if args.no_model and args.ending == "structure":
+        print("--no-model cannot answer the 'structure' ending: the keyword")
+        print("vocabulary knows table / caption / heading, and nothing in")
+        print("'make this a proper document' is one of them. Use --ending table.")
+        return 2
     if args.profile != "auto":
         SHELL, WORD_PROCESSOR = _pair_from(args.profile)
         if SHELL is None:
@@ -625,7 +670,7 @@ def main() -> int:
         print("\n[3] the same document open in each session")
         brief = os.path.join(root, "brief.md")
         with open(brief, "w") as fh:
-            fh.write(DRAFT)
+            fh.write(ENDING["draft"])
         painted = True
         for s in sessions:
             win = launch_word_processor(s, room, brief)
@@ -668,7 +713,7 @@ def main() -> int:
             while time.time() < deadline:
                 for blob in base.documents():
                     lines = _strings(blob)
-                    if any(INSTRUCTION_TAIL in ln for ln in lines):
+                    if any(ENDING["tail"] in ln for ln in lines):
                         before_lines = lines
                         break
                 if before_lines:
@@ -679,9 +724,10 @@ def main() -> int:
         if not check("xaver's app answered with the draft", bool(before_lines),
                      "no document frame carried the draft"):
             return 1
-        before_headings = headings(before_lines)
-        check("and it is a flat draft — no headings in it yet",
-              before_headings == 0, f"{before_headings} heading block(s)")
+        kind = ENDING["kind"]
+        before_made = blocks_of_kind(before_lines, kind)
+        check(f"and it is a flat draft — {ENDING['flat']}",
+              before_made == 0, f"{before_made} {kind} block(s)")
 
         print("\n[5] the agent joins quinten's session and chooses")
         argv = [str(AGENT), "--socket", quinten.broker, "--workspace", room,
@@ -736,23 +782,23 @@ def main() -> int:
         reader = DocumentReader(xaver.broker, room, record, handle="readback")
         try:
             ok, after_lines = reader.await_settled(
-                must_have=TITLE, must_lack=INSTRUCTION_TAIL, timeout=60)
+                must_have=ENDING["title"], must_lack=ENDING["tail"], timeout=60)
         finally:
             reader.close()
 
         check("xaver's document still holds the draft it started from",
-              any(TITLE in ln for ln in after_lines), TITLE)
+              any(ENDING["title"] in ln for ln in after_lines), ENDING["title"])
         check("the line addressed to the agent is gone from xaver's copy", ok,
               "still present" if after_lines else "no document frame arrived")
-        after_headings = headings(after_lines)
-        check("and his copy carries the headings the agent made",
-              after_headings > before_headings,
-              f"{before_headings} before, {after_headings} after")
+        after_made = blocks_of_kind(after_lines, kind)
+        check(f"and his copy carries {ENDING['made']}",
+              after_made > before_made,
+              f"{before_made} before, {after_made} after ({kind} blocks)")
         # The file the two apps opened is untouched, which is what makes
         # the two claims above about the room rather than about a disk.
         on_disk = open(brief, errors="replace").read()
         check("the file on disk still carries the instruction, unsaved",
-              INSTRUCTION_TAIL in on_disk,
+              ENDING["tail"] in on_disk,
               "the app saved, so disk is no longer a control")
 
         print(f"\n  xaver before: {before_png}")
