@@ -88,6 +88,52 @@ frames, 12.0s. A CI image build is in flight; the missing `COPY` for
 - **First boot is honest** — one empty workspace, no invented people,
   workspaces, tabs or documents.
 
+## Found while re-shooting, 2026-08-23
+
+Each of these is a fault in the product that the film happens to expose,
+not a staging problem. Numbers are measured on `target/demo/shell` at a
+1920-wide viewport.
+
+**Files shows an absolute path where it should say "Home".** The app
+resolves the directory to *open* from `QOS_USER_HOME` — the launcher sets
+it when a grant binds the real home (`crates/packaging/launcher/src/sandbox.rs:816`,
+read at `apps/file-explorer/src/model.rs:236`) — but resolves the home
+the *breadcrumb* measures against from `dirs::home_dir()`
+(`apps/file-explorer/src/files_app.rs:239`). Under a sandbox that is the
+app's own directory, `/run/qos/app`, so the trail never matches and every
+window falls back to drawing the full host path, component by component.
+The fix is for `FileExplorerWidget::new` to prefer
+`ui::sysdirs::user_home_override()` exactly as `model.rs` already does.
+Until then the demo has to pick a home path that is inoffensive when
+spelled out, which is the wrong lever.
+
+**The avatar stack cannot be clicked on an empty room.** Clicking it
+toggles the collaborators panel (`shell/src/shell/topbar_chrome.rs:1736`),
+but its rect is `Rect::ZERO` whenever the roster is empty
+(`topbar_chrome.rs:1611`) — so the affordance is missing at exactly the
+moment somebody wants to invite the first person. The local user is a
+collaborator in their own room and should be in the stack.
+
+**The collaborators panel offers no way to invite anyone.** It draws a
+header, the roster (or "No peers connected") and a "Room activity" row
+(`shell/src/shell/overlay_host.rs:10832`). Inviting and joining are only
+reachable from the palette or by address, so the panel a person opens to
+manage the room's people cannot change who is in it. An **Invite** row
+raising the existing peer-sync card, and a **Join** row raising the
+connect prompt, would make the whole flow clickable — both cards already
+work, and their buttons are already addressable (`peer_sync_copy`,
+`peer_sync_paste`, `peer_sync_join`).
+
+**Opening a second window scrolls the strip and never scrolls back.**
+With two even groups at 1920 wide the windows land at `-222 … 578` and
+`586 … 1386`: the first is cut by 222px on the left while 534px of empty
+backdrop sits on the right. The offset is fixed — narrowing the groups
+shrinks the windows and leaves the first at `-222`, and scrolling over
+the backdrop does not move it. Focusing the leftmost group does
+(`291 … 1091` and `1099 … 1899`, both whole), which is what the demo now
+does to get its shot. A strip whose content fits should show all of it
+rather than centring the newest group.
+
 ## Things that must not be said
 
 - that a beat works because its assertion passed
