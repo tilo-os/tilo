@@ -427,6 +427,11 @@ pub fn draw_peer_playheads(
 /// drawn into — so an outline is placed from the same geometry as the clip
 /// body under it. A peer holding a clip that is not on screen (scrolled out,
 /// or not yet replicated here) simply is not drawn.
+///
+/// `area` is the region the lanes are clipped to. A name chip hangs above the
+/// clip it names, and there is nothing above the top lane to hang it in, so
+/// the chip has to know where the ceiling is or a peer on the top track is
+/// labelled with the bottom two pixels of their name.
 pub fn draw_peer_clips(
     scene: &mut Scene,
     transform: Affine,
@@ -434,12 +439,13 @@ pub fn draw_peer_clips(
     theme: &Theme,
     presence: &PresenceCtx,
     visible: &[(ClipId, Rect)],
+    area: Rect,
 ) {
     for peer in peer_clips(presence) {
         let Some((_, rect)) = visible.iter().find(|(id, _)| *id == peer.clip) else {
             continue;
         };
-        presence.draw_peer_outline_labeled(
+        presence.draw_peer_outline_labeled_within(
             scene,
             theme,
             text_renderer,
@@ -448,6 +454,7 @@ pub fn draw_peer_clips(
             &presence.display_name(&peer.user),
             *rect,
             4.0,
+            area,
         );
     }
 }
