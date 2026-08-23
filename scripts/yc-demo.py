@@ -2130,6 +2130,23 @@ def focus_leftmost_group(s: Session) -> None:
          f"back and both windows are in frame")
 
 
+def screen_digest(s: Session, where: str) -> str | None:
+    """A hash of what `s` is painting right now, or None.
+
+    Used to ask the one question a socket cannot answer: did anything on
+    that screen change. The compositor encodes the same scene to the same
+    PNG, so equal bytes mean the screen did not move — carets included,
+    which is what makes this worth doing rather than approximating.
+    """
+    try:
+        s.snapshot(where)
+        with open(where, "rb") as f:
+            return hashlib.sha1(f.read()).hexdigest()
+    except Exception as exc:  # noqa: BLE001
+        note(f"{s.name}: could not read the screen back ({exc})")
+        return None
+
+
 def focus_app_group(s: Session, app_id: str,
                     prefer: dict | None = None) -> bool:
     """Scroll the strip to the group holding `app_id`, and say whether it
@@ -3736,6 +3753,16 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     # nobody and it reads as a transport failure.
     xaver.settle(6.0)
 
+    # What xaver's screen looks like before a word of it exists. The
+    # claim below is answered over a socket, and a socket cannot tell you
+    # whether the app *drew* anything: a run once passed "xaver's own
+    # word processor holds what quinten typed" with both pages on his
+    # screen reading "Start writing…" for the whole beat. Assertion
+    # green, screen blank — which is the failure this whole file is
+    # written against, so it is checked rather than hoped for.
+    before_screen = screen_digest(
+        xaver, os.path.join(shots, "07a-xaver-before-the-text.png"))
+
     step(f"quinten types {TYPED_TEXT!r}")
     cut("quinten")
     # No click first, and that is the point rather than an omission.
@@ -3896,7 +3923,29 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
             f"read back — this run establishes nothing about beat 7 in "
             f"either direction. See {xaver.log_path}")
     xaver.settle(2.0)
-    xaver.snapshot(os.path.join(shots, "08-xaver-received.png"))
+    after_screen = screen_digest(
+        xaver, os.path.join(shots, "08-xaver-received.png"))
+
+    # The cross-check. Only meaningful when the socket said yes: a
+    # document that never arrived is allowed to leave the screen alone.
+    if carried and before_screen and after_screen:
+        if before_screen == after_screen:
+            gap("xaver's session answered with a document carrying "
+                f"{TYPED_TEXT!r}, and his screen did not change by one "
+                f"pixel while it arrived — his two pages read "
+                f"'Start writing…' before and after. So the app that "
+                f"answered is not the app on screen. The broker fans an "
+                f"addressed channel key out room-wide (see the "
+                f"`room_wide=true` lines in {xaver.log_path}), so a "
+                f"handshake addressed to the word processor is answered "
+                f"by whatever else is in the room — which makes this "
+                f"claim pass without his word processor holding "
+                f"anything. Broker fix, and the one that matters most "
+                f"here: this is the shot the film crosses to a second "
+                f"machine for")
+        else:
+            note("and his screen changed while it arrived, so the app "
+                 "that answered is the app that is drawn")
 
 
 #: Where the file view puts its rows, straight off the app's own
