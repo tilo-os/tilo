@@ -163,6 +163,19 @@ const PROJECT_UNSAVED: &str = "Unsaved changes";
 /// reader, which is two descriptions of one state.
 const PREVIEW_EMPTY_TITLE: &str = "No clip at playhead";
 const PREVIEW_EMPTY_HINT: &str = "Move the playhead over a clip to see it";
+/// The marker list's add button, shared by the paint and the accessibility
+/// tree so a reader is offered the control the screen actually shows.
+const ADD_MARKER_LABEL: &str = "+ Marker at playhead (M)";
+/// The key the add button is addressed by, before hashing. A constant rather
+/// than a literal at each site so the node and the router cannot drift apart.
+const ADD_MARKER_KEY: &str = "add marker";
+
+/// The three controls a marker row carries, in painted order (see
+/// [`marker_row_parts`]). They are painted only under the pointer but are
+/// hit-tested whether painted or not, so for a reader -- which has no pointer
+/// -- they are the only route to a marker's note, its name, or its removal.
+const MARKER_VERBS: [&str; 3] = ["Edit note on", "Rename", "Delete"];
+
 const INSPECTOR_EMPTY_TITLE: &str = "No clip selected";
 const INSPECTOR_EMPTY_HINT: &str = "Click a clip in the timeline to edit it";
 
@@ -2811,7 +2824,7 @@ impl VideoEditorApp {
     /// pinned to a clip.
     fn commit_marker_rename(&mut self, doc: &mut AutoCommit, m: MarkerRef, text: &str) {
         let field = self.marker_field;
-        self.commit_marker_text(doc, m, field, text);
+        let _ = self.commit_marker_text(doc, m, field, text);
     }
 
     /// Write one of a marker's texts through whichever action owns that
@@ -2821,16 +2834,19 @@ impl VideoEditorApp {
     /// An empty **name** is refused — a marker with no name is a dot nobody
     /// can find in the list — while an empty **note** is accepted, because
     /// clearing a note is the only way to take one back off.
+    /// Returns whether the document changed, so a caller that has to report
+    /// the outcome -- an assistive technology setting the text outright --
+    /// can say "refused" rather than claim a write that never happened.
     fn commit_marker_text(
         &mut self,
         doc: &mut AutoCommit,
         m: MarkerRef,
         field: MarkerField,
         text: &str,
-    ) {
+    ) -> bool {
         let text = text.trim().to_string();
         if field == MarkerField::Name && text.is_empty() {
-            return;
+            return false;
         }
         let write = |mk: &mut crate::model::Marker| -> bool {
             let slot = match field {
@@ -2846,13 +2862,14 @@ impl VideoEditorApp {
         match m.clip {
             None => {
                 let mut next = self.project.clone();
-                let Some(mk) = next.marker_mut(m.id) else { return };
+                let Some(mk) = next.marker_mut(m.id) else { return false };
                 if !write(mk) {
-                    return;
+                    return false;
                 }
                 self.project = next.clone();
                 self.actions
                     .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &set_project_meta_action(&next));
+                true
             }
             Some(cid) => {
                 let changed = self
@@ -2863,8 +2880,19 @@ impl VideoEditorApp {
                 if changed {
                     self.dispatch_clip(doc, cid);
                 }
+                changed
             }
         }
+    }
+
+    /// Park the playhead on a marker -- what clicking a marker row's body
+    /// does. Extracted so the accessibility route runs the identical move
+    /// rather than a second copy of it that could drift.
+    fn seek_to_marker(&mut self, m: MarkerRef) {
+        self.playhead = m.at.clamp(0.0, self.project.duration());
+        self.playing = false;
+        self.shuttle = 0.0;
+        self.chase_playhead = true;
     }
 
     fn delete_marker(&mut self, doc: &mut AutoCommit, m: MarkerRef) {
@@ -4295,7 +4323,7 @@ impl VideoEditorApp {
                 text(scene, tr, tf, "Nothing marked yet", 11.5, c.text_dim, x0, rect.y0 - 16.0);
             }
             draw_button(
-                scene, tf, tr, theme, rect, "+ Marker at playhead (M)", false,
+                scene, tf, tr, theme, rect, ADD_MARKER_LABEL, false,
                 rect.contains(self.last_mouse),
             );
         }
@@ -6158,6 +6186,45 @@ impl VideoEditorApp {
         self.project.media.iter().map(|m| m.id).collect()
     }
 
+    /// The marker rows the inspector lists, in painted order: the reference a
+    /// row addresses, the name it is drawn with, and what a reader is told
+    /// about it beyond that name.
+    ///
+    /// Built from [`Project::all_markers`] -- the very call `layout_markers`
+    /// makes -- so the spoken list and the drawn list cannot come apart.
+    fn a11y_marker_rows(&self) -> Vec<(MarkerRef, String, String)> {
+        self.project
+            .all_markers()
+            .into_iter()
+            .map(|(at, m, clip)| {
+                let r = MarkerRef { id: m.id, clip, at };
+                // The stand-in an unnamed marker is painted with. A reader
+                // hearing nothing where the screen shows a word is being
+                // told a different story about the same row.
+                let name = if m.name.trim().is_empty() {
+                    "Marker".to_string()
+                } else {
+                    m.name.clone()
+                };
+                let mut value = crate::timecode::timecode(at, self.project.fps);
+                // A clip marker says which clip it travels with, because
+                // moving that clip moves the marker -- the same thing the
+                // row's tinted timecode says to the eye.
+                if let Some(c) = clip.and_then(|c| self.project.clip(c)) {
+                    value.push_str(", on ");
+                    value.push_str(&self.a11y_clip_name(c));
+                }
+                // The note is a second painted line under the name. Leaving
+                // it out here would be the tidier story, not the true one.
+                if !m.note.trim().is_empty() {
+                    value.push_str(", note: ");
+                    value.push_str(m.note.trim());
+                }
+                (r, name, value)
+            })
+            .collect()
+    }
+
     /// The inspector rows the keyboard can land on, in painted order: every
     /// section header (so a folded one can be opened without a mouse) followed
     /// by that section's controls when it is open.
@@ -6167,6 +6234,18 @@ impl VideoEditorApp {
         for section in self.a11y_sections(clip.as_ref()) {
             out.push(InspectorRow::Header(section));
             if self.collapsed.contains(&section) {
+                continue;
+            }
+            // The marker list is not a run of numeric knobs, so it is walked
+            // on its own terms: one stop per marked instant, then the button
+            // that adds another -- exactly the rows `layout_markers` draws.
+            if section == Section::Markers {
+                out.extend(
+                    self.a11y_marker_rows()
+                        .into_iter()
+                        .map(|(m, _, _)| InspectorRow::Marker(m)),
+                );
+                out.push(InspectorRow::AddMarker);
                 continue;
             }
             for f in Self::a11y_section_fields(section, clip.as_ref()) {
@@ -6473,18 +6552,20 @@ impl VideoEditorApp {
         let cursor = self.focus.pane == Pane::Inspector;
         let rows = self.a11y_inspector_rows();
         let clip = self.selected().and_then(|id| self.project.clip(id)).cloned();
-        if clip.is_none() && self.project.clips.is_empty() {
-            return self.a11y_pane(
-                Pane::Inspector,
-                // The painted empty state's own words. It used to phrase this
-                // differently from the screen, which is one state described
-                // two ways — and the reader's version has to be the same
-                // claim, not a neater one.
-                vec![AccessNode::new(Role::StaticText)
-                    .with_name(format!("{INSPECTOR_EMPTY_TITLE}. {INSPECTOR_EMPTY_HINT}."))
-                    .with_key(0)],
-            );
-        }
+        let markers = self.a11y_marker_rows();
+        // With nothing selected on a project holding no clips at all, the
+        // panel paints its empty state -- and, under it, the marker list,
+        // which belongs to the project rather than to any clip. Returning
+        // only the empty-state line here hid every marker on the screen from
+        // a reader. The line is now a sibling of the sections, which is what
+        // the paint does with it.
+        let empty_state = (clip.is_none() && self.project.clips.is_empty()).then(|| {
+            // The painted empty state's own words, so one state is not
+            // described two ways.
+            AccessNode::new(Role::StaticText)
+                .with_name(format!("{INSPECTOR_EMPTY_TITLE}. {INSPECTOR_EMPTY_HINT}."))
+                .with_key(0)
+        });
         // Rows are a flat painted list but a nested tree: walk it once, opening
         // a group at each header and dropping the controls into it.
         let mut groups: Vec<AccessNode> = Vec::new();
@@ -6525,10 +6606,40 @@ impl VideoEditorApp {
                         groups.push(node);
                     }
                 }
+                InspectorRow::Marker(m) => {
+                    let pos = markers.iter().position(|(r, _, _)| r.id == m.id);
+                    let Some(pos) = pos else { continue };
+                    let (_, name, value) = &markers[pos];
+                    let node =
+                        Self::a11y_marker_node(m, name, value, pos, markers.len(), focused);
+                    if let Some((_, kids)) = current.as_mut() {
+                        kids.push(node);
+                    } else {
+                        groups.push(node);
+                    }
+                }
+                InspectorRow::AddMarker => {
+                    let node = AccessNode::new(Role::Button)
+                        .with_name(ADD_MARKER_LABEL)
+                        .with_hashed_key(ADD_MARKER_KEY)
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused,
+                            ..Default::default()
+                        });
+                    if let Some((_, kids)) = current.as_mut() {
+                        kids.push(node);
+                    } else {
+                        groups.push(node);
+                    }
+                }
             }
         }
         if let Some((sec, kids)) = current.take() {
             groups.push(self.a11y_section_node(sec, kids, false));
+        }
+        if let Some(line) = empty_state {
+            groups.insert(0, line);
         }
         // Re-mark the focused header now that every group exists: a header's
         // focus lives on its group node.
@@ -6547,6 +6658,40 @@ impl VideoEditorApp {
     /// One inspector section, carrying whether it is folded and — when it is —
     /// a summary of what is inside, so a reader never has to unfold a section
     /// to learn its state.
+    /// One marker as a reader meets it: the name on the row, when it is, the
+    /// clip it travels with and the note written on it -- then the row's three
+    /// controls, which the pointer reveals on hover and a reader has no other
+    /// way to reach.
+    fn a11y_marker_node(
+        m: &MarkerRef,
+        name: &str,
+        value: &str,
+        pos: usize,
+        n: usize,
+        focused: bool,
+    ) -> AccessNode {
+        let verbs: Vec<AccessNode> = MARKER_VERBS
+            .iter()
+            .map(|verb| {
+                AccessNode::new(Role::Button)
+                    .with_name(format!("{verb} {name}"))
+                    .with_hashed_key((m.id, *verb))
+                    .with_state(AccessState { focusable: true, ..Default::default() })
+            })
+            .collect();
+        AccessNode::new(Role::ListItem)
+            .with_name(name.to_string())
+            .with_value(value.to_string())
+            // Identity-keyed: a marker keeps the node an assistive technology
+            // is holding across a rename, and across another marker landing
+            // earlier on the timeline and pushing this one down the list.
+            .with_hashed_key(m.id)
+            .with_position(pos + 1, n)
+            .with_description("Activate to move the playhead here")
+            .with_state(AccessState { focusable: true, focused, ..Default::default() })
+            .with_children(verbs)
+    }
+
     fn a11y_section_node(&self, section: Section, kids: Vec<AccessNode>, focused: bool) -> AccessNode {
         let folded = self.collapsed.contains(&section);
         AccessNode::new(Role::Group)
@@ -6605,7 +6750,11 @@ impl VideoEditorApp {
                 format!("{n} effect{}", if n == 1 { "" } else { "s" })
             }
             (Section::Markers, _) => {
-                let n = self.project.markers.len();
+                // Every marked instant the list shows -- the project's own and
+                // each clip's, which is what `layout_markers` walks and what
+                // the painted summary counts. Counting only the project's told
+                // a reader a smaller number than the panel had rows for.
+                let n = self.project.all_markers().len();
                 format!("{n} marker{}", if n == 1 { "" } else { "s" })
             }
             // The same words the folded header shows, so a reader is never
@@ -6982,6 +7131,14 @@ impl VideoEditorApp {
             }
             Pane::Inspector => match self.a11y_inspector_rows().get(self.focus.inspector) {
                 Some(InspectorRow::Header(sec)) => vec![hash_key(&sec.label())],
+                // A marker's path runs through the MARKERS section, the same
+                // shape a control's does.
+                Some(InspectorRow::Marker(m)) => {
+                    vec![hash_key(&Section::Markers.label()), hash_key(&m.id)]
+                }
+                Some(InspectorRow::AddMarker) => {
+                    vec![hash_key(&Section::Markers.label()), hash_key(&ADD_MARKER_KEY)]
+                }
                 Some(InspectorRow::Field(f)) => {
                     // A control's path runs through its section.
                     let rows = self.a11y_inspector_rows();
@@ -7215,10 +7372,88 @@ impl VideoEditorApp {
                         _ => false,
                     };
                 }
+                InspectorRow::Marker(m) if hash_key(&m.id) == key => {
+                    self.focus.inspector = i;
+                    let m = *m;
+                    // `[inspector, MARKERS, marker, verb]` names one of the
+                    // row's three buttons; one level shorter is the row
+                    // itself, whose body seeks when it is clicked.
+                    if let Some(&verb) = rest.get(2) {
+                        return self.a11y_marker_verb(m, verb, action, doc);
+                    }
+                    return match action {
+                        Action::Focus => true,
+                        Action::Activate => {
+                            self.seek_to_marker(m);
+                            true
+                        }
+                        _ => false,
+                    };
+                }
+                InspectorRow::AddMarker if hash_key(&ADD_MARKER_KEY) == key => {
+                    self.focus.inspector = i;
+                    return match action {
+                        Action::Focus => true,
+                        Action::Activate => {
+                            self.add_marker_here(doc);
+                            true
+                        }
+                        _ => false,
+                    };
+                }
                 _ => {}
             }
         }
         false
+    }
+
+    /// One of a marker row's three buttons, addressed by an assistive
+    /// technology. Each runs the same call the pointer runs on that button,
+    /// so a reader and a mouse cannot do two different things to a marker.
+    ///
+    /// `Activate` opens the inline editor the pointer opens, for a user
+    /// driving the real keyboard through the row. `SetValue` writes the text
+    /// outright, through the same commit the inline editor ends at -- an
+    /// assistive technology has no caret to type into an `EditableLabel`
+    /// with, so an editor it cannot reach would be an affordance in name
+    /// only. It reports the commit's own verdict, so the refusal of an empty
+    /// name reaches the caller as a refusal rather than a silent no-op.
+    fn a11y_marker_verb(
+        &mut self,
+        m: MarkerRef,
+        verb: u64,
+        action: &ui::a11y::Action,
+        doc: &mut AutoCommit,
+    ) -> bool {
+        use ui::a11y::{hash_key, Action};
+        let field = if hash_key(&(m.id, MARKER_VERBS[0])) == verb {
+            MarkerField::Note
+        } else if hash_key(&(m.id, MARKER_VERBS[1])) == verb {
+            MarkerField::Name
+        } else if hash_key(&(m.id, MARKER_VERBS[2])) == verb {
+            return match action {
+                Action::Focus => true,
+                Action::Activate => {
+                    self.delete_marker(doc, m);
+                    true
+                }
+                _ => false,
+            };
+        } else {
+            return false;
+        };
+        match action {
+            Action::Focus => true,
+            Action::Activate => {
+                self.begin_marker_edit(m, field);
+                true
+            }
+            Action::SetValue(text) => {
+                let text = text.clone();
+                self.commit_marker_text(doc, m, field, &text)
+            }
+            _ => false,
+        }
     }
 
     /// Step a numeric control one twentieth of its span — the same grain a
@@ -7275,6 +7510,12 @@ fn step_index(i: usize, n: usize, up: bool) -> usize {
 enum InspectorRow {
     Header(Section),
     Field(NumField),
+    /// One row of the marker list. A marker is not a numeric knob, so it is
+    /// its own stop: a reader that could only ever land on knobs could not
+    /// reach a marker at all.
+    Marker(MarkerRef),
+    /// The button that closes the marker list.
+    AddMarker,
 }
 
 // ==========================================================================
@@ -7938,10 +8179,7 @@ impl VideoEditorApp {
             } else if rename.contains(p) {
                 self.begin_marker_rename(m);
             } else {
-                self.playhead = m.at.clamp(0.0, self.project.duration());
-                self.playing = false;
-                self.shuttle = 0.0;
-                self.chase_playhead = true;
+                self.seek_to_marker(m);
             }
             return;
         }
@@ -16995,6 +17233,348 @@ mod tests {
             Some("Marker"),
             "an empty name is refused — a nameless marker is a dot nobody can find",
         );
+    }
+
+    /// Every node in `root`'s tree whose name matches, in walk order.
+    fn a11y_find(root: &AccessNode, name: &str) -> Vec<AccessNode> {
+        fn walk(n: &AccessNode, name: &str, out: &mut Vec<AccessNode>) {
+            if n.name.as_deref() == Some(name) {
+                out.push(n.clone());
+            }
+            for k in &n.children {
+                walk(k, name, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, name, &mut out);
+        out
+    }
+
+    /// The keys of the marker rows a reader is offered, in spoken order.
+    fn spoken_marker_keys(app: &VideoEditorApp) -> Vec<u64> {
+        fn walk(n: &AccessNode, out: &mut Vec<u64>) {
+            if n.role == Role::ListItem {
+                if let Some(k) = n.key {
+                    out.push(k);
+                }
+            }
+            for k in &n.children {
+                walk(k, out);
+            }
+        }
+        let mut out = Vec::new();
+        for g in &app.a11y_inspector().children {
+            if g.name.as_deref() == Some(Section::Markers.label()) {
+                walk(g, &mut out);
+            }
+        }
+        out
+    }
+
+    /// Put a named, annotated marker on the timeline at `t` and hand back its
+    /// reference, with no rename editor left open over it.
+    fn marker_at(
+        app: &mut VideoEditorApp,
+        doc: &mut AutoCommit,
+        t: f64,
+        name: &str,
+        note: &str,
+    ) -> MarkerRef {
+        app.playhead = t;
+        app.add_marker_here(doc);
+        app.marker_rename = None;
+        let m = *app
+            .a11y_marker_rows()
+            .iter()
+            .find(|(m, _, _)| (m.at - t).abs() < 1e-6)
+            .map(|(m, _, _)| m)
+            .expect("the marker was added");
+        app.commit_marker_text(doc, m, MarkerField::Name, name);
+        if !note.is_empty() {
+            app.commit_marker_text(doc, m, MarkerField::Note, note);
+        }
+        m
+    }
+
+    /// A marker is a named instant on the screen, sometimes carrying a note.
+    /// None of that reached the accessibility tree: the MARKERS group existed
+    /// but was always empty, so a reader could be told the section was there
+    /// and never that anything was in it -- not that a marker existed, not
+    /// what it was called, not what its note said.
+    #[test]
+    fn a_reader_is_told_a_markers_name_time_and_note() {
+        let (mut app, mut doc) = app_and_doc();
+        let m = marker_at(&mut app, &mut doc, 12.0, "act two", "check the horizon line");
+
+        let found = a11y_find(&app.a11y_inspector(), "act two");
+        assert_eq!(found.len(), 1, "the marker is one node in the tree");
+        let node = &found[0];
+        assert_eq!(node.role, Role::ListItem);
+        assert_eq!(node.key, Some(ui::a11y::hash_key(&m.id)), "identity-keyed");
+        let value = node.value.clone().unwrap_or_default();
+        assert!(
+            value.contains(&crate::timecode::timecode(12.0, app.project.fps)),
+            "the row's timecode is spoken: {value}",
+        );
+        assert!(value.contains("check the horizon line"), "the note is spoken: {value}");
+        assert!(node.state.focusable, "and it can be landed on");
+        // The three controls the row carries. They are painted only under the
+        // pointer, and a reader has no pointer, so the tree is the only place
+        // a marker's note, name or removal is reachable from.
+        for verb in MARKER_VERBS {
+            let want = format!("{verb} act two");
+            assert!(
+                node.children.iter().any(|k| k.name.as_deref() == Some(want.as_str())),
+                "the row offers {want:?}, has {:?}",
+                node.children.iter().filter_map(|k| k.name.clone()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    /// A reader and a sighted user have to be looking at the same list. This
+    /// walks the drawn rows and the spoken ones together, with a clip marker
+    /// in the mix so the two sources of markers are both covered.
+    #[test]
+    fn the_reader_is_offered_exactly_the_markers_that_are_drawn() {
+        let (mut app, mut doc) = app_and_doc();
+        marker_at(&mut app, &mut doc, 12.0, "act two", "");
+        marker_at(&mut app, &mut doc, 4.0, "cold open", "the quiet bit");
+        // A marker pinned to a clip travels with the footage and is listed on
+        // the same timeline as the project's own.
+        let clip = app.project.top_video_clip_at(23.0).expect("a clip under the playhead").id;
+        app.project.clip_mut(clip).unwrap().add_marker(23.5, "on the clip", 2);
+
+        let drawn: Vec<u64> = app
+            .inspector_layout(&app.regions())
+            .marker_rows
+            .iter()
+            .map(|(m, _)| ui::a11y::hash_key(&m.id))
+            .collect();
+        assert!(drawn.len() >= 3, "three marked instants are drawn, got {}", drawn.len());
+        assert_eq!(
+            spoken_marker_keys(&app),
+            drawn,
+            "the reader's markers must be the drawn markers, in the drawn order",
+        );
+        // And the button that closes the list is offered too, or a reader
+        // could read markers and never add one.
+        assert!(
+            !a11y_find(&app.a11y_inspector(), ADD_MARKER_LABEL).is_empty(),
+            "the add button is in the tree",
+        );
+    }
+
+    /// Clicking a marker row's body parks the playhead on it. Activating the
+    /// node must do the identical thing -- the reader's verb and the mouse's
+    /// are the same call.
+    #[test]
+    fn activating_a_marker_node_moves_the_playhead_there() {
+        let (mut app, mut doc) = app_and_doc();
+        let m = marker_at(&mut app, &mut doc, 12.0, "act two", "");
+        app.playhead = 0.0;
+        app.playing = true;
+
+        let path = vec![
+            Pane::Inspector.key(),
+            ui::a11y::hash_key(&Section::Markers.label()),
+            ui::a11y::hash_key(&m.id),
+        ];
+        assert!(
+            app.perform_action_at(&ui::a11y::Action::Activate, &path, &mut doc, &automerge::ROOT),
+            "the marker node is addressable",
+        );
+        assert!((app.playhead - 12.0).abs() < 1e-6, "playhead at {}", app.playhead);
+        assert!(!app.playing, "seeking to a mark stops playback, as the click does");
+    }
+
+    /// The row's three controls, driven the way an assistive technology drives
+    /// them. Each has to reach the same document write the pointer reaches.
+    #[test]
+    fn a_marker_rows_controls_rename_annotate_and_remove_it() {
+        let (mut app, mut doc) = app_and_doc();
+        let m = marker_at(&mut app, &mut doc, 12.0, "act two", "");
+        let verb = |i: usize| {
+            vec![
+                Pane::Inspector.key(),
+                ui::a11y::hash_key(&Section::Markers.label()),
+                ui::a11y::hash_key(&m.id),
+                ui::a11y::hash_key(&(m.id, MARKER_VERBS[i])),
+            ]
+        };
+        let root = automerge::ROOT;
+
+        // Setting the note's text writes it through the same commit the
+        // inline editor ends at.
+        assert!(app.perform_action_at(
+            &ui::a11y::Action::SetValue("mind the skyline".into()),
+            &verb(0),
+            &mut doc,
+            &root,
+        ));
+        assert_eq!(
+            VideoDoc::load_project(&mut doc).marker(m.id).map(|k| k.note.clone()),
+            Some("mind the skyline".to_string()),
+            "the note reached the document",
+        );
+
+        // And renaming.
+        assert!(app.perform_action_at(
+            &ui::a11y::Action::SetValue("act three".into()),
+            &verb(1),
+            &mut doc,
+            &root,
+        ));
+        assert_eq!(
+            VideoDoc::load_project(&mut doc).marker(m.id).map(|k| k.name.clone()),
+            Some("act three".to_string()),
+        );
+        // An empty name is refused at the commit, so the verb reports the
+        // refusal rather than claiming a write it did not make.
+        assert!(
+            !app.perform_action_at(
+                &ui::a11y::Action::SetValue("   ".into()),
+                &verb(1),
+                &mut doc,
+                &root,
+            ),
+            "a nameless marker is a dot nobody can find, and the verb says so",
+        );
+
+        // Activating the delete control removes it, exactly as the X does.
+        assert!(app.perform_action_at(&ui::a11y::Action::Activate, &verb(2), &mut doc, &root));
+        assert!(
+            VideoDoc::load_project(&mut doc).marker(m.id).is_none(),
+            "the marker is gone from the document",
+        );
+        assert!(
+            a11y_find(&app.a11y_inspector(), "act three").is_empty(),
+            "and gone from the tree",
+        );
+    }
+
+    /// Markers are kept sorted by time, so adding an earlier one pushes every
+    /// later one down the list. A node an assistive technology is holding has
+    /// to keep naming its own marker across that, not whatever took its slot.
+    #[test]
+    fn a_held_marker_node_still_names_its_own_marker_after_the_list_reorders() {
+        let (mut app, mut doc) = app_and_doc();
+        marker_at(&mut app, &mut doc, 12.0, "act two", "");
+        // The key is read off the tree rather than computed from the model:
+        // an assistive technology holds the node it was given, so a node
+        // keyed by its position would go on resolving here if the path were
+        // rebuilt from the marker's id instead.
+        let held_key = a11y_find(&app.a11y_inspector(), "act two")
+            .first()
+            .and_then(|n| n.key)
+            .expect("the marker node carries a key");
+        let held = vec![
+            Pane::Inspector.key(),
+            ui::a11y::hash_key(&Section::Markers.label()),
+            held_key,
+        ];
+        marker_at(&mut app, &mut doc, 4.0, "cold open", "");
+        assert_eq!(
+            app.a11y_marker_rows().first().map(|(_, n, _)| n.clone()),
+            Some("cold open".to_string()),
+            "the new marker took the first row",
+        );
+
+        app.playhead = 0.0;
+        assert!(app.perform_action_at(
+            &ui::a11y::Action::Activate,
+            &held,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(
+            (app.playhead - 12.0).abs() < 1e-6,
+            "the held path still names the marker at 12s, landed at {}",
+            app.playhead,
+        );
+    }
+
+    /// A folded header states what is inside it. This one counted only the
+    /// project's own markers while the panel listed a clip's too, so a reader
+    /// folding the section heard a smaller number than the rows they had just
+    /// been reading.
+    #[test]
+    fn the_folded_markers_header_counts_every_marker_the_panel_lists() {
+        let (mut app, mut doc) = app_and_doc();
+        marker_at(&mut app, &mut doc, 12.0, "act two", "");
+        let clip = app.project.top_video_clip_at(23.0).expect("a clip").id;
+        app.project.clip_mut(clip).unwrap().add_marker(23.5, "on the clip", 2);
+        let drawn_rows = app.inspector_layout(&app.regions()).marker_rows.len();
+
+        let any = app.project.clips.first().cloned().expect("a clip to pass in");
+        let painted = app
+            .section_summary(Section::Markers, &any, None)
+            .expect("the panel summarises a non-empty list");
+        assert_eq!(
+            app.a11y_section_summary(Section::Markers),
+            painted,
+            "the reader hears the summary the header shows",
+        );
+        assert!(
+            painted.starts_with(&drawn_rows.to_string()),
+            "{painted} counts the {drawn_rows} rows on screen",
+        );
+    }
+
+    /// With no clips at all the panel paints its empty state *and*, under it,
+    /// the marker list -- markers belong to the project, not to a selection.
+    /// The tree used to return only the empty-state line, hiding every marker
+    /// that was plainly on the screen.
+    #[test]
+    fn an_empty_project_still_lists_its_markers_to_a_reader() {
+        ui::portal::suppress_for_tests();
+        let mut doc = AutoCommit::new();
+        let mut app = VideoEditorApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.project.clips.is_empty(), "the fixture is a blank project");
+        let m = marker_at(&mut app, &mut doc, 3.0, "start here", "before anything is cut");
+
+        let node = app.a11y_inspector();
+        let spoken = node.children.iter().filter_map(|n| n.name.clone()).collect::<Vec<_>>();
+        assert!(
+            spoken.iter().any(|n| n.contains(INSPECTOR_EMPTY_TITLE)),
+            "the empty state is still spoken: {spoken:?}",
+        );
+        let found = a11y_find(&node, "start here");
+        assert_eq!(found.len(), 1, "and the marker with it: {spoken:?}");
+        assert_eq!(found[0].key, Some(ui::a11y::hash_key(&m.id)));
+        assert_eq!(
+            app.inspector_layout(&app.regions()).marker_rows.len(),
+            1,
+            "which is the row the panel drew",
+        );
+    }
+
+    /// The inspector's arrow keys walk `a11y_inspector_rows`, so a marker has
+    /// to be a stop there or the keyboard steps straight over the list.
+    #[test]
+    fn the_inspector_cursor_can_reach_a_marker_and_the_add_button() {
+        let (mut app, mut doc) = app_and_doc();
+        let m = marker_at(&mut app, &mut doc, 12.0, "act two", "");
+        let rows = app.a11y_inspector_rows();
+        let at = rows
+            .iter()
+            .position(|r| matches!(r, InspectorRow::Marker(x) if x.id == m.id))
+            .expect("the marker is a focus stop");
+        assert!(
+            rows.iter().any(|r| matches!(r, InspectorRow::AddMarker)),
+            "so is the button that adds another",
+        );
+
+        app.focus.pane = Pane::Inspector;
+        app.focus.inspector = at;
+        let focused = a11y_find(&app.a11y_inspector(), "act two");
+        assert!(focused[0].state.focused, "the cursor's marker carries focus");
+
+        // And Enter on it runs the row's own verb.
+        app.playhead = 0.0;
+        assert!(app.activate_focused(&mut doc), "Enter is answered");
+        assert!((app.playhead - 12.0).abs() < 1e-6, "playhead at {}", app.playhead);
     }
 
     #[test]
