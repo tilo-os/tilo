@@ -94,6 +94,15 @@ impl WsTab {
 }
 
 /// The WorkspaceSettings modal state.
+/// The workspace's invite URL.
+///
+/// One definition: the settings modal used to format this string in two
+/// places, once here and once inline in the compositor's draw pass, with
+/// a comment explaining that the widget was not reachable from there.
+pub fn invite_link(ws: &Workspace) -> String {
+    format!("quickdesktop://invite/{}", u64::from(ws.id))
+}
+
 pub struct WorkspaceSettings {
     pub ws_id: WorkspaceId,
     pub active_tab: WsTab,
@@ -166,7 +175,7 @@ impl WorkspaceSettings {
     /// Return a `quickdesktop://invite/{id}` link for this workspace. The
     /// TopBar's "Invite" button copies this to the clipboard.
     pub fn invite_link(&self, ws: &Workspace) -> String {
-        format!("quickdesktop://invite/{}", u64::from(ws.id))
+        invite_link(ws)
     }
 
     // -----------------------------------------------------------------
