@@ -9615,6 +9615,59 @@ mod tests {
     }
 
     #[test]
+    fn a_clip_is_still_the_same_clip_after_an_earlier_one_is_deleted() {
+        // Deleting a clip renumbers every clip after it on the track. This
+        // proves the tree keeps up: the survivor is still addressable, and
+        // operating it still operates THAT clip, with the same span, rather
+        // than the neighbour that moved into its place.
+        //
+        // NOTE this does not prove identity-keying. It re-resolves the node by
+        // name each time and passes under ordinal keys too. Identity keys are
+        // currently unobservable from here because the host regenerates its
+        // taffy tree on every relayout, which changes the owning widget's node
+        // id and therefore every id derived from it.
+        let mut d = a11y_driver();
+        let clips: Vec<(String, ui::accesskit::NodeId)> = d
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, n)| {
+                n.role() == ui::accesskit::Role::ListItem
+                    && n.value().map(|v| v.contains(" long, on ")).unwrap_or(false)
+            })
+            .map(|(id, n)| (n.label().unwrap_or_default().to_string(), id))
+            .collect();
+        assert!(clips.len() >= 2, "the sample project has several clips");
+        let (first_name, first_id) = clips.first().cloned().unwrap();
+        let (last_name, _) = clips.last().cloned().unwrap();
+        assert_ne!(first_name, last_name);
+        let last_span = d
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, n)| n.label() == Some(last_name.as_str()))
+            .and_then(|(_, n)| n.value().map(|v| v.to_string()))
+            .unwrap();
+
+        d.perform_a11y_action(first_id, &ui::a11y::Action::Activate).unwrap();
+        d.key("Delete");
+
+        let again = d
+            .a11y_node_named(&last_name)
+            .expect("the surviving clip is still addressable by name");
+        d.perform_a11y_action(again, &ui::a11y::Action::Activate).unwrap();
+        let (_, focused) = d.a11y_focus().expect("something is focused");
+        assert_eq!(
+            focused.label(),
+            Some(last_name.as_str()),
+            "activating it must still operate that clip, not its neighbour"
+        );
+        assert_eq!(
+            focused.value().map(|v| v.to_string()),
+            Some(last_span),
+            "and it is the same clip, in the same place, not a lookalike"
+        );
+    }
+
+    #[test]
     fn a_stale_clip_reference_operates_nothing() {
         // An id an AT held across a delete must not activate whichever clip
         // slid into that slot.
