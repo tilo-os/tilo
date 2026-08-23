@@ -2131,17 +2131,36 @@ mod tests {
         app.toggle_favorite_for_test(id, &mut state.doc);
         assert!(SnippetsDoc::get(&state.doc, id).unwrap().favorite);
 
-        // The host drains the captured heads and records ONE undo boundary.
-        let before = Widget::take_committed_action(&mut app).expect("heads were captured");
+        // The host's own recorder drains the captured heads and records ONE undo
+        // boundary. Going through it rather than pushing an entry by hand is the
+        // point: attribution happens in there, and undo is author-scoped. The
+        // node map is empty because the app widget is the root here.
+        let local_author = ui::collaboration::local_user_id();
+        let root: *mut dyn Widget = &mut app;
+        assert!(
+            ui::undo::record_dispatched_action(
+                &mut state,
+                root,
+                &std::collections::HashMap::new(),
+                &local_author,
+            ),
+            "the host recorded an undo boundary for the dispatched star"
+        );
         assert!(
             Widget::take_committed_action(&mut app).is_none(),
             "rising-edge: the captured heads are cleared on read",
         );
-        state.record_committed_action(before, None, None);
-        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        let entry = state.peek_last_undo().expect("exactly one undo boundary recorded");
+        assert_eq!(
+            entry.author.as_ref(),
+            Some(&local_author),
+            "attributed to the local user, so their Ctrl+Z can reach it"
+        );
 
         // Ctrl+Z reverts the star. Re-project so the library reflects the undo.
-        state.undo(None, None).expect("an undo entry to pop");
+        state
+            .undo_as(Some(&local_author), None, None)
+            .expect("an undo entry to pop");
         app.sync(&mut state.doc, &state.root);
         assert!(
             !SnippetsDoc::get(&state.doc, id).unwrap().favorite,
