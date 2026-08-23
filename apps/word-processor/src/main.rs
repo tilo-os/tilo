@@ -18,6 +18,17 @@
 //! QUICK_APP_ID=bob   word-processor doc.md
 //! ```
 
+// Thin build only: pull the shared toolkit dylib
+// (`libruntime_dylib.so`) into the link graph. It statically contains
+// the `ui` toolkit this app links -- and with it wgpu, vello,
+// cosmic-text, automerge, taffy and fluent -- so with `-C
+// prefer-dynamic` rustc serves `ui` and libstd from the dylib instead
+// of baking ~18 MB of `.text` into this binary. Naming the crate here
+// is what keeps rustc from eliminating it as unused. Compiled out in
+// normal (static) builds.
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};

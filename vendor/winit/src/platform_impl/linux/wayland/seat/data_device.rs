@@ -25,19 +25,27 @@
 //! Bytes are preferred over a URI list when both are offered: a confined
 //! app cannot read a path on the host, but it can always read what the
 //! source wrote into the pipe.
+//!
+//! The same module carries the *send* half — [`start_drag`] — so a `ui`
+//! app can be the source of a drag rather than only its target. It offers
+//! bytes for the same reason the receive side prefers them: the app on
+//! the other end is confined, and a path from this one's namespace means
+//! nothing in that one's.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use calloop::channel::{self, Channel, Sender};
 use sctk::compositor::SurfaceData;
 use sctk::data_device_manager::data_device::{DataDevice, DataDeviceData, DataDeviceHandler};
 use sctk::data_device_manager::data_offer::{DataOfferHandler, DragOffer};
-use sctk::data_device_manager::data_source::DataSourceHandler;
+use sctk::data_device_manager::data_source::{DataSourceData, DataSourceHandler};
 use sctk::data_device_manager::{DataDeviceManagerState, WritePipe};
+use sctk::reexports::client::backend::ObjectId;
 use sctk::reexports::client::globals::GlobalList;
 use sctk::reexports::client::protocol::wl_data_device::WlDataDevice;
-use sctk::reexports::client::protocol::wl_data_device_manager::DndAction;
+use sctk::reexports::client::protocol::wl_data_device_manager::{DndAction, WlDataDeviceManager};
 use sctk::reexports::client::protocol::wl_data_source::WlDataSource;
 use sctk::reexports::client::protocol::wl_seat::WlSeat;
 use sctk::reexports::client::protocol::wl_surface::WlSurface;
@@ -162,10 +170,49 @@ pub fn extension_for_mime(mime: &str) -> &'static str {
     }
 }
 
+/// Where a dropped payload is written so the app can open it.
+///
+/// `$XDG_RUNTIME_DIR` first, which is the conventional answer and the
+/// one the receiving app is most likely to recognise. It is not a
+/// reliable answer inside a sandbox, though: the variable is set, but
+/// the directory it names may be one the sandbox synthesised in order to
+/// mount a socket into, with nothing writable about it. A drop that
+/// lands there silently produces no file and the app is handed nothing,
+/// which looks exactly like a drag that was never accepted.
+///
+/// So each candidate is *probed* rather than assumed, ending at the app's
+/// own directory, which a qOS app always has and always owns.
 fn spool_dir() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
+    let candidates = [
+        std::env::var_os("XDG_RUNTIME_DIR"),
+        std::env::var_os("XDG_CACHE_HOME"),
+        std::env::var_os("HOME"),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.is_empty() {
+            continue;
+        }
+        let dir = PathBuf::from(candidate);
+        if is_writable(&dir) {
+            return dir;
+        }
+    }
+    std::env::temp_dir()
+}
+
+/// Whether a file can actually be created in `dir`, asked by creating one.
+///
+/// The permission bits are not the whole story — a read-only mount says
+/// nothing about them — so the question is put to the filesystem.
+fn is_writable(dir: &std::path::Path) -> bool {
+    let probe = dir.join(format!(".winit-dnd-probe-{}", std::process::id()));
+    match std::fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        },
+        Err(_) => false,
+    }
 }
 
 impl WinitState {
@@ -315,19 +362,156 @@ impl DataOfferHandler for WinitState {
     fn selected_action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &mut DragOffer, _: DndAction) {}
 }
 
-/// We never create a data source — winit does not *start* drags — but the
-/// delegate macro routes `wl_data_source` events here, so the trait has to
-/// exist.
+// ---------------------------------------------------------------------------
+// The send half: starting a drag
+// ---------------------------------------------------------------------------
+
+/// The seat objects a drag needs, published once the seat has a data
+/// device.
+///
+/// A drag is started from the application thread (inside an event
+/// handler), not from the event loop's own dispatch, so the objects it
+/// needs cannot be reached through `&mut WinitState`. They are protocol
+/// proxies, which are `Send + Sync` and queue their requests
+/// thread-safely, so a process-global is both sound and enough: one
+/// connection, one seat, and at most one drag at a time because a drag
+/// is a held pointer button.
+struct DragSeat {
+    manager: WlDataDeviceManager,
+    /// The seat's *existing* data device. Deliberately not a second one:
+    /// a new `wl_data_device` would also receive `enter` / `drop`, and
+    /// the receive half above would deliver every drop twice.
+    device: WlDataDevice,
+    queue_handle: QueueHandle<WinitState>,
+}
+
+static DRAG_SEAT: Mutex<Option<DragSeat>> = Mutex::new(None);
+
+/// What an in-flight outgoing drag is offering, keyed by the source that
+/// carries it.
+///
+/// The bytes live here rather than in the app because the receiver asks
+/// for them through `wl_data_source.send`, which arrives on the event
+/// loop long after the call that started the drag returned.
+struct Outgoing {
+    source: ObjectId,
+    offers: Vec<(String, Vec<u8>)>,
+}
+
+static OUTGOING: Mutex<Vec<Outgoing>> = Mutex::new(Vec::new());
+
+/// Publish the seat's data device so [`start_drag`] can reach it.
+pub fn register_drag_seat(
+    manager: WlDataDeviceManager,
+    device: WlDataDevice,
+    queue_handle: QueueHandle<WinitState>,
+) {
+    *DRAG_SEAT.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(DragSeat { manager, device, queue_handle });
+}
+
+/// Withdraw the published data device when its seat goes away.
+pub fn clear_drag_seat() {
+    *DRAG_SEAT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Start a drag from `surface`, offering `offers` as mime → bytes.
+///
+/// `serial` must be the serial of the pointer button press that is still
+/// held: the compositor validates it against the implicit grab and
+/// ignores a drag whose serial does not match one.
+///
+/// Bytes, not paths, are what a drag carries here — deliberately. The
+/// receiver is a sandboxed app with its own mount namespace, so a host
+/// path it was handed would not resolve; what always works is the source
+/// writing the content into the pipe the compositor brokers. A
+/// `text/uri-list` may be offered alongside for receivers that want a
+/// name, but it is never the only offer.
+///
+/// Returns whether the request was sent.
+pub fn start_drag(surface: &WlSurface, serial: u32, offers: Vec<(String, Vec<u8>)>) -> bool {
+    if offers.is_empty() {
+        return false;
+    }
+    let seat = DRAG_SEAT.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(seat) = seat.as_ref() else {
+        tracing::warn!("a drag was started before the seat had a data device");
+        return false;
+    };
+    let source = seat.manager.create_data_source(&seat.queue_handle, DataSourceData::default());
+    for (mime, _) in &offers {
+        source.offer(mime.clone());
+    }
+    // `set_actions` is version 3; on an older manager the drag is still
+    // valid, it just cannot negotiate copy-vs-move.
+    if source.version() >= 3 {
+        source.set_actions(DndAction::Copy);
+    }
+    OUTGOING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(Outgoing { source: source.id(), offers });
+    seat.device.start_drag(Some(&source), surface, None, serial);
+    true
+}
+
+/// Drop an outgoing drag's payload once the source is done with it.
+fn forget_outgoing(source: &WlDataSource) {
+    let id = source.id();
+    OUTGOING.lock().unwrap_or_else(|e| e.into_inner()).retain(|o| o.source != id);
+}
+
 impl DataSourceHandler for WinitState {
     fn accept_mime(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: Option<String>) {}
 
-    fn send_request(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: String, _: WritePipe) {}
+    /// The receiver asked for one of the mime types we offered. Write the
+    /// bytes registered for it.
+    fn send_request(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        source: &WlDataSource,
+        mime: String,
+        pipe: WritePipe,
+    ) {
+        let id = source.id();
+        let bytes = {
+            let out = OUTGOING.lock().unwrap_or_else(|e| e.into_inner());
+            out.iter()
+                .find(|o| o.source == id)
+                .and_then(|o| o.offers.iter().find(|(m, _)| *m == mime))
+                .map(|(_, b)| b.clone())
+        };
+        let Some(bytes) = bytes else {
+            tracing::warn!("a receiver asked for {mime}, which this drag never offered");
+            return;
+        };
+        // On a thread, for the same reason the read side is: a payload
+        // bigger than the pipe buffer blocks until the receiver drains
+        // it, and the receiver may well be waiting on an event this loop
+        // has not dispatched yet.
+        let _ = std::thread::Builder::new().name("winit-dnd-write".into()).spawn(move || {
+            let mut pipe = pipe;
+            if let Err(err) = pipe.write_all(&bytes) {
+                tracing::warn!("writing a dragged {mime} to the receiver failed: {err}");
+            }
+        });
+    }
 
-    fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+        forget_outgoing(source);
+        source.destroy();
+    }
 
+    /// The pointer was released over a receiver that accepted. The source
+    /// is *not* destroyed here — the receiver may still ask for the bytes
+    /// after the drop, and `dnd_finished` is where it says it is done.
     fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
 
-    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+        forget_outgoing(source);
+        source.destroy();
+    }
 
     fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
 }

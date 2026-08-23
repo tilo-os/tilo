@@ -57,6 +57,25 @@ ls -la $QOS_TEST_CONTROL
 
 The compositor prints `nirios compositor test_control listening on "<path>"` to stderr once the socket is ready to accept.
 
+### Put `TMPDIR` somewhere with room
+
+`/tmp` is a 16 GB tmpfs shared with everything else on the box, and a
+few concurrent `rustc` processes will fill it. When they do, anything
+that asks for a temporary file fails — harnesses here allocate session
+roots through `tempfile` — and the error surfaces from inside that call
+as `Quota exceeded`, a bare exit 1, or simply empty output. It reads
+like a bug in whatever you were testing, which is the expensive part.
+
+Point it at real disk before a run that spawns sessions:
+
+```bash
+TMPDIR=$HOME/tmp ./scripts/headless-examples/peers-cross-both-ways.py
+```
+
+Keep session roots short (`/tmp/qs-xxxx`-shaped): a unix socket path has
+a hard ~108-byte limit, and a deep temp directory silently pushes the
+control socket past it.
+
 ### Easiest path: the `qos-control` CLI
 
 A wrapper binary ships in the same workspace. Subcommands take human-friendly arguments instead of raw JSON:
@@ -212,6 +231,14 @@ For exploratory / partial flows, see `scripts/headless-examples/` (full walkthro
 - `drag-demo.py` — press-motions-release
 - `full-loop.py` — the end-to-end above
 - `spawn-headless.sh` — shell helper to start the compositor + wait for socket
+
+Alongside those, the `*-proof.py` scripts in the same directory stand up
+**two or three real compositors** with separate identities and homes, put
+them in one room, and assert across them. Reach for one of those when the
+question is about collaboration rather than about one session's chrome —
+`peers-cross-both-ways.py` is the presence regression net (each session
+must paint the other's cursor, under the name the room gave it), and
+`named-peer-proof.py` covers naming through a running app.
 
 If you want to do it by hand without Python, use `socat` (Ncat doesn't have `-q`):
 

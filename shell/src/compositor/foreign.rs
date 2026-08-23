@@ -66,6 +66,7 @@
 use std::collections::HashMap;
 use std::os::fd::AsRawFd;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer as _, Fourcc, Modifier};
@@ -384,6 +385,20 @@ struct ForeignEntry {
     /// Size most recently sent to the client in an `xdg_toplevel`
     /// configure, in surface-local (logical) pixels.
     configured: Option<(i32, i32)>,
+    /// When this surface was first heard of — the toplevel being adopted,
+    /// in practice, since that is what lays its tab out and publishes a
+    /// placement. Start of the window [`ForeignFrameStore::mark_presented`]
+    /// waits before giving up on a well-sized frame.
+    first_seen: Instant,
+    /// Latched: this surface has produced something worth showing, so
+    /// its window is on screen and stays there.
+    ///
+    /// One-way on purpose. The predicate behind it asks whether the
+    /// current frame fits the tab it is in, and that briefly stops being
+    /// true every time the user resizes a group — a window that could
+    /// un-present would blink out mid-drag, which is a worse thing to
+    /// watch than the one this exists to prevent.
+    presented: bool,
 }
 
 impl ForeignEntry {
@@ -396,6 +411,8 @@ impl ForeignEntry {
             last_error: None,
             placement: None,
             configured: None,
+            first_seen: Instant::now(),
+            presented: false,
         }
     }
 }
@@ -630,8 +647,14 @@ impl ForeignFrameStore {
         });
     }
 
-    /// Record that the last capture failed and drop the stale frame, so
-    /// the tile shows the reason instead of the previous image.
+    /// Record that the last capture failed and drop the stale frame.
+    ///
+    /// Two things read it. The window stops waiting — a surface with a
+    /// failure against it has something to say, so it is shown at once
+    /// rather than held back for a frame that is not coming. And the words
+    /// it shows are chosen by [`ForeignSurfaceWidget::unshowable_text`],
+    /// which says that the window cannot be shown and leaves `reason` here
+    /// for whoever is debugging rather than whoever is waiting.
     pub fn note_failure(&self, id: SurfaceId, reason: String) {
         self.with_entry(id, |e| {
             e.rgba.clear();
@@ -685,6 +708,56 @@ impl ForeignFrameStore {
             height: e.height,
             seq: e.seq,
         })
+    }
+
+    /// Dimensions of the frame currently staged for `id`, without
+    /// copying it. `None` when nothing has landed.
+    ///
+    /// Exists so a harness can compare what the client drew against the
+    /// tab it was drawn into. Those two disagreeing is what a window
+    /// visibly resizing after it opens *is*, and a test that can only see
+    /// the frame counter cannot tell that apart from a clean open.
+    pub fn frame_size(&self, id: SurfaceId) -> Option<(u32, u32)> {
+        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let e = guard.get(&id)?;
+        (e.width > 0 && e.height > 0).then_some((e.width, e.height))
+    }
+
+    /// Whether `id`'s window has been shown — the latched answer from
+    /// [`Self::mark_presented`], read without changing it.
+    pub fn is_presented(&self, id: SurfaceId) -> bool {
+        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        guard.get(&id).is_some_and(|e| e.presented)
+    }
+
+    /// Whether the tile standing in for `id` should say that its app is
+    /// on its way: nothing has been presented, and it has been waiting
+    /// longer than [`OPENING_DELAY`].
+    ///
+    /// Read by [`ForeignSurfaceWidget::opening`], which is what the
+    /// window group consults before deciding to paint the card that holds
+    /// the window's place. The latched `presented` wins, so this goes
+    /// false on the frame the app has something to show and never comes
+    /// back — a placeholder the person has watched go away must not
+    /// return.
+    pub fn is_opening(&self, id: SurfaceId) -> bool {
+        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .get(&id)
+            .is_some_and(|e| !e.presented && e.first_seen.elapsed() >= OPENING_DELAY)
+    }
+
+    /// Test-only: pretend this surface was first heard of `age` ago, so a
+    /// test can reach the far side of a delay without sleeping through
+    /// it. Creates the entry if it does not exist, which is what a
+    /// freshly-adopted toplevel amounts to.
+    #[cfg(test)]
+    pub fn backdate_first_seen(&self, id: SurfaceId, age: Duration) {
+        self.with_entry(id, |e| {
+            e.first_seen = Instant::now()
+                .checked_sub(age)
+                .expect("age is a test constant, well inside the clock's range");
+        });
     }
 
     /// Reason the last capture failed, if any.
@@ -748,6 +821,93 @@ impl ForeignFrameStore {
             Some(logical)
         })
     }
+
+    /// Whether this surface has something worth putting on screen, and
+    /// latch the answer once it does.
+    ///
+    /// Read by [`ForeignSurfaceWidget::presented`], which the shell's
+    /// window group consults before painting anything at all — so this
+    /// is the predicate deciding when a launched app's window turns up.
+    ///
+    /// Three ways to become presentable, in the order they are checked:
+    ///
+    /// - **A capture failed.** Then there is something to say, and the
+    ///   tile says it. An app that cannot be shown must not be silently
+    ///   invisible.
+    /// - **A frame has landed that fits the tab.** Not merely a frame:
+    ///   the first buffer a client commits is the size *it* chose, because
+    ///   the compositor's opening configure carries no size and the real
+    ///   one is only sent once the tab has been laid out. Painting that
+    ///   first buffer means [`ForeignSurfaceWidget::fit_rect`] scales it
+    ///   to fit — the app appears magnified, then snaps down to 1:1 when
+    ///   the correctly-sized buffer arrives a moment later. Waiting for a
+    ///   frame that already fits is what makes an opened window keep the
+    ///   size it opened at.
+    /// - **[`PRESENT_GRACE`] has passed.** The backstop, and the reason
+    ///   this cannot strand a window: an app that never presents, or one
+    ///   whose buffers never match its tab, becomes visible anyway and
+    ///   shows whatever it has — including the placeholder naming it.
+    ///   A window nobody can see is a window nobody can close.
+    ///
+    /// `tile` is the rect the tab occupies, from the widget that is about
+    /// to draw. A degenerate one means the tab has not been laid out yet,
+    /// which is not something a frame can be judged against.
+    pub fn mark_presented(&self, id: SurfaceId, tile: Rect) -> bool {
+        self.with_entry(id, |e| {
+            if e.presented {
+                return true;
+            }
+            let ready = e.last_error.is_some()
+                || fills(e.width, e.height, tile)
+                || e.first_seen.elapsed() >= PRESENT_GRACE;
+            if ready {
+                e.presented = true;
+            }
+            ready
+        })
+    }
+}
+
+/// How long a window's place is held in silence before the card saying
+/// what is coming to it is put there.
+///
+/// An app already on this machine can be on screen well inside a quarter
+/// of a second, and an indicator that appears and disappears in that time
+/// is a flicker rather than information — nobody has begun to wonder yet.
+/// Past it the wait is long enough to be a wait, and an empty space where
+/// a window was asked for reads as nothing having happened.
+pub(crate) const OPENING_DELAY: Duration = Duration::from_millis(250);
+
+/// How long a surface may take to produce a frame that fits its tab
+/// before its window is shown regardless.
+///
+/// Sized against what a launch actually costs: a cold open measured
+/// here runs 2-6 s from the invocation to the first buffer, and the
+/// notification the launch raised is on screen for all of it. Ten
+/// seconds is past every launch observed and still short enough that an
+/// app which is never going to paint stops being a hole in the strip.
+const PRESENT_GRACE: Duration = Duration::from_secs(10);
+
+/// Whether a `w`x`h` buffer, fitted into `tile` the way
+/// [`ForeignSurfaceWidget::fit_rect`] fits it, covers that tile.
+///
+/// `fit_rect` scales uniformly by the smaller of the two ratios, so the
+/// buffer covers the tile exactly when its aspect ratio matches — any
+/// mismatch leaves a band down one side, and closing that band later is
+/// the visible resize. Sizes are not compared directly because they need
+/// not be equal to look right: a buffer twice the tile in both axes is
+/// drawn at exactly the tile, sharper and in the same place.
+///
+/// The half-percent tolerance absorbs the rounding in the logical-size
+/// configure (a 1-px disagreement at 1400 px is 0.07%) without admitting
+/// a band anyone could see.
+fn fills(w: u32, h: u32, tile: Rect) -> bool {
+    if w == 0 || h == 0 || tile.width() <= 0.0 || tile.height() <= 0.0 {
+        return false;
+    }
+    let scale = (tile.width() / w as f64).min(tile.height() / h as f64);
+    let covers = |drawn: f64, avail: f64| drawn / avail >= 0.995;
+    covers(w as f64 * scale, tile.width()) && covers(h as f64 * scale, tile.height())
 }
 
 // ---------------------------------------------------------------------------
@@ -771,6 +931,15 @@ pub struct ForeignSurfaceWidget {
     /// Stable, human-addressable name so `FrameBuilder::widget_registry`
     /// (and therefore the shell's click/rect resolver) can find the tile.
     test_id: String,
+    /// The app's own name, resolved on the frame that first needs it.
+    ///
+    /// Only the placeholder below reads it, and the placeholder is the
+    /// rare path — an app that never showed a frame anyone could use. The
+    /// lookup consults this session's launches and then the installed
+    /// manifests, so it is not something to repeat on every rebuild of
+    /// the widget tree, and not something to pay for at all on the tiles
+    /// that never fail.
+    name: std::cell::OnceCell<String>,
 }
 
 impl ForeignSurfaceWidget {
@@ -782,7 +951,36 @@ impl ForeignSurfaceWidget {
             cached: None,
             cached_seq: 0,
             test_id: format!("foreign-surface-{surface_id}"),
+            name: std::cell::OnceCell::new(),
         }
+    }
+
+    /// The app's name, as the tab above this surface says it.
+    fn display_name(&self) -> &str {
+        self.name
+            .get_or_init(|| crate::compositor::tab_binding::tab_label_for_foreign(&self.app_id))
+    }
+
+    /// What a window says when it has gone up with nothing in it.
+    ///
+    /// Reached two ways, and both are the end of somebody's wait: a
+    /// capture failed, or the app was given every second it could have and
+    /// still never produced a frame that fits its tab. It has to be a
+    /// visible end either way — a window that quietly stays blank, or that
+    /// quietly disappears, leaves a person watching for something that is
+    /// not coming.
+    ///
+    /// So it says what happened, in the words that person would use, under
+    /// the app's own name. Why a particular buffer could not be shown is a
+    /// fact about buffers: it is kept in [`ForeignFrameStore::last_error`]
+    /// for whoever needs it, and it is not put on a card somebody is
+    /// reading to find out whether their app opened.
+    fn unshowable_text(&self) -> (String, String) {
+        let detail = match store().last_error(self.surface_id) {
+            Some(_) => "This window can't be shown.",
+            None => "This app isn't responding.",
+        };
+        (self.display_name().to_string(), detail.to_string())
     }
 
     pub fn surface_id(&self) -> SurfaceId {
@@ -816,12 +1014,39 @@ impl ForeignSurfaceWidget {
     }
 
     /// Destination rect for the client image inside `self.rect`,
-    /// preserving aspect ratio and centring the result.
+    /// preserving aspect ratio and anchoring the result at the tile's
+    /// top-left corner.
     ///
     /// A correctly-configured client renders at exactly the tab size, in
-    /// which case this is the identity fit. The letterbox only shows
+    /// which case this is the identity fit. A letterbox band only shows
     /// during the frame or two between a resize configure and the
     /// client's answering commit — better than a stretched image.
+    ///
+    /// The anchor is the load-bearing part. Pointer input reaches the
+    /// client by subtracting the tile origin from the global cursor
+    /// (`client_input::surface_local`), so the client's pixels have to be
+    /// painted from that same origin or the two disagree: a frame that is
+    /// momentarily the wrong size would otherwise be *centred*, sliding
+    /// every pixel the user is looking at by half the mismatch while
+    /// input carried on addressing the un-slid position. Anchoring costs
+    /// nothing when the sizes match (the centring term is zero) and keeps
+    /// paint and input on one origin when they don't, so a press always
+    /// lands on the row it appears to land on.
+    /// Whether this surface's window is still being held back, and so
+    /// the shell has to keep asking.
+    ///
+    /// The frame counter alone cannot carry this. A client that has
+    /// committed nothing leaves it at zero, matching the cache, so the
+    /// strip is judged unchanged and never re-recorded — and the ten
+    /// second backstop in [`ForeignFrameStore::mark_presented`] is only
+    /// ever read from a draw. The window would sit invisible until some
+    /// unrelated repaint happened to come along, which is not something
+    /// to leave to chance for the case whose whole purpose is to make
+    /// sure a window cannot be stranded.
+    fn awaiting_first_paint(&self) -> bool {
+        !store().is_presented(self.surface_id)
+    }
+
     fn fit_rect(&self, img_w: u32, img_h: u32) -> Option<Rect> {
         if img_w == 0 || img_h == 0 || self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return None;
@@ -831,8 +1056,8 @@ impl ForeignSurfaceWidget {
         let scale = (self.rect.width() / iw).min(self.rect.height() / ih);
         let dw = iw * scale;
         let dh = ih * scale;
-        let dx = self.rect.x0 + (self.rect.width() - dw) * 0.5;
-        let dy = self.rect.y0 + (self.rect.height() - dh) * 0.5;
+        let dx = self.rect.x0;
+        let dy = self.rect.y0;
         Some(Rect::new(dx, dy, dx + dw, dy + dh))
     }
 }
@@ -927,21 +1152,9 @@ impl Widget for ForeignSurfaceWidget {
             }
         }
 
-        // No frame yet (or the last capture failed). Say so — a blank tile
-        // that silently hides an unsupported buffer is exactly the failure
-        // mode this module must not have.
-        let headline = self.app_id.clone();
-        let detail = match store().last_error(self.surface_id) {
-            Some(err) => err,
-            None => "waiting for first frame".to_string(),
-        };
-        // This placeholder paints straight onto the window card, so its ink
-        // is derived from the card rather than from a fixed ramp slot —
-        // otherwise "waiting for first frame" is invisible on every preset
-        // whose card runs the other way (high contrast, OLED).
-        let ink = theme.on_card();
-        let on_card = ink.ink;
-        let on_card_dim = ink.ink_dim;
+        let (headline, detail) = self.unshowable_text();
+        let on_card = theme.tokens.colors.neutral[1];
+        let on_card_dim = theme.tokens.colors.neutral[4];
         let size = theme.tokens.typography.scale.xl;
         let (tw, _) = text_renderer.measure(&headline, size, None);
         let cx = self.rect.center().x;
@@ -986,6 +1199,22 @@ impl Widget for ForeignSurfaceWidget {
         "ForeignSurfaceWidget"
     }
 
+    /// Whether the client has drawn something that belongs on screen.
+    ///
+    /// The whole judgement is [`ForeignFrameStore::mark_presented`]; it
+    /// lives on the store because the answer has to latch per surface,
+    /// and this widget is rebuilt whenever the tab tree is.
+    fn presented(&self) -> bool {
+        store().mark_presented(self.surface_id, self.rect)
+    }
+
+    /// Whether this is a window's place being held for an app that has
+    /// been asked for and has not drawn. See [`Widget::opening`] and
+    /// [`ForeignFrameStore::is_opening`].
+    fn opening(&self) -> bool {
+        store().is_opening(self.surface_id)
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some(&self.test_id)
     }
@@ -999,11 +1228,11 @@ impl Widget for ForeignSurfaceWidget {
     /// `false` whenever the client is idle, so the paint-gating budget is
     /// unaffected by a foreign tab that isn't rendering.
     fn needs_animation_frame(&self) -> bool {
-        store().frame_seq(self.surface_id) != self.cached_seq
+        self.awaiting_first_paint() || store().frame_seq(self.surface_id) != self.cached_seq
     }
 
     fn needs_redraw(&self) -> bool {
-        store().frame_seq(self.surface_id) != self.cached_seq
+        self.awaiting_first_paint() || store().frame_seq(self.surface_id) != self.cached_seq
     }
 }
 
@@ -1280,6 +1509,218 @@ mod tests {
         assert!(PixelOrder::for_fourcc(Fourcc::Argb8888).is_some());
     }
 
+    /// A tab is 1200x800. These are the sizes a client hands us.
+    const TILE: Rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+
+    /// An app already on this machine can be on screen almost at once,
+    /// and for that first fraction of a second saying "on its way" would
+    /// be a card that appears and disappears before anyone has read it.
+    /// Nothing is the right thing to show while the wait is that short.
+    #[test]
+    fn a_surface_just_heard_of_is_not_yet_worth_saying_anything_about() {
+        let id = sid(50);
+        store().forget(id);
+        store().note_placement(id, TILE);
+        assert!(
+            !store().is_opening(id),
+            "an app that may still open in a blink must not flash an \
+             indicator on its way past",
+        );
+        store().forget(id);
+    }
+
+    /// Past the delay the wait is a wait, and an empty space where a
+    /// window was asked for reads as nothing having happened.
+    #[test]
+    fn a_surface_still_starting_after_the_delay_says_so() {
+        let id = sid(51);
+        store().forget(id);
+        store().backdate_first_seen(id, OPENING_DELAY + Duration::from_millis(50));
+        assert!(
+            store().is_opening(id),
+            "the person is watching an empty desktop for a window they \
+             asked for, and nothing on screen accounts for it",
+        );
+        store().forget(id);
+    }
+
+    /// And it stops the instant there is a window, without coming back.
+    ///
+    /// A placeholder someone has already watched go away must not return
+    /// — that is a window blinking into a card and out again, which is
+    /// worse to watch than the wait it was covering.
+    #[test]
+    fn a_surface_that_has_been_shown_is_never_opening_again() {
+        let id = sid(52);
+        store().forget(id);
+        store().backdate_first_seen(id, OPENING_DELAY + Duration::from_millis(50));
+        assert!(store().is_opening(id), "precondition: it was still starting");
+        store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
+        assert!(store().mark_presented(id, TILE), "precondition: it presented");
+        assert!(
+            !store().is_opening(id),
+            "the window is on screen; nothing may still be saying it is on \
+             its way",
+        );
+        store().forget(id);
+    }
+
+    /// What a person reads on a window's own card is the app's name.
+    ///
+    /// Never the wayland app-id: `dev.qos.file-explorer` is a machine
+    /// identifier the user did not choose and does not recognise, and it
+    /// is what used to be on screen for the whole of a cold open.
+    #[test]
+    fn a_card_in_a_windows_place_names_the_app_not_its_id() {
+        let w = ForeignSurfaceWidget::new(sid(53), "dev.qos.never-launched-fixture".into());
+        let name = w.display_name();
+        assert_eq!(
+            name, "Never Launched Fixture",
+            "a window's card must carry the app's name; got {name:?}",
+        );
+        assert!(
+            !name.contains("dev.qos."),
+            "a reverse-DNS package id reached a card somebody is reading",
+        );
+    }
+
+    /// A window that has gone up with nothing in it says so, in words a
+    /// person would use.
+    ///
+    /// This is the last thing standing between somebody and a window that
+    /// is never going to fill in, so it has to name the app they asked for
+    /// and tell them what happened — and it has to do that without any of
+    /// the vocabulary of the thing that went wrong. "waiting for first
+    /// frame" over a package id was on screen for the whole of a cold open
+    /// once; a person reading it learns neither which app it is nor
+    /// whether to keep waiting.
+    #[test]
+    fn a_window_that_cannot_be_shown_says_so_in_plain_words() {
+        let id = sid(54);
+        store().forget(id);
+        let w = ForeignSurfaceWidget::new(id, "dev.qos.never-launched-fixture".into());
+
+        let (headline, detail) = w.unshowable_text();
+        assert_eq!(headline, "Never Launched Fixture", "the app's own name");
+        assert_eq!(detail, "This app isn't responding.");
+
+        // A capture that failed is a different thing to say, and the
+        // reason it failed is still not the person's problem to read.
+        store().note_failure(id, "unsupported dmabuf modifier 0x0100000000000001".into());
+        let (headline, detail) = w.unshowable_text();
+        assert_eq!(headline, "Never Launched Fixture");
+        assert_eq!(detail, "This window can't be shown.");
+
+        for (field, text) in [("headline", &headline), ("detail", &detail)] {
+            let lower = text.to_lowercase();
+            for jargon in [
+                "frame", "buffer", "surface", "dmabuf", "modifier", "wayland",
+                "toplevel", "dev.qos", "install",
+            ] {
+                assert!(
+                    !lower.contains(jargon),
+                    "the {field} on a window somebody is reading says {jargon:?}: \
+                     {text:?}",
+                );
+            }
+        }
+        store().forget(id);
+    }
+
+    /// The window does not go up until there is a window to look at.
+    #[test]
+    fn a_surface_that_has_not_drawn_is_not_shown() {
+        let id = sid(40);
+        store().forget(id);
+        store().note_placement(id, TILE);
+        assert!(
+            !store().mark_presented(id, TILE),
+            "nothing has been committed, so there is nothing to show",
+        );
+        store().forget(id);
+    }
+
+    /// The frame the compositor's opening configure produces: the client
+    /// picked its own size, so painting it means scaling it to fit, and
+    /// the app appears magnified until the right-sized buffer lands.
+    /// That snap is the window "resizing itself" a second after opening.
+    #[test]
+    fn a_frame_that_does_not_fit_the_tab_is_not_shown() {
+        let id = sid(41);
+        store().forget(id);
+        // 4:3 into a 3:2 tab — fitted, it leaves a band down one side.
+        store().publish_rgba(id, &vec![0; 800 * 600 * 4], 800, 600);
+        assert!(
+            !store().mark_presented(id, TILE),
+            "an 800x600 buffer in a 1200x800 tab is drawn magnified, then \
+             snaps down when the real one arrives — which is the resize",
+        );
+        store().forget(id);
+    }
+
+    /// Any buffer whose aspect matches is drawn at exactly the tab, so
+    /// the one that follows it changes nothing the user can see.
+    #[test]
+    fn a_frame_that_fits_the_tab_is_shown() {
+        for (w, h) in [(1200u32, 800u32), (2400, 1600), (600, 400)] {
+            let id = sid(42);
+            store().forget(id);
+            store().publish_rgba(id, &vec![0; (w * h * 4) as usize], w, h);
+            assert!(
+                store().mark_presented(id, TILE),
+                "{w}x{h} has the tab's aspect, so it fills it",
+            );
+            store().forget(id);
+        }
+    }
+
+    /// Resizing a group makes the current frame stop fitting for a frame
+    /// or two. A window that answered this by disappearing would be a
+    /// worse defect than the one the gate exists to fix.
+    #[test]
+    fn a_shown_window_stays_shown_when_its_frame_stops_fitting() {
+        let id = sid(43);
+        store().forget(id);
+        store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
+        assert!(store().mark_presented(id, TILE));
+
+        let dragged = Rect::new(0.0, 0.0, 400.0, 800.0);
+        assert!(
+            store().mark_presented(id, dragged),
+            "the window is on screen; a resize does not take it away",
+        );
+        store().forget(id);
+    }
+
+    /// An app that cannot be shown must say so rather than be an
+    /// invisible hole in the strip.
+    #[test]
+    fn a_surface_whose_capture_failed_is_shown_so_it_can_say_why() {
+        let id = sid(44);
+        store().forget(id);
+        store().note_failure(id, "unsupported buffer".into());
+        assert!(store().mark_presented(id, TILE));
+        store().forget(id);
+    }
+
+    /// `fills` is what the gate is made of, and the grace period is what
+    /// stops it stranding a window. Both are asserted on the predicate
+    /// directly — the ten-second wait itself is not something a test can
+    /// sit through, so what is proved here is that a mismatch is the
+    /// only thing keeping the window back.
+    #[test]
+    fn fills_accepts_the_tabs_aspect_and_nothing_else() {
+        assert!(fills(1200, 800, TILE));
+        assert!(fills(300, 200, TILE), "same aspect, quarter size");
+        assert!(!fills(800, 600, TILE));
+        assert!(!fills(1200, 900, TILE));
+        assert!(!fills(0, 800, TILE), "no buffer is not a fitting buffer");
+        assert!(
+            !fills(1200, 800, Rect::ZERO),
+            "a tab with no area cannot be judged against",
+        );
+    }
+
     #[test]
     fn publish_then_snapshot_round_trips_and_bumps_seq() {
         let id = sid(1);
@@ -1378,14 +1819,32 @@ mod tests {
         );
     }
 
+    /// A surface asks for frames until it has drawn, and after that only
+    /// when a newer one is waiting.
+    ///
+    /// The first half is the rule `0b3e2451c` ("Keep asking about a
+    /// window that has not drawn, so it cannot be stranded") set out to
+    /// establish, and this test predates it — it used to assert the
+    /// opposite. A client whose first buffer has not arrived is the one
+    /// case where nothing else will wake the paint loop, so a widget
+    /// that fell silent there left the window blank for good.
+    ///
+    /// The second half is why the rule is not simply "always": an app
+    /// that has something on screen and nothing newer to show must not
+    /// hold the paint loop awake.
     #[test]
-    fn widget_reports_animation_frame_only_while_a_new_frame_is_pending() {
+    fn widget_asks_for_frames_until_it_has_drawn_then_only_for_a_pending_one() {
         let id = sid(7);
         store().forget(id);
         let mut w = ForeignSurfaceWidget::new(id, "org.example.app".into());
+        // A 1×1 tab, so the 1×1 frame below is a frame that *fits* it —
+        // which is what being presented waits for, rather than merely a
+        // frame having landed.
+        w.rect = Rect::new(0.0, 0.0, 1.0, 1.0);
         assert!(
-            !w.needs_animation_frame(),
-            "no frames yet: nothing to repaint for"
+            w.needs_animation_frame(),
+            "nothing presented yet: a widget that stopped asking here would \
+             never be woken to paint the window's first frame"
         );
         store().publish_rgba(id, &[255, 0, 0, 255], 1, 1);
         assert!(
@@ -1393,6 +1852,7 @@ mod tests {
             "a fresh frame requests a repaint"
         );
         assert!(w.refresh_cache(), "cache picks up the new frame");
+        assert!(w.presented(), "a frame that fits the tab is on screen");
         assert!(
             !w.needs_animation_frame(),
             "once drawn, an idle client must not keep the paint loop awake"
@@ -1404,14 +1864,43 @@ mod tests {
     fn widget_fit_rect_letterboxes_preserving_aspect() {
         let mut w = ForeignSurfaceWidget::new(sid(8), "x".into());
         w.rect = Rect::new(0.0, 0.0, 400.0, 200.0);
-        // A square image inside a 2:1 tile: height-limited, centred.
+        // A square image inside a 2:1 tile: height-limited, anchored at
+        // the tile's top-left with the spare width to the right.
         let fit = w.fit_rect(100, 100).expect("fit");
         assert_eq!((fit.width(), fit.height()), (200.0, 200.0));
-        assert_eq!(fit.x0, 100.0);
+        assert_eq!(fit.x0, 0.0);
         assert_eq!(fit.y0, 0.0);
         // An exactly-matching client fills the tile with no letterbox.
         let exact = w.fit_rect(400, 200).expect("fit");
         assert_eq!(exact, w.rect);
+    }
+
+    /// A press has to land on what the user can see, so the origin the
+    /// client's pixels are painted from must be the origin pointer input
+    /// is translated by — including while a resize is in flight and the
+    /// client's last frame is still the old size.
+    #[test]
+    fn painted_frame_origin_matches_the_origin_input_is_mapped_with() {
+        let tile = Rect::new(288.0, 124.0, 288.0 + 856.0, 124.0 + 868.0);
+        let mut w = ForeignSurfaceWidget::new(sid(9), "x".into());
+        w.rect = tile;
+
+        // Every size a lagging client might still be presenting: exactly
+        // right, short, tall, narrow and wide.
+        for (iw, ih) in [(856, 868), (856, 834), (856, 900), (800, 868), (900, 868)] {
+            let dst = w.fit_rect(iw, ih).expect("fit");
+            let (local_x, local_y) =
+                crate::compositor::client_input::surface_local((dst.x0, dst.y0), tile);
+            assert_eq!(
+                (local_x, local_y),
+                (0.0, 0.0),
+                "a {iw}x{ih} frame in an {}x{} tile paints from {:?}, but input maps that \
+                 point to ({local_x}, {local_y}) — a press would miss by that much",
+                tile.width(),
+                tile.height(),
+                (dst.x0, dst.y0),
+            );
+        }
     }
 
     #[test]
@@ -1459,7 +1948,16 @@ mod tests {
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
         let t = &foreign_tabs(&rendered)[0];
         assert_eq!(t.app_id, "io.example.late");
-        assert_eq!(t.title, "late");
+        // The identifier propagates; the *title* is humanised from it.
+        // `a50d47498` ("Put the app's own name on its tab") made that so,
+        // because Files was appearing as `app` and the word processor as
+        // `word-processor` — machine identifiers nobody chose, on camera.
+        // This test predates it and expected the raw trailing component,
+        // which is what a revert would restore and what this fails on.
+        assert_eq!(
+            t.title, "Late",
+            "a tab wears a name, not the last segment of an app id"
+        );
     }
 
     #[test]

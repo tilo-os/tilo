@@ -453,6 +453,21 @@ pub struct ChromeState {
     /// rather than a widget because it owns the keyboard outright while
     /// it is up.
     pub peer_sync_connect_input: Option<String>,
+    /// In-progress answer to "who are you inviting?". `Some` means the
+    /// invite composer is open; the string is the name typed so far.
+    ///
+    /// Inviting somebody is inviting *somebody*, so the panel's Invite
+    /// asks before it mints. The answer is what the room will call them
+    /// once they arrive — written by this machine, which administers the
+    /// room, rather than announced by the guest.
+    pub peer_sync_invite_name: Option<String>,
+    /// Who [`Self::peer_sync_invite_token`] was minted for, when it was
+    /// minted for anyone.
+    ///
+    /// `None` for a plain `/invite`, which says nothing about who its
+    /// token is for. The card reads a person's name off this instead of
+    /// making them recognise a token by its base64.
+    pub peer_sync_invite_for: Option<String>,
     /// Last thing the peer-sync layer said back — the room joined, or
     /// why the token was refused. Rendered under the prompt.
     pub peer_sync_status: Option<String>,
@@ -558,6 +573,8 @@ impl ChromeState {
             maximized_group: None,
             peer_sync_invite_token: None,
             peer_sync_connect_input: None,
+            peer_sync_invite_name: None,
+            peer_sync_invite_for: None,
             peer_sync_status: None,
             peer_sync_enabled: false,
             collab_unavailable: None,
@@ -883,7 +900,10 @@ impl ChromeState {
         let group = strip.window_groups.iter().find(|g| g.id == group_id)?;
         let tab = group.tabs.iter().find(|t| t.id == tab_id)?;
         Some(match &tab.tile {
-            TileContent::Foreign { app_id, .. } => app_id.clone(),
+            TileContent::Foreign { app_id, .. }
+            // A peer window already carries an app id, in the same
+            // namespace `AppKind::app_id` maps the others into.
+            | TileContent::PeerWindow { app_id, .. } => app_id.clone(),
             TileContent::AppPlaceholder { kind, .. }
             | TileContent::Stub { kind, .. } => kind.app_id(),
         })

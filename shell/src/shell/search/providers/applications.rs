@@ -5,8 +5,8 @@
 //! starts the package as a real sandboxed process through
 //! [`crate::shell::launcher`]. The row's `on_open` is the only launch
 //! trigger in the shell today, so everything a launch needs to report —
-//! "not installed", "no display yet", "qos-launcher missing" — surfaces
-//! here as a notification.
+//! "no app with that id", "no display yet", "qos-launcher missing" —
+//! surfaces here as a notification.
 //!
 //! ## Apps that are not here yet
 //!
@@ -30,8 +30,10 @@
 //! app that has to be fetched takes seconds, not milliseconds. Silence
 //! across those seconds is indistinguishable from an activation that
 //! did nothing, so an open that needs a fetch — and only that one —
-//! raises a notification while it runs, retired by the app actually
-//! starting.
+//! raises a standing indication that it is loading, retired when the
+//! app's window appears (or replaced by the reason it could not).
+//! Nothing the user reads names the fetch: they asked to open an app,
+//! not to acquire one, and how the bytes got here is the OS's business.
 
 use std::rc::Rc;
 
@@ -179,8 +181,6 @@ impl ApplicationsProvider {
             };
             let package_id = app.package_id.clone();
             let display_name = app.display_name.clone();
-            let version = app.version.clone();
-            let registry = app.registry.clone();
             // Identical to the installed subtitle, field for field.
             let detail = match app.category.as_deref() {
                 Some(cat) => format!("{cat} · {}", app.package_id),
@@ -234,17 +234,25 @@ impl ApplicationsProvider {
                         return Ok(());
                     };
                     // The palette closes the instant this returns, so
-                    // this notification is the only thing standing
-                    // between the user and an apparently dead Enter
-                    // key. It says the app is coming and where from;
-                    // it is retired when the app starts, not by a
-                    // timer.
+                    // this is the only thing standing between the user
+                    // and an apparently dead Enter key — and the wait
+                    // is seconds, not milliseconds.
+                    //
+                    // Raised *before* the work starts, so the
+                    // acknowledgement is on screen on the same frame as
+                    // the keystroke rather than whenever the first byte
+                    // lands. It says the app is loading and nothing
+                    // about how, because the user asked to open an app
+                    // and not to acquire one. It is retired by the
+                    // app's window appearing, not by a timer, so the
+                    // indication covers the whole wait and ends on
+                    // something the user can see.
                     let notice = {
                         let mut st = chrome.borrow_mut();
                         let id = st.push_notification_full(
                             Notification::new(
                                 format!("Opening {display_name}"),
-                                format!("Fetching {version} from {registry}…"),
+                                "Loading…".to_string(),
                             )
                             .with_app_name("Applications")
                             .with_dismiss_after(std::time::Duration::from_secs(120)),
@@ -281,11 +289,102 @@ impl ApplicationsProvider {
 /// The grants are published immediately before the launch rather than
 /// cached: a grant made a moment ago in the permissions UI must reach
 /// this launch, and a revoked one must not.
+/// The package id of the file manager qOS ships as a system app.
+pub(crate) const SYSTEM_FILE_MANAGER: &str = "dev.qos.file-explorer";
+
+/// Give the system file manager the user's home before it starts.
+///
+/// Every app gets one directory of its own, with `HOME` pointed inside
+/// it, and nothing else it was not granted. That is right for an app
+/// that edits its own documents and wrong for the one whose entire
+/// subject is the user's files: it opens on a folder containing nothing
+/// but its own dotfiles and reports, accurately, zero items.
+///
+/// The grant is not a hole in that model, it is the model being used.
+/// It goes through the same [`GrantStoreHandle`](crate::portal::GrantStoreHandle)
+/// the permission prompt and the file-chooser portal write to, so it is
+/// a capability on the workspace like any other: it appears in the
+/// permissions UI, it can be revoked there, and it expires with the
+/// session rather than persisting. What it changes is who decides —
+/// the OS, for the file manager it ships, instead of a dialog asking the
+/// user to approve the file manager's access to files on first sight of
+/// an empty window.
+///
+/// It names one package id rather than a rule about categories or
+/// manifests deliberately. A rule that could be satisfied by a
+/// third-party package would be a way to ask for the user's home by
+/// declaring the right thing about yourself; qOS ships exactly one file
+/// manager, and naming it is the narrower statement.
+///
+/// Write, not read: renaming, deleting and creating folders are what a
+/// file manager is for, and a read-only grant would leave its toolbar
+/// full of affordances that fail.
+fn grant_user_home_to_file_manager(chrome: &Chrome, package_id: &str) {
+    use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
+
+    if package_id != SYSTEM_FILE_MANAGER {
+        return;
+    }
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let (ws_id, store) = {
+        let st = chrome.borrow();
+        if st.tree().active_workspace().is_none() {
+            return;
+        }
+        (
+            st.tree().active,
+            crate::portal::GrantStoreHandle::new(st.tree_handle()),
+        )
+    };
+    let caller = crate::portal::PortalCaller::new(ws_id, package_id.to_string());
+    if store.filesystem_path_granted(&caller, &home) {
+        return;
+    }
+    store.insert(
+        &caller,
+        Capability::Filesystem {
+            path: home,
+            mode: FsMode::ReadWrite,
+            scope: GRANT_SESSION,
+        },
+    );
+    chrome.borrow_mut().bump();
+}
+
 pub(crate) fn launch_installed_app(
     chrome: &Chrome,
     package_id: &str,
     display_name: &str,
 ) -> Result<(), ActionError> {
+    grant_user_home_to_file_manager(chrome, package_id);
+    // Say that the app is opening, before the work starts, so the
+    // acknowledgement is on screen on the same frame as the keystroke.
+    //
+    // The window is seconds away — it is a process to start, a wayland
+    // connection to make and a first frame to draw — and it is not shown
+    // until it has something in it, precisely so nobody is handed an
+    // empty frame to look at. That leaves this notification as the only
+    // thing standing between the user and an apparently dead Enter key,
+    // which is why a plain launch raises it and not just the path that
+    // has to fetch the app first.
+    //
+    // It is retired by the window appearing rather than by a timer
+    // (`ShellOverlayHost::retire_notices_for_opened_windows`), so the
+    // indication covers exactly the wait and ends on something the
+    // person can see.
+    let notice = {
+        let mut st = chrome.borrow_mut();
+        let id = st.push_notification_full(
+            Notification::new(format!("Opening {display_name}"), "Loading…".to_string())
+                .with_app_name("Applications")
+                .with_dismiss_after(std::time::Duration::from_secs(120)),
+        );
+        st.bump();
+        id
+    };
+    catalogue::note_pending_notice(package_id, notice);
     // Scoped so the borrow is released before the error branch below
     // takes a mutable one.
     let launched = {
@@ -322,6 +421,12 @@ pub(crate) fn launch_installed_app(
         let message = err.user_message();
         {
             let mut st = chrome.borrow_mut();
+            // Nothing is opening after all, so stop saying it is. The
+            // notice is claimed back rather than left to expire, or the
+            // next window to paint would retire somebody else's.
+            if let Some(id) = catalogue::take_pending_notice(package_id) {
+                st.dismiss_notification(id);
+            }
             st.push_notification_full(
                 Notification::new(format!("Couldn't open {display_name}"), message.clone())
                     .with_severity(NotificationSeverity::Error)
@@ -858,6 +963,78 @@ mod tests {
             launcher::LaunchError::NoWorkspace.user_message(),
             "the same failure gets the same words whichever list the app \
              came from"
+        );
+    }
+
+    /// Pressing Enter on an app whose bytes are not here must put
+    /// something on screen *on that frame*, before any of the work
+    /// starts. The wait is measured in seconds; silence across it is
+    /// indistinguishable from a keystroke that did nothing.
+    #[test]
+    fn activating_an_app_that_has_to_load_says_so_immediately() {
+        let p = ApplicationsProvider::new();
+        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::bootstrap_demo()));
+        let c = ChromeState::new_with_handle(handle);
+        let mut doc = AutoCommit::new();
+        let out = p.catalogue_results_for(
+            "sheets",
+            vec![offered("dev.qos.sheets", "Sheets", None)],
+            &[],
+            OpenTarget::Beside,
+        );
+        let row = out.first().expect("a row for the offered app");
+        assert!(c.borrow().notifications().is_empty());
+
+        let _ = (row.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none());
+
+        let st = c.borrow();
+        let n = st
+            .notifications()
+            .first()
+            .expect("activation must never be silent");
+        assert_eq!(n.title, "Opening Sheets");
+        assert!(
+            n.dismiss_after >= std::time::Duration::from_secs(30),
+            "the indication has to outlast the wait it is covering, not \
+             flash and leave the user watching nothing"
+        );
+
+        // And it must not name the mechanism. The user asked to open an
+        // app; they did not ask to acquire one, and what had to happen
+        // first is the OS's business.
+        let visible = format!("{} {}", n.title, n.body).to_lowercase();
+        for word in ["install", "download", "fetch", "registry"] {
+            assert!(
+                !visible.contains(word),
+                "{word:?} must not appear in what the user reads while \
+                 waiting for an app to open: {:?} / {:?}",
+                n.title,
+                n.body
+            );
+        }
+        assert!(
+            n.body.to_lowercase().contains("load"),
+            "the one thing to say is that it is loading: {:?}",
+            n.body
+        );
+    }
+
+    /// An app that is already here opens without a loading state — it
+    /// does not need one, and a state that flashes for a hundred
+    /// milliseconds is noise rather than feedback.
+    #[test]
+    fn an_app_that_is_already_here_does_not_raise_a_loading_state() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for(
+            "she",
+            vec![app("dev.qos.sheets", "Sheets")],
+            OpenTarget::Beside,
+        );
+        let row = out.first().expect("a row for the installed app");
+        assert!(
+            !row.title.to_lowercase().contains("load"),
+            "an app that is here is just opened: {:?}",
+            row.title
         );
     }
 }
