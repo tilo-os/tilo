@@ -428,6 +428,44 @@ pub enum NeighbourMsg {
         /// Hashed libp2p peer id of the answering broker.
         responder: PeerId,
     },
+    /// One piece of a document's content, on its way to the peers in a room.
+    ///
+    /// Documents reference their binaries by blake3 hash rather than carrying
+    /// the bytes (see `qdoc::blobstore`), which is what keeps a photograph from
+    /// becoming a CRDT change larger than a gossipsub RPC. The bytes still have
+    /// to cross, and they cross here, split into pieces that each fit.
+    ///
+    /// # Why splitting is sound for this and was not for a change
+    ///
+    /// The key *is* the hash of the content, so a transfer that arrives
+    /// truncated, reordered or altered fails to verify and is discarded rather
+    /// than stored. Loss is therefore detectable and the transfer is
+    /// retryable, and the worst case leaves one image as a placeholder in a
+    /// document that is otherwise live and converged. A CRDT change split the
+    /// same way would have none of those properties: losing a piece loses the
+    /// change, and a lost change freezes every replica downstream of it
+    /// permanently and without a symptom.
+    BlobChunk {
+        /// Hashed libp2p PeerId of the sender, so a shell ignores its own echo.
+        peer: PeerId,
+        /// The room this content belongs to. A shell not in it drops the piece
+        /// before it reaches any store.
+        #[serde(default)]
+        cluster_id: String,
+        /// blake3 hex of the **whole** content — its name, and the thing the
+        /// reassembled bytes are checked against.
+        #[serde(default)]
+        hash: String,
+        /// 0-based position of this piece.
+        #[serde(default)]
+        index: u32,
+        /// How many pieces the whole content is in.
+        #[serde(default)]
+        count: u32,
+        /// This piece's bytes.
+        #[serde(default)]
+        data: Vec<u8>,
+    },
 }
 
 impl NeighbourMsg {
@@ -454,6 +492,7 @@ impl NeighbourMsg {
             Self::AppCrdtSnapshot { .. } => "AppCrdtSnapshot",
             Self::ScrollbackRequest { .. } => "ScrollbackRequest",
             Self::ScrollbackResponse { .. } => "ScrollbackResponse",
+            Self::BlobChunk { .. } => "BlobChunk",
         }
     }
 
