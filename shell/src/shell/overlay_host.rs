@@ -3366,14 +3366,24 @@ impl ShellOverlayHost {
     /// Settling on that put the desktop back to silence while the user
     /// was still waiting, which is the whole defect.
     ///
-    /// A tab existing is not the answer either, and that is the subtler
-    /// half: the compositor adopts a tab when the client creates its
-    /// toplevel, and the client then takes seconds more to present its
-    /// first buffer. Between those two moments the tab is the
-    /// compositor's own placeholder, which by eye is indistinguishable
-    /// from an app that has not started — measured at 2.3 s on a cold
-    /// open here. So the settlement is the app's **first frame**: the
-    /// first moment the person is looking at the thing they asked for.
+    /// A tab merely existing is not the answer either. The compositor
+    /// adopts a tab when the client creates its toplevel, and the client
+    /// then takes seconds more to present a buffer; for a short while
+    /// after adoption there is still nothing in that tab to look at.
+    ///
+    /// What settles it is the moment something the person can see stands
+    /// in the window's own place — the app's first frame, or the card
+    /// holding the place for it, whichever arrives first. Both are the
+    /// wait being accounted for where the window is going to be, which is
+    /// a better place to account for it than the corner of the screen. So
+    /// this is a hand-over rather than a dismissal: the notice covers the
+    /// stretch before there is a window's place at all, and stands down
+    /// when the place itself takes over.
+    ///
+    /// Waiting for the first frame instead would leave both up together
+    /// for seconds, saying the same thing twice — and worse, an app that
+    /// never draws ends with a window reading "isn't responding" under a
+    /// notification still reading "Loading…".
     ///
     /// Returns whether anything was retired, so the caller can mark the
     /// frame dirty.
@@ -3397,7 +3407,11 @@ impl ShellOverlayHost {
                     crate::shell::state::TileContent::Foreign {
                         app_id,
                         surface_id,
-                    } if crate::compositor::foreign::store().frame_seq(*surface_id) > 0 => {
+                    } if {
+                        let store = crate::compositor::foreign::store();
+                        store.is_presented(*surface_id) || store.is_opening(*surface_id)
+                    } =>
+                    {
                         Some(app_id.clone())
                     }
                     _ => None,
@@ -12811,14 +12825,21 @@ mod palette_dispatch_tests {
     // can see how it ended.
     // -----------------------------------------------------------------
 
-    /// The whole defect in one test: an open that takes seconds used to
-    /// have its one piece of feedback retired the moment the launcher
-    /// process forked — several seconds before anything was on screen —
-    /// leaving the user watching an empty desktop wondering whether
-    /// their keystroke had registered. The indication belongs to the
-    /// wait, so it ends when the wait does.
+    /// The indication is continuous, and there is only ever one of it.
+    ///
+    /// An open that takes seconds used to have its one piece of feedback
+    /// retired the moment the launcher process forked — seconds before
+    /// anything was on screen — leaving somebody watching an empty desktop
+    /// wondering whether their keystroke had registered. So it has to
+    /// stand until there is something to look at.
+    ///
+    /// But it must also stand down as soon as there is. Once the window's
+    /// own place is saying which app is coming, a notification in the
+    /// corner saying it again is noise; and if that app never draws, the
+    /// window ends up reading "isn't responding" beneath a notification
+    /// still reading "Loading…".
     #[test]
-    fn the_loading_indication_stands_until_the_window_is_actually_there() {
+    fn the_loading_indication_stands_until_the_window_place_speaks_for_itself() {
         let (mut h, chrome) = host_with_chrome();
         let notice = {
             let mut st = chrome.borrow_mut();
@@ -12839,11 +12860,13 @@ mod palette_dispatch_tests {
         );
 
         // The client creates its toplevel, and the compositor adopts a
-        // tab for it. This is *not* the end of the wait: the tab is the
-        // compositor's placeholder and the client has not presented
-        // anything yet.
+        // tab for it. This is *not* yet the end of the wait: for the first
+        // moments after adoption the tab holds nothing anyone can see,
+        // because an app that opens in a blink must not be preceded by an
+        // indicator flashing on and off in its place.
         const SURFACE: u64 = 918_273;
-        crate::compositor::foreign::store().forget(SURFACE);
+        let store = crate::compositor::foreign::store();
+        store.forget(SURFACE);
         {
             let st = chrome.borrow();
             let mut tree = st.tree_mut();
@@ -12853,27 +12876,85 @@ mod palette_dispatch_tests {
                 Some("dev.qos.retirefixture".to_string()),
             );
         }
+        store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
         assert!(
             !h.retire_notices_for_opened_windows(),
-            "a tab holding a surface that has never painted is a placeholder; \
-             retiring on it hands the user back an empty desktop"
+            "a tab with nothing painted in it yet is not somewhere the wait \
+             can be handed to; retiring on it hands the user back an empty \
+             desktop"
         );
         assert!(
             chrome.borrow().notifications().iter().any(|n| n.id == notice),
-            "still waiting — the client has not presented"
+            "still waiting — nothing stands in the window's place"
         );
 
-        // And now it paints.
-        crate::compositor::foreign::store().publish_rgba(SURFACE, &[9, 9, 9, 255], 1, 1);
+        // Past the delay the window's place is a card naming the app, so
+        // the wait is now being accounted for where the window is going to
+        // be. The notice stands down rather than saying it a second time.
+        store.backdate_first_seen(
+            SURFACE,
+            crate::compositor::foreign::OPENING_DELAY + std::time::Duration::from_millis(50),
+        );
         assert!(
             h.retire_notices_for_opened_windows(),
-            "the first frame is what settles the open"
+            "the window's own place is naming the app; a second indication \
+             in the corner is noise"
+        );
+        assert!(
+            !chrome.borrow().notifications().iter().any(|n| n.id == notice),
+            "the wait has moved to where the window will be, and only one \
+             thing may be saying it"
+        );
+        store.forget(SURFACE);
+    }
+
+    /// The other way the hand-over can happen: an app fast enough to paint
+    /// before the card was ever due still settles the open.
+    #[test]
+    fn a_window_that_paints_before_the_card_is_due_settles_the_open_too() {
+        let (mut h, chrome) = host_with_chrome();
+        let notice = {
+            let mut st = chrome.borrow_mut();
+            st.push_notification_full(crate::shell::notification::Notification::new(
+                "Opening Ledger",
+                "Loading…",
+            ))
+        };
+        crate::shell::catalogue::note_pending_notice("dev.qos.retirefixture", notice);
+
+        const SURFACE: u64 = 918_274;
+        let store = crate::compositor::foreign::store();
+        store.forget(SURFACE);
+        {
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            crate::compositor::tab_binding::adopt_toplevel(
+                &mut tree,
+                SURFACE,
+                Some("dev.qos.retirefixture".to_string()),
+            );
+        }
+        store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
+        assert!(
+            !h.retire_notices_for_opened_windows(),
+            "precondition: nothing stands in the window's place yet"
+        );
+
+        // A frame that fits the tab, inside the delay — so the card was
+        // never due and the window is simply there.
+        let tile = vello::kurbo::Rect::new(0.0, 0.0, 120.0, 80.0);
+        store.publish_rgba(SURFACE, &vec![0; 120 * 80 * 4], 120, 80);
+        assert!(store.mark_presented(SURFACE, tile), "precondition: it presented");
+        assert!(
+            h.retire_notices_for_opened_windows(),
+            "the window is on screen, which is the end of the wait however \
+             fast it came"
         );
         assert!(
             !chrome.borrow().notifications().iter().any(|n| n.id == notice),
             "once the app is on screen the indication has done its job"
         );
-        crate::compositor::foreign::store().forget(SURFACE);
+        store.forget(SURFACE);
     }
 
     /// Escape still dismisses. The card gained chords; it must not have
