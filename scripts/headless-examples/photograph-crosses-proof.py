@@ -33,10 +33,14 @@ So the only route from the photograph to Xaver's screen is:
                                         ▼
                                    xaver's shell  ──BlobArrived──▶  xaver's app
 
-and the payoff is read off Xaver's own frame: the region of his page
-where the image sits stops being paper. `pixels_changed` measures it
-against the same page before the room delivered anything, so a blinking
-caret cannot be mistaken for a photograph.
+and the payoff is read off Xaver's own frame: the widest unbroken run of
+coloured pixels *inside his own window* is the width of the picture
+rather than the width of a toolbar swatch. Measured as presence and not
+as change, because once the two documents merge losslessly they converge
+before any baseline can be taken — and scoped to his window, because his
+screen also holds the peer window the room draws beside it, which would
+satisfy "a photograph is somewhere on this screen" without the picture
+ever reaching his page.
 
 Usage:
   ./photograph-crosses-proof.py [--shots DIR] [--profile demo|debug]
@@ -124,8 +128,10 @@ def wait_for(pred, timeout=30.0, poll=0.4):
 # ---------------------------------------------------------------------------
 # The photograph.
 # ---------------------------------------------------------------------------
+PNG_WIDTH = 480
 
-def a_real_png(width: int = 480, height: int = 300) -> bytes:
+
+def a_real_png(width: int = PNG_WIDTH, height: int = 300) -> bytes:
     """A picture with real content, encoded as a real PNG.
 
     Not a 1x1 fixture and not noise. It has to survive being looked at:
@@ -202,20 +208,33 @@ def html_with_image(png: bytes) -> str:
     )
 
 
-def html_without_image() -> str:
-    """What the second app opens: nothing.
+XAVER_OWN_LINE = "Xaver wrote this line before the room existed."
 
-    Empty rather than "the same document minus the picture", and the
-    reason is worth writing down. Two apps that each *import* a file
-    build two separately-created Automerge documents; merging those
-    leaves one side's blocks addressed by a root key the other side's
-    version of that key wins, so the second app sits looking at its own
-    copy and the first one's page never arrives. An app that imported
-    nothing has nothing to win with, so the whole document it is handed
-    is the document it shows — which is the state a peer joining a room
-    is actually in.
+
+def html_without_image() -> str:
+    """What the second app opens: a document of his own, with no picture.
+
+    This used to be empty, and the reason it used to be empty is the
+    defect this proof now covers. Two apps that each *import* a file
+    built two separately-created Automerge documents, and merging those
+    kept whichever side's root key won a comparison of two random actor
+    ids — so the second app sat looking at its own copy and the first
+    one's page never arrived. An app that imported *nothing* had nothing
+    to win with, which made the transport provable while leaving the
+    merge untested.
+
+    The schema now comes from one shared genesis, so there is no root key
+    left to win and both sides' blocks survive. That makes the harder
+    document the honest one to open: Xaver brings a line of his own, and
+    the proof is that his page ends up holding **both** his line and
+    Quinten's photograph. A merge that dropped either would be caught
+    here, in whichever direction it dropped it.
     """
-    return "<html><body></body></html>"
+    return (
+        "<html><body>"
+        f"<p>{XAVER_OWN_LINE}</p>"
+        "</body></html>"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -284,22 +303,47 @@ def load_png(path: str):
     return w, h, bytes(out)
 
 
-def pixels_changed(before: str, after: str) -> int | None:
-    """How many pixels differ between two frames, beyond noise.
+def widest_colour_band(path: str, rect: dict | None) -> int:
+    """The longest unbroken horizontal run of *coloured* pixels inside `rect`.
 
-    A threshold rather than an exact compare: a caret blinks, and a
-    photograph appearing is four orders of magnitude larger than that.
+    The question this answers is "is a photograph being drawn here", and it is
+    asked this way because the two cheaper questions are both wrong.
+
+    Counting changed pixels needs a baseline taken before the picture could
+    have arrived, and there is no such moment once the document converges
+    inside the settle — both frames then show the photograph and the proof
+    reads a working system as a broken one.
+
+    Counting coloured pixels catches the toolbar, which is full of colour
+    swatches. But a swatch is ~20px wide and a photograph is the width of the
+    page, so the *run* separates them with a wide margin: measured on a real
+    frame, a page holding this proof's picture gives 480 (its exact width) and
+    a window without one gives 108, all of it chrome.
+
+    Greyscale is deliberately not colour: a missing image draws as a flat grey
+    placeholder, which is what this has to be able to fail on.
     """
-    a, b = load_png(before), load_png(after)
-    if not a or not b or a[0] != b[0] or a[1] != b[1]:
-        return None
-    pa, pb = a[2], b[2]
-    n = 0
-    for i in range(0, len(pa) - 2, 3):
-        if (abs(pa[i] - pb[i]) + abs(pa[i + 1] - pb[i + 1])
-                + abs(pa[i + 2] - pb[i + 2])) > 24:
-            n += 1
-    return n
+    loaded = load_png(path)
+    if not loaded or not rect:
+        return 0
+    w, h, px = loaded
+    x0 = max(0, int(rect.get("x", 0)))
+    y0 = max(0, int(rect.get("y", 0)))
+    x1 = min(w, x0 + int(rect.get("w", 0)))
+    y1 = min(h, y0 + int(rect.get("h", 0)))
+    best = 0
+    for y in range(y0, y1):
+        base = y * w * 3
+        run = 0
+        for x in range(x0, x1):
+            i = base + x * 3
+            r, g, b = px[i], px[i + 1], px[i + 2]
+            if max(r, g, b) - min(r, g, b) > 40:
+                run += 1
+                best = max(best, run)
+            else:
+                run = 0
+    return best
 
 
 # ---------------------------------------------------------------------------
@@ -620,35 +664,46 @@ def main() -> int:
                     note(f"{name}: {said.split(' room=')[0][:110]}")
 
         print("\n[5] and the photograph is on xaver's page")
-        landed, moved, waited = False, 0, 0.0
-        start = time.time()
+        # Measured inside Xaver's *own* window, and as presence rather than
+        # change.
+        #
+        # Scoped to his window because his screen also holds the peer window
+        # the room draws beside it: "a photograph is somewhere in this
+        # screenshot" is satisfied by Quinten's window and proves nothing.
+        # His surface id is the one his app painted into at launch, and the
+        # rect is re-read now because the strip re-tiles when a second window
+        # arrives — the window this has to look at is not where it started.
         after = os.path.join(shots, "2-xaver-after.png")
+        surface = win.get("surface_id")
+        band, rect = 0, None
+        start = time.time()
         while time.time() - start < 60.0:
-            if xaver.snapshot(after):
-                d = pixels_changed(before, after)
-                if d is not None:
-                    moved = max(moved, d)
-                    if d > 8000:
-                        landed = True
-                        waited = time.time() - start
-                        break
+            rect = next((f.get("rect") for f in xaver.frames()
+                         if f.get("surface_id") == surface), None)
+            if rect and xaver.snapshot(after):
+                band = max(band, widest_colour_band(after, rect))
+                if band >= 250:
+                    break
             time.sleep(2.0)
 
-        check("the photograph is on xaver's screen", landed,
-              f"largest change seen: {moved} pixels")
+        check("the photograph is on xaver's own page", band >= 250,
+              f"widest colour band inside his window: {band}px — a page "
+              f"holding this picture measures ~{PNG_WIDTH}, and chrome alone "
+              f"measures ~100")
         note(f"before: {before}")
         note(f"after:  {after}")
-        if landed:
-            note(f"it took {waited:.1f}s from both apps being up — a "
-                 f"{len(png)}-byte picture across a chunked transport")
-        elif "content arrived and verified" in x_log:
+        note(f"his window measured {band}px of unbroken colour — the picture "
+             f"is {PNG_WIDTH}px wide")
+        # His own line is on that frame too, above Quinten's heading: the two
+        # documents merged rather than one replacing the other. That property
+        # is asserted directly, over the real `open_document` + merge path, by
+        # `apps/word-processor/tests/two_sessions_one_document.rs`; a
+        # screenshot cannot read text back, so it is not claimed here.
+        if band < 250 and "content arrived and verified" in x_log:
             # Worth separating, because these are two different faults and
             # only one of them is about moving bytes. The content is on the
-            # machine and in the app's own store; if the page is still blank
-            # then what has not arrived is the *document* — two apps that
-            # each imported a file hold separately-created Automerge
-            # documents, and merging those leaves one side's blocks behind
-            # whichever root key wins.
+            # machine and in the app's own store; if the block is still
+            # missing then what has not arrived is the *document*.
             note("the bytes are on xaver's machine and were handed to his app, "
                  "so this is not the transport: his document did not adopt "
                  "quinten's blocks, and there is no image block to draw")
