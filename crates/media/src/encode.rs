@@ -92,6 +92,12 @@ pub enum BitrateUnits {
     KilobitsPerSecond,
 }
 
+/// The ceiling every kilobit-per-second encoder in GStreamer declares for its
+/// `bitrate` property — 2 Gbit/s. `vaav1enc`, `x264enc`, `nvh264enc` and the
+/// rest all stop there. Two thousand times the highest export preset, so it
+/// bounds a mis-scaled value without ever constraining a real one.
+pub const MAX_KILOBITS_PER_SECOND: u64 = 2_048_000;
+
 /// One candidate encoder: what to instantiate, which family it belongs to,
 /// and how to ask it for a target bitrate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +118,17 @@ impl EncoderSpec {
     /// which every one of them reads as "auto" — so the result is floored at
     /// 1 kbps. A request for a real bitrate must never turn into a request
     /// for whatever the encoder feels like.
+    ///
+    /// The result is also capped at [`MAX_KILOBITS_PER_SECOND`]. No export
+    /// comes near it, so in normal use the cap never fires; it is there
+    /// because handing a *hardware* encoder a value past the range it declares
+    /// is not a harmless overshoot. Feeding `vaav1enc` a bits-per-second number
+    /// on this machine — the exact mistake the units column exists to prevent —
+    /// made the amdgpu driver report "the CS has cancelled because the context
+    /// is lost" and take a hard recovery, which on a machine whose compositor
+    /// shares that GPU is a good deal worse than a wrongly sized file. The
+    /// units are still checked by test; this only bounds the blast radius if
+    /// one ever slips through.
     pub fn bitrate_value(&self, bits_per_second: u64) -> u64 {
         match self.bitrate_units {
             BitrateUnits::BitsPerSecond => bits_per_second,
@@ -119,7 +136,7 @@ impl EncoderSpec {
                 if bits_per_second == 0 {
                     0
                 } else {
-                    (bits_per_second / 1000).max(1)
+                    (bits_per_second / 1000).clamp(1, MAX_KILOBITS_PER_SECOND)
                 }
             }
         }
@@ -667,6 +684,18 @@ mod tests {
             );
         }
         assert_eq!(va.bitrate_value(8_000_000), 8_000);
+
+        // And never past the range the encoders declare. A value this large can
+        // only come from a units mistake, and on this machine an out-of-range
+        // rate reaching the VA encoder cost the amdgpu context a hard recovery.
+        assert_eq!(
+            va.bitrate_value(u64::MAX),
+            MAX_KILOBITS_PER_SECOND,
+            "a mis-scaled bitrate is clamped rather than handed to a video driver",
+        );
+        // The highest export preset is nowhere near the cap, so real requests
+        // pass through untouched.
+        assert_eq!(va.bitrate_value(45_000_000), 45_000);
     }
 
     #[test]
