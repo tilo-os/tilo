@@ -306,13 +306,31 @@ impl Transition {
     /// calls each frame don't restart the curve. On a real change (or a
     /// mid-flight reversal) it retargets from the current value, scaling
     /// `duration` by the remaining distance for a continuous feel.
-    pub fn set_open(
+    pub fn set_open(&mut self, open: bool, duration: Duration, curve: Curve) {
+        self.set_open_at(open, duration, curve, Instant::now());
+    }
+
+    /// [`Self::set_open`] against a caller-supplied clock.
+    ///
+    /// Every other reader here — [`Self::value`], [`Self::is_visible`],
+    /// [`Self::is_animating`] — already takes `now`; `set_open` was the
+    /// one that reached for the clock itself. That asymmetry is not
+    /// only inconsistent, it is untestable: a test could start a
+    /// transition and ask whether it was still running, but the two
+    /// calls read the clock independently, so a scheduler stall longer
+    /// than the animation between them let it finish and the assertion
+    /// flip. Under a loaded parallel run that is a real stall, not a
+    /// hypothetical one, and it produced exactly that flake.
+    ///
+    /// Pinning both ends to one instant makes such a test a statement
+    /// about the animation rather than about the machine's load.
+    pub fn set_open_at(
         &mut self,
         open: bool,
         duration: Duration,
         curve: Curve,
+        now: Instant,
     ) {
-        let now = Instant::now();
         if open == self.open && self.anim.done(now) {
             return;
         }

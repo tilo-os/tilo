@@ -1171,10 +1171,45 @@ fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
     // In a shipped build nothing reaches here at all — the socket that
     // leads here is compiled out (`compositor::dev_env`) — so the cached
     // texture and buffer are never allocated in production.
+    /// Holds the cached renderer and **abandons it at thread exit**
+    /// instead of dropping it.
+    ///
+    /// Dropping an `OffscreenRenderer` frees wgpu buffers, and
+    /// `wgpu-core` unmaps a buffer through a lock whose tracing reads a
+    /// thread-local of its own. Run from a TLS destructor that
+    /// thread-local may already be gone, and touching one during or
+    /// after its own destruction panics — inside a destructor, which is
+    /// non-unwinding, so the process takes `SIGABRT` and every test
+    /// sharing the binary dies with it. That is a teardown-order
+    /// accident, not a fault in either library: whichever thread-local
+    /// is destroyed second loses.
+    ///
+    /// So this leaks, deliberately and narrowly. Only the *outer*
+    /// wrapper's destructor forgets; assigning through
+    /// [`Self::slot`] still drops the previous renderer normally, which
+    /// is what keeps a session that resizes repeatedly from leaking a
+    /// texture per size. The abandoned allocation lives on the shared
+    /// device until the process exits, and this path exists only in dev
+    /// builds — the socket leading here is compiled out of a shipped
+    /// one — so the cost is one texture on a thread that took a
+    /// snapshot, in a binary that is already on its way out.
+    struct AbandonAtThreadExit {
+        slot: Option<ui::offscreen::OffscreenRenderer>,
+    }
+
+    impl Drop for AbandonAtThreadExit {
+        fn drop(&mut self) {
+            if let Some(renderer) = self.slot.take() {
+                std::mem::forget(renderer);
+            }
+        }
+    }
+
     thread_local! {
-        static SNAPSHOT_RENDERER: std::cell::RefCell<
-            Option<ui::offscreen::OffscreenRenderer>,
-        > = const { std::cell::RefCell::new(None) };
+        static SNAPSHOT_RENDERER: std::cell::RefCell<AbandonAtThreadExit> =
+            const {
+                std::cell::RefCell::new(AbandonAtThreadExit { slot: None })
+            };
     }
 
     // `try_new` rather than `new` inside a `catch_unwind`: the shipping
@@ -1185,25 +1220,32 @@ fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
     // wgpu adapter (e.g. CI without llvmpipe). A failure is not cached:
     // the slot is left empty so a later snapshot retries rather than
     // inheriting one bad moment forever.
-    let rgba = SNAPSHOT_RENDERER.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let stale = match slot.as_ref() {
+    let rgba = SNAPSHOT_RENDERER.with(|cell| {
+        let mut cached = cell.borrow_mut();
+        let stale = match cached.slot.as_ref() {
             Some(renderer) => renderer.width != w || renderer.height != h,
             None => true,
         };
         if stale {
             match ui::offscreen::OffscreenRenderer::try_new(w, h) {
-                Ok(renderer) => *slot = Some(renderer),
+                // Assigning through the field, so the renderer this
+                // replaces is dropped here and now — on a live thread,
+                // where wgpu's teardown is safe — rather than being
+                // abandoned with the wrapper.
+                Ok(renderer) => cached.slot = Some(renderer),
                 Err(e) => {
                     eprintln!(
                         "nirios compositor: test_control snapshot: no offscreen renderer: {e}"
                     );
-                    *slot = None;
+                    cached.slot = None;
                     return None;
                 }
             }
         }
-        slot.as_mut().map(|renderer| renderer.render_rgba(&scene))
+        cached
+            .slot
+            .as_mut()
+            .map(|renderer| renderer.render_rgba(&scene))
     });
     let Some(rgba) = rgba else {
         return;
