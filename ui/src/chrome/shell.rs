@@ -262,6 +262,15 @@ pub const GLASS_LIT_GAIN: f32 = 1.7;
 /// Film density at the seated end, relative to its own alpha.
 pub const GLASS_SEAT_FALLOFF: f32 = 0.68;
 
+/// How far down a selector the lit end's extra density has decayed to the
+/// body's own value.
+///
+/// This is what separates a highlight from a wash. Spread over half the
+/// pill, the extra film reads as "this pill is a lighter grey"; concentrated
+/// near the edge it reads as light landing on a surface, and the rest of the
+/// body stays dark enough to keep looking like something you can see through.
+pub const GLASS_LIT_SPAN: f32 = 0.5;
+
 /// Edge alpha of a hovered selector. Below [`HAIRLINE_ALPHA`] — a hovered
 /// pill is being pointed at, not chosen, and a full hairline on it reads
 /// as a second active tab.
@@ -343,18 +352,38 @@ fn light_ends(theme: &Theme) -> (f64, f64) {
     }
 }
 
-/// A vertical gradient over `rect` running `lit` → `seated`.
-fn vertical(rect: Rect, ends: (f64, f64), stops: [(f32, Color); 3]) -> vello::peniko::Gradient {
+/// `base` with its alpha scaled by `gain`, saturating at opaque.
+///
+/// The clamp is not decoration. Scaling a colour's alpha past 1.0 is not a
+/// no-op in a renderer that premultiplies — the components come out
+/// multiplied too, so an out-of-range gain silently *brightens* rather than
+/// doing nothing, and the amount depends on how close to opaque the input
+/// already was. The strip's old body gradient depended on exactly that
+/// accident for its highlight. A material should not be built on a
+/// library's saturation behaviour.
+fn scaled(base: Color, gain: f32) -> Color {
+    let a = (base.a() as f32 * gain).clamp(0.0, 255.0).round() as u8;
+    Color::from_rgba8(base.r(), base.g(), base.b(), a)
+}
+
+/// A vertical gradient over `rect` running from its dense end to its thin
+/// one, with `(offset, gain)` stops measured along that run.
+fn vertical(
+    rect: Rect,
+    ends: (f64, f64),
+    color: Color,
+    stops: [(f32, f32); 3],
+) -> vello::peniko::Gradient {
     let y = |t: f64| Point::new(rect.x0, rect.y0 + rect.height() * t);
-    let (lit, seated) = ends;
-    vello::peniko::Gradient::new_linear(y(lit), y(seated))
+    let (dense, thin) = ends;
+    vello::peniko::Gradient::new_linear(y(dense), y(thin))
         .with_extend(vello::peniko::Extend::Pad)
         .with_stops(
-            &[
-                vello::peniko::ColorStop { offset: 0.0, color: stops[0].1.with_alpha_factor(stops[0].0).into() },
-                vello::peniko::ColorStop { offset: 0.5, color: stops[1].1.with_alpha_factor(stops[1].0).into() },
-                vello::peniko::ColorStop { offset: 1.0, color: stops[2].1.with_alpha_factor(stops[2].0).into() },
-            ][..],
+            &stops
+                .map(|(offset, gain)| vello::peniko::ColorStop {
+                    offset,
+                    color: scaled(color, gain).into(),
+                })[..],
         )
 }
 
@@ -393,10 +422,11 @@ pub fn paint_glass_body(
             &vertical(
                 rect,
                 ends,
+                film,
                 [
-                    (GLASS_LIT_GAIN, film),
-                    (1.0, film),
-                    (GLASS_SEAT_FALLOFF, film),
+                    (0.0, GLASS_LIT_GAIN),
+                    (GLASS_LIT_SPAN, 1.0),
+                    (1.0, GLASS_SEAT_FALLOFF),
                 ],
             ),
             None,
@@ -412,13 +442,11 @@ pub fn paint_glass_body(
             &vertical(
                 rect,
                 ends,
+                edge,
                 [
-                    (1.0, edge),
-                    (
-                        (1.0 + GLASS_EDGE_SEAT_SCALE) / 2.0,
-                        edge,
-                    ),
-                    (GLASS_EDGE_SEAT_SCALE, edge),
+                    (0.0, 1.0),
+                    (0.5, (1.0 + GLASS_EDGE_SEAT_SCALE) / 2.0),
+                    (1.0, GLASS_EDGE_SEAT_SCALE),
                 ],
             ),
             None,
