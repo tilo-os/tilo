@@ -726,6 +726,26 @@ impl NavShell {
         Rect::new(r.x0, (r.y0 + band).min(r.y1), r.x1, r.y1)
     }
 
+    /// Where the overview pane's content actually begins — its rect with
+    /// the chip's band reserved, exactly as the shell lays the child out.
+    ///
+    /// The public counterpart of [`Self::sidebar_content_rect`], and it
+    /// exists for the same reason: a host that works the band out for
+    /// itself is guessing at a private constant, and a host that reads
+    /// [`Self::overview_rect`] is reading the pane rather than the content
+    /// inside it. The two differ by the chip's band in the narrow layout,
+    /// which is the difference between a row the pointer lands on and one
+    /// it lands above.
+    pub fn overview_content_rect(&self) -> Rect {
+        self.content_child_rect(self.overview_rect)
+    }
+
+    /// Where the detail pane's content actually begins. See
+    /// [`Self::overview_content_rect`].
+    pub fn detail_content_rect(&self) -> Rect {
+        self.content_child_rect(self.detail_rect)
+    }
+
     /// Paint the sidebar's own opaque panel. The drawer slides *over* live
     /// content, so without a fill the content reads straight through it — the
     /// file list showing through the places list. Drawn under the child so a
@@ -1412,6 +1432,29 @@ mod tests {
             (pane.x0, pane.x1),
             "the band is vertical only",
         );
+    }
+
+    /// The public accessors are the same answer the layout uses.
+    ///
+    /// Hosts aim clicks with these, so an accessor that drifted from
+    /// `content_child_rect` would put every hit-test a band away from the
+    /// content it is meant to land on — which is exactly the failure that
+    /// made this pair public rather than a constant each host re-derived.
+    #[test]
+    fn the_public_content_rects_are_what_the_layout_uses() {
+        for width in [600.0_f64, 1200.0] {
+            let ns = sidebar_content_shell(width);
+            assert_eq!(
+                ns.overview_content_rect(),
+                ns.content_child_rect(ns.overview_rect()),
+                "overview accessor disagrees with the laid-out child at {width}",
+            );
+            assert_eq!(
+                ns.detail_content_rect(),
+                ns.content_child_rect(ns.detail_rect()),
+                "detail accessor disagrees with the laid-out child at {width}",
+            );
+        }
     }
 
     /// Wide docks the sidebar under the chip, so the content is already

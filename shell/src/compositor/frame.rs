@@ -556,6 +556,17 @@ impl FrameBuilder {
         self.host.needs_animation_frame()
     }
 
+    /// Whether any tab is still holding a place for an app that has not
+    /// drawn yet. See [`ShellOverlayHost::any_tile_opening`].
+    ///
+    /// The opening card's spinner keeps [`Self::needs_animation_frame`]
+    /// true for as long as the wait lasts, so a caller waiting for the
+    /// tree to go quiet has to know the difference between "a window is
+    /// still starting" and "an animation is wedged".
+    pub fn any_tile_opening(&mut self) -> bool {
+        self.host.any_tile_opening()
+    }
+
     /// The chrome's monotonic revision counter. Bumps whenever chrome
     /// state mutates (overlay toggles, notifications, tab switches, …).
     /// The render loop repaints when this changes.
