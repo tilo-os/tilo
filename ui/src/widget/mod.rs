@@ -195,12 +195,30 @@ pub trait Widget {
     /// the windows either side of it are already where they will be when
     /// it lands, and the person is not shown an empty frame that fills in
     /// seconds later — a window appears when it has something in it.
+    /// What stands in that place meanwhile is decided by
+    /// [`Widget::opening`].
     ///
     /// Implementors must **latch**: once this has answered `true` it may
     /// never answer `false` again for the same content. A widget that
     /// could un-present would make a window vanish mid-resize, which is
     /// a worse defect than the one this exists to fix.
     fn presented(&self) -> bool { true }
+    /// Whether this widget stands for something the person asked for,
+    /// has not been given yet, and has been waiting on long enough that
+    /// saying nothing would read as nothing having happened.
+    ///
+    /// Only ever `true` while [`Widget::presented`] is `false`, and only
+    /// after a deliberate delay. An app that opens in a blink must not
+    /// flash an indicator on its way past: a state that appears and
+    /// disappears inside a quarter of a second is noise rather than
+    /// information, and nobody has begun to wonder yet.
+    ///
+    /// A [`crate::widget::TileHost`] whose content answers `true` paints
+    /// the card that holds the window's place — the app's own name over
+    /// a quiet indicator — in place of the app. Its group is painted
+    /// rather than held back, so the wait is spent where the window is
+    /// going to be, which is where the person is already looking.
+    fn opening(&self) -> bool { false }
     fn needs_commit(&self) -> bool { false }
     fn on_commit(&mut self) {}
     fn get_state(&self) -> Option<String> { None }

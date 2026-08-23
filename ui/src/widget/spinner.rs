@@ -87,6 +87,16 @@ impl Spinner {
         }
     }
 
+    /// Place the spinner directly, for a parent that positions it by
+    /// hand rather than through taffy.
+    ///
+    /// The orbit is centred in `rect` and sized by the spinner's own
+    /// diameter, so passing a square around the point you have in mind
+    /// gives the same result `apply_layout` would.
+    pub fn set_rect(&mut self, rect: Rect) {
+        self.rect = rect;
+    }
+
     /// Logical diameter in px. Exposed for tests and debug overlays;
     /// not part of the public API contract beyond that.
     #[cfg(test)]
