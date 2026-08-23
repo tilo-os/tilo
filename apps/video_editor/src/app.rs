@@ -293,6 +293,8 @@ struct PaneCursor {
 enum Section {
     Transform,
     Speed,
+    Key,
+    Mask,
     Title,
     Effects,
     Markers,
@@ -303,6 +305,8 @@ impl Section {
         match self {
             Section::Transform => "TRANSFORM",
             Section::Speed => "SPEED",
+            Section::Key => "CHROMA KEY",
+            Section::Mask => "MASK",
             Section::Title => "TITLE",
             Section::Effects => "EFFECTS",
             Section::Markers => "MARKERS",
@@ -327,6 +331,15 @@ enum NumField {
     CropRight,
     CropTop,
     CropBottom,
+    KeyTolerance,
+    KeySoftness,
+    KeySpill,
+    MaskX,
+    MaskY,
+    MaskW,
+    MaskH,
+    MaskRotation,
+    MaskFeather,
     Speed,
     TitleSize,
     TitleBackdrop,
@@ -344,6 +357,15 @@ impl NumField {
             NumField::CropRight => "Right",
             NumField::CropTop => "Top",
             NumField::CropBottom => "Bottom",
+            NumField::KeyTolerance => "Tolerance",
+            NumField::KeySoftness => "Softness",
+            NumField::KeySpill => "Spill removal",
+            NumField::MaskX => "Centre X",
+            NumField::MaskY => "Centre Y",
+            NumField::MaskW => "Width",
+            NumField::MaskH => "Height",
+            NumField::MaskRotation => "Rotation",
+            NumField::MaskFeather => "Feather",
             NumField::Speed => "Rate",
             NumField::TitleSize => "Size",
             NumField::TitleBackdrop => "Backdrop",
@@ -361,6 +383,15 @@ impl NumField {
             NumField::PosX => Param::PosX,
             NumField::PosY => Param::PosY,
             NumField::Rotation => Param::Rotation,
+            NumField::KeyTolerance => Param::KeyTolerance,
+            NumField::KeySoftness => Param::KeySoftness,
+            NumField::KeySpill => Param::KeySpill,
+            NumField::MaskX => Param::MaskX,
+            NumField::MaskY => Param::MaskY,
+            NumField::MaskW => Param::MaskW,
+            NumField::MaskH => Param::MaskH,
+            NumField::MaskRotation => Param::MaskRotation,
+            NumField::MaskFeather => Param::MaskFeather,
             _ => return None,
         })
     }
@@ -383,6 +414,17 @@ impl NumField {
             NumField::CropLeft | NumField::CropRight | NumField::CropTop | NumField::CropBottom => {
                 (0.0, 0.9)
             }
+            // A key's tolerance runs the full chroma span it is measured
+            // against, so the far stop keys everything and the near stop
+            // keys nothing — both are legible states rather than dead ends.
+            NumField::KeyTolerance | NumField::KeySoftness => (0.0, 1.0),
+            NumField::KeySpill => (0.0, 1.0),
+            NumField::MaskX | NumField::MaskY => (-1.0, 1.0),
+            // A mask can reach past the frame, which is how an edge is put
+            // outside the picture instead of cutting across it.
+            NumField::MaskW | NumField::MaskH => (0.0, 2.0),
+            NumField::MaskRotation => (-180.0, 180.0),
+            NumField::MaskFeather => (0.0, 1.0),
             NumField::Speed => (MIN_SPEED, MAX_SPEED),
             NumField::TitleSize => (0.02, 0.4),
             NumField::TitleBackdrop => (0.0, 1.0),
@@ -425,6 +467,13 @@ impl NumField {
             | NumField::CropRight
             | NumField::CropTop
             | NumField::CropBottom => format!("{:.0}%", v * 100.0),
+            NumField::KeyTolerance
+            | NumField::KeySoftness
+            | NumField::KeySpill
+            | NumField::MaskFeather => format!("{:.0}%", v * 100.0),
+            NumField::MaskX | NumField::MaskY => format!("{v:+.2}"),
+            NumField::MaskW | NumField::MaskH => format!("{:.0}%", v * 100.0),
+            NumField::MaskRotation => format!("{v:.0}°"),
             NumField::Speed => format!("{v:.2}×"),
             NumField::TitleSize => format!("{:.0}%", v * 100.0),
             NumField::TitleBackdrop => format!("{:.0}%", v * 100.0),
@@ -1199,6 +1248,62 @@ impl VideoEditorApp {
         #[cfg(not(feature = "decode"))]
         {
             false
+        }
+    }
+
+    /// The selected clip's source aspect and the project frame's, which is
+    /// what [`crate::model::Mask::over`] needs to place a shape over the
+    /// picture. A source with no probed size falls back to the frame's own
+    /// aspect — the same assumption the compositor's aspect fit makes.
+    fn selected_aspects(&self) -> (f64, f64) {
+        let frame = self.project.width.max(1) as f64 / self.project.height.max(1) as f64;
+        let src = self
+            .selected()
+            .and_then(|id| self.project.clip(id))
+            .and_then(|c| self.project.media(c.media))
+            .filter(|m| m.width > 0 && m.height > 0)
+            .map(|m| m.width as f64 / m.height as f64)
+            .unwrap_or(frame);
+        (src, frame)
+    }
+
+    /// The colour of the decoded preview frame at normalised source
+    /// coordinates `(u, v)`, or `None` when there is no decoded picture to
+    /// read one out of.
+    ///
+    /// `None` is the honest answer on a build with no decoder, on an
+    /// un-hydrated reference, and before the pipeline has prerolled — in
+    /// every one of those cases the canvas is showing the representative
+    /// fill, and handing back *its* colour as "the colour of your footage"
+    /// would be a fabrication. The caller shows the control as unavailable
+    /// instead.
+    pub fn preview_pixel(&self, u: f64, v: f64) -> Option<[f64; 3]> {
+        #[cfg(feature = "decode")]
+        {
+            let f = self.preview_decoder.frame()?;
+            // The sample must belong to the clip under the playhead, not to
+            // whatever the decoder last held for a different one.
+            let want = self.project.top_video_clip_at(self.playhead)?.media;
+            if self.preview_decoder.frame_media() != Some(want) {
+                return None;
+            }
+            if f.width == 0 || f.height == 0 {
+                return None;
+            }
+            let x = ((u.clamp(0.0, 1.0) * f.width as f64) as u32).min(f.width - 1);
+            let y = ((v.clamp(0.0, 1.0) * f.height as f64) as u32).min(f.height - 1);
+            let i = ((y * f.width + x) * 4) as usize;
+            let px = f.rgba.get(i..i + 3)?;
+            Some([
+                px[0] as f64 / 255.0,
+                px[1] as f64 / 255.0,
+                px[2] as f64 / 255.0,
+            ])
+        }
+        #[cfg(not(feature = "decode"))]
+        {
+            let _ = (u, v);
+            None
         }
     }
 
@@ -3568,6 +3673,80 @@ impl VideoEditorApp {
             l.reverse = Some(Rect::new(x0, y, x1, y + 26.0));
             y += 34.0;
         }
+        // Colour key, video only — there is nothing to key out of audio.
+        // The four sliders appear only once the key is switched on, so an
+        // unkeyed clip does not carry a row of controls that do nothing.
+        if is_video {
+            let open = header(&mut l, &mut y, Section::Key);
+            if open {
+                l.key_enable = Some(Rect::new(x0, y, x1, y + 26.0));
+                y += 34.0;
+                if clip.key.enabled {
+                    l.key_color_y = y;
+                    y += 18.0;
+                    let sw = 26.0;
+                    for (i, (_, col)) in crate::model::KEY_PRESETS.iter().enumerate() {
+                        let sx = x0 + i as f64 * (sw + 5.0);
+                        if sx + sw > x1 {
+                            break;
+                        }
+                        l.key_colors.push((*col, Rect::new(sx, y, sx + sw, y + sw)));
+                    }
+                    // Sampling the plate is how a key is really set; the
+                    // presets are only a starting point.
+                    let pick_x = x0 + 3.0 * (sw + 5.0);
+                    if pick_x + 96.0 <= x1 {
+                        l.key_pick = Some(Rect::new(pick_x, y, x1, y + sw));
+                    }
+                    y += sw + 14.0;
+                    for f in [
+                        NumField::KeyTolerance,
+                        NumField::KeySoftness,
+                        NumField::KeySpill,
+                    ] {
+                        l.nums.push((f, track_at(y)));
+                        if let Some(p) = f.param() {
+                            l.keys.push((p, key_at(y)));
+                        }
+                        y += row;
+                    }
+                    y += 4.0;
+                }
+            }
+        }
+        // Shape mask, video only. The geometry rows appear once a shape is
+        // chosen — with the mask off there is nothing for them to move.
+        if is_video {
+            let open = header(&mut l, &mut y, Section::Mask);
+            if open {
+                let mw = (x1 - x0) / crate::model::MaskShape::ALL.len() as f64;
+                for (i, s) in crate::model::MaskShape::ALL.iter().enumerate() {
+                    let sx = x0 + i as f64 * mw;
+                    l.mask_shapes.push((*s, Rect::new(sx, y, sx + mw - 3.0, y + 24.0)));
+                }
+                y += 32.0;
+                if clip.mask.is_active() {
+                    for f in [
+                        NumField::MaskX,
+                        NumField::MaskY,
+                        NumField::MaskW,
+                        NumField::MaskH,
+                        NumField::MaskRotation,
+                        NumField::MaskFeather,
+                    ] {
+                        l.nums.push((f, track_at(y)));
+                        if let Some(p) = f.param() {
+                            l.keys.push((p, key_at(y)));
+                        }
+                        y += row;
+                    }
+                    let hw = (x1 - x0) / 2.0 - 4.0;
+                    l.mask_fit = Some(Rect::new(x0, y, x0 + hw, y + 26.0));
+                    l.mask_invert = Some(Rect::new(x1 - hw, y, x1, y + 26.0));
+                    y += 34.0;
+                }
+            }
+        }
         // A title's words and setting — only for a clip whose source is one.
         if is_title && header(&mut l, &mut y, Section::Title) {
             // Captioned controls need the caption's line above them; without
@@ -4250,6 +4429,23 @@ struct InspectorLayout {
     speed_presets: Vec<(f64, Rect)>,
     /// The reverse toggle.
     reverse: Option<Rect>,
+    // ---- colour key --------------------------------------------------------
+    /// Switches the key on and off. The sliders below it only appear once it
+    /// is on, so an unkeyed clip does not carry four dead controls.
+    key_enable: Option<Rect>,
+    /// Baseline y of the "Key colour" caption over the swatches.
+    key_color_y: f64,
+    /// Preset key colours, and the swatch each is picked from.
+    key_colors: Vec<([f64; 3], Rect)>,
+    /// Samples the key colour out of the frame under the playhead.
+    key_pick: Option<Rect>,
+    // ---- mask ---------------------------------------------------------------
+    /// Shape choice, as a segmented row: Off / Rect / Ellipse.
+    mask_shapes: Vec<(crate::model::MaskShape, Rect)>,
+    /// Snaps the mask onto whatever the transform currently puts on screen.
+    mask_fit: Option<Rect>,
+    /// Keep the outside rather than the inside.
+    mask_invert: Option<Rect>,
     // ---- title ------------------------------------------------------------
     /// The words, edited inline through the shared editable label.
     title_text: Option<Rect>,
@@ -5024,10 +5220,22 @@ impl Widget for VideoEditorApp {
                     || l.speed_presets.iter().any(|(_, rc)| rc.contains(point))
                     || l.title_align.iter().any(|(_, rc)| rc.contains(point))
                     || l.title_colors.iter().any(|(_, rc)| rc.contains(point))
-                    || [l.reset_transform, l.reverse, l.title_text, l.title_bold, l.title_italic]
-                        .iter()
-                        .flatten()
-                        .any(|rc| rc.contains(point)))
+                    || l.key_colors.iter().any(|(_, rc)| rc.contains(point))
+                    || l.mask_shapes.iter().any(|(_, rc)| rc.contains(point))
+                    || [
+                        l.reset_transform,
+                        l.reverse,
+                        l.title_text,
+                        l.title_bold,
+                        l.title_italic,
+                        l.key_enable,
+                        l.key_pick,
+                        l.mask_fit,
+                        l.mask_invert,
+                    ]
+                    .iter()
+                    .flatten()
+                    .any(|rc| rc.contains(point)))
             {
                 return Some(CursorIcon::Pointer);
             }
@@ -5316,20 +5524,29 @@ impl VideoEditorApp {
         };
         let media = self.project.media(clip.media);
         let is_title = media.map(|m| m.text.is_some()).unwrap_or(false);
+        let is_video = media.map(|m| m.kind.is_visual()).unwrap_or(true);
         let mut v = vec![Section::Transform, Section::Speed];
+        // Same test the layout makes, so the reader is offered exactly the
+        // sections that are on screen — no more and no fewer.
+        if is_video {
+            v.push(Section::Key);
+            v.push(Section::Mask);
+        }
         if is_title {
             v.push(Section::Title);
         }
-        v.push(Section::Effects);
+        if is_video {
+            v.push(Section::Effects);
+        }
         v.push(Section::Markers);
         v
     }
 
     /// The numeric knobs inside a section, in painted order.
     fn a11y_section_fields(section: Section, clip: Option<&Clip>) -> Vec<NumField> {
-        if clip.is_none() {
+        let Some(c) = clip else {
             return Vec::new();
-        }
+        };
         match section {
             Section::Transform => vec![
                 NumField::ScaleX,
@@ -5343,8 +5560,25 @@ impl VideoEditorApp {
                 NumField::CropBottom,
             ],
             Section::Speed => vec![NumField::Speed],
+            // The key's sliders are only laid out once the key is on, and
+            // the mask's only once a shape is chosen. A reader offered
+            // controls a sighted user cannot see would be navigating a
+            // different panel from the one on screen.
+            Section::Key if c.key.enabled => vec![
+                NumField::KeyTolerance,
+                NumField::KeySoftness,
+                NumField::KeySpill,
+            ],
+            Section::Mask if c.mask.is_active() => vec![
+                NumField::MaskX,
+                NumField::MaskY,
+                NumField::MaskW,
+                NumField::MaskH,
+                NumField::MaskRotation,
+                NumField::MaskFeather,
+            ],
             Section::Title => vec![NumField::TitleSize, NumField::TitleBackdrop],
-            Section::Effects | Section::Markers => Vec::new(),
+            Section::Key | Section::Mask | Section::Effects | Section::Markers => Vec::new(),
         }
     }
 
@@ -5646,6 +5880,35 @@ impl VideoEditorApp {
                 c.transform.scale_x, c.transform.pos_x, c.transform.pos_y, c.transform.rotation
             ),
             (Section::Speed, Some(c)) => c.speed.label(),
+            // Worded from the same fields the visible summary reads, so a
+            // reader is never told a tidier story than the screen tells.
+            (Section::Key, Some(c)) => {
+                if !c.key.enabled {
+                    "off".into()
+                } else if c.key.tolerance <= 1e-6 {
+                    "on, but the tolerance keys nothing".into()
+                } else {
+                    format!(
+                        "keying {:.0}% tolerance, {:.0}% softness, {:.0}% spill removal",
+                        c.key.tolerance * 100.0,
+                        c.key.softness * 100.0,
+                        c.key.spill * 100.0
+                    )
+                }
+            }
+            (Section::Mask, Some(c)) => {
+                if !c.mask.is_active() {
+                    "off".into()
+                } else {
+                    format!(
+                        "{} {:.0}% by {:.0}%, {}",
+                        c.mask.shape.label().to_lowercase(),
+                        c.mask.w * 100.0,
+                        c.mask.h * 100.0,
+                        if c.mask.invert { "keeping the outside" } else { "keeping the inside" }
+                    )
+                }
+            }
             (Section::Effects, Some(c)) => {
                 let n = c.effects.len();
                 format!("{n} effect{}", if n == 1 { "" } else { "s" })
@@ -7110,6 +7373,80 @@ impl VideoEditorApp {
                     let (rate, rev) = (c.speed.rate(), c.speed.reverse);
                     c.set_speed(rate, !rev);
                 });
+                return;
+            }
+        }
+        // Colour key.
+        if let Some(rect) = l.key_enable {
+            if rect.contains(p) {
+                self.edit_selected(state, |c| {
+                    c.key.enabled = !c.key.enabled;
+                    // A key switched on with the tolerance wound to zero
+                    // removes nothing, which reads as the button not
+                    // working; give it back a tolerance that keys.
+                    if c.key.enabled && c.key.tolerance <= 1e-6 {
+                        c.key.tolerance = crate::model::ChromaKey::default().tolerance;
+                    }
+                });
+                self.collapsed.remove(&Section::Key);
+                return;
+            }
+        }
+        for (col, rect) in l.key_colors.clone() {
+            if rect.contains(p) {
+                self.edit_selected(state, move |c| c.key.color = col);
+                return;
+            }
+        }
+        if let Some(rect) = l.key_pick {
+            if rect.contains(p) {
+                // Only writes a colour when there really is a decoded frame
+                // to read one from; with none the button is drawn disabled
+                // and this is a no-op rather than a made-up sample.
+                if let Some(col) = self.preview_pixel(0.5, 0.5) {
+                    self.edit_selected(state, move |c| c.key.color = col);
+                }
+                return;
+            }
+        }
+        // Mask.
+        for (shape, rect) in l.mask_shapes.clone() {
+            if rect.contains(p) {
+                // Turning a mask on lands it over the picture rather than in
+                // the middle of an empty frame, so a masked PiP is one click.
+                let (src_aspect, frame_aspect) = self.selected_aspects();
+                self.edit_selected(state, move |c| {
+                    if shape == crate::model::MaskShape::None {
+                        c.mask.shape = shape;
+                    } else if c.mask.is_active() {
+                        c.mask.shape = shape;
+                    } else {
+                        c.mask =
+                            crate::model::Mask::over(shape, &c.transform, src_aspect, frame_aspect);
+                    }
+                });
+                self.collapsed.remove(&Section::Mask);
+                return;
+            }
+        }
+        if let Some(rect) = l.mask_fit {
+            if rect.contains(p) {
+                let (src_aspect, frame_aspect) = self.selected_aspects();
+                self.edit_selected(state, move |c| {
+                    let shape = c.mask.shape;
+                    let (feather, invert) = (c.mask.feather, c.mask.invert);
+                    c.mask = crate::model::Mask::over(
+                        shape, &c.transform, src_aspect, frame_aspect,
+                    );
+                    c.mask.feather = feather;
+                    c.mask.invert = invert;
+                });
+                return;
+            }
+        }
+        if let Some(rect) = l.mask_invert {
+            if rect.contains(p) {
+                self.edit_selected(state, |c| c.mask.invert = !c.mask.invert);
                 return;
             }
         }
@@ -9104,6 +9441,71 @@ impl VideoEditorApp {
                 on, rect.contains(self.last_mouse),
             );
         }
+        // ---- colour key -----------------------------------------------
+        if let Some(rect) = l.key_enable {
+            let on = clip.key.enabled;
+            draw_button(
+                scene, tf, tr, theme, rect,
+                if on { "Keying this colour out" } else { "Key a colour out" },
+                on, rect.contains(self.last_mouse),
+            );
+        }
+        if l.key_color_y > 0.0 {
+            text(scene, tr, tf, "Key colour", 11.5, c.text_dim, x0, l.key_color_y + 11.0);
+        }
+        for (col, rect) in &l.key_colors {
+            let on = clip
+                .key
+                .color
+                .iter()
+                .zip(col)
+                .all(|(a, b)| (a - b).abs() < 1e-6);
+            let swatch = Color::new([col[0] as f32, col[1] as f32, col[2] as f32, 1.0]);
+            fill_rrect(scene, tf, swatch, *rect, 5.0);
+            // The chosen swatch takes a ring rather than a tick, so the
+            // colour it names is never covered by the mark that selects it.
+            if on {
+                stroke_rrect(scene, tf, c.text_primary, rect.inflate(2.0, 2.0), 7.0, 2.0);
+            } else if rect.contains(self.last_mouse) {
+                stroke_rrect(scene, tf, c.border_focus, rect.inflate(1.0, 1.0), 6.0, 1.0);
+            }
+        }
+        if let Some(rect) = l.key_pick {
+            // Sampling needs a picture to sample: with no decoded frame the
+            // button says so rather than quietly handing back a colour the
+            // footage never had.
+            let have = self.preview_pixel(0.5, 0.5).is_some();
+            draw_button_enabled(
+                scene, tf, tr, theme, rect,
+                if have { "Sample centre" } else { "No frame to sample" },
+                false, rect.contains(self.last_mouse), have,
+            );
+        }
+        // ---- mask -------------------------------------------------------
+        if !l.mask_shapes.is_empty() {
+            let rects: Vec<Rect> = l.mask_shapes.iter().map(|(_, r)| *r).collect();
+            let labels: Vec<&str> = l.mask_shapes.iter().map(|(s, _)| s.label()).collect();
+            let sel = l
+                .mask_shapes
+                .iter()
+                .position(|(s, _)| *s == clip.mask.shape)
+                .unwrap_or(usize::MAX);
+            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+        }
+        if let Some(rect) = l.mask_fit {
+            draw_button(
+                scene, tf, tr, theme, rect, "Fit to picture", false,
+                rect.contains(self.last_mouse),
+            );
+        }
+        if let Some(rect) = l.mask_invert {
+            let on = clip.mask.invert;
+            draw_button(
+                scene, tf, tr, theme, rect,
+                if on { "Keeping outside" } else { "Invert" },
+                on, rect.contains(self.last_mouse),
+            );
+        }
         // ---- title ----------------------------------------------------
         if let Some(rect) = l.title_text {
             let text_src = media.as_ref().and_then(|m| m.text.clone()).unwrap_or_default();
@@ -9314,6 +9716,24 @@ impl VideoEditorApp {
                 Some(parts.join(" · "))
             }
             Section::Speed => (!clip.speed.is_normal()).then(|| clip.speed.label()),
+            // A key that is switched on but keying nothing still has to
+            // say so: "on" and "removing something" are different states,
+            // and a fold that reported neither would hide both.
+            Section::Key => clip.key.enabled.then(|| {
+                if clip.key.tolerance <= 1e-6 {
+                    "on · keys nothing".to_string()
+                } else {
+                    format!("keyed {:.0}%", clip.key.tolerance * 100.0)
+                }
+            }),
+            Section::Mask => clip.mask.is_active().then(|| {
+                let shape = clip.mask.shape.label().to_lowercase();
+                if clip.mask.invert {
+                    format!("{shape} · inverted")
+                } else {
+                    shape
+                }
+            }),
             Section::Title => {
                 let t = media?.text.as_ref()?;
                 let first = t.content.lines().next().unwrap_or("").trim();
