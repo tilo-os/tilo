@@ -198,15 +198,124 @@ pub fn store() -> Arc<dyn BlobStore> {
     }
 }
 
+/// How this process reaches the rest of the system for content.
+///
+/// # Why a store alone is not enough
+///
+/// A content-addressed store makes a blob's *identity* portable. It does not
+/// move the bytes, and in this system nothing else was going to: an app holds
+/// its blobs in its own sandbox — the launcher gives every app a private
+/// `HOME` and `XDG_CACHE_HOME`, deliberately, so there is no directory an app
+/// and its shell can both read and there must not be one. So an app could put
+/// a photograph in a document, and the shell that had to send it to the room
+/// never had the bytes; and a shell could receive a photograph, and the app
+/// that had to draw it never had them either. Both ends read a store that was
+/// simply not the store the content was in, found nothing, and said nothing.
+///
+/// This is the missing door. Whatever owns this process's link to the rest of
+/// the system installs one, and then `put` announces and a missed `get` asks —
+/// so a document's content follows its reference without a single call site in
+/// any app having to know that it does.
+pub trait BlobTransport: Send + Sync {
+    /// This process now holds `hash`. Anyone who might need it should hear.
+    fn offer(&self, hash: &str, bytes: &[u8]);
+    /// This process needs `hash` and does not have it.
+    ///
+    /// Called on a miss, rate-limited by [`ASK_AGAIN_AFTER`] — a renderer asks
+    /// for its picture on every frame, and a request per frame is a flood, not
+    /// a fetch.
+    fn want(&self, hash: &str);
+}
+
+static TRANSPORT: OnceLock<RwLock<Option<Arc<dyn BlobTransport>>>> = OnceLock::new();
+
+fn transport_cell() -> &'static RwLock<Option<Arc<dyn BlobTransport>>> {
+    TRANSPORT.get_or_init(|| RwLock::new(None))
+}
+
+/// Install the process-wide transport. Without one, this process can only ever
+/// read what it stored itself.
+pub fn set_transport(t: Arc<dyn BlobTransport>) {
+    if let Ok(mut s) = transport_cell().write() {
+        *s = Some(t);
+    }
+}
+
+/// The process-wide transport, if one has been installed.
+pub fn transport() -> Option<Arc<dyn BlobTransport>> {
+    transport_cell().read().ok()?.clone()
+}
+
+/// How long to wait before asking again for the same content.
+///
+/// A renderer calls [`get`] for its image every frame. Without this the first
+/// missing photograph would put sixty requests a second on the room's topic.
+const ASK_AGAIN_AFTER: std::time::Duration = std::time::Duration::from_millis(1000);
+
+static ASKED: OnceLock<RwLock<BTreeMap<String, std::time::Instant>>> = OnceLock::new();
+
+/// Whether enough time has passed to ask for `hash` again.
+fn may_ask(hash: &str) -> bool {
+    let cell = ASKED.get_or_init(|| RwLock::new(BTreeMap::new()));
+    let now = std::time::Instant::now();
+    let Ok(mut m) = cell.write() else { return false };
+    match m.get(hash) {
+        Some(t) if now.duration_since(*t) < ASK_AGAIN_AFTER => false,
+        _ => {
+            // Bounded: a document referencing thousands of blobs must not turn
+            // this into a leak. Oldest-first, and the worst case is one extra
+            // request for whatever was evicted.
+            if m.len() > 512 {
+                if let Some(k) = m.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) {
+                    m.remove(&k);
+                }
+            }
+            m.insert(hash.to_string(), now);
+            true
+        }
+    }
+}
+
 /// Read a blob's bytes from the process-wide store.
+///
+/// A miss asks the transport for the content and still returns `None`. That is
+/// deliberate and is the whole shape of the fix: the caller renders its honest
+/// placeholder now, the bytes arrive out of band, and the next frame draws the
+/// picture. A blocking fetch here would stall a compositor frame on a peer.
 pub fn get(hash: &str) -> Option<Vec<u8>> {
-    store().get(hash)
+    if let Some(bytes) = store().get(hash) {
+        return Some(bytes);
+    }
+    if let Some(t) = transport() {
+        if may_ask(hash) {
+            t.want(hash);
+        }
+    }
+    None
 }
 
 /// Write bytes to the process-wide store, returning their hash.
+///
+/// Also *offers* them to the transport, if one is installed. That is what
+/// carries a photograph out of the process that produced it — the document
+/// only ever gains the reference, and without this the bytes stayed where they
+/// were put and every other machine drew a placeholder forever.
 pub fn put(bytes: &[u8]) -> String {
     let hash = hash_bytes(bytes);
-    store().put(&hash, bytes);
+    if !store().put(&hash, bytes) {
+        // The document is about to reference content this machine then does
+        // not hold. Nothing downstream can detect that from the reference, so
+        // it has to be said here.
+        tracing::error!(
+            hash = %hash, bytes = bytes.len(),
+            "blobstore: could not store this content; a document referencing it will \
+             show a placeholder that never resolves",
+        );
+        return hash;
+    }
+    if let Some(t) = transport() {
+        t.offer(&hash, bytes);
+    }
     hash
 }
 

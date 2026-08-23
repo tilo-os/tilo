@@ -104,6 +104,22 @@ pub trait PeerPublishSink: Send + Sync {
 
     /// Ask the room whether anyone still holds a range of history.
     fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16);
+
+    /// Take content an app just stored, and offer it to the room.
+    ///
+    /// This is the only way a document's *bytes* leave the process that made
+    /// them. An app's blobs live in its own sandbox — the launcher gives every
+    /// app a private `HOME` and `XDG_CACHE_HOME` — so the shell cannot go and
+    /// read them, and until the app hands them over the shell holds a
+    /// reference to a photograph it does not have and can send nobody.
+    fn offer_blob(&self, cluster_id: &str, hash: &str, bytes: &[u8]) -> bool;
+
+    /// Content this machine already holds, if any, so an app can be answered
+    /// without troubling the room.
+    fn blob(&self, hash: &str) -> Option<Vec<u8>>;
+
+    /// Ask the room for content an app needs and this machine lacks.
+    fn want_blob(&self, cluster_id: &str, hash: &str);
 }
 
 impl PeerPublishSink for ShellNetwork {
@@ -143,6 +159,18 @@ impl PeerPublishSink for ShellNetwork {
 
     fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16) {
         self.publish_scrollback_request(artifact, before_seq, max);
+    }
+
+    fn offer_blob(&self, cluster_id: &str, hash: &str, bytes: &[u8]) -> bool {
+        self.offer_local_blob(cluster_id, hash, bytes)
+    }
+
+    fn blob(&self, hash: &str) -> Option<Vec<u8>> {
+        self.holds_blob(hash)
+    }
+
+    fn want_blob(&self, cluster_id: &str, hash: &str) {
+        ShellNetwork::want_blob(self, cluster_id, hash);
     }
 }
 
@@ -325,6 +353,41 @@ impl PeerPublisher {
             return false;
         };
         sink.app_presence(route.app_id.clone(), route.cluster_id.clone(), frame);
+        true
+    }
+
+    /// Take a document's content from the app that made it and offer it to
+    /// the room.
+    ///
+    /// Routed like every other outbound: an app that never announced an
+    /// address has no room to offer content to. Unlike the others, a refusal
+    /// here is reported by the caller — a picture that does not cross has no
+    /// symptom other than a placeholder that never resolves.
+    pub fn offer_blob(
+        &self,
+        route: &CrdtRoute,
+        transport: Transport,
+        hash: &str,
+        bytes: &[u8],
+    ) -> bool {
+        let Some(sink) = self.ready(route, transport, "document content") else {
+            return false;
+        };
+        sink.offer_blob(&route.cluster_id, hash, bytes)
+    }
+
+    /// Content this machine already holds, so an app's request can be answered
+    /// without a round trip through the room.
+    pub fn blob(&self, hash: &str) -> Option<Vec<u8>> {
+        self.sink.as_ref()?.blob(hash)
+    }
+
+    /// Ask the room for content an app is waiting on.
+    pub fn want_blob(&self, route: &CrdtRoute, transport: Transport, hash: &str) -> bool {
+        let Some(sink) = self.ready(route, transport, "content request") else {
+            return false;
+        };
+        sink.want_blob(&route.cluster_id, hash);
         true
     }
 

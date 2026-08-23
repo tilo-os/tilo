@@ -1014,6 +1014,23 @@ fn translate(
                 route,
             }
         }
+        CollabRequest::OfferBlob { hash, bytes } => {
+            // Cluster scope, not record scope: content is addressed by its own
+            // hash, and two apps in a room may reference the same picture from
+            // two different documents. The room is the audience; a different
+            // room is not.
+            let Some(route) = src_route.map(CrdtRoute::to_cluster_scope) else {
+                return unrouted(src_id, "OfferBlob");
+            };
+            TranslatedAction::Fanout {
+                event: CollabEvent::BlobArrived { hash, bytes },
+                route,
+            }
+        }
+        // Answered by the outbound bridge, which is the half that can reach
+        // this machine's store and the room. Nothing to fan locally: an app
+        // that lacks content is not news to its neighbours.
+        CollabRequest::WantBlob { .. } => TranslatedAction::Nothing,
         CollabRequest::Presence { key, payload } => {
             // Chrome traffic: cluster scope. Every app in the cluster
             // is a legitimate audience for "who else is here", but a
@@ -1304,6 +1321,47 @@ fn reader_loop(
                 // refer to objects the receiving document has never
                 // seen, and the peer's caret moves over a blank page.
                 publisher.document_snapshot(route, Transport::Json, data.clone());
+            }
+            (Some(route), CollabRequest::OfferBlob { hash, bytes }) => {
+                // The bytes behind a reference the app has just published.
+                // This is the only path they have out of the app's sandbox,
+                // and until this landed the shell held a document naming a
+                // photograph it did not have and could send nobody.
+                if !publisher.offer_blob(route, Transport::Json, hash, bytes) {
+                    tracing::warn!(
+                        hash = %hash, bytes = bytes.len(),
+                        "collab_broker: could not take content from peer-{}; a document \
+                         referencing it will show a placeholder on every other machine",
+                        peer.id,
+                    );
+                }
+            }
+            (Some(route), CollabRequest::WantBlob { hash }) => {
+                // Answer from this machine's store if the content is already
+                // here — a peer may have offered it before the app that needs
+                // it existed. Otherwise ask the room.
+                if let Some(bytes) = publisher.blob(hash) {
+                    let evt = CollabEvent::BlobArrived {
+                        hash: hash.clone(),
+                        bytes,
+                    };
+                    if let Ok(json) = serde_json::to_vec(&evt) {
+                        let _ = write_frame(&peer.writer, &json);
+                    }
+                } else {
+                    publisher.want_blob(route, Transport::Json, hash);
+                }
+            }
+            (
+                None,
+                CollabRequest::OfferBlob { .. } | CollabRequest::WantBlob { .. },
+            ) => {
+                tracing::warn!(
+                    "collab_broker: peer-{} offered or asked for document content \
+                     before saying Hello — it has no route, so the content cannot \
+                     reach or come from another machine",
+                    peer.id,
+                );
             }
             (Some(route), CollabRequest::Presence { .. }) => {
                 // Presence has to take the bridge too: the local
@@ -1817,6 +1875,7 @@ fn spawn_inner(
             let inbound = net.inbound_app_crdt_handle();
             let presence_inbound = net.inbound_app_presence_handle();
             let snapshot_inbound = net.inbound_app_crdt_snapshot_handle();
+            let blob_inbound = net.inbound_blob_handle();
             let signed_inbound = net.inbound_app_crdt_signed_handle();
             let sb_req_inbound = net.inbound_scrollback_request_handle();
             let sb_resp_inbound = net.inbound_scrollback_response_handle();
@@ -1913,6 +1972,52 @@ fn spawn_inner(
                                 entry.cluster_id,
                                 entry.record_id,
                             );
+                            drain_table.fanout_to_route(&event, u64::MAX, &route);
+                        }
+
+                        // Drain content that arrived from the room and hand it
+                        // to the local apps that are waiting on it.
+                        //
+                        // This shell holding a photograph is not a photograph
+                        // on a page: the app that draws it is another process
+                        // with a store of its own, deliberately — the launcher
+                        // gives every app a private `HOME` and
+                        // `XDG_CACHE_HOME`, so there is no directory the two
+                        // can share. Until the bytes are handed down, the app
+                        // goes on drawing the placeholder while the shell one
+                        // layer below has everything needed to stop it.
+                        //
+                        // Cluster scope with no app and no record, because
+                        // content is addressed by its own hash: two apps in a
+                        // room may reference the same picture from two
+                        // different documents, and both should get it.
+                        let drained_blobs: Vec<_> = {
+                            let mut buf = match blob_inbound.lock() {
+                                Ok(g) => g,
+                                Err(_) => break,
+                            };
+                            std::mem::take(&mut *buf)
+                        };
+                        for entry in drained_blobs {
+                            let Some(bytes) = drain_net.holds_blob(&entry.hash) else {
+                                tracing::warn!(
+                                    room = %entry.cluster_id, hash = %entry.hash,
+                                    "collab_broker: content was reported as arrived but is \
+                                     not in this machine's store; the image using it stays \
+                                     a placeholder",
+                                );
+                                continue;
+                            };
+                            tracing::info!(
+                                room = %entry.cluster_id, hash = %entry.hash,
+                                bytes = bytes.len(),
+                                "collab_broker: handing arrived content to the apps in this room",
+                            );
+                            let event = CollabEvent::BlobArrived {
+                                hash: entry.hash,
+                                bytes,
+                            };
+                            let route = CrdtRoute::cluster(entry.cluster_id);
                             drain_table.fanout_to_route(&event, u64::MAX, &route);
                         }
 

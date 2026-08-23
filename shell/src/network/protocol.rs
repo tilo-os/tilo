@@ -466,6 +466,33 @@ pub enum NeighbourMsg {
         #[serde(default)]
         data: Vec<u8>,
     },
+    /// "A document here names content I do not have. Whoever holds it, send it."
+    ///
+    /// # Why a push alone was not enough
+    ///
+    /// Content used to travel only as an unsolicited offer from whoever had
+    /// just stored it, once per room per hash. Every way of missing that one
+    /// broadcast was therefore permanent: a peer that joined after it, a mesh
+    /// that had not finished forming when it went out, a single dropped chunk.
+    /// The document was left naming a picture that would never arrive, and the
+    /// only symptom was a placeholder that never resolved.
+    ///
+    /// A request makes the transfer *recoverable* rather than one-shot: the
+    /// side that discovers it is missing something is the side that knows,
+    /// and it can say so as often as it needs to. Answering is cheap and safe
+    /// — the answer is content-addressed, so a peer can only ever serve the
+    /// bytes the requester already named.
+    BlobRequest {
+        /// Hashed libp2p PeerId of the asker, so a shell ignores its own echo.
+        peer: PeerId,
+        /// The room the request is scoped to. A shell not in it does not answer:
+        /// holding a hash is not a reason to serve it to strangers.
+        #[serde(default)]
+        cluster_id: String,
+        /// blake3 hex of the content wanted.
+        #[serde(default)]
+        hash: String,
+    },
 }
 
 impl NeighbourMsg {
@@ -493,6 +520,7 @@ impl NeighbourMsg {
             Self::ScrollbackRequest { .. } => "ScrollbackRequest",
             Self::ScrollbackResponse { .. } => "ScrollbackResponse",
             Self::BlobChunk { .. } => "BlobChunk",
+            Self::BlobRequest { .. } => "BlobRequest",
         }
     }
 

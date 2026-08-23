@@ -216,6 +216,12 @@ pub struct ShellNetwork {
     /// record references something that has not arrived, or is waiting on a
     /// change it was never sent.
     blob_relay: Arc<Mutex<crate::network::blob_relay::BlobRelay>>,
+    /// Content that has arrived whole and verified, awaiting hand-off to the
+    /// local apps that reference it. The shell holding a photograph is not the
+    /// same as a photograph being on a page — the app that draws it is another
+    /// process with its own store, and it keeps drawing a placeholder until
+    /// the bytes are handed down. See [`Self::inbound_blob_handle`].
+    inbound_blob: Arc<Mutex<Vec<InboundBlob>>>,
     /// Phase 6 buffer of inbound cooperative-scrollback *requests*.
     /// The broker's drainer reads these, consults its local op log,
     /// and (if it has any matching ops) publishes a corresponding
@@ -228,6 +234,16 @@ pub struct ShellNetwork {
     /// `CollabEvent::ScrollbackBatch`. See
     /// [`Self::inbound_scrollback_response_handle`].
     inbound_scrollback_response: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
+}
+
+/// Content that arrived whole and verified, waiting to be handed to the local
+/// apps in `cluster_id` that reference it.
+#[derive(Debug, Clone)]
+pub struct InboundBlob {
+    /// The room it belongs to; only apps in it are offered the bytes.
+    pub cluster_id: String,
+    /// blake3 hex of the content, which is also its name in every store.
+    pub hash: String,
 }
 
 /// One received app-CRDT incremental update, queued by
@@ -448,6 +464,7 @@ impl ShellNetwork {
             inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
             snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
             blob_relay: Arc::new(Mutex::new(crate::network::blob_relay::BlobRelay::new())),
+            inbound_blob: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         })
@@ -595,15 +612,30 @@ impl ShellNetwork {
         });
     }
 
-    /// Offer the room any content this frame newly refers to, and say so when
-    /// a document is referencing something nobody here can supply.
+    /// Offer the room any content this frame newly refers to, and **ask** the
+    /// room for anything it refers to that this machine does not hold.
     ///
-    /// Content is pushed rather than requested. The side that just stored a
-    /// blob is by definition the side that has it, and a peer that has only
-    /// the reference cannot ask for what it has not heard of yet without a
-    /// round trip that delays the image for no benefit. Offers are made once
-    /// per room per hash, so editing a document a hundred times does not send
-    /// its photograph a hundred times.
+    /// # Why both directions
+    ///
+    /// This used to push only. The side that had just stored a blob offered it
+    /// once per room per hash, and a side holding only the reference did
+    /// nothing but log. That is correct exactly when the one broadcast lands,
+    /// and permanently wrong every other time — a peer that joined afterwards,
+    /// a mesh still forming when it went out, a dropped chunk. All three end
+    /// the same way: a document naming a picture that will never arrive, and
+    /// a placeholder that never resolves.
+    ///
+    /// It was also wrong in a way pushing alone can never fix. The bytes are
+    /// held by the *app*, in its own sandbox, and the shell learns of them
+    /// only when the app offers them ([`Self::offer_local_blob`]). Until then
+    /// the shell holds the reference and not the content — indistinguishable,
+    /// from here, from a peer that is missing it. So the sending shell was
+    /// classifying its own document's photograph as "missing" and sending
+    /// nothing at all.
+    ///
+    /// Asking is safe because the answer is content-addressed: a peer can only
+    /// ever return the bytes the asker already named, and a wrong answer fails
+    /// to verify and is discarded.
     fn sync_content(&self, cluster_id: &str, record_id: &str, frame: &[u8]) {
         if cluster_id.is_empty() {
             return;
@@ -622,51 +654,220 @@ impl ShellNetwork {
                 room = %cluster_id,
                 record = %record_id,
                 missing = obs.missing_ancestors,
-                "shell_network: this document is waiting on {} change(s) it was never sent;                  it will read as the text before the gap until they arrive",
+                "shell_network: this document is waiting on {} change(s) it was never sent; \
+                 it will read as the text before the gap until they arrive",
                 obs.missing_ancestors,
             );
         }
+        let ws = self.active_ws_for_publish();
         for hash in &obs.missing {
+            if !relay.should_ask(cluster_id, hash) {
+                continue;
+            }
             tracing::info!(
                 room = %cluster_id, record = %record_id, hash = %hash,
-                "shell_network: this document references content that has not arrived;                  it renders as a placeholder until a peer offers it",
+                "shell_network: this document references content this machine does not hold; \
+                 asking the room for it. It renders as a placeholder until it arrives",
+            );
+            let msg = NeighbourMsg::BlobRequest {
+                peer: self.local_peer_id_hash(),
+                cluster_id: cluster_id.to_string(),
+                hash: hash.clone(),
+            };
+            if self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_err() {
+                tracing::warn!(
+                    room = %cluster_id, hash = %hash,
+                    "shell_network: could not send the request for this content; \
+                     the image stays a placeholder until the next attempt",
+                );
+            }
+        }
+        for hash in &obs.have {
+            if relay.already_announced(cluster_id, hash) {
+                continue;
+            }
+            relay.mark_announced(cluster_id, hash);
+            self.publish_blob(&mut relay, cluster_id, hash, "offered to the room");
+        }
+        self.report_unanswered(&mut relay);
+    }
+
+    /// Put every chunk of `hash` on the room's topic.
+    ///
+    /// Shared by the unsolicited offer and the answer to a request, so the two
+    /// cannot drift in how they split, address or count the pieces.
+    fn publish_blob(
+        &self,
+        relay: &mut crate::network::blob_relay::BlobRelay,
+        cluster_id: &str,
+        hash: &str,
+        why: &str,
+    ) {
+        let Some(bytes) = relay.store().get(hash) else {
+            // Only reachable if the store lost content between the check and
+            // here. Worth a line: from a peer's side this looks like an offer
+            // that never came.
+            tracing::warn!(
+                room = %cluster_id, hash = %hash,
+                "shell_network: content vanished from the store before it could be sent",
+            );
+            return;
+        };
+        let Some(chunks) = crate::network::blob_relay::BlobRelay::split(&bytes) else {
+            tracing::error!(
+                room = %cluster_id, hash = %hash,
+                bytes = bytes.len(),
+                limit = crate::network::blob_relay::MAX_BLOB_BYTES,
+                "shell_network: this content is too large to send; peers will show a \
+                 placeholder for it and no retry will change that",
+            );
+            return;
+        };
+        let count = chunks.len() as u32;
+        let ws = self.active_ws_for_publish();
+        let mut sent = 0u32;
+        for (index, data) in chunks.into_iter().enumerate() {
+            let msg = NeighbourMsg::BlobChunk {
+                peer: self.local_peer_id_hash(),
+                cluster_id: cluster_id.to_string(),
+                hash: hash.to_string(),
+                index: index as u32,
+                count,
+                data,
+            };
+            if self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok() {
+                sent += 1;
+            }
+        }
+        if sent < count {
+            // A partial send is a transfer that cannot complete. The receiver
+            // will ask again, but this end has to say what it did.
+            tracing::warn!(
+                room = %cluster_id, hash = %hash, sent, count,
+                "shell_network: only {sent} of {count} pieces of this content could be \
+                 queued; peers will have to ask again",
+            );
+            return;
+        }
+        tracing::info!(
+            room = %cluster_id, hash = %hash, bytes = bytes.len(), chunks = count,
+            "shell_network: {why}",
+        );
+    }
+
+    /// Report requests that have gone unanswered past every retry.
+    ///
+    /// The defect this whole area came from was a failure that said nothing.
+    /// A picture that will not arrive is a fact the log has to carry before a
+    /// person notices a grey box.
+    fn report_unanswered(&self, relay: &mut crate::network::blob_relay::BlobRelay) {
+        for (room, hash, waited) in relay.unanswered() {
+            tracing::error!(
+                room = %room, hash = %hash, waited_s = waited,
+                "shell_network: asked the room for this content repeatedly over {waited}s and \
+                 nobody answered; the image referencing it will stay a placeholder",
             );
         }
+    }
 
-        for hash in obs.have {
-            if relay.already_announced(cluster_id, &hash) {
-                continue;
-            }
-            let Some(bytes) = qdoc::blobstore::get(&hash) else {
-                continue;
-            };
-            let Some(chunks) = crate::network::blob_relay::BlobRelay::split(&bytes) else {
-                tracing::error!(
-                    room = %cluster_id, record = %record_id, hash = %hash,
-                    bytes = bytes.len(),
-                    limit = crate::network::blob_relay::MAX_BLOB_BYTES,
-                    "shell_network: this content is too large to send; peers will show a                      placeholder for it and no retry will change that",
-                );
-                relay.mark_announced(cluster_id, &hash);
-                continue;
-            };
-            relay.mark_announced(cluster_id, &hash);
-            let count = chunks.len() as u32;
-            let ws = self.active_ws_for_publish();
-            for (index, data) in chunks.into_iter().enumerate() {
-                let msg = NeighbourMsg::BlobChunk {
-                    peer: self.local_peer_id_hash(),
-                    cluster_id: cluster_id.to_string(),
-                    hash: hash.clone(),
-                    index: index as u32,
-                    count,
-                    data,
-                };
-                let _ = self.cmd_tx.try_send(NetCmd::Publish { ws, msg });
-            }
-            tracing::info!(
-                room = %cluster_id, hash = %hash, bytes = bytes.len(), chunks = count,
-                "shell_network: offered this document's content to the room",
+    /// Answer a peer's request for content, when this machine holds it.
+    ///
+    /// Deliberately ignores the once-per-room `announced` mark: the whole
+    /// reason a peer is asking is that it did not get the announcement, so
+    /// treating "already offered" as "already delivered" is the bug.
+    pub fn handle_blob_request_message(&self, peer: u64, cluster_id: String, hash: String) {
+        let Ok(mut relay) = self.blob_relay.lock() else {
+            return;
+        };
+        if !relay.holds(&hash) {
+            tracing::debug!(
+                from = peer, room = %cluster_id, hash = %hash,
+                "shell_network: a peer asked for content this machine does not hold either",
+            );
+            return;
+        }
+        self.publish_blob(&mut relay, &cluster_id, &hash, "sent on request from a peer");
+    }
+
+    /// Take content an app on this machine has just stored, and offer it.
+    ///
+    /// This is the seam the transfer was missing. An app holds its blobs in
+    /// its own sandbox — the launcher gives every app a private `HOME` and
+    /// `XDG_CACHE_HOME`, so there is no directory the shell and the app can
+    /// both read, and there must not be. The bytes therefore reach the shell
+    /// the same way everything else an app shares does: over the collaboration
+    /// socket. Without this the shell only ever saw the *reference* its app
+    /// published, classified its own photograph as content it was missing, and
+    /// sent nothing.
+    ///
+    /// Returns whether the content was stored, so the broker can say so.
+    pub fn offer_local_blob(&self, cluster_id: &str, hash: &str, bytes: &[u8]) -> bool {
+        let Ok(mut relay) = self.blob_relay.lock() else {
+            return false;
+        };
+        if !relay.store_arrived(hash, bytes) {
+            tracing::warn!(
+                room = %cluster_id, hash = %hash, bytes = bytes.len(),
+                "shell_network: refused content from a local app — it does not hash to the \
+                 name it was offered under, so it is not that content",
+            );
+            return false;
+        }
+        if cluster_id.is_empty() {
+            // Held, but not shared: an app with no room has no peers to offer
+            // it to. Storing it still matters — it is what lets this shell
+            // answer if the app later joins one.
+            return true;
+        }
+        relay.mark_announced(cluster_id, hash);
+        self.publish_blob(&mut relay, cluster_id, hash, "offered a local app's content to the room");
+        true
+    }
+
+    /// Whether this machine holds `hash`, so the broker can answer an app
+    /// without a round trip through the room.
+    pub fn holds_blob(&self, hash: &str) -> Option<Vec<u8>> {
+        let relay = self.blob_relay.lock().ok()?;
+        relay.store().get(hash)
+    }
+
+    /// Queue arrived content for hand-off to local apps.
+    pub fn note_blob_arrived(&self, cluster_id: &str, hash: &str) {
+        if let Ok(mut buf) = self.inbound_blob.lock() {
+            buf.push(InboundBlob {
+                cluster_id: cluster_id.to_string(),
+                hash: hash.to_string(),
+            });
+        }
+    }
+
+    /// Shared handle to the arrived-content buffer, drained by the broker and
+    /// pushed to the apps that are waiting on a picture.
+    pub fn inbound_blob_handle(&self) -> Arc<Mutex<Vec<InboundBlob>>> {
+        Arc::clone(&self.inbound_blob)
+    }
+
+    /// Ask the room for content a local app needs and this machine lacks.
+    pub fn want_blob(&self, cluster_id: &str, hash: &str) {
+        if cluster_id.is_empty() {
+            return;
+        }
+        let Ok(mut relay) = self.blob_relay.lock() else {
+            return;
+        };
+        if !relay.should_ask(cluster_id, hash) {
+            return;
+        }
+        let msg = NeighbourMsg::BlobRequest {
+            peer: self.local_peer_id_hash(),
+            cluster_id: cluster_id.to_string(),
+            hash: hash.to_string(),
+        };
+        let ws = self.active_ws_for_publish();
+        if self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_err() {
+            tracing::warn!(
+                room = %cluster_id, hash = %hash,
+                "shell_network: could not ask the room for content an app is waiting on",
             );
         }
     }
@@ -675,6 +876,9 @@ impl ShellNetwork {
     ///
     /// Public so an integration test can drive it without standing up
     /// gossipsub, mirroring the other `handle_*_message` adapters.
+    ///
+    /// Returns the hash when a whole, verified blob landed, so the caller can
+    /// tell the local apps that were waiting on it.
     pub fn handle_blob_chunk_message(
         &self,
         peer: u64,
@@ -682,20 +886,25 @@ impl ShellNetwork {
         index: u32,
         count: u32,
         data: Vec<u8>,
-    ) {
+    ) -> Option<String> {
         let Ok(mut relay) = self.blob_relay.lock() else {
-            return;
+            return None;
         };
-        if let Some(whole) = relay.accept_chunk(peer, &hash, index, count, data) {
-            let bytes = whole.len();
-            if qdoc::blobstore::store().put(&hash, &whole) {
-                tracing::info!(
-                    from = peer, hash = %hash, bytes,
-                    "shell_network: content arrived and verified; the image it backs can render",
-                );
-            } else {
-                tracing::warn!(from = peer, hash = %hash, bytes, "shell_network: could not store content");
-            }
+        let whole = relay.accept_chunk(peer, &hash, index, count, data)?;
+        let bytes = whole.len();
+        if relay.store_arrived(&hash, &whole) {
+            tracing::info!(
+                from = peer, hash = %hash, bytes,
+                "shell_network: content arrived and verified; the image it backs can render",
+            );
+            Some(hash)
+        } else {
+            tracing::warn!(
+                from = peer, hash = %hash, bytes,
+                "shell_network: content arrived but could not be stored; the image it backs \
+                 stays a placeholder",
+            );
+            None
         }
     }
 
@@ -917,6 +1126,11 @@ impl ShellNetwork {
             );
             return;
         }
+        // Same reason as the receive side: a whole document is the frame that
+        // establishes the record, and the relay's mirror needs it or every
+        // later increment lands on a hole and the document's content becomes
+        // invisible to this code.
+        self.sync_content(&cluster_id, &record_id, &data);
         let msg = NeighbourMsg::AppCrdtSnapshot {
             peer: self.local_peer_id_hash(),
             app_id,
@@ -1493,12 +1707,36 @@ impl ShellNetwork {
                 } = msg
                 {
                     if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
-                        self.handle_blob_chunk_message(
+                        if let Some(landed) = self.handle_blob_chunk_message(
                             peer_hash,
                             hash.clone(),
                             index,
                             count,
                             data.clone(),
+                        ) {
+                            // Tell the apps waiting on it. A shell holding the
+                            // bytes is not a picture on a page: the app that
+                            // renders it is a different process with its own
+                            // store, and until it is handed the content it
+                            // goes on drawing a placeholder.
+                            self.note_blob_arrived(cluster_id, &landed);
+                        }
+                    }
+                    continue;
+                }
+                // A peer asking for content it holds a reference to. Answered
+                // only if this machine has the bytes and shares the room.
+                if let NeighbourMsg::BlobRequest {
+                    peer: peer_hash,
+                    ref cluster_id,
+                    ref hash,
+                } = msg
+                {
+                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
+                        self.handle_blob_request_message(
+                            peer_hash,
+                            cluster_id.clone(),
+                            hash.clone(),
                         );
                     }
                     continue;
@@ -1529,6 +1767,16 @@ impl ShellNetwork {
                         "PROBE gossip recv AppCrdtSnapshot",
                     );
                     if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
+                        // A whole document has to be folded into the mirror as
+                        // much as an increment does — more so. It is the frame
+                        // that *creates* the record for a peer with no history,
+                        // so a mirror that never sees it is missing the change
+                        // every later one is built on: `qdoc::model::open`
+                        // fails on it, and the relay reports no content at all
+                        // for a document that plainly references some. That is
+                        // why neither end of a real session ever logged a word
+                        // about the photograph it was failing to move.
+                        self.sync_content(cluster_id, record_id, data);
                         self.handle_app_crdt_snapshot_message(
                             peer_hash,
                             app_id.clone(),
@@ -1667,6 +1915,20 @@ pub(crate) fn shell_network_for_test(
     tree: WorkspaceTreeHandle,
     local_peer_hash: u64,
 ) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
+    shell_network_for_test_with_store(tree, local_peer_hash, qdoc::blobstore::store())
+}
+
+/// [`shell_network_for_test`] with a store of its own.
+///
+/// Two peers are two stores. A test that lets both ends read the process-wide
+/// singleton can assert a transfer succeeded while no transfer happened at
+/// all, which is exactly the shape of failure this module exists to prevent.
+#[cfg(test)]
+pub(crate) fn shell_network_for_test_with_store(
+    tree: WorkspaceTreeHandle,
+    local_peer_hash: u64,
+    store: Arc<dyn qdoc::blobstore::BlobStore>,
+) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
     let (event_tx, event_rx) = mpsc::channel(64);
     let net = ShellNetwork {
@@ -1687,7 +1949,10 @@ pub(crate) fn shell_network_for_test(
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
         snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
-        blob_relay: Arc::new(Mutex::new(crate::network::blob_relay::BlobRelay::new())),
+        blob_relay: Arc::new(Mutex::new(
+            crate::network::blob_relay::BlobRelay::with_store(store),
+        )),
+        inbound_blob: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
     };
@@ -2522,6 +2787,208 @@ mod tests {
             img.attrs.get("blob"),
             Some(&qdoc::snapshot::AttrVal::Str(photo_hash)),
             "the reference must name the content that arrived",
+        );
+    }
+
+    /// A photograph must reach a peer that missed the moment it was offered.
+    ///
+    /// This is the defect as a person met it: the run sheet, the prose and
+    /// every keystroke converged on the second machine, and where the picture
+    /// belonged there was a grey box reading "image". The reference crossed;
+    /// the bytes did not.
+    ///
+    /// Two things had to be true at once for that, and this test holds both:
+    ///
+    /// - **Two peers are two stores.** Each side gets its own, so "the guest
+    ///   has the photograph" cannot be satisfied by the sender's copy. The
+    ///   process-wide singleton made that mistake easy to write and impossible
+    ///   to see.
+    /// - **The one offer is missed.** The chunks the host emits unprompted are
+    ///   dropped here rather than delivered — which is what a peer that joined
+    ///   afterwards, a mesh still forming, or a lost piece all look like from
+    ///   the guest's side. Every one of those was permanent, because content
+    ///   was offered once per room per hash and never asked for.
+    ///
+    /// Against the previous code this could not pass: the guest observed a
+    /// reference it could not resolve, wrote one line about it, and stopped.
+    /// Nothing on the wire asked for the content, so the placeholder was the
+    /// end state rather than a state on the way to the picture.
+    #[test]
+    fn a_photograph_reaches_a_peer_that_missed_the_offer() {
+        use automerge::{AutoCommit, ROOT};
+        use qdoc::blobstore::{BlobStore, MemoryBlobStore};
+        use qdoc::model::{self, DocMut, IdGen};
+
+        const ROOM: &str = "6b3f9a10-0000-4000-8000-00000000000d";
+        const RECORD: &str = "file:/work/shared/harbour.qdoc";
+
+        let photo: Vec<u8> = {
+            let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            v.extend_from_slice(&13u32.to_be_bytes());
+            v.extend_from_slice(b"IHDR");
+            v.extend_from_slice(&512u32.to_be_bytes());
+            v.extend_from_slice(&320u32.to_be_bytes());
+            v.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+            let mut x = 0x9E37_79B9_7F4A_7C15u64;
+            while v.len() < 98_304 {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                v.push((x >> 33) as u8);
+            }
+            v
+        };
+        let photo_hash = qdoc::blobstore::hash_bytes(&photo);
+
+        // Two machines, two stores. The host holds the picture because its own
+        // app handed it over; the guest holds nothing at all.
+        let host_store: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::default());
+        let guest_store: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::default());
+        assert!(host_store.put(&photo_hash, &photo));
+
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (host, mut host_rx) =
+            shell_network_for_test_with_store(tree.clone(), 0x400D_5EED, Arc::clone(&host_store));
+        let (guest, mut guest_rx) =
+            shell_network_for_test_with_store(tree, 0x64E57, Arc::clone(&guest_store));
+
+        // --- the host's document, with a photograph in it ----------------
+        let mut doc = AutoCommit::new();
+        let c = model::init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let p = dm.insert_block(None, "paragraph");
+            dm.splice_text(&p, 0, 0, "Run sheet.");
+            let h = dm.put_blob(&photo);
+            assert_eq!(h, photo_hash, "the fixture must be the content the store holds");
+            let img = dm.insert_block(Some(&p), "image");
+            dm.set_attr(&img, "blob", h.as_str());
+        }
+        host.publish_app_crdt_incremental(
+            "dev.qos.word-processor".into(),
+            ROOM.into(),
+            RECORD.into(),
+            doc.save_incremental(),
+        );
+
+        // --- the guest misses the offer ----------------------------------
+        // Keep the document frames; drop every chunk. This is a peer that
+        // joined a moment late, or a mesh that had not finished forming.
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        let mut offered = 0usize;
+        while let Ok(cmd) = host_rx.try_recv() {
+            let NetCmd::Publish { msg, .. } = cmd else { continue };
+            match msg {
+                NeighbourMsg::AppCrdtIncremental { data, .. } => frames.push(data),
+                NeighbourMsg::BlobChunk { .. } => offered += 1,
+                _ => {}
+            }
+        }
+        assert!(!frames.is_empty(), "the document itself must have gone out");
+        assert!(offered > 0, "the host must have offered the content at least once");
+
+        // The guest folds in what it did receive, exactly as `tick` does.
+        let mut guest_doc = AutoCommit::new();
+        for f in &frames {
+            guest.sync_content(ROOM, RECORD, f);
+            guest_doc.load_incremental(f).expect("a delivered frame applies");
+        }
+
+        // The reference is here and the content is not. That is the state the
+        // frame showed: a placeholder, correctly, on a converged document.
+        let guest_c = model::open(&guest_doc, &ROOT).expect("the guest has the document");
+        assert_eq!(
+            model::blob_hashes(&guest_doc, &guest_c),
+            vec![photo_hash.clone()],
+            "the guest's document must name the photograph",
+        );
+        assert!(
+            guest_store.get(&photo_hash).is_none(),
+            "the premise of this test is that the guest does not have the bytes yet",
+        );
+
+        // --- the guest asks, the host answers ----------------------------
+        let mut asked = 0usize;
+        while let Ok(cmd) = guest_rx.try_recv() {
+            let NetCmd::Publish { msg, .. } = cmd else { continue };
+            if let NeighbourMsg::BlobRequest { cluster_id, hash, .. } = msg {
+                asked += 1;
+                host.handle_blob_request_message(0x64E57, cluster_id, hash);
+            }
+        }
+        assert!(
+            asked > 0,
+            "a peer holding a reference it cannot resolve must ask the room for the \
+             content. Without this the picture never arrives by any route, and the \
+             placeholder is the end state rather than a state on the way to a photograph",
+        );
+
+        while let Ok(cmd) = host_rx.try_recv() {
+            let NetCmd::Publish { msg, .. } = cmd else { continue };
+            if let NeighbourMsg::BlobChunk { hash, index, count, data, .. } = msg {
+                guest.handle_blob_chunk_message(0x400D_5EED, hash, index, count, data);
+            }
+        }
+
+        // --- the photograph is on the second machine ---------------------
+        assert_eq!(
+            guest_store.get(&photo_hash).as_deref(),
+            Some(photo.as_slice()),
+            "the photograph must be on the guest's machine byte-for-byte, not a \
+             placeholder standing in for it",
+        );
+        // The descriptor the renderer sizes its placeholder from describes the
+        // picture that just arrived, so the page does not reflow when the grey
+        // box becomes a photograph.
+        let meta = model::blob_meta(&guest_doc, &guest_c, &photo_hash)
+            .expect("the guest's document must describe the content it references");
+        assert_eq!((meta.mime.as_str(), meta.w, meta.h), ("image/png", 512, 320));
+        assert_eq!(meta.len, photo.len() as u64);
+    }
+
+    /// Answering a request must not be gated on "already offered".
+    ///
+    /// The offer bookkeeping exists so a document edited a hundred times does
+    /// not resend its photograph a hundred times. Letting it also suppress a
+    /// *reply* would make every recoverable miss unrecoverable, because the
+    /// peers that need the content most are exactly the ones an offer already
+    /// went out without.
+    #[test]
+    fn a_peer_that_already_offered_content_still_answers_for_it() {
+        use qdoc::blobstore::{BlobStore, MemoryBlobStore};
+
+        const ROOM: &str = "6b3f9a10-0000-4000-8000-00000000000e";
+        let content: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+        let hash = qdoc::blobstore::hash_bytes(&content);
+
+        let store: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::default());
+        assert!(store.put(&hash, &content));
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, mut rx) = shell_network_for_test_with_store(tree, 0xA11CE, Arc::clone(&store));
+
+        // Offer it once, and consume everything that produced.
+        assert!(net.offer_local_blob(ROOM, &hash, &content));
+        let mut first = 0usize;
+        while let Ok(cmd) = rx.try_recv() {
+            if let NetCmd::Publish { msg: NeighbourMsg::BlobChunk { .. }, .. } = cmd {
+                first += 1;
+            }
+        }
+        assert!(first > 0, "the offer must have gone out");
+
+        // Now a peer says it missed it.
+        net.handle_blob_request_message(0xBEEF, ROOM.to_string(), hash.clone());
+        let mut again = 0usize;
+        while let Ok(cmd) = rx.try_recv() {
+            if let NetCmd::Publish { msg: NeighbourMsg::BlobChunk { .. }, .. } = cmd {
+                again += 1;
+            }
+        }
+        assert_eq!(
+            again, first,
+            "a request must be answered in full even though the content was already \
+             offered once — the asker is asking precisely because it did not get it",
         );
     }
 
