@@ -151,6 +151,29 @@ WORD_PROCESSOR = "dev.qos.word-processor"
 # two a session enumerates zero applications and every launch fails with
 # "no bundle was found". Documents and identities stay per-session; the
 # installed-app store and the runtime bundle are the machine's.
+# Where the three sessions' home directories live.
+#
+# Deliberately *not* under `--out`. The run directory is inside the
+# checkout, and Files draws the path it is showing: a home under
+# `target/` puts the worktree, `.claude` and the branch name on screen
+# in the first shot of the film. Every component of this one reads as a
+# machine's own, and the trail ends `… › home › ada`.
+#
+# It is still throwaway state — wiped and rebuilt per run, like the run
+# directory — just somewhere that does not name the tooling.
+#
+# It cannot be `/home/<user>`, which is what would render perfectly:
+# that is the real user's home and is not ours to write into. See the
+# note in `stage_home`, and `docs/demo-todo.md` for the app-side fix
+# that would make the path stop mattering.
+HOMES_ROOT = "/var/tmp/qos/home"
+
+# The photograph beat 8 inserts, by the name it wears on screen
+# and in the chooser. Named once because three places have to
+# agree about it: the staging that writes it, the assertion that
+# it is there, and the chooser row that is clicked.
+PHOTO_NAME = "harbour.png"
+
 MACHINE_APPS = os.path.expanduser("~/.local/share/qos-apps")
 RUNTIME_BUNDLES = os.path.expanduser("~/.local/share/qos-runtime")
 # A registry holding the word processor built from *this* tree. The
@@ -168,6 +191,26 @@ AGENT_SCOPE = f"app:{WORD_PROCESSOR}"
 # What ada types into the document, and what bob's session is then
 # asked whether it holds.
 TYPED_TEXT = "the same document on both machines"
+
+# Beat 9. The agent reads its instruction out of the document itself —
+# a paragraph addressed to it by name (`apps/agent/src/plan.rs`) — and
+# turns the run of bullets immediately above into a table. So the list
+# has to be there first, and it has to be worth reading: the failure
+# this replaces produced a table with nothing in it, which a transcript
+# asking only "is there a table" cannot tell from success.
+# `- ` at the start of a paragraph autoformats into a list item
+# (`word_processor.rs:2160`), and Enter continues the list, so one
+# prefix makes the whole run. It has to *be* a run of `list_item`
+# blocks: the agent converts those and nothing else
+# (`plan.rs::bullets_above`), and a run of plain paragraphs is what
+# produced a table with empty cells. The `: ` splits each line into two
+# columns (`plan.rs::split_cells`).
+AGENT_BULLETS = "\n- Doors: 18:00\nSound check: 18:30\nSeating: 240\n\n"
+AGENT_INSTRUCTION = "Claude: turn the bullets into a table\n"
+# One cell's text, looked for in the document afterwards. If the table
+# came out empty this is gone, and the claim fails instead of passing on
+# the existence of a grid.
+AGENT_BULLET_PROOF = "Sound check"
 
 # How long to wait for a change to cross between sessions.
 SYNC_TIMEOUT_S = 25.0
@@ -683,6 +726,24 @@ class Session:
         ok(call(self.sock, {"op": "modifiers", "ctrl": ctrl, "shift": shift,
                             "alt": alt, "logo": logo}))
 
+    # -- the clipboard (how a token crosses machines) ----------------
+
+    def clipboard_read(self) -> str | None:
+        """What this session's clipboard holds."""
+        return (call(self.sock, {"op": "clipboard_paste"})
+                .get("clipboard") or {}).get("text")
+
+    def clipboard_write(self, text: str) -> None:
+        """Put `text` on this session's clipboard.
+
+        Used for the hop between two machines, which is a person's job —
+        a chat message, an email, a USB stick — and not the OS's. What
+        travels is taken from the *issuing* session's clipboard, so a
+        copy that silently truncated is a failure here rather than a
+        token that happens to work because the harness had it anyway.
+        """
+        ok(call(self.sock, {"op": "clipboard_copy", "text": text}))
+
     # -- painting ----------------------------------------------------
 
     def snapshot(self, path: str) -> str:
@@ -750,16 +811,25 @@ class Session:
 # demo is given more real time to be longer in (`--record-dwell`,
 # `--record-cut-dwell`), never more frames than it took.
 VIDEO_W, VIDEO_H = 1920, 1080
-# What each session is recorded at: the video's own size, so a frame
-# goes in untouched. Resampling is the difference between a readable
-# screen and a blurred one, and there is no reason to pay it here.
-RECORD_SIZE = f"{VIDEO_W}x{VIDEO_H}"
 
 # The lower third. The name of the session and what it is, over a scrim
 # dark enough to stay legible against whatever it is sitting on — and
 # nothing else. The transcript belongs in the terminal; on the video it
 # was a wall of text nobody reads while a screen is moving underneath.
 BAND_H = 66
+
+# What each session is recorded at: the video's size *minus the band*.
+#
+# The band used to be drawn over the frame, and a compositor laying out
+# for the full 1080 put the bottom of every window under it — a status
+# bar, a word count, the foot of a file list, clipped in every shot that
+# mattered. Nothing in the compositor is wrong there; the camera was
+# covering a screen it had asked to be full height.
+#
+# So the session is given the height the video can actually show, and
+# the band occupies the strip below it. A frame still goes in 1:1 with
+# nothing resampled, and no pixel the compositor drew is hidden.
+RECORD_SIZE = f"{VIDEO_W}x{VIDEO_H - BAND_H}"
 BAND_SCRIM = "black@0.72"
 BAND_PAD_X = 52
 
@@ -1164,11 +1234,17 @@ class Recorder:
         rel_track = self._concat_list(timeline)
 
         chain = [f"fps={fps}"]
+        # The band sits *below* the screen rather than over it. A session
+        # recorded at the video's height minus the band goes in 1:1 and
+        # is padded downwards, so the strip the band occupies is empty
+        # canvas and no window is ever covered by it. See RECORD_SIZE.
+        if (source_w, source_h) == (VIDEO_W, VIDEO_H - BAND_H):
+            chain.append(f"pad={VIDEO_W}:{VIDEO_H}:0:0:color={BG}")
         # No scale filter at all when the session already renders at the
         # video's size, which is what `--record-size` picks by default.
         # Resampling a 1:1 frame would cost exactly the legibility that
         # recording full-frame was for.
-        if (source_w, source_h) != (VIDEO_W, VIDEO_H):
+        elif (source_w, source_h) != (VIDEO_W, VIDEO_H):
             k = min(VIDEO_W / source_w, VIDEO_H / source_h)
             w, h = _even(source_w * k), _even(source_h * k)
             print(f"  {size} is not {VIDEO_W}x{VIDEO_H}; frames are resampled "
@@ -1344,20 +1420,95 @@ def peer_id_of(s: Session) -> str:
     return "<unknown>"
 
 
-def frame_both_windows(s: Session) -> None:
-    """Give every group in the strip an even share of it.
+def windows_off_screen(s: Session, viewport: tuple[int, int]) -> list[str]:
+    """Which client windows are not wholly on screen, and by how much.
 
-    The default is about three quarters each, which is right for reading
-    one window and wrong for filming two: the second one opens mostly
-    past the right edge, and a beat whose subject is that window shows
-    half of it. This is a camera decision, not a claim — it changes what
-    is in frame and nothing about what happened.
+    Read off the compositor's own per-surface rects rather than off a
+    picture, because "the left window is cut in half" and "the left
+    window is behind the right one" look similar in a still and are
+    different faults. A window that is not fully in frame is named here
+    so a beat can refuse to claim what its own shot does not show.
+    """
+    w, h = viewport
+    out = []
+    for f in s.foreign_frames():
+        r = f.get("rect") or {}
+        x0, y0 = r.get("x", 0.0), r.get("y", 0.0)
+        x1, y1 = x0 + r.get("w", 0.0), y0 + r.get("h", 0.0)
+        over = []
+        if x0 < -0.5:
+            over.append(f"{-x0:.0f}px off the left")
+        if x1 > w + 0.5:
+            over.append(f"{x1 - w:.0f}px past the right")
+        if y1 > h + 0.5:
+            over.append(f"{y1 - h:.0f}px below the screen")
+        if over:
+            out.append(f"{f.get('app_id')} — {', '.join(over)}")
+    return out
+
+
+def frame_both_windows(s: Session, viewport: tuple[int, int] | None = None) -> None:
+    """Put the whole strip in frame: even shares, and scrolled back.
+
+    Two separate things go wrong, and only the first was being handled.
+
+    A group takes about three quarters of the strip by default, which is
+    right for reading one window and wrong for filming two — so every
+    group is given an even share.
+
+    The second is the strip's scroll offset. Opening a window in a new
+    group scrolls the strip to bring *that* group up, and it does not
+    come back when the content would fit whole: measured at 1920 wide,
+    two even groups land at `-222 … 578` and `586 … 1386`, so the first
+    window is cut by 222px on the left while 534px of empty backdrop
+    sits on the right. Narrowing the groups does not help — the offset
+    stays at -222 and only the windows get smaller — and scrolling the
+    backdrop does not move it either.
+
+    Focusing the leftmost group does move it: the same two windows then
+    sit at `291 … 1091` and `1099 … 1899`, both whole, filling the strip
+    beside the wheel disc. So that is the gesture — a click on the
+    window you have just opened something next to, which is what a
+    person does anyway.
+
+    It is aimed at the tab pill rather than into the window's body: a
+    click in the body reaches the client and selects whatever is under
+    it, and a file row highlighted by the camera is the camera making
+    the picture rather than the demo.
     """
     resp = s.set_group_width(500)
     if "err" in resp:
         note(f"{s.name}: could not even out the strip — "
              f"{json.dumps(resp['err'])[:120]}")
     s.settle(0.6)
+
+    # The leftmost client tile, by where it is drawn rather than by the
+    # order the tree lists it in.
+    tiles = []
+    for name in s.target_names():
+        if not name.startswith("foreign-surface-"):
+            continue
+        rect = s.named_rect(name)
+        if rect:
+            tiles.append((rect[0], name, rect))
+    if len(tiles) > 1:
+        tiles.sort()
+        _x, name, rect = tiles[0]
+        x, y, w, _h = rect
+        # The pill sits above the tile's top edge; 18px up lands on it
+        # and stays clear of the client's own first row.
+        s.click_at(max(4.0, x + min(90.0, w / 2.0)), max(4.0, y - 18.0))
+        s.settle(0.8)
+        note(f"{s.name}: focused the left group ({name}) so the strip "
+             f"scrolls back and both windows are in frame")
+
+    if viewport:
+        clipped = windows_off_screen(s, viewport)
+        if clipped:
+            gap(f"{s.name}: a window is not wholly on screen — "
+                + "; ".join(clipped))
+        else:
+            note(f"{s.name}: every window is wholly on screen")
 
 
 def peer_sync_card_up(s: Session) -> bool:
@@ -1431,14 +1582,56 @@ def peer_id_in_token(token: str) -> str | None:
         return None
 
 
-def mint_named_invite(host: Session, peer: str, name: str) -> str | None:
-    """Invite a *named* peer, rather than whoever redeems the token.
+def show_collaborators(s: Session) -> str:
+    """Open the room's people from whatever affordance is on screen.
+
+    The top bar's avatar stack is the affordance
+    (`topbar_chrome.rs:1736` toggles `overlays.collaborators`), and it is
+    the one a person reaches for. It is only *there* once somebody is in
+    the room: with an empty roster the stack is `Rect::ZERO`
+    (`topbar_chrome.rs:1611`), so it is not drawn and cannot be clicked —
+    which is exactly the moment the host wants to invite the first
+    person. Until that is fixed the panel is opened by its address for
+    the first invite, and the route taken is named out loud, because
+    "clicked the top bar" and "opened it by address" are different
+    claims about what a viewer is being shown.
+    """
+    if s.named_rect("topbar_avatar_stack"):
+        s.click_named("topbar_avatar_stack")
+        s.settle(1.0)
+        return "the avatar stack in the top bar"
+    resp = s.invoke_action(AGENT_PROVIDER, "collaborators.open")
+    if "err" in resp:
+        note(f"{s.name}: collaborators.open refused — "
+             f"{json.dumps(resp['err'])[:120]}")
+        return "nothing - the panel could not be opened"
+    s.settle(1.0)
+    return "its address (the avatar stack is not drawn on an empty room)"
+
+
+def close_collaborators(s: Session) -> None:
+    if s.overlays().get("collaborators"):
+        s.key("Escape")
+        s.settle(0.4)
+
+
+def mint_named_invite(host: Session, peer: str, name: str,
+                      shots: str | None = None,
+                      tag: str | None = None) -> str | None:
+    """Invite a *named* peer, and get the token onto the clipboard.
 
     A plain `peer.invite` says nothing about who its token is for, and
     the host records only his own name at mint time — so naming resolved
     in one direction only: a guest saw `ada` while ada saw
     `peer@…`, and a cursor nobody can attribute to a person is the thing
     beat 4 exists to disprove.
+
+    The copy is a **click on the card's own Copy button**, not a chord
+    and not a read of chrome state. That matters twice over: it is the
+    gesture a person makes, and what leaves here is what the button
+    actually produced — a copy that truncated fails at the assertion
+    below rather than being papered over by a token the harness already
+    had in a variable.
     """
     resp = host.invoke_action(AGENT_PROVIDER, "peer.invite.named",
                               {"peer": peer, "name": name})
@@ -1447,8 +1640,37 @@ def mint_named_invite(host: Session, peer: str, name: str) -> str | None:
         return None
     token = wait_for(lambda: host.chrome()["peer_sync"]["invite_token"],
                      timeout=20)
+    if not token:
+        return None
+    # Long enough to read: this is the card the beat is about, and it is
+    # the only place the token is ever visible.
+    if RECORDER:
+        RECORDER.dwell()
+        RECORDER.dwell()
+    if shots and tag:
+        host.snapshot(os.path.join(shots, f"{tag}-invite-card.png"))
+
+    step("he presses Copy on the card")
+    clicked = host.click_named("peer_sync_copy")
+    if "err" in clicked:
+        gap("the card's Copy button was not addressable - "
+            f"{json.dumps(clicked['err'])[:120]}")
+        dismiss_peer_sync_card(host, "invite")
+        return token
+    copied = wait_for(lambda: host.clipboard_read(), timeout=10)
+    claim("the token is on his clipboard, put there by the button",
+          copied == token, True)
+    if copied != token:
+        note(f"the card shows {len(token)} characters; the clipboard holds "
+             f"{len(copied or '')}")
+    claim("and the card says so, where he is looking",
+          "Copied" in (host.chrome()["peer_sync"].get("status") or ""), True)
+    if RECORDER:
+        RECORDER.dwell()
+    if shots and tag:
+        host.snapshot(os.path.join(shots, f"{tag}-copied.png"))
     dismiss_peer_sync_card(host, "invite")
-    return token
+    return copied or token
 
 
 def introduce(guest: Session) -> str | None:
@@ -1464,14 +1686,24 @@ def introduce(guest: Session) -> str | None:
     return peer_id_in_token(token or "")
 
 
-def join_room(guest: Session, token: str, by_action_api: bool) -> bool:
-    """Put `guest` into the room `token` names.
+def join_room(guest: Session, token: str, by_action_api: bool,
+              shots: str | None = None, tag: str | None = None) -> bool:
+    """Put `guest` into the room `token` names, by pasting and pressing Join.
 
-    `by_action_api` opens the connect prompt by invoking its stable
-    address rather than by driving the palette. The token itself still
-    has to be typed either way — the compositor has no semantic
-    "join this room" op, which the caller records as a GAP.
+    The token is never typed. It is put on this session's clipboard —
+    that is the hop between two machines, and it belongs to a person: a
+    chat message, an email, a USB stick, and not the OS's business — and
+    from there the card's own **Paste** button lifts it into the prompt
+    and its **Join** button redeems it. Both are the gestures a person
+    makes, and both are load-bearing: if the paste does nothing the
+    prompt stays empty and this fails, rather than quietly falling back
+    to typing a string the harness already had. Nobody types three
+    hundred characters of base64 correctly, twice, on a stage.
+
+    `by_action_api` opens the prompt by invoking its stable address
+    rather than by driving the palette.
     """
+    guest.clipboard_write(token)
     if by_action_api:
         resp = guest.invoke_action(AGENT_PROVIDER, "peer.connect")
         if "err" in resp:
@@ -1481,11 +1713,40 @@ def join_room(guest: Session, token: str, by_action_api: bool) -> bool:
     if not wait_for(lambda: guest.chrome()["peer_sync"]["connect_input"] is not None,
                     timeout=15):
         return False
-    guest.type_text(token)
-    guest.key("Enter")
+    if RECORDER:
+        RECORDER.dwell()
+
+    step("he presses Paste")
+    pasted_click = guest.click_named("peer_sync_paste")
+    if "err" in pasted_click:
+        gap("the prompt's Paste button was not addressable - "
+            f"{json.dumps(pasted_click['err'])[:120]}")
+        dismiss_peer_sync_card(guest, "connect")
+        return False
+    filled = wait_for(
+        lambda: guest.chrome()["peer_sync"]["connect_input"] or None, timeout=10)
+    claim("the prompt filled itself from the clipboard, unretyped",
+          filled == token, True)
+    if filled != token:
+        note(f"the prompt holds {len(filled or '')} characters; the token is "
+             f"{len(token)}")
+    if shots and tag:
+        guest.snapshot(os.path.join(shots, f"{tag}-pasted.png"))
+    if RECORDER:
+        RECORDER.dwell()
+
+    step("and Join")
+    joined_click = guest.click_named("peer_sync_join")
+    if "err" in joined_click:
+        gap("the prompt's Join button was not addressable - "
+            f"{json.dumps(joined_click['err'])[:120]}")
+        dismiss_peer_sync_card(guest, "connect")
+        return False
     joined = wait_for(
         lambda: (guest.chrome()["peer_sync"]["status"] or "").startswith("Joined"),
         timeout=15)
+    if shots and tag:
+        guest.snapshot(os.path.join(shots, f"{tag}-joined.png"))
     dismiss_peer_sync_card(guest, "connect")
     return bool(joined)
 
@@ -1726,13 +1987,41 @@ def a_real_png(width: int = 320, height: int = 200) -> bytes:
 
 
 def stage_home(path: str) -> str:
-    """A home of this session's own, with the demo's folder in it."""
-    demo = os.path.join(path, "Demo")
-    os.makedirs(demo, exist_ok=True)
-    with open(os.path.join(demo, "photo.png"), "wb") as fh:
+    """A home of this session's own, staged to look like one.
+
+    Two things are on screen here that are easy to get wrong and
+    impossible to unsee.
+
+    **The path.** Files draws the directory it is showing, component by
+    component, and a home under the checkout renders as
+    `… › quickdesktop › .claude › worktrees › yc-demo › target › …`. A
+    viewer reads that as a harness pointed at a scratch directory, and
+    `.claude` tells them which tooling built it. So the homes live under
+    [`HOMES_ROOT`], whose components each read as a machine's own.
+
+    **The contents.** A home holding one folder called `Demo` is not a
+    home anybody believes, and it gives a drag beat nothing to pick up.
+    The tree below is the ordinary furniture of a home directory — the
+    XDG folders the sidebar already lists, a couple of documents, and
+    the photograph beat 8 drags in.
+
+    Staging a *file tree* is not the same as fabricating content: there
+    is no invented correspondence here and nobody's name on anything.
+    The documents carry the few lines the demo itself writes and reads.
+    """
+    for folder in ("Documents", "Downloads", "Pictures", "Projects"):
+        os.makedirs(os.path.join(path, folder), exist_ok=True)
+    # The photograph beat 8 drags into the document. In Pictures,
+    # because that is where the file chooser opens and where a person
+    # would look for it.
+    with open(os.path.join(path, "Pictures", PHOTO_NAME), "wb") as fh:
         fh.write(a_real_png())
-    with open(os.path.join(demo, "brief.md"), "w") as fh:
+    with open(os.path.join(path, "Documents", "Launch plan.md"), "w") as fh:
         fh.write("# Launch plan\n\n- Venue - The Hall\n- Date - 3 Sep\n")
+    with open(os.path.join(path, "Documents", "Checklist.md"), "w") as fh:
+        fh.write("# Checklist\n\n- Doors\n- Sound\n- Seating\n")
+    with open(os.path.join(path, "Projects", "README.md"), "w") as fh:
+        fh.write("# Projects\n")
     return path
 
 
@@ -1797,6 +2086,98 @@ class Registry:
         return False
 
 
+def type_into_the_document(s: Session, wp: dict | None, text: str) -> bool:
+    """Put the caret in the page and type, the way a person would.
+
+    The word processor is a foreign client, so its insides are not in
+    the compositor's widget registry and there is no name to aim at.
+    Its *tile* has one, which is as close as the shell can get: click
+    into the middle of the page, then type.
+    """
+    surface = (wp or {}).get("surface_id")
+    stem = f"foreign-surface-{surface}"
+    named = next((n for n in s.target_names()
+                  if n == stem or n.startswith(stem + "[")), None)
+    rect = s.named_rect(named) if named else None
+    if not rect:
+        others = [n for n in s.target_names()
+                  if n.startswith("foreign-surface-")]
+        note(f"{s.name}: no laid-out tile for surface {surface}; "
+             f"laid out now: {others or 'none'}")
+        return False
+    bx, by, bw, bh = rect
+    s.click_at(bx + bw * 0.4, by + bh * 0.35)
+    s.settle(1.0)
+    # To the end of what is already there, rather than wherever the
+    # click happened to land. By this point the document has a sentence
+    # and an image in it, and a caret dropped into the middle of that
+    # writes the list into the middle of it — or replaces a selected
+    # image with the first character typed.
+    s.modifiers(ctrl=True)
+    s.key("End")
+    s.modifiers()
+    s.settle(0.5)
+    s.type_text(text)
+    s.settle(1.0)
+    return True
+
+
+def agent_binary() -> str | None:
+    """`qos-agent`, if it has been built.
+
+    A separate process rather than a compositor: the whole point of it
+    is that a participant can hold a document, a caret and a name in the
+    room's history without holding a screen. Absent is a supported
+    state — the beat says so and stops, rather than substituting
+    something that looks similar.
+    """
+    for profile in ("demo", "release", "debug"):
+        path = os.path.join(REPO, "target", profile, "qos-agent")
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def run_the_agent(agent: Session, room: str, shots: str,
+                  timeout: float = 120.0) -> bool | None:
+    """Let the agent join the document and carry out one instruction.
+
+    It connects to its own session's broker, which is how its edits
+    reach the other two: the same libp2p republish every peer's edits
+    take. `--no-model` keeps the run reproducible and off the network —
+    the vocabulary is a keyword table, and an instruction must never
+    wait on a request.
+
+    Returns None when the binary is not built, so a caller can say that
+    rather than report a failure it did not observe.
+    """
+    binary = agent_binary()
+    if binary is None:
+        return None
+    log_path = os.path.join(shots, "agent.log")
+    with open(log_path, "w") as log:
+        proc = subprocess.Popen(
+            [binary, "--workspace", str(room), "--name", "Claude",
+             "--socket", agent.collab_json_sock, "--no-model", "--once",
+             "--pace-ms", "250"],
+            stdout=log, stderr=subprocess.STDOUT, cwd=REPO,
+            preexec_fn=die_with_parent(enabled=not KEEP_SESSIONS))
+        if not KEEP_SESSIONS:
+            track(proc)
+        try:
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            note(f"the agent did not finish within {timeout:.0f}s; "
+                 f"see {log_path}")
+            return False
+    if code != 0:
+        with open(log_path) as fh:
+            tail = fh.read()[-400:]
+        note(f"qos-agent exited {code}: {tail}")
+    return code == 0
+
+
 # --------------------------------------------------------------------
 # the demonstration
 # --------------------------------------------------------------------
@@ -1804,6 +2185,11 @@ class Registry:
 # Set by `main`, so a beat can report on all three sessions without
 # every beat function taking all three.
 SESSIONS: list[Session] = []
+
+# The headless viewport every session was started at, as (w, h). Set by
+# `main` from the same string the compositors were given, so a beat can
+# ask whether what it is about to claim is actually inside the frame.
+VIEWPORT: tuple[int, int] = (0, 0)
 
 
 def beat_one(ada: Session, shots: str) -> dict:
@@ -1841,7 +2227,8 @@ def beat_one(ada: Session, shots: str) -> dict:
     return host_ws
 
 
-def beat_two(ada: Session, bob: Session, host_ws: dict) -> None:
+def beat_two(ada: Session, bob: Session, host_ws: dict,
+             shots: str) -> None:
     banner("2.  ada invites bob")
     cut("ada")
 
@@ -1851,11 +2238,27 @@ def beat_two(ada: Session, bob: Session, host_ws: dict) -> None:
     bob_peer = introduce(bob)
     claim("bob's peer id is known", bool(bob_peer), True)
 
-    step(f"he invites bob by name")
-    # Minting is his: the palette opens on his screen and the card with
-    # the token comes up there.
+    step("he opens the room's people")
+    # Through the chrome, at a pace a viewer can follow. This whole beat
+    # used to pass in under a second because it was invoked as an action:
+    # every claim held and the collaboration UI never appeared, which is
+    # the one thing the beat exists to put on screen.
     cut("ada")
-    token = mint_named_invite(ada, bob_peer or "", bob.user)
+    via = show_collaborators(ada)
+    note(f"opened from {via}")
+    claim("the collaborators panel is up", ada.overlays()["collaborators"],
+          True)
+    if RECORDER:
+        RECORDER.dwell()
+    ada.snapshot(os.path.join(shots, "02a-collaborators-empty.png"))
+    gap("the panel lists who is here and offers no way to invite anybody: "
+        "there is no Invite row in it, so the invite itself is still "
+        "raised by address rather than from the panel a person opened")
+    close_collaborators(ada)
+
+    step("he invites bob by name")
+    token = mint_named_invite(ada, bob_peer or "", bob.user,
+                              shots, "02b")
     claim("ada minted an invite token", bool(token), True)
     if not token:
         raise SystemExit("no invite token: the rest cannot run")
@@ -1863,17 +2266,23 @@ def beat_two(ada: Session, bob: Session, host_ws: dict) -> None:
          "address, an expiry — and now the name the guest is invited "
          "under, so both machines can attribute a cursor to a person")
 
-    # Redeeming is bob's, and it is his screen that changes.
+    # Redeeming is bob's, and it is his screen that changes. The cut
+    # lands on the prompt rather than on his empty desktop: a held shot
+    # of a bare backdrop under a band reading "joined by invite" shows
+    # nothing that supports what the band says.
+    step("the token travels — by hand, off ada's clipboard")
     cut("bob")
-    step("bob redeems it")
-    claim("bob joined", join_room(bob, token, by_action_api=False), True)
+    claim("bob joined",
+          join_room(bob, token, by_action_api=False, shots=shots, tag="02c"),
+          True)
     claim("bob's own state holds ada's room",
           bob.active_workspace()["room"], host_ws["room"])
     claim("and his own copy names ada as owner",
           bob.active_workspace()["owner"], ada.user)
 
 
-def beat_three(ada: Session, agent: Session, host_ws: dict) -> None:
+def beat_three(ada: Session, agent: Session, host_ws: dict,
+               shots: str) -> None:
     banner("3.  ada invites the agent")
     cut("ada")
 
@@ -1882,12 +2291,16 @@ def beat_three(ada: Session, agent: Session, host_ws: dict) -> None:
 
     step("a second token — but an agent is not a peer")
     cut("ada")
-    token = mint_named_invite(ada, agent_peer or "", agent.user)
+    token = mint_named_invite(ada, agent_peer or "", agent.user,
+                              shots, "03a")
     claim("ada minted a second token", bool(token), True)
     if not token:
         raise SystemExit("no second token: the agent cannot join")
 
-    cut("Claude")
+    # No cut. The agent has no screen worth filming and showing one
+    # inverts the claim: it is a participant in somebody else's room, so
+    # it appears as a row in a roster, a caret in a document and a name
+    # in a history — never as a desktop of its own.
     claim("the agent joined the room", join_room(agent, token, by_action_api=True),
           True)
     claim("the agent's own state holds ada's room",
@@ -1952,9 +2365,30 @@ def beat_four(ada: Session, bob: Session, agent: Session,
     cut("bob")
     claim("bob's own copy carries ada's name for the room",
           bob.active_workspace()["name"], host_ws["name"])
-    cut("Claude")
+    # Read from the agent's session, shot on nobody's: it is asserted
+    # here and *seen* in the roster on ada's screen below.
     claim("the agent's own copy carries it too",
           agent.active_workspace()["name"], host_ws["name"])
+
+    step("and the room's people, from the top bar")
+    # Now there is a roster, so the affordance exists: the avatar stack
+    # is drawn and clicking it opens the panel. This is also where the
+    # names have to hold up — a roster listing `peer-2` and
+    # `peer@11895642303397647149` beside `bob` is three label styles
+    # for three participants, and a room nobody can read.
+    cut("ada")
+    via = show_collaborators(ada)
+    note(f"opened from {via}")
+    claim("the collaborators panel is up on ada's screen",
+          ada.overlays()["collaborators"], True)
+    rows = [r for r in ((ada.peers() or {}).get("roster") or [])]
+    if rows:
+        note(f"roster: {json.dumps(rows)[:240]}")
+    if RECORDER:
+        RECORDER.dwell()
+        RECORDER.dwell()
+    ada.snapshot(os.path.join(shots, "03a-roster.png"))
+    close_collaborators(ada)
 
     step("and the cursors — on a desktop with nothing open on it")
     # `peers` is read from the same PresenceCtx the overlay draws from,
@@ -2119,7 +2553,7 @@ def beat_five(ada: Session, registry, shots: str) -> dict | None:
     # working exactly as designed, and the app the beat is about is half
     # off screen while it does. Give every group an even share, so the
     # window this beat just opened is actually in the frame that shows it.
-    frame_both_windows(ada)
+    frame_both_windows(ada, VIEWPORT)
     ada.snapshot(os.path.join(shots, "05-word-processor.png"))
     return painted
 
@@ -2386,7 +2820,7 @@ def beat_eight(ada: Session, shots: str) -> None:
          "sandboxed client and opens no wl_data_source, so no client drag "
          "exists for the compositor to promote")
     note("the app cannot read the folder; the OS hands it the bytes")
-    photo = os.path.join(ada.home, "Demo", "photo.png")
+    photo = os.path.join(ada.home, "Pictures", PHOTO_NAME)
     claim("there is an image to insert", os.path.exists(photo), True)
 
     step("the word processor asks the OS for a file")
@@ -2445,11 +2879,11 @@ def beat_eight(ada: Session, shots: str) -> None:
     claim("the OS file chooser opened, not the app's own", True, True)
     ada.snapshot(os.path.join(shots, "09-chooser.png"))
 
-    step("he picks photo.png")
+    step(f"he picks {PHOTO_NAME}")
     row = next((n for n in ada.target_names()
-                if "photo.png" in n), None)
+                if PHOTO_NAME in n), None)
     if row is None:
-        gap("photo.png was not offered by the chooser")
+        gap(f"{PHOTO_NAME} was not offered by the chooser")
         return
     ada.click_named(row)
     ada.settle(1.5)
@@ -2461,9 +2895,15 @@ def beat_eight(ada: Session, shots: str) -> None:
 
 
 def beat_nine(ada: Session, bob: Session, agent: Session,
-              shots: str) -> None:
-    banner("9.  the agent acts, by address")
-    cut("Claude")
+              host_ws: dict, ada_wp: dict | None, shots: str) -> None:
+    banner("9.  the agent acts, and the room shows who did it")
+    # The camera stays on the people. An agent is a participant in
+    # somebody else's room, so what it does is shown the way any other
+    # collaborator's actions are shown — arriving on their screens — and
+    # never as a desktop of its own. Everything it is asked below is
+    # asked over its control socket and printed to the transcript; none
+    # of it is filmed, because there is nothing there to film.
+    cut("ada")
 
     baseline = agent.input_ops
     note(f"synthetic-input commands sent to the agent so far: {baseline}")
@@ -2507,48 +2947,101 @@ def beat_nine(ada: Session, bob: Session, agent: Session,
           (AGENT_PROVIDER, AGENT_ACTION_ID))
     landed = wait_for(lambda: agent.overlays()[AGENT_ACTION_EFFECT], timeout=8)
     claim("the action changed live state", bool(landed), True)
-    agent.snapshot(os.path.join(shots, "11-agent.png"))
+    # Deliberately not filmed: this one opened a panel on the agent's own
+    # session, and the agent's own session is the one screen this film
+    # does not show.
 
     step("no synthetic input was used to do it")
     claim("no keystroke, click or modifier reached the agent since",
           agent.input_ops, baseline)
     note("the address (provider, id) is the entire input to the invocation")
 
-    step("and it opens a window, which the other two receive")
-    # The claim worth filming: the agent is a participant in the room, so
-    # what it does lands in everyone's copy of it. Read back from the two
-    # sessions that did not make the change.
-    before_agent = set(agent.tabs_here())
-    opened = agent.invoke_action(AGENT_PROVIDER, "window.new.terminal")
-    if "err" in opened:
-        gap(f"the agent may not open a window here — "
-            f"{json.dumps(opened['err'])[:120]}")
+    # What an agent cannot do here, said plainly rather than shot around.
+    # The action model reaches the shell's own text tiles (`text.insert`
+    # writes into a focused Notes or Editor tab) and stops at the edge of
+    # a packaged app: the word processor is a foreign Wayland client, its
+    # widgets are not addressable, and no exported action writes into its
+    # document. The mechanism that *can* is `qos-agent`, which joins the
+    # document through the collaboration broker and carries out an
+    # instruction written to it — a participant with a caret and no
+    # window. That is the beat this one should become.
+    gap("the agent cannot change the shared document by address: no "
+        "exported action reaches a packaged app's document, so what it "
+        "does here opens a window rather than writing in the file the "
+        "other two are looking at (see apps/agent, which does)")
+
+    # A terminal used to be opened here, because opening a window was
+    # the only visible thing an agent could do by address. It ended the
+    # film on a `bash` prompt in a fourth window — a developer machine,
+    # in the last shot a viewer keeps, arguing against the strip the
+    # letter points at. What follows is the beat that was wanted
+    # instead: the agent changes the document the other two are looking
+    # at, and it is read back off somebody else's screen.
+    step("ada writes a list, and asks Claude for a table")
+    cut("ada")
+    if not type_into_the_document(ada, ada_wp, AGENT_BULLETS):
+        gap("nothing could be typed into ada's document, so there is "
+            "no list for the agent to act on")
         return
-    fresh = wait_for(lambda: (set(agent.tabs_here()) - before_agent) or None,
-                     timeout=SYNC_TIMEOUT_S)
-    claim("the agent's own session shows the window", bool(fresh), True)
-    if not fresh:
+    ada.settle(1.0)
+    if RECORDER:
+        RECORDER.dwell()
+    ada.type_text(AGENT_INSTRUCTION)
+    ada.settle(1.5)
+    ada.snapshot(os.path.join(shots, "11-instruction.png"))
+    note(f"the instruction is a line in the document: {AGENT_INSTRUCTION!r}")
+
+    step("the agent reads it and carries it out — with no window at all")
+    ran = run_the_agent(agent, host_ws["room"], shots)
+    if ran is None:
+        gap("qos-agent is not built, so the agent could not act on the "
+            "document (cargo build -p agent --bin qos-agent)")
         return
-    tid = sorted(fresh)[0]
-    claim("no synthetic input was used for that either",
+    claim("the agent carried out the instruction", ran, True)
+    claim("and no synthetic input reached its session to do it",
           agent.input_ops, baseline)
 
-    cut("ada")
-    on_q = wait_for(lambda: tid in ada.tabs_here(), timeout=DOC_SYNC_TIMEOUT_S)
-    claim("the window the agent opened is open for ada", bool(on_q), True)
+    step("and bob's own word processor is asked what it holds now")
+    # The payoff, read off the screen of somebody who did not make the
+    # change. The assertion is that the *content* survived into the
+    # table: a table with the rows empty is what this beat produced
+    # before, and it is indistinguishable from success in a transcript
+    # that only asks whether a table exists.
     cut("bob")
-    on_x = wait_for(lambda: tid in bob.tabs_here(), timeout=DOC_SYNC_TIMEOUT_S)
-    claim("and for bob", bool(on_x), True)
-    if not (on_q and on_x):
-        note(f"tab {tid} had not replicated after {DOC_SYNC_TIMEOUT_S:.0f}s")
-    bob.snapshot(os.path.join(shots, "12-bob-agent.png"))
+    reader = None
+    try:
+        reader = DocumentReader(bob.collab_json_sock, host_ws["room"],
+                                record=None)
+        doc, carried = reader.await_document(AGENT_BULLET_PROOF,
+                                             DOC_SYNC_TIMEOUT_S)
+    except OSError as e:
+        gap(f"bob's session has no JSON broker to ask ({e})")
+        doc, carried = None, False
+    finally:
+        if reader is not None:
+            reader.close()
+    if doc is not None:
+        claim("bob's document carries the rows the agent made, with the "
+              "text still in them", carried, True)
+    else:
+        gap("bob's app never answered, so what his screen holds was not "
+            "established")
+    # The last shot of the film, so it is framed like one: even shares,
+    # the strip scrolled back, and every window whole. An accumulation
+    # of everything the run happened to open is the picture that argues
+    # against the layout this is meant to show off.
+    frame_both_windows(bob, VIEWPORT)
+    if RECORDER:
+        RECORDER.dwell()
+        RECORDER.dwell()
+    bob.snapshot(os.path.join(shots, "12-bob-agent-table.png"))
 
 
 def run(ada: Session, bob: Session, agent: Session, shots: str,
         registry) -> None:
     host_ws = beat_one(ada, shots)
-    beat_two(ada, bob, host_ws)
-    beat_three(ada, agent, host_ws)
+    beat_two(ada, bob, host_ws, shots)
+    beat_three(ada, agent, host_ws, shots)
     beat_four(ada, bob, agent, host_ws, shots)
     # Everything bob holds and is looking at *before* the word
     # processor exists anywhere. Beat 6 measures against this rather than
@@ -2563,7 +3056,7 @@ def run(ada: Session, bob: Session, agent: Session, shots: str,
     beat_six(ada, bob, baseline, shots)
     beat_seven(ada, bob, host_ws, wp, shots)
     beat_eight(ada, shots)
-    beat_nine(ada, bob, agent, shots)
+    beat_nine(ada, bob, agent, host_ws, wp, shots)
 
 
 
@@ -2660,6 +3153,11 @@ def main() -> int:
     # then fails on a stale precondition rather than on anything real.
     # `--keep` is about teardown, never about reusing state.
     shutil.rmtree(args.out, ignore_errors=True)
+    # The homes are throwaway too, and they live outside `--out` (see
+    # HOMES_ROOT), so they need clearing on their own. A home left over
+    # from a previous run carries that run's edits into this one's first
+    # shot.
+    shutil.rmtree(HOMES_ROOT, ignore_errors=True)
     shots = os.path.join(args.out, "shots")
     os.makedirs(shots, exist_ok=True)
 
@@ -2765,11 +3263,12 @@ def main() -> int:
             # A private runtime dir per session, standing in for the
             # per-user one logind would give each real login.
             os.path.join(runtime, f"qyc-{short}{pid}"),
-            stage_home(os.path.join(run_dir, "home")),
+            stage_home(os.path.join(HOMES_ROOT, name)),
             apps_dir, tools))
     ada, bob, agent = sessions
-    global SESSIONS
+    global SESSIONS, VIEWPORT
     SESSIONS = sessions
+    VIEWPORT = tuple(int(v) for v in size.lower().split("x"))
 
     print(f"compositor:    {args.shell}")
     print(f"run directory: {args.out}")
