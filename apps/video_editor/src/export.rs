@@ -126,11 +126,20 @@ impl Default for ExportSettings {
 impl ExportSettings {
     /// Estimated output size in megabytes for a `duration`-second project.
     ///
-    /// Video only, because video is all the pipeline encodes — there is no
-    /// audio track in the output, so charging the estimate for one would
-    /// quote the user a size for something they are not getting. The
-    /// figure is honest for the same reason the bitrate is real: the
-    /// encoder is told to hit [`Resolution::target_mbps`].
+    /// Video only: charging the estimate for an audio track would quote a
+    /// size for something the video figure does not describe.
+    ///
+    /// This is what the encoder is *asked* for — [`Resolution::target_mbps`],
+    /// set on whichever encoder [`encode_chain`] selected, in that encoder's
+    /// own units. How closely the file then lands on it is the encoder's
+    /// business, and they differ: the VA-API, NVENC, QSV and x264 encoders
+    /// rate-control to a target, while `openh264enc` — the last-resort
+    /// fallback, used only where none of those is installed — was measured on
+    /// this build not to track the setting at all. Five seconds of 720p noise
+    /// asked to fit 1 Mbit/s came out at roughly 59, and asking for 2 or 8
+    /// Mbit/s of the same compressible clip produced files within 0.4% of each
+    /// other. So on a machine that falls all the way back to openh264, treat
+    /// this as the requested rate rather than a prediction of the file size.
     pub fn estimated_mb(&self, duration: f64) -> f64 {
         self.resolution.target_mbps() * duration / 8.0
     }
