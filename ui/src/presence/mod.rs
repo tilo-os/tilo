@@ -1125,6 +1125,16 @@ impl PresenceCtx {
                 // A Tab-keyed arrival moves a focus dot; only a scope
                 // arrival is a join asking to be sent the document.
                 Arrived if !matches!(key, PresenceKey::Tab { .. }) => {
+                    // Said out loud, and only on arrival so it cannot
+                    // spam at pointer rate. A rule that works leaves
+                    // no pill behind — which is indistinguishable from
+                    // a session that was never sent anything, and a
+                    // test unable to tell those apart is how this bug
+                    // survived a screenshot. This line is the
+                    // difference.
+                    tracing::debug!(
+                        user_id, "presence: own participant, not painting it as a peer"
+                    );
                     RemotePresenceEffect::PeerArrived
                 }
                 _ => RemotePresenceEffect::None,
