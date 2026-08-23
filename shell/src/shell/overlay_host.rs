@@ -14361,6 +14361,417 @@ mod two_workspace_host_tests {
 }
 
 #[cfg(test)]
+mod one_pointer_per_person_tests {
+    //! One participant is one pointer on the screen, counted on the
+    //! screen.
+    //!
+    //! A peer's pointer has two painters and they live in different
+    //! processes: the compositor's overlay, which knows where the
+    //! pointer is on the desktop, and every app's own presence layer,
+    //! which knows only a position inside its own window. The broker
+    //! hands each inbound presence frame to *every* app in the room, so
+    //! a rule that lets the window layer paint a desktop pointer draws
+    //! one person once per open window — same name, same colour, one
+    //! copy per window, each at that window's own offset.
+    //!
+    //! Counting draw calls in one process cannot see that, because
+    //! neither process is drawing twice. So these tests composite what
+    //! the compositor composites — the overlay over the windows — render
+    //! it, and count the pointer dots a person would actually see.
+
+    use super::*;
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::WorkspaceTree;
+    use ui::collaboration::PresencePayload;
+    use ui::offscreen::OffscreenRenderer;
+    use ui::permissions::UserId;
+    use ui::widget::Container;
+
+    const DESKTOP_W: u32 = 1280;
+    const DESKTOP_H: u32 = 720;
+
+    /// Two windows side by side, the way a strip lays them out. Their
+    /// origins differ, which is the whole point: a pointer painted in
+    /// window-local coordinates lands in a different place in each.
+    fn windows() -> [Rect; 2] {
+        [
+            Rect::new(40.0, 80.0, 620.0, 660.0),
+            Rect::new(660.0, 80.0, 1240.0, 660.0),
+        ]
+    }
+
+    /// A host with a viewport the size of the desktop, and the room its
+    /// active workspace collaborates in — read off the tree rather than
+    /// spelled out, since that is what apps publish under and what
+    /// `visible_peers` looks up by.
+    fn host_and_room() -> (ShellOverlayHost, Chrome, String) {
+        let tree = WorkspaceTree::bootstrap_demo();
+        let room = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == tree.active)
+            .expect("the seed has an active workspace")
+            .room
+            .to_string();
+        let chrome = ChromeState::new(tree);
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        host.rect = Rect::new(0.0, 0.0, DESKTOP_W as f64, DESKTOP_H as f64);
+        (host, chrome, room)
+    }
+
+    /// The frame the compositor gets: a peer's pointer where it is on
+    /// the desktop, keyed by the room.
+    fn desktop_frame(ctx: &mut PresenceCtx, who: &str, room: &str, at: (f32, f32)) {
+        ctx.apply_remote_presence(
+            who.to_string(),
+            PresenceKey::Workspace { id: room.to_string() },
+            PresencePayload::Pointer { x: at.0, y: at.1 },
+        );
+    }
+
+    /// The frame every app gets: the same person's pointer, in the
+    /// sending window's own coordinates, under the key the broker puts
+    /// on the wire for a cursor publish
+    /// (`collab_broker_capnp::publish_cursor`). One arrival is fanned to
+    /// every app in the room, so both windows are handed this.
+    fn window_frame(ctx: &mut PresenceCtx, who: &str, local: (f32, f32)) {
+        ctx.apply_remote_presence(
+            who.to_string(),
+            PresenceKey::pointer_default(),
+            PresencePayload::Pointer { x: local.0, y: local.1 },
+        );
+    }
+
+    /// Composite the desktop: window surfaces, each window's own
+    /// presence layer inside it, and the compositor's peer overlay over
+    /// the lot. Both presence layers are the production painters.
+    fn composite(
+        host: &mut ShellOverlayHost,
+        shell: &PresenceCtx,
+        panes: &[(Rect, PresenceCtx)],
+    ) -> Scene {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+
+        // Backdrop and window surfaces. Scaffolding, so the rendered
+        // frame reads as a desktop — every colour from the theme.
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &Rect::new(0.0, 0.0, DESKTOP_W as f64, DESKTOP_H as f64),
+        );
+        for (rect, _) in panes {
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                rect,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                Affine::IDENTITY,
+                theme.tokens.colors.border_standard,
+                None,
+                rect,
+            );
+        }
+
+        // Each window paints its own peers, in its own coordinates,
+        // placed on the desktop by the compositor the way a surface is.
+        for (rect, ctx) in panes {
+            ui::presence::draw_remote_presence(
+                &mut scene,
+                Affine::translate((rect.x0, rect.y0)),
+                Rect::new(0.0, 0.0, rect.width(), rect.height()),
+                &mut tr,
+                &theme,
+                ctx,
+            );
+        }
+
+        // And the compositor paints the desktop's own, above them.
+        host.draw_real_peers(&mut scene, Affine::IDENTITY, &mut tr, &theme, shell);
+        scene
+    }
+
+    /// Render a composited desktop, and keep the frame on disk beside
+    /// the assertion that reads it — so a count can be checked against
+    /// the picture it was taken from.
+    fn shoot(scene: &Scene, name: &str) -> (Vec<u8>, std::path::PathBuf) {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/peer-pointer-once");
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join(name);
+        let mut r = OffscreenRenderer::new(DESKTOP_W, DESKTOP_H);
+        let rgba = r.render(scene, Color::BLACK);
+        r.render_png(scene, Color::BLACK, &path);
+        (rgba, path)
+    }
+
+    /// Every connected run of pixels within tolerance of `rgb`, as
+    /// `(centre_x, centre_y, width, height)`.
+    fn blobs(rgba: &[u8], rgb: (u8, u8, u8)) -> Vec<(u32, u32, u32, u32)> {
+        let (w, h) = (DESKTOP_W as usize, DESKTOP_H as usize);
+        let near = |i: usize| {
+            let p = &rgba[i * 4..i * 4 + 3];
+            p[0].abs_diff(rgb.0) <= 8 && p[1].abs_diff(rgb.1) <= 8 && p[2].abs_diff(rgb.2) <= 8
+        };
+        let mut seen = vec![false; w * h];
+        let mut out = Vec::new();
+        for start in 0..w * h {
+            if seen[start] || !near(start) {
+                continue;
+            }
+            let (mut x0, mut x1, mut y0, mut y1) = (w, 0usize, h, 0usize);
+            let mut stack = vec![start];
+            seen[start] = true;
+            while let Some(i) = stack.pop() {
+                let (x, y) = (i % w, i / w);
+                x0 = x0.min(x);
+                x1 = x1.max(x);
+                y0 = y0.min(y);
+                y1 = y1.max(y);
+                for (dx, dy) in [(0isize, 1isize), (0, -1), (1, 0), (-1, 0)] {
+                    let (nx, ny) = (x as isize + dx, y as isize + dy);
+                    if nx < 0 || ny < 0 || nx >= w as isize || ny >= h as isize {
+                        continue;
+                    }
+                    let j = ny as usize * w + nx as usize;
+                    if !seen[j] && near(j) {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+            out.push((
+                ((x0 + x1) / 2) as u32,
+                ((y0 + y1) / 2) as u32,
+                (x1 - x0 + 1) as u32,
+                (y1 - y0 + 1) as u32,
+            ));
+        }
+        out
+    }
+
+    /// The pointer *dots* on screen — one per person the desktop is
+    /// claiming is here.
+    ///
+    /// Three things are painted in a peer's colour and only one of them
+    /// is the pointer: the disc itself (`DOT_R` = 6.5, so ten pixels of
+    /// solid colour across), the name pill (several times wider than
+    /// tall), and the counters inside the pill's lettering, which are
+    /// specks. Size is what tells them apart.
+    fn pointer_dots(rgba: &[u8], rgb: (u8, u8, u8)) -> Vec<(u32, u32)> {
+        let mut dots: Vec<(u32, u32)> = blobs(rgba, rgb)
+            .into_iter()
+            .filter(|(_, _, w, h)| (8..=16).contains(w) && (8..=16).contains(h))
+            .map(|(x, y, _, _)| (x, y))
+            .collect();
+        dots.sort();
+        dots
+    }
+
+    /// How far a dot's measured centre may sit from where the peer is,
+    /// in pixels. The disc is antialiased and its colour-matched core is
+    /// a pixel or so narrower than the shape.
+    const DOT_TOLERANCE: i64 = 3;
+
+    fn near(dot: (u32, u32), at: (f32, f32)) -> bool {
+        (dot.0 as i64 - at.0 as i64).abs() <= DOT_TOLERANCE
+            && (dot.1 as i64 - at.1 as i64).abs() <= DOT_TOLERANCE
+    }
+
+    /// One person, two windows, one pointer.
+    ///
+    /// The peer is somewhere on the desktop — inside the left window, as
+    /// it happens — and their pointer is announced twice over, because
+    /// the two announcements are two different facts: the compositor is
+    /// told where they are on the screen, and every app in the room is
+    /// handed the same frame the sending app published, which says only
+    /// where the pointer sat inside *its* window.
+    ///
+    /// What the person watching must see is one pointer, at the place
+    /// the peer actually is.
+    #[test]
+    fn one_peer_with_two_windows_open_is_drawn_once() {
+        let (mut host, _chrome, room) = host_and_room();
+        let who = "peer@7";
+        let colour = (0xff, 0x00, 0xff);
+        let on_screen = (300.0_f32, 400.0_f32);
+        let panes = windows();
+        // Where that is inside the window it is over — and therefore
+        // what the sending app put on the wire.
+        let local = (
+            (on_screen.0 as f64 - panes[0].x0) as f32,
+            (on_screen.1 as f64 - panes[0].y0) as f32,
+        );
+
+        let mut shell = PresenceCtx::empty();
+        shell.set_color_override(UserId(who.into()), "#ff00ff");
+        desktop_frame(&mut shell, who, &room, on_screen);
+
+        let panes: Vec<(Rect, PresenceCtx)> = panes
+            .into_iter()
+            .map(|rect| {
+                let mut ctx = PresenceCtx::empty();
+                ctx.set_color_override(UserId(who.into()), "#ff00ff");
+                window_frame(&mut ctx, who, local);
+                (rect, ctx)
+            })
+            .collect();
+
+        let scene = composite(&mut host, &shell, &panes);
+        let (rgba, path) = shoot(&scene, "one-peer-two-windows.png");
+        let dots = pointer_dots(&rgba, colour);
+        assert_eq!(
+            dots.len(),
+            1,
+            "one person must be one pointer; found {} in {}",
+            dots.len(),
+            path.display(),
+        );
+        assert!(
+            near(dots[0], on_screen),
+            "the pointer must be drawn where the peer is ({on_screen:?}), not at \
+             {:?} — see {}",
+            dots[0],
+            path.display(),
+        );
+    }
+
+    /// A peer that crosses from one window to the other leaves nothing
+    /// behind.
+    ///
+    /// The window that no longer has them is deliberately not told: an
+    /// app is handed frames, not a retraction, so a window layer holding
+    /// a desktop pointer keeps painting the last place it heard about
+    /// for as long as the process lives. That is what put a second,
+    /// permanent copy of a person on screen after they had moved on.
+    #[test]
+    fn a_peer_crossing_between_windows_leaves_no_copy_behind() {
+        let (mut host, _chrome, room) = host_and_room();
+        let who = "peer@7";
+        let colour = (0xff, 0x00, 0xff);
+        let rects = windows();
+
+        let mut shell = PresenceCtx::empty();
+        shell.set_color_override(UserId(who.into()), "#ff00ff");
+        let mut panes: Vec<(Rect, PresenceCtx)> = rects
+            .iter()
+            .map(|rect| {
+                let mut ctx = PresenceCtx::empty();
+                ctx.set_color_override(UserId(who.into()), "#ff00ff");
+                (*rect, ctx)
+            })
+            .collect();
+
+        // First, over the left window.
+        let was = (300.0_f32, 400.0_f32);
+        desktop_frame(&mut shell, who, &room, was);
+        let local_was = (
+            (was.0 as f64 - rects[0].x0) as f32,
+            (was.1 as f64 - rects[0].y0) as f32,
+        );
+        for (_, ctx) in panes.iter_mut() {
+            window_frame(ctx, who, local_was);
+        }
+
+        // Then they cross to the right one. The compositor is told, and
+        // so is the window they are now over; the one they left is not.
+        let now = (900.0_f32, 250.0_f32);
+        desktop_frame(&mut shell, who, &room, now);
+        let local_now = (
+            (now.0 as f64 - rects[1].x0) as f32,
+            (now.1 as f64 - rects[1].y0) as f32,
+        );
+        window_frame(&mut panes[1].1, who, local_now);
+
+        let scene = composite(&mut host, &shell, &panes);
+        let (rgba, path) = shoot(&scene, "peer-after-crossing.png");
+        let dots = pointer_dots(&rgba, colour);
+        assert_eq!(
+            dots.len(),
+            1,
+            "a pointer that moved must not stay where it was; found {} in {}",
+            dots.len(),
+            path.display(),
+        );
+        assert!(
+            near(dots[0], now),
+            "the one pointer must be where the peer went ({now:?}), not {:?} — see {}",
+            dots[0],
+            path.display(),
+        );
+    }
+
+    /// Two people are two pointers, each in their own colour and under
+    /// their own name. Drawing a person once must not be achieved by
+    /// collapsing distinct people into one.
+    #[test]
+    fn two_peers_stay_two_pointers_in_their_own_colours() {
+        let (mut host, _chrome, room) = host_and_room();
+        let rects = windows();
+        let people = [
+            ("peer@7", "#ff00ff", (0xff, 0x00, 0xff), (300.0_f32, 400.0_f32)),
+            ("peer@9", "#00ffff", (0x00, 0xff, 0xff), (900.0_f32, 250.0_f32)),
+        ];
+
+        let mut shell = PresenceCtx::empty();
+        let mut panes: Vec<(Rect, PresenceCtx)> = rects
+            .iter()
+            .map(|rect| (*rect, PresenceCtx::empty()))
+            .collect();
+        for (i, (who, hex, _, at)) in people.into_iter().enumerate() {
+            shell.set_color_override(UserId(who.into()), hex);
+            desktop_frame(&mut shell, who, &room, at);
+            // Each of them is over a different window, and the frame the
+            // window they are over publishes is the one every window in
+            // the room is handed.
+            let over = rects[i];
+            let local = (
+                (at.0 as f64 - over.x0) as f32,
+                (at.1 as f64 - over.y0) as f32,
+            );
+            for (_, ctx) in panes.iter_mut() {
+                ctx.set_color_override(UserId(who.into()), hex);
+                window_frame(ctx, who, local);
+            }
+        }
+
+        let scene = composite(&mut host, &shell, &panes);
+        let (rgba, path) = shoot(&scene, "two-peers.png");
+        for (who, _, colour, at) in people {
+            let dots = pointer_dots(&rgba, colour);
+            assert_eq!(
+                dots.len(),
+                1,
+                "{who} must be drawn exactly once; found {} in {}",
+                dots.len(),
+                path.display(),
+            );
+            assert!(
+                near(dots[0], at),
+                "{who} must be drawn at {at:?}, not {:?} — see {}",
+                dots[0],
+                path.display(),
+            );
+        }
+
+        // And they are two people to the layer that names them, not one
+        // person drawn twice.
+        let visible = host.visible_peers(&shell);
+        let mut labels: Vec<&str> = visible.iter().map(|p| p.label.as_str()).collect();
+        labels.sort();
+        assert_eq!(labels, vec!["peer@7", "peer@9"]);
+    }
+}
+
+#[cfg(test)]
 mod me_tile_fallback_tests {
     //! Pin the General-tab "me" collaborator fallback to a label that
     //! doesn't duplicate the adjacent "You" badge. The 2026-05-04

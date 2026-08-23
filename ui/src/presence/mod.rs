@@ -799,6 +799,18 @@ impl PresenceCtx {
     /// them when their cursor is retired — a peer's own row blinking
     /// between "here" and "invited" while they read is worse than the
     /// stale cursor this fixes.
+    ///
+    /// Single-location, the way [`Self::set_caret`] and
+    /// [`Self::set_selection`] are: a person has one pointer, so this
+    /// one *moves* rather than gaining a second entry under the new
+    /// scope. It reaches here under more than one — the room a session
+    /// publishes under, and the keyless
+    /// [`PresenceKey::pointer_default`] the capnp cursor path re-keys to
+    /// — and while it accumulated, anything reading across scopes saw
+    /// one person twice, the older row pinned wherever it was last
+    /// mentioned with nothing able to retire it: `prune_pointers` ages a
+    /// row out only when nobody restates it, and a peer who is still
+    /// moving restates the *new* row.
     pub fn set_pointer_at(
         &mut self,
         key: &PresenceKey,
@@ -806,6 +818,17 @@ impl PresenceCtx {
         pos: (f32, f32),
         now: Instant,
     ) {
+        // Off every other scope first, so a pointer that changed scope
+        // leaves nothing painted where it used to be.
+        for (k, list) in self.pointers.iter_mut() {
+            if k != key {
+                list.retain(|(u, _)| u != &user);
+            }
+        }
+        self.pointers.retain(|_, list| !list.is_empty());
+        self.pointer_seen
+            .retain(|(k, u), _| k == key || u != &user);
+
         let list = self.pointers.entry(key.clone()).or_default();
         if let Some(entry) = list.iter_mut().find(|(u, _)| *u == user) {
             entry.1 = pos;
@@ -1376,17 +1399,24 @@ impl PresenceCtx {
                 // the shared `draw_remote_cursors` helper renders.
                 //
                 // Which of the two gets *painted* is the point of
-                // `owner`. A pointer that arrived under a workspace
-                // scope is a position on the desktop, and the
-                // compositor overlay draws it from `pointers` above
-                // every window. Stamping it `Desktop` is what stops
-                // this layer drawing the very same peer a second time
-                // from `remote_cursors` — the two stores are one
-                // arrival, not two people. Any other scope has no
-                // overlay claiming it, so it stays this layer's to
-                // paint.
+                // `owner`. A pointer that arrived under a desktop scope
+                // is a position on the desktop, and the compositor
+                // overlay draws it from `pointers` above every window.
+                // Stamping it `Desktop` is what stops this layer drawing
+                // the very same peer a second time from `remote_cursors`
+                // — the two stores are one arrival, not two people. A
+                // scope inside this window's own content has no overlay
+                // claiming it, so it stays this layer's to paint.
+                //
+                // `scopes_a_desktop_pointer` owns that distinction, and
+                // owns it in one place because the two halves of it are
+                // reached by different routes and were once answered
+                // differently: a room-keyed pointer was recognised, and
+                // the same pointer with its key stripped by the capnp
+                // cursor path was not — so every open window claimed it
+                // and a person came out once per window.
                 let uid = UserId(user_id.clone());
-                let owner = if matches!(key, PresenceKey::Workspace { .. }) {
+                let owner = if key.scopes_a_desktop_pointer() {
                     PointerOwner::Desktop
                 } else {
                     PointerOwner::Window
@@ -2384,5 +2414,132 @@ mod own_identity_tests {
             !ctx.peers_on(&block).contains(&bob),
             "a pointer over a widget must not put a presence dot on it",
         );
+    }
+}
+
+#[cfg(test)]
+mod one_person_one_pointer_tests {
+    //! A person has one pointer, and the screen has to agree.
+    //!
+    //! Two halves: which layer is entitled to paint a given arrival, and
+    //! how many rows one person may occupy in the store behind it.
+
+    use super::*;
+    use crate::collaboration::PresencePayload;
+
+    /// A pointer that arrives carrying no scope of its own is a pointer
+    /// on the *desktop*, and the compositor overlay is the only thing
+    /// that can place it there.
+    ///
+    /// The scope is lost on the way out. An app publishes its pointer
+    /// under the room ([`PresenceKey::for_local_workspace`]); the capnp
+    /// presence surface has no keyed cursor call, so
+    /// `CollabRequest::Presence` goes out as `publishCursor(x, y)` and
+    /// the broker re-keys it as [`PresenceKey::pointer_default`] for the
+    /// wire. Reading that back as a *widget* scope told every receiving
+    /// window the pointer was theirs to paint — and the broker hands
+    /// each inbound frame to every app in the room, so one person came
+    /// out once per open window, each copy placed in that window's own
+    /// coordinates.
+    #[test]
+    fn a_pointer_published_without_a_scope_belongs_to_the_desktop() {
+        let mut ctx = PresenceCtx::default();
+        ctx.apply_remote_presence(
+            "peer@7".into(),
+            PresenceKey::pointer_default(),
+            PresencePayload::Pointer { x: 319.0, y: 484.0 },
+        );
+
+        assert!(
+            !ctx.remote_cursors[0].painted_by_window(),
+            "an unscoped pointer is the compositor's to paint; a window \
+             painting it as well is the same person once per window",
+        );
+    }
+
+    /// The room scope keeps the answer it always had, so the rule above
+    /// cannot be satisfied by making *nothing* the window's to paint.
+    #[test]
+    fn a_room_scoped_pointer_still_belongs_to_the_desktop() {
+        let mut ctx = PresenceCtx::default();
+        ctx.apply_remote_presence(
+            "peer@7".into(),
+            PresenceKey::Workspace { id: "room".into() },
+            PresencePayload::Pointer { x: 10.0, y: 20.0 },
+        );
+        assert!(!ctx.remote_cursors[0].painted_by_window());
+    }
+
+    /// And a pointer genuinely inside a window's content is still that
+    /// window's to paint. The relay dialect and the hosted backend have
+    /// no overlay above them, so a rule that swallowed every scope would
+    /// leave those peers invisible rather than drawn once.
+    #[test]
+    fn a_pointer_inside_a_window_is_still_the_windows_to_paint() {
+        let mut ctx = PresenceCtx::default();
+        ctx.apply_remote_presence(
+            "peer@7".into(),
+            PresenceKey::Widget { path: vec![PathSegment::Index(3)] },
+            PresencePayload::Pointer { x: 10.0, y: 20.0 },
+        );
+        assert!(
+            ctx.remote_cursors[0].painted_by_window(),
+            "nothing else paints this one",
+        );
+    }
+
+    /// A person's pointer *moves*; it does not accumulate.
+    ///
+    /// The caret and the selection have said so since they were written
+    /// — each clears its peer from every other scope before recording
+    /// the new one — and the pointer, which is the most single-location
+    /// thing a person has, did not. A peer heard from under two scopes
+    /// therefore held two rows, and anything reading across scopes (the
+    /// compositor's `pointers` list, [`PresenceCtx::peer_pointer`]) saw
+    /// one person twice: the older row pinned wherever it was last
+    /// mentioned, with nothing left able to retire it.
+    #[test]
+    fn a_persons_pointer_moves_between_scopes_rather_than_multiplying() {
+        let mut ctx = PresenceCtx::default();
+        let who = UserId("peer@7".into());
+        let first = PresenceKey::Workspace { id: "room".into() };
+        let second = PresenceKey::pointer_default();
+
+        ctx.set_pointer(&first, who.clone(), (100.0, 200.0));
+        ctx.set_pointer(&second, who.clone(), (640.0, 480.0));
+
+        let rows: Vec<_> = ctx
+            .pointers
+            .iter()
+            .flat_map(|(k, v)| v.iter().map(move |(u, p)| (k.clone(), u.clone(), *p)))
+            .collect();
+        assert_eq!(rows.len(), 1, "one person is one pointer, got {rows:?}");
+        assert_eq!(rows[0].1, who);
+        assert_eq!(rows[0].2, (640.0, 480.0), "and it is where they are now");
+        assert_eq!(
+            ctx.pointer_for(&first, &who),
+            None,
+            "the scope they left must not keep a copy",
+        );
+    }
+
+    /// Moving one person's pointer must not take anybody else's with it.
+    #[test]
+    fn moving_one_persons_pointer_leaves_everybody_elses_alone() {
+        let mut ctx = PresenceCtx::default();
+        let room = PresenceKey::Workspace { id: "room".into() };
+        let alice = UserId("peer@1".into());
+        let bob = UserId("peer@2".into());
+
+        ctx.set_pointer(&room, alice.clone(), (10.0, 10.0));
+        ctx.set_pointer(&room, bob.clone(), (20.0, 20.0));
+        ctx.set_pointer(&PresenceKey::pointer_default(), alice.clone(), (30.0, 30.0));
+
+        assert_eq!(ctx.pointer_for(&room, &bob), Some((20.0, 20.0)));
+        assert_eq!(
+            ctx.pointer_for(&PresenceKey::pointer_default(), &alice),
+            Some((30.0, 30.0))
+        );
+        assert_eq!(ctx.pointer_for(&room, &alice), None);
     }
 }
