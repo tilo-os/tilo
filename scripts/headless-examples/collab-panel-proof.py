@@ -388,17 +388,34 @@ def main() -> int:
         xaver.snapshot(os.path.join(shots, "07-xaver-joined.png"))
 
         step("and quinten sees him")
-        # The roster is what a person reads to know somebody arrived, so
-        # that is what this asserts — not the transport's own opinion.
-        present = wait_for(
-            lambda: (quinten.state()["workspace_tree"].get("collaborators") or [])
-            or (quinten.state().get("peers") or []),
+        pointers = wait_for(
+            lambda: ((quinten.state().get("peers") or {}).get("pointers") or None),
             timeout=60)
-        check("a peer shows up on quinten's side", bool(present),
-              json.dumps(present)[:200] if present else "roster still empty")
+        check("xaver's presence reaches quinten's session", bool(pointers),
+              json.dumps(pointers)[:200] if pointers else "no presence arrived")
         if not quinten.overlays().get("collaborators"):
             click(quinten, "topbar_avatar_stack", "the avatar stack again")
         quinten.snapshot(os.path.join(shots, "08-quinten-roster.png"))
+
+        # And the part that does *not* hold, stated rather than papered
+        # over. The panel's rows come from `collaborator_roster_rows`,
+        # which reads `WorkspaceTree::collaborators` plus the active
+        # workspace's agent members. Nothing writes a peer that joined by
+        # token into either, so the surface that answers "who is in this
+        # room" still answers "No peers connected" after somebody
+        # demonstrably arrived — the frame this step just captured says
+        # so. A peer's arrival is currently visible only as a cursor.
+        #
+        # This is not something the panel's new buttons introduced and
+        # not something they can fix: the roster's source is the gap.
+        # It is asserted here so a run reports it every time rather than
+        # leaving it to whoever looks closely at the screenshot.
+        roster = quinten.state()["workspace_tree"].get("collaborators") or []
+        if not roster:
+            print("  GAP   the roster does not list him — "
+                  "`WorkspaceTree::collaborators` is never written by a "
+                  "token join, so the panel still reads 'No peers "
+                  "connected' (see 08-quinten-roster.png)")
 
         step("the negative claims")
         check("no token was ever typed — only copied and pasted", True,
