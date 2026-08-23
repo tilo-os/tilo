@@ -200,7 +200,23 @@ impl FrameBuilder {
             theme,
             viewport: (viewport.0 as f64, viewport.1 as f64),
             outputs: None,
-            presence: PresenceCtx::default(),
+            presence: {
+                // The desktop overlay draws every workspace-scoped
+                // pointer in this store, which includes the ones the
+                // session's *own* apps publish: the broker resolves
+                // every local connection to one participant and fans
+                // each app's frames to the rest of the room, this
+                // subscription included. Without this the owner gets a
+                // pill with their own name on it, floating over their
+                // own window.
+                //
+                // The same rule the roster has always applied — see
+                // `room_roster`, which drops the local handle before it
+                // builds a row.
+                let mut ctx = PresenceCtx::default();
+                ctx.set_own_identity([crate::shell::state::local_user_id()]);
+                ctx
+            },
             peer_presence: None,
         };
         builder.rebuild_layout_tree();
