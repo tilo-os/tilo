@@ -851,6 +851,25 @@ const COLLAB_WARNING_H: f64 = 24.0;
 /// in a palette a person has to know the name of a command to reach.
 const COLLAB_ACTIONS_H: f64 = 40.0;
 
+/// What a row for somebody who has been named but has not arrived says
+/// about itself.
+///
+/// A word rather than only a dimming, because dimming alone is a
+/// difference a viewer has to already know the meaning of, and the
+/// difference here is the one the whole surface turns on: whether the
+/// person in this row is actually in the room.
+const INVITED_TAG: &str = "invited";
+
+/// How far back the dashed seat-ring of an invited row is drawn, in
+/// that peer's own colour.
+///
+/// Their colour, so the ring and the chip that replaces it when they
+/// arrive are recognisably the same person; faded, so it reads as
+/// pending beside a present peer without looking disabled — an
+/// invitation is live, and the row becomes an ordinary participant the
+/// moment its peer turns up.
+const INVITED_ROW_ALPHA: f32 = 0.55;
+
 pub const POPOVER_SURFACE_ALPHA: f32 = 0.80;
 
 /// Alpha applied to the GlobalSearch palette and Workspace-Settings modal
@@ -8045,6 +8064,9 @@ pub struct RosterRow {
     /// would be the OS telling a user what a person is allowed to do in
     /// their room on no evidence.
     pub role: Option<String>,
+    /// True for somebody the room has named who has not arrived in it
+    /// yet. Drawn dimmed and qualified, never as a present participant.
+    pub invited: bool,
 }
 
 /// The rows the collaborators dropdown shows: the peers this session
@@ -8079,6 +8101,7 @@ pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Ve
                 color: Color::from_rgb8(r, g, b),
                 is_agent: false,
                 role: p.role_id.clone(),
+                invited: p.invited,
             }
         })
         .collect();
@@ -8099,6 +8122,10 @@ pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Ve
                 // so this is the one number a person needs in order to
                 // decide whether to revoke it.
                 role: Some(crate::shell::state::role_label(role).to_string()),
+                // An agent is admitted by a grant and needs nothing to
+                // redeem, so it is here the moment the capability says
+                // so. There is no invited state for it to be in.
+                invited: false,
             });
         }
     }
@@ -11133,20 +11160,71 @@ impl ShellOverlayHost {
             // overview.
             let avatar_rect =
                 Rect::new(center.x - 11.0, center.y - 11.0, center.x + 11.0, center.y + 11.0);
-            ui::widget::Avatar::draw_at(
-                scene,
-                transform,
-                avatar_rect,
-                &row.initial.to_string(),
-                row.color,
-                theme,
-                text_renderer,
-            );
+            // Same chip, same place, same order, whichever state the
+            // row is in — so what a viewer sees when somebody joins is
+            // one row filling in, not a list reshuffling.
+            //
+            // An invitation is drawn as an *empty seat*: the unfilled,
+            // dashed ring the top bar already uses to mean "nobody here
+            // yet". Reusing that idiom rather than inventing one is the
+            // point — and a filled chip merely faded would not have
+            // worked anyway, because `Avatar::draw_at` paints its
+            // monogram `Color::WHITE` at full strength, so a dimmed
+            // disc under a bright letter reads as a rendering fault
+            // rather than a state.
+            if row.invited {
+                let seat = vello::kurbo::Circle::new(center, 11.0);
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
+                    transform,
+                    row.color.multiply_alpha(INVITED_ROW_ALPHA),
+                    None,
+                    &seat,
+                );
+                // Their own initial, not a `+`: the seat belongs to a
+                // named person, which is exactly what distinguishes
+                // this from the top bar's "invite anybody" chip.
+                let initial = row.initial.to_string();
+                let size = 22.0_f32 * 0.4;
+                let (iw, ih) = text_renderer.measure_weighted(
+                    &initial,
+                    size,
+                    None,
+                    TextWeight::Semibold,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &initial,
+                    size,
+                    colors.text_dim,
+                    transform
+                        * Affine::translate((
+                            center.x - iw as f64 / 2.0,
+                            center.y - ih as f64 / 2.0,
+                        )),
+                    None,
+                    TextWeight::Semibold,
+                );
+            } else {
+                ui::widget::Avatar::draw_at(
+                    scene,
+                    transform,
+                    avatar_rect,
+                    &row.initial.to_string(),
+                    row.color,
+                    theme,
+                    text_renderer,
+                );
+            }
             text_renderer.draw_text(
                 scene,
                 &row.label,
                 tokens.typography.scale.sm,
-                colors.text_primary,
+                if row.invited {
+                    colors.text_dim
+                } else {
+                    colors.text_primary
+                },
                 transform * Affine::translate((rect.x0 + 44.0, row_y + 7.0)),
                 None,
             );
@@ -11169,20 +11247,31 @@ impl ShellOverlayHost {
                     None,
                 );
             }
-            // And what they may do here, when the room says. Right-
-            // aligned under the name rather than beside the tag above,
-            // so an agent shows both what it is and what it holds
-            // without the two colliding in the same 56 px.
-            if let Some(role) = &row.role {
+            // The sub-line: what they may do here, or — for somebody
+            // who has been named and has not come — that they have not
+            // come. Right-aligned under the name rather than beside the
+            // agent tag above, so an agent shows both what it is and
+            // what it holds without the two colliding in the same 56 px.
+            //
+            // "invited" wins over the role when both could be said. A
+            // role is what somebody may do once they are here, and
+            // leading with it for somebody who is not here yet answers
+            // a question nobody asked ahead of the one they did.
+            let sub = if row.invited {
+                Some(INVITED_TAG.to_string())
+            } else {
+                row.role.clone()
+            };
+            if let Some(sub) = sub {
                 let (rw, _) = text_renderer.measure_weighted(
-                    role,
+                    &sub,
                     tokens.typography.scale.xs,
                     None,
                     TextWeight::Regular,
                 );
                 text_renderer.draw_text(
                     scene,
-                    role,
+                    &sub,
                     tokens.typography.scale.xs,
                     colors.text_dim,
                     transform
