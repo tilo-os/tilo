@@ -296,8 +296,8 @@ impl Harness {
         self.host
             .strip_scroll_offsets()
             .into_iter()
-            .find(|(sid, _)| *sid == self.strip.0)
-            .map(|(_, x)| x)
+            .find(|(sid, ..)| *sid == self.strip.0)
+            .map(|(_, x, _)| x)
             .expect("the strip under test must report a pan offset")
     }
 

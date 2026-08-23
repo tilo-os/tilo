@@ -800,9 +800,13 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 .host()
                 .strip_scroll_offsets()
                 .into_iter()
-                .map(|(strip, scroll_x)| serde_json::json!({
+                .map(|(strip, scroll_x, max_scroll_x)| serde_json::json!({
                     "strip": strip,
                     "scroll_x": scroll_x,
+                    // Zero means the strip fits the display and cannot
+                    // pan, so a caller asserting it did not move is
+                    // asserting nothing.
+                    "max_scroll_x": max_scroll_x,
                 }))
                 .collect::<Vec<_>>(),
         })
