@@ -303,12 +303,35 @@ impl PresenceCtx {
         );
     }
 
-    /// Draw a peer's fading "just typed" highlighter over the glyph runs
+    /// Draw a peer's fading "just typed" highlighter behind the glyph runs
     /// they inserted. `spans` pairs each scene-space rect with its fade
     /// alpha (from [`PresenceCtx::active_typing`]); the tint is the peer's
-    /// colour scaled by that alpha and a low base so the text stays legible
-    /// as the swipe decays. Rects are already in scene space, so this uses
-    /// `Affine::IDENTITY`.
+    /// colour scaled by that alpha and by [`MARKER_ALPHA`]. Rects are
+    /// already in scene space, so this uses `Affine::IDENTITY`.
+    ///
+    /// # Paint this BEFORE the text, not after
+    ///
+    /// The band is opaque enough to be seen, which means it is opaque
+    /// enough to matter to whatever is already on the canvas. Painted over
+    /// the glyphs it is a wash: it drags ink and paper toward the same
+    /// pigment together, and the two ends converge. Measured through the
+    /// word processor's real canvas, a fresh mark left **2.4:1** between
+    /// glyph and band where unmarked body text reads about 15:1 — below
+    /// WCAG AA, for every hue in the palette. Beneath the glyphs the same
+    /// band at the same strength leaves **7.5:1**, because only the paper
+    /// takes the colour and the ink stays ink.
+    ///
+    /// The band's own strength is identical either way — the composite
+    /// over paper is the same pixels — so ordering this correctly costs
+    /// the marker nothing at all. It is also what a highlighter physically
+    /// is: pigment under the writing.
+    ///
+    /// [`MARKER_PIGMENT_L`] bounds how dark the band can get, which is what
+    /// keeps the ink-against-band ratio safe for any hue; that floor is
+    /// held by `text_stays_legible_under_a_marker_in_both_palettes` here,
+    /// and the end-to-end stacking is held by
+    /// `a_peers_marker_leaves_the_body_text_readable` in the word
+    /// processor, which measures glyph against band on a rendered page.
     pub fn draw_peer_typing(
         &self,
         scene: &mut Scene,
@@ -1433,6 +1456,14 @@ mod tests {
     /// And the text underneath still reads, on the paper the word processor
     /// keeps in every palette *and* on a dark app surface, for the palest
     /// and the darkest peer alike.
+    ///
+    /// This measures the band against *unmarked* ink, which is the right
+    /// model only while the marker is painted **under** the glyphs — see
+    /// the note on [`PresenceCtx::draw_peer_typing`]. A caller that paints
+    /// it over them gets a number this test cannot see, so the stacking is
+    /// pinned separately, on a rendered page, by
+    /// `a_peers_marker_leaves_the_body_text_readable` in the word
+    /// processor.
     #[test]
     fn text_stays_legible_under_a_marker_in_both_palettes() {
         let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
@@ -1457,6 +1488,7 @@ mod tests {
             }
         }
     }
+
 
     /// Reduce-motion takes the dissolve, not the marker.
     ///
