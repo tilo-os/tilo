@@ -548,6 +548,9 @@ pub enum ShotScenario {
     /// A keyframed clip with the playhead sitting on a key: the key control
     /// filled, the curve's diamonds on the clip body.
     Keyframes,
+    /// The marker list, holding timeline markers and a clip's own, with the
+    /// ruler flags they correspond to.
+    Markers,
 }
 
 impl ShotScenario {
@@ -569,6 +572,7 @@ impl ShotScenario {
                 | ShotScenario::Geometry
                 | ShotScenario::TitleClip
                 | ShotScenario::Keyframes
+                | ShotScenario::Markers
         )
     }
 
@@ -592,6 +596,7 @@ impl ShotScenario {
             "geometry" => ShotScenario::Geometry,
             "title" => ShotScenario::TitleClip,
             "keyframes" => ShotScenario::Keyframes,
+            "markers" => ShotScenario::Markers,
             _ => return None,
         })
     }
@@ -2037,12 +2042,25 @@ impl VideoEditorApp {
     /// is never read again, so writing it would look like the slider had
     /// stopped working. This is also what makes a second keyframe cost one
     /// drag — key it, move the playhead, drag.
-    fn set_num(&mut self, f: NumField, v: f64) {
+    /// Write an animatable parameter in memory: a key at the playhead when it
+    /// is animated, its constant when it is not.
+    ///
+    /// Every parameter-backed slider goes through here, the original grade and
+    /// level rows included. They used to write their constant field directly,
+    /// which meant that once a parameter was keyed its slider silently stopped
+    /// having any effect — the curve overrides the constant everywhere.
+    fn preview_param(&mut self, param: Param, v: f64) {
         let at = self.playhead;
+        self.preview_edit(move |c| c.set_param_at(param, at, v));
+    }
+
+    fn set_num(&mut self, f: NumField, v: f64) {
         if let Some(p) = f.param() {
-            self.preview_edit(move |c| c.set_param_at(p, at, v));
+            self.preview_param(p, v);
             return;
         }
+        let at = self.playhead;
+        let _ = at;
         match f {
             NumField::CropLeft => self.preview_edit(move |c| c.transform.crop_left = v),
             NumField::CropRight => self.preview_edit(move |c| c.transform.crop_right = v),
@@ -3659,6 +3677,27 @@ impl VideoEditorApp {
                 }
                 self.zoom = 42.0;
             }
+            ShotScenario::Markers => {
+                self.playhead = 14.0;
+                self.project.add_marker(4.0, "cold open", 1);
+                self.project.add_marker(9.5, "act two", 3);
+                self.project.add_marker(21.0, "sunset", 5);
+                if let Some(c) = self.project.top_video_clip_at(23.0) {
+                    let cid = c.id;
+                    let start = c.start;
+                    self.selection.select_only(cid);
+                    if let Some(c) = self.project.clip_mut(cid) {
+                        c.add_marker(start + 1.5, "cutaway", 2);
+                        // Re-timed, so the folded SPEED header has something
+                        // to report — a fold must never hide state.
+                        c.set_speed(2.0, true);
+                    }
+                }
+                self.collapsed.insert(Section::Transform);
+                self.collapsed.insert(Section::Speed);
+                self.collapsed.insert(Section::Effects);
+                self.inspector_scroll = self.inspector_max_scroll(r);
+            }
             ShotScenario::MultiSelect => {
                 // Everything on the top video lane, plus an audio clip, so the
                 // capture shows a selection spanning tracks.
@@ -3833,12 +3872,18 @@ enum KeyState {
     OnKey,
 }
 
-/// Sub-rects of a marker row: `(name, delete)`. The rest of the row jumps the
-/// playhead to the marker.
-fn marker_row_parts(row: Rect) -> (Rect, Rect) {
-    let del = Rect::new(row.x1 - 22.0, row.center().y - 11.0, row.x1, row.center().y + 11.0);
-    let name = Rect::new(row.x0 + 16.0, row.y0, row.x1 - 84.0, row.y1);
-    (name, del)
+/// Sub-rects of a marker row: `(name, rename, delete)`.
+///
+/// Renaming gets its own target rather than living on the name text, because
+/// the row's main job is navigation: a marker exists to be jumped to, and
+/// that has to be what clicking it does. `name` is where the label is drawn
+/// and where the inline editor is placed, not a hit target.
+fn marker_row_parts(row: Rect) -> (Rect, Rect, Rect) {
+    let cy = row.center().y;
+    let del = Rect::new(row.x1 - 22.0, cy - 11.0, row.x1, cy + 11.0);
+    let rename = Rect::new(del.x0 - 24.0, cy - 11.0, del.x0 - 2.0, cy + 11.0);
+    let name = Rect::new(row.x0 + 16.0, row.y0, rename.x0 - 60.0, row.y1);
+    (name, rename, del)
 }
 
 /// The colours a title can be set to from the inspector.
@@ -5067,37 +5112,18 @@ impl VideoEditorApp {
         // The slider controls start a drag and preview the click position in
         // memory; the final value is dispatched as one action on mouse-up
         // (see `commit_drag`), so a slider interaction is one undo step.
-        if let Some(track) = l.opacity {
-            if hit_slider(track, p) {
-                self.drag = Some(Drag::Opacity);
-                let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                self.preview_edit(|c| c.opacity = v);
-                return;
-            }
-        }
-        if let Some(track) = l.volume {
-            if hit_slider(track, p) {
-                self.drag = Some(Drag::Volume);
-                let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                self.preview_edit(|c| c.volume = v);
-                return;
-            }
-        }
-        // Colour-grade sliders.
-        for (track, field, drag) in [
-            (l.brightness, FilterField::Brightness, Drag::Brightness),
-            (l.contrast, FilterField::Contrast, Drag::Contrast),
-            (l.saturation, FilterField::Saturation, Drag::Saturation),
+        for (track, param, drag) in [
+            (l.opacity, Param::Opacity, Drag::Opacity),
+            (l.volume, Param::Volume, Drag::Volume),
+            (l.brightness, Param::Brightness, Drag::Brightness),
+            (l.contrast, Param::Contrast, Drag::Contrast),
+            (l.saturation, Param::Saturation, Drag::Saturation),
         ] {
             if let Some(track) = track {
                 if hit_slider(track, p) {
                     self.drag = Some(drag);
                     let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    self.preview_edit(move |c| match field {
-                        FilterField::Brightness => c.filters.brightness = v,
-                        FilterField::Contrast => c.filters.contrast = v,
-                        FilterField::Saturation => c.filters.saturation = v,
-                    });
+                    self.preview_param(param, v);
                     return;
                 }
             }
@@ -5275,14 +5301,15 @@ impl VideoEditorApp {
             if !row.contains(p) {
                 continue;
             }
-            let (name, del) = marker_row_parts(row);
+            let (_, rename, del) = marker_row_parts(row);
             if del.contains(p) {
                 self.delete_marker(state, m);
-            } else if name.contains(p) {
+            } else if rename.contains(p) {
                 self.begin_marker_rename(m);
             } else {
                 self.playhead = m.at.clamp(0.0, self.project.duration());
                 self.playing = false;
+                self.shuttle = 0.0;
                 self.chase_playhead = true;
             }
             return;
@@ -5533,31 +5560,22 @@ impl VideoEditorApp {
                 let delta = self.project.clip(id).map(|c| target - c.end()).unwrap_or(0.0);
                 self.project.trim_out(id, delta);
             }
-            Drag::Opacity => {
-                if let Some(track) = self.inspector_layout(r).opacity {
-                    let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    self.preview_edit(|c| c.opacity = v);
-                }
-            }
-            Drag::Volume => {
-                if let Some(track) = self.inspector_layout(r).volume {
-                    let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    self.preview_edit(|c| c.volume = v);
-                }
-            }
-            Drag::Brightness | Drag::Contrast | Drag::Saturation => {
-                let (track, field) = match drag {
-                    Drag::Brightness => (self.inspector_layout(r).brightness, FilterField::Brightness),
-                    Drag::Contrast => (self.inspector_layout(r).contrast, FilterField::Contrast),
-                    _ => (self.inspector_layout(r).saturation, FilterField::Saturation),
+            Drag::Opacity
+            | Drag::Volume
+            | Drag::Brightness
+            | Drag::Contrast
+            | Drag::Saturation => {
+                let l = self.inspector_layout(r);
+                let (track, param) = match drag {
+                    Drag::Opacity => (l.opacity, Param::Opacity),
+                    Drag::Volume => (l.volume, Param::Volume),
+                    Drag::Brightness => (l.brightness, Param::Brightness),
+                    Drag::Contrast => (l.contrast, Param::Contrast),
+                    _ => (l.saturation, Param::Saturation),
                 };
                 if let Some(track) = track {
                     let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    self.preview_edit(move |c| match field {
-                        FilterField::Brightness => c.filters.brightness = v,
-                        FilterField::Contrast => c.filters.contrast = v,
-                        FilterField::Saturation => c.filters.saturation = v,
-                    });
+                    self.preview_param(param, v);
                 }
             }
             Drag::FadeIn => {
@@ -6694,7 +6712,7 @@ impl VideoEditorApp {
         }
         // ---- markers --------------------------------------------------
         for (m, row) in &l.marker_rows {
-            let (name_rect, del) = marker_row_parts(*row);
+            let (name_rect, rename, del) = marker_row_parts(*row);
             let hovered = row.contains(self.last_mouse);
             if hovered {
                 fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
@@ -6721,21 +6739,28 @@ impl VideoEditorApp {
                 let stamp = timecode(m.at, self.project.fps);
                 let (sw2, _) = tr.measure(&stamp, 11.0, None);
                 let stamp_col = if m.clip.is_some() { c.text_tertiary } else { c.text_dim };
-                text(scene, tr, tf, &stamp, 11.0, stamp_col, del.x0 - 8.0 - sw2 as f64, baseline);
+                text(scene, tr, tf, &stamp, 11.0, stamp_col, rename.x0 - 8.0 - sw2 as f64, baseline);
             }
+            // Rename and delete only appear under the pointer, so a resting
+            // list reads as names and times rather than as a wall of icons.
             if hovered {
-                if del.contains(self.last_mouse) {
-                    fill_rrect(scene, tf, with_alpha(c.semantic.danger, 0.18), del, 4.0);
+                for (rect, icon, tint) in [
+                    (rename, ui::icons::Icon::Pencil, c.text_primary),
+                    (del, ui::icons::Icon::X, c.semantic.danger),
+                ] {
+                    if rect.contains(self.last_mouse) {
+                        fill_rrect(scene, tf, with_alpha(tint, 0.18), rect, 4.0);
+                    }
+                    let g = 11.0;
+                    let box_ = Rect::new(
+                        rect.center().x - g / 2.0, rect.center().y - g / 2.0,
+                        rect.center().x + g / 2.0, rect.center().y + g / 2.0,
+                    );
+                    ui::icons::draw_icon(
+                        scene, tf, box_, icon, tint,
+                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    );
                 }
-                let g = 11.0;
-                let xb = Rect::new(
-                    del.center().x - g / 2.0, del.center().y - g / 2.0,
-                    del.center().x + g / 2.0, del.center().y + g / 2.0,
-                );
-                ui::icons::draw_icon(
-                    scene, tf, xb, ui::icons::Icon::X, c.semantic.danger,
-                    ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-                );
             }
         }
         if let Some(rect) = l.add_marker {
@@ -10235,6 +10260,417 @@ mod tests {
         for cid in clip_ids {
             assert!(after.clip(cid).is_none(), "the track's clips were removed too");
         }
+    }
+
+    // ---- geometry, rate, titles, keys and markers -------------------------
+
+    /// Scroll the inspector until `find` returns a rect that is actually on
+    /// screen, then hand back that rect. The new sections live below the fold
+    /// on a 1280x800 window, and a test that clicked their un-scrolled
+    /// coordinates would be pressing the timeline.
+    fn reveal<F>(app: &mut VideoEditorApp, find: F) -> Rect
+    where
+        F: Fn(&InspectorLayout) -> Option<Rect>,
+    {
+        let r = app.regions();
+        let max = app.inspector_max_scroll(&r);
+        let mut best = None;
+        let mut offset = 0.0;
+        while offset <= max + 1.0 {
+            app.inspector_scroll = offset.min(max);
+            if let Some(rect) = find(&app.inspector_layout(&r)) {
+                if rect.y0 > r.inspector.y0 + 8.0 && rect.y1 < r.inspector.y1 - 8.0 {
+                    best = Some(rect);
+                    break;
+                }
+            }
+            offset += 12.0;
+        }
+        best.expect("control never became visible at any scroll offset")
+    }
+
+    /// Every new control writes through an action, so the value has to be in
+    /// the CRDT — not merely in the in-memory preview — once the interaction
+    /// ends. This drags each ranged control and reads the document back.
+    #[test]
+    fn dragging_a_geometry_control_writes_the_transform_to_the_document() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(id);
+        assert!(
+            VideoDoc::load_project(&doc).clip(id).unwrap().transform.is_identity(),
+            "starts as the plain aspect-fit",
+        );
+        // Drag Scale X to a quarter along its 0.05..4 span.
+        let track = reveal(&mut app, |l| l.num(NumField::ScaleX));
+        let x = track.x0 + track.width() * 0.25;
+        click(&mut app, &mut doc, x, track.center().y);
+        release(&mut app, &mut doc);
+        let after = VideoDoc::load_project(&doc).clip(id).unwrap().transform;
+        let want = NumField::ScaleX.from_frac(0.25);
+        assert!(
+            (after.scale_x - want).abs() < 0.05,
+            "scale_x is {} not ~{want}", after.scale_x,
+        );
+        assert!(!after.is_identity(), "the clip is no longer plainly fitted");
+        // Crop writes its own edge and leaves the others alone.
+        let track = reveal(&mut app, |l| l.num(NumField::CropTop));
+        click(&mut app, &mut doc, track.x0 + track.width() * 0.5, track.center().y);
+        release(&mut app, &mut doc);
+        let after = VideoDoc::load_project(&doc).clip(id).unwrap().transform;
+        assert!(after.crop_top > 0.3 && after.crop_top < 0.6, "crop_top is {}", after.crop_top);
+        assert_eq!(after.crop_bottom, 0.0, "only the dragged edge moved");
+        assert!(after.is_cropped());
+    }
+
+    /// A rate slider on a linear track would put 1x at 5% of the way along.
+    /// It is logarithmic, so normal speed is the centre and half / double are
+    /// symmetric about it — and the value reaches the document.
+    #[test]
+    fn the_rate_control_is_logarithmic_and_re_times_the_clip() {
+        assert!(
+            (NumField::Speed.to_frac(1.0) - 0.5).abs() < 1e-9,
+            "normal speed sits at the centre of the track",
+        );
+        let half = NumField::Speed.to_frac(0.5);
+        let double = NumField::Speed.to_frac(2.0);
+        assert!(
+            ((0.5 - half) - (double - 0.5)).abs() < 1e-9,
+            "half and double speed are the same distance from normal",
+        );
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(id);
+        let before = VideoDoc::load_project(&doc).clip(id).unwrap().duration();
+        // Click the "2x" preset.
+        let rect = reveal(&mut app, |l| {
+            l.speed_presets.iter().find(|(rate, _)| *rate == 2.0).map(|(_, r)| *r)
+        });
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        let after = VideoDoc::load_project(&doc).clip(id).unwrap().clone();
+        assert_eq!(after.speed.rate(), 2.0);
+        assert!(
+            (after.duration() - before / 2.0).abs() < 1e-6,
+            "2x halves the clip's length on the timeline",
+        );
+        assert_eq!(after.source_span(), before, "and leaves its source window alone");
+        // Reverse is a separate decision from the rate.
+        let rect = reveal(&mut app, |l| l.reverse);
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        let after = VideoDoc::load_project(&doc).clip(id).unwrap().clone();
+        assert!(after.speed.reverse, "the toggle reversed it");
+        assert_eq!(after.speed.rate(), 2.0, "without disturbing the rate");
+    }
+
+    /// A corner preset has to produce a real inset — scaled down and pushed
+    /// into the named corner — not merely a non-default transform.
+    #[test]
+    fn a_picture_in_picture_preset_insets_the_clip_into_that_corner() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(id);
+        // The layout lists the corners in the order top-left, top-right,
+        // bottom-left, bottom-right.
+        let rect = reveal(&mut app, |l| l.pip.get(3).map(|(_, _, r)| *r));
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        let t = VideoDoc::load_project(&doc).clip(id).unwrap().transform;
+        assert!(t.scale_x < 0.5 && t.scale_y < 0.5, "the picture is inset, not full frame");
+        assert!(t.pos_x > 0.0, "bottom-right sits right of centre");
+        assert!(t.pos_y > 0.0, "and below it");
+        // And the way back.
+        let rect = reveal(&mut app, |l| l.reset_transform);
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        assert!(
+            VideoDoc::load_project(&doc).clip(id).unwrap().transform.is_identity(),
+            "Fill frame restores the plain aspect-fit",
+        );
+    }
+
+    /// The three states a key control shows are what the whole keyframe UI
+    /// rests on: if "animated" and "a key is here" looked the same, clicking
+    /// would be a coin toss between adding and editing.
+    #[test]
+    fn the_key_control_reports_off_between_and_on_a_key() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(id);
+        app.playhead = 23.0;
+        assert_eq!(app.key_state(Param::Opacity), KeyState::Off);
+        // One click on an unkeyed control starts the animation, at whatever
+        // the parameter already reads — so keying never moves the picture.
+        let before = app.project.clip(id).unwrap().opacity;
+        let rect = reveal(&mut app, |l| {
+            l.keys.iter().find(|(p, _)| *p == Param::Opacity).map(|(_, r)| *r)
+        });
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        let clip = VideoDoc::load_project(&doc).clip(id).unwrap().clone();
+        assert!(clip.anim.is_animated(Param::Opacity), "the first click keyed it");
+        assert!(
+            (clip.param_at(Param::Opacity, 23.0) - before).abs() < 1e-9,
+            "and planted the value it already had",
+        );
+        assert_eq!(app.key_state(Param::Opacity), KeyState::OnKey);
+        // Step off the key: still animated, no key here.
+        app.playhead = 24.0;
+        assert_eq!(app.key_state(Param::Opacity), KeyState::Between);
+        // A second click at a keyed control opens the menu rather than
+        // silently re-keying, because there is more than one thing to do.
+        let rect = reveal(&mut app, |l| {
+            l.keys.iter().find(|(p, _)| *p == Param::Opacity).map(|(_, r)| *r)
+        });
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        assert!(app.bin_menu.is_open());
+        assert!(matches!(app.menu_target, Some(MenuTarget::Keyframe(Param::Opacity))));
+    }
+
+    /// Once a parameter is animated its constant is dead — every reader goes
+    /// through the curve. Dragging its slider therefore has to write a *key*,
+    /// or the control would appear to do nothing.
+    #[test]
+    fn dragging_an_animated_slider_writes_a_key_not_a_dead_constant() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(id);
+        app.playhead = 23.0;
+        // Key it once at the head.
+        app.key_here(&mut doc, Param::Opacity);
+        let keys_before = VideoDoc::load_project(&doc)
+            .clip(id).unwrap().anim.track(Param::Opacity).unwrap().keys.len();
+        assert_eq!(keys_before, 1);
+        // Move on and drag the opacity slider to a new value.
+        app.playhead = 25.0;
+        let r = app.regions();
+        app.inspector_scroll = 0.0;
+        let track = app.inspector_layout(&r).opacity.expect("opacity row");
+        let x = track.x0 + track.width() * 0.3;
+        click(&mut app, &mut doc, x, track.center().y);
+        release(&mut app, &mut doc);
+        let clip = VideoDoc::load_project(&doc).clip(id).unwrap().clone();
+        let keys = &clip.anim.track(Param::Opacity).unwrap().keys;
+        assert_eq!(keys.len(), 2, "the drag added a second key rather than writing a constant");
+        assert!(
+            (clip.param_at(Param::Opacity, 25.0) - 0.3).abs() < 0.06,
+            "the curve reads the dragged value here, got {}",
+            clip.param_at(Param::Opacity, 25.0),
+        );
+        // The head key is untouched, so the animation actually goes somewhere.
+        assert!(
+            (clip.param_at(Param::Opacity, 23.0) - clip.param_at(Param::Opacity, 25.0)).abs() > 0.1,
+            "the two keys hold different values",
+        );
+    }
+
+    /// The keyframe menu's rows are indexed past its separators, and a wrong
+    /// offset would silently perform the neighbouring action.
+    #[test]
+    fn the_keyframe_menu_shapes_and_removes_the_key_under_the_playhead() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(id);
+        app.playhead = 23.0;
+        app.key_here(&mut doc, Param::Opacity);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            app.project.clip(id).unwrap().key_interp_at(Param::Opacity, 23.0),
+            Some(Interp::Linear),
+        );
+        // Row 3 is Hold: 0 remove, 1 separator, 2 Linear, 3 Hold, 4 Ease.
+        app.open_key_menu(Param::Opacity, Point::new(400.0, 400.0));
+        app.key_menu_choose(&mut doc, Param::Opacity, 3);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            app.project.clip(id).unwrap().key_interp_at(Param::Opacity, 23.0),
+            Some(Interp::Hold),
+            "the menu re-shaped the key it was opened on",
+        );
+        // Row 0 removes it, and the last key going takes the curve with it.
+        app.open_key_menu(Param::Opacity, Point::new(400.0, 400.0));
+        app.key_menu_choose(&mut doc, Param::Opacity, 0);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(!app.project.clip(id).unwrap().anim.is_animated(Param::Opacity));
+    }
+
+    /// "+ Title" has to go all the way to an editable clip: a title with no
+    /// bytes to import is the one source where leaving an unnamed item in the
+    /// bin would be pure friction.
+    #[test]
+    fn adding_a_title_places_a_clip_and_opens_its_words() {
+        let (mut app, mut doc) = app_and_doc();
+        app.playhead = 12.0;
+        let media_before = app.project.media.len();
+        let clips_before = app.project.clips.len();
+        let r = app.regions();
+        let btn = app.add_title_rect(&r);
+        click(&mut app, &mut doc, btn.center().x, btn.center().y);
+        let p = VideoDoc::load_project(&doc);
+        assert_eq!(p.media.len(), media_before + 1, "a source was made");
+        assert_eq!(p.clips.len(), clips_before + 1, "and placed on the timeline");
+        let item = p.media.iter().find(|m| m.kind == MediaKind::Text).expect("a title source");
+        assert!(item.text.is_some(), "with a text body to edit");
+        // A title has no bytes: nothing to fetch, so it is never "not on this
+        // device" on any peer.
+        assert!(item.path.is_empty());
+        assert!(item.kind.is_generated());
+        let clip = p.clips.iter().find(|c| c.media == item.id).expect("its clip");
+        assert!(
+            (clip.start - 12.0).abs() < 0.1,
+            "placed at the playhead, got {}", clip.start,
+        );
+        assert_eq!(app.selection.primary(), Some(clip.id), "and selected");
+        assert!(app.title_edit.is_some(), "with the caret in its words");
+        // Typing and committing writes the words and renames the source.
+        app.commit_title_text(&mut doc, item.id, "SUNSET");
+        let p = VideoDoc::load_project(&doc);
+        let item = p.media.iter().find(|m| m.id == item.id).unwrap();
+        assert_eq!(item.text.as_ref().unwrap().content, "SUNSET");
+        assert_eq!(item.name, "SUNSET", "the bin row follows the words");
+    }
+
+    /// The title controls edit the *source*, so they commit a media write —
+    /// a clip write would drop them on the floor.
+    #[test]
+    fn the_title_controls_write_the_source() {
+        let (mut app, mut doc) = app_and_doc();
+        app.playhead = 12.0;
+        app.add_title(&mut doc);
+        app.title_edit = None;
+        let mid = app.selected_media_item().unwrap().id;
+        // Alignment.
+        let rect = reveal(&mut app, |l| {
+            l.title_align.iter().find(|(a, _)| *a == TextAlign::Right).map(|(_, r)| *r)
+        });
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        let t = VideoDoc::load_project(&doc)
+            .media(mid).unwrap().text.clone().unwrap();
+        assert_eq!(t.align, TextAlign::Right);
+        // Colour: an authored value, not a palette slot, so it survives a
+        // theme change.
+        let rect = reveal(&mut app, |l| l.title_colors.get(2).map(|(_, r)| *r));
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        let t = VideoDoc::load_project(&doc).media(mid).unwrap().text.clone().unwrap();
+        assert_eq!(t.color, TITLE_COLORS[2]);
+        // Size is a fraction of the frame height, dragged.
+        let track = reveal(&mut app, |l| l.num(NumField::TitleSize));
+        let before = t.size;
+        click(&mut app, &mut doc, track.x0 + track.width() * 0.8, track.center().y);
+        release(&mut app, &mut doc);
+        let t = VideoDoc::load_project(&doc).media(mid).unwrap().text.clone().unwrap();
+        assert!(t.size > before, "the size slider raised it: {} -> {}", before, t.size);
+        assert!(t.size <= 0.4, "and stayed inside the offered range");
+    }
+
+    /// Markers are listed, renamed, navigated and deleted from one place, and
+    /// each kind commits through the action that owns it.
+    #[test]
+    fn the_marker_list_names_navigates_and_deletes() {
+        let (mut app, mut doc) = app_and_doc();
+        app.playhead = 8.0;
+        // M marks the playhead and opens the name for typing.
+        assert!(key_press(&mut app, &mut doc, "m", false));
+        assert!(app.marker_rename.is_some(), "an unnamed tick is a marker you cannot find");
+        let target = app.marker_rename.as_ref().unwrap().0;
+        app.commit_marker_rename(&mut doc, target, "act two");
+        app.marker_rename = None;
+        app.sync(&mut doc, &automerge::ROOT);
+        let p = VideoDoc::load_project(&doc);
+        assert_eq!(p.markers.len(), 1);
+        assert_eq!(p.markers[0].name, "act two");
+        assert!((p.markers[0].t - 8.0).abs() < 1e-6);
+        // A second one, so navigation has somewhere to go.
+        app.playhead = 20.0;
+        key_press(&mut app, &mut doc, "m", false);
+        let second = app.marker_rename.as_ref().unwrap().0;
+        app.commit_marker_rename(&mut doc, second, "sunset");
+        app.marker_rename = None;
+        app.sync(&mut doc, &automerge::ROOT);
+        // , and . step between them and stop at the ends.
+        app.playhead = 14.0;
+        key_press(&mut app, &mut doc, ",", false);
+        assert!((app.playhead - 8.0).abs() < 1e-6, "stepped back to the first");
+        key_press(&mut app, &mut doc, ".", false);
+        assert!((app.playhead - 20.0).abs() < 1e-6, "and forward past it to the second");
+        key_press(&mut app, &mut doc, ".", false);
+        assert!((app.playhead - 20.0).abs() < 1e-6, "navigation stops rather than wrapping");
+        // Clicking a row takes the playhead there; the cross removes it.
+        let row = reveal(&mut app, |l| l.marker_rows.first().map(|(_, r)| *r));
+        click(&mut app, &mut doc, row.center().x, row.center().y);
+        assert!((app.playhead - 8.0).abs() < 1e-6, "the row navigated");
+        let row = reveal(&mut app, |l| l.marker_rows.first().map(|(_, r)| *r));
+        let (_, _, del) = marker_row_parts(row);
+        click(&mut app, &mut doc, del.center().x, del.center().y);
+        let p = VideoDoc::load_project(&doc);
+        assert_eq!(p.markers.len(), 1, "the cross deleted one");
+        assert_eq!(p.markers[0].name, "sunset", "and left the other");
+    }
+
+    /// A clip marker is stored clip-local and edited through a clip write,
+    /// which is a different action from a timeline marker's.
+    #[test]
+    fn a_clip_marker_is_listed_beside_the_timeline_ones_and_deletes_as_a_clip_write() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        let start = app.project.clip(id).unwrap().start;
+        app.selection.select_only(id);
+        app.project.clip_mut(id).unwrap().add_marker(start + 1.0, "beat", 2);
+        app.dispatch_clip(&mut doc, id);
+        app.sync(&mut doc, &automerge::ROOT);
+        app.playhead = 4.0;
+        key_press(&mut app, &mut doc, "m", false);
+        app.marker_rename = None;
+        app.sync(&mut doc, &automerge::ROOT);
+        // One list, both kinds, sorted by where they actually land.
+        let r = app.regions();
+        app.inspector_scroll = app.inspector_max_scroll(&r);
+        let rows = app.inspector_layout(&r).marker_rows.clone();
+        assert_eq!(rows.len(), 2, "the clip's marker is listed with the timeline's");
+        assert!(rows.iter().any(|(m, _)| m.clip == Some(id)));
+        assert!(rows.iter().any(|(m, _)| m.clip.is_none()));
+        // The clip one reports an absolute time even though it is stored local.
+        let clip_row = rows.iter().find(|(m, _)| m.clip == Some(id)).unwrap().0;
+        assert!((clip_row.at - (start + 1.0)).abs() < 1e-6);
+        // Deleting it writes the clip, not the project.
+        app.delete_marker(&mut doc, clip_row);
+        let p = VideoDoc::load_project(&doc);
+        assert!(p.clip(id).unwrap().markers.is_empty(), "gone from the clip");
+        assert_eq!(p.markers.len(), 1, "and the timeline marker is untouched");
+    }
+
+    /// A folded section may hide controls; it must never hide state.
+    #[test]
+    fn a_folded_section_still_reports_what_is_inside_it() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(id);
+        let clip = app.project.clip(id).unwrap().clone();
+        // Nothing to report while everything is at its default.
+        assert_eq!(app.section_summary(Section::Speed, &clip, None), None);
+        assert_eq!(app.section_summary(Section::Transform, &clip, None), None);
+        // Re-time and inset it, and the folded headers say so.
+        app.edit_selected(&mut doc, |c| {
+            c.set_speed(2.0, true);
+            c.transform = crate::model::Transform::pip(0.3, (1.0, -1.0), 0.04);
+            c.transform.crop_left = 0.1;
+        });
+        let clip = app.project.clip(id).unwrap().clone();
+        let speed = app.section_summary(Section::Speed, &clip, None).expect("a rate to report");
+        assert!(speed.contains('2') && speed.contains("rev"), "speed summary was {speed:?}");
+        let geom = app.section_summary(Section::Transform, &clip, None).expect("a placement");
+        assert!(geom.contains("cropped"), "transform summary was {geom:?}");
+        // Folding is a property of the panel, not of the clip: it survives
+        // selecting something else.
+        app.collapsed.insert(Section::Transform);
+        let other = app.project.top_video_clip_at(6.0).map(|c| c.id);
+        if let Some(other) = other {
+            app.selection.select_only(other);
+        }
+        assert!(app.collapsed.contains(&Section::Transform));
+        let r = app.regions();
+        let l = app.inspector_layout(&r);
+        assert!(l.num(NumField::ScaleX).is_none(), "a folded section lays out no controls");
+        assert!(
+            l.sections.iter().any(|(s, _)| *s == Section::Transform),
+            "but keeps its header, so it can be unfolded again",
+        );
     }
 
     #[test]
