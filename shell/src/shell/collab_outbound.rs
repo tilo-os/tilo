@@ -532,11 +532,25 @@ pub mod recording {
             before_seq: u64,
             max: u16,
         },
+        /// Content an app handed over for the room.
+        Blob {
+            cluster_id: String,
+            hash: String,
+            bytes: Vec<u8>,
+        },
+        /// A request for content this machine does not hold.
+        BlobWanted {
+            cluster_id: String,
+            hash: String,
+        },
     }
 
     #[derive(Default)]
     pub struct RecordingSink {
         sent: Mutex<Vec<Sent>>,
+        /// Content this sink was handed, so it can answer for it the way a
+        /// real machine's store does.
+        blobs: Mutex<std::collections::HashMap<String, Vec<u8>>>,
     }
 
     impl RecordingSink {
@@ -610,6 +624,34 @@ pub mod recording {
                 .lock()
                 .unwrap()
                 .push(Sent::Scrollback { before_seq, max });
+        }
+
+        fn offer_blob(&self, cluster_id: &str, hash: &str, bytes: &[u8]) -> bool {
+            // Records what it was handed *and* keeps it, so `blob` can answer
+            // for it afterwards. A sink that took content and then denied
+            // holding it would let a test prove a delivery that could not
+            // happen on a real machine.
+            self.blobs
+                .lock()
+                .unwrap()
+                .insert(hash.to_string(), bytes.to_vec());
+            self.sent.lock().unwrap().push(Sent::Blob {
+                cluster_id: cluster_id.to_string(),
+                hash: hash.to_string(),
+                bytes: bytes.to_vec(),
+            });
+            true
+        }
+
+        fn blob(&self, hash: &str) -> Option<Vec<u8>> {
+            self.blobs.lock().unwrap().get(hash).cloned()
+        }
+
+        fn want_blob(&self, cluster_id: &str, hash: &str) {
+            self.sent.lock().unwrap().push(Sent::BlobWanted {
+                cluster_id: cluster_id.to_string(),
+                hash: hash.to_string(),
+            });
         }
     }
 }

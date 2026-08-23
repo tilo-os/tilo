@@ -466,6 +466,17 @@ impl CapnpBrokerState {
                 // want late-arriving history repeat their
                 // `fetchScrollbackFor` call.
             }
+            CollabEvent::BlobArrived { hash, bytes } => {
+                // The capnp schema has no content stream. An app on this
+                // transport keeps its placeholder, and that has to be said:
+                // a picture that cannot be delivered must not look, from the
+                // log, like a picture nobody sent.
+                tracing::warn!(
+                    hash = %hash, bytes = bytes.len(),
+                    "capnp fanout: this transport cannot carry document content; apps on \
+                     it will show a placeholder for the image using it",
+                );
+            }
         }
     }
 
