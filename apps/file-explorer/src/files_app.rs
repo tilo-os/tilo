@@ -236,7 +236,17 @@ impl Default for FileExplorerWidget {
 
 impl FileExplorerWidget {
     pub fn new() -> Self {
-        Self::with_persistence(config::config_dir(), dirs::home_dir())
+        // The same home the start directory is resolved against
+        // (`crate::model::default_start_dir`), and for the same reason.
+        // Under a sandbox this process's `HOME` is its own per-package
+        // directory — `/run/qos/app` — while the directory actually
+        // opened is the user's real home, bound by a grant and named by
+        // `QOS_USER_HOME`. Reading `dirs::home_dir()` here made the two
+        // disagree, and the breadcrumb is where a disagreement shows:
+        // `format_path` abbreviates a path to `~` only when it lies
+        // under the home it was handed, so a home it does not recognise
+        // renders as an absolute trail from the filesystem root.
+        Self::with_persistence(config::config_dir(), crate::model::user_home())
     }
 
     /// Construct with an explicit persistence directory + home, resolving the
@@ -4066,6 +4076,69 @@ mod responsive_body_tests {
         assert!(
             h.w.debug_places_open(),
             "wide navigation leaves the docked list in place — nothing to dismiss",
+        );
+    }
+}
+
+#[cfg(test)]
+mod breadcrumb_home_tests {
+    use super::*;
+
+    /// The window opens on the user's real home, and the breadcrumb has
+    /// to be measured against the same one.
+    ///
+    /// Under a sandbox this process's `HOME` is its own per-package
+    /// directory (`/run/qos/app`) while the directory actually opened is
+    /// the user's real home, bound by a grant and named by
+    /// `QOS_USER_HOME`. `new` resolved the start directory from the
+    /// second and the breadcrumb's home from the first, so
+    /// [`crate::model::format_path`] was measuring against a directory
+    /// nothing is under — and the trail rendered as an absolute path
+    /// from the filesystem root instead of a `~`.
+    #[test]
+    fn breadcrumb_home_is_the_granted_user_home_not_the_process_home() {
+        let granted = tempfile::tempdir().expect("tempdir");
+        let granted_path = granted.path().to_path_buf();
+        // Only `QOS_USER_HOME` is touched: `HOME` is left as the machine's,
+        // which is precisely the disagreement under test — the override has
+        // to win over whatever `dirs::home_dir()` says, and it does not say
+        // this temp dir.
+        // SAFETY: the value is read on the two lines below and by nothing
+        // else in this crate's tests.
+        unsafe { std::env::set_var("QOS_USER_HOME", &granted_path) };
+
+        let resolved = crate::model::user_home();
+        let widget_home = FileExplorerWidget::new()
+            .home_path()
+            .map(|p| p.to_path_buf());
+
+        unsafe { std::env::remove_var("QOS_USER_HOME") };
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some(granted_path.as_path()),
+            "the granted home wins over the process's own HOME",
+        );
+        assert_ne!(
+            dirs::home_dir().as_deref(),
+            Some(granted_path.as_path()),
+            "this test only means something while the two disagree",
+        );
+        assert_eq!(
+            widget_home.as_deref(),
+            Some(granted_path.as_path()),
+            "the widget measures its breadcrumb against the home it opens on",
+        );
+
+        // Which is what makes the trail read as somebody's home rather
+        // than as a path from the filesystem root.
+        assert_eq!(
+            crate::model::format_path(&granted_path.join("Documents"), widget_home.as_deref()),
+            "~/Documents",
+        );
+        assert_eq!(
+            crate::model::format_path(&granted_path, widget_home.as_deref()),
+            "~",
         );
     }
 }

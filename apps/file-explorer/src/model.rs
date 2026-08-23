@@ -230,17 +230,27 @@ pub fn initial_path() -> PathBuf {
             return p;
         }
     }
-    // The user's home, which under a sandbox is *not* this process's
-    // `HOME` — that is the app's own per-package directory, and opening
-    // a file manager on it shows a folder with none of the user's files
-    // in it. `QOS_USER_HOME` is present only when a grant actually bound
-    // the real home, so preferring it can never point at a directory
-    // this process cannot read.
-    if let Some(home) = ui::sysdirs::user_home_override() {
+    if let Some(home) = user_home() {
         return home;
     }
-    if let Some(home) = dirs::home_dir() { return home; }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
+}
+
+/// The user's home, which under a sandbox is *not* this process's `HOME`
+/// — that is the app's own per-package directory, and opening a file
+/// manager on it shows a folder with none of the user's files in it.
+/// `QOS_USER_HOME` is present only when a grant actually bound the real
+/// home, so preferring it can never point at a directory this process
+/// cannot read.
+///
+/// Every surface that needs to know where home is resolves it here, so
+/// the directory the window opens on and the home the breadcrumb
+/// abbreviates against are the same answer. When they were two answers
+/// the trail rendered as an absolute path from the filesystem root: the
+/// window was on the real home and `format_path` was measuring against
+/// `/run/qos/app`, which nothing is under.
+pub fn user_home() -> Option<PathBuf> {
+    ui::sysdirs::user_home_override().or_else(dirs::home_dir)
 }
 
 #[cfg(test)]
