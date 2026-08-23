@@ -16,6 +16,25 @@ pub struct Editor {
     actor: ActorId,
 }
 
+/// Whether a peer's snapshot is a document with blocks in it.
+///
+/// The room's traffic is not all documents, and none of it is labelled:
+/// the broker fans a frame out by address, and a participant that
+/// announced no app id is cluster-scoped and reaches every subscriber in
+/// the room. Seeding a replica from whatever arrived first is how the
+/// agent ended up holding the file manager's state and then failing to
+/// merge the page it had been invited to.
+pub fn looks_like_a_document(bytes: &[u8]) -> bool {
+    let Ok(doc) = AutoCommit::load(bytes) else {
+        return false;
+    };
+    has_document_schema(&doc)
+}
+
+fn has_document_schema(doc: &AutoCommit) -> bool {
+    qdoc::model::open(doc, &automerge::ROOT).is_ok()
+}
+
 impl Editor {
     /// A fresh, unbound document under `actor`. Used by tests; a live
     /// agent always starts from a peer's snapshot.
@@ -27,6 +46,10 @@ impl Editor {
     }
 
     /// The replica, seeded from a full snapshot a peer sent.
+    ///
+    /// Check [`looks_like_a_document`] first: a room hands out snapshots
+    /// of everything in it, and this will happily seed itself from
+    /// something that is not a document at all.
     pub fn from_snapshot(bytes: &[u8], actor_handle: &str) -> Result<Self> {
         let actor = ActorId::from(actor_handle.as_bytes());
         let mut doc = AutoCommit::load(bytes).context("load the document snapshot")?;
@@ -38,20 +61,77 @@ impl Editor {
 
     /// Merge a full snapshot from a peer. Never replaces: both sides keep
     /// whatever the other had not seen.
-    pub fn merge_full(&mut self, bytes: &[u8]) -> Result<()> {
-        let mut incoming = AutoCommit::load(bytes).context("load a peer snapshot")?;
-        self.doc.merge(&mut incoming).context("merge a peer snapshot")?;
+    ///
+    /// Returns whether the snapshot was taken. **A room carries more than
+    /// one document**, and a subscriber that announced no record — or a
+    /// participant that announced no app at all, which the broker treats
+    /// as cluster-scoped — is handed all of them. So a snapshot that is
+    /// not this document is an ordinary event, not an error: two
+    /// unrelated Automerge documents that happen to share an actor id
+    /// fail to merge with `duplicate seq N found for actor …`, and
+    /// propagating that killed the agent mid-run with a message about
+    /// sequence numbers.
+    pub fn merge_full(&mut self, bytes: &[u8]) -> Result<bool> {
+        let Ok(mut incoming) = AutoCommit::load(bytes) else {
+            return Ok(false);
+        };
+        if !has_document_schema(&incoming) {
+            return Ok(false);
+        }
+        if self.doc.merge(&mut incoming).is_err() {
+            return Ok(false);
+        }
+        self.drain();
+        Ok(true)
+    }
+
+    /// Whether a peer's snapshot is a *different* document that is asking
+    /// for something from us.
+    ///
+    /// Only consulted once a snapshot has failed to merge, which is how
+    /// "a different document" is established. Without a `--record` the
+    /// agent cannot tell from the address which of a room's documents is
+    /// the one it was invited to, and adopting the first snapshot to
+    /// arrive picked whichever app answered first — in practice the file
+    /// manager's. An instruction addressed to us by name is the one
+    /// signal in the content that settles it.
+    pub fn is_addressed_to(bytes: &[u8], name: &str) -> bool {
+        let Ok(doc) = AutoCommit::load(bytes) else {
+            return false;
+        };
+        let Ok(c) = qdoc::model::open(&doc, &automerge::ROOT) else {
+            return false;
+        };
+        let snapshot = qdoc::model::materialize(&doc, &c);
+        let blocks = crate::plan::blocks(&snapshot);
+        crate::plan::find_addressed(&blocks, name).is_some()
+    }
+
+    /// Take `bytes` as the document, discarding what we hold.
+    ///
+    /// Only for the case above: we adopted the wrong document because
+    /// nothing in the address distinguished them, and a later one turned
+    /// out to be the one addressed to us. Nothing of ours is lost —
+    /// this only ever runs before the agent has made an edit.
+    pub fn replace_with(&mut self, bytes: &[u8]) -> Result<()> {
+        let mut doc = AutoCommit::load(bytes).context("load a peer snapshot")?;
+        doc.set_actor(self.actor.clone());
+        self.doc = doc;
         self.drain();
         Ok(())
     }
 
     /// Apply a peer's incremental change set.
-    pub fn merge_incremental(&mut self, bytes: &[u8]) -> Result<()> {
-        self.doc
-            .load_incremental(bytes)
-            .context("apply a peer's incremental changes")?;
+    ///
+    /// Returns whether it applied. A delta belonging to one of the
+    /// room's other documents refers to objects this one has never seen;
+    /// that is not this agent's business and must not end its run.
+    pub fn merge_incremental(&mut self, bytes: &[u8]) -> Result<bool> {
+        if self.doc.load_incremental(bytes).is_err() {
+            return Ok(false);
+        }
         self.drain();
-        Ok(())
+        Ok(true)
     }
 
     /// Forget what was just merged as far as "changes to broadcast" goes:
