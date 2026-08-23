@@ -73,7 +73,7 @@ use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::presence::PresenceKey;
 
 use crate::shell::collab_broker::{
-    AuditEntry, BrokerChannels, CrdtRoute, PeerTable, apply_redaction_from_envelope,
+    AuditEntry, BrokerChannels, CrdtRoute, LocalIdentity, PeerTable, apply_redaction_from_envelope,
 };
 use crate::shell::collab_outbound::{PeerPublisher, Transport};
 
@@ -196,6 +196,12 @@ pub struct CapnpBrokerState {
     /// fan-out is the whole story. It says so once rather than
     /// dropping frames in silence.
     publisher: Arc<PeerPublisher>,
+    /// Who the app on the far end of a capnp channel is. The same
+    /// instance the JSON transport resolves through, because an app
+    /// must not be a different participant for having connected over a
+    /// different socket — and every packaged qOS app speaks capnp, so
+    /// this transport is where a person is normally seen from.
+    identity: Arc<LocalIdentity>,
 }
 
 impl CapnpBrokerState {
@@ -210,19 +216,28 @@ impl CapnpBrokerState {
         peer_table: &Arc<PeerTable>,
         broker_channels: Arc<Mutex<BrokerChannels>>,
         publisher: Arc<PeerPublisher>,
+        identity: Arc<LocalIdentity>,
     ) -> Arc<Self> {
         Arc::new(Self {
             channels: Mutex::new(HashMap::new()),
             peer_table: Arc::downgrade(peer_table),
             broker_channels,
             publisher,
+            identity,
         })
     }
 
-    /// Publish a payload this transport just fanned out locally, on
-    /// the identical route. Every capnp write path funnels through
-    /// here so "did it leave the machine" is one decision rather than
-    /// one per RPC method.
+    /// What to stamp on traffic arriving on `route`.
+    ///
+    /// The capnp handshake is `joinChannel(channelId, identity)` and
+    /// carries no announced handle, so this transport has nothing to
+    /// offer but the room lookup — which is the authoritative answer
+    /// anyway.
+    fn participant_id(&self, route: &CrdtRoute) -> String {
+        self.identity.resolve(Some(route), None)
+    }
+
+    /// Publish a document delta to the peers in `route`'s room.
     ///
     /// The route gate, the refusal logging and the gossip size cap all
     /// live behind this handle, shared with the JSON dialect: a frame
@@ -828,7 +843,7 @@ fn handle_signed_op_send(
                 .signed_document(route, Transport::Capnp, envelope.clone());
             let event = CollabEvent::SignedCRDTIncremental {
                 envelope: Box::new(envelope),
-                from_user_id: format!("peer-{peer_id}"),
+                from_user_id: state.participant_id(route),
             };
             if let Some(t) = state.peer_table.upgrade() {
                 t.fanout_to_route(&event, peer_id, route);
@@ -968,7 +983,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
             // synthesises them from `PresenceKey::pointer_default()`
             // when it processes this event.
             let event = CollabEvent::RemoteCursorMoved {
-                user_id: format!("peer-{peer_id}"),
+                user_id: state.participant_id(&route),
                 x,
                 y,
             };
@@ -1144,7 +1159,7 @@ fn publish_keyed_presence(
     };
     state.publish_presence(full_route, key.clone(), payload.clone());
     let event = CollabEvent::RemotePresenceUpdate {
-        user_id: format!("peer-{peer_id}"),
+        user_id: state.participant_id(route),
         key,
         payload,
     };
@@ -1349,11 +1364,12 @@ pub fn spawn(
     peer_table: Arc<PeerTable>,
     broker_channels: Arc<Mutex<BrokerChannels>>,
     publisher: Arc<PeerPublisher>,
+    identity: Arc<LocalIdentity>,
     quit: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
     let _ = std::fs::remove_file(&socket_path);
     let wired = publisher.is_wired();
-    let state = CapnpBrokerState::new(&peer_table, broker_channels, publisher);
+    let state = CapnpBrokerState::new(&peer_table, broker_channels, publisher, identity);
     peer_table.attach_capnp(Arc::clone(&state));
 
     // Bind on the caller's thread, before anything is detached.
@@ -1759,7 +1775,16 @@ mod tests {
         assert_eq!(received.artifact, artifact);
         assert_eq!(received.seq, 1);
         assert_eq!(received.payload, b"hi-capnp");
-        assert!(from.starts_with("peer-"), "attribution shape: {from}");
+        // Attributed to whoever is at this machine, not to the
+        // connection slot the op came in on. There is no room here to
+        // ask, so the answer is the local user id; what matters is that
+        // it is an identity a name can attach to rather than a number
+        // an app has no way to resolve.
+        assert!(
+            !from.starts_with("peer-") && !from.starts_with("peer@"),
+            "a transport id reached a subscriber: {from}",
+        );
+        assert_eq!(from, crate::shell::state::local_user_id());
 
         drop(legacy);
         drop(handle);

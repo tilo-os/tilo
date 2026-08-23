@@ -1,6 +1,6 @@
 use automerge::{AutoCommit, ObjId, ROOT};
 use std::sync::{Arc, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use crate::record::{RecordCheckout, RecordId, RecordStore};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -8,6 +8,7 @@ use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData as Image, ImageF
 use winit::event::WindowEvent;
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::Widget;
+use crate::widget::Spinner;
 use crate::widget::app_widget::AppWidget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -211,6 +212,20 @@ impl AppKind {
 pub enum TileContent {
     App(Box<dyn AppWidget>),
     Stub { kind: AppKind, label: String },
+    /// A card that states something, rather than standing in for an app
+    /// that is not built yet.
+    ///
+    /// [`TileContent::Stub`] is the "coming soon" placeholder, and its
+    /// sub-line says so — which is a true thing to say about an app this
+    /// OS has not written and a false one about anything else. A tab whose
+    /// window has a reason for not being here needs to say *that* reason:
+    /// a peer's window whose app is not installed on this machine is not
+    /// coming soon, it is absent, and the two sentences send the reader to
+    /// different places.
+    ///
+    /// So: `title` names the thing, `detail` says what is actually the
+    /// case, and nothing is added to either.
+    Notice { title: String, detail: String },
     // reserved: Wayland(u64),
 }
 
@@ -266,6 +281,22 @@ pub struct TileHost {
     /// The record scope the hosted app was last told about, so a scope is
     /// announced once per change rather than every frame.
     announced: Option<RecordId>,
+    /// Set by [`TileHost::replace_content`]; drained by
+    /// [`Widget::take_structure_dirty`]. What tells the layout pass that
+    /// this tile's node shape changed even though no hosted widget
+    /// reported anything.
+    structure_dirty: bool,
+    /// Latched: this tile has had something to show at least once, so
+    /// the window it is in stays on screen from here on.
+    ///
+    /// It has to survive [`TileHost::replace_content`], which is the
+    /// case that makes it necessary: a tab announcing a window somebody
+    /// else in the room opened is a card, and a card is on screen. When
+    /// this machine's own instance of that app arrives, the tile becomes
+    /// a client surface that has not drawn yet — and without the latch
+    /// the window the person was already looking at would blink out and
+    /// come back, which is worse than what it replaced.
+    was_presented: std::cell::Cell<bool>,
     rect: Rect,
     /// Set by the parent `WindowGroup` each frame to indicate whether
     /// this tile is the "focused" tile — the concept's
@@ -285,7 +316,45 @@ pub struct TileHost {
     /// "animations only fire for runtime insertions" invariant used
     /// by `TabBar`'s insert fade.
     spawned_at: Option<Instant>,
+    /// The app's own name, as it reads on the tab pill above this tile.
+    /// Pushed down by the parent [`crate::widget::WindowGroup`] every
+    /// frame: the pill is where a wayland app-id is turned into a name a
+    /// person recognises, and resolving it a second time down here would
+    /// only be a second chance for the two to disagree.
+    opening_name: String,
+    /// The indicator on the opening card, kept across frames so its
+    /// motion is continuous rather than restarting on every paint.
+    opening_spinner: Spinner,
+    /// Set on the first frame the opening card is actually painted.
+    ///
+    /// What decides whether an arriving window is dissolved into or
+    /// simply drawn: a card nobody ever saw has nothing to dissolve, and
+    /// fading one out over an app that opened in a blink would invent a
+    /// transition out of a placeholder that was never on screen.
+    opening_shown: bool,
+    /// When the app's own content first took the place of the opening
+    /// card. Drives the dissolve, and is only ever set once
+    /// `opening_shown` is.
+    handed_over_at: Option<Instant>,
 }
+
+/// How long the opening card takes to dissolve into the window that
+/// replaced it.
+///
+/// The same length as the tab-close fade, because it is the same kind of
+/// motion at the same scale: long enough to read as one thing becoming
+/// another, short enough that nobody is waiting on it.
+const HANDOVER_MS: u64 = 180;
+
+/// Diameter of the indicator on the opening card.
+///
+/// A little larger than the toolkit's default so it holds its own under
+/// a title on a full-window card, and small enough that it stays an
+/// indicator rather than becoming the subject of the screen.
+const OPENING_SPINNER_PX: f64 = 36.0;
+
+/// Gap between the app's name and the indicator under it.
+const OPENING_SPINNER_GAP: f64 = 24.0;
 
 impl TileHost {
     pub fn new(content: TileContent) -> Self {
@@ -293,10 +362,43 @@ impl TileHost {
             content,
             binding: None,
             announced: None,
+            structure_dirty: false,
+            was_presented: std::cell::Cell::new(false),
             rect: Rect::ZERO,
             focused: false,
             spawned_at: None,
+            opening_name: String::new(),
+            opening_spinner: Spinner::with_size(OPENING_SPINNER_PX as f32),
+            opening_shown: false,
+            handed_over_at: None,
         }
+    }
+
+    /// Tell this tile the name of the app whose place it is holding.
+    ///
+    /// Called by the parent group each frame, from the tab above it.
+    /// Tiles not standing in for an app that has yet to draw never read
+    /// it.
+    pub fn set_opening_name(&mut self, name: &str) {
+        if self.opening_name != name {
+            self.opening_name.clear();
+            self.opening_name.push_str(name);
+        }
+    }
+
+    /// The name this tile would put on its opening card. Test seam for
+    /// the parent group's push — a card naming the wrong app, or naming
+    /// an app-id, is the defect this exists to catch.
+    #[cfg(test)]
+    pub(crate) fn opening_name_for_test(&self) -> &str {
+        &self.opening_name
+    }
+
+    /// Whether the opening card is mid-dissolve into the window that
+    /// replaced it.
+    fn handover_in_flight(&self) -> bool {
+        self.handed_over_at
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(HANDOVER_MS))
     }
 
     /// Give this tile its own document: the record `tab` names, kept in
@@ -332,7 +434,7 @@ impl TileHost {
     fn resolve_record(&mut self) -> Option<RecordId> {
         let want = match &self.content {
             TileContent::App(w) => w.record_intent(),
-            TileContent::Stub { .. } => None,
+            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
         };
         let live = self.binding.as_mut()?.follow(want);
         self.announce_scope();
@@ -356,9 +458,32 @@ impl TileHost {
         match &self.content {
             TileContent::App(_) => "App".into(),
             TileContent::Stub { kind, .. } => kind.as_str().into(),
+            TileContent::Notice { title, .. } => title.clone(),
         }
     }
     pub fn content_mut(&mut self) -> &mut TileContent { &mut self.content }
+    /// Swap what this tile hosts, keeping the tab it belongs to.
+    ///
+    /// A tab is an open thing; what fills it can change while it stays
+    /// the same tab. The case this exists for is a window that was
+    /// announced before it existed — a card saying an app is opening,
+    /// which becomes the app — and replacing the tab instead would take
+    /// the tab away from the person looking at it and hand focus somewhere
+    /// they did not ask for.
+    ///
+    /// The record binding is deliberately kept: same tab, same document.
+    /// What is dropped is the memory of having told the *previous*
+    /// occupant which record it was on, so the new one is told too.
+    ///
+    /// Flags a structural rebuild, because the swap can change the tile's
+    /// taffy shape — an `App` contributes a child node and the card
+    /// variants are leaves, and a layout pass that kept the old shape
+    /// would index a child that is no longer there.
+    pub fn replace_content(&mut self, content: TileContent) {
+        self.content = content;
+        self.announced = None;
+        self.structure_dirty = true;
+    }
     /// What this tile is showing, read-only.
     pub fn content(&self) -> &TileContent { &self.content }
     /// Toggle the indigo-bloom shadow. Called by `WindowGroup::draw`
@@ -457,7 +582,7 @@ impl Widget for TileHost {
                 let child = w.build_layout(taffy, theme, node_map);
                 taffy.new_with_children(Style { size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) }, ..Default::default() }, &[child]).unwrap()
             }
-            TileContent::Stub { .. } => {
+            TileContent::Stub { .. } | TileContent::Notice { .. } => {
                 taffy.new_leaf(Style { size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) }, ..Default::default() }).unwrap()
             }
         };
@@ -608,6 +733,40 @@ impl Widget for TileHost {
         });
     }
     fn name(&self) -> &str { "TileHost" }
+    /// Whether the thing this tile hosts has drawn yet.
+    ///
+    /// Only an app can answer anything but `true`: a stub and a notice
+    /// are cards this process painted itself, and they are on screen the
+    /// moment the tile is. An app that stands in for a client process
+    /// answers for that process — see
+    /// `crate::widget::Widget::presented`.
+    fn presented(&self) -> bool {
+        if self.was_presented.get() {
+            return true;
+        }
+        let now = match &self.content {
+            TileContent::App(w) => w.presented(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => true,
+        };
+        self.was_presented.set(now);
+        now
+    }
+    /// Whether this tile is holding a window's place for an app that has
+    /// been asked for and has not arrived — see [`Widget::opening`].
+    ///
+    /// A tile that has ever presented is never opening again. The latch
+    /// is what stops a window whose buffer briefly stops fitting its tab,
+    /// or one replaced by another instance of the same app, from falling
+    /// back to a placeholder the person has already watched go away once.
+    fn opening(&self) -> bool {
+        if self.was_presented.get() {
+            return false;
+        }
+        match &self.content {
+            TileContent::App(w) => w.opening(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
+        }
+    }
     fn get_rect(&self) -> Rect { self.rect }
     /// The tile's presence identity is the record it is showing.
     ///
@@ -629,7 +788,7 @@ impl Widget for TileHost {
         }
         match &self.content {
             TileContent::App(w) => w.needs_commit(),
-            TileContent::Stub { .. } => false,
+            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         }
     }
     fn on_commit(&mut self) {
@@ -644,11 +803,16 @@ impl Widget for TileHost {
         // A hosted app widget could itself mutate its subtree (e.g. a file
         // explorer that spawns a new pane). Forward through so App can
         // rebuild the taffy tree when the inner widget reports dirty.
-        if let TileContent::App(w) = &mut self.content {
-            w.take_structure_dirty()
-        } else {
-            false
-        }
+        // Or the tile's own content was swapped under it
+        // ([`TileHost::replace_content`]), which changes the node shape
+        // this host contributes. Both are drained, not short-circuited, so
+        // an inner flag cannot be left set behind an outer one.
+        let swapped = std::mem::take(&mut self.structure_dirty);
+        let inner = match &mut self.content {
+            TileContent::App(w) => w.take_structure_dirty(),
+            _ => false,
+        };
+        swapped || inner
     }
     fn needs_animation_frame(&self) -> bool {
         // `TileHost` doesn't expose children via `children()`, so the
@@ -659,9 +823,16 @@ impl Widget for TileHost {
         // signal still bubbles up through the tile to `App::run`.
         let inner = match &self.content {
             TileContent::App(w) => w.needs_animation_frame(),
-            TileContent::Stub { .. } => false,
+            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         };
-        self.spawn_in_flight() || inner
+        // The opening card's indicator moves, and the dissolve that
+        // retires it is motion too. Both belong to this tile and neither
+        // is visible through `children()`, so both are named here or they
+        // play out as one frozen frame.
+        self.spawn_in_flight()
+            || Widget::opening(self)
+            || self.handover_in_flight()
+            || inner
     }
 }
 
@@ -742,26 +913,73 @@ impl TileHost {
             transform,
             &shape,
         );
-        match &mut self.content {
-            TileContent::App(w) => w.draw(scene, transform, tr, theme, presence),
-            TileContent::Stub { kind, label } => {
-                // Ink derived from the card's own luminance — the card is a
-                // black surface under the high-contrast preset and a white
-                // one on the preserved concept palette, so a fixed ramp slot
-                // is legible on only one of them.
-                let ink = theme.on_card();
-                let on_card = ink.ink;
-                let on_card_dim = ink.ink_dim;
-                let text_size = theme.tokens.typography.scale.xl;
-                let (tw, _) = tr.measure(label, text_size, None);
-                let x = self.rect.center().x - tw as f64 / 2.0;
-                let y = self.rect.center().y - text_size as f64 / 2.0;
-                tr.draw_text(scene, label, text_size, on_card, transform * Affine::translate((x, y)), None);
-                let sm = theme.tokens.typography.scale.sm;
-                let s = format!("{} coming soon", kind.as_str());
-                let (sw, _) = tr.measure(&s, sm, None);
-                let sx = self.rect.center().x - sw as f64 / 2.0;
-                tr.draw_text(scene, &s, sm, on_card_dim, transform * Affine::translate((sx, y + text_size as f64 + 8.0)), None);
+        // An app that has been asked for and has not arrived gets the
+        // card that holds its window's place, in place of the app rather
+        // than behind it. Its early buffers are the size the client
+        // picked and not the size of the tab, and painting one is the
+        // window visibly resizing itself a moment after it opened, which
+        // is the other half of what the presented gate is for.
+        if Widget::opening(self) {
+            self.opening_shown = true;
+            draw_opening_card(
+                scene,
+                transform,
+                tr,
+                theme,
+                presence,
+                self.rect,
+                &self.opening_name,
+                &mut self.opening_spinner,
+            );
+        } else {
+            // The window has arrived. When the card was on screen it is
+            // dissolved over the top rather than cut away: the window is
+            // underneath at full opacity from the very first frame, so
+            // there is never one with nothing in the tile.
+            if self.opening_shown && self.handed_over_at.is_none() {
+                self.handed_over_at = Some(Instant::now());
+            }
+            match &mut self.content {
+                TileContent::App(w) => w.draw(scene, transform, tr, theme, presence),
+                TileContent::Stub { kind, label } => {
+                    let detail = format!("{} coming soon", kind.as_str());
+                    draw_card_text(scene, transform, tr, theme, self.rect, label, &detail);
+                }
+                TileContent::Notice { title, detail } => {
+                    draw_card_text(scene, transform, tr, theme, self.rect, title, detail);
+                }
+            }
+            // Reduced motion takes the cut. The window simply being there
+            // is the honest end state, and it is the one somebody who has
+            // asked for less movement wants.
+            if theme.reduce_motion {
+                self.opening_shown = false;
+                self.handed_over_at = None;
+            } else if let Some(started) = self.handed_over_at {
+                let t = started.elapsed().as_millis() as f32 / HANDOVER_MS as f32;
+                if t >= 1.0 {
+                    self.opening_shown = false;
+                    self.handed_over_at = None;
+                } else {
+                    scene.push_layer(
+                        vello::peniko::Fill::NonZero,
+                        vello::peniko::BlendMode::default(),
+                        1.0 - t,
+                        transform,
+                        &shape,
+                    );
+                    draw_opening_card(
+                        scene,
+                        transform,
+                        tr,
+                        theme,
+                        presence,
+                        self.rect,
+                        &self.opening_name,
+                        &mut self.opening_spinner,
+                    );
+                    scene.pop_layer();
+                }
             }
         }
         scene.pop_layer();
@@ -798,6 +1016,101 @@ impl TileHost {
             &edge,
         );
     }
+}
+
+/// The card that holds a window's place while its app is starting.
+///
+/// The same two-part composition as [`draw_card_text`] — a name, and
+/// something under it — with the sentence replaced by motion. There is
+/// deliberately no sentence: the app's own name over a working indicator
+/// already says the only two things somebody waiting for a window needs,
+/// and more than that would be describing the machinery to a person who
+/// asked to open an app.
+///
+/// It paints its own card ground, because it is also the top half of the
+/// dissolve that retires it, where it has to cover the window that has
+/// arrived underneath for as long as it is still fading.
+fn draw_opening_card(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    rect: Rect,
+    name: &str,
+    spinner: &mut Spinner,
+) {
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.window_card,
+        None,
+        &rect,
+    );
+    let on_card = theme.tokens.colors.neutral[1];
+    let size = theme.tokens.typography.scale.xl;
+    let cx = rect.center().x;
+    // The name sits above centre so that the pair of it and the indicator
+    // is what reads as centred, rather than the name alone with the
+    // indicator hanging off below the middle.
+    let y = rect.center().y - size as f64;
+    if !name.is_empty() {
+        let (tw, _) = tr.measure(name, size, None);
+        tr.draw_text(
+            scene,
+            name,
+            size,
+            on_card,
+            transform * Affine::translate((cx - tw as f64 / 2.0, y)),
+            None,
+        );
+    }
+    let top = y + size as f64 + OPENING_SPINNER_GAP;
+    spinner.set_rect(Rect::new(
+        cx - OPENING_SPINNER_PX / 2.0,
+        top,
+        cx + OPENING_SPINNER_PX / 2.0,
+        top + OPENING_SPINNER_PX,
+    ));
+    Widget::draw(spinner, scene, transform, tr, theme, presence);
+}
+
+/// Two centred lines on an otherwise empty window card: a name, and a
+/// sentence under it about why there is nothing else here.
+///
+/// One function because the two callers must not drift apart. A card is
+/// what the user sees when a tab has no app in it, and a tab that reads
+/// differently depending on which internal variant produced it teaches
+/// them that the difference is meaningful when it is not — the difference
+/// that *is* meaningful is the sentence, which the caller supplies.
+fn draw_card_text(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    title: &str,
+    detail: &str,
+) {
+    // Ink derived from the card's own luminance — the card is a black
+    // surface under the high-contrast preset and a white one on the
+    // preserved concept palette, so a fixed ramp slot is legible on
+    // only one of them.
+    let ink = theme.on_card();
+    let on_card = ink.ink;
+    let on_card_dim = ink.ink_dim;
+    let text_size = theme.tokens.typography.scale.xl;
+    let (tw, _) = tr.measure(title, text_size, None);
+    let x = rect.center().x - tw as f64 / 2.0;
+    let y = rect.center().y - text_size as f64 / 2.0;
+    tr.draw_text(scene, title, text_size, on_card, transform * Affine::translate((x, y)), None);
+    if detail.is_empty() {
+        return;
+    }
+    let sm = theme.tokens.typography.scale.sm;
+    let (sw, _) = tr.measure(detail, sm, None);
+    let sx = rect.center().x - sw as f64 / 2.0;
+    tr.draw_text(scene, detail, sm, on_card_dim, transform * Affine::translate((sx, y + text_size as f64 + 8.0)), None);
 }
 
 #[cfg(test)]
@@ -1376,6 +1689,215 @@ mod tests {
                 );
             }
         }
+    }
+
+
+    /// An app that has been asked for and has not drawn: the two things
+    /// its widget is allowed to say about itself.
+    struct Starting {
+        rect: Rect,
+        drawn: std::rc::Rc<std::cell::Cell<bool>>,
+        presented: bool,
+        opening: bool,
+    }
+
+    impl Widget for Starting {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _t: &Theme,
+            _m: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.new_leaf(Style::default()).unwrap()
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            scene: &mut Scene,
+            transform: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+            self.drawn.set(true);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                STARTING_FLOOD,
+                None,
+                &self.rect,
+            );
+        }
+        fn handle_event(
+            &mut self,
+            _event: &WindowEvent,
+            _scale: f64,
+            _m: &winit::event::Modifiers,
+            _state: &mut AutoCommit,
+            _path: &ObjId,
+            _handled: &mut bool,
+            _focus: &mut Option<NodeId>,
+            _node: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &str {
+            "Starting"
+        }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+        fn presented(&self) -> bool {
+            self.presented
+        }
+        fn opening(&self) -> bool {
+            self.opening
+        }
+    }
+
+    impl crate::widget::app_widget::AppWidget for Starting {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Files
+        }
+        fn app_title(&self) -> &str {
+            "Starting"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("S")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+
+    /// Loud and unmistakable, so a single sampled pixel says whether the
+    /// app painted.
+    const STARTING_FLOOD: vello::peniko::Color = vello::peniko::Color::from_rgb8(0xFF, 0x00, 0x00);
+
+    fn starting_host(presented: bool, opening: bool) -> (TileHost, std::rc::Rc<std::cell::Cell<bool>>) {
+        let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
+        let drawn = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mut host = TileHost::new(TileContent::App(Box::new(Starting {
+            rect,
+            drawn: std::rc::Rc::clone(&drawn),
+            presented,
+            opening,
+        })));
+        host.rect = rect;
+        (host, drawn)
+    }
+
+    fn paint(host: &mut TileHost, theme: &Theme) -> Scene {
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        host.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            theme,
+            &PresenceCtx::empty(),
+        );
+        scene
+    }
+
+    /// The card that holds a window's place must not be the app.
+    ///
+    /// An app that has not presented has only the buffer it chose its own
+    /// size for, and painting that is the window appearing magnified and
+    /// snapping down a moment later. So while the tile is standing in for
+    /// the app, the app does not draw at all — the place is held by the
+    /// frame, which is the one thing that knows how big the tab is.
+    #[test]
+    fn a_tile_holding_a_place_does_not_paint_the_app_behind_it() {
+        let theme = Theme::default();
+        let (mut host, drawn) = starting_host(false, true);
+        let _ = paint(&mut host, &theme);
+        assert!(
+            !drawn.get(),
+            "the app painted into a tile that is still holding its place; \
+             its buffer is not the size of the tab yet, and putting it on \
+             screen is the resize-after-open this gate exists to prevent",
+        );
+    }
+
+    /// And the moment it has something to show, it is what is shown.
+    #[test]
+    fn a_tile_paints_the_app_as_soon_as_it_has_something_to_show() {
+        let theme = Theme::default();
+        let (mut host, drawn) = starting_host(true, false);
+        let _ = paint(&mut host, &theme);
+        assert!(
+            drawn.get(),
+            "an app with a frame that fits its tab must be what the tile \
+             paints; anything else is a placeholder standing in front of a \
+             window that is already there",
+        );
+    }
+
+    /// The card is on screen, so it must keep moving.
+    ///
+    /// Its indicator is the only thing telling somebody the wait is a wait
+    /// rather than a hang, and a still one says the opposite of what it is
+    /// for. Nothing else in the tile is animating at that moment, so if
+    /// this tile does not ask for frames, none arrive.
+    #[test]
+    fn a_tile_holding_a_place_keeps_asking_for_frames() {
+        let (host, _) = starting_host(false, true);
+        assert!(
+            host.needs_animation_frame(),
+            "the indicator on the opening card would sit frozen, which \
+             reads as an app that has stopped rather than one starting",
+        );
+    }
+
+    /// A tile that has ever had a window in it never goes back to holding
+    /// a place for one.
+    ///
+    /// The latch is the difference between a window that briefly stops
+    /// fitting its tab mid-resize and one that was never there. Without
+    /// it, a drag on a group edge would flash the opening card over a
+    /// window the person is using.
+    #[test]
+    fn a_tile_that_has_shown_a_window_never_holds_a_place_again() {
+        let (host, _) = starting_host(true, false);
+        assert!(Widget::presented(&host), "precondition: it presented");
+        // The app now claims both, as a client whose buffer stopped
+        // matching its tab mid-resize would.
+        let (host_again, _) = starting_host(true, true);
+        assert!(Widget::presented(&host_again));
+        assert!(
+            !Widget::opening(&host_again),
+            "a tile that has presented must never answer `opening` again — \
+             a window the person is looking at would be replaced by a card \
+             saying it is on its way",
+        );
+    }
+
+    /// What is in the tile while the place is held is the frame's own
+    /// card, not the desktop showing through.
+    #[test]
+    fn the_card_that_holds_a_place_is_opaque() {
+        use crate::offscreen::OffscreenRenderer;
+        let theme = Theme::default();
+        let (mut host, _) = starting_host(false, true);
+        let scene = paint(&mut host, &theme);
+        let mut r = OffscreenRenderer::new(200, 200);
+        // A ground colour that appears nowhere else, so a pixel of it in
+        // the middle of the tile means the card did not cover it.
+        let rgba = r.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
+        let (cr, cg, cb, _) = OffscreenRenderer::sample(&rgba, 200, 100, 100);
+        assert!(
+            !(cr < 40 && cg < 40 && cb > 200),
+            "the desktop showed through the middle of a window's own place \
+             at (100,100) — got ({cr},{cg},{cb}), the backdrop colour. The \
+             card has to hold the space, or the window is a hole until it \
+             arrives",
+        );
+        assert!(
+            !(cr > 200 && cg < 80 && cb < 80),
+            "the app painted after all; got ({cr},{cg},{cb})",
+        );
     }
 
     #[test]
