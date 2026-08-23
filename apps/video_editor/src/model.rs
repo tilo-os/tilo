@@ -300,6 +300,286 @@ impl Speed {
     }
 }
 
+/// A colour key: the layer stops contributing wherever its picture is
+/// close enough — in *chroma*, not in brightness — to [`Self::color`].
+///
+/// Keying on chroma rather than on RGB distance is what lets a real green
+/// screen work: the lit and the shadowed parts of one backing cloth differ
+/// enormously in brightness and barely at all in hue, so a straight RGB
+/// distance either keeps the shadows or eats the subject.
+///
+/// The key runs on the **source** picture, before the grade and the effect
+/// chain — the order a keyer sits in on a real desk, and the reason grading
+/// a keyed clip does not re-open the matte.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChromaKey {
+    pub enabled: bool,
+    /// The colour to remove, in 0..1 RGB. Only its chroma is used; its
+    /// brightness is ignored, which is why a swatch sampled off a lit patch
+    /// of screen still keys the shadowed corners.
+    pub color: [f64; 3],
+    /// Chroma distance that is fully removed, 0..1. Nothing is keyed at 0.
+    pub tolerance: f64,
+    /// Width of the soft edge past `tolerance`, in the same units. This is
+    /// what gives hair and motion blur a partial matte rather than a
+    /// staircase.
+    pub softness: f64,
+    /// How much of the key colour is pulled back out of what survives,
+    /// 0..1. Green bouncing off a subject standing near the screen tints
+    /// them; this removes that tint without touching their brightness.
+    pub spill: f64,
+}
+
+/// The colours a keyer is usually pointed at, offered as swatches. A real
+/// plate is keyed by sampling it, but a plausible starting point beats an
+/// empty colour well.
+pub const KEY_PRESETS: [(&str, [f64; 3]); 3] = [
+    ("Green", [0.06, 0.72, 0.20]),
+    ("Blue", [0.06, 0.22, 0.72]),
+    ("Magenta", [0.72, 0.06, 0.55]),
+];
+
+impl Default for ChromaKey {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            color: KEY_PRESETS[0].1,
+            tolerance: 0.22,
+            softness: 0.10,
+            spill: 0.5,
+        }
+    }
+}
+
+impl ChromaKey {
+    /// Whether this key actually removes anything. A key that is switched
+    /// off, or one whose tolerance has been wound to zero, is not doing
+    /// work — the compositor can skip it and the inspector says so.
+    pub fn is_active(&self) -> bool {
+        self.enabled && self.tolerance > 1e-6
+    }
+
+    /// BT.709 chroma of an RGB triple as `(cb, cr)`, each in -0.5..0.5.
+    /// Mirrored by the shader's `chroma()` so the two cannot drift.
+    pub fn chroma(rgb: [f64; 3]) -> (f64, f64) {
+        let y = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+        ((rgb[2] - y) / 1.8556, (rgb[0] - y) / 1.5748)
+    }
+
+    /// How much of a pixel survives this key: 0 = removed, 1 = kept.
+    ///
+    /// The CPU twin of the shader's keyer, so a matte can be reasoned about
+    /// — and tested — without a device.
+    pub fn coverage(&self, rgb: [f64; 3]) -> f64 {
+        if !self.is_active() {
+            return 1.0;
+        }
+        let (pb, pr) = Self::chroma(rgb);
+        let (kb, kr) = Self::chroma(self.color);
+        let d = ((pb - kb).powi(2) + (pr - kr).powi(2)).sqrt();
+        let lo = self.tolerance.max(0.0);
+        let hi = lo + self.softness.max(0.0);
+        if d <= lo {
+            return 0.0;
+        }
+        if d >= hi {
+            return 1.0;
+        }
+        let u = (d - lo) / (hi - lo);
+        u * u * (3.0 - 2.0 * u)
+    }
+
+    /// Pull `spill` of the key colour's chroma back out of `rgb`, leaving
+    /// its brightness alone. The CPU twin of the shader's `despill`.
+    pub fn despilled(&self, rgb: [f64; 3]) -> [f64; 3] {
+        let amount = self.spill.clamp(0.0, 1.0);
+        if !self.is_active() || amount <= 1e-6 {
+            return rgb;
+        }
+        let (kb, kr) = Self::chroma(self.color);
+        let klen = (kb * kb + kr * kr).sqrt();
+        if klen < 1e-6 {
+            return rgb;
+        }
+        let (ub, ur) = (kb / klen, kr / klen);
+        let (pb, pr) = Self::chroma(rgb);
+        // Only the component pointing *at* the key is spill; a pixel whose
+        // chroma leans the other way is left alone.
+        let along = pb * ub + pr * ur;
+        if along <= 0.0 {
+            return rgb;
+        }
+        let cb = pb - amount * along * ub;
+        let cr = pr - amount * along * ur;
+        let y = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+        let r = y + 1.5748 * cr;
+        let b = y + 1.8556 * cb;
+        let g = (y - 0.2126 * r - 0.0722 * b) / 0.7152;
+        [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)]
+    }
+}
+
+/// The shape a [`Mask`] cuts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MaskShape {
+    /// No mask at all — the layer covers wherever its picture lands.
+    #[default]
+    None,
+    Rect,
+    Ellipse,
+}
+
+impl MaskShape {
+    pub const ALL: [MaskShape; 3] = [MaskShape::None, MaskShape::Rect, MaskShape::Ellipse];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MaskShape::None => "none",
+            MaskShape::Rect => "rect",
+            MaskShape::Ellipse => "ellipse",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            MaskShape::None => "Off",
+            MaskShape::Rect => "Rect",
+            MaskShape::Ellipse => "Ellipse",
+        }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "rect" | "rectangle" | "box" => MaskShape::Rect,
+            "ellipse" | "oval" | "circle" => MaskShape::Ellipse,
+            _ => MaskShape::None,
+        }
+    }
+    /// Index the shader switches on.
+    pub fn index(self) -> u32 {
+        match self {
+            MaskShape::None => 0,
+            MaskShape::Rect => 1,
+            MaskShape::Ellipse => 2,
+        }
+    }
+}
+
+/// A feathered shape that limits where a layer contributes.
+///
+/// The mask is positioned in **frame** space, not in the layer's own —
+/// `x`/`y` are offsets from the frame centre in frame widths and heights,
+/// exactly like [`Transform::pos_x`], and `w`/`h` are fractions of the
+/// frame. That is deliberate: a frame-space mask composes with the
+/// transform instead of being confounded by it, so a layer can be moved
+/// *behind* a stationary hole — the classic reveal — and a feather keeps
+/// its width however the layer under it is scaled.
+///
+/// For the common case where the mask is wanted *on* the picture rather
+/// than on the frame, [`Mask::over`] seeds one onto a transform's
+/// on-screen box, which is one click in the inspector.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Mask {
+    pub shape: MaskShape,
+    /// Centre, as an offset from the frame centre in frame widths/heights.
+    pub x: f64,
+    pub y: f64,
+    /// Full width and height, as fractions of the frame.
+    pub w: f64,
+    pub h: f64,
+    /// Clockwise rotation of the shape, degrees.
+    pub rotation: f64,
+    /// Softness of the edge, 0..1 of the shape's own half-extent.
+    pub feather: f64,
+    /// Keep the outside instead of the inside — a hole rather than a window.
+    pub invert: bool,
+}
+
+impl Default for Mask {
+    fn default() -> Self {
+        Self {
+            shape: MaskShape::None,
+            x: 0.0,
+            y: 0.0,
+            w: 0.6,
+            h: 0.6,
+            rotation: 0.0,
+            feather: 0.12,
+            invert: false,
+        }
+    }
+}
+
+impl Mask {
+    pub fn is_active(&self) -> bool {
+        self.shape != MaskShape::None
+    }
+
+    /// A mask sized and placed over what `transform` puts on screen, for a
+    /// source of aspect `src_aspect` inside a frame of aspect `frame_aspect`.
+    ///
+    /// This is what makes "round off my picture-in-picture" one click: the
+    /// shape lands on the placed picture rather than in the middle of the
+    /// frame, and the user shapes it from there.
+    pub fn over(
+        shape: MaskShape,
+        transform: &Transform,
+        src_aspect: f64,
+        frame_aspect: f64,
+    ) -> Self {
+        // The aspect-fit ("contain") occupancy the compositor places at the
+        // identity transform, mirrored from `composite.wgsl`.
+        let (mut ox, mut oy) = (1.0_f64, 1.0_f64);
+        if src_aspect > 0.0 && frame_aspect > 0.0 {
+            if src_aspect > frame_aspect {
+                oy = frame_aspect / src_aspect;
+            } else {
+                ox = src_aspect / frame_aspect;
+            }
+        }
+        let (l, t, r, b) = transform.crop_rect();
+        Self {
+            shape,
+            x: transform.pos_x,
+            y: transform.pos_y,
+            w: (ox * transform.scale_x.abs() * (r - l)).clamp(0.02, 4.0),
+            h: (oy * transform.scale_y.abs() * (b - t)).clamp(0.02, 4.0),
+            rotation: transform.rotation,
+            ..Self::default()
+        }
+    }
+
+    /// How much of the frame point `(u, v)` — in 0..1 frame coordinates —
+    /// this mask keeps. The CPU twin of the shader's `mask_cover`.
+    pub fn coverage(&self, u: f64, v: f64, frame_aspect: f64) -> f64 {
+        if !self.is_active() {
+            return 1.0;
+        }
+        let fa = if frame_aspect > 1e-6 { frame_aspect } else { 1.0 };
+        let dx = u - 0.5 - self.x;
+        let dy = v - 0.5 - self.y;
+        // Rotate in aspect-corrected space so a rotated shape is not sheared.
+        let (ax, ay) = (dx * fa, dy);
+        let ang = -self.rotation.to_radians();
+        let (ca, sa) = (ang.cos(), ang.sin());
+        let (rx, ry) = (ax * ca - ay * sa, ax * sa + ay * ca);
+        let hw = (self.w * 0.5 * fa).abs().max(1e-6);
+        let hh = (self.h * 0.5).abs().max(1e-6);
+        let (qx, qy) = (rx / hw, ry / hh);
+        // A feather of zero would make the edge a step, which aliases; the
+        // floor keeps it one narrow band wide instead.
+        let f = self.feather.clamp(1e-3, 1.0);
+        let edge = |t: f64| {
+            let u = ((t - (1.0 - f)) / f).clamp(0.0, 1.0);
+            1.0 - u * u * (3.0 - 2.0 * u)
+        };
+        let inside = match self.shape {
+            MaskShape::Rect => edge(qx.abs()) * edge(qy.abs()),
+            MaskShape::Ellipse => edge((qx * qx + qy * qy).sqrt()),
+            MaskShape::None => 1.0,
+        };
+        if self.invert { 1.0 - inside } else { inside }
+    }
+}
+
 /// A named point of interest, at a time. Timeline markers hang off the
 /// project in absolute seconds; clip markers hang off a clip in clip-local
 /// seconds so they travel with the footage.
@@ -692,6 +972,14 @@ pub struct Clip {
     /// Playback rate and direction. Normal by default.
     #[serde(default)]
     pub speed: Speed,
+    /// Colour key. Disabled by default, so a clip that has never been keyed
+    /// composites exactly as before.
+    #[serde(default)]
+    pub key: ChromaKey,
+    /// Shape mask limiting where this layer contributes. [`MaskShape::None`]
+    /// by default — no mask at all.
+    #[serde(default)]
+    pub mask: Mask,
     /// Keyframe curves. A parameter with a curve here ignores its constant
     /// field — see [`Clip::param_at`], the one door every reader goes
     /// through.
@@ -724,6 +1012,8 @@ impl Default for Clip {
             effects: Vec::new(),
             transform: Transform::default(),
             speed: Speed::default(),
+            key: ChromaKey::default(),
+            mask: Mask::default(),
             anim: ClipAnimation::default(),
             markers: Vec::new(),
         }
@@ -843,6 +1133,15 @@ impl Clip {
             Param::PosX => self.transform.pos_x,
             Param::PosY => self.transform.pos_y,
             Param::Rotation => self.transform.rotation,
+            Param::KeyTolerance => self.key.tolerance,
+            Param::KeySoftness => self.key.softness,
+            Param::KeySpill => self.key.spill,
+            Param::MaskX => self.mask.x,
+            Param::MaskY => self.mask.y,
+            Param::MaskW => self.mask.w,
+            Param::MaskH => self.mask.h,
+            Param::MaskRotation => self.mask.rotation,
+            Param::MaskFeather => self.mask.feather,
             Param::EffectAmount(i) => self.effects.get(i as usize)?.amount,
         })
     }
@@ -867,6 +1166,15 @@ impl Clip {
             Param::PosX => self.transform.pos_x = v,
             Param::PosY => self.transform.pos_y = v,
             Param::Rotation => self.transform.rotation = v,
+            Param::KeyTolerance => self.key.tolerance = v,
+            Param::KeySoftness => self.key.softness = v,
+            Param::KeySpill => self.key.spill = v,
+            Param::MaskX => self.mask.x = v,
+            Param::MaskY => self.mask.y = v,
+            Param::MaskW => self.mask.w = v,
+            Param::MaskH => self.mask.h = v,
+            Param::MaskRotation => self.mask.rotation = v,
+            Param::MaskFeather => self.mask.feather = v,
             Param::EffectAmount(i) => {
                 if let Some(e) = self.effects.get_mut(i as usize) {
                     e.amount = v;
@@ -1017,6 +1325,40 @@ impl Clip {
             pos_y: self.param_at(Param::PosY, playhead),
             rotation: self.param_at(Param::Rotation, playhead),
             ..self.transform
+        }
+    }
+
+    /// The colour key at `playhead`, with any animated axis substituted in.
+    /// `enabled` and the key colour are not animatable — a key that
+    /// switched itself on mid-shot, or drifted hue, is a re-key rather than
+    /// an animation.
+    pub fn key_at(&self, playhead: f64) -> ChromaKey {
+        if self.anim.is_empty() {
+            return self.key;
+        }
+        ChromaKey {
+            tolerance: self.param_at(Param::KeyTolerance, playhead),
+            softness: self.param_at(Param::KeySoftness, playhead),
+            spill: self.param_at(Param::KeySpill, playhead),
+            ..self.key
+        }
+    }
+
+    /// The mask at `playhead`. Everything geometric animates — a mask that
+    /// tracks a moving subject is the whole point — while `shape` and
+    /// `invert` stay static, since neither has an in-between value.
+    pub fn mask_at(&self, playhead: f64) -> Mask {
+        if self.anim.is_empty() {
+            return self.mask;
+        }
+        Mask {
+            x: self.param_at(Param::MaskX, playhead),
+            y: self.param_at(Param::MaskY, playhead),
+            w: self.param_at(Param::MaskW, playhead),
+            h: self.param_at(Param::MaskH, playhead),
+            rotation: self.param_at(Param::MaskRotation, playhead),
+            feather: self.param_at(Param::MaskFeather, playhead),
+            ..self.mask
         }
     }
 

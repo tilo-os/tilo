@@ -94,6 +94,14 @@ pub struct ClipData {
     /// Playback rate and direction. Defaults to normal speed.
     #[serde(default)]
     pub speed: crate::model::Speed,
+    /// Colour key. Absent on the wire for a peer that predates keying,
+    /// which `serde(default)` reads as "not keyed" — the composite that
+    /// peer is already drawing, so the two do not diverge.
+    #[serde(default)]
+    pub key: crate::model::ChromaKey,
+    /// Shape mask, same story: absent means no mask.
+    #[serde(default)]
+    pub mask: crate::model::Mask,
     /// Keyframe curves, carried whole: adding, moving or deleting a key is
     /// a new clip write, so a curve edit replays as one atomic change.
     #[serde(default)]
@@ -125,6 +133,8 @@ impl ClipData {
             effects: c.effects.clone(),
             transform: c.transform,
             speed: c.speed,
+            key: c.key,
+            mask: c.mask,
             anim: c.anim.clone(),
             markers: c.markers.clone(),
         }
@@ -156,6 +166,8 @@ impl ClipData {
             effects: self.effects.clone(),
             transform: self.transform,
             speed: self.speed,
+            key: self.key,
+            mask: self.mask,
             anim: self.anim.clone(),
             markers: self.markers.clone(),
         })

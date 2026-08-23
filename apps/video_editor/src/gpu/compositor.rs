@@ -23,9 +23,9 @@ use super::{FrameSource, SourceTexture};
 /// `composite.wgsl`.
 pub const MAX_SHADER_EFFECTS: usize = 8;
 
-/// Bytes of the uniform struct in `composite.wgsl`: eight `vec4<f32>`
+/// Bytes of the uniform struct in `composite.wgsl`: twelve `vec4<f32>`
 /// headers plus the effect array.
-const PARAMS_BYTES: usize = (8 + MAX_SHADER_EFFECTS) * 16;
+const PARAMS_BYTES: usize = (12 + MAX_SHADER_EFFECTS) * 16;
 
 /// Where on the target the composited frame lands, in target pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -415,6 +415,38 @@ impl VideoCompositor {
                     if l.source_alpha { 1.0 } else { 0.0 },
                 ];
                 params.crop = [cl as f32, ct as f32, cr as f32, cb as f32];
+                // A key or a mask that is switched off is passed as
+                // inactive rather than as neutral numbers, so the shader
+                // takes neither branch on the ordinary clip.
+                if l.key.is_active() {
+                    params.key_a = [
+                        1.0,
+                        l.key.tolerance as f32,
+                        l.key.softness as f32,
+                        l.key.spill as f32,
+                    ];
+                    params.key_b = [
+                        l.key.color[0] as f32,
+                        l.key.color[1] as f32,
+                        l.key.color[2] as f32,
+                        0.0,
+                    ];
+                }
+                if l.mask.is_active() {
+                    let m = &l.mask;
+                    params.mask_a = [
+                        m.shape.index() as f32,
+                        m.x as f32,
+                        m.y as f32,
+                        m.rotation.to_radians() as f32,
+                    ];
+                    params.mask_b = [
+                        m.w as f32,
+                        m.h as f32,
+                        m.feather as f32,
+                        if m.invert { 1.0 } else { 0.0 },
+                    ];
+                }
             } else {
                 // The empty-timeline clear: fully transparent coverage
                 // leaves the frame at black.
@@ -499,6 +531,10 @@ struct Params {
     xform_a: [f32; 4],
     xform_b: [f32; 4],
     crop: [f32; 4],
+    key_a: [f32; 4],
+    key_b: [f32; 4],
+    mask_a: [f32; 4],
+    mask_b: [f32; 4],
     effects: [[f32; 4]; MAX_SHADER_EFFECTS],
 }
 
@@ -517,6 +553,11 @@ impl Default for Params {
             xform_b: [0.0, 0.5, 0.5, 0.0],
             // The whole source is visible.
             crop: [0.0, 0.0, 1.0, 1.0],
+            // No key and no mask: every pixel of the layer contributes.
+            key_a: [0.0; 4],
+            key_b: [0.0; 4],
+            mask_a: [0.0; 4],
+            mask_b: [0.0; 4],
             effects: [[0.0; 4]; MAX_SHADER_EFFECTS],
         }
     }
@@ -540,6 +581,10 @@ impl Params {
         put(self.xform_a, &mut out, &mut at);
         put(self.xform_b, &mut out, &mut at);
         put(self.crop, &mut out, &mut at);
+        put(self.key_a, &mut out, &mut at);
+        put(self.key_b, &mut out, &mut at);
+        put(self.mask_a, &mut out, &mut at);
+        put(self.mask_b, &mut out, &mut at);
         for e in self.effects {
             put(e, &mut out, &mut at);
         }

@@ -481,6 +481,12 @@ pub struct Layer {
     pub alpha: f64,
     /// Geometric mask, when this layer is wiping in.
     pub wipe: Option<Wipe>,
+    /// Colour key, sampled at this instant. Inactive on a clip that has
+    /// never been keyed, which is the overwhelming majority.
+    pub key: crate::model::ChromaKey,
+    /// Shape mask, sampled at this instant. [`MaskShape::None`] unless the
+    /// clip carries one.
+    pub mask: crate::model::Mask,
     /// Where the picture sits in the frame, sampled at this instant so an
     /// animated move or scale is already resolved by the time the
     /// compositor sees it.
@@ -538,6 +544,8 @@ fn layer_at(
         effects: clip.effects_at(at),
         alpha: alpha.clamp(0.0, 1.0),
         wipe,
+        key: clip.key_at(at),
+        mask: clip.mask_at(at),
         transform: clip.transform_at(at),
         source_alpha,
         title,
