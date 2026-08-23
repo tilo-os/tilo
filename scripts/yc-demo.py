@@ -1176,7 +1176,7 @@ NEVER_ON_CAMERA = "Claude"
 # on an unchanged screen while it waits for a sandbox, and a card nobody
 # has had time to read is the opposite case. Frames taken inside `hold`
 # are marked, and trimming skips them. See `Recorder._timeline`.
-READ_HOLD_S = 2.0
+READ_HOLD_S = 1.5
 
 FONTS_REGULAR = (
     "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
@@ -4114,9 +4114,9 @@ def beat_five(quinten: Session, registry, shots: str) -> dict | None:
     # finished, motionless window for five more is the beat asking for
     # patience it has not earned.
     if RECORDER:
-        RECORDER.hold(2.5)
+        RECORDER.hold(1.5)
     else:
-        quinten.settle(2.5)
+        quinten.settle(1.5)
     quinten.snapshot(os.path.join(shots, "05-word-processor.png"))
     return painted
 
@@ -4516,7 +4516,7 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
         # that is the shot; when it does not, a minute of an unchanged
         # page under a caption about a document arriving is the worst
         # thing this film could contain.
-        with patience(10.0):
+        with patience(6.0):
             doc, carried = reader.await_document(TYPED_PROOF,
                                                  DOC_SYNC_TIMEOUT_S)
     except OSError as e:
@@ -5118,7 +5118,7 @@ def beat_nine(quinten: Session, xaver: Session, agent: Session,
     # The best fifteen seconds in the film when it works — a table
     # assembling itself in a document nobody is touching — and the worst
     # two minutes in it when it does not. Bounded accordingly.
-    with patience(15.0):
+    with patience(11.0):
         ran = run_the_agent(agent, host_ws["room"], shots)
     if ran is None:
         gap("qos-agent is not built, so the agent could not act on the "
