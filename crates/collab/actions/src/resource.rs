@@ -182,6 +182,32 @@ impl ActionSpec {
         })
     }
 
+    /// An action that fires immediately, from an [`EncodedAction`] the caller
+    /// already holds.
+    ///
+    /// [`immediate`](Self::immediate) is the usual door — it takes a typed
+    /// action and reads its [`locus`](Action::locus) — but a caller that has
+    /// only the encoded form (a stored action, a fixture, one that arrived over
+    /// a wire) has no typed value to hand it. Projects to zero parameters, the
+    /// same as `immediate`.
+    pub fn immediate_encoded(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        locus: ExecutionLocus,
+        encoded: EncodedAction,
+    ) -> Self {
+        let for_build = encoded.clone();
+        Self {
+            id: id.into(),
+            label: label.into(),
+            description: None,
+            locus,
+            input: ActionInput::Immediate(encoded),
+            params: Vec::new(),
+            build: Arc::new(move |_| for_build.clone()),
+        }
+    }
+
     /// An action that first collects a free-text argument, then builds its
     /// encoded action from it.
     ///
