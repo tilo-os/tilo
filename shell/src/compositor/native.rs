@@ -410,6 +410,11 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                         // wrong, and that is the one mistake this
                         // surface must not invite.
                         "is_agent": row.is_agent,
+                        // Named but not arrived. The one thing a
+                        // harness watching somebody join needs, and
+                        // the thing a screenshot of a dimmed row
+                        // cannot be asserted on.
+                        "invited": row.invited,
                     })
                 })
                 .collect();

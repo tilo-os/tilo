@@ -156,6 +156,32 @@ impl PeerOrigin {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The handle presence frames identify this origin's peer by, or
+    /// `None` when the origin is not a remote libp2p peer at all.
+    ///
+    /// The bridge between the two ways a session learns somebody is in
+    /// a room. Presence arrives keyed by
+    /// [`crate::network::behaviour::peer_liveness_handle`]; room
+    /// replication arrives keyed by the identity the transport
+    /// authenticated, which is this. Reducing that identity to the same
+    /// handle is what lets one peer be one row whichever route it
+    /// turned up by.
+    ///
+    /// Deliberately one-way, and deliberately not used for authority. A
+    /// handle is a digest, and a decision that turns on equality must
+    /// not turn on one — which is why [`Self::peer`] carries the peer id
+    /// whole. This is for display and de-duplication, where a collision
+    /// costs a merged row rather than a granted permission.
+    ///
+    /// An in-process hub subscriber and a local replay have no peer id
+    /// and get `None`, so neither can be mistaken for somebody who
+    /// arrived over a wire.
+    pub fn liveness_handle(&self) -> Option<u64> {
+        let base58 = self.0.strip_prefix("p2p:")?;
+        let peer = base58.parse::<libp2p::PeerId>().ok()?;
+        Some(crate::network::behaviour::peer_liveness_handle(&peer))
+    }
 }
 
 impl std::fmt::Display for PeerOrigin {
@@ -703,6 +729,27 @@ pub struct Collaborator {
     /// member's membership capability — never from this field.
     #[serde(default)]
     pub role_id: Option<String>,
+    /// True for somebody the room has *named* but who has not taken
+    /// part in it yet — invited, not arrived.
+    ///
+    /// The two are different facts and the difference is visible. A
+    /// room's authority writes an invitee's name into the room document
+    /// at the moment it mints their token, which is a real membership
+    /// statement and is why the row exists at all; but it is not
+    /// evidence that anybody came. A roster that drew the two the same
+    /// way would claim somebody was here on the strength of an
+    /// invitation they may never have opened — and it would make
+    /// joining a room change nothing on the screens of the people
+    /// already in it.
+    ///
+    /// Set only by
+    /// [`crate::shell::peer_presence::PeerPresence::refresh_roster`],
+    /// which knows both halves. `false` — the default, and what every
+    /// other constructor yields — means an ordinary participant, so a
+    /// collaborator built anywhere else reads as present exactly as it
+    /// did before this existed.
+    #[serde(default)]
+    pub invited: bool,
 }
 
 impl Collaborator {
@@ -719,6 +766,7 @@ impl Collaborator {
             cursor_color: None,
             avatar: None,
             role_id: None,
+            invited: false,
         }
     }
 
@@ -748,6 +796,13 @@ impl Collaborator {
     /// Attach a role id pointing into the workspace's role table.
     pub fn with_role(mut self, role_id: impl Into<String>) -> Self {
         self.role_id = Some(role_id.into());
+        self
+    }
+
+    /// Mark this collaborator as invited rather than arrived — see
+    /// [`Self::invited`].
+    pub fn as_invited(mut self) -> Self {
+        self.invited = true;
         self
     }
 }
@@ -6115,14 +6170,19 @@ impl WorkspaceTree {
 /// must keep their own filtered count — the fallback only fires for the
 /// active workspace.
 pub fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
+    // Somebody named but not yet arrived is not counted. This drives the
+    // avatar cluster's `+N` chip and the wheel disc's presence dot, and
+    // both are claims that people are *in* the workspace — an invitation
+    // that has not been redeemed is not one of them.
+    let present = |c: &&Collaborator| c.id != "me" && !c.invited;
     let active = tree.active_workspace();
     let per_ws = active
-        .map(|w| w.collaborators.iter().filter(|c| c.id != "me").count())
+        .map(|w| w.collaborators.iter().filter(present).count())
         .unwrap_or(0);
     if per_ws > 0 {
         return per_ws;
     }
-    tree.collaborators.iter().filter(|c| c.id != "me").count()
+    tree.collaborators.iter().filter(present).count()
 }
 
 #[cfg(test)]
