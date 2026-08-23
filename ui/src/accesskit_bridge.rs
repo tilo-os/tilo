@@ -206,17 +206,32 @@ pub fn accesskit_action_to_ours(
     })
 }
 
-/// Derive the stable AccessKit id for a widget. Preference order:
-///   1. its `taffy::NodeId` (a `u64`) offset by 1 so it can never be
-///      [`ROOT_ID`] (taffy ids start at 0);
-///   2. a structural walk index offset into a high range, for widgets that
-///      were never laid out (no entry in `node_map`).
-fn widget_node_id(taffy_id: Option<TaffyNodeId>, walk_index: u64) -> AkNodeId {
-    match taffy_id {
-        Some(id) => AkNodeId(u64::from(id) + 1),
-        // 1<<48 keeps fallback ids well clear of any realistic taffy id range.
-        None => AkNodeId((1u64 << 48) + walk_index),
-    }
+/// Derive the stable AccessKit id for a widget from **the address of the widget
+/// object itself**.
+///
+/// It used to be the widget's `taffy::NodeId`, and that was not stable: the
+/// host throws its `TaffyTree` away and rebuilds it on every relayout, and
+/// taffy's ids carry a per-tree generation, so every id in the exported tree —
+/// and every synthetic id chained off one — changed on each layout pass. An
+/// assistive technology holding a node reference across a repaint got an id
+/// that no longer resolved, or worse, one that resolved to a different element.
+///
+/// The widget objects themselves survive a relayout (only the layout tree is
+/// rebuilt), so their addresses are the identity that actually persists. The
+/// known limit is address reuse: a widget that is dropped and a different one
+/// allocated in its place can inherit the id. That is strictly better than the
+/// old scheme, which invalidated *every* id every frame, but it means a
+/// reference held across a structural change is still a reference to whatever
+/// now lives there — which is why [`resolve_node_id`] confirms the address is a
+/// live, laid-out widget before returning a target.
+fn widget_node_id(w: &dyn Widget) -> AkNodeId {
+    use std::hash::Hasher;
+    let addr = (w as *const dyn Widget).cast::<()>() as usize as u64;
+    let mut h = FnvHasher::new();
+    h.write(&addr.to_le_bytes());
+    // Force the marker bit so a widget id can never be `ROOT_ID` and can never
+    // be mistaken for a synthetic one.
+    AkNodeId((h.finish() & !SYNTHETIC_ID_BIT) | WIDGET_ID_BIT)
 }
 
 /// Reverse of the `App`'s `taffy::NodeId -> *mut dyn Widget` map: given a
@@ -242,15 +257,21 @@ struct WidgetIndex {
     by_fat: HashMap<*const dyn Widget, TaffyNodeId>,
     /// `None` = two or more widgets share this address; do not guess.
     by_addr: HashMap<*const (), Option<TaffyNodeId>>,
+    /// Address-derived AccessKit id -> the taffy node that widget was laid out
+    /// with. This is the inverse of [`widget_node_id`], and it is what lets an
+    /// incoming action on a widget id find something to dispatch against.
+    by_ak_id: HashMap<AkNodeId, TaffyNodeId>,
 }
 
 impl WidgetIndex {
     fn build(node_map: &HashMap<TaffyNodeId, *mut dyn Widget>) -> Self {
         let mut by_fat: HashMap<*const dyn Widget, TaffyNodeId> = HashMap::new();
         let mut by_addr: HashMap<*const (), Option<TaffyNodeId>> = HashMap::new();
+        let mut by_ak_id: HashMap<AkNodeId, TaffyNodeId> = HashMap::new();
         for (&taffy_id, &w_ptr) in node_map {
             let fat = w_ptr as *const dyn Widget;
             by_fat.insert(fat, taffy_id);
+            by_ak_id.insert(widget_node_id(unsafe { &*fat }), taffy_id);
             by_addr
                 .entry(fat.cast::<()>())
                 .and_modify(|slot| {
@@ -260,7 +281,13 @@ impl WidgetIndex {
                 })
                 .or_insert(Some(taffy_id));
         }
-        Self { by_fat, by_addr }
+        Self { by_fat, by_addr, by_ak_id }
+    }
+
+    /// The taffy node behind an address-derived widget id, when that widget is
+    /// laid out this frame.
+    fn taffy_id_for_ak(&self, id: AkNodeId) -> Option<TaffyNodeId> {
+        self.by_ak_id.get(&id).copied()
     }
 
     fn taffy_id_of(&self, w: &dyn Widget) -> Option<TaffyNodeId> {
@@ -272,11 +299,34 @@ impl WidgetIndex {
     }
 }
 
+/// Bit that marks an [`accesskit::NodeId`] as belonging to a **widget**. Set on
+/// every address-derived widget id so the space cannot collide with the
+/// synthetic space (bit 63) or with [`ROOT_ID`] (zero).
+pub const WIDGET_ID_BIT: u64 = 1u64 << 62;
+
 /// Bit that marks an [`accesskit::NodeId`] as belonging to a **synthetic**
 /// node (one with no backing [`Widget`]). Widget ids are `taffy_id + 1` or
 /// `(1 << 48) + index`, neither of which can reach bit 63 for any tree that
 /// fits in memory, so the two spaces cannot collide.
 pub const SYNTHETIC_ID_BIT: u64 = 1u64 << 63;
+
+/// The AccessKit id of the widget laid out at `taffy_id`, or `None` when that
+/// taffy node holds no live widget.
+///
+/// The host tracks focus by `taffy::NodeId` but the exported tree is keyed by
+/// widget identity, so anything crossing between the two — moving focus to a
+/// node, resolving a semantic node's verb — has to translate. Exposed rather
+/// than open-coded because the derivation is deliberately not arithmetic on the
+/// taffy id any more (see [`widget_node_id`]), and a caller that assumed it was
+/// would silently address the wrong element.
+pub fn widget_ak_id(
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
+    taffy_id: TaffyNodeId,
+) -> Option<AkNodeId> {
+    node_map
+        .get(&taffy_id)
+        .map(|p| widget_node_id(unsafe { &**p }))
+}
 
 /// Whether `id` addresses a synthetic node rather than a widget or the root.
 pub fn is_synthetic_id(id: AkNodeId) -> bool {
@@ -364,37 +414,28 @@ pub fn resolve_node_id(
     if id == ROOT_ID {
         return Some(A11yTarget::Root);
     }
+    let index = WidgetIndex::build(node_map);
     if !is_synthetic_id(id) {
-        // Widget space: `taffy_id + 1`, but only if that taffy node is live.
-        let taffy_id = TaffyNodeId::from(id.0 - 1);
-        return node_map
-            .contains_key(&taffy_id)
-            .then_some(A11yTarget::Widget(taffy_id));
+        // Widget space: an address-derived id, resolvable only while that widget
+        // is still laid out this frame.
+        return index.taffy_id_for_ak(id).map(A11yTarget::Widget);
     }
 
-    let index = WidgetIndex::build(node_map);
-    let mut walk_counter: u64 = 0;
-    search_synthetic(root, &index, id, &mut walk_counter)
+    search_synthetic(root, &index, id)
 }
 
 /// Depth-first hunt for the widget whose synthetic subtree contains `wanted`,
-/// mirroring [`visit`]'s traversal (and its `walk_counter` bookkeeping) so the
-/// ids line up with the ones [`build_tree_update`] emitted.
-fn search_synthetic(
-    w: &dyn Widget,
-    index: &WidgetIndex,
-    wanted: AkNodeId,
-    walk_counter: &mut u64,
-) -> Option<A11yTarget> {
+/// mirroring [`visit`]'s traversal so the ids line up with the ones
+/// [`build_tree_update`] emitted.
+fn search_synthetic(w: &dyn Widget, index: &WidgetIndex, wanted: AkNodeId) -> Option<A11yTarget> {
     let access = w.accessibility();
     let taffy_id = index.taffy_id_of(w);
 
     match access {
         Some(access_node) => {
-            let owner_id = widget_node_id(taffy_id, *walk_counter);
-            *walk_counter += 1;
+            let owner_id = widget_node_id(w);
             for child in w.children() {
-                if let Some(hit) = search_synthetic(child, index, wanted, walk_counter) {
+                if let Some(hit) = search_synthetic(child, index, wanted) {
                     return Some(hit);
                 }
             }
@@ -409,9 +450,8 @@ fn search_synthetic(
             None
         }
         None => {
-            *walk_counter += 1;
             for child in w.children() {
-                if let Some(hit) = search_synthetic(child, index, wanted, walk_counter) {
+                if let Some(hit) = search_synthetic(child, index, wanted) {
                     return Some(hit);
                 }
             }
@@ -467,10 +507,13 @@ pub fn build_tree_update(
 ) -> TreeUpdate {
     let index = WidgetIndex::build(node_map);
 
-    let focused_ak = focused.map(|t| AkNodeId(u64::from(t) + 1));
+    // The focused widget is named by its taffy node; translate that to the
+    // address-derived id the tree actually carries.
+    let focused_ak = focused
+        .and_then(|t| node_map.get(&t).copied())
+        .map(|p| widget_node_id(unsafe { &*p }));
 
     let mut nodes: Vec<(AkNodeId, AkNode)> = Vec::new();
-    let mut walk_counter: u64 = 0;
     // Set by the walk when the *focused* widget marks one of its synthetic
     // descendants focused — the active-descendant target (see the module docs).
     let mut active_descendant: Option<AkNodeId> = None;
@@ -485,7 +528,6 @@ pub fn build_tree_update(
         &index,
         scale,
         focused,
-        &mut walk_counter,
         &mut nodes,
         &mut root_children,
         &mut active_descendant,
@@ -528,7 +570,6 @@ fn visit(
     index: &WidgetIndex,
     scale: f64,
     focused: Option<TaffyNodeId>,
-    walk_counter: &mut u64,
     nodes: &mut Vec<(AkNodeId, AkNode)>,
     parent_children: &mut Vec<AkNodeId>,
     active_descendant: &mut Option<AkNodeId>,
@@ -538,8 +579,7 @@ fn visit(
 
     match access {
         Some(access_node) => {
-            let id = widget_node_id(taffy_id, *walk_counter);
-            *walk_counter += 1;
+            let id = widget_node_id(w);
 
             let mut ak = AkNode::new(map_role(access_node.role));
             apply_semantics(&mut ak, &access_node, w, scale);
@@ -553,7 +593,6 @@ fn visit(
                     index,
                     scale,
                     focused,
-                    walk_counter,
                     nodes,
                     &mut my_children,
                     active_descendant,
@@ -582,14 +621,12 @@ fn visit(
         }
         None => {
             // Presentational: collapse out, reparent children onto the parent.
-            *walk_counter += 1;
             for child in w.children() {
                 visit(
                     child,
                     index,
                     scale,
                     focused,
-                    walk_counter,
                     nodes,
                     parent_children,
                     active_descendant,
@@ -1331,7 +1368,7 @@ mod tests {
 
         let update = build_tree_update(&root, &node_map, Some(canvas_taffy), 1.0);
 
-        let canvas_ak = AkNodeId(u64::from(canvas_taffy) + 1);
+        let canvas_ak = widget_ak_id(&node_map, canvas_taffy).unwrap();
         assert_ne!(
             update.focus, canvas_ak,
             "focus must not fall back to the whole canvas when a descendant is marked"
@@ -1374,7 +1411,7 @@ mod tests {
 
         assert_eq!(
             update.focus,
-            AkNodeId(u64::from(button_taffy) + 1),
+            widget_ak_id(&node_map, button_taffy).unwrap(),
             "focus stays on the widget that holds the keyboard"
         );
         let (_, focused) = update

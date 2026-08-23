@@ -5410,7 +5410,7 @@ mod screen_reader_tests {
         // is private; drive it via the public a11y Focus action on the 2nd node,
         // which routes through set_focused_node (the same path Tab/arrow use).
         let second = app.focusable_order[1];
-        let ak_id = accesskit::NodeId(u64::from(second) + 1);
+        let ak_id = crate::accesskit_bridge::widget_ak_id(&app.node_map, second).unwrap();
         app.dispatch_a11y_action(ak_id, &crate::a11y::Action::Focus);
         let spoken = rec.0.borrow();
         assert_eq!(
@@ -5432,7 +5432,7 @@ mod screen_reader_tests {
         // Re-focus after disable: nothing new is spoken (reader is gone).
         let before = rec.0.borrow().spoken().len();
         let second = app.focusable_order[1];
-        let ak_id = accesskit::NodeId(u64::from(second) + 1);
+        let ak_id = crate::accesskit_bridge::widget_ak_id(&app.node_map, second).unwrap();
         app.dispatch_a11y_action(ak_id, &crate::a11y::Action::Focus);
         assert_eq!(
             rec.0.borrow().spoken().len(),
