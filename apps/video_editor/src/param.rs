@@ -128,12 +128,18 @@ pub enum Param {
     MaskRotation,
     /// Softness of the mask edge.
     MaskFeather,
+    /// How much of the clip's tone curve is mixed in: 0 bypasses it, 1 is
+    /// the curve as drawn. The curve's *shape* is not animatable — a shape
+    /// that morphed frame to frame is a different grade rather than an
+    /// animation of one — so this single knob is what a ramp on or off a
+    /// grade drives.
+    CurveMix,
     EffectAmount(u32),
 }
 
 impl Param {
     /// Every parameter that is not tied to a list index, for menus.
-    pub const SIMPLE: [Param; 19] = [
+    pub const SIMPLE: [Param; 20] = [
         Param::Opacity,
         Param::Volume,
         Param::Brightness,
@@ -153,6 +159,7 @@ impl Param {
         Param::MaskH,
         Param::MaskRotation,
         Param::MaskFeather,
+        Param::CurveMix,
     ];
 
     pub fn as_str(self) -> String {
@@ -176,6 +183,7 @@ impl Param {
             Param::MaskH => "mask_h".into(),
             Param::MaskRotation => "mask_rotation".into(),
             Param::MaskFeather => "mask_feather".into(),
+            Param::CurveMix => "curve_mix".into(),
             Param::EffectAmount(i) => format!("effect{i}"),
         }
     }
@@ -201,6 +209,7 @@ impl Param {
             Param::MaskH => "Mask height".into(),
             Param::MaskRotation => "Mask rotation".into(),
             Param::MaskFeather => "Mask feather".into(),
+            Param::CurveMix => "Curve amount".into(),
             Param::EffectAmount(i) => format!("Effect {} amount", i + 1),
         }
     }
@@ -226,6 +235,7 @@ impl Param {
             "mask_h" => Param::MaskH,
             "mask_rotation" => Param::MaskRotation,
             "mask_feather" => Param::MaskFeather,
+            "curve_mix" => Param::CurveMix,
             other => {
                 let n = other.strip_prefix("effect")?;
                 Param::EffectAmount(n.parse().ok()?)

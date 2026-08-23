@@ -200,6 +200,7 @@ impl VideoDoc {
         );
         let _ = doc.put(&obj, "speed_rate", c.speed.rate);
         let _ = doc.put(&obj, "speed_reverse", c.speed.reverse);
+        let _ = doc.put(&obj, "curves", serde_json::to_string(&c.curves).unwrap_or_default());
         let _ = doc.put(&obj, "key", serde_json::to_string(&c.key).unwrap_or_default());
         let _ = doc.put(&obj, "mask", serde_json::to_string(&c.mask).unwrap_or_default());
         let _ = doc.put(&obj, "anim", serde_json::to_string(&c.anim).unwrap_or_default());
@@ -408,6 +409,9 @@ impl VideoDoc {
                         rate: Self::get_f64(doc, &obj, "speed_rate").unwrap_or(1.0),
                         reverse: Self::get_bool(doc, &obj, "speed_reverse"),
                     },
+                    curves: Self::get_str(doc, &obj, "curves")
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .unwrap_or_default(),
                     key: Self::get_str(doc, &obj, "key")
                         .and_then(|s| serde_json::from_str(&s).ok())
                         .unwrap_or_default(),
@@ -624,6 +628,36 @@ mod tests {
         let c = back.clip(cid).unwrap();
         assert_eq!(c.key, key, "every field of the key, not just the switch");
         assert_eq!(c.mask, mask, "and every field of the mask");
+    }
+
+    #[test]
+    fn a_tone_curve_survives_the_document_with_every_channel() {
+        use crate::curve::Curve;
+        let (mut p, cid) = one_clip();
+        let mut want = Curve::default();
+        // One point on each channel, all at different heights, so a bake
+        // that dropped or transposed a channel cannot come back equal.
+        want.master.set_point(0.5, 0.72);
+        want.red.set_point(0.3, 0.44);
+        want.green.set_point(0.6, 0.21);
+        want.blue.set_point(0.8, 0.93);
+        want.mix = 0.65;
+        p.clip_mut(cid).unwrap().curves = want.clone();
+
+        let back = round_trip(&p);
+        let c = back.clip(cid).unwrap();
+        assert_eq!(c.curves, want, "every channel and the amount, not just the master");
+    }
+
+    #[test]
+    fn a_clip_written_before_curves_existed_reads_as_ungraded() {
+        // The `curves` key is simply absent in such a document, and the
+        // default has to be the straight line — a curve that read back as
+        // anything else would re-grade footage nobody touched.
+        let (p, cid) = one_clip();
+        let back = round_trip(&p);
+        let c = back.clip(cid).unwrap();
+        assert!(c.curves.is_identity(), "an untouched clip comes back ungraded");
     }
 
     #[test]

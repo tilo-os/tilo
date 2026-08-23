@@ -94,6 +94,11 @@ pub struct ClipData {
     /// Playback rate and direction. Defaults to normal speed.
     #[serde(default)]
     pub speed: crate::model::Speed,
+    /// Tone curves. Absent on the wire for a peer that predates them,
+    /// which `serde(default)` reads as the straight line — the ungraded
+    /// picture that peer is already drawing.
+    #[serde(default)]
+    pub curves: crate::curve::Curve,
     /// Colour key. Absent on the wire for a peer that predates keying,
     /// which `serde(default)` reads as "not keyed" — the composite that
     /// peer is already drawing, so the two do not diverge.
@@ -133,6 +138,7 @@ impl ClipData {
             effects: c.effects.clone(),
             transform: c.transform,
             speed: c.speed,
+            curves: c.curves.clone(),
             key: c.key,
             mask: c.mask,
             anim: c.anim.clone(),
@@ -166,6 +172,7 @@ impl ClipData {
             effects: self.effects.clone(),
             transform: self.transform,
             speed: self.speed,
+            curves: self.curves.clone(),
             key: self.key,
             mask: self.mask,
             anim: self.anim.clone(),

@@ -772,6 +772,167 @@ mod tests {
         );
     }
 
+    // --- tone curves ------------------------------------------------------
+    //
+    // A curve reaches the GPU as a baked 256-entry row, so what has to be
+    // proved here is not "some colour moved" but that the *table* is the one
+    // the CPU baked, addressed by the right row. Every test below paints a
+    // flat known grey, so the expected pixel is a number rather than an
+    // inference from a palette fill.
+
+    /// A flat mid-grey picture: one tone in, so a curve's answer for that
+    /// tone is the whole frame.
+    fn flat(level: u8) -> CpuFrames<impl FnMut(Uuid, f64) -> Option<CpuFrame>> {
+        painted(32, 32, move |_u, _v| [level, level, level, 255])
+    }
+
+    #[test]
+    fn the_shader_curve_matches_the_cpu_curve() {
+        use crate::curve::Curve;
+        // The shader is the production path for both preview and export;
+        // this pins its table lookup to `Curve::apply`, which the curve
+        // editor draws and every CPU test relies on.
+        let (mut p, cid) = square_clip();
+        let mut curve = Curve::default();
+        curve.master.set_point(0.5, 0.85);
+        curve.master.set_point(0.25, 0.1);
+        p.clip_mut(cid).unwrap().curves = curve.clone();
+
+        let mut c = compositor();
+        for level in [64u8, 128, 200] {
+            let buf = c.frame(&p, 1.0, 32, 32, &mut flat(level));
+            let got = px(&buf, 32, 16, 16);
+            let t = level as f64 / 255.0;
+            let (wr, wg, wb) = curve.apply(t, t, t);
+            assert!(
+                (got.r - wr).abs() < 0.02
+                    && (got.g - wg).abs() < 0.02
+                    && (got.b - wb).abs() < 0.02,
+                "level {level}: shader curve {got:?} should match the CPU curve \
+                 ({wr:.3}, {wg:.3}, {wb:.3})",
+            );
+        }
+    }
+
+    #[test]
+    fn a_per_channel_curve_reaches_the_composited_frame() {
+        use crate::curve::Curve;
+        // Per-channel comes free in the RGBA table, so it is exactly the
+        // sort of thing that can be baked and never bound. Lift red only:
+        // a neutral grey has to come out red-cast on the canvas.
+        let (mut p, cid) = square_clip();
+        let mut curve = Curve::default();
+        curve.red.set_point(0.5, 0.9);
+        p.clip_mut(cid).unwrap().curves = curve;
+
+        let mut c = compositor();
+        let got = px(&c.frame(&p, 1.0, 32, 32, &mut flat(128)), 32, 16, 16);
+        assert!(got.r > 0.85, "red was lifted: {got:?}");
+        assert!((got.g - 0.502).abs() < 0.02, "green untouched: {got:?}");
+        assert!((got.b - 0.502).abs() < 0.02, "blue untouched: {got:?}");
+    }
+
+    #[test]
+    fn each_layer_looks_up_its_own_row_of_the_table() {
+        use crate::curve::Curve;
+        // One table serves the whole composite, one row per layer. Get the
+        // row index wrong and both layers grade with the same curve — which
+        // a single-layer test cannot see. So: two layers of the *same* grey,
+        // one lifted and one crushed, with the upper one shrunk into the
+        // middle so both are on screen at once.
+        let mut p = Project::new("t");
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "sq".into(),
+            kind: MediaKind::Video,
+            duration: 30.0,
+            width: 32,
+            height: 32,
+            fps: 30.0,
+            palette: 2,
+            path: crate::media::workspace_path("sq.mp4"),
+            hydration: crate::media::Hydration::Local,
+            ..Default::default()
+        });
+        let v1 = track(&mut p, 1);
+        let v2 = track(&mut p, 2);
+        let under = p.add_clip(v1, mid, 0.0).unwrap();
+        let over = p.add_clip(v2, mid, 0.0).unwrap();
+
+        let mut lift = Curve::default();
+        lift.master.set_point(0.5, 0.9);
+        let mut crush = Curve::default();
+        crush.master.set_point(0.5, 0.1);
+        {
+            let c = p.clip_mut(under).unwrap();
+            c.out_point = 10.0;
+            c.curves = lift;
+        }
+        {
+            let c = p.clip_mut(over).unwrap();
+            c.out_point = 10.0;
+            c.curves = crush;
+            c.transform = Transform { scale_x: 0.4, scale_y: 0.4, ..Transform::default() };
+        }
+
+        let mut c = compositor();
+        let buf = c.frame(&p, 1.0, 64, 64, &mut flat(128));
+        let centre = px(&buf, 64, 32, 32);
+        let corner = px(&buf, 64, 4, 32);
+        assert!(centre.luma() < 0.2, "the upper layer's own curve crushed it: {centre:?}");
+        assert!(corner.luma() > 0.8, "the lower layer's own curve lifted it: {corner:?}");
+    }
+
+    #[test]
+    fn an_animated_curve_amount_ramps_the_grade_across_the_clip() {
+        use crate::curve::Curve;
+        use crate::param::{Interp, Param};
+        // `Param::CurveMix` is the keyframable knob, and the mix is folded
+        // into the bake — so an animated amount has to re-bake the table
+        // between frames rather than being ignored.
+        let (mut p, cid) = square_clip();
+        let mut curve = Curve::default();
+        curve.master.set_point(0.5, 1.0);
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.curves = curve;
+            c.set_key_at(Param::CurveMix, 0.0, 0.0, Interp::Linear);
+            c.set_key_at(Param::CurveMix, 4.0, 1.0, Interp::Linear);
+        }
+
+        let mut c = compositor();
+        let at = |c: &mut HeadlessCompositor, t: f64| {
+            px(&c.frame(&p, t, 32, 32, &mut flat(128)), 32, 16, 16).luma()
+        };
+        let (start, middle, end) = (at(&mut c, 0.0), at(&mut c, 2.0), at(&mut c, 4.0));
+        assert!(
+            (start - 0.502).abs() < 0.02,
+            "mixed all the way out, the grey is untouched: {start}",
+        );
+        assert!(middle > start + 0.15, "half way through it has lifted: {start} → {middle}");
+        assert!(end > middle + 0.15, "and further by the end: {middle} → {end}");
+        assert!(end > 0.9, "at full strength the midtone reaches the point drawn: {end}");
+    }
+
+    #[test]
+    fn a_curve_mixed_all_the_way_out_composites_exactly_as_no_curve_at_all() {
+        use crate::curve::Curve;
+        // The bypass has to be a real bypass, not "a table that is nearly
+        // the identity": an ungraded clip must not shift by a code unit
+        // because curves exist.
+        let (mut p, cid) = square_clip();
+        let mut c = compositor();
+        let plain = c.frame(&p, 1.0, 32, 32, &mut flat(137));
+
+        let mut curve = Curve::default();
+        curve.master.set_point(0.5, 0.95);
+        curve.mix = 0.0;
+        p.clip_mut(cid).unwrap().curves = curve;
+        let bypassed = c.frame(&p, 1.0, 32, 32, &mut flat(137));
+        assert_eq!(plain, bypassed, "mix = 0 is byte-identical to no curve");
+    }
+
     #[test]
     fn every_video_track_contributes_a_layer() {
         // The old single-clip path threw away everything below the top
