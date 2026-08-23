@@ -4131,7 +4131,24 @@ mod breadcrumb_home_tests {
         );
 
         // Which is what makes the trail read as somebody's home rather
-        // than as a path from the filesystem root.
+        // than as a path from the filesystem root. This is the function
+        // that rendered the bad one: handed a home the path is not
+        // under, it falls through to the `/`-rooted branch and emits a
+        // component per directory from the filesystem root.
+        let deep = granted_path.join("Documents").join("Investors");
+        let labels: Vec<String> = crate::breadcrumbs::breadcrumb_components(
+            &deep,
+            widget_home.as_deref(),
+        )
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
+        assert_eq!(
+            labels,
+            vec!["Home", "Documents", "Investors"],
+            "the trail is rooted at Home, not at /",
+        );
+
         assert_eq!(
             crate::model::format_path(&granted_path.join("Documents"), widget_home.as_deref()),
             "~/Documents",
