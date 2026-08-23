@@ -876,7 +876,7 @@ impl ForeignFrameStore {
 /// is a flicker rather than information — nobody has begun to wonder yet.
 /// Past it the wait is long enough to be a wait, and an empty space where
 /// a window was asked for reads as nothing having happened.
-const OPENING_DELAY: Duration = Duration::from_millis(250);
+pub(crate) const OPENING_DELAY: Duration = Duration::from_millis(250);
 
 /// How long a surface may take to produce a frame that fits its tab
 /// before its window is shown regardless.
