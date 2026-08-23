@@ -12,6 +12,8 @@ use regex::Regex;
 ///    origin, not token consumers)
 ///  - presence/render.rs (the HSL helper intentionally encodes per-user hue math)
 ///  - tests/**                                                            (test fixtures)
+///  - `#[cfg(test)]` modules inside a src file (test fixtures too — see
+///    `test_module_spans`)
 fn is_exempt(path: &Path) -> bool {
     let s = path.to_string_lossy();
     s.contains("/theme.rs")
@@ -52,6 +54,54 @@ fn forbidden_patterns() -> Vec<(Regex, &'static str)> {
     ]
 }
 
+/// Line ranges (half-open, 0-based) covered by a `#[cfg(test)]` module.
+///
+/// Found by brace-counting from the `mod ... {` that follows the
+/// attribute, so a test module anywhere in the file is handled, not just
+/// one conventionally parked at the bottom. Braces inside string or char
+/// literals would fool this; no test module in the tree contains one, and
+/// the failure mode is a skipped line rather than a false accusation.
+fn test_module_spans(content: &str) -> Vec<(usize, usize)> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim_start().starts_with("#[cfg(test)]") {
+            // Find the opening brace of the module body.
+            let mut j = i;
+            while j < lines.len() && !lines[j].contains('{') {
+                j += 1;
+            }
+            if j == lines.len() {
+                break;
+            }
+            let mut depth = 0i32;
+            let start = i;
+            let mut k = j;
+            'outer: while k < lines.len() {
+                for c in lines[k].chars() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break 'outer;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                k += 1;
+            }
+            spans.push((start, (k + 1).min(lines.len())));
+            i = k + 1;
+            continue;
+        }
+        i += 1;
+    }
+    spans
+}
+
 #[test]
 fn no_hardcoded_style_literals_in_tree() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -63,9 +113,17 @@ fn no_hardcoded_style_literals_in_tree() {
     let mut violations = Vec::new();
     for f in &files {
         let content = fs::read_to_string(f).unwrap();
+        let skip = test_module_spans(&content);
         for (i, line) in content.lines().enumerate() {
             // Ignore comment lines.
             if line.trim_start().starts_with("//") { continue; }
+            // Ignore `#[cfg(test)]` modules. The audit polices *draw
+            // paths*, and `tests/**` is already exempt on the grounds that
+            // a fixture may state a literal; a `#[cfg(test)]` module is
+            // the same fixture living in the same file as the code it
+            // covers. A test that pins how a token is painted has to be
+            // able to name the token's values.
+            if skip.iter().any(|(a, b)| i >= *a && i < *b) { continue; }
             for (re, msg) in &patterns {
                 if re.is_match(line) {
                     violations.push(format!(
