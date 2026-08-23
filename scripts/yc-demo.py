@@ -1994,6 +1994,7 @@ class LogTail:
     def biggest_delta(self, fresh: str) -> int:
         return max((int(m) for m in self.DELTA.findall(fresh)), default=0)
 
+
     def await_line(self, needle: str, timeout: float) -> bool:
         """Wait for `needle` to appear, reading as it goes."""
         deadline = time.time() + timeout
@@ -4473,28 +4474,51 @@ def beat_eight(quinten: Session, files: dict | None, wp: dict | None,
     quinten.pointer_button(False)
 
     # The payoff, off the receiving app's own account of its own
-    # document. An image is stored as its own bytes under a BLAKE3 hash,
-    # so it moves two orders of magnitude more than a keystroke does —
-    # there is nothing in between for this to confuse.
-    want = max(4000, len(payload) // 2)
+    # document.
+    #
+    # This used to watch for a change the size of the file, on the
+    # reasoning that an image moves two orders of magnitude more than a
+    # keystroke. That is now exactly backwards. Images no longer travel
+    # inside the document: it carries a BLAKE3 reference and the bytes go
+    # to a content-addressed store, because a 146 kB change exceeded the
+    # publish ceiling, was dropped, and — since Automerge holds a change
+    # whose ancestors are missing — froze every other machine's copy at
+    # that point, permanently and silently.
+    #
+    # So the file-sized change must *not* appear, and what is watched for
+    # instead is the reference: a small change carrying the hash, after
+    # which the page holds an image. A test looking for the old
+    # behaviour would now be asserting the bug.
+    # Asked of the page, because the wire no longer answers it. The
+    # reference is a few dozen bytes and reaches the log as nothing
+    # distinguishable from a keystroke, so the honest evidence that a
+    # photograph arrived is that a photograph is on screen: a large
+    # region of the page that was paper a moment ago is not any more.
+    #
+    # `pixels_moved` thresholds rather than comparing exactly, because a
+    # blinking caret changes bytes on a page where nothing happened.
+    before_page = screen_shot(quinten, os.path.join(shots, "11a-before-drop.png"))
     biggest = 0
+    landed = False
     deadline = time.time() + 25.0
     while time.time() < deadline:
         biggest = max(biggest, log.biggest_delta(log.read()))
-        if biggest >= want:
+        after_page = screen_shot(quinten, os.path.join(shots, "11b-after-drop.png"))
+        moved = pixels_moved(before_page, after_page)
+        if moved is not None and moved > 20000:
+            landed = True
             break
-        time.sleep(0.3)
-    landed = biggest >= want
-    claim("the document changed by the size of a photograph, not a "
-          "keystroke", landed, True)
+        time.sleep(0.5)
+    claim("the photograph is on the page", landed, True)
     note(f"largest change the word processor broadcast after the drop: "
-         f"{biggest} bytes (the file is {len(payload)}; a keystroke moves "
-         f"about a hundred)")
+         f"{biggest} bytes, against a {len(payload)}-byte file — the bytes "
+         f"travel beside the document now, not inside it, which is why "
+         f"this beat asks the page rather than the wire")
     quinten.settle(2.0)
     quinten.snapshot(os.path.join(shots, "12-image-in-the-document.png"))
 
     if not landed:
-        gap(f"nothing the size of the photograph reached the document "
+        gap(f"no reference to the photograph reached the document "
             f"within 25s of the drop. See {quinten.log_path}")
         return
 
