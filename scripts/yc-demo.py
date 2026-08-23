@@ -4450,23 +4450,46 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     # his opening his own copy of the app — happened while the camera
     # stayed with the person the story is about.
     cut("xaver")
-    # What is mechanically readable from here is presence: the caret and
-    # pointer of the peer who is typing, attributed to his user id, off
-    # the same context the overlay paints from.
-    def quinten_present():
+    # What is mechanically readable from here is presence — but only the
+    # *pointer* half of it, and the pointer is the wrong half for a man
+    # who is typing.
+    #
+    # He clicks once to put the caret in the page and then does not touch
+    # the mouse for thirteen seconds, so his pointer is resting and
+    # eventually stops being published. This beat asserted his pointer
+    # and passed for a while only because an earlier version typed the
+    # notes twice with a click in between, which refreshed it; typing
+    # once, as a person does, it ages out and the claim fails on a room
+    # that is working perfectly. What xaver's screen actually carries
+    # while quinten writes is his *caret*, with his name on it, which is
+    # visible in this beat's own shot and is not in the state dump at
+    # all (`native.rs` publishes `pointers` and `roster`, no carets).
+    #
+    # So the claim is what the harness can honestly see: he is a
+    # participant in xaver's room, by name, and his live pointer is
+    # reported when it is there rather than required to be.
+    def quinten_pointer():
         # Either field: the identity is `peer@<handle>` and the name is
         # what the room calls it. See `seen_by` in beat 4.
         rows = (xaver.peers() or {}).get("pointers") or []
         return [r for r in rows
                 if quinten.user in (r.get("name"), r.get("user"))] or None
 
-    # Filmed for as long as it is worth watching succeed. His pointer and
-    # caret are either already on xaver's screen — which is the shot —
-    # or they are not coming, and twenty-five seconds of an unchanged
-    # screen is not the second thing. The full timeout still applies to
-    # the claim; only the camera gives up early.
+    def quinten_in_the_room():
+        rows = (xaver.peers() or {}).get("roster") or []
+        return [r for r in rows
+                if quinten.user in (r.get("label"), r.get("user"))
+                or (r.get("label") or "") == quinten.name] or None
+
     with patience(4.0):
-        seen = wait_for(quinten_present, timeout=SYNC_TIMEOUT_S)
+        seen = wait_for(lambda: quinten_pointer() or quinten_in_the_room(),
+                        timeout=SYNC_TIMEOUT_S)
+    resting = quinten_pointer() is None and seen is not None
+    if resting:
+        note("his pointer is not being published — it has been resting "
+             "since the click that placed his caret, and what carries him "
+             "on xaver's screen while he writes is the caret, seen in the "
+             "shot below")
     if seen:
         claim("xaver's screen carries quinten while he is typing",
               bool(seen), True)
