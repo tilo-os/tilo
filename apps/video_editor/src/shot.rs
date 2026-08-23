@@ -190,6 +190,44 @@ mod tests {
         }
     }
 
+    /// The picture itself, twice, through the real GPU path a `--shots`
+    /// capture uses.
+    ///
+    /// Two rasterisations of one scene are allowed to disagree by one 8-bit
+    /// step on antialiased edge pixels and by nothing else — measured on this
+    /// app, four pixels of 1 024 000, each +/-1 in a single channel, with the
+    /// set of pixels carrying ink unchanged. `pixels_differing_beyond_aa`
+    /// tolerates exactly that step, so a zero here means the two runs made the
+    /// same picture and anything above zero is a real difference in what was
+    /// drawn.
+    ///
+    /// This is the part a person diffing two screenshots is relying on: not
+    /// that the bytes match, which the rasteriser will not promise, but that
+    /// nothing beyond the wobble moved. A machine that cannot rasterise cannot
+    /// observe the property, so failing to build a renderer is the correct
+    /// outcome here rather than a silent pass.
+    #[test]
+    fn two_captures_of_one_scenario_are_the_same_picture() {
+        let size = (640, 400);
+        let shoot = || {
+            let mut app: Box<dyn Widget> =
+                Box::new(VideoEditorApp::new_for_shot(ShotScenario::Markers));
+            let mut state = ui::State::new();
+            let mut tr = TextRenderer::new();
+            let scene = compose(&mut *app, size, &Theme::dark(), &mut state, &mut tr)
+                .expect("the scenario composes");
+            ui::offscreen::OffscreenRenderer::new(size.0, size.1).render_rgba(&scene)
+        };
+        let a = shoot();
+        let b = shoot();
+        assert!(!a.is_empty(), "the capture produced pixels");
+        assert_eq!(
+            ui::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(&a, &b),
+            0,
+            "two runs of one scenario drew different pictures",
+        );
+    }
+
     /// And the fingerprint has to be able to tell scenes apart, or the check
     /// above would pass on a function that returned a constant.
     #[test]
