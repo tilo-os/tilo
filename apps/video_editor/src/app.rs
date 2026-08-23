@@ -1267,13 +1267,26 @@ impl VideoEditorApp {
         app
     }
 
-    /// Whether the real preview decoder currently has a decoded frame on the
-    /// canvas. The `--shots` decode path pumps `sync` until this is true so an
-    /// asynchronously-prerolled frame is captured, not a blank one.
+    /// Whether the canvas is currently showing real decoded footage rather
+    /// than the representative fill. The `--shots` decode path pumps `sync`
+    /// until this is true, so an asynchronously-prerolled frame is captured
+    /// instead of a stand-in.
+    ///
+    /// This must be answered by whatever actually *paints* the canvas. It used
+    /// to read `preview_decoder`, which the GPU compositor replaced: the
+    /// screenshot path then waited on a decoder that no longer fed the picture,
+    /// saw a frame in it, and captured the representative fill believing it had
+    /// the footage. Measured on the demo clip, the captured preview's
+    /// horizontal detail fell from 11.42 to 0.56 — a flat gradient — while
+    /// every test stayed green, because no test compared the *canvas* against
+    /// the source. The compositor's frame source now reports whether it put a
+    /// decoded picture on any layer, and that is the answer.
     pub fn has_preview_frame(&self) -> bool {
         #[cfg(feature = "decode")]
         {
-            self.preview_decoder.frame().is_some()
+            self.frame_source
+                .as_ref()
+                .is_some_and(|s| s.served_real_picture())
         }
         #[cfg(not(feature = "decode"))]
         {
@@ -3526,7 +3539,19 @@ impl VideoEditorApp {
             let sig = crate::gpu::MediaFrameSource::project_signature(&self.project);
             if self.frame_source.is_none() {
                 self.frame_source =
-                    Some(crate::gpu::MediaFrameSource::new(&self.project, crate::gpu::Fetch::Responsive));
+                    // A capture has no interactive deadline to miss, and it
+                    // renders exactly once — so it must block for the real
+                    // picture rather than paint the representative fill and
+                    // move on. The live editor must never block: a scrub that
+                    // stalls the UI thread is worse than a frame of lag.
+                    Some(crate::gpu::MediaFrameSource::new(
+                        &self.project,
+                        if self.auto_place_imports {
+                            crate::gpu::Fetch::Exact
+                        } else {
+                            crate::gpu::Fetch::Responsive
+                        },
+                    ));
                 self.frame_source_sig = sig;
             } else if sig != self.frame_source_sig {
                 if let Some(src) = self.frame_source.as_mut() {

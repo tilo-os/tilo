@@ -1237,6 +1237,71 @@ mod tests {
         );
     }
 
+    /// The canvas, through the source the *app* actually composites with.
+    ///
+    /// The test above hands the compositor frames it decoded itself with
+    /// `PreviewDecoder`. That decoder no longer paints anything: the app
+    /// composites through [`MediaFrameSource`]. So that test's name promises
+    /// canvas coverage it does not have, and it stayed green while the shipped
+    /// preview fell back to the representative fill — measured on the demo
+    /// clip, the captured canvas's horizontal detail dropped from 11.4 to 0.56
+    /// and no test noticed.
+    ///
+    /// This drives the real pair. It also pins the reason it broke: a capture
+    /// renders exactly once, so it must ask for `Exact` and wait. `Responsive`
+    /// is right for the live editor — a scrub must never stall the UI thread —
+    /// but asking it for a picture that has not arrived yet and then rendering
+    /// immediately is precisely how a stand-in gets captured as though it were
+    /// the footage.
+    #[test]
+    #[serial_test::serial(video_editor_gst)]
+    fn the_apps_own_frame_source_puts_real_footage_on_the_canvas() {
+        let path = demo_clip();
+        let mut p = Project::new("live");
+        p.width = 1920;
+        p.height = 1080;
+        let mid = Uuid::new_v4();
+        p.media.push(crate::model::MediaItem {
+            id: mid,
+            name: "demo".into(),
+            kind: crate::model::MediaKind::Video,
+            duration: 57.0,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            path: path.to_string_lossy().into_owned(),
+            hydration: crate::media::Hydration::Local,
+            ..Default::default()
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(crate::model::Track {
+            id: tid,
+            name: "V1".into(),
+            kind: crate::model::TrackKind::Video,
+            index: 1,
+            ..Default::default()
+        });
+        let cid = p.add_clip(tid, mid, 0.0).unwrap();
+        p.clip_mut(cid).unwrap().out_point = 57.0;
+
+        let (w, h) = (192u32, 108u32);
+        let mut c = compositor();
+        let mut sources = MediaFrameSource::new(&p, Fetch::Exact);
+        let live = c.frame(&p, 22.0, w, h, &mut sources);
+
+        assert!(
+            sources.served_real_picture(),
+            "the frame source reported no decoded picture — the canvas is a stand-in",
+        );
+        let detail = horizontal_detail(&live, w, h);
+        println!("app-path canvas horizontal detail = {detail:.3}");
+        assert!(
+            detail > 2.0,
+            "the canvas is flat along its rows ({detail:.3}): the app's own source \
+             served the representative fill, not the footage",
+        );
+    }
+
 
     /// The compositor painting a real hardware-decoded frame.
     ///
