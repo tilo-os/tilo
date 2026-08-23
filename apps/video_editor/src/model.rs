@@ -847,6 +847,50 @@ impl Clip {
         })
     }
 
+    /// Write `param`'s **constant** field — the write-side twin of
+    /// [`Self::param_const`], and the other half of what a control bound to a
+    /// parameter needs. Silently ignores an `EffectAmount` past the end of
+    /// the stack, for the same reason reading one returns `None`.
+    ///
+    /// This writes the constant only. A caller editing an *animated*
+    /// parameter wants [`Self::set_key_at`] instead, or the value it writes
+    /// will be overridden by the curve the moment it is read back.
+    pub fn set_param_const(&mut self, param: Param, v: f64) {
+        match param {
+            Param::Opacity => self.opacity = v,
+            Param::Volume => self.volume = v,
+            Param::Brightness => self.filters.brightness = v,
+            Param::Contrast => self.filters.contrast = v,
+            Param::Saturation => self.filters.saturation = v,
+            Param::ScaleX => self.transform.scale_x = v,
+            Param::ScaleY => self.transform.scale_y = v,
+            Param::PosX => self.transform.pos_x = v,
+            Param::PosY => self.transform.pos_y = v,
+            Param::Rotation => self.transform.rotation = v,
+            Param::EffectAmount(i) => {
+                if let Some(e) = self.effects.get_mut(i as usize) {
+                    e.amount = v;
+                }
+            }
+        }
+    }
+
+    /// Set `param` to `v` at `playhead`, keying it when it is animated and
+    /// writing its constant when it is not.
+    ///
+    /// This is what a slider drag calls, and it is why keying a parameter
+    /// once turns every later drag into a new keyframe: an animated
+    /// parameter's constant is dead, so writing it would look like the
+    /// control had stopped working.
+    pub fn set_param_at(&mut self, param: Param, playhead: f64, v: f64) {
+        if self.anim.is_animated(param) {
+            let interp = self.key_interp_at(param, playhead).unwrap_or_default();
+            self.set_key_at(param, playhead, v, interp);
+        } else {
+            self.set_param_const(param, v);
+        }
+    }
+
     /// **The one door.** The value of `param` at absolute timeline time
     /// `playhead`: the curve if this clip has one, else the constant.
     ///
