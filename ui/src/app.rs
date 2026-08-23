@@ -2302,6 +2302,30 @@ impl App {
             A11yTarget::Widget(id) => (id, Vec::new()),
             A11yTarget::Synthetic { owner, key_path } => (owner, key_path),
         };
+        self.dispatch_a11y_action_to(taffy_id, &key_path, action)
+    }
+
+    /// Perform an accessibility action on an already-resolved target: the widget
+    /// at `taffy_id`, or the synthetic element inside it named by `key_path`
+    /// (empty for the widget itself).
+    ///
+    /// This is the single place a verb is applied, shared by every route that
+    /// can produce one — an AccessKit `ActionRequest`
+    /// ([`dispatch_a11y_action`](Self::dispatch_a11y_action)), a named
+    /// affordance on the retained semantic tree
+    /// ([`invoke_semantic_action`](Self::invoke_semantic_action)), and the
+    /// keyboard ([`perform_action_on_focused`](Self::perform_action_on_focused)).
+    /// Keeping them on one path is what stops a screen reader, an agent, and a
+    /// key press from disagreeing about what "activate this" does.
+    ///
+    /// Returns `Some((x, y))` if the caller should synthesise a click there.
+    pub fn dispatch_a11y_action_to(
+        &mut self,
+        taffy_id: NodeId,
+        key_path: &[u64],
+        action: &crate::a11y::Action,
+    ) -> Option<(f64, f64)> {
+        use crate::a11y::Action;
         let &w_ptr = self.node_map.get(&taffy_id)?;
 
         // Focusing a synthetic node means two things at once: the keyboard goes
@@ -2316,7 +2340,7 @@ impl App {
 
         // 1. Widget gets first refusal, told which element was targeted.
         let handled = unsafe {
-            (*w_ptr).perform_action_at(action, &key_path, &mut self.state.doc, &self.state.root)
+            (*w_ptr).perform_action_at(action, key_path, &mut self.state.doc, &self.state.root)
         };
         if handled {
             self.needs_sync = true;
@@ -2444,18 +2468,28 @@ impl App {
                 self.dispatch_encoded_semantic(encoded)
             }
             SemanticActionKind::Verb(verb) => {
-                let Some(taffy_raw) = self.semantic_tree.node(id).and_then(|n| n.widget_taffy_id)
-                else {
+                // Two kinds of node carry verbs: a laid-out widget, addressed by
+                // its taffy id, and a synthetic element inside one, addressed by
+                // its owner plus a key path. Before, only the first could be
+                // driven — a canvas app's rows and clips reported affordances
+                // that silently did nothing when invoked.
+                let Some(node) = self.semantic_tree.node(id) else {
                     return Ok(false);
                 };
-                let ak = accesskit::NodeId(taffy_raw + 1);
-                // Give the widget first refusal (its `perform_action`) and let the
-                // generic focus fallback run. A `Some((x, y))` result means the
+                let (taffy_raw, key_path) = match (&node.synthetic_ref, node.widget_taffy_id) {
+                    (Some(sref), _) => (sref.owner_taffy_id, sref.key_path.clone()),
+                    (None, Some(raw)) => (raw, Vec::new()),
+                    // A root or resource node has no widget to drive.
+                    (None, None) => return Ok(false),
+                };
+                // Give the widget first refusal (its `perform_action_at`) and let
+                // the generic focus fallback run. A `Some((x, y))` result means the
                 // widget self-activates only via a pointer click, which needs the
                 // windowed input path (the winit handler synthesises it for an
                 // AccessKit `ActionRequest`); such widgets should implement
-                // `perform_action`. We surface the verb as dispatched either way.
-                let _pending_click = self.dispatch_a11y_action(ak, &verb);
+                // `perform_action_at`. We surface the verb as dispatched either way.
+                let _pending_click =
+                    self.dispatch_a11y_action_to(NodeId::from(taffy_raw), &key_path, &verb);
                 Ok(true)
             }
         }
