@@ -913,6 +913,7 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
         // every later window opened behind it.
         || chrome.peer_sync_invite_token.is_some()
         || chrome.peer_sync_connect_input.is_some()
+        || chrome.peer_sync_invite_name.is_some()
         || chrome.editing_workspace_name.is_some()
         || !chrome.pending_grants.is_empty()
 }

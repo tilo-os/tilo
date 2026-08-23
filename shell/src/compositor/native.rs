@@ -472,6 +472,13 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                         "buffer": buffer,
                         // Whether the shell is painting this window yet.
                         "presented": store.is_presented(tab.surface_id),
+                        // And, while it is not, whether the card holding
+                        // the window's place is up. Without this a harness
+                        // cannot tell an empty desktop from one that is
+                        // saying which app is on its way — which is the
+                        // whole difference between a wait somebody can
+                        // read and one they cannot.
+                        "opening": store.is_opening(tab.surface_id),
                     })
                 })
                 .collect();
@@ -746,6 +753,12 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 "invite_token": chrome.peer_sync_invite_token,
                 "connect_input": chrome.peer_sync_connect_input,
                 "status": chrome.peer_sync_status,
+                // The invite composer: what has been typed into "who
+                // are you inviting?", and who the token on screen was
+                // minted for. A script drives the same two facts the
+                // card shows.
+                "invite_name": chrome.peer_sync_invite_name,
+                "invite_for": chrome.peer_sync_invite_for,
             },
             // Whether apps in this session can share edits at all, and
             // why not when they cannot. Exposed because "collaboration
@@ -2214,6 +2227,8 @@ pub fn run() -> ! {
                             PeerSyncRequest::IssueInvite => {
                                 bridge_net.issue_invite(active, INVITE_EXPIRY_SECONDS)
                             }
+                            PeerSyncRequest::IssueInviteFor(name) => bridge_net
+                                .issue_invite_named(active, INVITE_EXPIRY_SECONDS, &name),
                             PeerSyncRequest::AcceptInvite(token) => bridge_net
                                 .accept_invite(active, &token)
                                 .map(|room| room.to_string()),
