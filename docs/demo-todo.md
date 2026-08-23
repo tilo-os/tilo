@@ -87,6 +87,14 @@ chunking a change never was.** A blob is self-verifying against its hash, so a
 lost chunk is detectable, retryable, and degrades one image to a placeholder. A
 lost CRDT change is undetectable and freezes the document forever.
 
+**A guessed rectangle standing in for a real one.** `ui/src/widget/conflict_picker.rs:494`
+draws its scrim as `self.rect.inflate(2000.0, 2000.0)` in a hardcoded `rgba8`
+rather than the theme's scrim token, relying on downstream clipping to bound
+it. It works today at the sizes we run. Two ways it does not: a display larger
+than the guess, and a palette where a fixed black is wrong. The modal that
+landed tonight takes the viewport it is given and reads the token, which is the
+shape to copy.
+
 ## Rules learned the hard way
 
 - **A stale binary invalidates a run.** Five verifications died this way, twice with an agent judging its own fix against a build that predated it. The rig now refuses to record against one.
