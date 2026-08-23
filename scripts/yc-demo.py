@@ -3125,10 +3125,24 @@ def image_is_in_the_document(session: Session, room: str, png: bytes,
     permanently and silently. A document still carrying the bytes would
     now be the bug.
 
-    The needle is `blob_w`, one of the metadata keys an image reference
-    always carries (`blob`, `blob_mime`, `blob_bytes`, `blob_w`,
-    `blob_h`). A key name rather than the hash, because it is stable
-    ASCII that needs no hashing tool on the machine running this.
+    The needle is `image/png`, the mime the store sniffed off the bytes
+    and wrote into the descriptor beside the hash.
+
+    It was `blob_w`, which could never have matched. `blob_w` and its
+    siblings (`blob_mime`, `blob_bytes`, `blob_h`) are *projected onto
+    the materialised snapshot at read time* by `project_blob_meta`; what
+    the document itself stores is a map keyed by the hash holding
+    `mime`, `len`, `w` and `h`. So this searched a document for a key
+    that by design is not in one, and reported a working drag as a
+    photograph that never reached the page. `crates/doc/qdoc/tests/
+    blob_reference.rs` pins what a saved document does contain, so the
+    two cannot drift again.
+
+    The hash would be the sharper needle — it is the address the content
+    store is keyed by — but it is blake3, and there is no blake3 in this
+    machine's python or on its path. The mime is specific enough here:
+    nothing else in a document of typed notes says `image/png`, and the
+    beat has already established separately that the drop landed.
 
     Deliberately run after the camera has stopped: attaching announces a
     presence, and a phantom collaborator arriving mid-take would be a
@@ -3141,7 +3155,7 @@ def image_is_in_the_document(session: Session, room: str, png: bytes,
     try:
         deadline = time.time() + timeout
         newest = 0
-        reference = b"blob_w"
+        reference = b"image/png"
         raw_bytes = png[:24]
         while time.time() < deadline:
             for blob in reader.documents() + reader.deltas():
