@@ -239,6 +239,46 @@ impl VideoDoc {
         }
     }
 
+    /// Every key currently present in the root map `key`.
+    fn keys_of(doc: &AutoCommit, key: &str) -> Vec<String> {
+        match doc.get(&ROOT, key) {
+            Ok(Some((Value::Object(ObjType::Map), id))) => doc.keys(&id).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Make the document hold **exactly** `p` — the write behind opening a
+    /// project file.
+    ///
+    /// The difference from [`write_project`](Self::write_project) is the
+    /// removals: anything in the document that `p` does not have goes. Without
+    /// that, opening a second project would *merge* it into the first and the
+    /// user would get both timelines at once.
+    ///
+    /// Entries `p` also has are upserted rather than deleted and recreated.
+    /// That keeps re-opening the project you already have open close to a
+    /// no-op, and — because the keys are stable ids — it is what lets two
+    /// peers who open the same file converge on one project instead of two
+    /// copies of it.
+    pub fn replace_project(doc: &mut AutoCommit, p: &Project) {
+        let keep_media: Vec<String> = p.media.iter().map(|m| m.id.to_string()).collect();
+        let keep_tracks: Vec<String> = p.tracks.iter().map(|t| t.id.to_string()).collect();
+        let keep_clips: Vec<String> = p.clips.iter().map(|c| c.id.to_string()).collect();
+
+        for (map_key, keep) in
+            [("media", &keep_media), ("tracks", &keep_tracks), ("clips", &keep_clips)]
+        {
+            let obj = Self::map(doc, map_key);
+            for existing in Self::keys_of(doc, map_key) {
+                if !keep.contains(&existing) {
+                    let _ = doc.delete(&obj, existing.as_str());
+                }
+            }
+        }
+
+        Self::write_project(doc, p);
+    }
+
     // --- reader ----------------------------------------------------------
 
     /// Project the whole document back into the in-memory model. Returns a
@@ -819,6 +859,70 @@ mod tests {
         let reload = VideoDoc::load_project(&doc);
         assert!(reload.clip(cid).is_none());
         assert_eq!(reload.clips.len(), 6);
+    }
+
+    #[test]
+    fn replacing_a_project_removes_what_the_new_one_does_not_have() {
+        // The difference between opening a project and merging one. Without
+        // the removals a user who opens a second project gets both timelines
+        // stacked on top of each other and no way to tell which is which.
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let before = VideoDoc::load_project(&doc);
+        assert!(before.clips.len() > 1 && !before.media.is_empty());
+
+        let mut other = Project::new("Other");
+        let mid = uuid::Uuid::new_v4();
+        other.media.push(MediaItem {
+            id: mid,
+            name: "Only.mp4".into(),
+            kind: MediaKind::Video,
+            duration: 5.0,
+            ..Default::default()
+        });
+        let tid = uuid::Uuid::new_v4();
+        other.tracks.push(Track { id: tid, name: "V1".into(), index: 1, ..Default::default() });
+        let cid = uuid::Uuid::new_v4();
+        other.clips.push(Clip {
+            id: cid,
+            track: tid,
+            media: mid,
+            out_point: 5.0,
+            ..Default::default()
+        });
+
+        VideoDoc::replace_project(&mut doc, &other);
+        let after = VideoDoc::load_project(&doc);
+
+        assert_eq!(after.name, "Other");
+        assert_eq!(after.media.len(), 1, "the old bin is gone, not merged");
+        assert_eq!(after.tracks.len(), 1, "the old tracks are gone");
+        assert_eq!(after.clips.len(), 1, "the old timeline is gone");
+        assert_eq!(after.clips[0].id, cid);
+        for old in &before.clips {
+            assert!(after.clip(old.id).is_none(), "no clip of the old project survives");
+        }
+    }
+
+    #[test]
+    fn reopening_the_same_project_keeps_its_ids() {
+        // Replace is upsert-plus-remove, not delete-everything-and-recreate.
+        // Ids are the CRDT keys, so re-minting them would turn "two peers
+        // opened the same file" into two disjoint projects that merge into
+        // duplicates rather than converging.
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let before = VideoDoc::load_project(&doc);
+
+        VideoDoc::replace_project(&mut doc, &before);
+        let after = VideoDoc::load_project(&doc);
+
+        assert_eq!(after.clips.len(), before.clips.len());
+        for c in &before.clips {
+            let same = after.clip(c.id).expect("the same clip is still here");
+            assert!((same.start - c.start).abs() < 1e-9);
+            assert_eq!(same.media, c.media);
+        }
     }
 
     #[test]
