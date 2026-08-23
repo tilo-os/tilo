@@ -15,10 +15,10 @@ use vello::peniko::Color;
 ///   it is honoured. It is not a decorative field for a painter to drop on
 ///   the floor: doing exactly that is how the quick-settings panel came to
 ///   render a 43 %-black token as a 100 %-black smear.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Shadow { pub offset_y: f32, pub blur: f32, pub color: Color }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Elevation { pub e0: Shadow, pub e1: Shadow, pub e2: Shadow, pub e3: Shadow, pub e4: Shadow, pub glass_inner: Shadow, pub glass_outer: Shadow }
 
 impl Default for Elevation {
