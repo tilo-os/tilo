@@ -551,6 +551,9 @@ pub enum ShotScenario {
     /// The marker list, holding timeline markers and a clip's own, with the
     /// ruler flags they correspond to.
     Markers,
+    /// The keyframe menu open on a key under the playhead: remove, the three
+    /// shapes with the one in force ticked, and the steps either side.
+    KeyMenu,
 }
 
 impl ShotScenario {
@@ -573,6 +576,7 @@ impl ShotScenario {
                 | ShotScenario::TitleClip
                 | ShotScenario::Keyframes
                 | ShotScenario::Markers
+                | ShotScenario::KeyMenu
         )
     }
 
@@ -597,6 +601,7 @@ impl ShotScenario {
             "title" => ShotScenario::TitleClip,
             "keyframes" => ShotScenario::Keyframes,
             "markers" => ShotScenario::Markers,
+            "keymenu" => ShotScenario::KeyMenu,
             _ => return None,
         })
     }
@@ -3184,8 +3189,21 @@ impl VideoEditorApp {
 
     fn inspector_layout(&self, r: &Regions) -> InspectorLayout {
         let mut l = InspectorLayout::default();
-        let Some(id) = self.selected() else { return l };
-        let Some(clip) = self.project.clip(id) else { return l };
+        // Markers belong to the project, not to any clip, so the list is laid
+        // out with nothing selected too. Without this the only way to see or
+        // remove a marker was to first pick a clip that had nothing to do
+        // with it.
+        let selected = self.selected().and_then(|id| self.project.clip(id));
+        if selected.is_none() {
+            let x0 = r.inspector.x0 + PAD;
+            let x1 = r.inspector.x1 - PAD;
+            let mut y = r.inspector.y0 - self.inspector_scroll + 116.0;
+            self.layout_markers(&mut l, x0, x1, &mut y);
+            l.content_height = y - (r.inspector.y0 - self.inspector_scroll);
+            return l;
+        }
+        let clip = selected.expect("checked above");
+        let id = clip.id;
         let media = self.project.media(clip.media);
         let is_video = media.map(|m| m.kind.is_visual()).unwrap_or(true);
         let is_title = media.map(|m| m.text.is_some()).unwrap_or(false);
@@ -3361,17 +3379,7 @@ impl VideoEditorApp {
         }
         // Markers: every marked instant on the timeline, the project's own and
         // each clip's, so one list is the whole answer to "what is marked".
-        if header(&mut l, &mut y, Section::Markers) {
-            for (at, m, on_clip) in self.project.all_markers() {
-                l.marker_rows.push((
-                    MarkerRef { id: m.id, clip: on_clip, at },
-                    Rect::new(x0, y, x1, y + 26.0),
-                ));
-                y += 30.0;
-            }
-            l.add_marker = Some(Rect::new(x0, y, x1, y + 26.0));
-            y += 34.0;
-        }
+        self.layout_markers(&mut l, x0, x1, &mut y);
         // Actions.
         y += 6.0;
         l.split = Rect::new(x0, y, (x0 + x1) / 2.0 - 4.0, y + 28.0);
@@ -3380,6 +3388,109 @@ impl VideoEditorApp {
         l.content_height = y - top;
         l.valid = true;
         l
+    }
+
+    /// Draw the marker list: one row per marked instant, with rename and
+    /// delete revealed under the pointer. Shared by both inspector states.
+    fn draw_marker_rows(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        l: &InspectorLayout,
+        x0: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        for (m, row) in &l.marker_rows {
+            let (name_rect, rename, del) = marker_row_parts(*row);
+            let hovered = row.contains(self.last_mouse);
+            if hovered {
+                fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
+            }
+            let Some((_, mk, _)) =
+                self.project.all_markers().into_iter().find(|(_, k, _)| k.id == m.id)
+            else {
+                continue;
+            };
+            let col = clip_color(theme, mk.palette);
+            scene.fill(
+                Fill::NonZero, tf, col, None,
+                &Circle::new(Point::new(row.x0 + 7.0, row.center().y), 4.0),
+            );
+            let renaming = self.marker_rename.as_ref().map(|(r, _)| r.id) == Some(m.id);
+            if !renaming {
+                let name = if mk.name.trim().is_empty() { "Marker" } else { mk.name.as_str() };
+                let shown = elide_w(name, name_rect.width() as f32, tr);
+                let baseline = text_baseline(*row, 12.0, tr);
+                text(scene, tr, tf, &shown, 12.0, c.text_primary, name_rect.x0, baseline);
+                // A clip marker says which clip it travels with, because
+                // moving that clip moves the marker and nothing else would
+                // explain why the time changed.
+                let stamp = timecode(m.at, self.project.fps);
+                let (sw2, _) = tr.measure(&stamp, 11.0, None);
+                let stamp_col = if m.clip.is_some() { c.text_tertiary } else { c.text_dim };
+                text(scene, tr, tf, &stamp, 11.0, stamp_col, rename.x0 - 8.0 - sw2 as f64, baseline);
+            }
+            // Rename and delete only appear under the pointer, so a resting
+            // list reads as names and times rather than as a wall of icons.
+            if hovered {
+                for (rect, icon, tint) in [
+                    (rename, ui::icons::Icon::Pencil, c.text_primary),
+                    (del, ui::icons::Icon::X, c.semantic.danger),
+                ] {
+                    if rect.contains(self.last_mouse) {
+                        fill_rrect(scene, tf, with_alpha(tint, 0.18), rect, 4.0);
+                    }
+                    let g = 11.0;
+                    let box_ = Rect::new(
+                        rect.center().x - g / 2.0, rect.center().y - g / 2.0,
+                        rect.center().x + g / 2.0, rect.center().y + g / 2.0,
+                    );
+                    ui::icons::draw_icon(
+                        scene, tf, box_, icon, tint,
+                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    );
+                }
+            }
+        }
+        if let Some(rect) = l.add_marker {
+            if l.marker_rows.is_empty() {
+                text(scene, tr, tf, "Nothing marked yet", 11.5, c.text_dim, x0, rect.y0 - 16.0);
+            }
+            draw_button(
+                scene, tf, tr, theme, rect, "+ Marker at playhead (M)", false,
+                rect.contains(self.last_mouse),
+            );
+        }
+    }
+
+    /// Lay out the markers section — its header, one row per marked instant,
+    /// and the add button — advancing `y` past it.
+    ///
+    /// Shared by both inspector states: the list is the same whether a clip
+    /// is selected or not, because a marker belongs to the project.
+    fn layout_markers(&self, l: &mut InspectorLayout, x0: f64, x1: f64, y: &mut f64) {
+        l.sections.push((Section::Markers, Rect::new(x0, *y, x1, *y + SECTION_H)));
+        *y += SECTION_H + 4.0;
+        if self.collapsed.contains(&Section::Markers) {
+            return;
+        }
+        let markers = self.project.all_markers();
+        if markers.is_empty() {
+            // Room for the "nothing marked yet" line, which would otherwise
+            // land on the section header it sits under.
+            *y += 18.0;
+        }
+        for (at, m, on_clip) in markers {
+            l.marker_rows.push((
+                MarkerRef { id: m.id, clip: on_clip, at },
+                Rect::new(x0, *y, x1, *y + 26.0),
+            ));
+            *y += 30.0;
+        }
+        l.add_marker = Some(Rect::new(x0, *y, x1, *y + 26.0));
+        *y += 34.0;
     }
 
     /// Sub-rects of one effect row: `(reorder-up, reorder-down, slider, remove)`.
@@ -3540,6 +3651,20 @@ impl VideoEditorApp {
     /// once, from `draw` where the layout rect is known. Uses the same
     /// production affordances a live interaction drives.
     fn apply_shot_interaction(&mut self, r: &Regions) {
+        // A capture that is about the inspector has to show it, and on a
+        // narrow window it starts out of the way. Opening it here is what
+        // selecting a clip does in the live app.
+        if matches!(
+            self.shot_scenario,
+            ShotScenario::Geometry
+                | ShotScenario::TitleClip
+                | ShotScenario::Keyframes
+                | ShotScenario::Markers
+                | ShotScenario::Effects
+        ) {
+            self.reveal_inspector();
+            self.inspector_flap.snap(true);
+        }
         match self.shot_scenario {
             ShotScenario::BinMenu => {
                 if let Some((mid, row)) = self.bin_item_rects(r).into_iter().nth(2) {
@@ -3676,6 +3801,27 @@ impl VideoEditorApp {
                     }
                 }
                 self.zoom = 42.0;
+            }
+            ShotScenario::KeyMenu => {
+                self.playhead = 6.0;
+                if let Some(c) = self.project.top_video_clip_at(6.0) {
+                    let cid = c.id;
+                    self.selection.select_only(cid);
+                    if let Some(c) = self.project.clip_mut(cid) {
+                        let start = c.start;
+                        c.set_key_at(Param::Opacity, start + 1.0, 0.2, Interp::Linear);
+                        c.set_key_at(Param::Opacity, 6.0, 1.0, Interp::Ease);
+                        c.set_key_at(Param::Opacity, start + 8.0, 0.4, Interp::Linear);
+                    }
+                }
+                // Open the menu on the key the playhead is sitting on, from
+                // the control's own rect — the same call the click makes.
+                let l = self.inspector_layout(r);
+                if let Some((_, rect)) =
+                    l.keys.iter().find(|(p, _)| *p == Param::Opacity).copied()
+                {
+                    self.open_key_menu(Param::Opacity, Point::new(rect.center().x, rect.y1));
+                }
             }
             ShotScenario::Markers => {
                 self.playhead = 14.0;
@@ -4104,7 +4250,7 @@ impl Widget for VideoEditorApp {
         // Track the decoded frame to the (possibly advancing) playhead.
         #[cfg(feature = "decode")]
         self.pump_preview_decode();
-        let r = self.regions();
+        let mut r = self.regions();
         // Arrange a rect-dependent interaction scenario once (for --shots).
         if !self.shot_interaction_applied
             && self.shot_scenario.is_interaction()
@@ -4112,7 +4258,13 @@ impl Widget for VideoEditorApp {
         {
             self.apply_shot_interaction(&r);
             self.shot_interaction_applied = true;
+            // A scenario can move a side flap, and the regions were resolved
+            // before it ran — so re-resolve them, or the frame paints the
+            // panel into the slot it occupied a moment ago (an inspector
+            // opened by the scenario drew itself off the right edge).
+            r = self.regions();
         }
+        let r = r;
         // Keep the inspector scroll within the current selection's content.
         let max_scroll = self.inspector_max_scroll(&r);
         self.inspector_scroll = self.inspector_scroll.clamp(0.0, max_scroll);
@@ -4544,7 +4696,19 @@ impl Widget for VideoEditorApp {
                 l.opacity, l.volume, l.brightness, l.contrast, l.saturation, l.fade_in,
                 l.fade_out, l.transition_len,
             ];
-            if sliders.iter().flatten().any(|t| hit_slider(*t, point)) {
+            if sliders.iter().flatten().any(|t| hit_slider(*t, point))
+                || l.nums.iter().any(|(_, t)| hit_slider(*t, point))
+            {
+                return Some(CursorIcon::Pointer);
+            }
+            // Everything else that answers to a click here says so, including
+            // the sections, the key controls and the marker rows — a control
+            // the pointer does not acknowledge reads as decoration.
+            let clickable = l.sections.iter().any(|(_, rc)| rc.contains(point))
+                || l.keys.iter().any(|(_, rc)| rc.contains(point))
+                || l.marker_rows.iter().any(|(_, rc)| rc.contains(point))
+                || l.add_marker.map(|rc| rc.contains(point)).unwrap_or(false);
+            if clickable {
                 return Some(CursorIcon::Pointer);
             }
             if l.valid
@@ -4552,7 +4716,15 @@ impl Widget for VideoEditorApp {
                     || l.delete.contains(point)
                     || l.add_effect.contains(point)
                     || l.transitions.iter().any(|(_, rc)| rc.contains(point))
-                    || l.colors.iter().any(|(_, rc)| rc.contains(point)))
+                    || l.colors.iter().any(|(_, rc)| rc.contains(point))
+                    || l.pip.iter().any(|(_, _, rc)| rc.contains(point))
+                    || l.speed_presets.iter().any(|(_, rc)| rc.contains(point))
+                    || l.title_align.iter().any(|(_, rc)| rc.contains(point))
+                    || l.title_colors.iter().any(|(_, rc)| rc.contains(point))
+                    || [l.reset_transform, l.reverse, l.title_text, l.title_bold, l.title_italic]
+                        .iter()
+                        .flatten()
+                        .any(|rc| rc.contains(point)))
             {
                 return Some(CursorIcon::Pointer);
             }
@@ -5106,6 +5278,40 @@ impl VideoEditorApp {
 
     fn press_inspector(&mut self, state: &mut AutoCommit, r: &Regions, p: Point) {
         let l = self.inspector_layout(r);
+        // The markers section and the section folds are project-level, so
+        // they answer to a press whether or not a clip is selected. Every
+        // control below this point edits the selection and needs one.
+        for (s, rect) in &l.sections {
+            if rect.contains(p) {
+                if !self.collapsed.remove(s) {
+                    self.collapsed.insert(*s);
+                }
+                return;
+            }
+        }
+        for (m, row) in l.marker_rows.clone() {
+            if !row.contains(p) {
+                continue;
+            }
+            let (_, rename, del) = marker_row_parts(row);
+            if del.contains(p) {
+                self.delete_marker(state, m);
+            } else if rename.contains(p) {
+                self.begin_marker_rename(m);
+            } else {
+                self.playhead = m.at.clamp(0.0, self.project.duration());
+                self.playing = false;
+                self.shuttle = 0.0;
+                self.chase_playhead = true;
+            }
+            return;
+        }
+        if let Some(rect) = l.add_marker {
+            if rect.contains(p) {
+                self.add_marker_here(state);
+                return;
+            }
+        }
         if !l.valid {
             return;
         }
@@ -5197,15 +5403,6 @@ impl VideoEditorApp {
             self.open_effect_menu(p);
             return;
         }
-        // Section headers fold and unfold.
-        for (s, rect) in &l.sections {
-            if rect.contains(p) {
-                if !self.collapsed.remove(s) {
-                    self.collapsed.insert(*s);
-                }
-                return;
-            }
-        }
         // Key controls. An unkeyed parameter takes one click to start
         // animating; a keyed one opens the menu that shapes, removes and
         // steps between its keys, because "what do I do with this key" has
@@ -5292,31 +5489,6 @@ impl VideoEditorApp {
         if let Some(rect) = l.title_italic {
             if rect.contains(p) {
                 self.edit_title(state, |t| t.italic = !t.italic);
-                return;
-            }
-        }
-        // Marker rows: the name renames, the cross deletes, the rest of the
-        // row takes the playhead there — which is what a marker is for.
-        for (m, row) in l.marker_rows.clone() {
-            if !row.contains(p) {
-                continue;
-            }
-            let (_, rename, del) = marker_row_parts(row);
-            if del.contains(p) {
-                self.delete_marker(state, m);
-            } else if rename.contains(p) {
-                self.begin_marker_rename(m);
-            } else {
-                self.playhead = m.at.clamp(0.0, self.project.duration());
-                self.playing = false;
-                self.shuttle = 0.0;
-                self.chase_playhead = true;
-            }
-            return;
-        }
-        if let Some(rect) = l.add_marker {
-            if rect.contains(p) {
-                self.add_marker_here(state);
                 return;
             }
         }
@@ -6413,12 +6585,21 @@ impl VideoEditorApp {
             text_w(scene, tr, tf, &label, 10.5, c.accent[5], pillr.x0 + 7.0, top + 8.0, TextWeight::Medium);
         }
 
-        let Some(id) = self.selected() else {
+        let selected = self.selected().and_then(|id| self.project.clip(id).cloned());
+        let Some(clip) = selected else {
             text(scene, tr, tf, "No clip selected", 13.0, c.text_dim, x0, top + 60.0);
             text(scene, tr, tf, "Click a clip in the timeline", 11.5, c.text_dim, x0, top + 82.0);
+            // The markers still belong to the project, so they stay reachable
+            // with nothing selected. Everything else here edits a clip.
+            let l = self.inspector_layout(r);
+            let blank = Clip::default();
+            for (s, rect) in &l.sections {
+                self.draw_section_header(scene, tf, tr, theme, *rect, *s, &blank, None);
+            }
+            self.draw_marker_rows(scene, tf, tr, theme, &l, x0);
             return;
         };
-        let Some(clip) = self.project.clip(id).cloned() else { return };
+        let id = clip.id;
         let media = self.project.media(clip.media).cloned();
         let is_video = media.as_ref().map(|m| m.kind.is_visual()).unwrap_or(true);
         let track_name = self.project.track(clip.track).map(|t| t.name.clone()).unwrap_or_default();
@@ -6710,68 +6891,7 @@ impl VideoEditorApp {
             let Some(rect) = rect else { continue };
             draw_button(scene, tf, tr, theme, rect, label, on, rect.contains(self.last_mouse));
         }
-        // ---- markers --------------------------------------------------
-        for (m, row) in &l.marker_rows {
-            let (name_rect, rename, del) = marker_row_parts(*row);
-            let hovered = row.contains(self.last_mouse);
-            if hovered {
-                fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
-            }
-            let Some((_, mk, _)) =
-                self.project.all_markers().into_iter().find(|(_, k, _)| k.id == m.id)
-            else {
-                continue;
-            };
-            let col = clip_color(theme, mk.palette);
-            scene.fill(
-                Fill::NonZero, tf, col, None,
-                &Circle::new(Point::new(row.x0 + 7.0, row.center().y), 4.0),
-            );
-            let renaming = self.marker_rename.as_ref().map(|(r, _)| r.id) == Some(m.id);
-            if !renaming {
-                let name = if mk.name.trim().is_empty() { "Marker" } else { mk.name.as_str() };
-                let shown = elide_w(name, name_rect.width() as f32, tr);
-                let baseline = text_baseline(*row, 12.0, tr);
-                text(scene, tr, tf, &shown, 12.0, c.text_primary, name_rect.x0, baseline);
-                // A clip marker says which clip it travels with, because
-                // moving that clip moves the marker and nothing else would
-                // explain why the time changed.
-                let stamp = timecode(m.at, self.project.fps);
-                let (sw2, _) = tr.measure(&stamp, 11.0, None);
-                let stamp_col = if m.clip.is_some() { c.text_tertiary } else { c.text_dim };
-                text(scene, tr, tf, &stamp, 11.0, stamp_col, rename.x0 - 8.0 - sw2 as f64, baseline);
-            }
-            // Rename and delete only appear under the pointer, so a resting
-            // list reads as names and times rather than as a wall of icons.
-            if hovered {
-                for (rect, icon, tint) in [
-                    (rename, ui::icons::Icon::Pencil, c.text_primary),
-                    (del, ui::icons::Icon::X, c.semantic.danger),
-                ] {
-                    if rect.contains(self.last_mouse) {
-                        fill_rrect(scene, tf, with_alpha(tint, 0.18), rect, 4.0);
-                    }
-                    let g = 11.0;
-                    let box_ = Rect::new(
-                        rect.center().x - g / 2.0, rect.center().y - g / 2.0,
-                        rect.center().x + g / 2.0, rect.center().y + g / 2.0,
-                    );
-                    ui::icons::draw_icon(
-                        scene, tf, box_, icon, tint,
-                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-                    );
-                }
-            }
-        }
-        if let Some(rect) = l.add_marker {
-            if l.marker_rows.is_empty() {
-                text(scene, tr, tf, "Nothing marked yet", 11.5, c.text_dim, x0, rect.y0 - 16.0);
-            }
-            draw_button(
-                scene, tf, tr, theme, rect, "+ Marker at playhead (M)", false,
-                rect.contains(self.last_mouse),
-            );
-        }
+        self.draw_marker_rows(scene, tf, tr, theme, &l, x0);
         // ---- key controls ---------------------------------------------
         // Drawn last so a diamond sits over its row rather than under it.
         for (param, rect) in &l.keys {
@@ -10354,6 +10474,19 @@ mod tests {
             "2x halves the clip's length on the timeline",
         );
         assert_eq!(after.source_span(), before, "and leaves its source window alone");
+        // A rate that is not on a preset highlights none of them. A segmented
+        // control that always lit something would claim 1.37x was 1x.
+        app.edit_selected(&mut doc, |c| {
+            c.set_speed(1.37, false);
+        });
+        let clip = app.project.clip(id).unwrap().clone();
+        assert!(
+            !SPEED_PRESETS.iter().any(|p| (p - clip.speed.rate()).abs() < 1e-6),
+            "1.37x is deliberately off every preset",
+        );
+        app.edit_selected(&mut doc, |c| {
+            c.set_speed(2.0, false);
+        });
         // Reverse is a separate decision from the rate.
         let rect = reveal(&mut app, |l| l.reverse);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
@@ -10633,6 +10766,34 @@ mod tests {
         let p = VideoDoc::load_project(&doc);
         assert!(p.clip(id).unwrap().markers.is_empty(), "gone from the clip");
         assert_eq!(p.markers.len(), 1, "and the timeline marker is untouched");
+    }
+
+    /// A marker belongs to the project, so the list has to be reachable with
+    /// nothing selected — otherwise seeing or removing one meant first
+    /// picking a clip that had nothing to do with it.
+    #[test]
+    fn the_marker_list_is_reachable_with_no_clip_selected() {
+        let (mut app, mut doc) = app_and_doc();
+        app.selection.clear();
+        app.playhead = 7.0;
+        let r = app.regions();
+        let l = app.inspector_layout(&r);
+        assert!(!l.valid, "no clip is selected, so no clip controls are laid out");
+        assert!(l.num(NumField::ScaleX).is_none());
+        assert!(l.split.width() == 0.0, "and no clip actions");
+        let add = l.add_marker.expect("but the markers section is still offered");
+        assert!(r.inspector.contains(add.center()));
+        // The button works from this state, not just the keyboard.
+        click(&mut app, &mut doc, add.center().x, add.center().y);
+        assert_eq!(VideoDoc::load_project(&doc).markers.len(), 1, "a marker was added");
+        app.marker_rename = None;
+        app.sync(&mut doc, &automerge::ROOT);
+        // And the row it produced can be deleted from the same state.
+        let l = app.inspector_layout(&app.regions());
+        let row = l.marker_rows.first().expect("the marker is listed").1;
+        let (_, _, del) = marker_row_parts(row);
+        click(&mut app, &mut doc, del.center().x, del.center().y);
+        assert!(VideoDoc::load_project(&doc).markers.is_empty(), "and removed");
     }
 
     /// A folded section may hide controls; it must never hide state.
