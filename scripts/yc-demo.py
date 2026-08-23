@@ -19,7 +19,7 @@ The storyboard, in order, about a minute:
   5. "word processor" — a machine that does not have it, fetching it
   6. cut to xaver: the window quinten opened is open for him too
   7. quinten writes, and xaver's screen is asked what it holds
-  8. an image into the document, through the OS file chooser
+  8. a photograph dragged out of Files and into the document
   9. the agent acts by address, and the other two read the result back
 
 Every claim is read back from a session that did **not** make the change.
@@ -168,10 +168,13 @@ WORD_PROCESSOR = "dev.qos.word-processor"
 # that would make the path stop mattering.
 HOMES_ROOT = "/var/tmp/qos/home"
 
-# The photograph beat 8 inserts, by the name it wears on screen
-# and in the chooser. Named once because three places have to
-# agree about it: the staging that writes it, the assertion that
-# it is there, and the chooser row that is clicked.
+# The photograph beat 8 drags into the document, by the name it wears on
+# screen. Named once because four places have to agree about it: the
+# staging that writes it, the assertion that it is there, the row the
+# press has to land on, and the chip the compositor paints at the cursor
+# while it crosses — that last one reads the name out of the `text/uri-list`
+# the source app is offering, so what is on camera is the file's real name
+# rather than anything this script told it to say.
 PHOTO_NAME = "harbour.png"
 
 MACHINE_APPS = os.path.expanduser("~/.local/share/qos-apps")
@@ -191,6 +194,18 @@ AGENT_SCOPE = f"app:{WORD_PROCESSOR}"
 # What quinten types into the document, and what xaver's session is then
 # asked whether it holds.
 TYPED_TEXT = "the same document on both machines"
+
+# Characters a US layout only produces with shift held, and the key that
+# carries each one. `Session.type_prose` presses a real Shift across
+# these; without it a client resolves the bare keycode and puts the
+# character *below* the one that was asked for on screen.
+SHIFTED_KEYS = {c: c.lower() for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
+SHIFTED_KEYS.update({
+    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6",
+    "&": "7", "*": "8", "(": "9", ")": "0", "_": "-", "+": "=",
+    "{": "[", "}": "]", "|": "\\", ":": ";", '"': "'",
+    "<": ",", ">": ".", "?": "/", "~": "`",
+})
 
 # Beat 9. The agent reads its instruction out of the document itself —
 # a paragraph addressed to it by name (`apps/agent/src/plan.rs`) — and
@@ -366,7 +381,23 @@ class Session:
             QOS_FS_ACL_PATH=os.path.join(self.dir, "config", "fs-capabilities.json"),
             QOS_TEST_CONTROL=self.sock,
             NIRIOS_HEADLESS_SIZE=self.size,
-            RUST_LOG=env.get("RUST_LOG", "info"),
+            # `info`, plus the two targets that narrate a cross-client
+            # drag. Beat 8 aims a press at a file row inside a client,
+            # and a client's widgets are not in the compositor's
+            # registry — so the only way to know *which row was grabbed*
+            # is to have the app say so. It does:
+            #
+            #   file_explorer::drag  "drag armed"  path=… at=Point{…}
+            #   file_explorer::drag  "drag begins" path=…
+            #   shell::selection     "client started a drag"
+            #
+            # Both are `debug!`, so at plain `info` the beat would be
+            # aiming blind and could only report on the outcome. An
+            # explicit RUST_LOG in the environment still wins, because
+            # somebody debugging this wants their own filter.
+            RUST_LOG=env.get(
+                "RUST_LOG",
+                "info,shell::selection=debug,file_explorer::drag=debug"),
             # A home of this session's own, staged with the demo's files.
             HOME=self.home,
             # The two stores an app launch cannot do without. The install
@@ -619,6 +650,21 @@ class Session:
         self.input_ops += 1
         ok(call(self.sock, {"op": "pointer_move", "x": x, "y": y}))
 
+    def pointer_button(self, pressed: bool) -> None:
+        """Press or release the left button where the pointer already is.
+
+        `click_at` and `drag` both bundle press and release together,
+        which cannot express a drag-and-drop across two clients: the
+        source has to still be *holding* the button when it calls
+        `start_drag`, the compositor promotes the gesture some frames
+        later, and the drop only happens on a release that arrives after
+        the pointer has crossed into another window. Bundled ops give
+        the source process no wall-clock in which to do any of that.
+        These two decompose it (`test_control.rs:198`).
+        """
+        self.input_ops += 1
+        ok(call(self.sock, {"op": "pointer_button", "pressed": pressed}))
+
     def place_next_window(self, app_id: str) -> dict:
         """Note that the next window announcing `app_id` opens in its own
         group. Two clients are only on screen at once when they are in
@@ -720,6 +766,61 @@ class Session:
         # the socket's line cap while still arriving as ordinary keys.
         for i in range(0, len(text), 200):
             ok(call(self.sock, {"op": "type", "text": text[i:i + 200]}))
+
+    def key_down(self, name: str) -> None:
+        """Press and hold a key. Pairs with [`key_up`]."""
+        self.input_ops += 1
+        ok(call(self.sock, {"op": "key_down", "key": name}))
+
+    def key_up(self, name: str) -> None:
+        self.input_ops += 1
+        ok(call(self.sock, {"op": "key_up", "key": name}))
+
+    def type_prose(self, text: str) -> None:
+        """Type `text` into a *client* so that it arrives as written.
+
+        `type` alone does not. It emits one keycode per character, and a
+        client resolves a keycode through the seat's xkb state — which
+        has no shift held — so every capital arrives lowercase and every
+        shifted symbol arrives as the character below it. Compositor
+        chrome is unaffected: it takes the character directly, which is
+        why the same call produces `Launch Plan: ok!` in the palette and
+        `launch plan; ok1` in an app, and why this was believed for a
+        while to be a limitation of the `type` op rather than of the
+        path it was being used on.
+
+        The remedy is a real held modifier: `key_down("Shift")` drives
+        the seat the way hardware does, and the client's own xkb state
+        then resolves the keycode to the shifted symbol. Measured in the
+        word processor, not assumed.
+
+        Newlines are `Enter`, which does break a paragraph — the word
+        processor starts a new one and even turns a leading `- ` into a
+        real bullet. A draft typed this way arrives as a document rather
+        than as one lowercase run-on line.
+
+        Runs of unshifted characters still go through one `type` call, so
+        this costs a round trip per capital and not per character.
+        """
+        pending: list[str] = []
+
+        def flush() -> None:
+            if pending:
+                self.type_text("".join(pending))
+                pending.clear()
+
+        for ch in text:
+            if ch == "\n":
+                flush()
+                self.key("Enter")
+            elif ch in SHIFTED_KEYS:
+                flush()
+                self.key_down("Shift")
+                self.key(SHIFTED_KEYS[ch])
+                self.key_up("Shift")
+            else:
+                pending.append(ch)
+        flush()
 
     def modifiers(self, ctrl=False, shift=False, alt=False, logo=False) -> None:
         self.input_ops += 1
@@ -1420,6 +1521,125 @@ def peer_id_of(s: Session) -> str:
     return "<unknown>"
 
 
+class LogTail:
+    """A session's own log, read as it is written.
+
+    Everything a cross-client drag does is narrated here by the two
+    processes doing it, and nowhere else a harness can reach: the file
+    manager's rows are not in the compositor's widget registry, the
+    compositor's drag label is not in `state_dump`, and the word
+    processor's document is not on screen in any form a script can read.
+    So this is not a shortcut around an API — it is the API, and every
+    line below is one of the two processes reporting on itself.
+
+    The app's stderr reaches this file because the launcher pipes a
+    sandboxed app's output into the session's, which is also how
+    `[app] broadcast doc delta` has always been readable.
+    """
+
+    #: The file manager, on a press that landed on a row. Names the path
+    #: and the press position *in the client's own coordinates*, which
+    #: together are enough to convert a miss into a correction rather
+    #: than a re-guess.
+    #: `at` is a `kurbo::Point`, whose `Debug` is `(x, y)` — *not*
+    #: `Point { x: …, y: … }`, which is what this matched first and
+    #: would never have found.
+    ARMED = re.compile(
+        r'drag armed\s+path="([^"]+)"\s+at=\((-?[\d.]+),\s*(-?[\d.]+)\)')
+    #: The same press, once the pointer has travelled far enough.
+    BEGAN = re.compile(r'drag begins\s+path="([^"]+)"')
+    #: The app handing the gesture to the compositor — the moment it
+    #: stops being an in-app drag and becomes a desktop-wide one.
+    CARRIED = "carrying the drag out of this app as a client drag"
+    #: The compositor, having accepted it.
+    PROMOTED = "client started a drag"
+    #: The compositor, on the drop.
+    FINISHED = "drag finished"
+    #: A `ui` app reporting the size of a change to its own document.
+    DELTA = re.compile(r"broadcast doc delta (\d+)B")
+
+    #: `tracing_subscriber::fmt::init()` colours its output whether or
+    #: not the sink is a terminal, and the session's log is a file. So a
+    #: field arrives as `path\x1b[0m\x1b[2m=\x1b[0m"…"` rather than
+    #: `path="…"`, and a pattern written against what the line *reads*
+    #: as matches nothing at all. Cost a whole run to find; stripped
+    #: here, once, so no pattern below has to know about it.
+    ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.at = 0
+        self.text = ""
+
+    def read(self) -> str:
+        """Everything appended since the last read, decoloured."""
+        try:
+            with open(self.path, "rb") as fh:
+                fh.seek(self.at)
+                chunk = fh.read()
+                self.at = fh.tell()
+        except OSError:
+            return ""
+        fresh = self.ANSI.sub("", chunk.decode(errors="replace"))
+        self.text += fresh
+        return fresh
+
+    def catch_up(self) -> None:
+        """Skip whatever is already there without remembering it, so
+        setup is never mistaken for the gesture."""
+        self.read()
+        self.text = ""
+
+    def armed(self, fresh: str) -> tuple[str, float, float] | None:
+        """The path and client-space point of the last press that landed
+        on a row, or None if none did."""
+        hits = self.ARMED.findall(fresh)
+        if not hits:
+            return None
+        path, x, y = hits[-1]
+        return path, float(x), float(y)
+
+    def biggest_delta(self, fresh: str) -> int:
+        return max((int(m) for m in self.DELTA.findall(fresh)), default=0)
+
+    def await_line(self, needle: str, timeout: float) -> bool:
+        """Wait for `needle` to appear, reading as it goes."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if needle in self.read() or needle in self.text:
+                return True
+            time.sleep(0.1)
+        return False
+
+
+def painted_tiles(s: Session) -> dict[int, dict]:
+    """Every client window this session is painting, by surface id.
+
+    Off `foreign_frames`, which reports the rect the widget tree laid
+    each tab into — the placement the compositor is actually painting.
+    That matters more than it sounds: the same tile is registered in the
+    widget registry under *two* names (`foreign-surface-<id>` and
+    `foreign-surface-<id>[<tab>]`), so an exact-name lookup can come back
+    empty while the window is plainly on screen. This has no names in it
+    to get wrong.
+    """
+    out: dict[int, dict] = {}
+    for f in s.foreign_frames():
+        r = f.get("rect") or {}
+        if not (r.get("w") and r.get("h")):
+            continue
+        sid = f.get("surface_id")
+        if sid is None:
+            continue
+        out[int(sid)] = {
+            "app_id": f.get("app_id"),
+            "rect": (r["x"], r["y"], r["w"], r["h"]),
+            "frame_seq": f.get("frame_seq"),
+            "presented": f.get("presented"),
+        }
+    return out
+
+
 def windows_off_screen(s: Session, viewport: tuple[int, int]) -> list[str]:
     """Which client windows are not wholly on screen, and by how much.
 
@@ -1917,6 +2137,75 @@ def _carries(blob: bytes, needle: str) -> bool:
         return False
     return done.returncode == 0
 
+
+def carries_bytes(blob: bytes, needle: bytes) -> bool:
+    """Whether an Automerge save contains `needle` verbatim.
+
+    The counterpart to [`_carries`] for something that is not text. The
+    word processor stores an image as `ScalarValue::Bytes` under its
+    BLAKE3 hash (`qdoc/src/model.rs:2005`), so the PNG's own bytes are
+    in the document — which is what makes this answerable without an
+    Automerge binding.
+
+    Columns over a size threshold are DEFLATE'd, so a plain `in` is not
+    enough: every plausible zlib header is inflated and searched too.
+    Bounded at the first megabyte, because the scan is quadratic in the
+    worst case and a document this big is already the answer.
+    """
+    if needle in blob:
+        return True
+    for start in range(min(len(blob), 1 << 20)):
+        if blob[start] != 0x78 or start + 1 >= len(blob):
+            continue
+        if blob[start + 1] not in (0x01, 0x5E, 0x9C, 0xDA):
+            continue
+        try:
+            if needle in zlib.decompressobj().decompress(blob[start:], 1 << 25):
+                return True
+        except zlib.error:
+            continue
+    return False
+
+
+def image_is_in_the_document(session: Session, room: str, png: bytes,
+                             timeout: float = 20.0) -> tuple[bool, int]:
+    """Ask the running word processor for its document, and look for the
+    image in it.
+
+    A late joiner on this session's broker announces the app's address
+    and sends the one frame every toolkit answers with its whole
+    document. What comes back was produced by the app out of the
+    document it holds — so this is the difference between "an image
+    appeared on screen" and "the image is in the document", which is the
+    claim that matters, because it is the one that replicates.
+
+    The needle is the PNG's signature plus its IHDR: enough to be *this*
+    file rather than any file, short enough to survive being stored
+    across an Automerge column boundary.
+
+    Deliberately run after the camera has stopped: attaching announces a
+    presence, and a phantom collaborator arriving mid-take would be a
+    thing on screen that the demo did not do.
+    """
+    try:
+        reader = DocumentReader(session.collab_json_sock, room, record=None)
+    except OSError:
+        return False, 0
+    try:
+        deadline = time.time() + timeout
+        newest = 0
+        needle = png[:24]
+        while time.time() < deadline:
+            for blob in reader.documents() + reader.deltas():
+                newest = max(newest, len(blob))
+                if carries_bytes(blob, needle):
+                    return True, len(blob)
+            time.sleep(0.5)
+        return False, newest
+    finally:
+        reader.close()
+
+
 def registry_entries(path: str) -> dict[str, str]:
     """Split a `registry.toml` into one verbatim text block per app.
 
@@ -1956,25 +2245,101 @@ def installed_ids(apps_dir: str) -> list[str]:
     return sorted(registry_entries(os.path.join(apps_dir, "registry.toml")))
 
 
-def a_real_png(width: int = 320, height: int = 200) -> bytes:
-    """A picture with something in it.
+def a_real_png(width: int = 512, height: int = 320) -> bytes:
+    """A photograph — a sun over ridged hills, drawn pixel by pixel.
 
-    Written out rather than embedded so the image on screen is worth
-    looking at: a 1x1 pixel proves the plumbing and shows the camera
-    nothing.
+    It has to read as a photograph at two sizes at once: as a 16px
+    thumbnail in a file row, where only the sky/land split and the sun
+    survive, and as a picture in the document, where a flat gradient
+    would be obviously synthetic. So there is a horizon, a light source,
+    receding ridges that get paler with distance, and a little grain.
+
+    Generated rather than embedded because a checked-in JPEG is a binary
+    blob nobody can review, and because the demo wants a payload whose
+    size it chose: the whole point of beat 8 is that ~98 KB of image
+    crosses into the document where a keystroke moves ~100 bytes, and
+    that number should come from this function rather than from whatever
+    file somebody happened to drop in the tree.
     """
+    import math
     import struct
     import zlib
+
+    horizon = int(height * 0.56)
+    sun_x, sun_y = int(width * 0.72), int(horizon * 0.42)
+    sun_r = max(6.0, height * 0.055)
+
+    # Each ridge: how far below the horizon its crest sits, its
+    # amplitude, its wavelength, a phase, and how dark it is. Front
+    # ridges are darker and rougher — that is what makes them read as
+    # nearer rather than merely lower.
+    # The `base` of each has to clear its own amplitude, or the crest
+    # rises above the horizon, gets clipped by the sky, and paints as a
+    # dead flat plate with a notch in it — which is precisely what the
+    # first version of this drew.
+    ridges = [
+        (0.045, 0.055, 1.7, 0.4, (96, 122, 132)),
+        (0.130, 0.075, 1.1, 2.1, (66, 94, 100)),
+        (0.270, 0.095, 0.8, 4.3, (42, 68, 70)),
+        (0.470, 0.130, 0.6, 1.2, (24, 44, 44)),
+    ]
+
+    def clamp(v: float) -> int:
+        return 0 if v < 0 else (255 if v > 255 else int(v))
+
+    # Deterministic grain. `random` would make the file — and so the
+    # document delta — differ between runs, and the demo prints that
+    # number.
+    def grain(x: int, y: int) -> float:
+        h = (x * 374761393 + y * 668265263) & 0xFFFFFFFF
+        h = (h ^ (h >> 13)) * 1274126177 & 0xFFFFFFFF
+        return ((h >> 16) & 0xFF) / 255.0 - 0.5
 
     rows = bytearray()
     for y in range(height):
         rows.append(0)  # filter: none
         for x in range(width):
-            rows += bytes((
-                40 + (x * 160) // width,
-                70 + (y * 150) // height,
-                150 + ((x + y) * 90) // (width + height),
-            ))
+            if y < horizon:
+                # Sky: deep above, warm and pale toward the horizon.
+                t = y / max(1, horizon)
+                r, g, b = (58 + 150 * t, 108 + 122 * t, 165 + 70 * t)
+                # The sun, and the haze around it.
+                d = math.hypot(x - sun_x, y - sun_y)
+                if d < sun_r:
+                    r, g, b = 255, 250, 214
+                elif d < sun_r * 7.0:
+                    k = (1.0 - (d - sun_r) / (sun_r * 6.0)) ** 2.4
+                    r, g, b = (r + (255 - r) * k, g + (250 - g) * k,
+                               b + (214 - b) * k)
+            else:
+                # Land, painted back to front so a nearer ridge covers
+                # the one behind it. What shows through above the
+                # furthest crest is haze, not ground — filling this with
+                # the ground colour put a dark band along the horizon,
+                # and filling it with one flat haze colour put a flat
+                # one there instead. So it fades out of the sky.
+                t = min(1.0, (y - horizon) / max(1.0, height * 0.10))
+                r, g, b = (208 - 76 * t, 230 - 78 * t, 235 - 77 * t)
+                for base, amp, freq, phase, colour in ridges:
+                    crest = (horizon + height * base
+                             + math.sin(x / width * math.pi * 2 * freq + phase)
+                             * height * amp * 0.5
+                             + math.sin(x / width * math.pi * 9 * freq + phase * 3)
+                             * height * amp * 0.12)
+                    if y >= crest:
+                        # A little vertical shading inside each band, so
+                        # it is not a flat cut-out.
+                        k = min(1.0, (y - crest) / (height * 0.30))
+                        r, g, b = (colour[0] * (1 - 0.35 * k),
+                                   colour[1] * (1 - 0.35 * k),
+                                   colour[2] * (1 - 0.35 * k))
+            # Enough grain to break up the banding a pure gradient shows
+            # on a large flat sky, and no more: grain is nearly
+            # incompressible, and this file's size *is* the payload the
+            # demo measures crossing into the document. At 7.0 the same
+            # picture was 294 KB.
+            n = grain(x, y) * 2.5
+            rows += bytes((clamp(r + n), clamp(g + n), clamp(b + n)))
 
     def chunk(tag: bytes, payload: bytes) -> bytes:
         return (struct.pack(">I", len(payload)) + tag + payload
@@ -2011,11 +2376,22 @@ def stage_home(path: str) -> str:
     """
     for folder in ("Documents", "Downloads", "Pictures", "Projects"):
         os.makedirs(os.path.join(path, folder), exist_ok=True)
-    # The photograph beat 8 drags into the document. In Pictures,
-    # because that is where the file chooser opens and where a person
-    # would look for it.
-    with open(os.path.join(path, "Pictures", PHOTO_NAME), "wb") as fh:
-        fh.write(a_real_png())
+    # The photograph beat 8 drags into the document, written twice.
+    #
+    # In `Pictures`, because that is where it belongs and where a person
+    # would look for it — and at the top of the home, because that is
+    # the directory Files is *showing* when the beat starts, and a drag
+    # can only pick up a row that is on screen. Navigating there first
+    # would be two more client-aimed clicks before the gesture the beat
+    # is actually about, each of which can miss.
+    #
+    # Both are the same bytes, so whichever is dragged produces the same
+    # payload and the same document delta.
+    photo = a_real_png()
+    for where in (os.path.join(path, "Pictures", PHOTO_NAME),
+                  os.path.join(path, PHOTO_NAME)):
+        with open(where, "wb") as fh:
+            fh.write(photo)
     with open(os.path.join(path, "Documents", "Launch plan.md"), "w") as fh:
         fh.write("# Launch plan\n\n- Venue - The Hall\n- Date - 3 Sep\n")
     with open(os.path.join(path, "Documents", "Checklist.md"), "w") as fh:
@@ -2113,11 +2489,19 @@ def type_into_the_document(s: Session, wp: dict | None, text: str) -> bool:
     # and an image in it, and a caret dropped into the middle of that
     # writes the list into the middle of it — or replaces a selected
     # image with the first character typed.
-    s.modifiers(ctrl=True)
+    #
+    # A *held* Control, not the `modifiers` mask. That mask is the
+    # compositor's own, read by chrome; a client resolves keycodes
+    # through the seat's xkb state, which the mask never touches. So the
+    # `modifiers(ctrl=True)` this used to do sent a bare `End` — end of
+    # the *line*, not of the document — and did it silently, which is
+    # exactly the kind of thing that only shows up as a list typed into
+    # the middle of a paragraph.
+    s.key_down("Control")
     s.key("End")
-    s.modifiers()
+    s.key_up("Control")
     s.settle(0.5)
-    s.type_text(text)
+    s.type_prose(text)
     s.settle(1.0)
     return True
 
@@ -2156,8 +2540,26 @@ def run_the_agent(agent: Session, room: str, shots: str,
         return None
     log_path = os.path.join(shots, "agent.log")
     with open(log_path, "w") as log:
+        # `--app` is named rather than left to its default, because the
+        # default is the whole reason this beat once filmed a file
+        # manager: with no address to narrow on, the broker's fan-out is
+        # room-wide, the agent is offered every document open in the room
+        # and takes whichever arrives first — and in one run that was the
+        # file explorer's, whose actor id (`files-2`) then refused to
+        # merge with the word processor's when that finally turned up.
+        #
+        # `--record` is the other half of that address and is deliberately
+        # *not* passed: it names the file a document was opened from, and
+        # this document has no file. It is the untitled document the app
+        # created when beat 5 launched it, so its record is empty, and
+        # `--record ""` would be a different address from "no record"
+        # rather than the same one. Staging a file to open instead would
+        # give this something to name — it needs a way to launch a
+        # packaged app *on* a path, which the applications action does
+        # not expose today.
         proc = subprocess.Popen(
             [binary, "--workspace", str(room), "--name", "Claude",
+             "--app", WORD_PROCESSOR,
              "--socket", agent.collab_json_sock, "--no-model", "--once",
              "--pace-ms", "250"],
             stdout=log, stderr=subprocess.STDOUT, cwd=REPO,
@@ -2192,7 +2594,7 @@ SESSIONS: list[Session] = []
 VIEWPORT: tuple[int, int] = (0, 0)
 
 
-def beat_one(quinten: Session, shots: str) -> dict:
+def beat_one(quinten: Session, shots: str) -> tuple[dict, dict | None]:
     banner("1.  an empty desktop, and Files opened on it")
     # The host's screen. A first boot really is empty here — one
     # workspace, no strips, no windows — so "empty" is read off the tree
@@ -2224,7 +2626,11 @@ def beat_one(quinten: Session, shots: str) -> dict:
     tabs = quinten.tabs_here()
     claim("and it is the only window on his desktop", len(tabs), 1)
     quinten.snapshot(os.path.join(shots, "02-files.png"))
-    return host_ws
+    # The surface travels with it: beat 8 drags a file *out of this
+    # window*, and by then a second client is on screen announcing the
+    # same wayland app-id. The surface the launch saw paint is the only
+    # thing that tells the two apart.
+    return host_ws, painted
 
 
 def beat_two(quinten: Session, xaver: Session, host_ws: dict,
@@ -2381,9 +2787,34 @@ def beat_four(quinten: Session, xaver: Session, agent: Session,
     note(f"opened from {via}")
     claim("the collaborators panel is up on quinten's screen",
           quinten.overlays()["collaborators"], True)
-    rows = [r for r in ((quinten.peers() or {}).get("roster") or [])]
-    if rows:
-        note(f"roster: {json.dumps(rows)[:240]}")
+    # Who is in this room, read off the room's own capability list —
+    # which *is* the membership (`state.rs:877`: "Room membership lives
+    # here"), and is the same list the panel on screen is drawn from.
+    #
+    # Read here rather than from `peers`, which carries pointers and
+    # nothing else: a `peers()["roster"]` lookup returned an empty list
+    # on every run this demo has ever made, and printed nothing, so the
+    # roster was never actually being checked.
+    #
+    # This is also the honest place to look for the agent. Claude is a
+    # participant in this room and has no mouse — a pointer that has
+    # never moved publishes nothing, by design — so asserting a cursor
+    # for it would be asserting something that should not exist. What
+    # makes it a participant is that it holds a capability in the room,
+    # and that is what is checked.
+    members: dict[str, list[str]] = {}
+    for cap in (quinten.active_workspace().get("capabilities") or []):
+        subject = json.dumps(cap.get("subject"))
+        for name in (quinten.user, xaver.user, agent.user):
+            if f'"{name}"' in subject or f":{name}" in subject:
+                members.setdefault(name, []).append(str(cap.get("verb")))
+    note(f"the room's own capability list names {sorted(members)}")
+    claim("the agent is in the room the same way the people are — by "
+          "holding a capability in it", agent.user in members, True)
+    if agent.user in members:
+        note(f"{agent.user} holds {sorted(set(members[agent.user]))} here, "
+             f"and no cursor: an agent is a participant whose actions are "
+             f"visible, not a mouse on somebody's screen")
     if RECORDER:
         RECORDER.dwell()
         RECORDER.dwell()
@@ -2423,12 +2854,25 @@ def beat_four(quinten: Session, xaver: Session, agent: Session,
         screen, correctly drawn and correctly named. Reading both is the
         honest question — "does this session hold a pointer for that
         person" — rather than a question about where it is filed.
+
+        A row is matched on either field, because the two carry
+        different facts and only one of them is a person's name. The
+        *identity* is `peer@<handle>`, derived from the handle the
+        frames arrive under (`peer_presence.rs:420`); the *name* is what
+        the room calls that identity, written into the room document
+        under the inviter's authority. A peer that could announce its own
+        name could announce anybody's, so identity stopped being the
+        sending session's word for who is at it — and a predicate
+        written against `user == "quinten"` stopped matching anything at
+        exactly that moment, which read here as presence failing while
+        it was working.
         """
         peers = watcher.peers() or {}
         rows = []
         for key in ("pointers", "remote_cursors"):
             rows.extend(peers.get(key) or [])
-        return [r for r in rows if r.get("user") == who] or None
+        return [r for r in rows
+                if who in (r.get("name"), r.get("user"))] or None
 
     def at_the_origin(row: dict) -> bool:
         """A pointer painted where nobody is.
@@ -2454,8 +2898,17 @@ def beat_four(quinten: Session, xaver: Session, agent: Session,
         # the name is what the *room* calls that identity, and the pill
         # over the cursor draws the name. A cursor reading `peer-1` is a
         # cursor nobody can attribute to a person.
-        claim("and labels it with quinten's own id, not a synthetic one",
-              row.get("user"), quinten.user)
+        #
+        # Asserted on the *name*, and deliberately not on the id. The id
+        # is `peer@<handle>` and is supposed to be: the sending session
+        # does not get to say who is at it, or a peer could sit in a room
+        # under somebody else's name. So "the label is trustworthy" is a
+        # claim about where the name came from — the room document, which
+        # only the room's authority can write — and this checks that the
+        # id is a handle rather than a person's word for themselves.
+        claim("the identity is the session's handle, not a name it chose "
+              "for itself",
+              str(row.get("user", "")).startswith("peer@"), True)
         claim("and the pill over it reads his name, resolved from the room",
               row.get("name"), quinten.user)
         claim(f"and puts it where he actually is, not at the origin",
@@ -2737,8 +3190,11 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     # pointer of the peer who is typing, attributed to his user id, off
     # the same context the overlay paints from.
     def quinten_present():
+        # Either field: the identity is `peer@<handle>` and the name is
+        # what the room calls it. See `seen_by` in beat 4.
         rows = (xaver.peers() or {}).get("pointers") or []
-        return [r for r in rows if r.get("user") == quinten.user] or None
+        return [r for r in rows
+                if quinten.user in (r.get("name"), r.get("user"))] or None
 
     seen = wait_for(quinten_present, timeout=SYNC_TIMEOUT_S)
     if seen:
@@ -2799,99 +3255,317 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     xaver.snapshot(os.path.join(shots, "08-xaver-received.png"))
 
 
-def beat_eight(quinten: Session, shots: str) -> None:
-    banner("8.  an image into the document, through the OS file chooser")
+#: Where the file view puts its rows, straight off the app's own
+#: constants (`views/file_view.rs:63`): a 30px column header, then rows
+#: of 34px. Used only to convert a press that landed on the *wrong* row
+#: into an aimed one — never to guess where a row is in the first place.
+LIST_ROW_H = 34.0
+LIST_HEADER_H = 30.0
+
+
+def expected_listing(home: str) -> list[str]:
+    """The order Files draws this directory in: folders first, then
+    files, each case-insensitively by name.
+
+    Only used to work out how many rows separate the row a press landed
+    on from the one that was wanted. Being wrong about it costs a
+    correction, not the beat — every press is checked against what the
+    app says it hit.
+    """
+    try:
+        names = [n for n in os.listdir(home) if not n.startswith(".")]
+    except OSError:
+        return []
+    dirs = sorted((n for n in names if os.path.isdir(os.path.join(home, n))),
+                  key=str.lower)
+    files = sorted((n for n in names if not os.path.isdir(os.path.join(home, n))),
+                   key=str.lower)
+    return dirs + files
+
+
+def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
+                        photo_name: str, listing: list[str]) -> tuple | None:
+    """Press on the photograph's row and *keep the button down*.
+
+    The whole difficulty of this beat is in this function. A file row
+    belongs to a client, and a client's widgets are not in the
+    compositor's registry, so there is no name to click and no rect to
+    read — the press has to be aimed at a pixel. Aiming at a remembered
+    pixel is what went wrong repeatedly, so nothing here is remembered:
+
+    - the tile's rect comes from `foreign_frames`, which is the
+      placement the compositor is painting right now;
+    - every press is checked against the app's own account of what it
+      hit (`drag armed path=… at=…`), so a miss is *known* to be a miss
+      rather than assumed to be a hit;
+    - a press that lands on the wrong row is corrected using the
+      client-space y the app just reported, not using arithmetic about
+      where the tile's chrome ends. One press measures the mapping
+      between screen and client coordinates; the second uses it.
+
+    Returns the (x, y) the button is held at, or None with the button
+    up and nothing selected.
+    """
+    tx, ty, tw, th = tile
+    # The name column: right of the sidebar, left of the size column.
+    x = tx + tw * 0.45
+    want = photo_name.lower()
+    try:
+        target_index = [n.lower() for n in listing].index(want)
+    except ValueError:
+        target_index = None
+
+    def press(at_y: float) -> tuple[str, float] | None:
+        """Press at `at_y`; report what the app says it grabbed."""
+        quinten.pointer_move(x, at_y)
+        quinten.settle(0.15)
+        log.read()
+        quinten.pointer_button(True)
+        # The press has to cross a process boundary, be dispatched by
+        # the app's event loop and be written to a log this then reads.
+        # 0.5s is the difference between "the app did not report it" and
+        # "the app had not reported it yet".
+        quinten.settle(0.5)
+        hit = log.armed(log.read())
+        return (hit[0], hit[2]) if hit else None
+
+    # Where to try first. Rows start below the app's toolbar and the
+    # column header, and how much chrome sits above them depends on what
+    # the app stacked there — so this sweeps a band rather than trusting
+    # a single offset. Coarse, because it only has to land on *any* row;
+    # the correction below does the aiming.
+    for frac in (0.16, 0.22, 0.10, 0.28, 0.34):
+        y = ty + th * frac
+        hit = press(y)
+        if hit is None:
+            # Nothing under it — empty space below the last row, or the
+            # toolbar. Let go before trying elsewhere, or the next press
+            # arrives with a button already down.
+            quinten.pointer_button(False)
+            quinten.settle(0.2)
+            continue
+        path, client_y = hit
+        if os.path.basename(path).lower() == want:
+            note(f"pressed on {os.path.basename(path)} at y={y:.0f}")
+            return (x, y)
+        # A row, but not the one. The app reported the press's position
+        # in its own coordinates, so the offset between the two spaces
+        # is now measured rather than assumed, and one jump of N rows
+        # lands on the wanted one.
+        if target_index is None:
+            quinten.pointer_button(False)
+            quinten.settle(0.2)
+            break
+        try:
+            hit_index = [n.lower() for n in listing].index(
+                os.path.basename(path).lower())
+        except ValueError:
+            quinten.pointer_button(False)
+            quinten.settle(0.2)
+            continue
+        offset = y - client_y          # screen y  =  client y + offset
+        aimed = (client_y + (target_index - hit_index) * LIST_ROW_H + offset)
+        note(f"the press landed on {os.path.basename(path)} "
+             f"(row {hit_index}); {photo_name} is row {target_index}, "
+             f"{abs(target_index - hit_index)} rows "
+             f"{'down' if target_index > hit_index else 'up'} at "
+             f"y={aimed:.0f}")
+        quinten.pointer_button(False)
+        quinten.settle(0.3)
+        again = press(aimed)
+        if again and os.path.basename(again[0]).lower() == want:
+            note(f"pressed on {os.path.basename(again[0])} at y={aimed:.0f}")
+            return (x, aimed)
+        quinten.pointer_button(False)
+        quinten.settle(0.2)
+        break
+    return None
+
+
+def beat_eight(quinten: Session, files: dict | None, wp: dict | None,
+               shots: str) -> None:
+    banner("8.  a photograph dragged out of Files and into the document")
     cut("quinten")
 
-    # Which of the two routes this films, decided on the code rather
-    # than on preference. The built drag is promoted from the
-    # compositor's *own* file-manager chrome; the Files on screen here is
-    # the launched `dev.qos.file-explorer`, a sandboxed Wayland client,
-    # and neither it nor the toolkit ever opens a `wl_data_source`
-    # (`grep -rn 'start_drag\|wl_data_source' apps/file-explorer/src
-    # ui/src` finds only in-process tab dragging). There is no client
-    # drag for the compositor to promote, so there is nothing to film.
-    #
-    # The chooser is the better beat anyway, and not as a consolation:
-    # the drag would show a file moving, and this shows the sandbox —
-    # the app asks, the OS chooses, and what the app is handed is bytes
-    # rather than a path it has no right to read.
-    note("filming the OS file chooser, not a drag: the launched Files is a "
-         "sandboxed client and opens no wl_data_source, so no client drag "
-         "exists for the compositor to promote")
-    note("the app cannot read the folder; the OS hands it the bytes")
-    photo = os.path.join(quinten.home, "Pictures", PHOTO_NAME)
-    claim("there is an image to insert", os.path.exists(photo), True)
+    # What makes this beat worth filming is not that a picture appears in
+    # a document. It is *how* it gets there: Files and the word processor
+    # are two sandboxed clients with two different mount namespaces, so
+    # the path Files is holding means nothing in the other app's world.
+    # The drag carries the file's **bytes**, not its name — Files reads
+    # its own file at the start of the gesture, because it has the
+    # authority to read what it is showing, the compositor brokers a
+    # pipe, and the receiving toolkit spools what comes down it into its
+    # own directory. Neither app is ever given a path into the other's.
+    note("two sandboxed clients, two mount namespaces: the drag carries "
+         "the file's bytes, not a path either app could resolve")
 
-    step("the word processor asks the OS for a file")
-    before = set(quinten.target_names())
-    # The toolbar belongs to the client, and a client's insides are not in
-    # the compositor's widget registry, so this is the one gesture in the
-    # demo aimed at a coordinate rather than at a name.
-    tile = next((n for n in before if n.startswith("foreign-surface-")), None)
-    if tile is None:
-        gap("no client tile is laid out, so the toolbar cannot be reached")
+    photo = os.path.join(quinten.home, PHOTO_NAME)
+    claim("there is a photograph in his home to drag",
+          os.path.exists(photo), True)
+    if not os.path.exists(photo):
         return
-    rect = quinten.named_rect(tile)
-    if not rect:
-        gap(f"{tile} has no laid-out rect")
+    payload = open(photo, "rb").read()
+
+    # Both windows whole, before anything is aimed at either of them. A
+    # drag that starts or ends off the edge of the screen is not a drag
+    # anybody can see.
+    frame_both_windows(quinten, VIEWPORT)
+    quinten.settle(0.5)
+    tiles = painted_tiles(quinten)
+    if VIEWPORT:
+        clipped = windows_off_screen(quinten, VIEWPORT)
+        claim("both windows are wholly on screen before the gesture",
+              clipped, [])
+        if clipped:
+            gap("a window is cut off, so the gesture would cross an edge "
+                "the camera cannot show — " + "; ".join(clipped))
+            quinten.snapshot(os.path.join(shots, "09-not-in-frame.png"))
+            return
+
+    def tile_for(app_id: str, painted: dict | None) -> tuple | None:
+        sid = (painted or {}).get("surface_id")
+        if sid is not None and int(sid) in tiles:
+            return tiles[int(sid)]["rect"]
+        # No surface id to hand (an earlier beat did not return one):
+        # fall back to the app id, which is unambiguous while there is
+        # one window per app on screen.
+        for t in tiles.values():
+            if t["app_id"] == app_id:
+                return t["rect"]
+        return None
+
+    files_tile = tile_for(FILES_APP, files)
+    wp_tile = tile_for(WORD_PROCESSOR, wp)
+    claim("Files is on screen to drag out of", files_tile is not None, True)
+    claim("the word processor is on screen to drop into",
+          wp_tile is not None, True)
+    if not files_tile or not wp_tile:
+        gap("both windows have to be on screen at once for this gesture; "
+            f"the session is painting {[t['app_id'] for t in tiles.values()]}")
         return
-    tx, ty, tw, th = rect
-    note(f"tile {tile} at {[round(v) for v in rect]}")
-    opened = None
-    # The image control sits in the toolbar strip under the tile's top
-    # edge. Swept rather than guessed once: a miss is a click on inert
-    # chrome, and the chooser opening is what says it was hit.
+    note(f"Files at {[round(v) for v in files_tile]}, "
+         f"the document at {[round(v) for v in wp_tile]}")
+    quinten.snapshot(os.path.join(shots, "09-before-drag.png"))
+
+    log = LogTail(quinten.log_path)
+    log.catch_up()
+
+    step(f"he presses on {PHOTO_NAME}")
+    # A click first, so the press that starts the drag is not the one
+    # that focuses the window. The first click on an unfocused client is
+    # spent on the focus change and never reaches the app's own widgets —
+    # measured, and the cause of a drag that produced nothing at all.
+    fx, fy, fw, fh = files_tile
+    quinten.click_at(fx + fw * 0.45, fy + fh * 0.16)
+    quinten.settle(0.8)
+
+    listing = expected_listing(quinten.home)
+    note(f"his home lists as {listing}")
+    held = press_the_photo_row(quinten, log, files_tile, PHOTO_NAME, listing)
+    claim(f"the press landed on {PHOTO_NAME}'s own row", held is not None, True)
+    if held is None:
+        gap(f"no press landed on {PHOTO_NAME}: the file rows belong to a "
+            f"client and are not addressable by name from the compositor, "
+            f"so this is aimed at pixels and the app did not report a row "
+            f"under any of them. See {quinten.log_path}")
+        quinten.snapshot(os.path.join(shots, "09-missed-the-row.png"))
+        return
+    hx, hy = held
+
+    step("and drags it across the desktop")
+    # Past the app's own drag threshold first, slowly, while the button
+    # is still down. That is the moment Files opens a `wl_data_source`
+    # and hands the gesture to the compositor; a drag that teleports to
+    # its destination never gives either process a frame in which to do
+    # it, and nothing is ever picked up.
+    for step_px in (4, 10, 18, 30):
+        quinten.pointer_move(hx + step_px, hy - step_px * 0.4)
+        quinten.settle(0.12)
+    promoted = log.await_line(LogTail.CARRIED, 3.0)
+    claim("Files handed the gesture out as a client drag", promoted, True)
+    if promoted:
+        note("from here the picture on screen belongs to the compositor: "
+             "the source window will not see another motion event, and "
+             "will never see the release")
+    took = log.await_line(LogTail.PROMOTED, 3.0)
+    claim("and the compositor took it", took, True)
+
+    # Across, in steps, with the chip drawn at the cursor the whole way.
     #
-    # Two dimensions, because one was not enough. The toolbar's distance
-    # from the top of the tile depends on what the app stacked above it —
-    # a tab strip, a title row — and a sweep along a single line at 5.5%
-    # crossed inert chrome on every step and concluded the control was
-    # not there. The rows are ordered nearest-first so the usual case
-    # still lands in the first few clicks.
-    #
-    # The button carries `a11y-insert-image` inside the app's own widget
-    # tree (`apps/word-processor/src/widget.rs:4231`), which is exactly
-    # the name this would use if a client's widgets were addressable from
-    # the compositor. They are not, so this stays aimed at pixels.
-    for row in (0.055, 0.085, 0.035):
-        for frac in (0.34, 0.40, 0.46, 0.28, 0.52):
-            quinten.click_at(tx + tw * frac, ty + th * row)
-            # Short: a sweep that has to miss most of the time should
-            # cost the recording as little as possible while it does.
-            quinten.settle(0.4)
-            names = set(quinten.target_names())
-            fresh = {n for n in names if n not in before}
-            if any("chooser" in n.lower() or "file_row" in n.lower()
-                   or "portal" in n.lower() for n in fresh):
-                opened = sorted(fresh)[:8]
-                break
-        if opened:
+    # Where it is released matters more than it looks. The word
+    # processor moves its caret to the drop point before inserting
+    # (`widget.rs:5792`), mapping the pointer to a position in the text —
+    # so a drop in the middle of the page lands the photograph in the
+    # middle of a *word*. The first take of this beat cut "and" in half
+    # and left a spell-check squiggle on screen. Released to the right of
+    # where the line of text ends, it goes in after the sentence.
+    wx, wy, ww, wh = wp_tile
+    drop = (wx + ww * 0.62, wy + wh * 0.30)
+    x0, y0 = hx + 30, hy - 12
+    frames = 26
+    for i in range(1, frames + 1):
+        t = i / frames
+        quinten.pointer_move(x0 + (drop[0] - x0) * t,
+                             y0 + (drop[1] - y0) * t)
+        quinten.settle(0.05)
+        if i == frames // 2:
+            # Mid-flight, over open desktop between the two windows:
+            # this is the frame that shows the drag is the OS's and not
+            # either app's.
+            quinten.snapshot(os.path.join(shots, "10-carrying.png"))
+    quinten.settle(0.4)
+    quinten.snapshot(os.path.join(shots, "11-over-the-page.png"))
+
+    step("and drops it on the page")
+    log.read()
+    quinten.pointer_button(False)
+
+    # The payoff, off the receiving app's own account of its own
+    # document. An image is stored as its own bytes under a BLAKE3 hash,
+    # so it moves two orders of magnitude more than a keystroke does —
+    # there is nothing in between for this to confuse.
+    want = max(4000, len(payload) // 2)
+    biggest = 0
+    deadline = time.time() + 25.0
+    while time.time() < deadline:
+        biggest = max(biggest, log.biggest_delta(log.read()))
+        if biggest >= want:
             break
-    if opened is None:
-        gap("the word processor's image control was not found by sweeping "
-            "its toolbar — a client's widgets are not addressable by name "
-            "from the compositor, so this beat is aimed at pixels and did "
-            "not land")
-        quinten.snapshot(os.path.join(shots, "09-no-chooser.png"))
-        return
-    note(f"the chooser is compositor chrome: {opened}")
-    claim("the OS file chooser opened, not the app's own", True, True)
-    quinten.snapshot(os.path.join(shots, "09-chooser.png"))
+        time.sleep(0.3)
+    landed = biggest >= want
+    claim("the document changed by the size of a photograph, not a "
+          "keystroke", landed, True)
+    note(f"largest change the word processor broadcast after the drop: "
+         f"{biggest} bytes (the file is {len(payload)}; a keystroke moves "
+         f"about a hundred)")
+    quinten.settle(2.0)
+    quinten.snapshot(os.path.join(shots, "12-image-in-the-document.png"))
 
-    step(f"he picks {PHOTO_NAME}")
-    row = next((n for n in quinten.target_names()
-                if PHOTO_NAME in n), None)
-    if row is None:
-        gap(f"{PHOTO_NAME} was not offered by the chooser")
+    if not landed:
+        gap(f"nothing the size of the photograph reached the document "
+            f"within 25s of the drop. See {quinten.log_path}")
         return
-    quinten.click_named(row)
-    quinten.settle(1.5)
-    quinten.key("Enter")
-    quinten.settle(3.0)
-    quinten.snapshot(os.path.join(shots, "10-image.png"))
-    note("the image is bytes inside the document, so it replicates the "
-         "way the text does")
+
+    step("and it is in the document, not merely on the screen")
+    # Asked of the app, after the camera has moved on: a late joiner on
+    # this session's broker gets the whole document back, and the
+    # photograph's own bytes are either in it or they are not.
+    room = quinten.active_workspace()["room"]
+    carried, size_bytes = image_is_in_the_document(quinten, room, payload)
+    claim("the word processor's own document carries the photograph's "
+          "bytes", carried, True)
+    if carried:
+        note(f"answered with a {size_bytes} byte document holding the "
+             f"file's own header — so the image replicates the way the "
+             f"text does, and a peer receives the picture rather than a "
+             f"path to it")
+    elif size_bytes:
+        gap(f"the app answered with {size_bytes} bytes and the "
+            f"photograph's are not among them")
+    else:
+        gap("the app never answered the late-join handshake, so the "
+            "document could not be read back and the delta above is the "
+            "only account of the image landing")
 
 
 def beat_nine(quinten: Session, xaver: Session, agent: Session,
@@ -2986,7 +3660,7 @@ def beat_nine(quinten: Session, xaver: Session, agent: Session,
     quinten.settle(1.0)
     if RECORDER:
         RECORDER.dwell()
-    quinten.type_text(AGENT_INSTRUCTION)
+    quinten.type_prose(AGENT_INSTRUCTION)
     quinten.settle(1.5)
     quinten.snapshot(os.path.join(shots, "11-instruction.png"))
     note(f"the instruction is a line in the document: {AGENT_INSTRUCTION!r}")
@@ -3039,7 +3713,7 @@ def beat_nine(quinten: Session, xaver: Session, agent: Session,
 
 def run(quinten: Session, xaver: Session, agent: Session, shots: str,
         registry) -> None:
-    host_ws = beat_one(quinten, shots)
+    host_ws, files = beat_one(quinten, shots)
     beat_two(quinten, xaver, host_ws, shots)
     beat_three(quinten, agent, host_ws, shots)
     beat_four(quinten, xaver, agent, host_ws, shots)
@@ -3055,7 +3729,7 @@ def run(quinten: Session, xaver: Session, agent: Session, shots: str,
     wp = beat_five(quinten, registry, shots)
     beat_six(quinten, xaver, baseline, shots)
     beat_seven(quinten, xaver, host_ws, wp, shots)
-    beat_eight(quinten, shots)
+    beat_eight(quinten, files, wp, shots)
     beat_nine(quinten, xaver, agent, host_ws, wp, shots)
 
 
