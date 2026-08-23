@@ -565,6 +565,12 @@ fn parse_invite(token: &str) -> Option<crate::network::invite::PeerInviteToken> 
 /// *sender*, not the bytes of one particular token: every invite from
 /// one machine reads the same, which is what makes it something two
 /// people can check against each other and not a second password.
+///
+/// Grouped with a space, which is how this OS already writes a
+/// fingerprint somebody is meant to compare by eye — see
+/// `onboarding::MintedIdentity::grouped_fingerprint`. Not the `·` this
+/// card uses between phrases: one glyph meaning two things on one
+/// surface is how a code gets read as a sentence.
 fn peer_fingerprint(peer_id: &str) -> String {
     let chars: Vec<char> = peer_id.chars().collect();
     let tail: Vec<char> = chars[chars.len().saturating_sub(8)..].to_vec();
@@ -573,7 +579,7 @@ fn peer_fingerprint(peer_id: &str) -> String {
     }
     let (a, b) = tail.split_at(4);
     format!(
-        "{}·{}",
+        "{} {}",
         a.iter().collect::<String>(),
         b.iter().collect::<String>()
     )
@@ -12680,8 +12686,9 @@ mod palette_dispatch_tests {
         assert_eq!(peer_fingerprint(a), peer_fingerprint(a), "stable");
         assert_eq!(
             peer_fingerprint(a),
-            "QrSt·UvWx",
-            "the tail of the peer id, in two groups"
+            "QrSt UvWx",
+            "the tail of the peer id, in two groups — spaced the way \
+             `MintedIdentity::grouped_fingerprint` spaces its own"
         );
         assert_ne!(
             peer_fingerprint(a),
