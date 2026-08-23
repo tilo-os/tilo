@@ -630,19 +630,35 @@ impl GreeterApp {
 
         match self.phase {
             AuthPhase::Authenticating | AuthPhase::Starting => {
-                let mut row = Row::new().push(Box::new(Spinner::with_size(16.0)));
+                // A spinner only when there is something for it to be
+                // spinning *about*.
+                //
+                // While the exchange is in flight the button already
+                // reads "Signing you in…", and the status line is
+                // deliberately silent unless PAM says something new. A
+                // spinner on its own under a full-width button is then a
+                // dot floating in empty space — it reads as a rendering
+                // fault rather than as progress, and it says nothing the
+                // button has not already said. The moment there *is* a
+                // message (a fingerprint prompt, or the session
+                // starting) the pair carries real information and both
+                // belong.
                 let live = self.feedback_text();
-                if !live.trim().is_empty() {
+                let live = live.trim();
+                if !live.is_empty() {
                     let tint = if self.phase == AuthPhase::Starting {
                         c.semantic.success
                     } else {
                         c.text_dim
                     };
-                    row = row.push(Box::new(
-                        Text::new(live.trim()).with_size(13.0).with_color(tint),
+                    rows.push(Box::new(
+                        Row::new()
+                            .push(Box::new(Spinner::with_size(16.0)))
+                            .push(Box::new(
+                                Text::new(live).with_size(13.0).with_color(tint),
+                            )),
                     ));
                 }
-                rows.push(Box::new(row));
             }
             AuthPhase::Idle => match self.status_kind {
                 StatusKind::None => {}
@@ -1681,12 +1697,39 @@ mod tests {
         assert_eq!(app.phase, AuthPhase::Idle);
     }
 
+    /// In flight, the button carries the sentence and nothing else is
+    /// drawn. A spinner underneath it would have nothing beside it —
+    /// the status line is deliberately silent unless PAM says something
+    /// new — and a lone dot under a full-width button reads as a
+    /// rendering fault rather than as progress.
     #[test]
-    fn authenticating_shows_spinner_and_relabels_button() {
+    fn authenticating_relabels_the_button_and_draws_nothing_else() {
         let app = GreeterApp::for_shot(AuthScenario::Authenticating);
         assert_eq!(app.phase, AuthPhase::Authenticating);
         assert_eq!(app.login_label(), "Signing you in…");
-        assert_eq!(count_named(card_of(&app).as_ref(), "Spinner"), 1);
+        assert_eq!(
+            count_named(card_of(&app).as_ref(), "Spinner"),
+            0,
+            "a spinner with no message beside it is a dot in empty space",
+        );
+    }
+
+    /// And the moment there *is* something to say, the pair appears —
+    /// so this is "no spinner without a message", not "no spinner".
+    #[test]
+    fn a_spinner_appears_once_there_is_something_to_say() {
+        for scenario in [AuthScenario::Starting, AuthScenario::Fingerprint] {
+            let app = GreeterApp::for_shot(scenario);
+            assert!(
+                !app.feedback_text().trim().is_empty(),
+                "{scenario:?} is expected to carry a message",
+            );
+            assert_eq!(
+                count_named(card_of(&app).as_ref(), "Spinner"),
+                1,
+                "{scenario:?} says something, so it spins beside it",
+            );
+        }
     }
 
     /// The regression this screen was carrying: "Authenticating…" was
@@ -1715,8 +1758,9 @@ mod tests {
             app.feedback_text()
         );
 
-        // Exactly one spinner, not one per indicator.
-        assert_eq!(count_named(card_of(&app).as_ref(), "Spinner"), 1);
+        // And nothing is drawn under the button at all, because there is
+        // nothing to draw: no message means no spinner.
+        assert_eq!(count_named(card_of(&app).as_ref(), "Spinner"), 0);
     }
 
     /// A live PAM prompt IS new information, so it may appear alongside the

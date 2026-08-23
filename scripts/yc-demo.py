@@ -58,6 +58,7 @@ import hashlib
 import base64
 import json
 import os
+import random
 import re
 import shutil
 import signal
@@ -191,6 +192,61 @@ LIVE_APPS = os.path.join(REPO, "target", "qos-apps-live")
 AGENT_SUBJECT = "agent:claude"
 AGENT_SCOPE = f"app:{WORD_PROCESSOR}"
 
+# How fast a person types, on camera.
+#
+# Not a speed setting — before this, runs of unshifted characters went
+# out in a single `type` call, so a sentence arrived in two or three
+# instant bursts. The viewer saw text appear without seeing it typed,
+# which is the one thing the beat is for.
+#
+# 55 ms is around 60 words a minute: quick, clearly deliberate, and slow
+# enough that the caret is visibly ahead of the words.
+TYPING_PACE = 0.055
+
+# Where hands actually slow down. A person does not type at one rate —
+# they pause fractionally after a word and longer after a sentence.
+TYPING_PAUSE = {
+    " ": 0.085,
+    ",": 0.16,
+    ".": 0.22,
+    ":": 0.2,
+    "\n": 0.3,
+}
+
+# And no two keystrokes take the same time. An exactly even cadence is
+# the tell — it is the one thing real typing never does, and at 18 keys
+# a second the eye picks it out as a machine even when the speed is
+# right. Each interval is scaled by a factor drawn around 1.0, so the
+# rhythm wanders the way a hand does.
+#
+# Seeded, not arbitrary: two runs of the film type identically, which is
+# what lets a frame from one run be compared against a frame from
+# another. The spread is deliberately asymmetric — a hand has a floor it
+# cannot go below and a long tail of hesitations above it, so the
+# distribution is skewed rather than centred.
+TYPING_JITTER = (0.72, 1.45)
+TYPING_SEED = 0x9E3779B9
+
+
+def _typing_jitter(who: str):
+    """An endless run of interval multipliers for `who`'s hands.
+
+    Its own `random.Random`, seeded from the name, rather than the module
+    generator: two sessions type at once in this film, and drawing from a
+    shared generator would make each person's rhythm depend on how their
+    keystrokes happened to interleave with the other's — so a rerun that
+    scheduled them differently would type differently.
+
+    `triangular` rather than `uniform` because a hand is not uniform: it
+    has a floor it cannot beat and a tail of hesitations above it. The
+    mode sits below the midpoint, so most keys land near the base pace
+    and the occasional one drags.
+    """
+    lo, hi = TYPING_JITTER
+    rng = random.Random(TYPING_SEED ^ hash(who) & 0xFFFF_FFFF)
+    while True:
+        yield rng.triangular(lo, hi, lo + (hi - lo) * 0.35)
+
 # What quinten types into the document, and what xaver's session is then
 # asked whether it holds.
 TYPED_TEXT = "the same document on both machines"
@@ -292,6 +348,10 @@ class Session:
                  tools: dict[str, str] | None = None):
         self.name = name
         self.user = user
+        # This session's own typing rhythm, seeded from its name so each
+        # person types a little differently and each of them types the
+        # same way every run.
+        self._typing_jitter = _typing_jitter(name)
         self.dir = run_dir
         self.sock = sock
         self.binary = binary
@@ -786,7 +846,7 @@ class Session:
         self.input_ops += 1
         ok(call(self.sock, {"op": "key_up", "key": name}))
 
-    def type_prose(self, text: str) -> None:
+    def type_prose(self, text: str, pace: bool | None = None) -> None:
         """Type `text` into a *client* so that it arrives as written.
 
         `type` alone does not. It emits one keycode per character, and a
@@ -809,28 +869,56 @@ class Session:
         real bullet. A draft typed this way arrives as a document rather
         than as one lowercase run-on line.
 
-        Runs of unshifted characters still go through one `type` call, so
-        this costs a round trip per capital and not per character.
-        """
-        pending: list[str] = []
+        One character at a time, at a pace a person reads as typing.
 
-        def flush() -> None:
-            if pending:
-                self.type_text("".join(pending))
-                pending.clear()
+        Batching the unshifted runs into a single `type` call is much
+        cheaper — one round trip per capital rather than per character —
+        and it is the wrong thing on camera. A sentence that arrives in
+        three instant bursts is not a person writing; the viewer sees
+        text appear and has no idea it was typed, which is the one thing
+        this beat exists to show.
+
+        The cadence is deterministic rather than random, so two runs of
+        the film type identically: a base interval, plus a longer pause
+        after the punctuation and spaces where a person's hands actually
+        slow down. Off camera the pause is skipped entirely and the old
+        batching applies, because a harness waiting out a realistic
+        typing speed is just a slower harness.
+        """
+        paced = RECORDER is not None and pace is not False
+        if not paced:
+            pending: list[str] = []
+
+            def flush() -> None:
+                if pending:
+                    self.type_text("".join(pending))
+                    pending.clear()
+
+            for ch in text:
+                if ch == "\n":
+                    flush()
+                    self.key("Enter")
+                elif ch in SHIFTED_KEYS:
+                    flush()
+                    self.key_down("Shift")
+                    self.key(SHIFTED_KEYS[ch])
+                    self.key_up("Shift")
+                else:
+                    pending.append(ch)
+            flush()
+            return
 
         for ch in text:
             if ch == "\n":
-                flush()
                 self.key("Enter")
             elif ch in SHIFTED_KEYS:
-                flush()
                 self.key_down("Shift")
                 self.key(SHIFTED_KEYS[ch])
                 self.key_up("Shift")
             else:
-                pending.append(ch)
-        flush()
+                self.type_text(ch)
+            base = TYPING_PAUSE.get(ch, TYPING_PACE)
+            time.sleep(base * next(self._typing_jitter))
 
     def modifiers(self, ctrl=False, shift=False, alt=False, logo=False) -> None:
         self.input_ops += 1
