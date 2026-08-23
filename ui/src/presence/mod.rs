@@ -1130,11 +1130,19 @@ impl PresenceCtx {
                     // no pill behind — which is indistinguishable from
                     // a session that was never sent anything, and a
                     // test unable to tell those apart is how this bug
-                    // survived a screenshot. This line is the
+                    // survived being photographed. This line is the
                     // difference.
-                    tracing::debug!(
-                        user_id, "presence: own participant, not painting it as a peer"
-                    );
+                    //
+                    // `eprintln!` under the same env var the sibling
+                    // announcement in `App` uses, not `tracing`: an
+                    // app installs no subscriber, so a `debug!` here
+                    // reaches nobody and a proof resting on it would
+                    // fail against a *correct* build.
+                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                        eprintln!(
+                            "[app] own participant {user_id}: not painting it as a peer"
+                        );
+                    }
                     RemotePresenceEffect::PeerArrived
                 }
                 _ => RemotePresenceEffect::None,
