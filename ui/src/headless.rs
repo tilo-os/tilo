@@ -1043,7 +1043,7 @@ mod a11y_driver_tests {
     /// accessibility nodes, and implements only the routed action hook. The
     /// shape a timeline or a spreadsheet grid takes.
     struct Strip {
-        items: Vec<&'static str>,
+        items: Rc<RefCell<Vec<&'static str>>>,
         cursor: usize,
         focused: bool,
         activated: Rc<RefCell<Vec<String>>>,
@@ -1107,6 +1107,7 @@ mod a11y_driver_tests {
                     .with_state(AccessState::new().focusable(true).focused(self.focused))
                     .with_children(
                         self.items
+                            .borrow()
                             .iter()
                             .enumerate()
                             .map(|(i, id)| {
@@ -1133,11 +1134,13 @@ mod a11y_driver_tests {
             let Some(&key) = key_path.first() else { return false };
             let Some(i) = self
                 .items
+                .borrow()
                 .iter()
                 .position(|id| crate::a11y::hash_key(id) == key)
             else {
                 return false;
             };
+            let name = self.items.borrow()[i];
             match action {
                 Action::Focus => {
                     self.cursor = i;
@@ -1145,7 +1148,7 @@ mod a11y_driver_tests {
                 }
                 Action::Activate => {
                     self.cursor = i;
-                    self.activated.borrow_mut().push(self.items[i].into());
+                    self.activated.borrow_mut().push(name.into());
                     true
                 }
                 _ => false,
@@ -1154,9 +1157,21 @@ mod a11y_driver_tests {
     }
 
     fn driver() -> (Driver, Rc<RefCell<Vec<String>>>) {
+        let (d, activated, _items) = driver_with_items();
+        (d, activated)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn driver_with_items() -> (
+        Driver,
+        Rc<RefCell<Vec<String>>>,
+        Rc<RefCell<Vec<&'static str>>>,
+    ) {
         let activated: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let items: Rc<RefCell<Vec<&'static str>>> =
+            Rc::new(RefCell::new(vec!["alpha", "beta", "gamma"]));
         let strip = Strip {
-            items: vec!["alpha", "beta", "gamma"],
+            items: items.clone(),
             cursor: 0,
             focused: false,
             activated: activated.clone(),
@@ -1164,6 +1179,7 @@ mod a11y_driver_tests {
         (
             Driver::new(State::new(), Box::new(strip), (800, 600)),
             activated,
+            items,
         )
     }
 
@@ -1206,6 +1222,80 @@ mod a11y_driver_tests {
         let (id, node) = d.a11y_focus().expect("something is focused");
         assert_eq!(id, gamma, "the reader sits on the element, not the canvas");
         assert_eq!(node.label(), Some("gamma"));
+    }
+
+    #[test]
+    fn a_node_reference_survives_a_relayout() {
+        // The gap this closes: the host throws its TaffyTree away and rebuilds
+        // it on every relayout, and ids used to be derived from taffy's
+        // per-tree node ids — so every id in the exported tree changed on each
+        // layout pass. An assistive technology holding a reference across a
+        // repaint got an id that no longer resolved, or one that resolved to a
+        // different element, which is worse than having no id at all.
+        let (mut d, _a) = driver();
+        let before: Vec<(String, accesskit::NodeId)> = d
+            .a11y_nodes()
+            .into_iter()
+            .map(|(id, n)| (n.label().unwrap_or_default().to_string(), id))
+            .collect();
+        assert!(before.len() >= 4, "the canvas and its items are exported");
+
+        // A layout pass, exactly as any frame does.
+        d.relayout();
+
+        let after: Vec<(String, accesskit::NodeId)> = d
+            .a11y_nodes()
+            .into_iter()
+            .map(|(id, n)| (n.label().unwrap_or_default().to_string(), id))
+            .collect();
+        assert_eq!(
+            before, after,
+            "every exported id must be the same after a relayout"
+        );
+    }
+
+    #[test]
+    fn an_id_taken_before_a_relayout_still_operates_the_same_element() {
+        // Stability is only worth anything if the id still *works*: an AT holds
+        // its reference across frames and then acts on it.
+        let (mut d, activated) = driver();
+        let beta = d.a11y_node_named("beta").unwrap();
+
+        d.relayout();
+        d.relayout();
+
+        d.perform_a11y_action(beta, &Action::Activate).unwrap();
+        assert_eq!(
+            *activated.borrow(),
+            vec!["beta".to_string()],
+            "the reference must still operate the element it named"
+        );
+    }
+
+    #[test]
+    fn a_held_reference_follows_its_element_when_an_earlier_one_is_removed() {
+        // Identity keys, observed. Removing an earlier element renumbers every
+        // element after it. Keyed by ordinal, a reference an assistive
+        // technology took before the removal would afterwards name a DIFFERENT
+        // element — it would operate the wrong one, silently. Keyed by
+        // identity, it keeps naming the element it was taken from.
+        let (mut d, activated, items) = driver_with_items();
+        let gamma = d.a11y_node_named("gamma").expect("gamma is addressable");
+
+        // Remove the first element, so gamma slides from third place to second.
+        items.borrow_mut().remove(0);
+        d.relayout();
+        assert!(d.a11y_node_named("alpha").is_none(), "alpha is gone");
+        assert!(d.a11y_node_named("gamma").is_some(), "gamma is still listed");
+
+        d.perform_a11y_action(gamma, &Action::Activate)
+            .expect("the reference must still resolve");
+        assert_eq!(
+            *activated.borrow(),
+            vec!["gamma".to_string()],
+            "a held reference must operate the element it named, not the one \
+             that took its place"
+        );
     }
 
     #[test]
