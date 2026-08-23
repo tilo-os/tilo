@@ -1101,20 +1101,17 @@ impl Widget for WindowGroup {
             self.held_back = true;
             return;
         }
-        // The frame this group was waiting for has landed. Play the
-        // arrival curve from here rather than from whenever the tab was
-        // spliced in, so what fades in is the window appearing and not
-        // an animation that finished while the app was still starting.
+        // The frame this group was waiting for has landed, so the
+        // arrival curve starts here — restarted, not merely started.
+        // The shell latches that fade when it splices the group in,
+        // which is before the app has drawn, so by the time there is
+        // something to fade in the fade has already run its course
+        // against an invisible group and the window would pop.
         //
         // Gated on having actually been held back, so a group that had
         // something to show from its first draw — every group at shell
         // start, and every group rebuilt from an unchanged tree — is
         // painted exactly as before.
-        // Restarted, not merely started: the shell latches the arrival
-        // fade when it splices the group in, which is before the app has
-        // drawn — so by the time there is something to fade in, the fade
-        // has already run its course against an invisible group and the
-        // window would pop.
         if std::mem::take(&mut self.held_back) {
             self.spawned_at = Some(Instant::now());
         }
