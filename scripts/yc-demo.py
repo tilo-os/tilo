@@ -4356,19 +4356,35 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
                 "could not be compared, so whether his app drew any of "
                 "it is not established by this run")
         elif moved < SCREEN_MOVED_PX:
+            # Two different failures wear this shape, and the message
+            # used to name only the first — which sent three separate
+            # investigations at a broker that had already been fixed.
+            #
+            #   * the document reached a *different* app from the one on
+            #     screen, or
+            #   * the app on screen never finished opening, so there was
+            #     nothing to draw the document into.
+            #
+            # The second is not a collaboration failure at all, and
+            # reading it as one is expensive: the last time this fired,
+            # the guest's word processor was sitting under its "Opening…"
+            # card while the text underneath it had converged perfectly.
+            still_opening = any(
+                (f.get("app_id") or "") == WORD_PROCESSOR and f.get("opening")
+                for f in xaver.foreign_frames())
+            because = ("his word processor had not finished opening, so "
+                       "there was no app drawn to put the document in — "
+                       "which is a window-presentation failure and not a "
+                       "collaboration one"
+                       if still_opening else
+                       "the app that answered is not the app that is "
+                       "drawn; check which channel the handshake was "
+                       "answered on")
             gap(f"xaver's session answered with a document carrying "
                 f"{TYPED_TEXT!r}, and {moved} pixels of his screen moved "
-                f"while it arrived — a blinking caret, and no text. His "
-                f"pages read 'Start writing…' either side of it. So the "
-                f"app that answered is not the app that is drawn: the "
-                f"broker computes an addressed channel key and fans out "
-                f"room-wide anyway (grep `room_wide=true` in "
-                f"{xaver.log_path}), so a handshake addressed to the "
-                f"word processor is answered by whatever else is in the "
-                f"room, and this claim passes without his word processor "
-                f"holding anything. It is the same defect that leaves "
-                f"the agent waiting in beat 9, and this is the shot the "
-                f"film crosses to a second machine to get")
+                f"while it arrived — a blinking caret, and no text. "
+                f"{because}. This is the shot the film crosses to a "
+                f"second machine to get. See {xaver.log_path}")
         else:
             note(f"and {moved} pixels of his screen moved while it "
                  f"arrived, so the app that answered is the app that is "
