@@ -1580,7 +1580,15 @@ class Recorder:
             ])
 
         for i, (name, a, b) in enumerate(self._label_spans(timeline, fps)):
-            text = f"{name} · {ROLES[name]}" if name in ROLES else name
+            # Capitalised on the band, lowercase everywhere else. The
+            # session identity really is `quinten` — it is a unix user,
+            # and the roster, the room document and every log line spell
+            # it that way. But this band is prose about a person, in a
+            # film, and a person's name has a capital in it. Leaving the
+            # login on screen reads as an unfinished caption rather than
+            # as fidelity to the system underneath.
+            who = name[:1].upper() + name[1:]
+            text = f"{who} · {ROLES[name]}" if name in ROLES else who
             chain.append(label(self._caption(f"n{i:03d}", text),
                                f"between(t,{a:.3f},{b:.3f})"))
         chain.append("format=yuv420p")
