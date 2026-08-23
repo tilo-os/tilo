@@ -154,15 +154,30 @@ impl ExportSettings {
     /// requested and a plain statement that the size does not follow from it.
     ///
     /// The distinction is [`media::encode::Selection::bitrate_is_predictive`],
-    /// false for an encoder measured to ignore its bitrate (`openh264enc`, the
-    /// fallback a machine with no other H.264 encoder actually uses) and for a
-    /// build that could not confirm any encoder at all. In both cases a
-    /// megabyte number would be a guess dressed as a measurement: openh264 was
-    /// asked for 1 Mbit/s and wrote 59, and asking it for 2 or for 8 Mbit/s
-    /// produced files within 0.4% of each other.
+    /// false for an encoder measured to ignore its bitrate and for a build
+    /// that could not confirm any encoder at all. On a machine with no
+    /// hardware encoder every candidate this export can reach is in the first
+    /// group: `openh264enc` asked for 1 Mbit/s of noise writes 59, `vp8enc`
+    /// writes 14, and eight times the request moves either by nothing worth
+    /// counting. A megabyte figure there is a guess dressed as a measurement.
     pub fn estimate_label(&self, project: &Project) -> String {
-        let with_audio = crate::audio::has_audio(project);
         let (video, _, _) = encode_chain(self.container);
+        self.estimate_label_for(project, &video)
+    }
+
+    /// [`Self::estimate_label`] against a given encoder choice rather than
+    /// this machine's.
+    ///
+    /// Split out so both branches can be exercised wherever the tests run: a
+    /// box with no hardware encoder resolves every container to an encoder
+    /// that ignores its bitrate, so the megabyte branch would otherwise go
+    /// unexecuted exactly where it most needs checking.
+    pub fn estimate_label_for(
+        &self,
+        project: &Project,
+        video: &media::encode::Selection,
+    ) -> String {
+        let with_audio = crate::audio::has_audio(project);
         if video.bitrate_is_predictive() {
             return format!("≈ {:.0} MB", self.estimated_mb(project.duration(), with_audio));
         }
@@ -1333,65 +1348,97 @@ mod tests {
             voiced.duration(),
         );
 
+        // Both encoder choices, whatever this machine happens to have: one
+        // that rate-controls and one measured not to. A box with no hardware
+        // encoder resolves every container to the second kind, so driving
+        // only the machine's own choice would leave the megabyte branch
+        // unexecuted.
+        let confirmed = |element: &str| {
+            let spec = media::encode::VideoCodec::H264
+                .candidates()
+                .iter()
+                .chain(media::encode::VideoCodec::Vp8.candidates())
+                .find(|s| s.element == element)
+                .unwrap_or_else(|| panic!("{element} is in the candidate tables"));
+            media::encode::Selection { spec, confirmed: true, passed_over: Vec::new() }
+        };
+        let choices = [confirmed("x264enc"), confirmed("openh264enc")];
+
         let mut saw_predictive = false;
         let mut saw_unpredictable = false;
         for container in Container::ALL {
             let s = ExportSettings { container, ..Default::default() };
-            let (video, _, _) = encode_chain(container);
-            let (a, b) = (s.estimate_label(&silent), s.estimate_label(&voiced));
-            println!("{container:?} via {}: silent {a:?}, with audio {b:?}", video.describe());
-
-            // The arithmetic first, at full precision and independent of how
-            // the label rounds: an audio track costs exactly the rate the
-            // audio branch is given.
-            let d = voiced.duration();
-            let charged = s.estimated_mb(d, true) - s.estimated_mb(d, false);
-            let want = AUDIO_BITRATE_BPS as f64 / 1_000_000.0 * d / 8.0;
-            assert!(
-                (charged - want).abs() < 1e-9,
-                "muxing audio costs the {AUDIO_BITRATE_BPS} bps the branch encodes at: \
-                 charged {charged} MB, expected {want} MB",
+            // The machine's own choice must agree with the same call made
+            // explicitly, or these two branches are testing something the
+            // dialog does not use.
+            let (machine, _, _) = encode_chain(container);
+            assert_eq!(
+                s.estimate_label(&voiced),
+                s.estimate_label_for(&voiced, &machine),
+                "the dialog's label is the one these branches exercise",
             );
 
-            if video.bitrate_is_predictive() {
-                saw_predictive = true;
-                assert!(a.contains("MB") && b.contains("MB"), "a size is quoted: {a:?} / {b:?}");
-                // The audio track has to cost something, or the figure is
-                // still describing a video-only file.
-                let mb = |label: &str| {
-                    label
-                        .trim_start_matches(['≈', ' '])
-                        .trim_end_matches(" MB")
-                        .parse::<f64>()
-                        .unwrap_or_else(|e| panic!("a megabyte figure in {label:?}: {e}"))
-                };
-                assert!(
-                    mb(&b) > mb(&a),
-                    "muxing audio must cost more than not muxing it: {a:?} vs {b:?}",
+            for video in &choices {
+                let (a, b) = (
+                    s.estimate_label_for(&silent, video),
+                    s.estimate_label_for(&voiced, video),
                 );
-            } else {
-                saw_unpredictable = true;
+                println!("{container:?} via {}: silent {a:?}, with audio {b:?}", video.describe());
+
+                // The arithmetic first, at full precision and independent of how
+                // the label rounds: an audio track costs exactly the rate the
+                // audio branch is given.
+                let d = voiced.duration();
+                let charged = s.estimated_mb(d, true) - s.estimated_mb(d, false);
+                let want = AUDIO_BITRATE_BPS as f64 / 1_000_000.0 * d / 8.0;
                 assert!(
-                    !a.contains("MB") && !b.contains("MB"),
-                    "{} does not track its bitrate, so no size may be quoted: {a:?} / {b:?}",
-                    video.spec.element,
+                    (charged - want).abs() < 1e-9,
+                    "muxing audio costs the {AUDIO_BITRATE_BPS} bps the branch encodes at: \
+                     charged {charged} MB, expected {want} MB",
                 );
-                // What *is* known — the rate that was asked for — is still
-                // said, so the line is informative rather than merely blank.
-                let mbps = format!("{:.0} Mbit/s", s.resolution.target_mbps());
-                assert!(a.contains(&mbps) && b.contains(&mbps), "{a:?} / {b:?}");
-                assert!(
-                    b.contains(&format!("{} kbit/s audio", AUDIO_BITRATE_BPS / 1000)),
-                    "and the audio rate, when there is audio: {b:?}",
-                );
-                assert!(!a.contains("kbit/s"), "but not when there is none: {a:?}");
+
+                if video.bitrate_is_predictive() {
+                    saw_predictive = true;
+                    assert!(a.contains("MB") && b.contains("MB"), "a size is quoted: {a:?} / {b:?}");
+                    // The audio track has to cost something, or the figure is
+                    // still describing a video-only file.
+                    let mb = |label: &str| {
+                        label
+                            .trim_start_matches(['≈', ' '])
+                            .trim_end_matches(" MB")
+                            .parse::<f64>()
+                            .unwrap_or_else(|e| panic!("a megabyte figure in {label:?}: {e}"))
+                    };
+                    assert!(
+                        mb(&b) > mb(&a),
+                        "muxing audio must cost more than not muxing it: {a:?} vs {b:?}",
+                    );
+                } else {
+                    saw_unpredictable = true;
+                    assert!(
+                        !a.contains("MB") && !b.contains("MB"),
+                        "{} does not track its bitrate, so no size may be quoted: {a:?} / {b:?}",
+                        video.spec.element,
+                    );
+                    // What *is* known — the rate that was asked for — is still
+                    // said, so the line is informative rather than merely blank.
+                    let mbps = format!("{:.0} Mbit/s", s.resolution.target_mbps());
+                    assert!(a.contains(&mbps) && b.contains(&mbps), "{a:?} / {b:?}");
+                    assert!(
+                        b.contains(&format!("{} kbit/s audio", AUDIO_BITRATE_BPS / 1000)),
+                        "and the audio rate, when there is audio: {b:?}",
+                    );
+                    assert!(!a.contains("kbit/s"), "but not when there is none: {a:?}");
+                }
             }
         }
         println!("size line: predictive branch seen={saw_predictive}, \
                   unpredictable branch seen={saw_unpredictable}");
         assert!(
-            saw_predictive || saw_unpredictable,
-            "Container::ALL is empty, so this test observed nothing",
+            saw_predictive && saw_unpredictable,
+            "both branches must be exercised, saw predictive={saw_predictive} \
+             unpredictable={saw_unpredictable} — a branch that never ran is a branch \
+             this test says nothing about",
         );
     }
 
