@@ -89,6 +89,40 @@ impl PresenceKey {
     pub fn pointer_default() -> Self {
         PresenceKey::Widget { path: Vec::new() }
     }
+
+    /// Whether a pointer arriving under this key is a position on the
+    /// *desktop* — one the compositor overlay places, above every
+    /// window — rather than a position inside one window's content.
+    ///
+    /// Two keys mean that, and they are the two ends of the same
+    /// journey. An app publishes its pointer under the room
+    /// ([`Self::for_local_workspace`]), which is what a peer that keeps
+    /// the key sees. The capnp presence surface has no keyed cursor
+    /// call, though: `publishCursor(x, y)` takes coordinates and
+    /// nothing else, so the room is dropped on the way out and the
+    /// broker re-keys the frame as [`Self::pointer_default`] for the
+    /// wire. Both describe the same thing.
+    ///
+    /// Reading the second as an ordinary widget scope is what drew one
+    /// person once per window. The broker hands every inbound presence
+    /// frame to every app in the room, so each window claimed the
+    /// pointer as its own and painted it in its own coordinates — same
+    /// name, same colour, one copy per window, none of them anywhere
+    /// the peer actually was except by luck. Only the compositor knows
+    /// where a desktop pointer is, so only the compositor draws one.
+    ///
+    /// This is deliberately about the *scope*, not the transport: a
+    /// pointer that reaches a window with no key at all (the relay
+    /// dialect, the hosted backend's interpolated cursors) never comes
+    /// through here and stays the window's to paint, because nothing is
+    /// above it that could.
+    pub fn scopes_a_desktop_pointer(&self) -> bool {
+        match self {
+            PresenceKey::Workspace { .. } => true,
+            PresenceKey::Widget { path } => path.is_empty(),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
