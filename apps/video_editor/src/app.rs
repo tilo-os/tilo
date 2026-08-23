@@ -5527,9 +5527,15 @@ impl VideoEditorApp {
         let media = self.project.media(clip.media);
         let is_title = media.map(|m| m.text.is_some()).unwrap_or(false);
         let is_video = media.map(|m| m.kind.is_visual()).unwrap_or(true);
-        let mut v = vec![Section::Transform, Section::Speed];
-        // Same test the layout makes, so the reader is offered exactly the
-        // sections that are on screen — no more and no fewer.
+        // The same `is_video` test the layout makes, so the reader is
+        // offered exactly the sections that are drawn — no more and no
+        // fewer. An audio clip has no picture to place, key, mask or
+        // effect, and the panel draws none of those headers for one.
+        let mut v = Vec::new();
+        if is_video {
+            v.push(Section::Transform);
+        }
+        v.push(Section::Speed);
         if is_video {
             v.push(Section::Key);
             v.push(Section::Mask);
@@ -14807,6 +14813,308 @@ mod tests {
             l.sections.iter().any(|(s, _)| *s == Section::Transform),
             "but keeps its header, so it can be unfolded again",
         );
+    }
+
+    /// The whole point of gating these two sections' controls: an unkeyed,
+    /// unmasked clip must not carry ten sliders that do nothing, and the
+    /// moment the feature is switched on they have to be there.
+    #[test]
+    fn the_key_and_mask_controls_appear_only_once_they_have_something_to_do() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(id);
+        let r = app.regions();
+        let l = app.inspector_layout(&r);
+        assert!(
+            l.key_enable.is_some(),
+            "the key can always be switched on",
+        );
+        assert!(l.num(NumField::KeyTolerance).is_none(), "but has no sliders yet");
+        assert!(l.key_colors.is_empty(), "and no colour to pick");
+        assert!(
+            !l.mask_shapes.is_empty(),
+            "a shape can always be chosen",
+        );
+        assert!(l.num(NumField::MaskW).is_none(), "but there is no shape to size");
+        assert!(l.mask_invert.is_none());
+
+        // Switch the key on through the button, as a user would.
+        let rect = reveal(&mut app, |l| l.key_enable);
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        assert!(
+            VideoDoc::load_project(&doc).clip(id).unwrap().key.enabled,
+            "the toggle reaches the document, not just the preview",
+        );
+        let l = app.inspector_layout(&app.regions());
+        for f in [NumField::KeyTolerance, NumField::KeySoftness, NumField::KeySpill] {
+            assert!(l.num(f).is_some(), "{f:?} is laid out once the key is on");
+        }
+        assert_eq!(l.key_colors.len(), crate::model::KEY_PRESETS.len());
+
+        // And a mask shape brings its geometry with it.
+        let rect = reveal(&mut app, |l| {
+            l.mask_shapes
+                .iter()
+                .find(|(s, _)| *s == crate::model::MaskShape::Ellipse)
+                .map(|(_, r)| *r)
+        });
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        let stored = VideoDoc::load_project(&doc).clip(id).unwrap().mask;
+        assert_eq!(stored.shape, crate::model::MaskShape::Ellipse);
+        let l = app.inspector_layout(&app.regions());
+        for f in [
+            NumField::MaskX,
+            NumField::MaskY,
+            NumField::MaskW,
+            NumField::MaskH,
+            NumField::MaskRotation,
+            NumField::MaskFeather,
+        ] {
+            assert!(l.num(f).is_some(), "{f:?} is laid out once a shape is chosen");
+        }
+        assert!(l.mask_invert.is_some());
+    }
+
+    /// Switching a key on that would key nothing reads as a broken button.
+    /// The toggle gives back a tolerance that actually cuts.
+    #[test]
+    fn switching_the_key_on_gives_it_a_tolerance_that_keys() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(id);
+        app.edit_selected(&mut doc, |c| c.key.tolerance = 0.0);
+        let rect = reveal(&mut app, |l| l.key_enable);
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        let key = VideoDoc::load_project(&doc).clip(id).unwrap().key;
+        assert!(key.enabled);
+        assert!(key.is_active(), "on, and actually removing something: {key:?}");
+    }
+
+    /// Choosing a shape lands the mask on the picture rather than in the
+    /// middle of an empty frame — which is what makes rounding off a
+    /// picture-in-picture one click instead of four slider drags.
+    #[test]
+    fn a_new_mask_lands_on_the_picture_the_transform_placed() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(id);
+        app.edit_selected(&mut doc, |c| {
+            c.transform = crate::model::Transform::pip(0.3, (1.0, -1.0), 0.04);
+        });
+        let placed = app.project.clip(id).unwrap().transform;
+        let rect = reveal(&mut app, |l| {
+            l.mask_shapes
+                .iter()
+                .find(|(s, _)| *s == crate::model::MaskShape::Ellipse)
+                .map(|(_, r)| *r)
+        });
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        let m = VideoDoc::load_project(&doc).clip(id).unwrap().mask;
+        assert!((m.x - placed.pos_x).abs() < 1e-9, "centred on the inset: {m:?}");
+        assert!((m.y - placed.pos_y).abs() < 1e-9);
+        assert!(m.w < 0.5 && m.h < 0.5, "and sized to it, not to the frame: {m:?}");
+
+        // Changing the shape afterwards keeps the geometry the user has by
+        // then adjusted — only the first choice seeds it.
+        app.edit_selected(&mut doc, |c| c.mask.w = 0.123);
+        let rect = reveal(&mut app, |l| {
+            l.mask_shapes
+                .iter()
+                .find(|(s, _)| *s == crate::model::MaskShape::Rect)
+                .map(|(_, r)| *r)
+        });
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        let m = VideoDoc::load_project(&doc).clip(id).unwrap().mask;
+        assert_eq!(m.shape, crate::model::MaskShape::Rect);
+        assert!((m.w - 0.123).abs() < 1e-9, "the width the user set survived: {m:?}");
+    }
+
+    #[test]
+    fn dragging_a_key_or_mask_slider_writes_it_to_the_document() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(id);
+        app.edit_selected(&mut doc, |c| {
+            c.key.enabled = true;
+            c.mask.shape = crate::model::MaskShape::Rect;
+        });
+        for (f, read) in [
+            (NumField::KeyTolerance, (|c: &Clip| c.key.tolerance) as fn(&Clip) -> f64),
+            (NumField::KeySoftness, |c: &Clip| c.key.softness),
+            (NumField::KeySpill, |c: &Clip| c.key.spill),
+            (NumField::MaskW, |c: &Clip| c.mask.w),
+            (NumField::MaskFeather, |c: &Clip| c.mask.feather),
+            (NumField::MaskRotation, |c: &Clip| c.mask.rotation),
+        ] {
+            let track = reveal(&mut app, |l| l.num(f));
+            let frac = 0.7;
+            click(&mut app, &mut doc, track.x0 + track.width() * frac, track.center().y);
+            release(&mut app, &mut doc);
+            let want = f.from_frac(frac);
+            let got = read(VideoDoc::load_project(&doc).clip(id).unwrap());
+            let span = f.range().1 - f.range().0;
+            assert!(
+                (got - want).abs() < span * 0.05,
+                "{f:?} landed at {got} not ~{want} in the document",
+            );
+        }
+    }
+
+    /// Every key and mask slider carries a keyframe control, because both
+    /// are things that have to move across a shot.
+    #[test]
+    fn the_key_and_mask_sliders_can_be_keyframed_from_the_inspector() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(id);
+        app.playhead = 23.0;
+        app.edit_selected(&mut doc, |c| {
+            c.key.enabled = true;
+            c.mask.shape = crate::model::MaskShape::Ellipse;
+        });
+        for param in [Param::KeyTolerance, Param::MaskX] {
+            let rect = reveal(&mut app, |l| {
+                l.keys.iter().find(|(p, _)| *p == param).map(|(_, r)| *r)
+            });
+            click(&mut app, &mut doc, rect.center().x, rect.center().y);
+            let c = VideoDoc::load_project(&doc).clip(id).unwrap().clone();
+            assert!(c.anim.is_animated(param), "{param:?} has a curve now");
+            assert!(c.has_key_at(param, 23.0), "with a key on the playhead");
+        }
+    }
+
+    /// A screen-reader user and a sighted user have to be navigating the
+    /// same panel. This walks every state the two new sections have — off,
+    /// on, and on an audio clip that has neither — and asserts the reader's
+    /// list of sections and controls is exactly what the layout put on
+    /// screen, never a tidier or a fuller story.
+    #[test]
+    fn the_reader_is_offered_exactly_the_inspector_that_is_on_screen() {
+        let (mut app, mut doc) = app_and_doc();
+        let video = app.project.top_video_clip_at(23.0).unwrap().id;
+        let audio = app
+            .project
+            .clips
+            .iter()
+            .find(|c| {
+                app.project
+                    .track(c.track)
+                    .is_some_and(|t| t.kind == TrackKind::Audio)
+            })
+            .map(|c| c.id);
+
+        let check = |app: &VideoEditorApp, note: &str| {
+            let r = app.regions();
+            let l = app.inspector_layout(&r);
+            let clip = app.selected().and_then(|id| app.project.clip(id)).cloned();
+            let on_screen: Vec<Section> = l.sections.iter().map(|(s, _)| *s).collect();
+            assert_eq!(
+                app.a11y_sections(clip.as_ref()),
+                on_screen,
+                "{note}: the reader's sections must be the drawn sections",
+            );
+            for s in &on_screen {
+                if app.collapsed.contains(s) {
+                    continue;
+                }
+                let spoken = VideoEditorApp::a11y_section_fields(*s, clip.as_ref());
+                for f in &spoken {
+                    assert!(
+                        l.num(*f).is_some(),
+                        "{note}: the reader is offered {f:?} in {s:?}, which is not drawn",
+                    );
+                }
+                // And nothing drawn inside this section is missing from it.
+                // Only the sections that own numeric rows are checked, since
+                // the layout does not tag a row with its section.
+                if matches!(*s, Section::Key | Section::Mask) {
+                    let drawn: Vec<NumField> = l
+                        .nums
+                        .iter()
+                        .map(|(f, _)| *f)
+                        .filter(|f| {
+                            matches!(
+                                f,
+                                NumField::KeyTolerance
+                                    | NumField::KeySoftness
+                                    | NumField::KeySpill
+                            ) == (*s == Section::Key)
+                                && matches!(
+                                    f,
+                                    NumField::KeyTolerance
+                                        | NumField::KeySoftness
+                                        | NumField::KeySpill
+                                        | NumField::MaskX
+                                        | NumField::MaskY
+                                        | NumField::MaskW
+                                        | NumField::MaskH
+                                        | NumField::MaskRotation
+                                        | NumField::MaskFeather
+                                )
+                        })
+                        .collect();
+                    assert_eq!(drawn, spoken, "{note}: {s:?} draws and speaks the same rows");
+                }
+            }
+        };
+
+        app.selection.select_only(video);
+        check(&app, "an untouched video clip");
+        app.edit_selected(&mut doc, |c| {
+            c.key.enabled = true;
+            c.mask.shape = crate::model::MaskShape::Rect;
+        });
+        check(&app, "keyed and masked");
+        app.collapsed.insert(Section::Key);
+        check(&app, "with the key folded away");
+        app.collapsed.remove(&Section::Key);
+
+        if let Some(audio) = audio {
+            app.selection.select_only(audio);
+            let r = app.regions();
+            let l = app.inspector_layout(&r);
+            let on_screen: Vec<Section> = l.sections.iter().map(|(s, _)| *s).collect();
+            assert!(
+                !on_screen.contains(&Section::Key) && !on_screen.contains(&Section::Mask),
+                "an audio clip has no picture to key or mask: {on_screen:?}",
+            );
+            check(&app, "an audio clip");
+        }
+    }
+
+    /// A fold is a view choice. It must never turn into missing state — a
+    /// user who folded the key away still has to be able to see that this
+    /// clip is keyed.
+    #[test]
+    fn folding_the_key_or_mask_still_reports_that_they_are_on() {
+        let (mut app, mut doc) = app_and_doc();
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(id);
+        let clip = app.project.clip(id).unwrap().clone();
+        assert_eq!(app.section_summary(Section::Key, &clip, None), None, "nothing on");
+        assert_eq!(app.section_summary(Section::Mask, &clip, None), None);
+
+        app.edit_selected(&mut doc, |c| {
+            c.key.enabled = true;
+            c.key.tolerance = 0.4;
+            c.mask.shape = crate::model::MaskShape::Ellipse;
+            c.mask.invert = true;
+        });
+        let clip = app.project.clip(id).unwrap().clone();
+        let key = app.section_summary(Section::Key, &clip, None).expect("a key to report");
+        assert!(key.contains("40"), "the folded key states its tolerance: {key:?}");
+        let mask = app.section_summary(Section::Mask, &clip, None).expect("a mask to report");
+        assert!(
+            mask.contains("ellipse") && mask.contains("invert"),
+            "the folded mask states its shape and that it is inverted: {mask:?}",
+        );
+
+        // A key switched on but keying nothing is a distinct state from off,
+        // and a fold that reported neither would hide both.
+        app.edit_selected(&mut doc, |c| c.key.tolerance = 0.0);
+        let clip = app.project.clip(id).unwrap().clone();
+        let key = app.section_summary(Section::Key, &clip, None).expect("still on");
+        assert!(key.contains("keys nothing"), "and says it is doing nothing: {key:?}");
     }
 
     #[test]

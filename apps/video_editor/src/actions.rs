@@ -1386,17 +1386,61 @@ mod tests {
             c.set_key_at(Param::Opacity, 3.0, 0.9, Interp::Hold);
             c.transition_duration = 1.25;
             c.add_marker(1.0, "beat", 2);
+            c.key = crate::model::ChromaKey {
+                enabled: true,
+                color: [0.09, 0.71, 0.18],
+                tolerance: 0.26,
+                softness: 0.08,
+                spill: 0.55,
+            };
+            c.mask = crate::model::Mask {
+                shape: crate::model::MaskShape::Rect,
+                x: 0.12,
+                y: -0.34,
+                w: 0.55,
+                h: 0.42,
+                rotation: 12.0,
+                feather: 0.19,
+                invert: true,
+            };
+            c.set_key_at(Param::MaskX, 2.0, 0.4, Interp::Linear);
         }
         let want = p.clip(cid).unwrap().clone();
         let data = ClipData::from_clip(&want);
         let back = data.to_clip().expect("round-trips");
         assert_eq!(back, want, "the wire payload is lossless");
+        // Through serde too, which is how it actually travels — a field
+        // missing its `serde` attribute survives the struct copy above and
+        // is dropped the moment it is encoded.
+        let wire = serde_json::to_vec(&data).expect("encodes");
+        let decoded: ClipData = serde_json::from_slice(&wire).expect("decodes");
+        assert_eq!(decoded.to_clip().expect("rebuilds"), want, "and over the wire");
 
         // And through a real document.
         let mut doc = AutoCommit::new();
         VideoDoc::write_project(&mut doc, &p);
         VideoEditorAction::UpsertClip(data).apply(&mut doc).expect("applies");
         assert_eq!(VideoDoc::load_project(&doc).clip(cid).unwrap(), &want);
+    }
+
+    /// A peer that predates keying sends a payload with no `key`/`mask`
+    /// field at all. That has to read as "not keyed, not masked" — the
+    /// composite that peer is already drawing — rather than failing the
+    /// decode and wedging the replay.
+    #[test]
+    fn a_payload_from_before_keying_reads_as_unkeyed_and_unmasked() {
+        let (ctx, cid) = ctx_fixture();
+        let want = ctx.project.clip(cid).unwrap().clone();
+        let mut json: serde_json::Value =
+            serde_json::to_value(ClipData::from_clip(&want)).expect("encodes");
+        let obj = json.as_object_mut().expect("a map on the wire");
+        assert!(obj.remove("key").is_some(), "the field is there to remove");
+        assert!(obj.remove("mask").is_some());
+        let older: ClipData = serde_json::from_value(json).expect("an older payload still decodes");
+        let c = older.to_clip().expect("and still rebuilds");
+        assert!(!c.key.is_active(), "absent means nothing is keyed");
+        assert!(!c.mask.is_active(), "absent means the layer is not cut");
+        assert_eq!(c, want, "and nothing else about the clip moved");
     }
 
     #[test]
