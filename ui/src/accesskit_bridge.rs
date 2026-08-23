@@ -219,6 +219,59 @@ fn widget_node_id(taffy_id: Option<TaffyNodeId>, walk_index: u64) -> AkNodeId {
     }
 }
 
+/// Reverse of the `App`'s `taffy::NodeId -> *mut dyn Widget` map: given a
+/// `&dyn Widget` encountered during the walk, which taffy node is it?
+///
+/// Matching on the raw `*const dyn Widget` alone is not enough. A widget
+/// registers itself in `build_layout` as `self as *mut dyn Widget`, and the walk
+/// sees it through a `&dyn Widget` coerced somewhere else entirely; those are
+/// *fat* pointers, and Rust does not promise that two coercions of the same type
+/// carry the same vtable address — for a generic widget like
+/// [`DataTable`](crate::widget::DataTable) they routinely don't. A fat-pointer
+/// lookup then misses, the widget silently falls back to a structural id, and
+/// everything hanging off it (its synthetic rows, and any action aimed at them)
+/// becomes unaddressable.
+///
+/// So match on the **data address**, which uniquely identifies a live object,
+/// and keep the fat-pointer map as the precise first pass. The one case a data
+/// address cannot separate is a widget stored inline as another widget's first
+/// field, where parent and child share an address; that is recorded as
+/// ambiguous and resolved only if the fat pointers happen to disambiguate it,
+/// rather than guessing and handing two nodes the same id.
+struct WidgetIndex {
+    by_fat: HashMap<*const dyn Widget, TaffyNodeId>,
+    /// `None` = two or more widgets share this address; do not guess.
+    by_addr: HashMap<*const (), Option<TaffyNodeId>>,
+}
+
+impl WidgetIndex {
+    fn build(node_map: &HashMap<TaffyNodeId, *mut dyn Widget>) -> Self {
+        let mut by_fat: HashMap<*const dyn Widget, TaffyNodeId> = HashMap::new();
+        let mut by_addr: HashMap<*const (), Option<TaffyNodeId>> = HashMap::new();
+        for (&taffy_id, &w_ptr) in node_map {
+            let fat = w_ptr as *const dyn Widget;
+            by_fat.insert(fat, taffy_id);
+            by_addr
+                .entry(fat.cast::<()>())
+                .and_modify(|slot| {
+                    if *slot != Some(taffy_id) {
+                        *slot = None;
+                    }
+                })
+                .or_insert(Some(taffy_id));
+        }
+        Self { by_fat, by_addr }
+    }
+
+    fn taffy_id_of(&self, w: &dyn Widget) -> Option<TaffyNodeId> {
+        let fat = w as *const dyn Widget;
+        if let Some(&id) = self.by_fat.get(&fat) {
+            return Some(id);
+        }
+        self.by_addr.get(&fat.cast::<()>()).copied().flatten()
+    }
+}
+
 /// Bit that marks an [`accesskit::NodeId`] as belonging to a **synthetic**
 /// node (one with no backing [`Widget`]). Widget ids are `taffy_id + 1` or
 /// `(1 << 48) + index`, neither of which can reach bit 63 for any tree that
@@ -293,12 +346,9 @@ pub fn resolve_node_id(
             .then_some(A11yTarget::Widget(taffy_id));
     }
 
-    let mut ptr_to_taffy: HashMap<*const dyn Widget, TaffyNodeId> = HashMap::new();
-    for (&taffy_id, &w_ptr) in node_map {
-        ptr_to_taffy.insert(w_ptr as *const dyn Widget, taffy_id);
-    }
+    let index = WidgetIndex::build(node_map);
     let mut walk_counter: u64 = 0;
-    search_synthetic(root, &ptr_to_taffy, id, &mut walk_counter)
+    search_synthetic(root, &index, id, &mut walk_counter)
 }
 
 /// Depth-first hunt for the widget whose synthetic subtree contains `wanted`,
@@ -306,19 +356,19 @@ pub fn resolve_node_id(
 /// ids line up with the ones [`build_tree_update`] emitted.
 fn search_synthetic(
     w: &dyn Widget,
-    ptr_to_taffy: &HashMap<*const dyn Widget, TaffyNodeId>,
+    index: &WidgetIndex,
     wanted: AkNodeId,
     walk_counter: &mut u64,
 ) -> Option<A11yTarget> {
     let access = w.accessibility();
-    let taffy_id = ptr_to_taffy.get(&(w as *const dyn Widget)).copied();
+    let taffy_id = index.taffy_id_of(w);
 
     match access {
         Some(access_node) => {
             let owner_id = widget_node_id(taffy_id, *walk_counter);
             *walk_counter += 1;
             for child in w.children() {
-                if let Some(hit) = search_synthetic(child, ptr_to_taffy, wanted, walk_counter) {
+                if let Some(hit) = search_synthetic(child, index, wanted, walk_counter) {
                     return Some(hit);
                 }
             }
@@ -335,7 +385,7 @@ fn search_synthetic(
         None => {
             *walk_counter += 1;
             for child in w.children() {
-                if let Some(hit) = search_synthetic(child, ptr_to_taffy, wanted, walk_counter) {
+                if let Some(hit) = search_synthetic(child, index, wanted, walk_counter) {
                     return Some(hit);
                 }
             }
@@ -389,12 +439,7 @@ pub fn build_tree_update(
     focused: Option<TaffyNodeId>,
     scale: f64,
 ) -> TreeUpdate {
-    // Reverse map: widget pointer -> taffy id, so we can look up a stable id
-    // for any &dyn Widget we encounter during the walk.
-    let mut ptr_to_taffy: HashMap<*const dyn Widget, TaffyNodeId> = HashMap::new();
-    for (&taffy_id, &w_ptr) in node_map {
-        ptr_to_taffy.insert(w_ptr as *const dyn Widget, taffy_id);
-    }
+    let index = WidgetIndex::build(node_map);
 
     let focused_ak = focused.map(|t| AkNodeId(u64::from(t) + 1));
 
@@ -411,7 +456,7 @@ pub fn build_tree_update(
     let mut root_children: Vec<AkNodeId> = Vec::new();
     visit(
         root,
-        &ptr_to_taffy,
+        &index,
         scale,
         focused,
         &mut walk_counter,
@@ -454,7 +499,7 @@ pub fn build_tree_update(
 #[allow(clippy::too_many_arguments)]
 fn visit(
     w: &dyn Widget,
-    ptr_to_taffy: &HashMap<*const dyn Widget, TaffyNodeId>,
+    index: &WidgetIndex,
     scale: f64,
     focused: Option<TaffyNodeId>,
     walk_counter: &mut u64,
@@ -463,8 +508,7 @@ fn visit(
     active_descendant: &mut Option<AkNodeId>,
 ) {
     let access = w.accessibility();
-    let w_ptr = w as *const dyn Widget;
-    let taffy_id = ptr_to_taffy.get(&w_ptr).copied();
+    let taffy_id = index.taffy_id_of(w);
 
     match access {
         Some(access_node) => {
@@ -480,7 +524,7 @@ fn visit(
             for child in w.children() {
                 visit(
                     child,
-                    ptr_to_taffy,
+                    index,
                     scale,
                     focused,
                     walk_counter,
@@ -516,7 +560,7 @@ fn visit(
             for child in w.children() {
                 visit(
                     child,
-                    ptr_to_taffy,
+                    index,
                     scale,
                     focused,
                     walk_counter,
