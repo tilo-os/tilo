@@ -1,10 +1,11 @@
 use automerge::{AutoCommit, ObjId, ROOT};
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use crate::record::{RecordCheckout, RecordId, RecordStore};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format};
+use vello::peniko::{Blob, Color, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format};
 use winit::event::WindowEvent;
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::Widget;
@@ -30,6 +31,19 @@ const SPAWN_SCALE_START: f64 = 0.95;
 /// reads as a drawn outline around the app rather than as the boundary
 /// of a surface.
 const EDGE_STROKE_WIDTH: f64 = 1.0;
+
+/// Width of that same hairline on the window the keyboard is aimed at.
+/// Still an edge, not a fence: the focused window's boundary is drawn a
+/// half-pixel heavier and in the focus colour, so it reads as *this*
+/// surface being lit rather than as a rectangle laid over the layout.
+const FOCUS_EDGE_STROKE_WIDTH: f64 = 1.6;
+
+/// Global multiplier on the focused window's tinted bloom. The ambient
+/// shadow every window casts sits at 0.25; the focused one adds this on
+/// top in the theme's focus hue, which is enough to pick the window out
+/// of a strip at a glance without the bloom becoming the loudest thing
+/// on screen.
+const FOCUS_BLOOM_ALPHA: f32 = 0.30;
 
 /// Side length of the pre-baked radial shadow sprite. 256 px keeps the
 /// one-shot RGBA8 allocation tiny (256 KiB) while being large enough
@@ -107,12 +121,30 @@ fn ambient_shadow_sprite() -> &'static Image {
     SPRITE.get_or_init(|| build_shadow_sprite(0, 0, 0))
 }
 
-/// Cached indigo bloom sprite used for the focused-tile
-/// `shadow-[0_0_60px_rgba(99,102,241,0.6)]`. RGB = `#6366f1`
-/// (indigo-500).
-fn indigo_bloom_sprite() -> &'static Image {
-    static SPRITE: OnceLock<Image> = OnceLock::new();
-    SPRITE.get_or_init(|| build_shadow_sprite(0x63, 0x66, 0xf1))
+/// The focused window's bloom sprite, tinted with the theme's own focus
+/// colour.
+///
+/// This used to bake `#6366f1` — Tailwind indigo-500 — into the binary,
+/// which meant the focus bloom was the same violet on a warm light
+/// palette, on the graphite dark one, and on high-contrast, where the
+/// focus colour is a high-visibility yellow and a violet glow says
+/// nothing at all. Colours belong to the theme (see `ui/HIG.md` §9.4),
+/// so the tint is now a parameter.
+///
+/// Sprites are cached per RGB triple rather than rebuilt each frame:
+/// baking one is a 256x256 pass over 65k pixels, and a session uses one
+/// tint until the user changes theme, so the map holds a single entry in
+/// the common case and one more per theme actually visited.
+fn focus_bloom_sprite(tint: Color) -> Image {
+    static SPRITES: OnceLock<Mutex<HashMap<[u8; 3], Image>>> = OnceLock::new();
+    let rgba = tint.to_rgba8();
+    let key = [rgba.r, rgba.g, rgba.b];
+    let cache = SPRITES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    cache
+        .entry(key)
+        .or_insert_with(|| build_shadow_sprite(key[0], key[1], key[2]))
+        .clone()
 }
 
 /// Stretch a cached shadow sprite across `target`, modulated by `alpha`
@@ -267,10 +299,9 @@ pub struct TileHost {
     /// announced once per change rather than every frame.
     announced: Option<RecordId>,
     rect: Rect,
-    /// Set by the parent `WindowGroup` each frame to indicate whether
-    /// this tile is the "focused" tile — the concept's
-    /// `shadow-[0_0_60px_rgba(99,102,241,0.6)]` bloom
-    /// (`WindowFrame.tsx:359`) is painted only when this is true.
+    /// Set by the parent `WindowGroup` each frame: is this the tile the
+    /// keyboard is aimed at? Drives both halves of the focus signal —
+    /// the tinted bloom under the card and the lit card edge.
     pub focused: bool,
     /// Timestamp at which this TileHost was marked "newly spawned".
     /// When set, `draw` applies an ease-out-cubic fade + uniform scale
@@ -361,8 +392,8 @@ impl TileHost {
     pub fn content_mut(&mut self) -> &mut TileContent { &mut self.content }
     /// What this tile is showing, read-only.
     pub fn content(&self) -> &TileContent { &self.content }
-    /// Toggle the indigo-bloom shadow. Called by `WindowGroup::draw`
-    /// before dispatching to the active host.
+    /// Mark this tile as the one the keyboard is aimed at. Called by
+    /// `WindowGroup::draw` before dispatching to the active host.
     pub fn set_focused(&mut self, focused: bool) { self.focused = focused; }
 
     /// Latch the concept-parity spawn fade-in (opacity 0→1, scale
@@ -702,11 +733,18 @@ impl TileHost {
             ambient_target,
             0.25,
         );
-        // Focused-only indigo bloom
-        // (`shadow-[0_0_60px_rgba(99,102,241,0.6)]`): wider bleed,
-        // centred (no y-offset), tinted indigo-500. Only painted when
-        // the parent `WindowGroup` marks this tile focused — matches
-        // the concept's `isSearching` predicate in WindowFrame.tsx:359.
+        // The focused window's bloom: the same radial sprite as the
+        // ambient shadow, but wider, centred (no y-offset), and tinted
+        // with the theme's focus colour.
+        //
+        // This is the "which window is the keyboard aimed at" signal,
+        // and it is deliberately a *deeper shadow* rather than a line
+        // drawn around the window. A strip of non-overlapping windows
+        // has no z-order to read focus from, so the focused one has to
+        // announce itself — but announcing it by fencing off the
+        // content area draws a shape that belongs to nothing else on
+        // screen. Lighting the window's own footprint keeps the signal
+        // attached to the object it describes.
         if self.focused {
             let bloom_pad = 120.0_f64;
             let bloom_target = Rect::new(
@@ -718,9 +756,9 @@ impl TileHost {
             draw_shadow_sprite(
                 scene,
                 transform,
-                indigo_bloom_sprite(),
+                &focus_bloom_sprite(theme.tokens.colors.border_focus),
                 bloom_target,
-                0.6,
+                FOCUS_BLOOM_ALPHA,
             );
         }
         // White rounded-3xl card (concept: `bg-white` `rounded-3xl`
@@ -785,15 +823,27 @@ impl TileHost {
         // its interior. The corner radius grows by the same half-width
         // so the offset band stays concentric with the card's arc
         // instead of pinching at the corners.
-        let half = EDGE_STROKE_WIDTH / 2.0;
+        //
+        // Focus is carried on this same edge rather than by a second
+        // stroke outside it. Two concentric rings around one card is
+        // how the old maximize / search rings read — a hairline, then a
+        // gap, then a heavier line that belonged to neither the card
+        // nor the desktop. One edge that changes colour and weight says
+        // the same thing and leaves the silhouette intact.
+        let (edge_width, edge_color) = if self.focused {
+            (FOCUS_EDGE_STROKE_WIDTH, theme.tokens.colors.border_focus)
+        } else {
+            (EDGE_STROKE_WIDTH, theme.window_edge())
+        };
+        let half = edge_width / 2.0;
         let edge = RoundedRect::from_rect(
             self.rect.inflate(half, half),
             radius + half,
         );
         scene.stroke(
-            &vello::kurbo::Stroke::new(EDGE_STROKE_WIDTH),
+            &vello::kurbo::Stroke::new(edge_width),
             transform,
-            theme.window_edge(),
+            edge_color,
             None,
             &edge,
         );
