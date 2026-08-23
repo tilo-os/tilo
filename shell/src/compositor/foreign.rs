@@ -834,15 +834,18 @@ impl ForeignFrameStore {
     /// - **A capture failed.** Then there is something to say, and the
     ///   tile says it. An app that cannot be shown must not be silently
     ///   invisible.
-    /// - **A frame has landed that fits the tab.** Not merely a frame:
+    /// - **A frame has landed that answers the tab.** Not merely a frame:
     ///   the first buffer a client commits is the size *it* chose, because
     ///   the compositor's opening configure carries no size and the real
     ///   one is only sent once the tab has been laid out. Painting that
     ///   first buffer means [`ForeignSurfaceWidget::fit_rect`] scales it
     ///   to fit — the app appears magnified, then snaps down to 1:1 when
     ///   the correctly-sized buffer arrives a moment later. Waiting for a
-    ///   frame that already fits is what makes an opened window keep the
-    ///   size it opened at.
+    ///   frame sized to the tab is what makes an opened window keep the
+    ///   size it opened at. What counts as sized to the tab is [`fills`],
+    ///   and it has to admit a client that keeps a strip of that size for
+    ///   decorations it draws itself — otherwise the answer never comes
+    ///   and the window waits out the grace below.
     /// - **[`PRESENT_GRACE`] has passed.** The backstop, and the reason
     ///   this cannot strand a window: an app that never presents, or one
     ///   whose buffers never match its tab, becomes visible anyway and
@@ -888,15 +891,33 @@ pub(crate) const OPENING_DELAY: Duration = Duration::from_millis(250);
 /// app which is never going to paint stops being a hole in the strip.
 const PRESENT_GRACE: Duration = Duration::from_secs(10);
 
-/// Whether a `w`x`h` buffer, fitted into `tile` the way
-/// [`ForeignSurfaceWidget::fit_rect`] fits it, covers that tile.
+/// Whether a `w`x`h` buffer is this client's answer to the tab it was
+/// configured into, rather than the size it picked before being asked.
 ///
-/// `fit_rect` scales uniformly by the smaller of the two ratios, so the
-/// buffer covers the tile exactly when its aspect ratio matches — any
-/// mismatch leaves a band down one side, and closing that band later is
-/// the visible resize. Sizes are not compared directly because they need
-/// not be equal to look right: a buffer twice the tile in both axes is
-/// drawn at exactly the tile, sharper and in the same place.
+/// Two ways to be an answer, because there are two kinds of client.
+///
+/// **It covers the tab.** `fit_rect` scales uniformly by the smaller of
+/// the two ratios, so a buffer covers the tile exactly when its aspect
+/// ratio matches. Sizes are not compared directly because they need not
+/// be equal to look right: a buffer twice the tile in both axes is drawn
+/// at exactly the tile, sharper and in the same place.
+///
+/// **It fits inside the tab and matches one of its axes.** A client that
+/// draws its own frame keeps the title bar out of the size it was given
+/// and commits the remainder, so it answers one axis exactly and comes up
+/// short on the other — for ever, because there is no later buffer in
+/// which it gives that strip back. Every winit client on this compositor
+/// is such a client: no `xdg_decoration` global is advertised, so the
+/// toolkit falls back to decorating itself. Configured 670x668 they all
+/// commit 670x633, which under the covering test alone was not an answer
+/// at all, and their windows waited out [`PRESENT_GRACE`] — ten seconds
+/// of empty tab over an app that had painted in two.
+///
+/// Overflowing either axis is what still disqualifies the opening buffer:
+/// a client's own idea of its size is not derived from the tab and does
+/// not fit inside it. That is the frame this gate exists to keep off
+/// screen, and it is kept off screen by the same arm that admits the
+/// decorated one.
 ///
 /// The half-percent tolerance absorbs the rounding in the logical-size
 /// configure (a 1-px disagreement at 1400 px is 0.07%) without admitting
@@ -905,10 +926,21 @@ fn fills(w: u32, h: u32, tile: Rect) -> bool {
     if w == 0 || h == 0 || tile.width() <= 0.0 || tile.height() <= 0.0 {
         return false;
     }
-    let scale = (tile.width() / w as f64).min(tile.height() / h as f64);
-    let covers = |drawn: f64, avail: f64| drawn / avail >= 0.995;
-    covers(w as f64 * scale, tile.width()) && covers(h as f64 * scale, tile.height())
+    let (bw, bh) = (w as f64, h as f64);
+    let scale = (tile.width() / bw).min(tile.height() / bh);
+    let at_least = |a: f64, b: f64| a >= b * (1.0 - FIT_TOLERANCE);
+    let at_most = |a: f64, b: f64| a <= b * (1.0 + FIT_TOLERANCE);
+    if at_least(bw * scale, tile.width()) && at_least(bh * scale, tile.height()) {
+        return true;
+    }
+    at_most(bw, tile.width())
+        && at_most(bh, tile.height())
+        && (at_least(bw, tile.width()) || at_least(bh, tile.height()))
 }
+
+/// How far a buffer may disagree with its tab and still be the same
+/// size. See [`fills`].
+const FIT_TOLERANCE: f64 = 0.005;
 
 // ---------------------------------------------------------------------------
 // The widget
@@ -1658,6 +1690,36 @@ mod tests {
         store().forget(id);
     }
 
+    /// A client that answered the size it was configured to, less the
+    /// strip its own toolkit kept for decorations, has arrived.
+    ///
+    /// This is not a hypothetical. The compositor advertises no
+    /// `xdg_decoration` global, so every winit client falls back to
+    /// drawing its own frame and reserves the title bar out of the size
+    /// it was given: configured 670x668, it commits 670x633 and never
+    /// commits anything else. Measured on the launch path with all four
+    /// of Files, the word processor, the calculator and Notes.
+    ///
+    /// Judged on aspect alone that buffer never fits, so the window was
+    /// held back until [`PRESENT_GRACE`] ran out — ten seconds of empty
+    /// tab over an app that had painted in two.
+    #[test]
+    fn a_frame_short_by_the_clients_own_decorations_is_shown() {
+        let id = sid(45);
+        store().forget(id);
+        store().note_placement(id, TILE);
+        // The tab less a title bar the client kept for itself.
+        let (w, h) = (1200u32, 765u32);
+        store().publish_rgba(id, &vec![0; (w * h * 4) as usize], w, h);
+        assert!(
+            store().mark_presented(id, TILE),
+            "{w}x{h} is the tab's width and answers its height as closely \
+             as a client that draws its own frame ever will — waiting for \
+             it to give that strip back is waiting for the grace period",
+        );
+        store().forget(id);
+    }
+
     /// Any buffer whose aspect matches is drawn at exactly the tab, so
     /// the one that follows it changes nothing the user can see.
     #[test]
@@ -1709,7 +1771,7 @@ mod tests {
     /// sit through, so what is proved here is that a mismatch is the
     /// only thing keeping the window back.
     #[test]
-    fn fills_accepts_the_tabs_aspect_and_nothing_else() {
+    fn fills_accepts_a_buffer_sized_to_the_tab_and_nothing_else() {
         assert!(fills(1200, 800, TILE));
         assert!(fills(300, 200, TILE), "same aspect, quarter size");
         assert!(!fills(800, 600, TILE));
@@ -1718,6 +1780,20 @@ mod tests {
         assert!(
             !fills(1200, 800, Rect::ZERO),
             "a tab with no area cannot be judged against",
+        );
+
+        // A client that kept a title bar out of the size it was given:
+        // one axis answered exactly, the other short, nothing overflowing.
+        assert!(fills(1200, 765, TILE), "short by a title bar it drew itself");
+        assert!(fills(1160, 800, TILE), "short by a frame down one side");
+        assert!(
+            !fills(1210, 765, TILE),
+            "wider than the tab is not an answer to it, however close",
+        );
+        assert!(
+            !fills(600, 500, TILE),
+            "inside the tab but answering neither axis is the client's own \
+             idea of its size, which is the frame this gate keeps back",
         );
     }
 
