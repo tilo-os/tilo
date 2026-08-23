@@ -187,6 +187,7 @@ page-indicator = Page { $n }
 # On-page placeholders (a missing/undecodable image; an embedded object we render
 # as a fidelity box rather than its content).
 canvas-image-missing = image
+canvas-image-loading = image arriving
 canvas-embedded-content = ⟦ embedded content ⟧
 canvas-empty-placeholder = Start writing…
 toolbar-history = History

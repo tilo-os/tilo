@@ -730,6 +730,48 @@ fn block_presence_key(block_id: &str) -> PresenceKey {
     }
 }
 
+/// The on-screen bands a peer's just-typed run covers inside one laid-out
+/// block, as `(user, [(rect, fade)])` in page content space.
+///
+/// One geometry source for two callers: the draw pass, which paints these
+/// bands under the block's glyphs, and
+/// [`WordProcessorWidget::remote_typing_overlays`], which is what the geometry
+/// test reads back. Splitting them would let the test drift away from the
+/// rects that actually reach the screen.
+fn typing_bands_for_block(
+    l: &Laid,
+    layout: &RichTextLayout,
+    presence: &PresenceCtx,
+    now: std::time::Instant,
+) -> Vec<(UserId, Vec<(Rect, f32)>)> {
+    let key = block_presence_key(&l.id);
+    let mut out = Vec::new();
+    for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
+        if range.start >= range.end {
+            continue;
+        }
+        let spans: Vec<(Rect, f32)> = layout
+            .selection_rects(range.start, range.end)
+            .into_iter()
+            .map(|(rx0, ry0, rx1, ry1)| {
+                (
+                    Rect::new(
+                        l.text_x + rx0 as f64,
+                        l.layout_y + ry0 as f64,
+                        l.text_x + rx1 as f64,
+                        l.layout_y + ry1 as f64,
+                    ),
+                    alpha,
+                )
+            })
+            .collect();
+        if !spans.is_empty() {
+            out.push((user, spans));
+        }
+    }
+    out
+}
+
 /// A resolved remote collaborator caret to paint this frame: the on-screen
 /// caret rectangle (in *content* space, ready to be mapped through the page
 /// content transform), the peer's id (for colour + the name label), and the
@@ -984,6 +1026,55 @@ fn image_wrap(b: &BlockView) -> &str {
 /// `width`/`height` attrs (set by the ODF/OOXML importers and the model on
 /// insert). `None` when either dimension is missing, so callers fall back to the
 /// decoded intrinsic size. Accepts `Int` or `Float`.
+/// Where a peer's name pill sits for a caret on a given line.
+///
+/// `caret` is the caret bar in page content space — its top and bottom are the
+/// line's, which is what the pill aligns to. `column` and `page` are the
+/// left/right edges of the text column and of the page.
+///
+/// Vertically the pill is centred on the caret's own line, so it names one
+/// line and reaches into neither neighbour. Horizontally it goes out into the
+/// margin, the only part of a page guaranteed to have nothing to read on it:
+/// the right margin by preference, where this app already keeps its comment
+/// and change indicators, and the left one when the name will not fit on the
+/// right. A name too long for either margin is truncated to fit rather than
+/// allowed to run back over the words.
+fn caret_label_rect(
+    want_w: f64,
+    chip_h: f64,
+    caret: Rect,
+    column: (f64, f64),
+    page: (f64, f64),
+) -> Rect {
+    // Gap between the pill and the text column it sits beside.
+    const GAP: f64 = 6.0;
+    let y = (caret.y0 + caret.y1) / 2.0 - chip_h / 2.0;
+    let right_room = (page.1 - column.1 - GAP * 2.0).max(0.0);
+    let left_room = (column.0 - page.0 - GAP * 2.0).max(0.0);
+    let w = want_w.min(right_room.max(left_room)).max(2.0);
+    let x = if w <= right_room {
+        column.1 + GAP
+    } else {
+        column.0 - GAP - w
+    };
+    Rect::new(x, y, x + w, y + chip_h)
+}
+
+/// The image's *intrinsic* pixel size, as recorded beside the blob reference.
+///
+/// Not to be confused with `width`/`height`, which are a **requested display**
+/// size — set by an importer or a resize handle, and usually absent. `blob_w`
+/// and `blob_h` are the content's own dimensions, written when the image was
+/// ingested, and they are the only size available before a single byte of it
+/// has arrived. Written as integers only, so an `Int` match is exhaustive.
+fn image_blob_size(b: &BlockView) -> Option<(u32, u32)> {
+    let dim = |key: &str| match b.attrs.get(key) {
+        Some(AttrVal::Int(n)) if *n > 0 => Some(*n as u32),
+        _ => None,
+    };
+    Some((dim("blob_w")?, dim("blob_h")?))
+}
+
 fn image_explicit_size(b: &BlockView) -> Option<(f64, f64)> {
     let dim = |key: &str| match b.attrs.get(key) {
         Some(AttrVal::Int(n)) if *n > 0 => Some(*n as f64),
@@ -4745,8 +4836,16 @@ impl Widget for WordProcessorWidget {
                     _ => String::new(),
                 };
                 if !hash.is_empty() && !self.image_cache.contains_key(&hash) {
-                    let decoded = self.blobs.get(&hash).and_then(|bytes| ui::widget::Image::from_encoded(bytes).ok());
-                    self.image_cache.insert(hash.clone(), decoded);
+                    // Only record a verdict once the bytes are actually here.
+                    // The reference and the content travel separately, so a
+                    // `blobs` miss means "not yet", not "never" — caching that
+                    // as `None` would pin the block to its placeholder for the
+                    // life of the document and the image would never appear,
+                    // however promptly it landed.
+                    if let Some(bytes) = self.blobs.get(&hash) {
+                        let decoded = ui::widget::Image::from_encoded(bytes).ok();
+                        self.image_cache.insert(hash.clone(), decoded);
+                    }
                 }
                 let intrinsic = self.image_cache.get(&hash).and_then(|o| o.as_ref()).map(|im| im.intrinsic_size());
                 // Display size: an explicit `width`/`height` attr (set by importers
@@ -4759,7 +4858,13 @@ impl Widget for WordProcessorWidget {
                         let w = ew.min(content_w as f64);
                         (w, (eh * (w / ew)).max(8.0))
                     }
-                    _ => match intrinsic {
+                    // The recorded intrinsic size comes before the decoded one
+                    // so that a block reserves the space its image will need
+                    // *before* the bytes arrive. Without it a not-yet-arrived
+                    // image sat at the 280x90 fallback and jumped to its real
+                    // size on landing, reflowing every paragraph below it on a
+                    // live shared document — possibly under someone's cursor.
+                    _ => match image_blob_size(b).or(intrinsic) {
                         Some((iw, ih)) if iw > 0 && ih > 0 => {
                             let w = (iw as f64).min(content_w as f64);
                             (w, (ih as f64 * (w / iw as f64)).max(8.0))
@@ -5208,6 +5313,7 @@ impl Widget for WordProcessorWidget {
         // Pass 2: draw cell borders, bullets, selection, text, caret. Everything
         // here renders through `ctf` (the zoom transform) so page content scales
         // while the surrounding chrome stays at 100%.
+        let now = std::time::Instant::now();
         for l in &laid {
             if l.kind == "image" {
                 let rect = Rect::new(l.text_x, l.y_top, l.text_x + l.width, l.y_top + l.height);
@@ -5234,17 +5340,30 @@ impl Widget for WordProcessorWidget {
                 } else {
                     ctf
                 };
-                if let Some(hash) = &l.image_hash {
-                    if let Some(slot) = self.image_cache.get_mut(hash) {
-                        if let Some(img) = slot {
+                // Three states, and the reader is told which one they are
+                // looking at. A blob still on its way is a normal condition on
+                // a slow link — and a peer may legitimately never fetch one —
+                // so it cannot be left as blank space, which is exactly what a
+                // broken image looks like.
+                let pending = match &l.image_hash {
+                    Some(hash) => match self.image_cache.get_mut(hash) {
+                        // Decoded: paint it.
+                        Some(Some(img)) => {
                             img.paint_at(scene, itf, rect);
+                            None
                         }
-                    }
-                } else {
-                    // Missing or undecodable (e.g. non-PNG) image — placeholder.
+                        // The bytes arrived and would not decode.
+                        Some(None) => Some(t("canvas-image-missing")),
+                        // The reference is here and the content is not.
+                        None => Some(t("canvas-image-loading")),
+                    },
+                    // An image block with no blob reference at all.
+                    None => Some(t("canvas-image-missing")),
+                };
+                if let Some(msg) = pending {
                     scene.fill(Fill::NonZero, ctf, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
                     scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, Color::from_rgb8(0xcc, 0xce, 0xd6), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
-                    text_renderer.draw_text(scene, &t("canvas-image-missing"), 14.0, PAPER_MUTED, ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)), None);
+                    text_renderer.draw_text(scene, &msg, 14.0, PAPER_MUTED, ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)), None);
                 }
                 // Selection chrome: when this image is the caret's block, ring it
                 // with an accent border + corner resize handles so it reads as
@@ -5304,6 +5423,27 @@ impl Widget for WordProcessorWidget {
             let clipped = l.clip.is_some();
             if let Some(band) = l.clip {
                 scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, ctf, &band);
+            }
+
+            // A peer's fading "just typed" marker, laid down with the other
+            // under-the-text bands.
+            //
+            // It has to go *under* the glyphs. Painted over them it is a wash
+            // that drags ink and paper toward the same pigment together: a
+            // fresh mark measured 2.1:1 between the two, for every hue in the
+            // palette, where unmarked body text reads about 15:1. Beneath
+            // them the ink stays ink and only the paper takes the colour —
+            // which is also what a highlighter physically is.
+            for (user, spans) in typing_bands_for_block(l, layout, presence, now) {
+                let mapped: Vec<(Rect, f32)> = spans
+                    .iter()
+                    .map(|(r, a)| {
+                        let p0 = ctf * Point::new(r.x0, r.y0);
+                        let p1 = ctf * Point::new(r.x1, r.y1);
+                        (Rect::new(p0.x, p0.y, p1.x, p1.y), *a)
+                    })
+                    .collect();
+                presence.draw_peer_typing(scene, theme, &user, &mapped);
             }
 
             if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
@@ -5677,14 +5817,6 @@ impl Widget for WordProcessorWidget {
         // when the PresenceCtx carries no remote carets/selections (single-user,
         // no broker), so single-user rendering is unchanged.
         let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
-        // A peer's just-typed run, glowing in their colour and fading. Drawn
-        // first so it sits under the selection and the caret: it is a
-        // property of the text, not another cursor competing with them.
-        for (user, spans) in
-            self.remote_typing_overlays(presence, std::time::Instant::now())
-        {
-            presence.draw_peer_typing(scene, theme, &user, &spans);
-        }
         for sel in &remote_selections {
             for r in &sel.rects {
                 presence.draw_peer_selection(scene, theme, ctf, &sel.user, *r);
@@ -5700,8 +5832,9 @@ impl Widget for WordProcessorWidget {
                 presence,
                 &c.user,
                 &c.label,
-                c.rect.x0,
-                c.rect.y0,
+                c.rect,
+                (page_x + m.left, page_x + page_w - m.right),
+                (page_x, page_x + page_w),
             );
         }
 
@@ -6773,10 +6906,24 @@ impl WordProcessorWidget {
         (carets, selections)
     }
 
-    /// Paint a small rounded name pill in the peer's colour, anchored just above
-    /// a remote caret at content-space `(caret_x, caret_top)`, so a user can see
-    /// *who* is editing where. Drawn through the page content transform `ctf` so
-    /// it tracks the page as it scrolls/zooms, exactly like the caret it labels.
+    /// Paint a small rounded name pill in the peer's colour beside the line a
+    /// remote caret sits on, so a user can see *who* is editing where. Drawn
+    /// through the page content transform `ctf` so it tracks the page as it
+    /// scrolls/zooms, exactly like the caret it labels.
+    ///
+    /// `caret` is the caret bar in content space — its top and bottom are the
+    /// line's, which is what the pill aligns to. `column` and `page` are the
+    /// left/right edges of the text column and of the page.
+    ///
+    /// # Why it is not above the caret
+    ///
+    /// It was, and that is only safe on the first line of a block. On a
+    /// wrapped line "above" is the *previous line of the same paragraph*, so
+    /// the pill landed squarely on top of a word somebody was reading —
+    /// `The files[Agent]n projects`, with a word gone. Below fails the same
+    /// way on the last line, and beside-the-caret covers whatever follows it
+    /// on that line. There is no free space inside the text column at all,
+    /// which is why the pill leaves it.
     #[allow(clippy::too_many_arguments)]
     /// A peer's just-typed runs, mapped onto this frame's laid-out blocks.
     ///
@@ -6804,30 +6951,7 @@ impl WordProcessorWidget {
             let Some((_, layout)) = self.layout_cache.get(&l.id) else {
                 continue;
             };
-            let key = block_presence_key(&l.id);
-            for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
-                if range.start >= range.end {
-                    continue;
-                }
-                let spans: Vec<(Rect, f32)> = layout
-                    .selection_rects(range.start, range.end)
-                    .into_iter()
-                    .map(|(rx0, ry0, rx1, ry1)| {
-                        (
-                            Rect::new(
-                                l.text_x + rx0 as f64,
-                                l.y_top + ry0 as f64,
-                                l.text_x + rx1 as f64,
-                                l.y_top + ry1 as f64,
-                            ),
-                            alpha,
-                        )
-                    })
-                    .collect();
-                if !spans.is_empty() {
-                    out.push((user, spans));
-                }
-            }
+            out.extend(typing_bands_for_block(l, layout, presence, now));
         }
         out
     }
@@ -6841,8 +6965,9 @@ impl WordProcessorWidget {
         presence: &PresenceCtx,
         user: &UserId,
         label: &str,
-        caret_x: f64,
-        caret_top: f64,
+        caret: Rect,
+        column: (f64, f64),
+        page: (f64, f64),
     ) {
         let (r, g, b) = presence.color_for(user);
         let peer = Color::from_rgb8(r, g, b);
@@ -6850,15 +6975,18 @@ impl WordProcessorWidget {
         let pad_x = 5.0_f64;
         let pad_y = 2.0_f64;
         let (tw, _th) = text_renderer.measure(label, size, None);
-        let chip_w = tw as f64 + pad_x * 2.0;
-        let chip_h = size as f64 + pad_y * 2.0;
-        // Sit the pill just above the caret's top edge.
-        let chip_x = caret_x;
-        let chip_y = caret_top - chip_h - 2.0;
-        let chip_rect = Rect::new(chip_x, chip_y, chip_x + chip_w, chip_y + chip_h);
+        let chip_rect = caret_label_rect(
+            tw as f64 + pad_x * 2.0,
+            size as f64 + pad_y * 2.0,
+            caret,
+            column,
+            page,
+        );
         let chip = vello::kurbo::RoundedRect::from_rect(chip_rect, 3.0);
         scene.fill(Fill::NonZero, ctf, peer, None, &chip);
-        // White-on-colour label for contrast against the peer hue.
+        // White-on-colour label for contrast against the peer hue, clipped to
+        // the pill so a truncated name cannot spill back over the text.
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, ctf, &chip);
         text_renderer.draw_text(
             scene,
             label,
@@ -6867,6 +6995,7 @@ impl WordProcessorWidget {
             ctf * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
             None,
         );
+        scene.pop_layer();
         let _ = theme;
     }
 
@@ -11572,6 +11701,347 @@ mod tests {
         let (carets, _sel) = wp.remote_presence_overlays(&presence);
         assert_eq!(carets.len(), 1, "the production draw consumed the remote caret");
         assert_eq!(carets[0].user, UserId("charlie".into()));
+    }
+
+    // ---- collaboration: the marker and the name pill ----------------------
+
+    /// Run the real five-pass draw with a populated presence and hand back the
+    /// framebuffer. At 100% zoom with `Affine::IDENTITY`, page content space
+    /// and scene space coincide, so rects from `remote_typing_overlays` index
+    /// straight into these pixels.
+    fn scene_with_presence(
+        wp: &mut WordProcessorWidget,
+        state: &mut ui::State,
+        w: u32,
+        h: u32,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Scene {
+        let permission = PermissionContext::permissive();
+        let mut tr = TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        wp.sync(&mut state.doc, &state.root);
+        let child = wp.build_layout(&mut taffy, theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style { size: Size { width: Dimension::length(w as f32), height: Dimension::length(h as f32) }, ..Default::default() },
+                &[child],
+            )
+            .unwrap();
+        {
+            let measure_map = node_map.clone();
+            let trr = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size { width: AvailableSpace::Definite(w as f32), height: AvailableSpace::Definite(h as f32) },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, trr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        wp.apply_layout(&taffy, child, Point::ORIGIN);
+        let mut scene = Scene::new();
+        wp.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, theme, presence, &permission);
+        scene
+    }
+
+    /// [`scene_with_presence`], rasterised.
+    fn render_with_presence(
+        wp: &mut WordProcessorWidget,
+        state: &mut ui::State,
+        w: u32,
+        h: u32,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Vec<u8> {
+        let scene = scene_with_presence(wp, state, w, h, theme, presence);
+        let mut r = ui::offscreen::OffscreenRenderer::new(w, h);
+        r.render(&scene, Color::from_rgb8(0x20, 0x22, 0x28))
+    }
+
+    /// WCAG relative luminance of an 8-bit sRGB triple.
+    fn luma(r: u8, g: u8, b: u8) -> f32 {
+        let f = |v: u8| {
+            let v = v as f32 / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+    }
+
+    /// Contrast between the ink and the paper *inside* a marker band, read back
+    /// off the framebuffer.
+    ///
+    /// Taken at the 2.5th and 97.5th luminance percentiles so anti-aliased
+    /// glyph edges — which are neither ink nor paper — cannot stand in for
+    /// either end, and so no single stray pixel decides the answer.
+    fn band_contrast(rgba: &[u8], w: u32, band: Rect) -> f32 {
+        let mut lums: Vec<f32> = Vec::new();
+        for y in (band.y0.ceil() as u32 + 1)..(band.y1.floor() as u32).saturating_sub(1) {
+            for x in (band.x0.ceil() as u32 + 1)..(band.x1.floor() as u32).saturating_sub(1) {
+                let (r, g, b, _) = ui::offscreen::OffscreenRenderer::sample(rgba, w, x, y);
+                lums.push(luma(r, g, b));
+            }
+        }
+        assert!(lums.len() > 400, "band too small to measure ({} px)", lums.len());
+        lums.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let at = |q: f32| lums[((lums.len() - 1) as f32 * q) as usize];
+        let (lo, hi) = (at(0.025), at(0.975));
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// Body text stays readable underneath a peer's "just typed" marker.
+    ///
+    /// This measures the property that actually matters — **glyph against
+    /// band** — and measures it on the real canvas through the production
+    /// draw, rather than modelling the composite. The marker used to be
+    /// painted *over* the glyphs, which drags ink and paper toward the same
+    /// pigment together: a fresh mark read about 2.1:1 between them for every
+    /// hue in the palette, where unmarked body text reads about 15:1. Both
+    /// ends of the fade are checked, because a mark that passes at full
+    /// strength and fails halfway through its life is still failing — full
+    /// strength being the worse of the two, since the wash only thins as it
+    /// ages.
+    #[test]
+    fn a_peers_marker_leaves_the_body_text_readable() {
+        for (theme, name) in [(Theme::light(), "light"), (Theme::dark(), "dark")] {
+            for (user, hue) in [("alice", "pink"), ("charlie", "emerald"), ("bob", "orange"), ("me", "indigo")] {
+                for (aged, when) in [(0u64, "fresh"), (1250, "half-faded")] {
+                    let (mut state, mut wp) = populated();
+                    wp.set_focus(true);
+                    pipeline_draw(&mut wp, &mut state, 1100, 760);
+                    let block = wp
+                        .laid
+                        .iter()
+                        .find(|l| l.text.contains("Body text here"))
+                        .expect("the body block was laid out")
+                        .id
+                        .clone();
+
+                    let born = std::time::Instant::now()
+                        .checked_sub(std::time::Duration::from_millis(aged))
+                        .expect("a recent instant");
+                    let mut presence = PresenceCtx::empty();
+                    presence.record_peer_typing(
+                        UserId(user.to_string()),
+                        block_presence_key(&block),
+                        ui::SelectionRange { start: 0, end: "Body text here".len() },
+                        born,
+                    );
+
+                    let rgba = render_with_presence(&mut wp, &mut state, 1100, 760, &theme, &presence);
+                    let band = wp
+                        .remote_typing_overlays(&presence, std::time::Instant::now())
+                        .first()
+                        .and_then(|(_, spans)| spans.first())
+                        .map(|(r, _)| *r)
+                        .expect("the marker resolved to a band");
+
+                    let c = band_contrast(&rgba, 1100, band);
+                    println!("{name:5} {hue:8} {when:11} {c:5.2}:1");
+                    assert!(
+                        c >= 4.5,
+                        "{hue} marker ({when}, {name} theme): the body ink under it \
+                         falls to {c:.2}:1"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The peer name pill never lands on the text it is labelling.
+    ///
+    /// It used to float directly above the caret, which is only safe on the
+    /// first line of a block: on a wrapped line "above" is the previous line of
+    /// the same paragraph, so the pill sat squarely on a word somebody was
+    /// reading. Below fails the same way on a last line, and beside-the-caret
+    /// covers whatever follows it. So the pill leaves the text column
+    /// altogether, and this pins it there at every edge a caret can reach.
+    #[test]
+    fn the_peer_name_pill_stays_out_of_the_text_column() {
+        // A letter page with one-inch margins, in page content space.
+        let page = (100.0_f64, 916.0_f64);
+        let column = (196.0_f64, 820.0_f64);
+        let line_h = 22.0_f64;
+
+        let cases: [(&str, f64, f64); 4] = [
+            // The page's first line — nothing above it to sit on.
+            ("top of the page", column.0, 120.0),
+            // The last line of the page.
+            ("bottom of the page", column.0 + 40.0, 1000.0),
+            // A caret on a wrapped second line: the case that broke.
+            ("a wrapped line", column.0 + 210.0, 120.0 + line_h),
+            // Hard against the right-hand edge of the text column.
+            ("the right-hand edge", column.1 - 2.0, 300.0),
+        ];
+
+        for (what, cx, cy) in cases {
+            let caret = Rect::new(cx, cy, cx + 2.0, cy + line_h);
+            // A short name and one far too long for either margin.
+            for label_w in [44.0_f64, 300.0] {
+                let pill = caret_label_rect(label_w, 15.0, caret, column, page);
+
+                assert!(
+                    pill.x1 <= column.0 || pill.x0 >= column.1,
+                    "{what} (label {label_w}): the pill overlaps the text column \
+                     ({pill:?} vs column {column:?})"
+                );
+                assert!(
+                    pill.x0 >= page.0 && pill.x1 <= page.1,
+                    "{what} (label {label_w}): the pill leaves the page \
+                     ({pill:?} vs page {page:?})"
+                );
+                // It labels the caret's own line and reaches into neither
+                // neighbour, so no other line is ever covered.
+                assert!(
+                    pill.y0 >= caret.y0 - line_h / 2.0 && pill.y1 <= caret.y1 + line_h / 2.0,
+                    "{what} (label {label_w}): the pill strays off the caret's line \
+                     ({pill:?} vs caret {caret:?})"
+                );
+            }
+        }
+    }
+
+    // ---- images whose content has not arrived ------------------------------
+
+    /// An image block whose bytes have not arrived reserves the space its image
+    /// will need, taken from the intrinsic size recorded beside the reference.
+    ///
+    /// The reference and the content travel separately, so a `blobs` miss is a
+    /// normal state on a slow link. Laid out at the fixed fallback, such a
+    /// block jumped to its real size the moment the bytes landed and reflowed
+    /// every paragraph below it — on a live shared document, possibly while
+    /// somebody was typing into one of them.
+    #[test]
+    fn an_unarrived_image_reserves_the_size_it_will_need() {
+        let mut state = ui::State::new();
+        with_doc(&mut state, |dm| {
+            let p = dm.insert_block(None, "paragraph");
+            dm.splice_text(&p, 0, 0, "caption");
+            let img = dm.insert_block(Some(&p), "image");
+            // A reference whose content is not here, plus the intrinsic size
+            // recorded with it. No `width`/`height`: nobody asked for a
+            // display size, which is the ordinary case.
+            dm.set_attr(&img, "blob", "deadbeef");
+            dm.set_attr(&img, "blob_w", 400_i64);
+            dm.set_attr(&img, "blob_h", 200_i64);
+        });
+        let mut wp = WordProcessorWidget::new();
+        pipeline_draw(&mut wp, &mut state, 1100, 900);
+
+        let img = wp.laid.iter().find(|l| l.kind == "image").expect("image laid out");
+        assert!(
+            (img.width - 400.0).abs() < 0.5 && (img.height - 200.0).abs() < 0.5,
+            "an unarrived image reserved {}x{}, not the 400x200 recorded for it",
+            img.width,
+            img.height
+        );
+    }
+
+    /// A reference whose content has not arrived is not written off.
+    ///
+    /// The decode cache used to record a verdict the first time it saw a hash,
+    /// so a block whose bytes were still in flight was filed as undecodable and
+    /// never looked at again: the image stayed a placeholder for the life of
+    /// the document however promptly it landed. A `blobs` miss means "not yet",
+    /// and nothing may be cached for it — while bytes that *are* present still
+    /// decode in the same pass.
+    #[test]
+    fn an_unarrived_image_is_not_written_off_as_broken() {
+        let mut state = ui::State::new();
+        let mut here = String::new();
+        with_doc(&mut state, |dm| {
+            let p = dm.insert_block(None, "paragraph");
+            dm.splice_text(&p, 0, 0, "caption");
+            let a = dm.insert_block(Some(&p), "image");
+            dm.set_attr(&a, "blob", "deadbeef");
+            here = dm.put_blob(IMG_PNG);
+            let b = dm.insert_block(Some(&a), "image");
+            dm.set_attr(&b, "blob", here.as_str());
+        });
+        let mut wp = WordProcessorWidget::new();
+        pipeline_draw(&mut wp, &mut state, 1100, 900);
+
+        assert!(
+            !wp.image_cache.contains_key("deadbeef"),
+            "a reference whose content has not arrived must not be cached as a verdict"
+        );
+        assert!(
+            matches!(wp.image_cache.get(&here), Some(Some(_))),
+            "an image whose bytes are present still decodes"
+        );
+    }
+
+    /// An image still on its way says so, rather than being left as blank space
+    /// — which is exactly what a broken image looks like.
+    #[test]
+    fn an_arriving_image_reads_differently_from_a_broken_one() {
+        let arriving = t("canvas-image-loading");
+        assert!(!arriving.is_empty(), "the arriving-image string is defined");
+        assert_ne!(
+            arriving,
+            t("canvas-image-missing"),
+            "an image still on its way must not read as a broken one"
+        );
+    }
+
+    /// Visual review frames for the peer marker + name pill. Set
+    /// `QOS_WP_MARKER_SHOTS=<dir>` to emit them; a normal run is a no-op.
+    #[test]
+    fn render_marker_shots() {
+        let Some(dir) = std::env::var_os("QOS_WP_MARKER_SHOTS") else { return };
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).ok();
+
+        for (theme, tname) in [(Theme::light(), "light"), (Theme::dark(), "dark")] {
+            let mut state = ui::State::new();
+            with_doc(&mut state, |dm| {
+                let a = dm.insert_block(None, "paragraph");
+                dm.splice_text(&a, 0, 0,
+                    "The compositor now streams window buffers to invited peers, and remote input is injected back through the same sandbox boundary that guards local clients.");
+                let b = dm.insert_block(Some(&a), "paragraph");
+                dm.splice_text(&b, 0, 0,
+                    "The filesystem projects metadata immediately over gossip and hydrates content on first read, so opening a shared folder does not wait on a transfer.");
+            });
+            let mut wp = WordProcessorWidget::new();
+            pipeline_draw(&mut wp, &mut state, 1100, 760);
+
+            let first = wp.laid.first().expect("first block").id.clone();
+            let second = wp.laid.get(1).expect("second block").id.clone();
+
+            let mut presence = PresenceCtx::empty();
+            // A fresh marker over the opening clause of the first paragraph.
+            presence.record_peer_typing(
+                UserId("alice".into()),
+                block_presence_key(&first),
+                ui::SelectionRange { start: 4, end: 68 },
+                std::time::Instant::now(),
+            );
+            // A marker on the second paragraph in another peer's colour, with
+            // that peer's caret parked on its WRAPPED second line — the case
+            // where a pill drawn above the caret lands on readable text.
+            presence.record_peer_typing(
+                UserId("agent".into()),
+                block_presence_key(&second),
+                ui::SelectionRange { start: 0, end: 120 },
+                std::time::Instant::now(),
+            );
+            presence.set_remote_caret("agent".into(), block_presence_key(&second), 118);
+            presence.set_remote_caret("alice".into(), block_presence_key(&first), 40);
+
+            let scene = scene_with_presence(&mut wp, &mut state, 1100, 760, &theme, &presence);
+            ui::offscreen::OffscreenRenderer::new(1100, 760).render_png(
+                &scene,
+                Color::from_rgb8(0x20, 0x22, 0x28),
+                dir.join(format!("marker-{tname}.png")),
+            );
+        }
     }
 
     // ---- collaboration: outbound presence (presence_payload) ---------------
