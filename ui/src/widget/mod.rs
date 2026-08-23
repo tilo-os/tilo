@@ -43,6 +43,19 @@ pub trait Widget {
     /// not `TextInput`).
     fn test_id(&self) -> Option<&str> { None }
 
+    /// Hand the concrete widget back out of a `Box<dyn Widget>`.
+    ///
+    /// Screenshot harnesses need this to hold an animation at a chosen
+    /// point on its curve: a still frame cannot show motion, and a
+    /// render costs more wall time than most curves last, so stepping
+    /// frames only ever catches the endpoints. Asking the widget to sit
+    /// at a chosen millisecond and then rendering it means what lands on
+    /// disk is the production `draw` at that instant rather than a
+    /// reconstruction of it.
+    ///
+    /// Default is `None` — a widget opts in by returning `Some(self)`.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { None }
+
     /// Named hit rects *inside* this widget, for widgets that paint
     /// several affordances into one rect rather than composing child
     /// widgets. Same naming convention as [`Widget::test_id`].
