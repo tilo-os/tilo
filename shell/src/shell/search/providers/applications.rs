@@ -351,25 +351,29 @@ fn grant_user_home_to_file_manager(chrome: &Chrome, package_id: &str) {
 /// Returns whether a grant was added, so a caller with a repaint to do
 /// can skip it when there was nothing to change.
 ///
-/// # Local, not replicated
+/// # Minted per machine, and why that is not yet enough
 ///
-/// Written straight to the workspace and deliberately **not** mirrored
-/// into the room document, which is what every other grant does.
+/// Every member mints their own, because the path names *this* machine's
+/// home and is meaningless on anybody else's. A member who only received
+/// a copy of somebody else's still got no `QOS_USER_HOME`
+/// (`packaging/launcher/src/sandbox.rs`, `push_user_home`, which exports
+/// it only when the local `$HOME` is covered by a granted bind) and so
+/// still opened on their sandbox directory.
 ///
-/// The path names this machine's home. It is meaningless on anybody
-/// else's — and worse than meaningless: a replicated grant naming
-/// `/home/user` is one the *other* member's sandbox honours, so a
-/// peer's file manager was handed a read-write bind of the host's home
-/// directory. It also does not do what it looks like it does, because
-/// the member who received it still has a different `$HOME` and so still
-/// got no `QOS_USER_HOME` (`packaging/launcher/src/sandbox.rs`,
-/// `push_user_home`).
+/// This deliberately does **not** mirror the grant into the room
+/// document the way `GrantStoreHandle::insert` does. That is not
+/// sufficient to keep it off the wire, and the remaining hole is worth
+/// stating plainly rather than leaving to be rediscovered: the workspace
+/// projection writes `ws.capabilities` wholesale
+/// (`WorkspaceTree`'s doc write, `state.rs`), so the grant reaches every
+/// peer on the next persist regardless. A peer's sandbox then honours a
+/// path naming *this* machine's home directory.
 ///
-/// Each machine minting its own is both the safe answer and the working
-/// one: every member's file manager opens on *their* home, and nobody's
-/// home is bound into anybody else's sandbox. It stays a capability on
-/// the workspace like any other — it shows in the permissions UI and can
-/// be revoked there; it simply does not travel.
+/// Closing it needs a capability the projection knows not to ship — and
+/// one the doc-driven rebuild of `ws.capabilities` knows not to sweep,
+/// since that rebuild replaces the list with whatever the document holds.
+/// Both halves are a change to the capability model, not to this
+/// function, so it is recorded here rather than half-done.
 pub(crate) fn grant_file_manager_home(
     tree: &mut crate::shell::state::WorkspaceTree,
     workspace: crate::shell::state::WorkspaceId,
