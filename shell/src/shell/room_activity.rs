@@ -1975,6 +1975,7 @@ mod tests {
             cursor_color: None,
             avatar: None,
             role_id: None,
+            invited: false,
         });
         let pane = pane_over(&mut tree);
         assert!(
