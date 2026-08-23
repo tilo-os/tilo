@@ -49,16 +49,10 @@ first does not: the demo's desktop should still be the first desktop.
   the rule above. It is QEMU's firmware logo, and to anyone who recognises it
   the shot says "this is a virtual machine" rather than "this is an operating
   system".
-- **The seatd error.** Two lines that read as a failure:
-
-  ```
-  [libseat] Could not connect to socket /run/seatd.sock: No such file or directory
-  [libseat] Backend 'seatd' failed to open seat, skipping
-  ```
-
-  It is harmless — the compositor falls through to another backend and boots —
-  but it is text saying `failed` in a film for investors. Cut past it. Better
-  still, fix why seatd is not up in the image, and then there is nothing to cut.
+- ~~The seatd error.~~ **Gone as of the 2026-08-23 image** (`fbe59310b`).
+  Neither `libseat` line appears on screen or in the serial log any more, so
+  there is nothing to cut past. Left here only so nobody reintroduces the
+  instruction from an older copy of this file.
 - **The black gap between console and greeter.** In the example recording this
   was about 3 seconds of pure black with only a mouse pointer on it — a dead
   hole in the middle of the bumper. Cut it out entirely and let the console
@@ -104,6 +98,29 @@ recording is 1280×800, so it pillarboxes — expected.
 ```bash
 scripts/demo-assemble.py --out final.mp4 boot-cut.mp4 qos-demo.mp4
 ```
+
+## The 2026-08-23 recording, as a worked example
+
+`qos-boot-greeter-fbe59310b.mp4` — 1280x800, 28.1 s, the image carrying the
+rebuilt greeter. Measured spans:
+
+| span | content |
+|---|---|
+| → 17.0 s | console; the on-screen log freezes at kernel 13.5 s |
+| 17.5-20.5 s | black gap — cut entirely |
+| 21.0-24.5 s | greeter idle, legible |
+| 24.5-25.5 s | credentials typed |
+| ~25.5 s | filled form — **the ending frame** |
+| 25.6 s → | authenticating, then black. No desktop is reached at all. |
+
+Cut to **14.0-17.0** and **21.0-25.5**, joined: 7.5 s. The greeter holds for
+about three and a half seconds at real speed, so this recording needs **no
+slowing** — that was the previous take's one-second problem, not a standing
+property of the recorder.
+
+Two things this boot showed that are not visible in the film, because the
+on-screen console freezes before systemd's summary: `shell-firstboot.service`
+and `systemd-growfs-root.service` both fail. Good for the cut, bad for the OS.
 
 ## Finding the spans in a new recording
 
