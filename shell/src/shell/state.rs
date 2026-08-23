@@ -7981,6 +7981,12 @@ mod collaborator_tests {
         assert_eq!(c.cursor_color, None);
         assert_eq!(c.avatar, None);
         assert_eq!(c.role_id, None);
+        // Present, not invited. A collaborator persisted before the
+        // distinction existed says nothing about whether its peer had
+        // arrived, and the invited state draws as an empty seat — so
+        // defaulting the other way would redraw every already-saved
+        // participant as somebody who never turned up.
+        assert!(!c.invited);
     }
 
     #[test]
