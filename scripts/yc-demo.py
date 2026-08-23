@@ -2130,6 +2130,37 @@ def focus_leftmost_group(s: Session) -> None:
          f"back and both windows are in frame")
 
 
+def frame_one_window(s: Session, app_id: str, prefer: dict | None = None,
+                     share: int = 720) -> None:
+    """Put one window up at a readable width, with the strip around it.
+
+    `frame_both_windows` exists for a beat that has to show two windows
+    at once, and it pays for that: three groups get a third of the strip
+    each, and a third of this strip is a word processor whose styles
+    panel leaves a column of page about as wide as a phone. The last shot
+    of the film is about what is *written* in a document, and it came out
+    with the text clipped mid-word.
+
+    A beat about one window asks for the opposite: that window at close
+    to the width a person would give it, with its neighbours where a
+    scrollable strip actually leaves them — visible at the edges, not
+    squared off into equal thirds. Which is also the more honest picture
+    of the layout model, and the one the strip is for.
+    """
+    # Scrolled to first, then widened, then scrolled to again. Widening
+    # moves every tile, and a tile that has been pushed off the edge has
+    # no pill on screen to click — so the strip is brought to it while
+    # everything is still small enough to be in view, and confirmed
+    # afterwards.
+    focus_app_group(s, app_id, prefer=prefer)
+    resp = s.set_group_width(share)
+    if "err" in resp:
+        note(f"{s.name}: could not widen the strip — "
+             f"{json.dumps(resp['err'])[:120]}")
+    s.settle(0.6)
+    focus_app_group(s, app_id, prefer=prefer)
+
+
 def screen_digest(s: Session, where: str) -> str | None:
     """A hash of what `s` is painting right now, or None.
 
@@ -3710,8 +3741,7 @@ def show_xavers_screen(xaver: Session, shots: str) -> None:
     empty folder, under a caption about a document two other participants
     had just written into.
     """
-    frame_both_windows(xaver, VIEWPORT)
-    focus_app_group(xaver, WORD_PROCESSOR)
+    frame_one_window(xaver, WORD_PROCESSOR)
     read_hold(READ_HOLD_S * 2)
     xaver.snapshot(os.path.join(shots, "06b-xaver-window-and-text.png"))
 
@@ -4472,8 +4502,7 @@ def beat_nine(quinten: Session, xaver: Session, agent: Session,
     # as choosing what the shot is of: an earlier cut ended on a file
     # manager showing an empty folder, under a caption about a document
     # two other participants had just written into.
-    frame_both_windows(quinten, VIEWPORT)
-    focus_app_group(quinten, WORD_PROCESSOR, prefer=quinten_wp)
+    frame_one_window(quinten, WORD_PROCESSOR, prefer=quinten_wp)
     read_hold(READ_HOLD_S * 2)
     quinten.snapshot(os.path.join(shots, "12-agent-table.png"))
     xaver.snapshot(os.path.join(shots, "12b-xaver-agent-table.png"))
