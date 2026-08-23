@@ -1107,17 +1107,6 @@ impl ChromeState {
             }
         };
         if changed {
-            // Smoke-test the notification system: every successful
-            // workspace switch pushes a transient toast naming the
-            // new active workspace. Any subsystem can call
-            // `push_notification`; this is just the canonical first
-            // consumer so the system is visibly exercised.
-            let new_name = self
-                .tree()
-                .active_workspace()
-                .map(|ws| ws.name.clone())
-                .unwrap_or_else(|| "(unnamed)".to_string());
-            self.push_notification(format!("Switched to workspace {new_name}"), String::new());
             self.bump();
         }
         changed
