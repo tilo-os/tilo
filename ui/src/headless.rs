@@ -552,6 +552,11 @@ impl Driver {
                 _ => {}
             }
         }
+        // The widget may have mutated the document from `perform_action_at` —
+        // dispatching an action, or asking for a commit — and this route does
+        // not go through `send`. Close the tick here too, or an app driven the
+        // way an assistive technology drives it leaves no history behind.
+        self.host_tick();
         self.relayout();
         Ok(())
     }
@@ -613,21 +618,44 @@ impl Driver {
         if let Some(t) = focus_target {
             self.set_focused(Some(t));
         }
-        // Mirror the App's idle tick: a widget that asked for a commit gets
-        // one, so undo boundaries and any commit-time CRDT writes happen the
-        // way they do live.
+        self.host_tick();
+        self.relayout();
+    }
+
+    /// Everything the live host does between one interaction and the next
+    /// frame, in the order [`App`](crate::app::App)'s idle tick does it.
+    ///
+    /// Runs after *every* route that can reach a widget — a window event
+    /// ([`send`](Self::send)) and an accessibility verb
+    /// ([`perform_a11y_action`](Self::perform_a11y_action)) alike. A route that
+    /// skipped it would let a scenario mutate the document without the history
+    /// ever learning about it, and a test written over that route could drive
+    /// an app but never observe what the driving produced.
+    ///
+    /// The three steps are ordered, not incidental:
+    ///
+    /// 1. **Dispatched actions** become one undo boundary, through the shared
+    ///    [`undo::record_dispatched_action`](crate::undo::record_dispatched_action)
+    ///    the App calls.
+    /// 2. **A requested commit** closes the transaction, for widgets that edit
+    ///    the document directly instead of dispatching actions.
+    /// 3. **Undo/redo the tree asked for** runs last, so an action performed in
+    ///    the same tick is already on the stack and is what gets reverted.
+    fn host_tick(&mut self) {
+        let author = self.author.clone();
+        let root: *mut dyn Widget = self.root.as_mut();
+        crate::undo::record_dispatched_action(&mut self.state, root, &self.node_map, &author);
         if self.root.needs_commit() {
             // Authored, as `App::commit_action` is. An anonymous entry is
             // invisible to author-scoped undo, so a scenario that pressed
             // Ctrl+Z would find nothing where the user finds their last edit.
             self.state
-                .commit_action_authored(None, None, Some(self.author.clone()));
+                .commit_action_authored(None, None, Some(author.clone()));
             self.root.on_commit();
         }
         // An Undo/Redo control the widget tree activated during that event.
         // Same route the live host takes: the widget asks, the host performs.
         self.drain_undo_requests();
-        self.relayout();
     }
 
     /// Move the pointer to `(x, y)` and press+release the left button — the
@@ -1615,5 +1643,420 @@ mod undo_driver_tests {
         // Redo is unavailable: nothing has been undone yet.
         let _ = d.click_named("redo_button");
         assert_eq!(body(&mut d), "hello", "the document is untouched");
+    }
+}
+
+/// Undo for an app whose edits are dispatched [`qos_actions`] actions — the
+/// shape every migrated qOS app has — driven headlessly.
+///
+/// The module above drives the *other* editing path, `needs_commit` /
+/// `on_commit`, where the widget writes the document itself. An app built on
+/// [`ActionHost`](crate::action_host::ActionHost) never sets `needs_commit`:
+/// its boundary arrives through
+/// [`take_committed_action`](crate::widget::Widget::take_committed_action)
+/// instead. Until the driver drained that, a headless test of such an app could
+/// deliver the input but could not observe the undo history the input produced,
+/// so undo behaviour was untestable for the majority of the fleet.
+#[cfg(test)]
+mod dispatched_action_driver_tests {
+    use super::*;
+    use crate::a11y::{AccessNode, AccessState, Role};
+    use crate::state::State;
+    use qos_actions::{ActionError, Doc, ExecutionLocus};
+    use serde::{Deserialize, Serialize};
+
+    /// A real action: append `text` to the document's `body`. Deterministic, as
+    /// the executor requires.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct Append {
+        text: String,
+    }
+
+    const APPEND: &str = "test.append";
+
+    impl qos_actions::Action for Append {
+        fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+            use automerge::{transaction::Transactable, ReadDoc};
+            let obj = match doc.get(&automerge::ROOT, "body") {
+                Ok(Some((_, o))) => o,
+                _ => doc.put_object(&automerge::ROOT, "body", automerge::ObjType::Text)?,
+            };
+            let len = doc.length(&obj);
+            doc.splice_text(&obj, len, 0, &self.text)?;
+            Ok(())
+        }
+        fn locus(&self) -> ExecutionLocus {
+            ExecutionLocus::ClientLocal
+        }
+    }
+
+    /// An editor in the migrated shape: every edit is dispatched through
+    /// [`ActionHost`](crate::action_host::ActionHost), and the only thing it
+    /// tells the host is the bracket. It deliberately does **not** implement
+    /// `needs_commit` — that is the whole distinction under test.
+    ///
+    /// Two ways in, because a canvas app has two: a keystroke, and an
+    /// accessibility verb routed to `perform_action_at` (how an assistive
+    /// technology, and every headless scenario over a canvas, drives it).
+    struct ActionEditor {
+        rect: vello::kurbo::Rect,
+        actions: crate::action_host::ActionHost,
+        focused: bool,
+        /// Whether this editor claims the event. A `Row` stops dispatching to
+        /// later siblings once a child claims one, so a second editor that must
+        /// also see the keystroke is built without the claim — the shape of a
+        /// pane that reacts to an edit alongside the widget that owns it.
+        claims: bool,
+    }
+
+    impl ActionEditor {
+        fn new() -> Self {
+            Self {
+                rect: vello::kurbo::Rect::ZERO,
+                actions: crate::action_host::ActionHost::new(),
+                focused: false,
+                claims: true,
+            }
+        }
+
+        /// An editor that dispatches but lets the event travel on.
+        fn passive() -> Self {
+            Self {
+                claims: false,
+                ..Self::new()
+            }
+        }
+    }
+
+    impl crate::widget::Widget for ActionEditor {
+        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn crate::widget::Widget>,
+        ) -> NodeId {
+            let node = taffy
+                .new_leaf(Style {
+                    size: Size {
+                        width: Dimension::length(60.0),
+                        height: Dimension::length(20.0),
+                    },
+                    ..Default::default()
+                })
+                .unwrap();
+            node_map.insert(node, self as *mut dyn crate::widget::Widget);
+            node
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let l = taffy.layout(node).unwrap();
+            let x = origin.x + l.location.x as f64;
+            let y = origin.y + l.location.y as f64;
+            self.rect =
+                vello::kurbo::Rect::new(x, y, x + l.size.width as f64, y + l.size.height as f64);
+        }
+
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            doc: &mut automerge::AutoCommit,
+            _path: &automerge::ObjId,
+            handled: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _node: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+            let WindowEvent::KeyboardInput { event: ke, .. } = event else {
+                return;
+            };
+            if ke.state != ElementState::Pressed {
+                return;
+            }
+            let winit::keyboard::Key::Character(c) = &ke.logical_key else {
+                return;
+            };
+            // "2" dispatches two actions within the one event, so a test can
+            // prove the host brackets the *event*, not each action.
+            if c.as_str() == "2" {
+                for text in ["x", "y"] {
+                    self.actions.dispatch(
+                        doc,
+                        APPEND,
+                        &Append {
+                            text: text.to_string(),
+                        },
+                    );
+                }
+            } else {
+                self.actions.dispatch(
+                    doc,
+                    APPEND,
+                    &Append {
+                        text: c.as_str().to_string(),
+                    },
+                );
+            }
+            *handled = self.claims;
+        }
+
+        fn perform_action_at(
+            &mut self,
+            action: &crate::a11y::Action,
+            _key_path: &[u64],
+            doc: &mut automerge::AutoCommit,
+            _path: &automerge::ObjId,
+        ) -> bool {
+            if !matches!(action, crate::a11y::Action::Activate) {
+                return false;
+            }
+            self.actions.dispatch(
+                doc,
+                APPEND,
+                &Append {
+                    text: "!".to_string(),
+                },
+            );
+            true
+        }
+
+        fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+            self.actions.take_committed()
+        }
+
+        fn name(&self) -> &str {
+            "ActionEditor"
+        }
+
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            self.rect
+        }
+
+        fn is_focusable(&self) -> bool {
+            true
+        }
+
+        fn set_focus(&mut self, f: bool) {
+            self.focused = f;
+        }
+
+        fn is_focused(&self) -> bool {
+            self.focused
+        }
+
+        fn accessibility(&self) -> Option<AccessNode> {
+            Some(
+                AccessNode::new(Role::Canvas)
+                    .with_name("Editor")
+                    .with_state(AccessState::new().focusable(true).focused(self.focused)),
+            )
+        }
+    }
+
+    /// The editor plus the history controls an app would put in its toolbar.
+    fn action_driver() -> Driver {
+        let row = crate::widget::Row::new()
+            .push(Box::new(ActionEditor::new()))
+            .push(Box::new(crate::widget::UndoButton::undo()))
+            .push(Box::new(crate::widget::UndoButton::redo()));
+        Driver::new(State::new(), Box::new(row), (400, 120))
+    }
+
+    fn body(d: &mut Driver) -> String {
+        use automerge::ReadDoc;
+        let state = d.state_mut();
+        match state.doc.get(&automerge::ROOT, "body") {
+            Ok(Some((_, obj))) => state.doc.text(&obj).unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
+    /// The whole covenant on one interaction: a real edit dispatched as an
+    /// action, the Undo control lighting because of it, pressing that control,
+    /// and the edit going away.
+    ///
+    /// Every step is the driver's own output — `undo_status` is what the
+    /// harness publishes to the tree, `click_named` is the production click
+    /// path, and the document is read back from the live state.
+    #[test]
+    fn an_edit_dispatched_as_an_action_lights_undo_and_reverts_when_pressed() {
+        let mut d = action_driver();
+
+        assert!(
+            !d.undo_status().can_undo,
+            "nothing has happened yet, so the control must be dark"
+        );
+
+        d.type_text("a");
+        assert_eq!(body(&mut d), "a", "the dispatched action reached the document");
+        assert!(
+            d.undo_status().can_undo,
+            "an action-dispatched edit must be an undo boundary the local user owns"
+        );
+
+        d.click_named("undo_button")
+            .expect("the control is addressable once it can act");
+        assert_eq!(body(&mut d), "", "pressing Undo reverted the edit");
+        assert!(
+            d.undo_status().can_redo,
+            "and the reverted action is available to redo"
+        );
+
+        d.click_named("redo_button").expect("redo became available");
+        assert_eq!(body(&mut d), "a", "redo put the action back");
+    }
+
+    /// The keyboard and the control must reach the same undo — for the action
+    /// path too, not just the `needs_commit` one.
+    #[test]
+    fn ctrl_z_and_the_control_undo_the_same_dispatched_action() {
+        let mut via_key = action_driver();
+        via_key.type_text("a");
+        via_key.set_modifiers(&["ctrl".to_string()]);
+        via_key.key("z");
+
+        let mut via_click = action_driver();
+        via_click.type_text("a");
+        via_click.click_named("undo_button").expect("addressable");
+
+        assert_eq!(body(&mut via_key), "");
+        assert_eq!(
+            body(&mut via_key),
+            body(&mut via_click),
+            "the shortcut and the control land in the same place"
+        );
+    }
+
+    /// A canvas app is driven through the accessibility tree, not through
+    /// clicks — `perform_a11y_action` is the route
+    /// [`docs/headless-testing.md`] tells scenarios to take. That route mutates
+    /// the document without going through `send`, so it needs the boundary
+    /// recorded too.
+    #[test]
+    fn an_action_performed_through_accessibility_is_undoable() {
+        let mut d = action_driver();
+        let node = d
+            .a11y_node_named("Editor")
+            .expect("the canvas is exported to the accessibility tree");
+
+        d.perform_a11y_action(node, &crate::a11y::Action::Activate)
+            .expect("the widget consumes Activate");
+
+        assert_eq!(body(&mut d), "!", "the a11y verb dispatched the action");
+        assert!(
+            d.undo_status().can_undo,
+            "an action performed through accessibility must be undoable too"
+        );
+        assert!(d.perform_undo(), "and the history actually pops it");
+        assert_eq!(body(&mut d), "");
+    }
+
+    /// One event is one undo boundary, however many actions it dispatched —
+    /// [`ActionHost`](crate::action_host::ActionHost)'s contract, observed
+    /// through the driver rather than asserted against the host in isolation.
+    #[test]
+    fn several_actions_in_one_event_are_one_boundary() {
+        let mut d = action_driver();
+        d.type_text("2"); // dispatches two Appends within the single keystroke
+        assert_eq!(body(&mut d), "xy", "both actions applied");
+
+        assert!(d.perform_undo(), "the batch is undoable");
+        assert_eq!(
+            body(&mut d),
+            "",
+            "one undo reverted the whole event, not half of it"
+        );
+        assert!(
+            !d.undo_status().can_undo,
+            "and there is no second boundary left behind"
+        );
+    }
+
+    /// Two separate interactions are two separate boundaries, undone newest
+    /// first. Guards the rising-edge drain: a host that failed to clear the
+    /// bracket would bracket the second edit from the first edit's heads and
+    /// revert both at once.
+    #[test]
+    fn separate_interactions_are_separate_boundaries() {
+        let mut d = action_driver();
+        d.type_text("a");
+        d.type_text("b");
+        assert_eq!(body(&mut d), "ab");
+
+        assert!(d.perform_undo());
+        assert_eq!(body(&mut d), "a", "undo reverted only the newer edit");
+        assert!(d.perform_undo());
+        assert_eq!(body(&mut d), "");
+    }
+
+    /// Two widgets dispatching in the same tick is still one boundary, and it
+    /// spans from the earlier of their brackets.
+    ///
+    /// The second widget captures its bracket *after* the first has already
+    /// changed the document, so recording from that later bracket would strand
+    /// the first widget's edit outside the entry: one Ctrl+Z would revert half
+    /// the tick and leave the rest with nothing to undo it. Which bracket the
+    /// sweep happens to see first is a hash-map order, so this cannot be left
+    /// to luck.
+    #[test]
+    fn two_widgets_dispatching_in_one_tick_are_one_boundary_from_the_earlier() {
+        // Both editors handle the same keystroke, so a single key press
+        // dispatches from each in turn.
+        let row = crate::widget::Row::new()
+            .push(Box::new(ActionEditor::passive()))
+            .push(Box::new(ActionEditor::new()))
+            .push(Box::new(crate::widget::UndoButton::undo()));
+        let mut d = Driver::new(State::new(), Box::new(row), (400, 120));
+
+        d.type_text("a");
+        assert_eq!(body(&mut d), "aa", "both widgets dispatched");
+
+        assert!(d.perform_undo(), "the tick is undoable");
+        assert_eq!(
+            body(&mut d),
+            "",
+            "one undo reverted the whole tick — the entry started before the \
+             first widget's action, not between the two"
+        );
+        assert!(
+            !d.undo_status().can_undo,
+            "and left no orphaned second boundary"
+        );
+    }
+
+    /// An event that dispatches nothing must not push an empty entry, or the
+    /// next Ctrl+Z is spent on a no-op and the user's real edit survives a
+    /// press they expected to undo it.
+    #[test]
+    fn an_event_that_dispatches_nothing_records_no_boundary() {
+        let mut d = action_driver();
+        d.type_text("a");
+
+        // A pointer move: reaches the tree, dispatches no action.
+        d.send(WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(5.0, 5.0),
+        });
+
+        assert!(d.perform_undo(), "the real edit is still the top of the stack");
+        assert_eq!(body(&mut d), "", "and one press reverted it");
+        assert!(
+            !d.undo_status().can_undo,
+            "the pointer move left nothing behind"
+        );
     }
 }
