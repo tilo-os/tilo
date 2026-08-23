@@ -316,9 +316,10 @@ mod tests {
     }
 
     #[test]
-    fn a_three_finger_swipe_sideways_cycles_the_groups_tabs() {
-        // Swiping left (dx negative) moves forward through the tabs, the
-        // same sense the horizontal-scroll fallback already uses.
+    fn a_three_finger_swipe_sideways_travels_along_the_strip() {
+        // Swiping left (dx negative) travels forward along the strip:
+        // the fingers move the way the content does, which is the same
+        // sense a two-finger horizontal scroll already has.
         assert_eq!(
             swipe_action(3, (-150.0, 0.0), &cfg()),
             Some(GestureAction::StepAlongStrip(1))
