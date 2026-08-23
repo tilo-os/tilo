@@ -3804,7 +3804,16 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     # twice, and it costs two cuts to show it.
     # His machine runs its own copy and draws it locally. Nothing is
     # streamed; the two copies share one document.
-    his = xaver.launch(WORD_PROCESSOR, search="word processor")
+    # Bounded like every other wait, and for a sharper reason than the
+    # others: `LAUNCH_TIMEOUT_S` is four minutes, deliberately, because a
+    # launch on a loaded machine really can take that long and a harness
+    # that gives up early reports a working system as broken. But those
+    # four minutes are spent on quinten's unchanging screen, and one run
+    # spent 250 of its 350 seconds — 72% of the whole film — sitting in
+    # exactly this call while the app it was waiting for never painted.
+    # The wait keeps its full length; only the camera stops attending it.
+    with patience(20.0):
+        his = xaver.launch(WORD_PROCESSOR, search="word processor")
     claim("xaver's word processor painted", his is not None, True)
     if his is None:
         gap("xaver has no word processor open, so there is no far screen "
