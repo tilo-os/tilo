@@ -1824,14 +1824,16 @@ mod two_sessions {
         // shot came back with a pill reading `Claude` in it. A horizon
         // cannot be checked against itself.
         //
-        // Twelve seconds is what the run this was written against left
-        // between the beat that joins the room and the beat that reads
-        // its cursors; the film's own beat marks bound it at fourteen
-        // even when every step in between runs long. Both are inside
-        // `POINTER_IDLE`, asserted here so that a future attempt to fix
-        // this by shortening one horizon has to confront what it is
-        // trading away.
-        let gap_the_film_leaves = Duration::from_secs(12);
+        // Five seconds is a floor on what the run leaves between the
+        // beat that joins a room and the beat that reads its cursors —
+        // that beat sleeps 2.6s on one card and 0.6s after each of two
+        // pointer moves before it looks, and the beat before it waits on
+        // a grant. The real gap is longer. It is comfortably inside
+        // `POINTER_IDLE`, asserted below so a future attempt to fix this
+        // by shortening one horizon has to confront what it trades away:
+        // the person whose cursor has to survive the same wait is only a
+        // second or two further back.
+        let gap_the_film_leaves = Duration::from_secs(5);
         assert!(
             gap_the_film_leaves < POINTER_IDLE,
             "the single idle horizon does not elapse inside this film, so \
@@ -2353,12 +2355,19 @@ mod two_sessions {
             1,
             "the frame has a cursor to draw",
         );
-        let with_pill = fb.paint().encoding().draw_tags.len();
+        let painted_with = fb.paint();
+        let with_pill = painted_with.encoding().draw_tags.len();
 
         // The room gets on with itself. The frame loop keeps running and
-        // keeps asking; the session keeps having nothing to say.
-        let mut published_again = 0usize;
-        let deadline = Instant::now() + POINTER_STALE_AFTER + Duration::from_millis(1500);
+        // keeps asking; the session keeps having nothing new to say.
+        //
+        // The keepalive is *expected* to restate the press for a moment
+        // — that is what stops a peer who joins in the same second from
+        // seeing an empty desktop — so what is counted is restatements
+        // after the horizon, not restatements at all.
+        let stops_speaking_at = joined_at + POINTER_ACTUATED_IDLE;
+        let mut restated_past_the_horizon = 0usize;
+        let deadline = stops_speaking_at + POINTER_STALE_AFTER + Duration::from_millis(1500);
         while Instant::now() < deadline {
             let now = Instant::now();
             guest.set_cursor_position(input.live_pointer(
@@ -2367,16 +2376,18 @@ mod two_sessions {
                 POINTER_ACTUATED_IDLE,
             ));
             if guest.publish_local_cursor_at(&room.to_string(), now) {
-                published_again += 1;
+                if now >= stops_speaking_at {
+                    restated_past_the_horizon += 1;
+                }
                 over_the_wire(published(&mut guest_cmds), &host_net);
             }
             fb.pump_peer_presence();
             std::thread::sleep(Duration::from_millis(120));
         }
         assert_eq!(
-            published_again, 0,
-            "the keepalive restated a position nobody has touched, which \
-             is the whole defect",
+            restated_past_the_horizon, 0,
+            "the keepalive went on restating a position nobody has \
+             touched, which is the whole defect",
         );
 
         assert_eq!(
@@ -2385,7 +2396,8 @@ mod two_sessions {
             "and the frame the compositor is about to paint has no cursor \
              left in it",
         );
-        let without_pill = fb.paint().encoding().draw_tags.len();
+        let painted_without = fb.paint();
+        let without_pill = painted_without.encoding().draw_tags.len();
         assert!(
             without_pill < with_pill,
             "the second frame has to be visibly smaller than the first, \
@@ -2401,6 +2413,19 @@ mod two_sessions {
                 .any(|u| u.0 == format!("peer@{}", handle_of(&guest_peer))),
             "retiring a cursor is not evicting a participant",
         );
+
+        // And the two frames themselves, when asked for. The counts
+        // above are the assertion; these are the pictures it is about,
+        // put through the same offscreen renderer `shots` uses so they
+        // are what the compositor would have shown.
+        if let Ok(out) = std::env::var("QOS_PRESENCE_FRAMES") {
+            let dest = std::path::Path::new(&out);
+            let _ = std::fs::create_dir_all(dest);
+            let mut r = ui::offscreen::OffscreenRenderer::new(1920, 1014);
+            let bg = vello::peniko::Color::BLACK;
+            r.render_png(&painted_with, bg, dest.join("pressed.png"));
+            r.render_png(&painted_without, bg, dest.join("left-alone.png"));
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
