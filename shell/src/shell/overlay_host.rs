@@ -2257,6 +2257,31 @@ impl ShellOverlayHost {
         None
     }
 
+    /// Whether any tab on screen is still holding a place for an app that
+    /// has not drawn yet — see [`ui::widget::WindowGroup::any_tile_opening`].
+    ///
+    /// The opening card carries a spinner, so a group in this state asks
+    /// for animation frames for as long as it is waiting. That is the
+    /// point of it: a launch that takes three seconds should look like
+    /// something is happening. It does mean
+    /// [`Self::needs_animation_frame`] stays true the whole time, which is
+    /// correct but indistinguishable, from the outside, from an animation
+    /// that is wedged. Anything waiting for the tree to go quiet needs to
+    /// tell those two apart, and this is how.
+    pub fn any_tile_opening(&mut self) -> bool {
+        for &row_ptr in self.group_row_ptrs.values() {
+            // SAFETY: same contract as every other `group_row_ptrs`
+            // accessor — the pointer comes from a `Box<GroupRow>` owned by
+            // the content tree, the host outlives the content, and
+            // `&mut self` gives us unaliased access for this call.
+            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            if row.groups.iter().any(|g| g.any_tile_opening()) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Per-tick wire-up for the data-layer active-group reconciler.
     ///
     /// Walks the captured [`GroupRow`] pointers, harvests the set of
