@@ -449,10 +449,11 @@ impl Driver {
             A11yTarget::Widget(id) => (id, Vec::new()),
             A11yTarget::Synthetic { owner, key_path } => (owner, key_path),
         };
-        // Focusing an element inside a widget also moves the keyboard to that
+        // Operating an element inside a widget also moves the keyboard to that
         // widget, matching the App: the widget moves its own cursor, the host
-        // moves the focus.
-        if !key_path.is_empty() && matches!(action, crate::a11y::Action::Focus) {
+        // moves the focus. Every verb, not just Focus — an activation must
+        // leave the reader on what it operated.
+        if !key_path.is_empty() {
             self.set_focused(Some(taffy_id));
         }
         let &p = self
