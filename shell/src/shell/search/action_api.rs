@@ -746,6 +746,65 @@ mod tests {
         assert!(chrome.borrow().overlays.ws_settings);
     }
 
+    /// The compositor's parameter vocabulary **is** the action model's, not
+    /// a look-alike sitting beside it.
+    ///
+    /// This surface and an app's own actions are driven by the same external
+    /// caller, and two structurally-identical declarations agree only for as
+    /// long as someone keeps editing both. Re-declaring these types here
+    /// would compile and would pass every other test in this file while
+    /// silently reopening that gap, so the check is type *identity*: a
+    /// parameter list built through the shared path is bound through this
+    /// module's path. A separate declaration does not typecheck.
+    #[test]
+    fn the_parameter_vocabulary_is_shared_with_the_action_model_not_copied() {
+        let shared: Vec<qos_actions::params::ActionParam> =
+            vec![qos_actions::params::ActionParam::required(
+                "text",
+                qos_actions::params::ParamType::Text,
+                "what to write",
+            )];
+
+        let bound = ActionArgs::bind(&shared, [("text".to_string(), text("hi"))])
+            .expect("a parameter declared through the shared path binds through this one");
+        assert_eq!(bound.text("text"), Some("hi"));
+
+        // The wire spellings are the external contract: they are what an
+        // enumeration descriptor carries, and the only thing a caller with no
+        // screen has to build an invocation from.
+        assert_eq!(ParamType::Text.label(), "text");
+        assert_eq!(ParamType::Integer.label(), "integer");
+        assert_eq!(ParamType::Boolean.label(), "boolean");
+    }
+
+    /// Declared `choices` are enforced by binding — so an action that
+    /// restricts its values refuses anything else by name rather than
+    /// quietly falling through to a default.
+    ///
+    /// Nothing in this crate declares choices yet. The check is here because
+    /// the enforcement arrived with the shared vocabulary and applies to
+    /// every action reachable through this catalogue the moment one does.
+    #[test]
+    fn a_value_outside_a_parameters_choices_is_refused() {
+        let params = vec![
+            qos_actions::params::ActionParam::required("filter", ParamType::Text, "which filter")
+                .with_choices(["grayscale", "sepia"]),
+        ];
+
+        assert!(
+            ActionArgs::bind(&params, [("filter".to_string(), text("sepia"))]).is_ok(),
+            "a declared choice must be accepted"
+        );
+
+        let err = ActionArgs::bind(&params, [("filter".to_string(), text("invert"))])
+            .expect_err("a value outside the declared choices must be refused");
+        let ArgError::NotAllowed { name, value, .. } = &err else {
+            panic!("expected a NotAllowed refusal, got {err:?}");
+        };
+        assert_eq!(name, "filter");
+        assert_eq!(value, "invert");
+    }
+
     /// Empty stays empty — no fabricated rows when nothing matches.
     #[test]
     fn no_match_yields_an_empty_catalog() {
