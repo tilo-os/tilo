@@ -31,7 +31,8 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
@@ -220,6 +221,57 @@ impl Harness {
         });
     }
 
+    /// A key press with `mods` held, through the same `handle_event`
+    /// entry point the compositor calls.
+    fn key(&mut self, logical: Key, mods: ModifiersState) {
+        // winit's `KeyEvent` carries a private platform field, so the
+        // struct is zero-initialised and every public field overwritten —
+        // the same synthesis the test-control executor uses.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical;
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        let event = WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        };
+        let modifiers = Modifiers::from(mods);
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT.clone();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        self.host.handle_event(
+            &event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            self.child,
+            &self.taffy,
+        );
+    }
+
+    /// A horizontally-dominant wheel event with the pointer over the
+    /// strip, the way a two-finger sideways swipe arrives.
+    fn scroll_horizontally(&mut self, dx: f32) {
+        self.event(&WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(600.0, 500.0),
+        });
+        self.event(&WindowEvent::MouseWheel {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: MouseScrollDelta::LineDelta(dx, 0.0),
+            phase: winit::event::TouchPhase::Moved,
+        });
+    }
+
     fn scroll_x(&self) -> f64 {
         self.host
             .strip_scroll_offsets()
@@ -357,4 +409,139 @@ fn the_plus_chip_opens_the_picker_filtered_to_apps() {
     );
     let (visible, ..) = h.host.palette_snapshot();
     assert!(visible, "clicking + must open the picker");
+}
+
+// =====================================================================
+// Travelling along the strip.
+//
+// The strip is the primary axis of this desktop and had no keyboard
+// binding at all: the only way to step along it was Alt+Shift and a
+// wheel, which is not something anyone finds. These pin the three ways
+// in, and that they are one operation rather than three.
+// =====================================================================
+
+/// Super+Right walks forward through the strip's windows, and does not
+/// stop at the group boundary — the strip is one sequence of windows,
+/// not a set of independent tab bars.
+#[test]
+fn super_right_walks_the_whole_strip() {
+    let mut h = Harness::new();
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
+
+    let expected = [
+        (h.groups[0], h.tabs[0][1]),
+        (h.groups[1], h.tabs[1][0]),
+        (h.groups[1], h.tabs[1][1]),
+        (h.groups[2], h.tabs[2][0]),
+        (h.groups[2], h.tabs[2][1]),
+    ];
+    for (step, want) in expected.iter().enumerate() {
+        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+        h.tick();
+        assert_eq!(
+            h.active_window(),
+            *want,
+            "step {} of Super+Right landed on the wrong window",
+            step + 1
+        );
+    }
+}
+
+/// Super+Left is its inverse, and neither wraps: the end of the strip is
+/// the end. Wrapping would teleport the viewport the whole length of the
+/// strip for what the user asked to be one step.
+#[test]
+fn super_left_is_the_inverse_and_neither_wraps() {
+    let mut h = Harness::new();
+    // Walk to the far end.
+    for _ in 0..8 {
+        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+        h.tick();
+    }
+    assert_eq!(
+        h.active_window(),
+        (h.groups[2], h.tabs[2][1]),
+        "pushing past the end must clamp at the last window, not wrap"
+    );
+
+    for _ in 0..8 {
+        h.key(Key::Named(NamedKey::ArrowLeft), ModifiersState::SUPER);
+        h.tick();
+    }
+    assert_eq!(
+        h.active_window(),
+        (h.groups[0], h.tabs[0][0]),
+        "pushing past the start must clamp at the first window, not wrap"
+    );
+}
+
+/// Focus travelling off-screen brings the strip with it. Without this the
+/// chord silently focuses a window the user cannot see.
+#[test]
+fn stepping_to_an_offscreen_window_pans_the_strip() {
+    let mut h = Harness::new();
+    let home = h.scroll_x();
+    // Group 2 is entirely off the right of the viewport at rest.
+    let g2 = h
+        .host
+        .group_at_for_tests(h.strip, 2)
+        .expect("group 2 must be live")
+        .get_rect();
+    let row_right = h
+        .host
+        .group_row_rect_for_tests(h.strip)
+        .expect("strip row")
+        .x1;
+    assert!(
+        g2.x0 > row_right,
+        "fixture must start with group 2 off screen (group {g2:?}, viewport ends {row_right})"
+    );
+
+    // Two tabs per group, so the fourth step is the first one that
+    // leaves the two groups the viewport can already reach.
+    for _ in 0..4 {
+        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+        h.tick();
+    }
+    assert_eq!(h.active_window().0, h.groups[2], "focus must have reached group 2");
+    assert!(
+        h.scroll_x() > home,
+        "the strip must follow focus off screen; still parked at {home}"
+    );
+}
+
+/// A sideways two-finger swipe is the same operation as the chord —
+/// literally, not merely similar. Two navigation models that agree on the
+/// easy case and diverge at a group boundary is the failure this pins.
+#[test]
+fn a_horizontal_swipe_and_the_chord_are_one_operation() {
+    let by_key = {
+        let mut h = Harness::new();
+        for _ in 0..3 {
+            h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+            h.tick();
+        }
+        h.active_window()
+    };
+    let by_swipe = {
+        let mut h = Harness::new();
+        for _ in 0..3 {
+            // Positive dx steps forward, matching the chord's direction.
+            h.scroll_horizontally(4.0);
+            h.tick();
+        }
+        h.active_window()
+    };
+    assert_eq!(
+        by_key, by_swipe,
+        "three swipes and three Super+Rights must land on the same window"
+    );
+    // …and that window is across a group boundary, so this is not two
+    // implementations agreeing inside one tab bar.
+    let mut h = Harness::new();
+    assert_ne!(
+        by_key.0,
+        h.active_window().0,
+        "the fixture must carry the walk across a group boundary"
+    );
 }

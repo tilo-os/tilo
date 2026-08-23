@@ -29,15 +29,14 @@
 //! | Gesture                  | Same as                    |
 //! |--------------------------|----------------------------|
 //! | 3-finger swipe up / down | Super+ArrowUp / ArrowDown — switch workspace |
-//! | 3-finger swipe left/right| horizontal scroll over the strip — cycle the group's tabs |
+//! | 3-finger swipe left/right| Super+ArrowLeft / ArrowRight — step along the strip |
 //! | 4-finger swipe up / down | Ctrl+Tab — open / close the overview |
 //! | 3+-finger pinch in / out | open / close the overview |
 //!
 //! Workspaces are the vertical axis (the wheel disc spins through them),
-//! tabs within a group are the horizontal one (groups scroll horizontally
-//! within a strip). Inventing a third axis — a free 2-D pan — is exactly
-//! what the compositor design rules out, so the gestures stay on the two
-//! that exist.
+//! and the windows along a strip are the horizontal one. Inventing a
+//! third axis — a free 2-D pan — is exactly what the compositor design
+//! rules out, so the gestures stay on the two that exist.
 //!
 //! `natural_scroll` inverts the directions, because it is the same
 //! preference and the same finger: a user who has decided content follows
@@ -74,8 +73,11 @@ pub const PINCH_OUT_SCALE: f64 = 1.25;
 pub enum GestureAction {
     /// `chrome_state::switch_workspace` — `-1` is up the wheel, `+1` down.
     SwitchWorkspace(i32),
-    /// `chrome_state::cycle_active_tab` — `-1` is the previous tab.
-    CycleTab(i32),
+    /// `ShellOverlayHost::step_focus_along_strip` — `-1` is the window
+    /// to the left. The same step the Super+Left/Right chord and a
+    /// horizontal scroll make; a swipe is a third way to ask for it, not
+    /// a fourth definition of it.
+    StepAlongStrip(i32),
     /// Open the workspace overview (what `Ctrl+Tab` toggles on).
     ShowOverview,
     /// Close it.
@@ -247,7 +249,7 @@ pub fn swipe_action(
     // ambiguous rather than useful.
     if ax >= t && ax >= ay * AXIS_DOMINANCE && fingers == 3 {
         let dir = if dx < 0.0 { 1 } else { -1 };
-        return Some(GestureAction::CycleTab(dir));
+        return Some(GestureAction::StepAlongStrip(dir));
     }
     None
 }
@@ -319,11 +321,11 @@ mod tests {
         // same sense the horizontal-scroll fallback already uses.
         assert_eq!(
             swipe_action(3, (-150.0, 0.0), &cfg()),
-            Some(GestureAction::CycleTab(1))
+            Some(GestureAction::StepAlongStrip(1))
         );
         assert_eq!(
             swipe_action(3, (150.0, 0.0), &cfg()),
-            Some(GestureAction::CycleTab(-1))
+            Some(GestureAction::StepAlongStrip(-1))
         );
     }
 
@@ -354,7 +356,7 @@ mod tests {
         );
         assert_eq!(
             swipe_action(3, (-150.0, 0.0), &natural()),
-            Some(GestureAction::CycleTab(-1))
+            Some(GestureAction::StepAlongStrip(-1))
         );
         assert_eq!(
             swipe_action(4, (0.0, 150.0), &natural()),
