@@ -7156,3 +7156,199 @@ mod semantic_tree_app_tests {
         assert_eq!(via_a11y, via_affordance, "both paths produce the same result");
     }
 }
+
+/// End-to-end proof that a widget's **synthetic** accessibility nodes — the
+/// ones a canvas-style widget describes without any child widget behind them —
+/// are reachable by an assistive technology, not merely describable to one.
+///
+/// Every assertion here is made against what the real bridge emits
+/// ([`App::build_a11y_tree_update`]) and against what the real dispatch path
+/// does ([`App::dispatch_a11y_action`]), so nothing passes because a hand-built
+/// node list happened to look right.
+#[cfg(test)]
+mod synthetic_node_dispatch_tests {
+    use super::*;
+    use crate::a11y::{Action, Role};
+    use crate::state::State;
+    use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[derive(Clone)]
+    struct Person {
+        name: &'static str,
+    }
+
+    /// A three-row selectable table, plus the recorder its `on_activate` writes
+    /// the activated row index into.
+    fn table_app() -> (App, Rc<RefCell<Vec<usize>>>) {
+        let fired: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = fired.clone();
+        let mut table: DataTable<Person> = DataTable::new(vec![
+            ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0)),
+            ColumnDef::new("role", "Role", ColumnWidth::Flex(1.0)),
+        ])
+        .selectable(true)
+        .on_activate(move |i| sink.borrow_mut().push(i));
+        table.set_rows(vec![
+            Person { name: "Ada" },
+            Person { name: "Grace" },
+            Person { name: "Katherine" },
+        ]);
+
+        let mut app = App::new(State::new(), Box::new(table));
+        app.init_layout();
+        (app, fired)
+    }
+
+    /// The id the bridge emitted for the row at 0-based `index`. Rows carry no
+    /// label, so they are located by their exported 1-based collection position
+    /// — the same handle a reader announces as "row 2 of 3".
+    fn row_id(update: &accesskit::TreeUpdate, index: usize) -> accesskit::NodeId {
+        update
+            .nodes
+            .iter()
+            .find(|(_, n)| {
+                n.role() == accesskit::Role::Row && n.position_in_set() == Some(index + 1)
+            })
+            .map(|(id, _)| *id)
+            .unwrap_or_else(|| panic!("no exported node for row {index}"))
+    }
+
+    #[test]
+    fn every_row_reaches_the_tree_as_a_focusable_node() {
+        let (app, _fired) = table_app();
+        let update = app.build_a11y_tree_update(1.0);
+
+        let rows: Vec<_> = update
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.role() == accesskit::Role::Row)
+            .collect();
+        assert_eq!(rows.len(), 3, "one exported node per row");
+        for (id, node) in &rows {
+            assert!(
+                node.supports_action(accesskit::Action::Focus),
+                "a row an AT cannot focus is a row it cannot navigate to"
+            );
+            assert!(node.supports_action(accesskit::Action::Click));
+            assert!(
+                crate::accesskit_bridge::is_synthetic_id(*id),
+                "rows have no widget of their own, so they live in the synthetic id space"
+            );
+        }
+    }
+
+    #[test]
+    fn focusing_a_row_moves_the_readers_cursor_onto_that_row() {
+        // The gap this closes: before, focus could only ever land on the whole
+        // table, so a reader user arrowing through rows heard "table" each time.
+        let (mut app, _fired) = table_app();
+        let before = app.build_a11y_tree_update(1.0);
+        let second = row_id(&before, 1);
+        assert_ne!(before.focus, second, "nothing is focused yet");
+
+        app.dispatch_a11y_action(second, &Action::Focus);
+
+        let after = app.build_a11y_tree_update(1.0);
+        assert_eq!(
+            after.focus, second,
+            "the tree's focus must be the row the AT asked for, not its owning table"
+        );
+        // ...and the keyboard went to the table, so typing still reaches it.
+        let table_taffy = app
+            .node_map
+            .iter()
+            .find(|(_, ptr)| {
+                let w = unsafe { &***ptr };
+                w.accessibility().map(|n| n.role == Role::Table).unwrap_or(false)
+            })
+            .map(|(&id, _)| id)
+            .expect("the table was laid out");
+        assert_eq!(
+            app.focused_node,
+            Some(table_taffy),
+            "focusing a descendant must also put the keyboard on its owner"
+        );
+        // The focused node must exist in the update it belongs to — AccessKit
+        // panics the consuming AT otherwise.
+        assert!(after.nodes.iter().any(|(id, _)| *id == after.focus));
+    }
+
+    #[test]
+    fn moving_the_cursor_moves_the_exported_focus_with_it() {
+        let (mut app, _fired) = table_app();
+        for index in [2usize, 0, 1] {
+            let update = app.build_a11y_tree_update(1.0);
+            let target = row_id(&update, index);
+            app.dispatch_a11y_action(target, &Action::Focus);
+            let after = app.build_a11y_tree_update(1.0);
+            assert_eq!(
+                after.focus,
+                target,
+                "focus should follow the AT to row {index}"
+            );
+            let (_, node) = after
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == after.focus)
+                .unwrap();
+            assert_eq!(
+                node.position_in_set(),
+                Some(index + 1),
+                "and the focused node should be that very row"
+            );
+        }
+    }
+
+    #[test]
+    fn activating_a_row_activates_that_row_and_not_the_whole_table() {
+        // Without per-node routing the host could only synthesise a click at the
+        // table's centre, which activates whatever row happens to sit there.
+        let (mut app, fired) = table_app();
+        let update = app.build_a11y_tree_update(1.0);
+
+        app.dispatch_a11y_action(row_id(&update, 2), &Action::Activate);
+        assert_eq!(
+            *fired.borrow(),
+            vec![2],
+            "the activation must carry the row the AT named"
+        );
+
+        app.dispatch_a11y_action(row_id(&update, 0), &Action::Activate);
+        assert_eq!(*fired.borrow(), vec![2, 0]);
+    }
+
+    #[test]
+    fn activating_a_cell_activates_its_row() {
+        // A cell is addressed as [row, column]; the table has no independent
+        // per-cell behaviour, so the row is what gets activated.
+        let (mut app, fired) = table_app();
+        let update = app.build_a11y_tree_update(1.0);
+        let row1 = row_id(&update, 1);
+        let (_, row_node) = update.nodes.iter().find(|(id, _)| *id == row1).unwrap();
+        let cell = *row_node.children().last().expect("the row exports cells");
+
+        app.dispatch_a11y_action(cell, &Action::Activate);
+        assert_eq!(*fired.borrow(), vec![1]);
+    }
+
+    #[test]
+    fn a_stale_row_reference_does_nothing_rather_than_hitting_the_wrong_row() {
+        // An AT can hold a node id across a change. Acting on "whatever is at
+        // that index now" is how the wrong record gets deleted.
+        let (mut app, fired) = table_app();
+        let update = app.build_a11y_tree_update(1.0);
+        let real = row_id(&update, 0);
+
+        // Same id space, no such node.
+        let stale = accesskit::NodeId(real.0 ^ 0x5555_5555);
+        assert!(crate::accesskit_bridge::is_synthetic_id(stale));
+        assert_eq!(app.dispatch_a11y_action(stale, &Action::Activate), None);
+        assert!(
+            fired.borrow().is_empty(),
+            "an unresolvable id must activate nothing at all"
+        );
+        assert_eq!(app.focused_node, None, "and must not move focus either");
+    }
+}
