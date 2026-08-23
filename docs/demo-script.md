@@ -16,6 +16,34 @@ process ran.
 
 ---
 
+## Structure the owner settled on 2026-08-23
+
+**One perspective, one excursion.** ada's screen carries the story. There
+is exactly one cut to bob, placed where it proves the most — his machine
+showing the replicated window *and* ada's text arriving, in the same shot —
+and one cut back. The beats below originally interleaved a switch at nearly
+every step; a viewer spends each of those re-orienting rather than watching.
+
+**A caption names whose screen this is**, at the bottom of frame, on every
+segment: the person and their relationship to the room. Two machines running
+the same OS are otherwise indistinguishable across a cut. It is drawn into the
+recording, not added to the shell — a caption, not desktop chrome.
+
+**The agent has no cursor and no cut.** A mouse pointer is an instrument for
+pointing at something you are looking at, so giving one to an agent that never
+looks at a screen contradicts the claim this video exists to make. The agent's
+presence is a caret in the document at the moment it acts, and its arrival is a
+chip appearing in ada's roster. There is no shot of its "view" because
+there is nothing to shoot — and that absence is the demonstration. The run
+asserts zero frames come from its session, and fails if any do.
+
+Beat 4's heading below therefore means bob's cursor. Beat 6's "cut to bob"
+is the one excursion, and beat 7 happens inside it rather than after a return.
+
+**The boot bumper ends where the desktop arrives**, not after it: the demo
+opens on an empty desktop, so holding one first shows the same picture on both
+sides of a cut. See `boot-bumper-cut.md`.
+
 ## 1 · Empty desktop, ada opens Files ✅
 
 A first boot is genuinely empty — one workspace, no windows, no collaborators,
