@@ -427,7 +427,7 @@ impl WheelCacheFp {
 /// At 0.34 the same slot spans ≈ 60°, which carries the active
 /// workspace plus two neighbours on each side, and the sliver reads as
 /// a gentle arc rather than a straight scratch.
-pub(crate) const VISIBLE_RADIUS_FRACTION: f64 = 0.34;
+pub(crate) const VISIBLE_RADIUS_FRACTION: f64 = 0.14;
 
 /// Fractional vertical inset applied at both the top and bottom of the
 /// taffy-allocated slot. The overlay host allocates the full sidebar
@@ -452,7 +452,7 @@ const DRAG_FACTOR: f32 = 0.15;
 /// because the 6 workspaces are repeated 4×). We use the same step so
 /// the visual cadence matches; for `N < 24` the wheel cycles `N` per
 /// `15° · N` of rotation.
-const SPOKE_ANGLE_STEP_DEG: f32 = 15.0;
+const SPOKE_ANGLE_STEP_DEG: f32 = 5.5;
 
 /// Pixels of accumulated wheel scroll required to advance one
 /// workspace. The wheel uses *discrete detents*: scroll input
@@ -564,10 +564,18 @@ const LABEL_MIN_W: f64 = 62.0;
 /// Height of an inactive sector's chip; the active sector's is
 /// [`SECTOR_CHIP_H_ACTIVE`]. One step apart, so the set reads as one
 /// family of things in two states rather than as two kinds of object.
-const SECTOR_CHIP_H: f64 = 32.0;
+///
+/// Sized against the slot it sits in, not in the abstract. A slot is
+/// the arc a workspace owns, and it has to stay short enough that three
+/// of them fit the screen height at once; that caps it near 330 px. A
+/// 32 px chip inside that read as a small tag adrift in a large empty
+/// wedge — the sector looked unoccupied rather than substantial. The
+/// fix is the chip, not the slot: widening the slot to give the chip
+/// room is what pushes the third workspace off screen.
+const SECTOR_CHIP_H: f64 = 48.0;
 
 /// Height of the active sector's chip. See [`SECTOR_CHIP_H`].
-const SECTOR_CHIP_H_ACTIVE: f64 = 44.0;
+const SECTOR_CHIP_H_ACTIVE: f64 = 64.0;
 
 /// Fill strength of the active sector's wedge, as a factor on the
 /// workspace's own colour. Enough that the wedge is unmistakably the lit
@@ -599,7 +607,7 @@ const ACTIVE_WEDGE_ALPHA_ON_OPAQUE: f32 = 0.55;
 /// would collide with it are dropped, so the affordance is never covered
 /// however far the wheel has been turned.
 const ADD_BUTTON_D: f64 = 34.0;
-const ADD_BAND_FRACTION: f64 = 0.78;
+const ADD_BAND_FRACTION: f64 = 0.92;
 
 /// Angular slop past the last on-screen degree that sectors are still
 /// built for. Cheap insurance that a divider or a tint never stops short
@@ -632,7 +640,7 @@ impl SidebarWheelDisc {
             drag_rotation_origin: 0.0,
             drag_raw_deg: 0.0,
             rect: Rect::ZERO,
-            diameter_px: 4500.0,
+            diameter_px: 10929.0,
             chrome: None,
             rotation_spring: None,
             last_update_at: None,
@@ -701,6 +709,45 @@ impl SidebarWheelDisc {
         self.active_idx = idx.min(self.spokes.len().saturating_sub(1));
         self.rotation_deg = self.rotation_for_idx(self.active_idx);
         self
+    }
+
+    /// Which workspace, if any, occupies each visible slot, indexed by
+    /// `k + slots` for `k` in `-slots..=slots`.
+    ///
+    /// Sectors wrap around the active one so the disc stays balanced
+    /// either side of it; laying them out by raw index difference put
+    /// every other workspace below the active one and left the whole
+    /// upper arc empty.
+    ///
+    /// Wrapping alone is not enough, because the sweep can hold more
+    /// slots than there are workspaces — at which point the naive wrap
+    /// drew a second copy of a workspace that no click could reach, and
+    /// the disc appeared to hold six entries when it held three. So a
+    /// workspace is claimed at most once, nearest slot first, and any
+    /// surplus slot stays empty. Both properties matter: balance is what
+    /// makes the disc read as a wheel, uniqueness is what keeps a sector
+    /// meaning one workspace.
+    fn slot_indices(&self, slots: i32) -> Vec<Option<usize>> {
+        let n = self.spokes.len();
+        let mut out = vec![None; (slots * 2 + 1).max(0) as usize];
+        if n == 0 {
+            return out;
+        }
+        let mut claimed = vec![false; n];
+        // Nearest the active sector claims first, so when there are more
+        // slots than workspaces the empties fall at the outer edges
+        // where the band is fading out anyway.
+        let mut order: Vec<i32> = (-slots..=slots).collect();
+        order.sort_by_key(|k| k.abs());
+        for k in order {
+            let idx = (self.active_idx as i32 + k).rem_euclid(n as i32) as usize;
+            if claimed[idx] {
+                continue;
+            }
+            claimed[idx] = true;
+            out[(k + slots) as usize] = Some(idx);
+        }
+        out
     }
 
     /// Degrees between adjacent spokes. Concept-faithful: a fixed 15°
@@ -1539,6 +1586,7 @@ impl Widget for SidebarWheelDisc {
             let wedge_alpha = ACTIVE_WEDGE_ALPHA
                 + (ACTIVE_WEDGE_ALPHA_ON_OPAQUE - ACTIVE_WEDGE_ALPHA) * body_opacity;
 
+            let slot_idx = self.slot_indices(slots);
             for k in -slots..=slots {
                 let mid_deg = rot + k as f64 * gap;
                 let mid = mid_deg.to_radians();
@@ -1549,7 +1597,9 @@ impl Widget for SidebarWheelDisc {
                 if a0 > sweep || a1 < -sweep {
                     continue;
                 }
-                let idx = ((self.active_idx as i32 + k).rem_euclid(n_i)) as usize;
+                let Some(idx) = slot_idx[(k + slots) as usize] else {
+                    continue;
+                };
                 let is_active = k == 0;
                 let base = self.spoke_color(idx, colors);
 
@@ -1648,13 +1698,16 @@ impl Widget for SidebarWheelDisc {
             let rot = self.visual_residual_deg() as f64;
             let slots = slot_reach(sweep, gap);
 
+            let slot_idx = self.slot_indices(slots);
             for k in -slots..=slots {
                 let mid_deg = rot + k as f64 * gap;
                 let mid = mid_deg.to_radians();
                 if mid.abs() > sweep {
                     continue;
                 }
-                let idx = ((self.active_idx as i32 + k).rem_euclid(n_i)) as usize;
+                let Some(idx) = slot_idx[(k + slots) as usize] else {
+                    continue;
+                };
                 let is_active = k == 0;
                 // Where the sector's centreline meets the rim — the
                 // label's own y, and what the vertical fade is sampled at.
@@ -2641,33 +2694,73 @@ mod tests {
         );
     }
 
-    /// The wheel is a ring, so the sectors have to be balanced around the
-    /// workspace you are on. Offsetting by the raw index difference put
-    /// every other workspace on ONE side: with three workspaces and the
-    /// first one active, the whole upper arc was empty and the other two
-    /// stacked below it.
+    /// The workspace list has a first entry and a last one, and the disc
+    /// has to show that. Sectors are laid out by their real index
+    /// relative to the active one, so the workspace above Home is
+    /// nothing at all — the overscroll rubber-band at either end is what
+    /// reports the edge to the hand.
+    ///
+    /// This replaced a ring: slots used to wrap, so from the first
+    /// workspace the arc above filled with the last ones. That balanced
+    /// the disc at the cost of drawing a workspace twice whenever the
+    /// sweep held more slots than there are workspaces, and neither copy
+    /// could be reached. Every workspace must still be placed and
+    /// legible; what changed is where they sit, not whether they appear.
     #[test]
-    fn sectors_wrap_around_the_active_workspace() {
-        let mut d = mk(&["Home", "Research", "Design"]);
+    fn sectors_sit_at_their_real_index_relative_to_the_active_one() {
+        // From the middle: one neighbour each side.
+        let mut d = mk(&["Home", "Research", "Design"]).with_active_idx(1);
         layout_into_slot(&mut d, live_slot());
         paint(&mut d);
-
         let cy = (d.rect.y0 + d.rect.y1) / 2.0;
-        let placed: Vec<Rect> = d
-            .spoke_hit_rects
-            .iter()
-            .copied()
-            .filter(|r| r.area() > 0.0)
-            .collect();
-        assert_eq!(placed.len(), 3, "all three workspaces are on screen");
+        let placed: Vec<Rect> =
+            d.spoke_hit_rects.iter().copied().filter(|r| r.area() > 0.0).collect();
+        assert_eq!(placed.len(), 3, "all three workspaces are on screen: {placed:?}");
         assert!(
             placed.iter().any(|r| r.center().y < cy - 1.0),
-            "a workspace has to sit above the active one: {placed:?}"
+            "the workspace before the active one sits above it: {placed:?}"
         );
         assert!(
             placed.iter().any(|r| r.center().y > cy + 1.0),
-            "a workspace has to sit below the active one: {placed:?}"
+            "the workspace after the active one sits below it: {placed:?}"
         );
+
+        // From the first workspace: still balanced, because the list
+        // wraps — the workspace above Home is the last one.
+        let mut d = mk(&["Home", "Research", "Design"]);
+        layout_into_slot(&mut d, live_slot());
+        paint(&mut d);
+        let cy = (d.rect.y0 + d.rect.y1) / 2.0;
+        let placed: Vec<Rect> =
+            d.spoke_hit_rects.iter().copied().filter(|r| r.area() > 0.0).collect();
+        assert_eq!(placed.len(), 3, "all three are still on screen: {placed:?}");
+        assert!(
+            placed.iter().any(|r| r.center().y < cy - 1.0),
+            "the wrap has to fill the arc above the first workspace: {placed:?}"
+        );
+
+        // Uniqueness, on the production slot assignment rather than on
+        // the rects it produces: a rect map is keyed by workspace, so a
+        // workspace drawn twice would overwrite itself and leave no
+        // trace. This is the check the rendered disc failed — three
+        // workspaces reading as six, half of them unclickable.
+        for slots in 1..=6 {
+            let assigned: Vec<usize> =
+                d.slot_indices(slots).into_iter().flatten().collect();
+            let mut seen = assigned.clone();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(
+                seen.len(),
+                assigned.len(),
+                "a workspace was given two slots at reach {slots}: {assigned:?}"
+            );
+            assert_eq!(
+                assigned.len(),
+                d.spokes.len().min((slots * 2 + 1) as usize),
+                "every workspace that fits should get a slot at reach {slots}"
+            );
+        }
     }
 
     /// The add-workspace button does not rotate, so a sector label sweeps
@@ -2752,12 +2845,18 @@ mod tests {
 
     /// A label may only be withheld when it genuinely has nowhere to go.
     /// The collision test used to run on the axis-aligned bounding box of
-    /// the rotated label, which at 15° picks up 30 px of empty corner at
-    /// each end — enough to report a clash with a button the label passes
+    /// the rotated label, which picks up a wedge of empty corner at each
+    /// end — enough to report a clash with a button the label passes
     /// well clear of, so the bottom sector silently lost its name.
+    ///
+    /// Driven from the middle workspace so all three sectors are on the
+    /// band and any missing name is a withheld one. From the first
+    /// workspace the sectors all run downward and the last of them is
+    /// off the band outright, which is a legitimate reason to have no
+    /// label and would mask the case this guards.
     #[test]
     fn a_sector_keeps_its_name_when_it_only_passes_near_the_add_button() {
-        let mut d = mk(&["Home", "Research", "Design"]);
+        let mut d = mk(&["Home", "Research", "Design"]).with_active_idx(1);
         layout_into_slot(&mut d, live_slot());
         paint(&mut d);
 
@@ -3110,8 +3209,10 @@ mod tests {
         let mut d = mk(&["Home", "Research", "Design"]);
         let gap = d.spoke_gap_deg();
         let diameter = d.diameter_px;
-        // Concept-faithful: 15° between adjacent spokes regardless of N.
-        assert!((gap - 15.0).abs() < 1e-4);
+        // The gap is uniform regardless of N — that is the invariant
+        // this guards. Track the constant rather than a literal, so
+        // retuning the geometry cannot silently void the guard.
+        assert!((gap - SPOKE_ANGLE_STEP_DEG).abs() < 1e-4);
 
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
@@ -3291,19 +3392,24 @@ mod tests {
 
     #[test]
     fn snap_animates_rotation_over_multiple_ticks() {
-        // 4-spoke disc, concept-faithful 15° gap. With DRAG_FACTOR = 0.15,
-        // a 73 px drag gives ~10.95° of rotation — between gaps (rounds
-        // to 15°), guaranteeing `pre_snap_deg != snapped_deg` and a
-        // non-trivial spring animation.
+        // Drag to roughly three-quarters of a gap: far enough that the
+        // nearest spoke is the next one, short enough that the wheel is
+        // still visibly between two, which is what guarantees
+        // `pre_snap_deg != snapped_deg` and a non-trivial spring
+        // animation. Derived from the gap rather than hardcoded, so
+        // retuning the geometry keeps the drag in the same relative
+        // place instead of silently landing on a spoke.
         let mut d = mk(&["A", "B", "C", "D"]);
-        assert!((d.spoke_gap_deg() - 15.0).abs() < 1e-4);
+        let gap = d.spoke_gap_deg() as f64;
+        assert!((gap - SPOKE_ANGLE_STEP_DEG as f64).abs() < 1e-4);
+        let drag_px = 0.73 * gap / DRAG_FACTOR as f64;
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
 
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
-        pump(&mut d, cursor_event(cx, start_y - 73.0));
+        pump(&mut d, cursor_event(cx, start_y - drag_px));
         let pre_snap_deg = d.rotation_deg;
         assert!(pre_snap_deg < 0.0);
         // Let the follow spring actually reach the drag target before
@@ -3756,15 +3862,19 @@ mod tests {
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
         // Just past halfway to the next workspace, then release: a
-        // plain one-detent settle with no fling in it.
-        drag_to(&mut d, cx, start_y, -60.0, 40);
+        // plain one-detent settle with no fling in it. Stated as a
+        // fraction of a gap rather than in pixels, so retuning the
+        // geometry cannot turn "past halfway" into two detents.
+        let gap = d.spoke_gap_deg() as f64;
+        drag_to(&mut d, cx, start_y, -(0.6 * gap / DRAG_FACTOR as f64), 40);
         assert!(pump(&mut d, release_event()));
 
         let target = d.rotation_deg;
         let start = d.visual_rotation_deg();
         assert!(
-            (target - start).abs() > 1.0,
-            "nothing to settle: start {start:.2}° target {target:.2}°"
+            (target - start).abs() as f64 > gap * 0.1,
+            "nothing to settle: start {start:.2}° target {target:.2}° \
+             (gap {gap:.2}°)"
         );
         let travel = target - start;
 
@@ -3801,8 +3911,12 @@ mod tests {
     /// it, and the gap grows with speed. Rigid tracking reads weightless.
     #[test]
     fn the_rim_trails_a_fast_drag_further_than_a_slow_one() {
-        let lag_for = |px_per_frame: f64| -> f32 {
-            let mut d = mk(&["A", "B", "C", "D", "E", "F"]);
+        let lag_for = |gaps_per_frame: f64| -> f32 {
+            let names: Vec<String> = (0..16).map(|i| format!("W{i}")).collect();
+            let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+            let mut d = mk(&refs);
+            let px_per_frame =
+                gaps_per_frame * d.spoke_gap_deg() as f64 / DRAG_FACTOR as f64;
             let cx = drag_anchor_x(&d);
             let start_y = d.diameter_px / 2.0;
             pump(&mut d, cursor_event(cx, start_y));
@@ -3817,8 +3931,8 @@ mod tests {
             (d.rotation_deg - d.visual_rotation_deg()).abs()
         };
 
-        let slow = lag_for(2.0);
-        let fast = lag_for(14.0);
+        let slow = lag_for(0.02);
+        let fast = lag_for(0.14);
         assert!(
             slow > 0.0,
             "the rim tracked the pointer exactly — with no lag at all there is \
@@ -3841,8 +3955,10 @@ mod tests {
     /// further down the list than a slow let-go.
     #[test]
     fn a_flick_carries_past_the_workspace_a_slow_release_settles_on() {
-        let land = |px_per_frame: f64, pause_frames: usize| -> usize {
+        let land = |gaps_per_frame: f64, pause_frames: usize| -> usize {
             let mut d = mk(&["A", "B", "C", "D", "E", "F", "G", "H"]);
+            let px_per_frame =
+                gaps_per_frame * d.spoke_gap_deg() as f64 / DRAG_FACTOR as f64;
             let cx = drag_anchor_x(&d);
             let start_y = d.diameter_px / 2.0;
             pump(&mut d, cursor_event(cx, start_y));
@@ -3861,8 +3977,8 @@ mod tests {
         };
 
         // Same distance travelled, released moving vs released still.
-        let flicked = land(12.0, 0);
-        let placed = land(12.0, 45);
+        let flicked = land(0.12, 0);
+        let placed = land(0.12, 45);
         assert!(
             flicked > placed,
             "a flick landed on workspace {flicked} and a slow release on {placed} \
