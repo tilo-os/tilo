@@ -5,6 +5,7 @@
 //! `Document` model that md/odt/docx map onto. See
 //! `docs/superpowers/specs/2026-06-24-crdt-native-file-formats-design.md`.
 
+pub mod blobstore;
 pub mod codecs;
 pub mod diff;
 pub mod document;
