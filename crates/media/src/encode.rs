@@ -102,6 +102,21 @@ pub struct EncoderSpec {
     /// The property carrying the target bitrate.
     pub bitrate_property: &'static str,
     pub bitrate_units: BitrateUnits,
+    /// Set where this build **measured** the encoder producing a file whose
+    /// rate bears no relation to the one it was asked for.
+    ///
+    /// Only `openh264enc` carries it, and only because it was measured here:
+    /// five seconds of 720p noise asked to fit 1 Mbit/s came out at roughly
+    /// 59, and asking the same compressible clip for 2 or for 8 Mbit/s
+    /// produced files within 0.4% of each other. The property is accepted
+    /// either way — nothing errors — so the only thing that can distinguish
+    /// it is an encode.
+    ///
+    /// `false` is the *absence* of such an observation, not a promise of
+    /// accuracy: it means nobody has caught this encoder ignoring the
+    /// setting, which is the most any table can honestly say about an
+    /// encoder this machine may not even have installed.
+    pub ignores_bitrate: bool,
 }
 
 impl EncoderSpec {
@@ -196,7 +211,7 @@ const H264: &[EncoderSpec] = &[
     kbit("vaapih264enc", EncoderKind::Va),
     kbit("v4l2h264enc", EncoderKind::V4l2),
     kbit("x264enc", EncoderKind::Software),
-    bits("openh264enc", EncoderKind::Software),
+    bits_untracked("openh264enc", EncoderKind::Software),
 ];
 
 /// VP8. Hardware VP8 encode is rare but real on some Intel parts.
@@ -240,7 +255,14 @@ const fn bits(element: &'static str, kind: EncoderKind) -> EncoderSpec {
         kind,
         bitrate_property: "bitrate",
         bitrate_units: BitrateUnits::BitsPerSecond,
+        ignores_bitrate: false,
     }
+}
+
+/// [`bits`], for an encoder measured not to track the rate it is given —
+/// see [`EncoderSpec::ignores_bitrate`].
+const fn bits_untracked(element: &'static str, kind: EncoderKind) -> EncoderSpec {
+    EncoderSpec { ignores_bitrate: true, ..bits(element, kind) }
 }
 
 /// A candidate whose bitrate property is `bitrate`, in kilobits per second.
@@ -250,6 +272,7 @@ const fn kbit(element: &'static str, kind: EncoderKind) -> EncoderSpec {
         kind,
         bitrate_property: "bitrate",
         bitrate_units: BitrateUnits::KilobitsPerSecond,
+        ignores_bitrate: false,
     }
 }
 
@@ -261,6 +284,7 @@ const fn target_bits(element: &'static str) -> EncoderSpec {
         kind: EncoderKind::Software,
         bitrate_property: "target-bitrate",
         bitrate_units: BitrateUnits::BitsPerSecond,
+        ignores_bitrate: false,
     }
 }
 
@@ -391,6 +415,20 @@ impl Selection {
     /// [`crate::hw::HwReport::is_hardware`] applies to decode.
     pub fn is_hardware(&self) -> bool {
         self.confirmed && self.spec.kind.is_hardware()
+    }
+
+    /// Whether a size predicted from the requested bitrate means anything
+    /// for this encoder.
+    ///
+    /// False in two cases, and a caller must treat them the same way — by not
+    /// quoting a size:
+    ///   * the chosen encoder is [recorded as ignoring its
+    ///     bitrate](EncoderSpec::ignores_bitrate), so the rate asked for says
+    ///     nothing about the file that comes out;
+    ///   * nothing was confirmed present ([`Self::confirmed`]), so which
+    ///     encoder runs — if any — has not been observed at all.
+    pub fn bitrate_is_predictive(&self) -> bool {
+        self.confirmed && !self.spec.ignores_bitrate
     }
 
     /// A one-line summary for a log or a test failure message.
@@ -913,6 +951,113 @@ mod tests {
         eprintln!(
             "encode: vaav1enc kilobits confirmed — 400 kbit/s -> {low} bytes, \
              8 Mbit/s -> {high} bytes ({ratio:.1}x)",
+        );
+    }
+
+    /// A size predicted from the requested bitrate is only meaningful where
+    /// the encoder tracks the request and the encoder was actually found.
+    #[test]
+    fn a_size_is_only_predictable_from_a_confirmed_rate_controlling_encoder() {
+        let tracking = H264.iter().find(|s| s.element == "x264enc").unwrap();
+        let untracked = H264.iter().find(|s| s.element == "openh264enc").unwrap();
+        assert!(untracked.ignores_bitrate, "openh264enc is the measured exception");
+        assert!(!tracking.ignores_bitrate, "nothing has been observed about x264enc");
+
+        let sel = |spec: &'static EncoderSpec, confirmed: bool| Selection {
+            spec,
+            confirmed,
+            passed_over: Vec::new(),
+        };
+        assert!(
+            sel(tracking, true).bitrate_is_predictive(),
+            "a confirmed rate-controlling encoder can be quoted a size",
+        );
+        assert!(
+            !sel(untracked, true).bitrate_is_predictive(),
+            "an encoder measured to ignore its bitrate must not be quoted a size",
+        );
+        // Unconfirmed is "nothing observed", never "probably fine" — the same
+        // discipline `is_hardware` applies.
+        assert!(
+            !sel(tracking, false).bitrate_is_predictive(),
+            "an unconfirmed encoder has not been observed, so nothing follows from it",
+        );
+    }
+
+    /// The `openh264enc` measurement, re-run.
+    ///
+    /// [`EncoderSpec::ignores_bitrate`] is a claim about this encoder's
+    /// behaviour, and a claim in a table decays: openh264 could gain working
+    /// rate control, and then the export dialog would be refusing to quote a
+    /// size it could perfectly well quote. So this encodes the same clip at
+    /// two settings 8x apart and asserts the sizes barely move — which is what
+    /// "ignores its bitrate" means, and the only way to tell, since the
+    /// property is accepted either way and nothing errors.
+    ///
+    /// It fails rather than skips when openh264enc is installed and behaves
+    /// differently from the table; it reports honestly when the element is
+    /// missing, which is a property of the machine.
+    #[cfg(feature = "encode")]
+    #[test]
+    fn openh264_still_ignores_the_bitrate_it_is_given() {
+        use gstreamer::prelude::*;
+
+        gstreamer::init().expect("gstreamer init");
+        let spec = H264.iter().find(|s| s.element == "openh264enc").unwrap();
+        assert!(spec.ignores_bitrate, "the table records the measurement");
+        if gstreamer::ElementFactory::find(spec.element).is_none() {
+            eprintln!("encode: no openh264enc here; its bitrate behaviour was not re-measured");
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("qos-media-oh264-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let seconds = 3u64;
+        let mut sizes = Vec::new();
+        for bps in [1_000_000u64, 8_000_000] {
+            let out = dir.join(format!("{bps}.mp4"));
+            let desc = format!(
+                "videotestsrc pattern=ball num-buffers={frames} \
+                 ! video/x-raw,width=640,height=360,framerate=30/1 \
+                 ! videoconvert ! {el} {arg} ! h264parse ! mp4mux ! filesink location={out}",
+                frames = seconds * 30,
+                el = spec.element,
+                arg = spec.bitrate_arg(bps),
+                out = out.display(),
+            );
+            let Ok(pipeline) = gstreamer::parse::launch(&desc) else {
+                panic!("openh264enc is installed but its pipeline would not build: {desc}");
+            };
+            let pipeline = pipeline.downcast::<gstreamer::Pipeline>().expect("a pipeline");
+            pipeline
+                .set_state(gstreamer::State::Playing)
+                .expect("openh264enc is installed, so it must run");
+            let bus = pipeline.bus().expect("bus");
+            let msg = bus.timed_pop_filtered(
+                gstreamer::ClockTime::from_seconds(120),
+                &[gstreamer::MessageType::Eos, gstreamer::MessageType::Error],
+            );
+            let _ = pipeline.set_state(gstreamer::State::Null);
+            assert!(
+                matches!(&msg, Some(m) if m.type_() == gstreamer::MessageType::Eos),
+                "the openh264 encode did not finish: {msg:?}",
+            );
+            sizes.push(std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0));
+        }
+        std::fs::remove_dir_all(&dir).ok();
+
+        let (low, high) = (sizes[0], sizes[1]);
+        assert!(low > 0 && high > 0, "both encodes wrote a file, got {low} and {high} bytes");
+        let ratio = high as f64 / low as f64;
+        eprintln!(
+            "encode: openh264enc 1 Mbit/s -> {low} bytes, 8 Mbit/s -> {high} bytes ({ratio:.3}x)",
+        );
+        assert!(
+            (0.8..1.25).contains(&ratio),
+            "openh264enc now answers its bitrate setting — 8x the request gave {ratio:.2}x the \
+             bytes ({low} -> {high}). The table still records it as ignoring the rate, so the \
+             export dialog is withholding a size estimate it could now give. Clear \
+             `ignores_bitrate` on openh264enc.",
         );
     }
 }
