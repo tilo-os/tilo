@@ -74,6 +74,7 @@ import base64
 import importlib.util
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -123,10 +124,100 @@ DEFAULT_DURATION_S = 900.0
 # thing is ever polled per tick.
 POLL_S = 0.9
 
+# What to tell him to write, per agent mode — and they are not
+# interchangeable.
+#
+# `yc.AGENT_INSTRUCTION` asks for a *run sheet*, which is a judgement
+# about which of those lines is a scheduled item and whether they are
+# consistent. A model can do that. The keyword vocabulary matches three
+# substrings — `table`, `caption`, `heading` (`apps/agent/src/plan.rs`)
+# — so it finds nothing in "run sheet" and answers, on the page, in
+# front of everybody: *I can't "make this a run sheet" yet. I can:
+# table, caption, heading.* Which is honest, is the right behaviour,
+# and is not what anybody wants filmed.
+#
+# So the terminal asks for the thing the running mode can actually do.
+KEYWORD_INSTRUCTION = "Claude: turn the bullets into a table"
+
 # What the film calls each session, under its name on the band. Quinten
 # is whoever is running this; the band says so in the third person
 # because that is what a caption is.
 ROLES = {"quinten": "hosts the room", "xaver": "joined by invite"}
+
+
+# --------------------------------------------------------------------
+# one transient line at the bottom of the transcript
+# --------------------------------------------------------------------
+
+
+class Console:
+    """`stdout` with a status line that anything else clears first.
+
+    Three things write to this terminal at once — the watcher's counter,
+    the assertions the scripted half prints as it goes, and under
+    `--self-test` a second thread driving the owner's half. The counter
+    is a `\\r` line with no newline on the end of it, so without this
+    every one of those lands *appended* to it:
+
+        23s  0 frames  xaver crosses the room    [PASS] xaver joined
+
+    which is the transcript this rig exists to produce, made unreadable
+    by the thing that was supposed to prove it was alive. So the status
+    line is erased before any other write and re-drawn after it, and the
+    lock makes that hold across the threads.
+    """
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+        self._pending = 0
+        self._buf = ""
+        self._lock = threading.Lock()
+
+    def write(self, text: str) -> int:
+        """Buffer until a line is whole, then emit the whole line.
+
+        `print` writes its text and its newline as two separate calls, so
+        locking each call individually still lets the other thread land
+        its line in the middle of this one — which is the same
+        interleaving one level down. Holding partial lines back until
+        their newline arrives makes a line the unit, which is what a
+        reader thinks it is anyway.
+        """
+        if not text:
+            return 0
+        with self._lock:
+            self._buf += text
+            if "\n" in self._buf:
+                whole, _, self._buf = self._buf.rpartition("\n")
+                self._erase()
+                self._stream.write(whole + "\n")
+                self._stream.flush()
+        return len(text)
+
+    def status(self, text: str) -> None:
+        with self._lock:
+            self._erase()
+            self._stream.write(text)
+            self._stream.flush()
+            self._pending = len(text)
+
+    def _erase(self) -> None:
+        if self._pending:
+            self._stream.write("\r" + " " * self._pending + "\r")
+            self._pending = 0
+
+    def flush(self) -> None:
+        with self._lock:
+            # Anything still without its newline goes out now: on the way
+            # out, a half-written line is better than a lost one.
+            if self._buf:
+                self._erase()
+                self._stream.write(self._buf)
+                self._buf = ""
+            self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
 
 
 # --------------------------------------------------------------------
@@ -246,6 +337,12 @@ class Live:
         self.started = time.time()
         self.deadline = self.started + args.duration
         self.waiting = "the desktop to settle"
+        # Everything scripted hangs off the invitation, because
+        # everything scripted is somebody else being in the room. Said in
+        # the counter rather than only in the docstring: a run where he
+        # opens three apps and wonders why nothing is happening is a run
+        # where the terminal should already have told him.
+        self.first_wait = "he mints an invite — all of this waits on it"
         self._last_status = 0.0
         self.stop = threading.Event()
 
@@ -263,13 +360,15 @@ class Live:
             return
         self._last_status = now
         frames = len(self.recorder.frames) if self.recorder else 0
-        sys.stdout.write(
-            f"\r  {now - self.started:5.0f}s  {frames:6d} frames   "
-            f"{self.waiting:<54.54s} ({self.deadline - now:4.0f}s left)  ")
-        sys.stdout.flush()
+        line = (f"  {now - self.started:5.0f}s  {frames:6d} frames   "
+                f"{self.waiting:<48.48s} ({self.deadline - now:4.0f}s left)")
+        if isinstance(sys.stdout, Console):
+            sys.stdout.status(line)
+        else:
+            sys.stdout.write("\r" + line)
+            sys.stdout.flush()
 
     def say(self, text: str) -> None:
-        sys.stdout.write("\r" + " " * 100 + "\r")
         print(f"  {text}", flush=True)
 
     # -- an excursion to the other machine ---------------------------
@@ -285,16 +384,26 @@ class Live:
             return
         self.say(f"cutting to xaver — {why}")
         yc.cut("xaver")
-        if frame_app:
-            yc.frame_one_window(self.x, frame_app)
-        else:
-            yc.show_collaborators(self.x)
-        yc.read_hold(self.args.excursion)
-        self.x.snapshot(os.path.join(
-            self.shots, f"xaver-{int(time.time() - self.started):04d}.png"))
-        if not frame_app:
-            yc.close_collaborators(self.x)
-        yc.cut("quinten")
+        try:
+            if frame_app:
+                yc.frame_one_window(self.x, frame_app)
+            else:
+                yc.show_collaborators(self.x)
+            yc.read_hold(self.args.excursion)
+            self.x.snapshot(os.path.join(
+                self.shots,
+                f"xaver-{int(time.time() - self.started):04d}.png"))
+            if not frame_app:
+                yc.close_collaborators(self.x)
+        except Exception as exc:  # noqa: BLE001
+            # An excursion is a shot, not a claim. Losing one costs the
+            # cut a few seconds of the other machine; taking the run down
+            # for it would lose the whole film, most of which is of a
+            # person who was not doing anything wrong.
+            yc.gap(f"the excursion to xaver's screen failed "
+                   f"({type(exc).__name__}: {exc})")
+        finally:
+            yc.cut("quinten")
 
     # -- the things that fire ----------------------------------------
 
@@ -443,17 +552,23 @@ class Live:
             else "keyword vocabulary, no network"
         self.say(f"Claude is in the room, watching the document "
                  f"(pid {self.agent_proc.pid}, {decides})")
-        self.say(f'  write "{yc.AGENT_INSTRUCTION.strip()}" under a run of '
+        self.say(f'  write "{self.args.instruction}" under a run of '
                  f'bullets and it will act')
+
+    #: The agent, having changed the document: `applied splice text
+    #: (+76 -29)`. On a word boundary, because the same log carries
+    #: prose about a change being held *unapplied* while history it was
+    #: built on is missing — and a plain substring match reported that
+    #: sentence as the agent acting, in a run where it had not.
+    APPLIED = re.compile(r"\bapplied .*")
 
     def check_the_agent(self) -> None:
         """Whether it has done anything, and whether it has finished."""
         fresh = self.agent_tail.read() if self.agent_tail else ""
-        if not self.agent_applied and "applied " in fresh:
+        hit = self.APPLIED.search(fresh)
+        if hit and not self.agent_applied:
             self.agent_applied = True
-            first = next((ln.strip() for ln in fresh.splitlines()
-                          if "applied " in ln), "")
-            self.say(f"Claude acted — {first[-110:]}")
+            self.say(f"Claude acted — {hit.group(0).strip()[:110]}")
         if self.agent_proc.poll() is None:
             return
         code = self.agent_proc.returncode
@@ -480,7 +595,7 @@ class Live:
         now = time.time()
 
         if self.token is None:
-            self.waiting = "he mints an invite (collaborators panel, Invite)"
+            self.waiting = self.first_wait
             self.look_for_the_invitation()
             return
 
@@ -510,8 +625,7 @@ class Live:
 
         if self.agent_proc is not None and not self.agent_done_at:
             self.waiting = ("Claude is working" if self.agent_applied
-                            else "Claude is watching the document for an "
-                                 "instruction addressed to it")
+                            else "Claude waits for a line addressed to it")
             self.check_the_agent()
             return
 
@@ -546,8 +660,8 @@ class Live:
                 break
             self.status()
             self.stop.wait(POLL_S)
-        sys.stdout.write("\r" + " " * 100 + "\r")
-        sys.stdout.flush()
+        if isinstance(sys.stdout, Console):
+            sys.stdout.status("")
         return self.finished or "you stopped it"
 
 
@@ -556,8 +670,31 @@ class Live:
 # --------------------------------------------------------------------
 
 
-def the_owners_half(q, shots: str, stop: threading.Event) -> None:
+def the_owners_half(q, shots: str, instruction: str,
+                    stop: threading.Event) -> None:
     """Everything you would do, driven from here.
+
+    Wrapped, because it runs on a thread of its own and a thread that
+    dies of an exception dies silently: the watcher then sits there
+    saying it is waiting for a word processor nobody is ever going to
+    open, and the run reads as the reactive half hanging rather than as
+    the driving half having crashed. That is exactly what a
+    `NameError` in one of `yc-demo.py`'s framing helpers did to the
+    first self-test of this file.
+    """
+    try:
+        _the_owners_half(q, shots, instruction, stop)
+    except Exception as exc:  # noqa: BLE001 — a dead thread must be loud
+        import traceback
+        traceback.print_exc()
+        yc.FAILURES.append(
+            f"--self-test: the owner's half stopped at "
+            f"{type(exc).__name__}: {exc}")
+
+
+def _the_owners_half(q, shots: str, instruction: str,
+                     stop: threading.Event) -> None:
+    """The steps themselves.
 
     For `--self-test`: the reactive halves cannot be proven without
     something to react to, and asking a person to sit through the rig
@@ -591,7 +728,18 @@ def the_owners_half(q, shots: str, stop: threading.Event) -> None:
     yc.claim("the word processor opened", wp is not None, True)
     if wp is None:
         return
-    yc.frame_both_windows(q, yc.VIEWPORT)
+    # Framing is a nicety and is not what any of this is proving, so a
+    # helper that throws costs a tidy strip rather than the take. It has
+    # thrown: `frame_both_windows` reports a strip it could not frame
+    # using a name that no longer exists in that function, so the only
+    # run that reaches its unhappy path dies of a `NameError` inside a
+    # diagnostic. Live, that path is reached by a person who happened to
+    # open a third window.
+    try:
+        yc.frame_both_windows(q, yc.VIEWPORT)
+    except Exception as exc:  # noqa: BLE001
+        yc.gap(f"the two windows could not be framed ({type(exc).__name__}: "
+               f"{exc}); the strip is left where it is")
     stop.wait(1.0)
 
     # A run of real list items, a line of prose that disagrees with them,
@@ -599,7 +747,7 @@ def the_owners_half(q, shots: str, stop: threading.Event) -> None:
     # converts the bullets immediately above the paragraph addressed to
     # it.
     typed = yc.type_into_the_document(
-        q, wp, yc.AGENT_PROSE + yc.AGENT_BULLETS + yc.AGENT_INSTRUCTION)
+        q, wp, yc.AGENT_PROSE + yc.AGENT_BULLETS + instruction + "\n")
     yc.claim("the document was written into", typed, True)
     print("\n  [ --self-test: the owner's half is done ]", flush=True)
 
@@ -634,10 +782,13 @@ def main() -> int:
                          "agent in the room")
     ap.add_argument("--no-agent", dest="agent", action="store_false",
                     help="no agent in the room at all")
-    ap.add_argument("--agent-model", action="store_true",
-                    help="let the agent ask a model what to do. Off by "
-                         "default: the keyword vocabulary needs no network "
-                         "and does the same thing every take")
+    ap.add_argument("--no-agent-model", dest="agent_model",
+                    action="store_false",
+                    help="decide by keyword instead of asking a model: "
+                         "reproducible and off the network, at the price of "
+                         "a three-word vocabulary. Ask it for a table, a "
+                         "caption or a heading in that mode — anything else "
+                         "and it says so, on the page, in the shot")
     ap.add_argument("--agent-pace", type=int, default=250, metavar="MS",
                     help="pause between the agent's edits, so its caret can "
                          "be watched moving")
@@ -687,6 +838,13 @@ def main() -> int:
                          "invitation, open the word processor, write the "
                          "instruction. Proves the whole rig with no hands")
     args = ap.parse_args()
+
+    # The instruction the terminal will tell him to write — and, under
+    # `--self-test`, the one that actually gets written. It is only ever
+    # advice: the agent reads whatever is in the document, and he can
+    # write anything he likes.
+    args.instruction = (yc.AGENT_INSTRUCTION.strip() if args.agent_model
+                        else KEYWORD_INSTRUCTION)
 
     # ---- preflight -------------------------------------------------
     #
@@ -847,9 +1005,14 @@ def main() -> int:
     for var, path in sorted(tools.items()):
         print(f"  {var:20} {path}")
 
-    video_path = args.video or os.path.join(
-        REPO, ".claude", "demo-artifacts",
-        f"yc-live-{time.strftime('%Y%m%d-%H%M%S')}.mp4")
+    # A real take goes where the other demo videos go. A rehearsal's
+    # goes in its own run directory: it is proof the composer ran, not
+    # something anybody is going to watch, and it should not have to be
+    # told apart from a take afterwards.
+    video_path = args.video or (
+        os.path.join(args.out, "rehearsal.mp4") if args.dry_run else
+        os.path.join(REPO, ".claude", "demo-artifacts",
+                     f"yc-live-{time.strftime('%Y%m%d-%H%M%S')}.mp4"))
     video_path = os.path.abspath(video_path)
     record_dir = os.path.join(args.out, "recording")
 
@@ -861,6 +1024,7 @@ def main() -> int:
     outcome = "not reached"
     rc = 0
     hands = None
+    real_stdout = None
     stop = threading.Event()
 
     # First Ctrl-C ends the take and composes what was filmed; a second
@@ -987,24 +1151,65 @@ def main() -> int:
                 print("\nready: the sessions are up, each has a room of its "
                       "own and the apps are installed. Nothing reactive is "
                       "exercised here — add --self-test to drive the owner's "
-                      "half and watch the other two answer it.")
+                      "half, watch the other two answer it, and get a "
+                      "rehearsal clip out of it.")
                 outcome = "dry-run"
                 return 0
+            print("\n  --dry-run --self-test: the whole rig, headless. Both "
+                  "halves run, the camera rolls on the same snapshot op a "
+                  "take uses, and nothing appears on anybody's screen.")
 
         # ---- roll ---------------------------------------------------
+        #
+        # One page saying what the window is for and what will answer
+        # each thing done in it. Printed while the terminal is still in
+        # front, because in a moment it will not be.
         if not args.dry_run:
+            print("\nthe window is yours. There is no order to keep:")
+            print("  - open Files, open the collaborators panel, press "
+                  "Invite and name somebody")
+            if args.xaver:
+                print(f"      -> xaver redeems it "
+                      f"{args.xaver_delay:.0f}s later, on his own machine")
+            print("  - open the word processor and write in it; drag "
+                  f"{yc.PHOTO_NAME} out of Files onto the page")
+            if args.agent:
+                print(f'      -> once it is open, Claude joins the room and '
+                      f'waits. Write "{args.instruction}"')
+                print("         under a run of bullets and it will do it"
+                      + ("" if args.agent_model else
+                         " (keyword mode: it only knows"
+                         " table, caption and heading)"))
+            if args.stop_after == "agent" and args.agent:
+                print("  - the take ends by itself once that has landed on "
+                      "the other machine")
+            else:
+                print("  - Ctrl-C in this terminal ends the take and writes "
+                      "the clip")
+            if args.stop_after == "agent" and not args.agent:
+                print("  ! --stop-after agent with no agent in the room: "
+                      "nothing can end this take but Ctrl-C or the "
+                      f"{args.duration:.0f}s cap")
             if args.self_test:
                 print("\n  --self-test: no hands. Your half is driven from "
                       "here so the reactive half has something real to "
                       "answer.")
             ins.countdown(max(0, args.countdown),
-                          "Open Files, invite xaver from the collaborators "
-                          "panel, open the word processor, write to it.",
+                          "Open Files, invite somebody from the "
+                          "collaborators panel, open the word processor.",
                           quiet=args.self_test)
             if wid is not None:
                 ins.raise_window(wid)
 
-        if args.record and not args.dry_run:
+        # A dry run films too, when it is driving. The camera reads the
+        # same `snapshot` op off a headless session as off a windowed
+        # one, so recording here is what makes `--dry-run --self-test` a
+        # rehearsal of the whole rig rather than of its first half: the
+        # cuts, the two excursions to xaver's screen and the compose all
+        # run, on a machine with no X server and with nothing on
+        # anybody's desktop. Without it, three of the things most likely
+        # to be broken on the night are the three never exercised.
+        if args.record:
             os.makedirs(record_dir, exist_ok=True)
             recorder = yc.Recorder(sessions, record_dir, interval=0.0,
                                    dwell=0.0, cut_dwell=1.0,
@@ -1016,9 +1221,15 @@ def main() -> int:
             yc.ROLES.update(ROLES)
             recorder.start(quinten.name)
 
+        # From here on three things write to this terminal at once, so
+        # the transient counter learns to get out of their way. Put back
+        # in the `finally` below, before anything reports.
+        real_stdout, sys.stdout = sys.stdout, Console(sys.stdout)
+
         if args.self_test:
             hands = threading.Thread(
-                target=the_owners_half, args=(quinten, shots, stop),
+                target=the_owners_half,
+                args=(quinten, shots, args.instruction, stop),
                 name="hands", daemon=True)
             hands.start()
 
@@ -1037,6 +1248,9 @@ def main() -> int:
         outcome = f"{type(exc).__name__}: {exc}"
         rc = 1
     finally:
+        if real_stdout is not None:
+            sys.stdout.flush()
+            sys.stdout = real_stdout
         stop.set()
         if hands is not None:
             hands.join(timeout=15)
@@ -1081,11 +1295,17 @@ def main() -> int:
             print(f"  no frame came from {yc.NEVER_ON_CAMERA}'s session: what "
                   f"it did is in the film only where the people it did it "
                   f"with can see it")
-        windowed = [s.name for s in sessions
-                    if isinstance(s, ins.WindowedSession)]
-        if windowed != ["quinten"]:
+        # The mechanical half of the same claim, and stated as what it
+        # actually forbids: *nobody but the person driving* gets a
+        # window. Not "quinten has one" — a rehearsal is headless
+        # throughout and would fail an assertion written that way, which
+        # is a failure about the harness rather than about the film.
+        intruders = [s.name for s in sessions
+                     if isinstance(s, ins.WindowedSession)
+                     and s.name != "quinten"]
+        if intruders:
             yc.FAILURES.append(
-                f"a window was opened for {windowed} — only the person "
+                f"a window was opened for {intruders} — only the person "
                 f"driving gets one")
         first = ins.png_size(os.path.join(record_dir, recorder.frames[0][1]))
         source_size = f"{first[0]}x{first[1]}" if first else yc.RECORD_SIZE
