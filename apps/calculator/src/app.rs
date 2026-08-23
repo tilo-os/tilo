@@ -1240,16 +1240,21 @@ mod tests {
         let mut app = CalculatorApp::new();
         let mut state = ui::State::new();
 
+        // Checkpoint the way the host does: attributed to the local user.
+        // Undo is author-scoped, so an anonymous checkpoint is one this user's
+        // own Ctrl+Z steps straight past.
+        let local_author = ui::collaboration::local_user_id();
+
         // Seed the CRDT from the initial model, then checkpoint that baseline.
         app.sync(&mut state.doc, &state.root);
-        state.commit_action(None, None);
+        state.commit_action_authored(None, None, Some(local_author.clone()));
 
         // Start from a single, empty 2D function; checkpoint it.
         app.set_mode(Mode::Graph2d);
         app.model.funcs = vec![PlotFn { expr: String::new(), visible: true }];
         app.model.active_fn = 0;
         doc::store(&mut state.doc, &app.model);
-        state.commit_action(None, None);
+        state.commit_action_authored(None, None, Some(local_author.clone()));
 
         // Type "2*x" (character edits) and seal one checkpoint — exactly what the
         // App's needs_commit → commit_action coalescing does after a pause.
@@ -1259,10 +1264,13 @@ mod tests {
         }
         assert_eq!(app.model.funcs[0].expr, "2*x");
         doc::store(&mut state.doc, &app.model);
-        state.commit_action(None, None);
+        state.commit_action_authored(None, None, Some(local_author.clone()));
 
         // Ctrl+Z: ui::State restores the prior snapshot; sync adopts it.
-        assert!(state.undo(None, None).is_some(), "undo must pop a checkpoint");
+        assert!(
+            state.undo_as(Some(&local_author), None, None).is_some(),
+            "undo must pop a checkpoint"
+        );
         app.sync(&mut state.doc, &state.root);
         assert_eq!(
             app.model.funcs[0].expr, "",
@@ -1270,7 +1278,10 @@ mod tests {
         );
 
         // Ctrl+Y: redo re-applies; sync adopts it.
-        assert!(state.redo(None, None).is_some(), "redo must pop a checkpoint");
+        assert!(
+            state.redo_as(Some(&local_author), None, None).is_some(),
+            "redo must pop a checkpoint"
+        );
         app.sync(&mut state.doc, &state.root);
         assert_eq!(
             app.model.funcs[0].expr, "2*x",
