@@ -4584,15 +4584,26 @@ impl VideoEditorApp {
     fn seed_shot_collaborators(&mut self) {
         use ui::permissions::UserId;
         let mut ctx = PresenceCtx::empty();
-        // Clips to hand out, in timeline order so the pick is the same on
-        // every run rather than whatever order a map iterated in.
-        let mut clips: Vec<(ClipId, f64, f64)> = self
+        // Clips to hand out, walked track by track from the top so the pick
+        // is the same on every run rather than whatever order a map iterated
+        // in -- and so the first peer lands on the topmost lane, where a name
+        // chip has no room above it and has to fall inside the clip instead.
+        // One per track, walked from the top, so two participants are never
+        // stacked on one lane -- and so the first lands on the topmost track,
+        // where a name chip has no room above it and has to fall inside the
+        // clip instead.
+        let clips: Vec<(ClipId, f64, f64)> = self
             .project
-            .clips
+            .display_tracks()
             .iter()
-            .map(|c| (c.id, c.start, c.end()))
+            .filter_map(|t| {
+                self.project
+                    .clips_on(t.id)
+                    .into_iter()
+                    .find(|c| Some(c.id) != self.selected())
+                    .map(|c| (c.id, c.start, c.end()))
+            })
             .collect();
-        clips.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
         for (i, (id, name, at)) in [("ada", "Ada", 6.5), ("bo", "Bo", 21.0)]
             .into_iter()
@@ -4604,12 +4615,7 @@ impl VideoEditorApp {
             ctx.apply_remote_presence(id.to_string(), k, p);
             // Each takes a different clip, and neither takes the one this
             // participant has, so the three selections are distinguishable.
-            if let Some((cid, start, end)) = clips
-                .iter()
-                .filter(|(cid, _, _)| Some(*cid) != self.selected())
-                .nth(i)
-                .copied()
-            {
+            if let Some((cid, start, end)) = clips.get(i).copied() {
                 let (k, p) = crate::presence::range_frame(Some((cid, start, end)));
                 ctx.apply_remote_presence(id.to_string(), k, p);
             }
@@ -5011,10 +5017,7 @@ impl VideoEditorApp {
         // which is the document's map-key order — arbitrary, and re-rolled
         // every run because the ids are fresh UUIDs, so the same project
         // opened twice highlighted two different bin rows.
-        self.selected_media = first
-            .and_then(|id| self.project.clip(id))
-            .map(|c| c.media)
-            .or_else(|| self.bin_order().first().copied());
+        self.selected_media = self.project.media.first().map(|m| m.id);
         self.initialised_selection = true;
     }
 
@@ -11186,7 +11189,15 @@ impl VideoEditorApp {
         // colours. Over the mute/lock scrims, because a peer's selection has
         // to stay legible on a lane that is greyed back -- knowing someone
         // else is working on a locked clip is exactly when it matters.
-        crate::presence::draw_peer_clips(scene, tf, tr, theme, presence, &drawn);
+        crate::presence::draw_peer_clips(
+            scene,
+            tf,
+            tr,
+            theme,
+            presence,
+            &drawn,
+            Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1),
+        );
 
         // Live rubber band, over the clips it is sweeping.
         if let Some(band) = self.marquee {
