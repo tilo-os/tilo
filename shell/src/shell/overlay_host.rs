@@ -44,6 +44,7 @@ use ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::notification::NotificationStack;
+use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{
     Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
 };
@@ -3231,6 +3232,21 @@ impl ShellOverlayHost {
     /// drives scenarios through this and is built in release for the OS
     /// image, so gating it breaks the image build while every debug build
     /// and test still passes.
+    /// The sidebar wheel disc, downcast back out of the `Box<dyn Widget>`
+    /// the host holds it in.
+    ///
+    /// For the screenshot harness, which needs to ask the wheel to hold
+    /// its settle at a chosen point on the curve: the settle is motion,
+    /// a still frame cannot show motion, and an offscreen render takes
+    /// longer than the settle lasts, so stepping real frames only ever
+    /// catches the endpoints.
+    pub fn sidebar_wheel_mut_for_tests(&mut self) -> Option<&mut SidebarWheelDisc> {
+        self.sidebar
+            .as_mut()?
+            .as_any_mut()?
+            .downcast_mut::<SidebarWheelDisc>()
+    }
+
     pub fn group_row_mut_for_tests(&mut self, strip_id: StripId) -> Option<&mut GroupRow> {
         let &ptr = self.group_row_ptrs.get(&strip_id)?;
         // SAFETY: see field doc on `group_row_ptrs`.

@@ -184,6 +184,34 @@ pub enum Action {
         /// Milliseconds into the curve.
         at_ms: &'static [u64],
     },
+    /// Press on the workspace wheel's rim and drag it `dy` px vertically
+    /// in `steps` increments, WITHOUT releasing.
+    ///
+    /// Self-locating: the press lands on the disc's own laid-out rect,
+    /// so the scenario does not carry coordinates that go stale when the
+    /// sidebar's width changes with the viewport. Leaving the button
+    /// down is the point — the indicator stepping across workspaces is a
+    /// mid-drag state, and a scenario that released could never capture
+    /// it.
+    DragWheelRim {
+        dy: f64,
+        steps: u32,
+    },
+    /// Sample the workspace wheel's settle at fixed points along its
+    /// curve and capture each as `prefix-<ms>`.
+    ///
+    /// The escape [`Action::SampleTabReveal`] gives, pointed at the
+    /// wheel: a release's settle lasts about half a second and one
+    /// offscreen render costs more wall time than that, so stepping
+    /// frames catches the wheel where it was let go and then already
+    /// parked. This asks the disc to hold the production spring at a
+    /// chosen millisecond instead, and what renders is the production
+    /// `draw` there.
+    SampleWheelSettle {
+        prefix: &'static str,
+        /// Milliseconds into the settle.
+        at_ms: &'static [u64],
+    },
     /// Put the selection on the `idx`-th group of the active strip, or
     /// clear it entirely with `None` — which is the state rule 3 (place
     /// at a seam) is about.
@@ -483,6 +511,70 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 }
                 st.bump();
             });
+        }
+        Action::DragWheelRim { dy, steps } => {
+            driver.relayout();
+            let Some(rect) = driver
+                .host_mut()
+                .sidebar_wheel_mut_for_tests()
+                .map(|w| ui::Widget::get_rect(w))
+            else {
+                eprintln!("scenario: no wheel disc in the tree to drag");
+                return;
+            };
+            if rect.area() <= 0.0 {
+                eprintln!("scenario: the wheel disc has not laid out yet — paint first?");
+                return;
+            }
+            // A third of the way in from the rim, vertically centred:
+            // inside the arc at every rotation, and clear of the
+            // add-workspace button down at the bottom.
+            let from = Point::new(rect.x0 + rect.width() * 0.66, (rect.y0 + rect.y1) / 2.0);
+            driver.move_cursor(from);
+            driver.press();
+            let n = (*steps).max(1);
+            for s in 1..=n {
+                let t = s as f64 / n as f64;
+                driver.move_cursor(Point::new(from.x, from.y + dy * t));
+                // One frame per increment so the follow spring actually
+                // integrates — with no frames between moves the rim
+                // never gets anywhere and the drag is a teleport.
+                driver.step_frames(1);
+            }
+        }
+        Action::SampleWheelSettle { prefix, at_ms } => {
+            // Let the workspace crossfade the release just started run
+            // to completion before sampling anything.
+            //
+            // Committing a workspace switches the content underneath,
+            // and that switch is its own animation. Sampling straight
+            // after the release caught it a frame or two in — outgoing
+            // workspace faded out, incoming one not yet faded in — so
+            // the earliest frames of the strip came out nearly black
+            // and showed the crossfade instead of the wheel. Which is
+            // the one failure a sampled-curve strip cannot survive,
+            // since the earliest frames are its whole job.
+            //
+            // Spending frames here is free: every sample re-derives the
+            // wheel's curve from the settle's recorded starting state,
+            // so whatever the spring does meanwhile is discarded. Only
+            // the crossfade keeps the time, which is the point.
+            driver.step_frames(24);
+            driver.relayout();
+            for ms in at_ms.iter() {
+                let held = driver
+                    .host_mut()
+                    .sidebar_wheel_mut_for_tests()
+                    .map(|w| w.hold_rotation_at(std::time::Duration::from_millis(*ms)))
+                    .unwrap_or(false);
+                if !held {
+                    eprintln!("scenario: no wheel settle in flight to sample at {ms} ms");
+                }
+                driver.relayout();
+                let name: &'static str =
+                    Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
+                sink.capture(driver, name);
+            }
         }
         Action::SampleTabReveal { prefix, at_ms } => {
             // Lay out once so the hover that preceded this has latched a
@@ -1001,6 +1093,8 @@ pub fn catalogue() -> Vec<Scenario> {
         workspace_switch(),
         workspace_switch_animated(),
         wheel_scroll_workspaces(),
+        wheel_drag_feel(),
+        wheel_overscroll_at_the_end(),
         wheel_summon_at_pointer(),
         overview_transition(),
         strip_horizontal_scroll(),
@@ -1979,6 +2073,87 @@ fn wheel_summon_at_pointer() -> Scenario {
     }
 }
 
+/// The wheel's feel, laid out frame by frame: the indicator stepping
+/// across the list under a held drag, then the release settling.
+///
+/// Both halves need explaining. A drag is captured *mid-gesture*,
+/// button still down, because the whole complaint was that the
+/// highlight did not move until the end — the interesting states are
+/// exactly the ones a released drag has already left. And the settle is
+/// sampled rather than stepped, because it lasts about half a second
+/// while a single offscreen render costs more than that, so real frames
+/// only ever catch the two ends of it.
+fn wheel_drag_feel() -> Scenario {
+    // One workspace is `15° / 0.15 = 100 px` of drag. Up, because the
+    // shell opens on its first workspace and the list runs downward from
+    // there.
+    const PER_WORKSPACE_PX: f64 = 100.0;
+    const SETTLE_SAMPLES: &[u64] = &[0, 40, 80, 120, 180, 260, 360, 500];
+    Scenario {
+        name: "wheel_drag_feel",
+        description: "Drag the workspace wheel's rim across the list with the button held,              then sample the release settle along its curve.",
+        actions: vec![
+            Action::Snapshot("00-rest"),
+            // A third of a workspace: not yet past the boundary, so the
+            // indicator is still on the workspace we started from while
+            // the disc is visibly turned off its detent. Deliberately
+            // not one HALF — that is exactly the boundary, and a
+            // capture there tips one way or the other and shows neither
+            // state clearly.
+            Action::DragWheelRim { dy: -PER_WORKSPACE_PX * 0.35, steps: 10 },
+            Action::Snapshot("01-part-way"),
+            Action::MouseRelease,
+            Action::Wait(45),
+            // One, two, three workspaces, each captured while still held.
+            Action::DragWheelRim { dy: -PER_WORKSPACE_PX, steps: 14 },
+            Action::Snapshot("02-one-workspace-held"),
+            Action::DragWheelRim { dy: -PER_WORKSPACE_PX, steps: 14 },
+            Action::Snapshot("03-two-workspaces-held"),
+            Action::MouseRelease,
+            Action::Wait(60),
+            Action::Snapshot("04-settled-at-the-end"),
+            // Now a flick: the same distance covered in a third of the
+            // moves, so the pointer is still travelling fast when the
+            // button comes up. Sampling THIS is the point — a release
+            // from rest has almost nothing to show, whereas a flick has
+            // to coast the length of the list and decelerate, which is
+            // the entire claim about weight.
+            Action::DragWheelRim { dy: PER_WORKSPACE_PX * 1.6, steps: 5 },
+            Action::MouseRelease,
+            Action::SampleWheelSettle { prefix: "05-coast", at_ms: SETTLE_SAMPLES },
+            Action::Wait(60),
+            Action::Snapshot("06-landed"),
+        ],
+    }
+}
+
+/// Pull the wheel off the end of the list and let it go.
+///
+/// The end is the one place a still is worth much: overscroll is a
+/// *position* the wheel can be held in, so a capture at full pull shows
+/// the give directly, and the sampled return shows it coming back.
+fn wheel_overscroll_at_the_end() -> Scenario {
+    const SETTLE_SAMPLES: &[u64] = &[0, 60, 140, 240, 400];
+    Scenario {
+        name: "wheel_overscroll_at_the_end",
+        description: "Pull the workspace wheel past the first workspace, where the list ends,              and sample its return.",
+        actions: vec![
+            Action::Snapshot("00-rest"),
+            // Downward from the first workspace is off the top of the
+            // list. 120 px asks for 18°, resistance gives back far less.
+            Action::DragWheelRim { dy: 120.0, steps: 12 },
+            Action::Snapshot("01-pulled"),
+            // Five times the pull for nowhere near five times the give.
+            Action::DragWheelRim { dy: 480.0, steps: 24 },
+            Action::Snapshot("02-pulled-hard"),
+            Action::MouseRelease,
+            Action::SampleWheelSettle { prefix: "03-returning", at_ms: SETTLE_SAMPLES },
+            Action::Wait(60),
+            Action::Snapshot("04-back-at-the-end"),
+        ],
+    }
+}
+
 fn wheel_scroll_workspaces() -> Scenario {
     Scenario {
         name: "wheel_scroll_workspaces",
@@ -1989,7 +2164,8 @@ fn wheel_scroll_workspaces() -> Scenario {
             Action::Snapshot("00-pre"),
             // Negative dy advances forward (LineDelta sign convention
             // matches a wheel-down gesture). 8 lines × 16 px/line =
-            // 128 px > the 120-px detent → fires one click_to_spoke.
+            // 128 px, which at a 48-px detent is two workspaces plus a
+            // remainder the idle timer clears.
             Action::MouseWheel { dx: 0.0, dy: -8.0 },
             Action::SnapshotSequence {
                 prefix: "detent-1",
