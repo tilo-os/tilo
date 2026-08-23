@@ -30,6 +30,42 @@
 //! [`dispatch`](executor::dispatch) honors it against an
 //! [`ActionTransport`](executor::ActionTransport), falling back to local
 //! execution when no host answers.
+//!
+//! ## Driving an app that has no window
+//!
+//! A [`Resource`]/[`ActionSpec`] is presentation and stays local, but a
+//! faithful *description* of it crosses: [`project_flat`] turns the forest into
+//! [`FlatSpec`]s — a stable address, human labels, and a typed
+//! [`ActionParam`] list — carrying nothing fireable, so surveying what an app
+//! offers can never trip a side-effect. A caller reads that, sends back an
+//! address and arguments, and [`build_from_json`] resolves it, binds strictly,
+//! and runs the app's own builder. The result is byte-identical to what the
+//! on-screen affordance produces, because it *is* the affordance's closure —
+//! see [`resource`] for how one closure serves both.
+//!
+//! [`IoTransport`] is the other missing half: an [`ActionTransport`] over any
+//! `Write` + `BufRead`, framing newline-delimited JSON, so an envelope can
+//! actually reach a peer or host instead of being dropped into a `Vec`.
+//!
+//! ## Sharing this vocabulary with the compositor
+//!
+//! [`params`] is deliberately the *same* vocabulary the compositor's headless
+//! action API speaks — [`ParamType`], [`ActionParam`], [`ArgValue`], and the
+//! strict [`ActionArgs::bind`] — lifted into one definition rather than left to
+//! converge by accident. The wire spellings of `text` / `integer` / `boolean`
+//! and the bind semantics (unknown argument refused, first failure wins,
+//! nothing partial reaches an action) are unchanged from that surface, and the
+//! `const` constructors keep a `const PARAMS: &[ActionParam] = &[…]` compiling
+//! as written.
+//!
+//! Two deliberate supersets, both additive: [`ParamType::Number`], because the
+//! app-side arguments this replaces are overwhelmingly fractional and rounding
+//! them would discard the values they exist to carry; and
+//! [`ActionParam::choices`], which turns a prose list into something a caller
+//! can read and binding can enforce. The string fields are
+//! [`Cow<'static, str>`](std::borrow::Cow) rather than `&'static str` because an
+//! app builds its parameters per frame out of live document state — a `const`
+//! declaration is `Cow::Borrowed` and costs nothing.
 
 pub mod action;
 pub mod envelope;
