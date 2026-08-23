@@ -158,6 +158,23 @@ impl Editor {
         Ok((!delta.is_empty()).then_some(delta))
     }
 
+    /// How many ancestor changes this replica is waiting for.
+    ///
+    /// Automerge will not apply a change whose dependencies it has not
+    /// got — it queues it — and nothing about reading the document
+    /// afterwards says so: it simply materialises as the page *before*
+    /// the gap, however many later changes are sitting in the queue. So
+    /// a replica that missed one change in the middle reads exactly like
+    /// a document that has nothing more in it, and a snapshot saved from
+    /// it carries the queued changes along, spreading the same silent
+    /// truncation to whoever it is sent to.
+    ///
+    /// This is the one honest way to tell "there is nothing more" from
+    /// "there is more, and I was never sent what it stands on".
+    pub fn missing_ancestors(&mut self) -> usize {
+        self.doc.get_missing_deps(&[]).len()
+    }
+
     /// The whole document, for a peer that just arrived.
     pub fn full(&mut self) -> Vec<u8> {
         let bytes = self.doc.save();

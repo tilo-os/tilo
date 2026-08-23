@@ -40,12 +40,19 @@ pub struct Config {
     /// How long that call may take before the keyword vocabulary decides
     /// instead. Short on purpose: the work must not wait on the network.
     pub model_timeout: Duration,
-    /// How long to wait for somebody in the room to answer with the
-    /// document before giving up and saying which address went
-    /// unanswered. `Duration::ZERO` waits forever — right for an agent
-    /// left running against a room whose document nobody has opened yet,
-    /// wrong for a scripted run, where it turns a mismatched route into
-    /// a hang that names no cause.
+    /// How long to wait for the room to produce something addressed to
+    /// this agent before giving up and saying what it did see.
+    ///
+    /// `Duration::ZERO` waits forever — right for an agent left running
+    /// against a room nobody has written an instruction in yet, wrong
+    /// for a scripted run, where it turns every way of finding no work
+    /// into a hang that names no cause.
+    ///
+    /// It covers *nothing to do*, not merely *nothing received*.
+    /// Bounding only the empty-handed case is what let the demo's agent
+    /// sit for two minutes: a peer answered with a page that stopped
+    /// above the instruction, and from that moment no deadline applied
+    /// to it at all.
     pub await_document: Duration,
 }
 
@@ -59,22 +66,45 @@ pub struct Session {
     /// Decides which exported action answers an instruction.
     chooser: Chooser,
     /// When the agent last asked the room for the document. It asks again
-    /// until it has one: an app that was still opening its file when the
-    /// agent arrived never saw the first ask, and the agent would then wait
-    /// for a reply that is never coming. On a loaded machine that is the
-    /// difference between the beat happening and the beat hanging.
+    /// until something that comes back is addressed to it: an app that
+    /// was still opening its file when the agent arrived never saw the
+    /// first ask, and an app whose own copy stops short will never send
+    /// a whole one. On a loaded machine that is the difference between
+    /// the beat happening and the beat hanging.
     asked_at: Instant,
+    /// How long to leave before asking again. Constant while the agent
+    /// holds nothing at all — the room may simply not be up yet, and a
+    /// steady beat is what gets the first answer — then doubling up to
+    /// [`REASK_CEILING`], so an agent holding a quiet page is not
+    /// knocking every three quarters of a second forever.
+    reask_every: Duration,
+    /// Whether anything in this room has ever been addressed to the
+    /// agent. Until something is, holding *a* document proves nothing:
+    /// the first peer to answer may be an app still opening its file, or
+    /// one whose own replica is missing a change nobody can send it.
+    addressed_seen: bool,
+    /// Changes the replica is holding but cannot apply, because whatever
+    /// they were built on never arrived. Non-zero means the page that
+    /// materialises here is provably not the whole page — Automerge
+    /// queues a change with unmet dependencies rather than applying it,
+    /// so the document stops at the gap however much came after it.
+    missing_ancestors: usize,
     /// How the last instruction was decided. The record that keeps a run on
     /// the fallback from being indistinguishable from a live one afterwards.
     last_route: Option<Route>,
 }
 
-/// How often the agent asks again while it still has no document.
+/// How often the agent asks again while it is still empty-handed.
 const REASK_EVERY: Duration = Duration::from_millis(750);
+
+/// The slowest the agent falls back to once it holds a page but has
+/// still found nothing in the room addressed to it.
+const REASK_CEILING: Duration = Duration::from_secs(8);
 
 /// Ask the room for the document: peers already in it answer an `Arrived`
 /// with their full state. Safe to repeat — a second copy of a document the
-/// agent already holds merges to the same thing.
+/// agent already holds merges to the same thing, and a copy from a peer
+/// with more history than this replica fills in what is missing.
 fn ask_for_document(link: &mut Link) -> Result<()> {
     link.send(&CollabRequest::Presence {
         key: PresenceKey::Workspace {
@@ -149,6 +179,9 @@ impl Session {
             chooser,
             last_route: None,
             asked_at: Instant::now(),
+            reask_every: REASK_EVERY,
+            addressed_seen: false,
+            missing_ancestors: 0,
         })
     }
 
@@ -158,33 +191,75 @@ impl Session {
         self.last_route.as_ref()
     }
 
+    /// Changes this replica holds but cannot apply for want of what they
+    /// were built on. Non-zero means what the agent can read is short of
+    /// what the peer that sent it can read.
+    pub fn missing_ancestors(&self) -> usize {
+        self.missing_ancestors
+    }
+
     /// Run until the broker goes away — or, with `once`, until the first
     /// instruction has been carried out.
     ///
-    /// If nobody ever answers with a document, give up after
-    /// `await_document` and say which address went unanswered. Waiting
-    /// forever was the previous behaviour and it is the wrong one: the
-    /// commonest cause is a route that does not match, the broker drops
-    /// a mismatched frame silently by design, and the symptom is an
-    /// agent sitting at 0% forever while every log line says it joined
-    /// fine. A harness then reports "the agent did not finish", which
-    /// names the one component that was working.
+    /// If nothing addressed to the agent turns up, give up after
+    /// `await_document` and say which of the three things went wrong.
+    /// Waiting forever was the previous behaviour and it is the wrong
+    /// one: every way of finding no work looks identical from outside —
+    /// a process that connected, announced, logged that it joined, and
+    /// then went quiet. A harness then reports "the agent did not
+    /// finish", which names the one component that was working.
     pub fn run(&mut self) -> Result<()> {
         let joined = Instant::now();
         loop {
             if self.step(Duration::from_millis(100))? && self.cfg.once {
                 return Ok(());
             }
-            if self.editor.is_none()
+            if !self.addressed_seen
                 && !self.cfg.await_document.is_zero()
                 && joined.elapsed() >= self.cfg.await_document
             {
-                anyhow::bail!("{}", self.unanswered());
+                anyhow::bail!("{}", self.nothing_to_do());
             }
         }
     }
 
-    /// Why no document arrived, in terms of the thing that decides it.
+    /// Why there was no work, in terms of the thing that decides it.
+    ///
+    /// Three different faults present identically as silence and each
+    /// sends the reader somewhere else, so they are separated here
+    /// rather than left to whoever opens the log.
+    fn nothing_to_do(&self) -> String {
+        if self.editor.is_none() {
+            return self.unanswered();
+        }
+        let waited = self.cfg.await_document.as_secs();
+        let name = &self.cfg.name;
+        if self.missing_ancestors > 0 {
+            return format!(
+                "a document arrived, but nothing in it is addressed to \
+                 {name:?} after {waited}s — and it is not the whole \
+                 document. It is built on {} ancestor change(s) that were \
+                 never sent here, so everything made after them is held \
+                 unapplied and the page stops at the gap. Nobody in the \
+                 room answered with a copy that has them, which points \
+                 upstream of this agent: a change too large to cross \
+                 severs every edit made after it, because `shell`'s gossip \
+                 publish refuses an app snapshot over \
+                 MAX_APP_SNAPSHOT_BYTES rather than truncating it.",
+                self.missing_ancestors,
+            );
+        }
+        format!(
+            "the whole document arrived, but nothing in it is addressed to \
+             {name:?} after {waited}s. An instruction is a paragraph whose \
+             first word is this agent's name and a colon — `{name}: turn \
+             the bullets into a table`. Check --name against what the line \
+             in the document actually says."
+        )
+    }
+
+    /// Why no document arrived at all, in terms of the thing that
+    /// decides it.
     ///
     /// The broker's fan-out matches `(app, room, record)` and the record
     /// is the innermost test — it fails closed both ways, and "no
@@ -226,13 +301,27 @@ impl Session {
     /// asks. Returns whether an instruction was carried out.
     fn step(&mut self, wait: Duration) -> Result<bool> {
         let mut changed = false;
-        // Still empty-handed: ask again. An app that was still opening its
-        // file when the agent arrived never saw the first ask, and nothing
-        // else would ever prompt a reply.
-        if self.editor.is_none() && self.asked_at.elapsed() >= REASK_EVERY {
+        // Ask again until something in this room is addressed to us.
+        //
+        // Holding a document is not the same as holding the page that
+        // asks for something. The app that answers first may have been
+        // opening its file when the agent arrived, or — as in the demo —
+        // be holding a replica missing a change it will never be sent,
+        // so its page ends above the instruction. Nobody sends a whole
+        // document unprompted, so asking again is the only thing in this
+        // loop that can change the answer.
+        if !self.addressed_seen && self.asked_at.elapsed() >= self.reask_every {
             ask_for_document(&mut self.link)?;
             self.asked_at = Instant::now();
-            tracing::debug!("asked the room for the document again");
+            self.reask_every = if self.editor.is_some() {
+                (self.reask_every * 2).min(REASK_CEILING)
+            } else {
+                REASK_EVERY
+            };
+            tracing::debug!(
+                every_ms = self.reask_every.as_millis() as u64,
+                "asked the room for the document again"
+            );
         }
         match self.link.recv(wait)? {
             Some(CollabEvent::CRDTUpdate { data }) => {
@@ -241,6 +330,9 @@ impl Session {
             Some(CollabEvent::CRDTIncremental { data }) => {
                 if let Some(ed) = self.editor.as_mut() {
                     changed = ed.merge_incremental(&data)?;
+                }
+                if changed {
+                    self.note_what_is_missing();
                 }
             }
             Some(CollabEvent::RemotePresenceUpdate {
@@ -263,7 +355,46 @@ impl Session {
         self.act()
     }
 
-    /// Take a peer's whole-document frame, if it is ours to take.
+    /// Record — and say, when it changes — whether the replica can see
+    /// its own history.
+    ///
+    /// Automerge will not apply a change whose ancestors it lacks; it
+    /// queues it. So a replica that missed one change in the middle
+    /// materialises as the page *before* that change, however many later
+    /// changes it is carrying, and nothing about reading it says so.
+    /// That is what the demo's agent read as "the document", and there
+    /// was no line anywhere saying the page it held was short.
+    fn note_what_is_missing(&mut self) {
+        let was = self.missing_ancestors;
+        let now = match self.editor.as_mut() {
+            Some(ed) => ed.missing_ancestors(),
+            None => return,
+        };
+        self.missing_ancestors = now;
+        if now > 0 && now != was {
+            tracing::warn!(
+                missing = now,
+                "this is not the whole document: it is built on change(s) \
+                 that were never sent here, so everything after them is \
+                 held unapplied and the page stops at the gap — still \
+                 asking the room for a copy that has them"
+            );
+        } else if now == 0 && was > 0 {
+            tracing::info!("the missing history arrived; the page is whole again");
+        }
+    }
+
+    /// Take a peer's whole-document frame, if it is ours to take, and
+    /// note afterwards whether what we now hold is whole.
+    fn absorb_snapshot(&mut self, data: &[u8]) -> Result<bool> {
+        let took = self.take_snapshot(data)?;
+        if took {
+            self.note_what_is_missing();
+        }
+        Ok(took)
+    }
+
+    /// The taking half of [`Self::absorb_snapshot`].
     ///
     /// A room is not one document. Every participant answers an arrival
     /// with its own state, and the broker hands a frame to any
@@ -280,7 +411,7 @@ impl Session {
     /// something.
     ///
     /// Returns whether the agent's replica moved.
-    fn absorb_snapshot(&mut self, data: &[u8]) -> Result<bool> {
+    fn take_snapshot(&mut self, data: &[u8]) -> Result<bool> {
         let Some(ed) = self.editor.as_mut() else {
             if !crate::apply::looks_like_a_document(data) {
                 tracing::debug!(
@@ -329,6 +460,8 @@ impl Session {
         let Some((at, asked)) = plan::find_addressed(&blocks, &self.cfg.name) else {
             return Ok(false);
         };
+        // Something in this room is for us; stop knocking on doors.
+        self.addressed_seen = true;
         let ins_id = blocks[at].id.clone();
         if self.handled.contains(&ins_id) {
             return Ok(false);
