@@ -212,13 +212,24 @@ pub struct WindowGroup {
     /// The shell paints the floating controls on top of this rect while
     /// set; click the maximize icon again to un-maximize (restore).
     pub maximized: bool,
-    /// Concept parity for `WindowFrame.isSearching`: the user clicked the
-    /// search glyph on one of this group's tabs. We paint a thicker indigo
-    /// ring + outer glow around the card while set, matching the concept's
-    /// `ring-4 ring-indigo-500/50 shadow-[0_0_60px_rgba(99,102,241,0.6)]`.
-    /// Toggled off by clicking the same icon again or pressing Esc while
-    /// the group is focused.
+    /// The user clicked the search glyph on one of this group's tabs, so
+    /// the shell's search is scoped to this app. Toggled off by clicking
+    /// the same icon again or pressing Esc while the group is focused.
     pub search_active: bool,
+    /// This is the group the keyboard is aimed at: the active group of
+    /// the active strip. Set by the shell each frame from the persisted
+    /// `WorkspaceTree::active_group` pointer, which until now had no
+    /// representation on screen at all — a strip of non-overlapping
+    /// windows has no z-order, so with nothing painted there was no way
+    /// to tell which of three side-by-side windows would take the next
+    /// keystroke.
+    ///
+    /// Consumed by the active [`TileHost`], which carries the signal on
+    /// the window's own edge and shadow. The group deliberately paints
+    /// nothing of its own for this: the group's rect spans its tab row
+    /// *and* its card, so anything stroked around it is a box around a
+    /// region rather than a ring around an object.
+    pub focused: bool,
     /// Hit region for the floating "restore" pill drawn while maximized.
     /// Populated each draw so clicks always map to what's on screen.
     restore_rect: Rect,
@@ -337,6 +348,7 @@ impl WindowGroup {
             hover_resize: false,
             maximized: false,
             search_active: false,
+            focused: false,
             restore_rect: Rect::ZERO,
             restore_hover: false,
             close_rect: Rect::ZERO,
@@ -364,6 +376,21 @@ impl WindowGroup {
         self.maximized = maximized;
         self
     }
+
+    /// Mark this group as the one the keyboard is aimed at. Called by the
+    /// shell each frame for the active group of the active strip; every
+    /// other group is told `false` in the same pass, so focus cannot be
+    /// left latched on a group that lost it.
+    pub fn set_focused(&mut self, focused: bool) -> bool {
+        if self.focused == focused {
+            return false;
+        }
+        self.focused = focused;
+        true
+    }
+
+    /// Whether this group currently holds keyboard focus.
+    pub fn focused(&self) -> bool { self.focused }
 
     /// Latch the concept-faithful spawn fade-in: opacity 0→1, scale
     /// 0.92→1, and a -16 px → 0 horizontal settle over `SPAWN_ANIM_MS`,
@@ -604,6 +631,20 @@ impl WindowGroup {
             host.bind_record(store.clone(), record_for(*tab_id));
         }
     }
+    /// Whether *any* tab in this group is still holding a place for an app
+    /// that has not drawn yet.
+    ///
+    /// Deliberately not [`Widget::opening`], which asks whether the whole
+    /// group is a placeholder and is therefore false as soon as one tab has
+    /// drawn. A tab behind that one can still be starting, and its tile
+    /// still paints an opening card with a turning spinner — so the group
+    /// keeps asking for animation frames while reporting that it is not
+    /// opening. That pair is not a contradiction, but anything waiting for
+    /// the tree to go quiet has to ask this question rather than that one.
+    pub fn any_tile_opening(&self) -> bool {
+        self.hosts.iter().any(|(_, h)| Widget::opening(h))
+    }
+
 
     pub fn active_host_mut(&mut self) -> Option<&mut TileHost> {
         let id = self.bar.active_id();
@@ -733,6 +774,7 @@ impl WindowGroup {
             hover_resize: false,
             maximized: false,
             search_active: false,
+            focused: false,
             restore_rect: Rect::ZERO,
             restore_hover: false,
             close_rect: Rect::ZERO,
@@ -1263,10 +1305,12 @@ impl Widget for WindowGroup {
             .iter()
             .find(|t| t.id == active_id)
             .map(|t| t.title.clone());
-        // Mirror `search_active` onto the active host so its card paints
-        // the concept's focused indigo bloom
-        // (`shadow-[0_0_60px_rgba(99,102,241,0.6)]`, WindowFrame.tsx:359).
-        let focused = self.search_active;
+        // The window the keyboard is aimed at lights its own edge and
+        // shadow (see `TileHost::draw_steady_state`). A search scoped to
+        // this group lights it too: scoping the search *is* aiming the
+        // keyboard here, and it is the group's card the results will act
+        // on.
+        let focused = self.focused || self.search_active;
         if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             if let Some(name) = &opening_name {
                 h.set_opening_name(name);
@@ -1355,79 +1399,35 @@ impl Widget for WindowGroup {
         scene.fill(vello::peniko::Fill::NonZero, transform, grip_col, None, &bar(-2.0));
         scene.fill(vello::peniko::Fill::NonZero, transform, grip_col, None, &bar(2.0));
 
-        // Drag-in-flight visual: subtle accent ring around the whole group
-        // so the user has a spatial signal the drag is live. Matches the
-        // concept's "drag-over" border state for the source group. Skipped
-        // while maximized — the 2 px maximized outline takes priority.
-        if self.bar.drag_in_flight() && !self.maximized {
-            let ring = Rect::new(
-                self.rect.x0 - 1.0,
-                self.rect.y0 - 1.0,
-                self.rect.x1 + 1.0,
-                self.rect.y1 + 1.0,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.5),
-                transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(0.6),
-                None,
-                &ring,
-            );
-        }
-
-        // Search-active visual: concept's `ring-4 ring-indigo-500/50` +
-        // `shadow-[0_0_60px_rgba(99,102,241,0.6)]`. We paint two concentric
-        // indigo strokes (inner 4 px at 50% alpha, outer 8 px at 24% alpha)
-        // to approximate the ring + shadow pair without introducing a blur
-        // primitive. Draws behind the maximized outline so a group can be
-        // simultaneously maximized and searching (as the concept allows).
-        if self.search_active {
-            let ring_outer = Rect::new(
-                self.rect.x0 - 6.0,
-                self.rect.y0 - 6.0,
-                self.rect.x1 + 6.0,
-                self.rect.y1 + 6.0,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(8.0),
-                transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(0.24),
-                None,
-                &ring_outer,
-            );
-            let ring_inner = Rect::new(
-                self.rect.x0 - 2.0,
-                self.rect.y0 - 2.0,
-                self.rect.x1 + 2.0,
-                self.rect.y1 + 2.0,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(4.0),
-                transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(0.5),
-                None,
-                &ring_inner,
-            );
-        }
-
-        // Maximized visual: 2 px accent outline around the whole group so
-        // the user gets immediate feedback from the tab's maximize click
-        // even before the shell paints concept-style floating controls.
+        // Three rings used to be stroked around `self.rect` here — one
+        // for a tab drag in flight, two concentric ones for a scoped
+        // search, and a 2 px accent outline while maximized. All four
+        // strokes were sharp-cornered rectangles around the group's
+        // bounding box, which spans the tab row *and* the rounded card
+        // below it. So each painted a hard right-angled fence a pixel
+        // outside a rounded window, in a saturated accent, at a weight
+        // and a corner radius that matched nothing else in the chrome.
+        //
+        // What each was actually reporting is now said where it belongs:
+        //
+        // * **drag in flight** — the tab bar already draws the drop line
+        //   at the target gap and `GroupRow` draws the accent capsule at
+        //   the destination. A third cue, wrapped around the source, told
+        //   the user something they could already see and competed with
+        //   the two cues that say where the tab will land.
+        // * **scoped search** — folded into the focus signal above: the
+        //   group's own card lights, and the shell's search bar (which
+        //   the same click opens) is the substantive feedback.
+        // * **maximized** — a maximized group is the only thing on the
+        //   strip; its siblings are gone and its tab row has collapsed
+        //   into the floating pill drawn just below. The outline was
+        //   added as interim feedback "even before the shell paints
+        //   concept-style floating controls"; the shell paints them now.
+        //
+        // Per `ui/HIG.md` §9.4 the accent means *live*, not *chosen*, so
+        // maximize and search — both things the user picked — had no
+        // claim on it in the first place.
         if self.maximized {
-            let outline = Rect::new(
-                self.rect.x0 - 1.0,
-                self.rect.y0 - 1.0,
-                self.rect.x1 + 1.0,
-                self.rect.y1 + 1.0,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(2.0),
-                transform,
-                theme.tokens.colors.accent[5],
-                None,
-                &outline,
-            );
-
             // Concept-parity auto-hide: only paint the floating chrome
             // (title pill + Restore + close) while the cursor sits in
             // the reveal band (y <= MAXIMIZED_CHROME_REVEAL_Y). Mirrors
@@ -1469,14 +1469,12 @@ impl Widget for WindowGroup {
             // shadow. The previous translucent-white fill was designed for a
             // dark desktop and disappeared entirely once it floated over a
             // light app card — the decoration was invisible in fullscreen.
-            crate::surface::soft_shadow(
+            crate::surface::shadow(
                 scene,
                 transform,
                 title_pill,
-                vello::peniko::Color::BLACK,
-                10.0,
-                2.0,
-                0.35,
+                title_pill.height() / 2.0,
+                &theme.tokens.elevation.e2,
             );
             let (title_fill, title_border) = crate::surface::chip_colors(theme, false);
             crate::surface::pill(scene, transform, title_pill, title_fill, title_border, None);
@@ -1501,14 +1499,12 @@ impl Widget for WindowGroup {
                 Rect::new(restore_x0, y0, restore_x0 + restore_w, y0 + pill_h);
 
             // Restore pill.
-            crate::surface::soft_shadow(
+            crate::surface::shadow(
                 scene,
                 transform,
                 self.restore_rect,
-                vello::peniko::Color::BLACK,
-                10.0,
-                2.0,
-                0.35,
+                self.restore_rect.height() / 2.0,
+                &theme.tokens.elevation.e2,
             );
             // Hover promotes the chip to the accent fill, matching how a
             // selected pill reads everywhere else in the toolkit.
@@ -1566,14 +1562,12 @@ impl Widget for WindowGroup {
             // `hover:bg-red-500/80` (WindowFrame.tsx:249) — red-500 at
             // 80% alpha — so we multiply `semantic.danger` by 0.8 rather
             // than painting it fully opaque.
-            crate::surface::soft_shadow(
+            crate::surface::shadow(
                 scene,
                 transform,
                 self.close_rect,
-                vello::peniko::Color::BLACK,
-                10.0,
-                2.0,
-                0.35,
+                self.close_rect.height() / 2.0,
+                &theme.tokens.elevation.e2,
             );
             let close_fill = if self.close_hover {
                 theme.tokens.colors.semantic.danger.with_alpha_factor(0.8)
@@ -1870,7 +1864,30 @@ impl Widget for WindowGroup {
     /// for the group that is *only* a starting app — which is what a
     /// launch makes, since a launch opens its own group.
     fn presented(&self) -> bool {
-        self.hosts.is_empty() || self.hosts.iter().any(|(_, h)| h.presented())
+        if self.hosts.is_empty() {
+            return true;
+        }
+        // Every tab is asked, and `any` would not ask them all.
+        //
+        // Asking is what records the answer: a tab's `presented()` is
+        // the only thing that marks its window as having drawn, and its
+        // `opening()` reads that mark. Stopping at the first tab that
+        // says yes therefore strands every tab behind it — nothing ever
+        // records that their windows drew, so they go on painting the
+        // card that holds a window's place over a window that has been
+        // on screen for minutes.
+        //
+        // The tab a peer's window asks this machine to open is bound
+        // into a tab that already exists, which lands it in exactly that
+        // position. It is why the same window reported itself drawn on
+        // the machine that owns it and never did on the one it was
+        // replicated to.
+        //
+        // `h.presented()` first in the `||` so it is evaluated on every
+        // pass; the value is the one `any` would have produced.
+        self.hosts
+            .iter()
+            .fold(false, |seen, (_, h)| h.presented() || seen)
     }
     /// Whether this group is a window's place being held for an app that
     /// is still starting — see [`Widget::opening`].
@@ -2200,6 +2217,197 @@ mod tests {
             "a group holding a window the person is using must never be \
              replaced by a card about the tab beside it",
         );
+    }
+
+    /// A tab whose window answers the way a client window really does:
+    /// being *asked* whether it has drawn is what records that it has,
+    /// and until something asks, the tile still reports itself as
+    /// holding the window's place.
+    ///
+    /// Not a contrivance — this is `ForeignSurfaceWidget` verbatim. Its
+    /// `presented()` is `ForeignFrameStore::mark_presented`, the only
+    /// thing in the compositor that sets the flag, and its `opening()`
+    /// is `is_opening`, which reads it. A window nobody asks about
+    /// therefore keeps its card forever, however long ago it drew.
+    struct Latching {
+        /// Whether the client has actually put a frame on screen.
+        drawn: bool,
+        /// The store's latch for this one surface.
+        latched: std::rc::Rc<std::cell::Cell<bool>>,
+        /// How many times anything asked.
+        asked: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+
+    impl Latching {
+        fn new(drawn: bool) -> (Self, std::rc::Rc<std::cell::Cell<bool>>,
+                                std::rc::Rc<std::cell::Cell<u32>>) {
+            let latched = std::rc::Rc::new(std::cell::Cell::new(false));
+            let asked = std::rc::Rc::new(std::cell::Cell::new(0));
+            (
+                Self { drawn, latched: latched.clone(), asked: asked.clone() },
+                latched,
+                asked,
+            )
+        }
+    }
+
+    impl Widget for Latching {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _t: &crate::theme::Theme,
+            _m: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.new_leaf(taffy::Style::default()).unwrap()
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _tr: &mut TextRenderer,
+            _th: &crate::theme::Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _event: &winit::event::WindowEvent,
+            _scale: f64,
+            _m: &winit::event::Modifiers,
+            _state: &mut automerge::AutoCommit,
+            _path: &automerge::ObjId,
+            _handled: &mut bool,
+            _focus: &mut Option<NodeId>,
+            _node: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &str {
+            "Latching"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+        fn presented(&self) -> bool {
+            self.asked.set(self.asked.get() + 1);
+            if self.drawn {
+                self.latched.set(true);
+            }
+            self.latched.get()
+        }
+        fn opening(&self) -> bool {
+            !self.latched.get()
+        }
+    }
+
+    impl crate::widget::app_widget::AppWidget for Latching {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Files
+        }
+        fn app_title(&self) -> &str {
+            "Latching"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("L")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+
+    /// Build a two-tab group where tab 2 is the one on screen.
+    fn group_of_two(first_drawn: bool, second_drawn: bool) -> (
+        WindowGroup,
+        std::rc::Rc<std::cell::Cell<bool>>,
+        std::rc::Rc<std::cell::Cell<u32>>,
+    ) {
+        let (a, _, _) = Latching::new(first_drawn);
+        let (b, latched, asked) = Latching::new(second_drawn);
+        let tabs: Vec<(TabDescriptor, TileContent)> = vec![
+            (TabDescriptor::new(1, "Notes"), TileContent::App(Box::new(a))),
+            (TabDescriptor::new(2, "Files"), TileContent::App(Box::new(b))),
+        ];
+        (WindowGroup::new(10, tabs, 2, WindowWidth::Normal), latched, asked)
+    }
+
+    /// Every tab in a group is asked whether its window has drawn — not
+    /// only the tabs up to the first one that says yes.
+    ///
+    /// The group's own answer is "does any of my tabs have a window on
+    /// screen", and `any` is the obvious way to compute it. It is also
+    /// wrong here, because the asking is what records the answer: a tab
+    /// behind one that has already said yes is never asked, so nothing
+    /// ever marks its window as drawn, and the tile goes on painting the
+    /// card that holds the window's place over a window that arrived
+    /// minutes ago.
+    ///
+    /// A window bound into a tab that already exists — which is what a
+    /// peer's window asks this machine to open — lands in exactly that
+    /// position. Which is why it was seen there and not on the machine
+    /// that owns the same window, where the window is the tab that gets
+    /// asked first.
+    #[test]
+    fn every_tab_in_a_group_is_asked_whether_its_window_has_drawn() {
+        let (g, latched, asked) = group_of_two(true, true);
+
+        assert!(Widget::presented(&g), "both of its tabs have drawn");
+        assert!(
+            asked.get() > 0,
+            "the second tab was never asked whether its window had drawn, so \
+             nothing recorded that it had",
+        );
+        assert!(
+            latched.get(),
+            "a window that has drawn must end up marked as having drawn",
+        );
+        assert!(
+            !Widget::opening(&g),
+            "and must not still be holding its own place",
+        );
+    }
+
+    /// The tile itself stops saying a window is on its way once that
+    /// window has drawn — which is the part a person actually sees.
+    #[test]
+    fn a_drawn_window_behind_another_tab_retires_its_opening_card() {
+        let (g, _latched, _asked) = group_of_two(true, true);
+        let _ = Widget::presented(&g);
+        let host = g
+            .hosts
+            .iter()
+            .find(|(id, _)| *id == 2)
+            .map(|(_, h)| h)
+            .expect("the group holds the tab it was built with");
+        assert!(
+            !Widget::opening(host),
+            "the card holding this window's place must be gone: the window is \
+             drawn, populated, and the one on screen",
+        );
+    }
+
+    /// And a window that genuinely has not drawn still gets its card.
+    ///
+    /// The gate exists so a window does not appear at whatever size its
+    /// client happened to pick and then visibly resize itself. Asking
+    /// every tab must not become answering yes for all of them.
+    #[test]
+    fn a_window_that_has_not_drawn_still_holds_its_place() {
+        let (g, latched, _asked) = group_of_two(true, false);
+        let _ = Widget::presented(&g);
+        assert!(
+            !latched.get(),
+            "asking is not answering — a window that has not drawn must not be \
+             recorded as having drawn",
+        );
+        let host = g
+            .hosts
+            .iter()
+            .find(|(id, _)| *id == 2)
+            .map(|(_, h)| h)
+            .expect("the group holds the tab it was built with");
+        assert!(Widget::opening(host), "its place is still being held");
     }
 
     /// Pressing the per-tab Maximize2 hit rect flips

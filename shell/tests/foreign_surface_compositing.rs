@@ -59,18 +59,59 @@ fn frame(fb: &mut FrameBuilder) -> vello::Scene {
     fb.paint_settled()
 }
 
-/// Paint until the widget tree stops asking for animation frames.
+/// Paint until the widget tree reaches a steady state.
 ///
 /// Splicing a tab into a live group plays the tile's spawn fade, which
 /// legitimately keeps `needs_animation_frame()` true for a couple of
 /// hundred milliseconds. Tests that assert on the *idle* repaint signal
 /// have to let that settle first, or they measure the fade instead of the
 /// thing they care about.
+///
+/// "Steady" is not the same as "asking for no frames". A group holding a
+/// place for an app that has not drawn yet paints an opening card with a
+/// spinner in it, and a spinner turns for as long as the wait lasts — by
+/// design, so that a slow launch looks like something rather than like
+/// nothing. Every client in this file is exactly that case: it is adopted,
+/// laid out and configured, and only commits a buffer further down, so its
+/// tile is legitimately still opening at this point and
+/// `needs_animation_frame()` never goes false. Waiting for it to is waiting
+/// for the spinner to stop, which it will not do.
+///
+/// So the terminal state is "nothing is animating, or the only thing still
+/// animating is a tab that is still starting". The deadline keeps the
+/// teeth: reaching it means the fade or the pan never finished, which is
+/// the wedge this guard exists to catch. What it cannot see is an
+/// unrelated animation wedged *while* a group is opening — the spinner
+/// hides it. Any test that needs that distinction has to get its client to
+/// present first, which retires the card.
 fn settle(fb: &mut FrameBuilder) {
     // Always paint once: the first pass is what splices pending tabs into
     // the live tree and lays them out, so it must run even when nothing
     // is animating yet.
     let _ = frame(fb);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let settled = |fb: &mut FrameBuilder| !fb.needs_animation_frame() || fb.any_tile_opening();
+    while !settled(fb) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(8));
+        let _ = frame(fb);
+    }
+    assert!(
+        settled(fb),
+        "the widget tree never settled; an animation is stuck in flight"
+    );
+}
+
+/// Paint until nothing is animating at all, once every tab on screen has
+/// drawn.
+///
+/// Stricter than [`settle`], and usable only after a client's buffer is in
+/// the store: handing a tile's placeholder over to the window it was
+/// holding the place for is a 180 ms cross-fade, so the frame straight
+/// after a commit is mostly still the card. A test that samples there is
+/// measuring the dissolve rather than the client's pixels, and one that
+/// asserts the tree is idle there is asking before the animation it
+/// started has had a chance to run.
+fn quiesce(fb: &mut FrameBuilder) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     while fb.needs_animation_frame() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(8));
@@ -78,7 +119,7 @@ fn settle(fb: &mut FrameBuilder) {
     }
     assert!(
         !fb.needs_animation_frame(),
-        "the widget tree never settled; an animation is stuck in flight"
+        "the tree never went quiet; an animation is stuck in flight"
     );
 }
 
@@ -216,6 +257,9 @@ fn client_buffer_pixels_are_composited_into_the_tab_rect() {
         "a freshly committed client frame must request a repaint"
     );
 
+    // Let the card hand over to the window before sampling: the dissolve
+    // is 180 ms, so the very next frame is still mostly placeholder.
+    quiesce(&mut fb);
     let scene = frame(&mut fb);
     let after = shot("foreign-with-client-frame", &mut renderer, &scene);
     let px = OffscreenRenderer::sample(&after, W, cx, cy);
@@ -302,6 +346,9 @@ fn unmap_stops_painting_and_destroy_releases_the_frame() {
     store().publish_rgba(surface_id, &rgba, bw, bh);
     assert!(store().snapshot(surface_id).is_some());
 
+    // The placeholder dissolves into the window over 180 ms; sample after
+    // it, or the "mapped" fixture is still mostly card.
+    quiesce(&mut fb);
     let mut renderer = OffscreenRenderer::new(W, H);
     let scene = frame(&mut fb);
     let mapped = shot("foreign-lifecycle-mapped", &mut renderer, &scene);
@@ -392,6 +439,12 @@ fn painting_does_not_reimport_the_clients_buffer() {
     let before = store().import_count();
     store().publish_rgba(surface_id, &solid(bw, bh, (0x30, 0x90, 0xD0)), bw, bh);
 
+    // Let the card hand the tile over to the window first. That dissolve
+    // is an animation this commit legitimately starts, and it is still
+    // running for 180 ms — so "the client is idle" is only a question that
+    // can be asked once it has finished.
+    quiesce(&mut fb);
+
     // Now paint repeatedly with no further commits, the way the
     // compositor's loop does while the client sits idle.
     for _ in 0..30 {
@@ -463,10 +516,24 @@ fn a_background_foreign_tab_neither_paints_nor_wakes_the_paint_loop() {
     let rect = tile_rect(&mut fb, front);
     let (cx, cy) = (rect.center().x as u32, rect.center().y as u32);
 
-    // Only the background client commits a frame.
     let (bw, bh) = store()
         .viewport(front)
         .expect("the visible tab publishes its rect");
+
+    // Give the *visible* tab its window first, and let the tree go quiet.
+    //
+    // Without this the front tab is still a place being held for an app
+    // that has not drawn, so its tile paints an opening card with a
+    // turning spinner and the compositor is asked to repaint for as long
+    // as the wait lasts — correctly, and for a reason that has nothing to
+    // do with the background tab. Asking "did the background tab wake the
+    // paint loop" while something else is legitimately keeping it awake is
+    // a question with no answer, so the front tab is settled first and the
+    // repaint signal below is about the background commit alone.
+    store().publish_rgba(front, &solid(bw, bh, (0x40, 0x40, 0x40)), bw, bh);
+    quiesce(&mut fb);
+
+    // Only the background client commits a frame.
     let rgba = solid(bw, bh, (0x11, 0x9E, 0xE0));
     store().publish_rgba(back, &rgba, bw, bh);
 

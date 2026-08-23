@@ -1,10 +1,11 @@
 use automerge::{AutoCommit, ObjId, ROOT};
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use crate::record::{RecordCheckout, RecordId, RecordStore};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format};
+use vello::peniko::{Blob, Color, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format};
 use winit::event::WindowEvent;
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::Widget;
@@ -31,6 +32,19 @@ const SPAWN_SCALE_START: f64 = 0.95;
 /// reads as a drawn outline around the app rather than as the boundary
 /// of a surface.
 const EDGE_STROKE_WIDTH: f64 = 1.0;
+
+/// Width of that same hairline on the window the keyboard is aimed at.
+/// Still an edge, not a fence: the focused window's boundary is drawn a
+/// half-pixel heavier and in the focus colour, so it reads as *this*
+/// surface being lit rather than as a rectangle laid over the layout.
+const FOCUS_EDGE_STROKE_WIDTH: f64 = 1.6;
+
+/// Global multiplier on the focused window's tinted bloom. The ambient
+/// shadow every window casts sits at 0.25; the focused one adds this on
+/// top in the theme's focus hue, which is enough to pick the window out
+/// of a strip at a glance without the bloom becoming the loudest thing
+/// on screen.
+const FOCUS_BLOOM_ALPHA: f32 = 0.30;
 
 /// Side length of the pre-baked radial shadow sprite. 256 px keeps the
 /// one-shot RGBA8 allocation tiny (256 KiB) while being large enough
@@ -108,12 +122,30 @@ fn ambient_shadow_sprite() -> &'static Image {
     SPRITE.get_or_init(|| build_shadow_sprite(0, 0, 0))
 }
 
-/// Cached indigo bloom sprite used for the focused-tile
-/// `shadow-[0_0_60px_rgba(99,102,241,0.6)]`. RGB = `#6366f1`
-/// (indigo-500).
-fn indigo_bloom_sprite() -> &'static Image {
-    static SPRITE: OnceLock<Image> = OnceLock::new();
-    SPRITE.get_or_init(|| build_shadow_sprite(0x63, 0x66, 0xf1))
+/// The focused window's bloom sprite, tinted with the theme's own focus
+/// colour.
+///
+/// This used to bake `#6366f1` — Tailwind indigo-500 — into the binary,
+/// which meant the focus bloom was the same violet on a warm light
+/// palette, on the graphite dark one, and on high-contrast, where the
+/// focus colour is a high-visibility yellow and a violet glow says
+/// nothing at all. Colours belong to the theme (see `ui/HIG.md` §9.4),
+/// so the tint is now a parameter.
+///
+/// Sprites are cached per RGB triple rather than rebuilt each frame:
+/// baking one is a 256x256 pass over 65k pixels, and a session uses one
+/// tint until the user changes theme, so the map holds a single entry in
+/// the common case and one more per theme actually visited.
+fn focus_bloom_sprite(tint: Color) -> Image {
+    static SPRITES: OnceLock<Mutex<HashMap<[u8; 3], Image>>> = OnceLock::new();
+    let rgba = tint.to_rgba8();
+    let key = [rgba.r, rgba.g, rgba.b];
+    let cache = SPRITES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    cache
+        .entry(key)
+        .or_insert_with(|| build_shadow_sprite(key[0], key[1], key[2]))
+        .clone()
 }
 
 /// Stretch a cached shadow sprite across `target`, modulated by `alpha`
@@ -298,10 +330,9 @@ pub struct TileHost {
     /// come back, which is worse than what it replaced.
     was_presented: std::cell::Cell<bool>,
     rect: Rect,
-    /// Set by the parent `WindowGroup` each frame to indicate whether
-    /// this tile is the "focused" tile — the concept's
-    /// `shadow-[0_0_60px_rgba(99,102,241,0.6)]` bloom
-    /// (`WindowFrame.tsx:359`) is painted only when this is true.
+    /// Set by the parent `WindowGroup` each frame: is this the tile the
+    /// keyboard is aimed at? Drives both halves of the focus signal —
+    /// the tinted bloom under the card and the lit card edge.
     pub focused: bool,
     /// Timestamp at which this TileHost was marked "newly spawned".
     /// When set, `draw` applies an ease-out-cubic fade + uniform scale
@@ -486,8 +517,8 @@ impl TileHost {
     }
     /// What this tile is showing, read-only.
     pub fn content(&self) -> &TileContent { &self.content }
-    /// Toggle the indigo-bloom shadow. Called by `WindowGroup::draw`
-    /// before dispatching to the active host.
+    /// Mark this tile as the one the keyboard is aimed at. Called by
+    /// `WindowGroup::draw` before dispatching to the active host.
     pub fn set_focused(&mut self, focused: bool) { self.focused = focused; }
 
     /// Latch the concept-parity spawn fade-in (opacity 0→1, scale
@@ -873,11 +904,18 @@ impl TileHost {
             ambient_target,
             0.25,
         );
-        // Focused-only indigo bloom
-        // (`shadow-[0_0_60px_rgba(99,102,241,0.6)]`): wider bleed,
-        // centred (no y-offset), tinted indigo-500. Only painted when
-        // the parent `WindowGroup` marks this tile focused — matches
-        // the concept's `isSearching` predicate in WindowFrame.tsx:359.
+        // The focused window's bloom: the same radial sprite as the
+        // ambient shadow, but wider, centred (no y-offset), and tinted
+        // with the theme's focus colour.
+        //
+        // This is the "which window is the keyboard aimed at" signal,
+        // and it is deliberately a *deeper shadow* rather than a line
+        // drawn around the window. A strip of non-overlapping windows
+        // has no z-order to read focus from, so the focused one has to
+        // announce itself — but announcing it by fencing off the
+        // content area draws a shape that belongs to nothing else on
+        // screen. Lighting the window's own footprint keeps the signal
+        // attached to the object it describes.
         if self.focused {
             let bloom_pad = 120.0_f64;
             let bloom_target = Rect::new(
@@ -889,9 +927,9 @@ impl TileHost {
             draw_shadow_sprite(
                 scene,
                 transform,
-                indigo_bloom_sprite(),
+                &focus_bloom_sprite(theme.tokens.colors.border_focus),
                 bloom_target,
-                0.6,
+                FOCUS_BLOOM_ALPHA,
             );
         }
         // White rounded-3xl card (concept: `bg-white` `rounded-3xl`
@@ -1003,15 +1041,27 @@ impl TileHost {
         // its interior. The corner radius grows by the same half-width
         // so the offset band stays concentric with the card's arc
         // instead of pinching at the corners.
-        let half = EDGE_STROKE_WIDTH / 2.0;
+        //
+        // Focus is carried on this same edge rather than by a second
+        // stroke outside it. Two concentric rings around one card is
+        // how the old maximize / search rings read — a hairline, then a
+        // gap, then a heavier line that belonged to neither the card
+        // nor the desktop. One edge that changes colour and weight says
+        // the same thing and leaves the silhouette intact.
+        let (edge_width, edge_color) = if self.focused {
+            (FOCUS_EDGE_STROKE_WIDTH, theme.tokens.colors.border_focus)
+        } else {
+            (EDGE_STROKE_WIDTH, theme.window_edge())
+        };
+        let half = edge_width / 2.0;
         let edge = RoundedRect::from_rect(
             self.rect.inflate(half, half),
             radius + half,
         );
         scene.stroke(
-            &vello::kurbo::Stroke::new(EDGE_STROKE_WIDTH),
+            &vello::kurbo::Stroke::new(edge_width),
             transform,
-            theme.window_edge(),
+            edge_color,
             None,
             &edge,
         );
@@ -1686,6 +1736,104 @@ mod tests {
                      shows ({sr},{sg},{sb}). The window's edge belongs outside \
                      the card, on ground the shell knows — over app content it \
                      is a constant on an unknown surface",
+                );
+            }
+        }
+    }
+
+    /// Focus is a change to the window's own edge, and it stays inside
+    /// the card's silhouette.
+    ///
+    /// The regression this guards is specific. Focus-ish states used to
+    /// be stroked as sharp-cornered rectangles around the *group's*
+    /// bounding box, a pixel outside a card whose corners are rounded.
+    /// At the corner that produces two lines — a square one and a round
+    /// one — and diagonally outside the arc it paints a saturated pixel
+    /// on bare desktop, which is what made the whole thing read as a
+    /// fence rather than as part of the window.
+    ///
+    /// So: on the flat of the edge the focused window shows the focus
+    /// colour and the unfocused one does not; and diagonally outside the
+    /// rounded corner, where a square fence would have to paint, both
+    /// show untouched desktop. Rendered through `TileHost::draw` — the
+    /// same call the shell makes — on every theme preset, because the
+    /// hardcoded indigo this replaces was correct on exactly one.
+    #[test]
+    fn focus_lights_the_card_s_edge_and_never_squares_off_its_corner() {
+        use crate::offscreen::OffscreenRenderer;
+
+        let (w, h) = (200u32, 200u32);
+        let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
+        // Desktop stand-in. Deliberately a colour no palette contains, so
+        // "still desktop" cannot be confused with "some theme token".
+        let ground = vello::peniko::Color::from_rgb8(0x00, 0xFF, 0x00);
+
+        for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            let name = theme.name.clone();
+            let focus = theme.tokens.colors.border_focus;
+            let (fr, fg, fb) = {
+                let c = focus.to_rgba8();
+                (c.r, c.g, c.b)
+            };
+
+            let mut shot = |focused: bool| {
+                let mut host = TileHost::new(TileContent::Stub {
+                    kind: AppKind::Editor,
+                    label: String::new(),
+                });
+                host.rect = rect;
+                host.set_focused(focused);
+                let mut tr = TextRenderer::new();
+                let mut scene = Scene::new();
+                host.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                let mut renderer = OffscreenRenderer::new(w, h);
+                renderer.render(&scene, ground)
+            };
+
+            let lit = shot(true);
+            let dark = shot(false);
+
+            // Mid-span of the top edge: the band the stroke occupies sits
+            // just outside the card boundary.
+            let (x, y) = (100u32, rect.y0 as u32 - 1);
+            let (lr, lg, lb, _) = OffscreenRenderer::sample(&lit, w, x, y);
+            assert_eq!(
+                (lr, lg, lb),
+                (fr, fg, fb),
+                "{name}: the focused window's edge is not the theme's focus                  colour at ({x},{y}) — got ({lr},{lg},{lb}), expected                  ({fr},{fg},{fb}). Focus has to come from the theme: a baked                  constant is right on one palette and meaningless on the rest",
+            );
+            let (ur, ug, ub, _) = OffscreenRenderer::sample(&dark, w, x, y);
+            assert_ne!(
+                (ur, ug, ub),
+                (fr, fg, fb),
+                "{name}: an unfocused window paints the focus colour on its                  edge at ({x},{y}), so focus distinguishes nothing",
+            );
+
+            // Diagonally outside the rounded corner. The card's radius
+            // is `radii.xl`, so a point two pixels in from the corner of
+            // the bounding box on both axes lies well outside the arc —
+            // exactly where a square fence around the box had to paint.
+            // The window's ambient shadow legitimately darkens this
+            // pixel, so the claim is not "untouched": it is that the
+            // focus colour is not there, and that the desktop still
+            // reads as the desktop rather than as a stroke laid over it.
+            let (cx, cy) = (rect.x0 as u32 - 2, rect.y0 as u32 - 2);
+            for (label, buf) in [("focused", &lit), ("unfocused", &dark)] {
+                let (r, g, b, _) = OffscreenRenderer::sample(buf, w, cx, cy);
+                assert_ne!(
+                    (r, g, b),
+                    (fr, fg, fb),
+                    "{name}: the {label} window painted the focus colour at ({cx},{cy}), outside its own rounded corner on bare desktop. Only a sharp-cornered rectangle drawn around the window reaches that pixel, which is the artefact this replaced",
+                );
+                assert!(
+                    g > r && g > b,
+                    "{name}: the {label} window covered the desktop at ({cx},{cy}) with ({r},{g},{b}). Outside its rounded corner the desktop must still read as the desktop, shadowed at most, never stroked over",
                 );
             }
         }
