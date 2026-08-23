@@ -860,13 +860,47 @@ impl ForeignFrameStore {
             if e.presented {
                 return true;
             }
-            let ready = e.last_error.is_some()
-                || fills(e.width, e.height, tile)
-                || e.first_seen.elapsed() >= PRESENT_GRACE;
-            if ready {
-                e.presented = true;
+            let waited = e.first_seen.elapsed();
+            let backstop = waited >= PRESENT_GRACE;
+            if e.last_error.is_none() && !fills(e.width, e.height, tile) && !backstop {
+                return false;
             }
-            ready
+            e.presented = true;
+            // Reaching the backstop is a defect every time: the window
+            // was a hole in the strip for ten seconds, and the buffer
+            // and tab printed beside it are what has to be reconciled
+            // to close it. Said out loud, because the symptom on screen
+            // is indistinguishable from an app that was simply slow —
+            // which is how a client short by its own title bar went
+            // unnoticed while it delayed every launch on this machine.
+            let (tab_w, tab_h) = (
+                tile.width().round() as u32,
+                tile.height().round() as u32,
+            );
+            if backstop {
+                tracing::warn!(
+                    target: "shell::compositor::foreign",
+                    surface_id = id,
+                    waited_ms = waited.as_millis() as u64,
+                    buffer_w = e.width,
+                    buffer_h = e.height,
+                    tab_w,
+                    tab_h,
+                    "no frame answered this tab; showing the window anyway",
+                );
+            } else {
+                tracing::debug!(
+                    target: "shell::compositor::foreign",
+                    surface_id = id,
+                    waited_ms = waited.as_millis() as u64,
+                    buffer_w = e.width,
+                    buffer_h = e.height,
+                    tab_w,
+                    tab_h,
+                    "window shown",
+                );
+            }
+            true
         })
     }
 }
