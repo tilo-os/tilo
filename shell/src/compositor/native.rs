@@ -4486,13 +4486,18 @@ fn apply_shell_gesture(
     action: crate::compositor::backend::drm::gestures::GestureAction,
 ) {
     use crate::compositor::backend::drm::gestures::GestureAction;
+    if let GestureAction::StepAlongStrip(dir) = action {
+        // Goes through the host rather than the chrome: the widget side
+        // owns the active tab, so a tree-only write is undone by the next
+        // frame's writeback. Same call the chord and the scroll make.
+        frame_builder.host_mut().step_focus_along_strip(dir);
+        return;
+    }
     frame_builder.with_chrome(|st| match action {
         GestureAction::SwitchWorkspace(dir) => {
             st.switch_workspace(dir);
         }
-        GestureAction::CycleTab(dir) => {
-            st.cycle_active_tab(dir);
-        }
+        GestureAction::StepAlongStrip(_) => unreachable!("handled above"),
         GestureAction::ShowOverview => {
             if !st.overlays.overview {
                 st.overlays.overview = true;

@@ -3835,6 +3835,100 @@ impl ShellOverlayHost {
         row.set_group_active_tab(group, tab)
     }
 
+    /// Move focus one or more windows along the active strip.
+    ///
+    /// This is the *only* implementation of "next window / previous
+    /// window" in the shell. The keyboard chord, a horizontal scroll, a
+    /// touchpad swipe and the modifier wheel all call it, so they cannot
+    /// drift apart into four navigation models that agree on easy cases
+    /// and disagree at group boundaries — which is what they did while
+    /// two of them stepped tabs inside a group and stopped at its edge.
+    ///
+    /// A "window" is a tab, and the strip is one flat sequence of them in
+    /// visual order, so stepping past a group's last tab continues into
+    /// the next group rather than wrapping back to its own first. Clamped
+    /// at the strip's ends: there is nothing beyond them, and wrapping
+    /// from the last window to the first teleports the viewport the whole
+    /// length of the strip for what the user asked to be one step.
+    ///
+    /// The widget side is written first and the tree second, for the
+    /// reason [`Self::focus_window_widget`] documents: the per-frame
+    /// writeback mirrors widgets into the tree, so a tree-only write is
+    /// undone one frame later.
+    ///
+    /// Returns `true` when focus actually moved.
+    pub fn step_focus_along_strip(&mut self, steps: i32) -> bool {
+        if steps == 0 {
+            return false;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let target = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            crate::compositor::client_input::step_active_window(&tree, steps)
+        };
+        let Some((strip, group, tab)) = target else {
+            return false;
+        };
+        self.focus_window_on_strip(strip, group, tab)
+    }
+
+    /// Focus one window by identity — the strip rail's click target, and
+    /// the landing half of [`Self::step_focus_along_strip`].
+    ///
+    /// Unlike a click on the window itself this *does* pan the strip: the
+    /// rail is a map of the whole strip, so its segments address windows
+    /// that are not on screen, and picking one that cannot be seen has to
+    /// bring it into view to have meant anything.
+    pub fn focus_window_on_strip(&mut self, strip: StripId, group: GroupId, tab: u64) -> bool {
+        self.focus_window_widget(strip, group, tab);
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let mut changed = false;
+        {
+            let st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            if let Some(g) = tree
+                .active_workspace_mut()
+                .and_then(|ws| ws.strips.iter_mut().find(|s| s.id == strip))
+                .and_then(|s| s.window_groups.iter_mut().find(|g| g.id == group))
+                && g.active_tab != tab
+            {
+                g.active_tab = tab;
+                changed = true;
+            }
+            if tree.active_group_for(strip) != Some(group) {
+                tree.set_active_group(strip, group);
+                changed = true;
+            }
+        }
+        if changed {
+            chrome.borrow_mut().bump();
+        }
+        changed
+    }
+
+    /// Focus the first window of `group` — what clicking a rail segment
+    /// means, since a segment stands for a whole group.
+    pub fn focus_group_on_strip(&mut self, strip: StripId, group: GroupId) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let tab = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            tree.active_workspace()
+                .and_then(|ws| ws.strips.iter().find(|s| s.id == strip))
+                .and_then(|s| s.window_groups.iter().find(|g| g.id == group))
+                .map(|g| g.active_tab)
+        };
+        let Some(tab) = tab else { return false };
+        self.focus_window_on_strip(strip, group, tab)
+    }
+
     /// Read-only accessor for the cached "+ Add workspace" tile rect.
     /// Populated by `draw_overview` each frame the overview is visible
     /// and reset to `Rect::ZERO` once the overview is fully hidden.
@@ -7035,6 +7129,41 @@ impl Widget for ShellOverlayHost {
                         }
                     }
                 }
+                // Super+ArrowLeft / Super+ArrowRight — move focus one
+                // window along the strip.
+                //
+                // The arrow cluster already carries the spatial model's
+                // other two axes on this modifier: unshifted Up/Down
+                // switches workspace, shifted Up/Down switches strip.
+                // Travelling *along* a strip is the primary motion of a
+                // desktop made of horizontal strips and was the one axis
+                // with no key at all — reachable only by holding Alt and
+                // Shift and turning a wheel, which is not something a
+                // person discovers.
+                //
+                // Super only, not the `is_mod` Super-or-Ctrl alias the
+                // vertical pair uses: `shell_owns_chord` grabs every
+                // Super chord ahead of the focused client, so this takes
+                // nothing away, while Ctrl+Left/Right is word-wise
+                // cursor motion in every text field and terminal there
+                // has ever been. Same reasoning that keeps Super+W and
+                // Super+S off Ctrl.
+                if super_down
+                    && matches!(
+                        logical_key,
+                        Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowRight)
+                    )
+                {
+                    let dir = if matches!(logical_key, Key::Named(NamedKey::ArrowLeft)) {
+                        -1
+                    } else {
+                        1
+                    };
+                    if self.step_focus_along_strip(dir) {
+                        *handled = true;
+                    }
+                    return;
+                }
                 // Shift+ArrowUp / Shift+ArrowDown (with the same Super
                 // or Ctrl modifier) — move focus between the strips of
                 // the current workspace.
@@ -8175,20 +8304,27 @@ impl Widget for ShellOverlayHost {
             taffy,
         );
 
-        // DE-level horizontal-scroll fallback. If the cursor's host
-        // app/widget didn't consume the MouseWheel (most apps don't
-        // implement horizontal scroll at all — only widgets like the
-        // GroupRow strip-pan and a terminal with overflow do), and the
-        // event is horizontally-dominant, promote it to a tab cycle in
-        // the active group. This makes "swipe sideways = next window"
-        // work everywhere the app under the cursor doesn't claim it,
-        // including over the empty desktop. Vertical wheel is left
-        // untouched — it's reserved for the wheel disc's workspace
-        // rotate (handled above when the cursor is over the sidebar)
-        // and the focused widget's own vertical scroll (e.g. the
-        // terminal's scrollback). Threshold of 0.5 guards against
-        // trackpad axis noise — a real horizontal flick is well
-        // above one line's worth of delta.
+        // Horizontal scroll travels along the strip. If the app under
+        // the cursor didn't claim the wheel (most don't implement
+        // horizontal scroll at all) and the event is horizontally
+        // dominant, it moves focus one window — the same step the
+        // Super+Left/Right chord and the Alt+Shift wheel make, so a
+        // two-finger swipe, a chord and a modifier gesture cannot
+        // disagree about where "the next window" is. The focus-follow
+        // reconciler then slides the strip to it, which is what makes
+        // the gesture read as travel along the canvas while still
+        // landing on a window boundary rather than mid-window.
+        //
+        // It steps rather than free-pans deliberately: this is a strip
+        // of non-overlapping windows, and a viewport parked across the
+        // seam between two of them shows parts of both and all of
+        // neither.
+        //
+        // Vertical wheel is left alone — it belongs to the wheel disc's
+        // workspace rotate (handled above, over the sidebar) and to the
+        // focused widget's own scrolling. The 0.5 threshold rejects
+        // trackpad axis noise; a deliberate flick is well past one
+        // line's worth.
         if !*handled {
             if let WindowEvent::MouseWheel { delta, .. } = event {
                 let dx = match *delta {
@@ -8196,11 +8332,9 @@ impl Widget for ShellOverlayHost {
                     winit::event::MouseScrollDelta::PixelDelta(p) => (p.x as f32) / 40.0,
                 };
                 if dx.abs() > 0.5 {
-                    if let Some(chrome) = &self.chrome {
-                        let dir = if dx > 0.0 { 1 } else { -1 };
-                        if chrome.borrow_mut().cycle_active_tab(dir) {
-                            *handled = true;
-                        }
+                    let dir = if dx > 0.0 { 1 } else { -1 };
+                    if self.step_focus_along_strip(dir) {
+                        *handled = true;
                     }
                 }
             }
