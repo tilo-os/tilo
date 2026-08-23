@@ -1614,6 +1614,86 @@ def _carries(blob: bytes, needle: str) -> bool:
         return False
     return done.returncode == 0
 
+def registry_entries(path: str) -> dict[str, str]:
+    """Split a `registry.toml` into one verbatim text block per app.
+
+    Text rather than parsed: an entry carries hashes and a publisher key,
+    and round-tripping those through a hand-rolled TOML writer is a good
+    way to install something that no longer verifies.
+    """
+    try:
+        with open(path) as fh:
+            body = fh.read()
+    except OSError:
+        return {}
+    entries: dict[str, str] = {}
+    for chunk in body.split("[[entry]]"):
+        if not chunk.strip():
+            continue
+        ident = None
+        for line in chunk.splitlines():
+            if line.startswith("id = "):
+                ident = line.split("=", 1)[1].strip().strip('"')
+                break
+        if ident:
+            entries[ident] = "[[entry]]" + chunk.rstrip() + "\n"
+    return entries
+
+
+def compose_registry(apps_dir: str, entries: dict[str, str],
+                     drop: tuple[str, ...] = ()) -> None:
+    os.makedirs(apps_dir, exist_ok=True)
+    kept = [v for k, v in sorted(entries.items()) if k not in drop]
+    with open(os.path.join(apps_dir, "registry.toml"), "w") as fh:
+        fh.write("\n".join(kept))
+
+
+def installed_ids(apps_dir: str) -> list[str]:
+    """What this session's install root actually holds, read off disk."""
+    return sorted(registry_entries(os.path.join(apps_dir, "registry.toml")))
+
+
+def a_real_png(width: int = 320, height: int = 200) -> bytes:
+    """A picture with something in it.
+
+    Written out rather than embedded so the image on screen is worth
+    looking at: a 1x1 pixel proves the plumbing and shows the camera
+    nothing.
+    """
+    import struct
+    import zlib
+
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)  # filter: none
+        for x in range(width):
+            rows += bytes((
+                40 + (x * 160) // width,
+                70 + (y * 150) // height,
+                150 + ((x + y) * 90) // (width + height),
+            ))
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        return (struct.pack(">I", len(payload)) + tag + payload
+                + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(bytes(rows), 9))
+            + chunk(b"IEND", b""))
+
+
+def stage_home(path: str) -> str:
+    """A home of this session's own, with the demo's folder in it."""
+    demo = os.path.join(path, "Demo")
+    os.makedirs(demo, exist_ok=True)
+    with open(os.path.join(demo, "photo.png"), "wb") as fh:
+        fh.write(a_real_png())
+    with open(os.path.join(demo, "brief.md"), "w") as fh:
+        fh.write("# Launch plan\n\n- Venue - The Hall\n- Date - 3 Sep\n")
+    return path
+
+
 class Registry:
     """A signed registry on loopback, serving one real `.qpkg`.
 
