@@ -32,24 +32,35 @@ carrying the room id, the owner's address and an expiry.
 The token has to be typed — there is no Copy button and no paste in the
 connect prompt. Fine on camera; only a problem if we claim otherwise.
 
-## 3 · ada invites the agent ✅
+## 3 · ada invites Claude ✅
 
-A different mechanism, and the more interesting one: an agent is not a peer.
-It is a capability principal (`agent:<id>`) granted through the permission
-model, and it reaches the document as a broker client.
+A different mechanism, and the more interesting one: an agent is not a
+peer. There is no token and no network handshake — it is a capability
+principal granted into the room, through the same palette, beside
+"Invite peer to workspace".
 
-## 4 · Both join — you see their cursors ❌ NOT ON SCREEN
+The grant is real: `CapOverride::membership(Subject::agent(id),
+Scope::Room(..), Verb::Write)` through the same entry point the control
+socket uses, so it passes the production authority check and replicates
+to the room's other members. Revoking it removes the row.
 
-Presence genuinely crosses the network, and inside an app window a peer's
-caret and pointer render correctly — that much was proven from the receiving
-machine, the peer labelled by its own id.
+Agents are read back as a separate list from people, not as extra rows in
+the roster, so an agent can never be rendered as a person. The roster
+draws a dim `agent` tag beside the name — which is why the name itself
+can be `Claude` without a reader having to guess what it is.
 
-**The desktop layer draws nothing.** `RemoteCursorOverlay::new()` is called
-only in `shell/tests/remote_cursors_test.rs`; the compositor never mounts it.
-Filmed, this beat is twenty-eight seconds of empty desktop.
+## 4 · Both join — you see their cursors ✅
 
-This entry said ✅ until someone watched the frames instead of the
-assertions.
+A peer's cursor and their name, on the other person's desktop, with
+nothing open on either side. Proven from the receiving machine:
+`target/desktop-peer-cursor/bob-sees-adas-cursor.png`.
+
+The overlay was never the problem — it was mounted and drawing all
+along. The session only put its cursor on the wire *as a side effect of
+a local app publishing one*, so two people on an empty desktop, which is
+exactly this beat, published nothing. The pointer is now level-triggered
+from the frame loop, and a stopped one is restated once a second, so
+someone who joins after the last mouse movement still sees who is there.
 
 ## 5 · Search "word processor" → not installed → installs → opens ✅
 
@@ -57,47 +68,75 @@ The palette offers apps this machine does not have yet in the same rows as the
 ones it does. Installing verifies an ed25519 signature and a BLAKE3 digest,
 then runs it.
 
-Timed, on twelve clean sessions: a median of **6.7s** from the keystroke to
-the app's own first frame, spread 5.0–9.5s — roughly a quarter fetching, two
-quarters verifying and unpacking, one quarter starting and painting. That is
-a 446 MB debug package over a loopback registry, on a machine that was busy;
-most of it is the package's size, not the mechanism. So say "a few seconds",
-never "instant" — a viewer can time this one off the recording.
-Re-measure with `scripts/headless-examples/install-open-timing.py`.
+Timed, on five clean sessions: a median of **1.87s** from the keystroke to the
+app's own first frame, spread 1.81–2.18s. That is a 24 MB package over a
+loopback registry, on a machine carrying a load average of 5.5.
 
-## 6 · Cut to bob — the window opens there too ❌ ASSERTION GREEN, SCREEN BLANK
+Fetching and verifying have stopped being the story: 0.07s to fetch, 0.10s to
+check the ed25519 signature and the BLAKE3 digest and unpack, and 1.70s — over
+nine tenths of the wait — for the app itself to start and paint its first
+frame. Shrinking the package further buys almost nothing now; the remaining
+second and a half is the word processor's own startup.
 
-A workspace is shared, so its windows are shared. The room document carries
-that room's strips, groups and tabs, each entry written only by the peer that
-owns it.
+It read as 6.7s, and on a busy machine 16–21s, for as long as the payload was
+a 449 MB **debug** build — the packaging was moving and hashing eighteen times
+the bytes it needed to. Build it with `scripts/demo-apps-live.sh`, which packs
+an optimised profile by default; `QOS_DEMO_PROFILE=debug` reproduces the old
+number if you want to see it.
 
-What does **not** travel is view state — focus, scroll, active tab. bob sees
-the window arrive without his own view moving, asserted on the same object in
-the same run.
+Say "about two seconds", never "instant" — a viewer can time this one off the
+recording. Re-measure with `scripts/headless-examples/install-open-timing.py`.
 
-**But it is not drawn.** The screenshot taken at the instant the script
-declares success shows an empty desktop. The room document carries the window,
-bob's tree holds it, and his compositor renders nothing. This is the exact
-failure the whole verification pass exists to catch — an assertion that goes
-green while the screen stays blank is worse than one that fails, because it
-reads as proof.
+## 6 · Cut to bob — the window opens there too ✅
 
-## 7 · ada's writing appears on bob's screen ✅
+A workspace is shared, so its windows are shared. The room document
+carries that room's strips, groups and tabs, each entry written only by
+the peer that owns it. Proven on the receiving screen:
+`target/peer-window-drawn/bob-sees-adas-window.png` — tab pill,
+window card and content, not a stub.
 
-Two real packaged word processors converge. Proven from the receiving side:
-`/tmp/qs-gpxaor_7/shots/bob-received.png` shows bob's page reading text he
-never typed, with alice's caret and pointer labelled by her peer id.
+What does **not** travel is view state — focus, scroll, active tab.
 
-The cause was not routing, which is why it survived so long. The op stream
-carries three kinds of frame — a signed envelope, a delta, a whole document —
-and nothing on the wire said which, so the reader guessed by trying to decode
-each one as a signed envelope and skipping what failed. That discarded every
-unsigned frame there is, including the full-state snapshot by which two
-independently created documents learn of each other. Presence rides a separate
-stream and was never affected — which is precisely why presence crossed while
-the page stayed blank, and why this read as a routing bug for days.
+Two breaks in series had kept this blank. The changed-flag from
+`apply_room_changes` was discarded, so nothing bumped the chrome
+revision; and once that was fixed, the resync still skipped any strip
+with no widget row, which is every strip a peer's window arrives in.
+Either alone produces "assertion green, screen blank" — and any
+unrelated click that bumped the revision made the window appear, which
+is why it looked intermittent rather than broken.
 
-Frames now carry a kind tag.
+Keep this beat on qOS's own apps. They replicate through the document
+and are drawn from it; a foreign Wayland surface has nothing to
+replicate and degrades to a card reading "coming soon".
+
+## 7 · ada's writing appears on bob's screen ⏳ — one path works
+
+**Two packaged word processors converge when both are opened from the
+palette.** Proven from the receiving side:
+`/tmp/qs-gpxaor_7/shots/bob-received.png` — bob's page carrying text he
+never typed, with alice's caret and pointer.
+
+That took fixing something subtle. The op stream carries signed
+envelopes, deltas and whole documents with nothing on the wire saying
+which, so the reader guessed by trying to decode each frame as a signed
+envelope and skipping what failed — discarding every unsigned frame,
+including the full-state snapshot by which two independently created
+documents learn of each other. Presence rides a separate stream and was
+never affected, which is why presence crossed while the page stayed
+blank, and why this read as a routing bug for days. Frames now carry a
+kind tag.
+
+**It does not work yet on the path this demo actually takes.** ada's
+word processor is the one from beat 5 — installed, then opened — and it
+logs `collab connected=false`, while bob's, opened from the palette,
+logs `true`. Same asymmetry across four runs. A peer's caret arrives and
+paints; the document never does.
+
+That is a product bug, not a demo one: installing an app and opening it
+is what a person does the first time they use anything, and on that path
+collaboration fails *quietly* — presence works, so the room looks alive
+while nothing is shared. Under fix. This beat is not claimed until a
+frame shows the text arriving on the other machine.
 
 ## 8 · An image into the document ✅ — but mind which Files
 
@@ -127,33 +166,56 @@ it receives is the bytes the OS handed it. Either way the image ends up
 as `ScalarValue::Bytes` in the document, so it replicates exactly like
 text, which is what makes it arrive on the other screen.
 
-## 9 · The agent does something ✅
+## 9 · Claude does something ✅ — two endings, pick one
 
-`qos-agent` joins the document the way a second copy of the app would: same
-`(app, room, record)` route, asks the room for state, holds a live replica. No
-window, no pointer. Addressed inside the document — "Scribe: turn the bullets
-into a table" — it edits through the word processor's **own exported actions**,
-under its own actor. Its changes are attributed to it in the history strip and
-its caret appears in the others' windows while it works.
+`qos-agent` joins the document the way a second copy of the app would:
+same `(app, room, record)` route, asks the room for state, holds a live
+replica. No window, no pointer. Addressed inside the document — `Claude:
+make this a proper document` — it edits through the word processor's
+**own exported actions**, under its own actor, attributed in the history
+strip.
 
-Its vocabulary is scripted, and the honest framing is the stronger one:
-anything that can speak an app's actions can drive that app without competing
-for the screen. That is the resource and action model paying out, not a model
-call.
+**A real model chooses the action.** One bounded call, given the
+document, the instruction, and the catalogue of actions the app exports;
+it answers with one catalogue id and a reason. Validated twice — a
+JSON-schema enum built at runtime from that catalogue, then re-checked
+against it before dispatch — and the catalogue itself is verified against
+the app's own `encode()` names, so the agent cannot offer an action the
+app does not have. Typical decision 2.8–4.2s.
+
+A refusal, a timeout, a missing key or an answer outside the vocabulary
+falls back to the keyword vocabulary, so the beat always completes. Every
+run records which path decided, and the harness asserts it — a fallback
+run can never be written up later as a live one. That matters more now
+that the name on screen is Claude.
+
+Two endings, both live, both attributed:
+
+- **The table** — bullets become a formatted table.
+  `…/scratchpad/table-03-after.png`
+- **The structural pass** — a flat draft becomes a document: title,
+  section headings, prose intact. `…/scratchpad/structure-03-after.png`.
+  The instruction was "make this a proper document"; it never named an
+  action.
+
+Still to prove: the edit arriving on a *second* session. The agent's own
+copy is not the shot.
+
 
 ---
 
 # Things not to say
 
-- **The "Ada" cursor in footage shot before 2026-08-22 is not a person.** The
-  compositor painted a fake peer unconditionally so the collaboration chrome
-  stayed visible in single-process development. It is in
-  `.claude/demo-artifacts/qos-demo.mp4` and in every screenshot from before it
-  was removed. That cut needs re-shooting regardless — it also predates apps
-  launching.
-- Not "install is fast" — not measured yet.
-- Not "it boots as a real OS" in this cut. The image builds in CI; no boot
-  footage is part of this.
+- **The "Ada" cursor in footage shot before 2026-08-22 is not a person.**
+  The compositor painted a fake peer unconditionally so the collaboration
+  chrome stayed visible in single-process development. Any cut from
+  before that date contains a collaborator who does not exist.
+- Not "install is instant". It is a few seconds — median 6.7s — and a
+  viewer can time it off the recording. That honesty is the point.
+- Not that a beat works because its assertion passed. Six of nine beats
+  passed every byte-level check today and showed nothing on screen.
+- Nothing about beat 7 until a frame shows the text on the other machine.
+
 
 ---
 

@@ -11,6 +11,7 @@ use uuid::Uuid;
 use word_processor::actions::{self as wp, RegionKind, WordProcessorAction};
 
 use crate::apply::Editor;
+use crate::model::{Chooser, Decision, Route};
 use crate::plan::{self, Block, Instruction};
 use crate::wire::Link;
 
@@ -33,6 +34,19 @@ pub struct Config {
     pub pace: Duration,
     /// Stop after the first instruction has been carried out.
     pub once: bool,
+    /// Let a model choose which exported action answers an instruction.
+    /// False pins the run to the keyword vocabulary.
+    pub model: bool,
+    /// How long that call may take before the keyword vocabulary decides
+    /// instead. Short on purpose: the work must not wait on the network.
+    pub model_timeout: Duration,
+    /// How long to wait for somebody in the room to answer with the
+    /// document before giving up and saying which address went
+    /// unanswered. `Duration::ZERO` waits forever — right for an agent
+    /// left running against a room whose document nobody has opened yet,
+    /// wrong for a scripted run, where it turns a mismatched route into
+    /// a hang that names no cause.
+    pub await_document: Duration,
 }
 
 pub struct Session {
@@ -42,6 +56,32 @@ pub struct Session {
     /// Instruction blocks already acted on, so a slow peer re-sending the
     /// same state does not make the agent do the work twice.
     handled: HashSet<String>,
+    /// Decides which exported action answers an instruction.
+    chooser: Chooser,
+    /// When the agent last asked the room for the document. It asks again
+    /// until it has one: an app that was still opening its file when the
+    /// agent arrived never saw the first ask, and the agent would then wait
+    /// for a reply that is never coming. On a loaded machine that is the
+    /// difference between the beat happening and the beat hanging.
+    asked_at: Instant,
+    /// How the last instruction was decided. The record that keeps a run on
+    /// the fallback from being indistinguishable from a live one afterwards.
+    last_route: Option<Route>,
+}
+
+/// How often the agent asks again while it still has no document.
+const REASK_EVERY: Duration = Duration::from_millis(750);
+
+/// Ask the room for the document: peers already in it answer an `Arrived`
+/// with their full state. Safe to repeat — a second copy of a document the
+/// agent already holds merges to the same thing.
+fn ask_for_document(link: &mut Link) -> Result<()> {
+    link.send(&CollabRequest::Presence {
+        key: PresenceKey::Workspace {
+            id: "word-processor".to_string(),
+        },
+        payload: PresencePayload::Arrived,
+    })
 }
 
 /// How the word processor keys a caret: the block's own presence key.
@@ -62,6 +102,14 @@ impl Session {
             .clone()
             .unwrap_or_else(crate::wire::default_socket_path);
         let mut link = Link::connect(&path)?;
+        // The name here is self-declared, and a self-declared name is
+        // spoofable — which is why a *peer's* name is resolved through the
+        // room document, under the authority that admitted it, rather than
+        // taken from what the peer says it is called. The agent should end
+        // up resolving the same way. What keeps this honest meanwhile is
+        // that the agent is admitted by a capability its inviter granted,
+        // so nothing false is being asserted about who is in the room; the
+        // name is a label on a participant that was already let in.
         link.send(&CollabRequest::Hello {
             app_id: cfg.app_id.clone(),
             cluster_id: cfg.cluster,
@@ -70,12 +118,7 @@ impl Session {
         })?;
         // The late-join handshake: every peer in the room answers an
         // `Arrived` with its full document.
-        link.send(&CollabRequest::Presence {
-            key: PresenceKey::Workspace {
-                id: "word-processor".to_string(),
-            },
-            payload: PresencePayload::Arrived,
-        })?;
+        ask_for_document(&mut link)?;
         tracing::info!(
             socket = %path.display(),
             app = %cfg.app_id,
@@ -84,22 +127,86 @@ impl Session {
             name = %cfg.name,
             "joined the room; waiting for the document"
         );
+        let chooser = Chooser::new(cfg.model, cfg.model_timeout);
+        // Said once, at the top of the run: an operator should know which
+        // path a recording is going to take before the beat, not after.
+        tracing::info!(
+            live = chooser.is_live(),
+            model = crate::model::MODEL,
+            timeout_ms = cfg.model_timeout.as_millis() as u64,
+            "action choice: {}",
+            if chooser.is_live() {
+                "a model chooses from the app's exported actions"
+            } else {
+                "no model available; the keyword vocabulary chooses"
+            }
+        );
         Ok(Self {
             cfg,
             link,
             editor: None,
             handled: HashSet::new(),
+            chooser,
+            last_route: None,
+            asked_at: Instant::now(),
         })
+    }
+
+    /// How the last instruction was decided, for a test or an operator
+    /// checking after the fact whether a run was live.
+    pub fn last_route(&self) -> Option<&Route> {
+        self.last_route.as_ref()
     }
 
     /// Run until the broker goes away — or, with `once`, until the first
     /// instruction has been carried out.
+    ///
+    /// If nobody ever answers with a document, give up after
+    /// `await_document` and say which address went unanswered. Waiting
+    /// forever was the previous behaviour and it is the wrong one: the
+    /// commonest cause is a route that does not match, the broker drops
+    /// a mismatched frame silently by design, and the symptom is an
+    /// agent sitting at 0% forever while every log line says it joined
+    /// fine. A harness then reports "the agent did not finish", which
+    /// names the one component that was working.
     pub fn run(&mut self) -> Result<()> {
+        let joined = Instant::now();
         loop {
             if self.step(Duration::from_millis(100))? && self.cfg.once {
                 return Ok(());
             }
+            if self.editor.is_none()
+                && !self.cfg.await_document.is_zero()
+                && joined.elapsed() >= self.cfg.await_document
+            {
+                anyhow::bail!("{}", self.unanswered());
+            }
         }
+    }
+
+    /// Why no document arrived, in terms of the thing that decides it.
+    ///
+    /// The broker's fan-out matches `(app, room, record)` and the record
+    /// is the innermost test — it fails closed both ways, and "no
+    /// record" is a value like any other rather than a wildcard. So an
+    /// agent told nothing about the record does not join an untitled
+    /// conversation *and* a saved one: it joins the untitled one only,
+    /// and a word processor with a file open is announcing
+    /// `file:<path>` and cannot hear it.
+    fn unanswered(&self) -> String {
+        let waited = self.cfg.await_document.as_secs();
+        let addressed = match self.cfg.record.as_deref() {
+            Some(r) => format!("record {r:?}"),
+            None => "no record (an untitled document)".to_string(),
+        };
+        format!(
+            "no participant answered with a document in {waited}s. Announced \
+             app={:?} room={} and {addressed}. The broker matches all three \
+             and drops what does not match, so if the app has a file open \
+             its record is `file:<path>` and this agent must be given the \
+             same one with --record.",
+            self.cfg.app_id, self.cfg.cluster,
+        )
     }
 
     /// Run until `deadline`, then return whether an instruction was
@@ -119,21 +226,21 @@ impl Session {
     /// asks. Returns whether an instruction was carried out.
     fn step(&mut self, wait: Duration) -> Result<bool> {
         let mut changed = false;
+        // Still empty-handed: ask again. An app that was still opening its
+        // file when the agent arrived never saw the first ask, and nothing
+        // else would ever prompt a reply.
+        if self.editor.is_none() && self.asked_at.elapsed() >= REASK_EVERY {
+            ask_for_document(&mut self.link)?;
+            self.asked_at = Instant::now();
+            tracing::debug!("asked the room for the document again");
+        }
         match self.link.recv(wait)? {
             Some(CollabEvent::CRDTUpdate { data }) => {
-                match self.editor.as_mut() {
-                    Some(ed) => ed.merge_full(&data)?,
-                    None => {
-                        self.editor = Some(Editor::from_snapshot(&data, &self.cfg.name)?);
-                        tracing::info!(bytes = data.len(), "received the document");
-                    }
-                }
-                changed = true;
+                changed = self.absorb_snapshot(&data)?;
             }
             Some(CollabEvent::CRDTIncremental { data }) => {
                 if let Some(ed) = self.editor.as_mut() {
-                    ed.merge_incremental(&data)?;
-                    changed = true;
+                    changed = ed.merge_incremental(&data)?;
                 }
             }
             Some(CollabEvent::RemotePresenceUpdate {
@@ -156,13 +263,70 @@ impl Session {
         self.act()
     }
 
+    /// Take a peer's whole-document frame, if it is ours to take.
+    ///
+    /// A room is not one document. Every participant answers an arrival
+    /// with its own state, and the broker hands a frame to any
+    /// subscriber whose address it matches — which, for a participant
+    /// that announced no app id, is everyone in the room. So the agent
+    /// is offered the file manager's state alongside the page it was
+    /// invited to, and nothing in the frame says which is which.
+    ///
+    /// Given a `--record` the address settles it and only one arrives.
+    /// Without one, this does what it can from the content: take the
+    /// first thing that is a document at all, and if a later one turns
+    /// out to be a *different* document — established by its refusing to
+    /// merge — prefer whichever of the two is actually asking us for
+    /// something.
+    ///
+    /// Returns whether the agent's replica moved.
+    fn absorb_snapshot(&mut self, data: &[u8]) -> Result<bool> {
+        let Some(ed) = self.editor.as_mut() else {
+            if !crate::apply::looks_like_a_document(data) {
+                tracing::debug!(
+                    bytes = data.len(),
+                    "ignored a peer's state: it is not a document"
+                );
+                return Ok(false);
+            }
+            self.editor = Some(Editor::from_snapshot(data, &self.cfg.name)?);
+            tracing::info!(bytes = data.len(), "received the document");
+            return Ok(true);
+        };
+        if ed.merge_full(data)? {
+            return Ok(true);
+        }
+        // It did not merge, so it is not this document. Worth having only
+        // if it is the one addressed to us and what we hold is not.
+        let ours_asks = ed
+            .snapshot()
+            .map(|s| plan::find_addressed(&plan::blocks(&s), &self.cfg.name).is_some())
+            .unwrap_or(false);
+        if !ours_asks && Editor::is_addressed_to(data, &self.cfg.name) {
+            ed.replace_with(data)?;
+            tracing::info!(
+                bytes = data.len(),
+                "took a different document: this is the one addressed to {}",
+                self.cfg.name
+            );
+            return Ok(true);
+        }
+        tracing::debug!(
+            bytes = data.len(),
+            "ignored another document in this room"
+        );
+        Ok(false)
+    }
+
     /// Look for an instruction and carry it out.
     fn act(&mut self) -> Result<bool> {
         let Some(ed) = self.editor.as_ref() else {
             return Ok(false);
         };
         let blocks = plan::blocks(&ed.snapshot()?);
-        let Some((at, instruction)) = plan::find_instruction(&blocks, &self.cfg.name) else {
+        // Who was addressed is decided here, from the document. What to do
+        // about it is the only thing a model gets a say in.
+        let Some((at, asked)) = plan::find_addressed(&blocks, &self.cfg.name) else {
             return Ok(false);
         };
         let ins_id = blocks[at].id.clone();
@@ -170,7 +334,19 @@ impl Session {
             return Ok(false);
         }
         self.handled.insert(ins_id.clone());
-        tracing::info!(?instruction, block = %ins_id, "instruction found");
+
+        let Decision { instruction, route } = self.chooser.choose(&asked, &blocks);
+        tracing::info!(
+            block = %ins_id,
+            asked = %asked,
+            decided_by = route.label(),
+            live = route.is_live(),
+            ?instruction,
+            "{}",
+            route.detail()
+        );
+        self.last_route = Some(route);
+
         match instruction {
             Instruction::Table => self.make_table(&blocks, at)?,
             Instruction::Caption => self.caption_image(&blocks, at)?,
@@ -247,18 +423,32 @@ impl Session {
         Ok(())
     }
 
-    /// The first line becomes a level-1 heading; the instruction goes away.
+    /// A structural pass over a rough draft: the first line becomes the
+    /// title, each section label under it becomes a heading, and the
+    /// instruction goes away. One `SetParagraphStyle` per level, so the
+    /// sections land together rather than one flicker at a time.
     fn make_heading(&mut self, blocks: &[Block], at: usize) -> Result<()> {
         let ins_id = blocks[at].id.clone();
-        let Some(first) = plan::first_text_block(blocks, at) else {
+        let found = plan::structure(blocks, at);
+        let Some(title_id) = found.title else {
             return self.edit(&ins_id, wp::remove_blocks_action(vec![ins_id.clone()]));
         };
-        let first_id = blocks[first].id.clone();
         self.edit(
-            &first_id,
-            wp::set_paragraph_style_action(vec![first_id.clone()], "heading", Some(1), None),
+            &title_id,
+            wp::set_paragraph_style_action(vec![title_id.clone()], "heading", Some(1), None),
         )?;
-        self.edit(&first_id, wp::remove_blocks_action(vec![ins_id]))?;
+        if !found.sections.is_empty() {
+            let anchor = found.sections[0].clone();
+            self.edit(
+                &anchor,
+                wp::set_paragraph_style_action(found.sections.clone(), "heading", Some(2), None),
+            )?;
+        }
+        tracing::info!(
+            sections = found.sections.len(),
+            "made the draft a document"
+        );
+        self.edit(&title_id, wp::remove_blocks_action(vec![ins_id]))?;
         Ok(())
     }
 

@@ -531,7 +531,23 @@ impl App {
             last_stable_metadata: None,
             collab_manager: CollaborationManager::new(),
             local_author: crate::collaboration::local_user_id(),
-            presence_ctx: PresenceCtx::empty(),
+            presence_ctx: {
+                // What a frame this app publishes comes back stamped
+                // with when the broker fans it to another app the same
+                // person has open. Both of the broker's own answers,
+                // in its order of preference: the handle announced on
+                // `Hello`, then the app id it falls back to when
+                // nothing announced one — which is what two windows of
+                // one unnamed app share. Anything not on this list is
+                // somebody else and gets painted.
+                let mut ctx = PresenceCtx::empty();
+                ctx.set_own_identity(
+                    crate::collaboration::presence_handle_env()
+                        .into_iter()
+                        .chain(std::iter::once(crate::collaboration::local_user_id().0)),
+                );
+                ctx
+            },
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
             followed_peer: None,
@@ -1610,27 +1626,21 @@ impl App {
             match event {
                 CollabEvent::Context { collaborators, .. } => {
                     for c in collaborators {
-                        self.state.collab.cursors.entry(c.id.clone()).or_insert(
-                            crate::state::RemoteCursor {
-                                x: 0.0,
-                                y: 0.0,
-                                color: crate::color_compat::rgb(
-                                    c.color[0] as f64,
-                                    c.color[1] as f64,
-                                    c.color[2] as f64,
-                                ),
-                                name: c.name.clone(),
-                            },
-                        );
-                        // Seed the overlay-side presence so peer
-                        // labels come through with the server-
-                        // announced friendly name; later cursor
-                        // moves preserve the label because they
-                        // pass display_name=None.
-                        self.presence_ctx
-                            .upsert_remote_cursor(c.id.clone(), [0.0, 0.0], Some(&c.name));
-                        // Seed the roster so caret chips and mist tags for
-                        // this peer show the friendly name, not the raw id.
+                        // The roster says who is here and what they are
+                        // called. It does **not** say where their
+                        // pointer is, so it does not make one: a
+                        // cursor minted here would be drawn at the
+                        // origin, and a pointer painted somewhere the
+                        // peer is not is a lie the screen tells about a
+                        // real person. A peer that already has a
+                        // pointer keeps it, relabelled.
+                        if let Some(cursor) = self.state.collab.cursors.get_mut(&c.id) {
+                            cursor.name = c.name.clone();
+                        }
+                        // Seed the roster so caret chips, cursor pills
+                        // and mist tags for this peer show the name the
+                        // room gave them rather than the raw id. Peers
+                        // already on screen are relabelled in place.
                         self.presence_ctx.set_display_name(
                             crate::permissions::UserId(c.id.clone()),
                             c.name.clone(),
@@ -2823,6 +2833,40 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
     )
 }
 
+/// Resolve the wayland `app_id` this process announces.
+///
+/// `QOS_PACKAGE_ID` when the launcher set it — that is the package's
+/// real identity and what every id-keyed lookup in the compositor is
+/// written against. Failing that, the **binary's own name**, which is
+/// still a name for this app and not a name for every app.
+///
+/// The old fallback was a single shared `org.qos.app`. It is worth
+/// being precise about why that was wrong, because it looked harmless:
+/// the compositor labels a tab from the app-id, claims a launch's
+/// placement note by it, and answers "is this document already open"
+/// by it. One id shared by every app made all three collapse onto each
+/// other — most visibly as a tab reading `app`, which is the trailing
+/// component of `org.qos.app` and the name of nothing. A binary name is
+/// specific, stable for a given app, and matches the trailing-component
+/// convention package ids already follow (`dev.qos.notes` ↔ `notes`),
+/// so a dev run of an app is recognisable as that app.
+///
+/// The generic id survives only for the case where there is genuinely
+/// nothing to say — no package, no readable binary name.
+fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
+    let non_blank = |s: &str| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    };
+    if let Some(id) = package_id.and_then(non_blank) {
+        return id;
+    }
+    if let Some(bin) = binary.and_then(non_blank) {
+        return bin;
+    }
+    "org.qos.app".to_string()
+}
+
 /// Pure title resolution, so the precedence is unit-testable without
 /// touching the process environment. In order, the first non-blank
 /// candidate wins:
@@ -3143,10 +3187,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         #[cfg(target_os = "linux")]
         {
             use winit::platform::wayland::WindowAttributesExtWayland;
-            let app_id = std::env::var("QOS_PACKAGE_ID")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "org.qos.app".to_string());
+            let app_id = resolve_app_id(
+                std::env::var("QOS_PACKAGE_ID").ok().as_deref(),
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .as_deref(),
+            );
             window_attributes = window_attributes.with_name(app_id, "");
         }
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
@@ -3181,6 +3228,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // first launch ("works on the second try"). Deferring lets the
         // event loop complete the configure + seat handshake first.
         window.request_redraw();
+        // Publish the window so a widget can start a drag out of this app
+        // without holding one — the same shape as the clipboard backend
+        // above, and for the same reason: only the toolkit has the
+        // process's Wayland connection.
+        crate::dnd::set_drag_window(&window);
         self.window = Some(window);
     }
 
@@ -3593,8 +3645,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // paints each on-screen peer as a round, color-coded dot +
                 // name pill, and each OFF-screen peer as a colored edge
                 // mist pointing the way they drifted, so nobody vanishes.
-                // `pointers` is kept populated for the shell overlay but
-                // not painted here, so no peer is drawn twice.
+                //
+                // Which peers this layer may paint is not up to this
+                // call: a pointer that arrived on a desktop scope is
+                // the compositor's to draw, and the helper skips it —
+                // see `presence::PointerOwner`. Both stores being
+                // populated from one arrival is deliberate (`pointers`
+                // feeds the overlay, `remote_cursors` feeds "follow
+                // that peer"); it is the *painting* that has one owner.
+                // A comment here once claimed populating two stores was
+                // enough to keep a peer from being drawn twice. That
+                // held only inside one process's own draw, which is not
+                // where the two painters were: the shell threads this
+                // very context into its overlay as well, so a peer came
+                // out twice from a single context.
                 crate::presence::draw_remote_presence(
                     &mut scene,
                     transform,
@@ -4657,6 +4721,38 @@ mod window_title_tests {
         let t = resolve_title_from(None, None, None, None);
         assert_eq!(t, "qOS App");
         assert_ne!(t, "QuickUI App");
+    }
+
+    /// The wayland app-id is what the compositor labels a tab from,
+    /// claims a launch's placement note by, and answers "is this
+    /// document already open" by. A single shared id collapses all
+    /// three — most visibly as a tab reading `app`.
+    #[test]
+    fn the_app_id_is_never_the_generic_one_when_anything_identifies_the_app() {
+        assert_eq!(
+            resolve_app_id(Some("dev.qos.file-explorer"), Some("file-explorer")),
+            "dev.qos.file-explorer",
+            "the package id is the identity everything else is keyed on"
+        );
+        assert_eq!(
+            resolve_app_id(None, Some("file-explorer")),
+            "file-explorer",
+            "outside a sandbox the binary still names this app, and it \
+             matches the trailing-component convention package ids use"
+        );
+        assert_eq!(
+            resolve_app_id(Some("   "), Some("terminal")),
+            "terminal",
+            "a blank package id is no package id"
+        );
+        assert_eq!(
+            resolve_app_id(None, None),
+            "org.qos.app",
+            "the generic id survives only when there is nothing to say"
+        );
+        // The regression in one line: no run with a name to its own
+        // binary may announce the id that produced a tab called `app`.
+        assert_ne!(resolve_app_id(None, Some("file-explorer")), "org.qos.app");
     }
 
     #[test]

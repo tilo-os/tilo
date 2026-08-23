@@ -78,6 +78,27 @@ pub struct WorkspaceTreeReplica {
     ///
     /// [`Hub`]: crate::network::hub::Hub
     pub origin: PeerOrigin,
+    /// Who has actually taken part in each room's document, by the
+    /// handle presence frames use.
+    ///
+    /// The answer to "has this peer *joined*", as distinct from "has
+    /// this peer been invited". An invitation is a statement the room's
+    /// authority writes on its own; taking part is something the peer
+    /// has to do, and this is where it is observed: a peer that asks
+    /// this room for its changes, or answers with them, is by
+    /// definition a participant in it.
+    ///
+    /// Keyed off [`PeerOrigin::liveness_handle`] — the identity the
+    /// transport authenticated, not anything the message claimed — so a
+    /// peer cannot put itself in here by saying it is here. That is the
+    /// whole reason this lives at this layer rather than being inferred
+    /// from a payload higher up: `handle_from` is the last place that
+    /// still knows who the bytes came from.
+    ///
+    /// Session-scoped and never persisted. It answers a question about
+    /// this run of this compositor, and a machine that has just booted
+    /// has correctly seen nobody.
+    pub participants: std::collections::HashMap<RoomId, std::collections::BTreeSet<u64>>,
 }
 
 impl WorkspaceTreeReplica {
@@ -87,7 +108,24 @@ impl WorkspaceTreeReplica {
             tree,
             pending_outgoing: Arc::new(Mutex::new(Vec::new())),
             origin: PeerOrigin::hub(id),
+            participants: std::collections::HashMap::new(),
         }
+    }
+
+    /// Record that `from` has taken part in `room`'s document.
+    ///
+    /// A no-op for an origin with no peer id behind it — an in-process
+    /// hub subscriber or a local replay is not somebody who joined.
+    fn note_participant(&mut self, room: RoomId, from: &PeerOrigin) {
+        let Some(handle) = from.liveness_handle() else {
+            return;
+        };
+        self.participants.entry(room).or_default().insert(handle);
+    }
+
+    /// The peers that have taken part in `room`'s document this session.
+    pub fn participants_in(&self, room: RoomId) -> std::collections::BTreeSet<u64> {
+        self.participants.get(&room).cloned().unwrap_or_default()
     }
 
     /// Deliver this replica's messages under `origin`.
@@ -195,6 +233,21 @@ impl WorkspaceTreeReplica {
                 let Some(changes) = exported else {
                     return;
                 };
+                // Somebody asked this room for its changes, and this
+                // machine is in it. That is a peer taking part in the
+                // room's document, which is what "joined" means and
+                // what tells an invitation apart from an arrival.
+                //
+                // After the "we are not in that room" return, so a peer
+                // asking about a room this machine does not have is not
+                // recorded as being in it — and before the
+                // "nothing to send" return below, because a guest that
+                // is already up to date exports empty and gets no
+                // reply. It is no less in the room for having nothing
+                // to catch up on, and recording further down would have
+                // dropped it off the roster the moment it finished
+                // syncing.
+                self.note_participant(room_id, sender);
                 if changes.is_empty() {
                     return;
                 }
@@ -245,7 +298,15 @@ impl WorkspaceTreeReplica {
                         "WorkspaceTreeReplica::apply_room_changes failed; \
                          peer-sync round produced no doc mutation (C-9)",
                     );
+                    return;
                 }
+                // The other half of the round, and the guest's side of
+                // it: whoever answered with this room's changes is in
+                // this room. Only once the changes were accepted —
+                // `apply_room_changes` refuses a room this machine is
+                // not in, and a refused document must not leave a
+                // participant behind it.
+                self.note_participant(room_id, sender);
             }
             _ => {}
         }
@@ -835,7 +896,8 @@ mod tests {
         );
         assert!(
             tree_b.read().room_epoch() > before,
-            "content landed in the guest's tree but nothing told the frame              loop to rebuild, so it would never be drawn"
+            "content landed in the guest's tree but nothing told the frame \
+             loop to rebuild, so it would never be drawn"
         );
     }
 
@@ -1064,6 +1126,84 @@ mod tests {
             "shell-side add_workspace must produce automerge changes the \
              peer-sync replica can ship to peers in that room (audit C-3: \
              shared WorkspaceTreeHandle ties subsystems together)",
+        );
+    }
+
+    /// Taking part in a room's document is what "joined" means, and it
+    /// is observed here because this is the last place that still knows
+    /// who the bytes came from.
+    ///
+    /// Three claims, and the second two are what make the first worth
+    /// anything: a peer that asks about a room this machine is in has
+    /// joined it; a peer that asks about a room this machine does not
+    /// have has not joined anything; and an origin with no peer id
+    /// behind it — an in-process hub subscriber — is not somebody who
+    /// arrived over a wire at all.
+    #[test]
+    fn asking_a_room_for_its_changes_is_what_joining_it_looks_like() {
+        let mut tree = WorkspaceTree::default();
+        let ws = tree.append_empty_workspace("Design review");
+        let room = tree.room_of(ws).expect("a fresh workspace mints a room");
+        tree.adopt_ownerless_workspaces(&"ada".to_string());
+        let mut rep = WorkspaceTreeReplica::new(1, tree.shared());
+
+        let guest = libp2p::identity::Keypair::ed25519_from_bytes([7u8; 32])
+            .expect("32 bytes is a keypair")
+            .public()
+            .to_peer_id();
+        let handle = crate::network::behaviour::peer_liveness_handle(&guest);
+        let since = serde_json::to_vec(&Vec::<automerge::ChangeHash>::new()).expect("heads");
+
+        assert!(
+            rep.participants_in(room).is_empty(),
+            "nobody has asked about this room yet",
+        );
+
+        // A room this machine is not in. Answering nothing is already
+        // tested elsewhere; the claim here is that it also leaves no
+        // trace of a participant behind.
+        let elsewhere = RoomId::new();
+        rep.handle_from(
+            &PeerOrigin::peer(&guest),
+            &NeighbourMsg::SyncReq {
+                since: since.clone(),
+                room: elsewhere.to_string(),
+            },
+        );
+        assert!(
+            rep.participants_in(elsewhere).is_empty(),
+            "a peer asking about a room this machine does not have has \
+             joined nothing here",
+        );
+
+        // An in-process subscriber has no peer id, so there is nobody
+        // to record — and nothing that could be mistaken for a person
+        // who turned up on the network.
+        rep.handle_from(
+            &PeerOrigin::hub(9),
+            &NeighbourMsg::SyncReq {
+                since: since.clone(),
+                room: room.to_string(),
+            },
+        );
+        assert!(
+            rep.participants_in(room).is_empty(),
+            "a hub subscriber is not a peer that arrived: {:?}",
+            rep.participants_in(room),
+        );
+
+        // And the real thing.
+        rep.handle_from(
+            &PeerOrigin::peer(&guest),
+            &NeighbourMsg::SyncReq {
+                since,
+                room: room.to_string(),
+            },
+        );
+        assert!(
+            rep.participants_in(room).contains(&handle),
+            "a peer that asked this room for its changes is in it: {:?}",
+            rep.participants_in(room),
         );
     }
 }

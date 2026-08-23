@@ -236,7 +236,17 @@ impl Default for FileExplorerWidget {
 
 impl FileExplorerWidget {
     pub fn new() -> Self {
-        Self::with_persistence(config::config_dir(), dirs::home_dir())
+        // The same home the start directory is resolved against
+        // (`crate::model::default_start_dir`), and for the same reason.
+        // Under a sandbox this process's `HOME` is its own per-package
+        // directory — `/run/qos/app` — while the directory actually
+        // opened is the user's real home, bound by a grant and named by
+        // `QOS_USER_HOME`. Reading `dirs::home_dir()` here made the two
+        // disagree, and the breadcrumb is where a disagreement shows:
+        // `format_path` abbreviates a path to `~` only when it lies
+        // under the home it was handed, so a home it does not recognise
+        // renders as an absolute trail from the filesystem root.
+        Self::with_persistence(config::config_dir(), crate::model::user_home())
     }
 
     /// Construct with an explicit persistence directory + home, resolving the
@@ -446,11 +456,12 @@ impl FileExplorerWidget {
             ),
         };
         let sp = &theme.tokens.spacing;
-        // In the narrow layout the shell paints the hamburger chip over the
-        // content pane's top-left (it summons the places drawer); reserve a
-        // strip so the list header + rows start clear of it instead of under
-        // it. Wide docks the places list, with no chip over the content.
-        let chip_reserve = if self.nav.mode() == ShellMode::Narrow { 44.0 } else { 0.0 };
+        // The hamburger chip that summons the places drawer floats over this
+        // pane's top-left in the narrow layout. `NavShell` reserves that band
+        // itself, in the pass that positions the chip — reserving it here
+        // instead would mean asking the shell how wide it was on the *previous*
+        // frame, which is how the list used to be built 44px lower than it was
+        // laid out and then jump the first time anything rebuilt it.
         // A plain (percent-height) column: this pane is the root of `NavShell`'s
         // inner layout, sized to the content rect, so it must FILL that rect
         // (`percent(1.0)` height). `with_fill_remaining_height` (flex-grow from
@@ -460,7 +471,6 @@ impl FileExplorerWidget {
         // optional error row.
         let mut view_col = Column::new()
             .with_vertical_padding(sp.s1)
-            .with_extra_top_padding(chip_reserve)
             .with_horizontal_padding(sp.s3, sp.s3);
         if let Some(err) = self.error.as_deref() {
             // Real error affordance: the message plus a "Try Again" button
@@ -974,7 +984,37 @@ impl FileExplorerWidget {
                 // Tell the host what is being carried: if the pointer
                 // reaches another application's window, the host turns
                 // this into a real drag-and-drop for that client.
+                //
+                // That is the path when Files is a widget inside the
+                // compositor. When it is a packaged app — its own
+                // process, its own sandbox, a Wayland client like any
+                // other — there is no host holding the gesture, so it
+                // opens the drag itself. Only one of the two can be
+                // true in a given process, and each reports whether it
+                // applied, so both are offered the gesture and at most
+                // one takes it.
                 crate::external_drag::begin(self.drag_paths.clone());
+                if ui::dnd::start_file_drag(&self.drag_paths) {
+                    tracing::debug!(
+                        target: "file_explorer::drag",
+                        paths = ?self.drag_paths,
+                        "carrying the drag out of this app as a client drag"
+                    );
+                    // The gesture now belongs to the compositor's
+                    // drag grab, and this window will not see the rest
+                    // of it: no more motion, and no release. Anything
+                    // kept here would be state waiting for an end that
+                    // never arrives — a ghost pinned to the last place
+                    // the pointer was, and a drop this app would try to
+                    // resolve against its own folders. So it is let go
+                    // of here, and the picture from this point on is
+                    // the compositor's to draw.
+                    self.pin_drag = None;
+                    self.drag_paths.clear();
+                    self.drag_hover = None;
+                    self.armed_drag = None;
+                    crate::external_drag::end();
+                }
                 true
             }
             FileCommand::AddFavorite(path) => {
@@ -3431,6 +3471,54 @@ mod command_path_tests {
         assert!(!w.entries_snapshot().iter().any(|e| e.name == ".secret"), "toggled back off");
     }
 
+    /// A file manager pointed at a directory that has files in it lists
+    /// those files.
+    ///
+    /// Asserts the *exact* set rather than "contains one of them". The
+    /// frame this guards showed "This folder is empty" over a directory
+    /// that held five entries, and an `.iter().any(|e| e.name == …)`
+    /// probe for a single name — the shape every other listing test in
+    /// this file uses — would still have passed on a listing that had
+    /// lost the other four.
+    ///
+    /// The empty-state banner is a draw-only side effect with no
+    /// accessor, so the assertions are on the two conditions that gate
+    /// it (a non-empty `entries`, no error) plus the item count the same
+    /// view renders in its footer.
+    #[test]
+    fn a_populated_directory_lists_exactly_its_contents() {
+        let d = tempfile::tempdir().unwrap();
+        let names = ["alpha.txt", "beta.md", "delta.rs", "epsilon.png", "gamma.odt"];
+        for n in names {
+            std::fs::write(d.path().join(n), b"x").unwrap();
+        }
+
+        let (mut w, _cfg) = hermetic();
+        w.navigate(d.path().to_path_buf());
+
+        assert_eq!(
+            w.error_message(),
+            None,
+            "a directory that reads cleanly reports no error",
+        );
+
+        let mut listed: Vec<String> = w.entries_snapshot().iter().map(|e| e.name.clone()).collect();
+        listed.sort();
+        let mut expected: Vec<String> = names.iter().map(|s| (*s).to_string()).collect();
+        expected.sort();
+        assert_eq!(
+            listed, expected,
+            "every file in the directory is listed, and nothing else is",
+        );
+
+        let (count, _path) = w.footer_text();
+        assert_eq!(
+            count,
+            names.len(),
+            "the footer counts the same entries the list shows",
+        );
+    }
+
     #[test]
     fn scroll_position_survives_a_structural_rebuild_but_resets_on_navigation() {
         // The real fix: selecting a row / re-sorting rebuilds the whole
@@ -4036,6 +4124,86 @@ mod responsive_body_tests {
         assert!(
             h.w.debug_places_open(),
             "wide navigation leaves the docked list in place — nothing to dismiss",
+        );
+    }
+}
+
+#[cfg(test)]
+mod breadcrumb_home_tests {
+    use super::*;
+
+    /// The window opens on the user's real home, and the breadcrumb has
+    /// to be measured against the same one.
+    ///
+    /// Under a sandbox this process's `HOME` is its own per-package
+    /// directory (`/run/qos/app`) while the directory actually opened is
+    /// the user's real home, bound by a grant and named by
+    /// `QOS_USER_HOME`. `new` resolved the start directory from the
+    /// second and the breadcrumb's home from the first, so
+    /// [`crate::model::format_path`] was measuring against a directory
+    /// nothing is under — and the trail rendered as an absolute path
+    /// from the filesystem root instead of a `~`.
+    #[test]
+    fn breadcrumb_home_is_the_granted_user_home_not_the_process_home() {
+        let granted = tempfile::tempdir().expect("tempdir");
+        let granted_path = granted.path().to_path_buf();
+        // Only `QOS_USER_HOME` is touched: `HOME` is left as the machine's,
+        // which is precisely the disagreement under test — the override has
+        // to win over whatever `dirs::home_dir()` says, and it does not say
+        // this temp dir.
+        // SAFETY: the value is read on the two lines below and by nothing
+        // else in this crate's tests.
+        unsafe { std::env::set_var("QOS_USER_HOME", &granted_path) };
+
+        let resolved = crate::model::user_home();
+        let widget_home = FileExplorerWidget::new()
+            .home_path()
+            .map(|p| p.to_path_buf());
+
+        unsafe { std::env::remove_var("QOS_USER_HOME") };
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some(granted_path.as_path()),
+            "the granted home wins over the process's own HOME",
+        );
+        assert_ne!(
+            dirs::home_dir().as_deref(),
+            Some(granted_path.as_path()),
+            "this test only means something while the two disagree",
+        );
+        assert_eq!(
+            widget_home.as_deref(),
+            Some(granted_path.as_path()),
+            "the widget measures its breadcrumb against the home it opens on",
+        );
+
+        // Which is what makes the trail read as somebody's home rather
+        // than as a path from the filesystem root. This is the function
+        // that rendered the bad one: handed a home the path is not
+        // under, it falls through to the `/`-rooted branch and emits a
+        // component per directory from the filesystem root.
+        let deep = granted_path.join("Documents").join("Investors");
+        let labels: Vec<String> = crate::breadcrumbs::breadcrumb_components(
+            &deep,
+            widget_home.as_deref(),
+        )
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
+        assert_eq!(
+            labels,
+            vec!["Home", "Documents", "Investors"],
+            "the trail is rooted at Home, not at /",
+        );
+
+        assert_eq!(
+            crate::model::format_path(&granted_path.join("Documents"), widget_home.as_deref()),
+            "~/Documents",
+        );
+        assert_eq!(
+            crate::model::format_path(&granted_path, widget_home.as_deref()),
+            "~",
         );
     }
 }

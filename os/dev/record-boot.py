@@ -37,6 +37,7 @@ import argparse
 import os
 import shutil
 import socket
+import threading
 import subprocess
 import sys
 import time
@@ -72,6 +73,7 @@ class Monitor:
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(timeout)
         self.sock.connect(path)
+        self.lock = threading.Lock()
         time.sleep(0.3)
         self._drain()
 
@@ -101,8 +103,9 @@ class Monitor:
         return out.decode("utf-8", "replace")
 
     def cmd(self, line: str) -> str:
-        self.sock.sendall((line + "\n").encode())
-        return self._drain()
+        with self.lock:
+            self.sock.sendall((line + "\n").encode())
+            return self._drain()
 
     def close(self) -> None:
         try:
@@ -129,15 +132,135 @@ def greeter_up(serial: Path) -> bool:
     return b"Started greetd.service" in tail or b"session-c1.scope" in tail
 
 
+_KEYMAP = {
+    " ": "spc", "-": "minus", ".": "dot", "/": "slash", "_": "shift-minus",
+    ":": "shift-semicolon", ";": "semicolon", "@": "shift-2", "=": "equal",
+    "+": "shift-equal", "|": "shift-backslash", "\\": "backslash",
+    ">": "shift-dot", "<": "shift-comma", ",": "comma", "~": "shift-grave_accent",
+    "`": "grave_accent", "#": "shift-3", "*": "shift-8", "&": "shift-7",
+    "(": "shift-9", ")": "shift-0", "!": "shift-1", '"': "shift-apostrophe",
+    "'": "apostrophe", "?": "shift-slash", "$": "shift-4", "%": "shift-5",
+    "^": "shift-6", "{": "shift-bracket_left", "}": "shift-bracket_right",
+    "[": "bracket_left", "]": "bracket_right",
+}
+
+
+def key_for(ch: str) -> str:
+    if ch in _KEYMAP:
+        return _KEYMAP[ch]
+    if ch.isupper():
+        return f"shift-{ch.lower()}"
+    return ch
+
+
+def _ppm_header(path: Path):
+    """Open a binary PPM and return (file, width, height, pixel_offset)."""
+    try:
+        fh = open(path, "rb")
+    except OSError:
+        return None
+    try:
+        if fh.read(2) != b"P6":
+            fh.close(); return None
+        vals: list[int] = []
+        while len(vals) < 3:                       # width, height, maxval
+            tok = b""
+            while True:
+                c = fh.read(1)
+                if not c:
+                    fh.close(); return None
+                if c.isspace():
+                    if tok:
+                        break
+                    continue
+                tok += c
+            vals.append(int(tok))
+        return fh, vals[0], vals[1], fh.tell()
+    except (OSError, ValueError):
+        fh.close(); return None
+
+
+def _region_mean(path: Path, x0: int, y0: int, x1: int, y1: int) -> float | None:
+    """Mean brightness of a rectangle of a binary PPM."""
+    hdr = _ppm_header(path)
+    if hdr is None:
+        return None
+    fh, w, h, base = hdr
+    with fh:
+        x1 = min(x1, w); y1 = min(y1, h)
+        if x0 >= x1 or y0 >= y1:
+            return None
+        total = n = 0
+        for y in range(y0, y1, 2):
+            fh.seek(base + (y * w + x0) * 3)
+            row = fh.read((x1 - x0) * 3)
+            total += sum(row); n += len(row)
+        return (total / n) if n else None
+
+
+class GreeterWatch:
+    """Decide when the greeter is up AND painted, from the framebuffer itself.
+
+    Two events look alike and are half a minute apart under software rendering:
+    the greeter taking the VT (which clears the console) and the greeter
+    actually drawing its form. Typing at the first one puts the credentials
+    nowhere -- the take ends on an empty login box, which is exactly what
+    happened before this looked for the form instead.
+
+    So it waits for the form: the greeter is a lighter panel centred on a dark
+    field, which nothing else on the way through a boot looks like. Measured on
+    real frames from this image, panel-minus-corner is +14.8 for the greeter,
+    -3.2 for the desktop and -11.5 for the console.
+    """
+
+    PANEL_DELTA = 8.0
+
+    def __init__(self) -> None:
+        self.ready_at: float | None = None
+
+    def feed(self, path: Path, elapsed: float) -> bool:
+        if self.ready_at is not None:
+            return True
+        panel = _region_mean(path, 500, 200, 780, 560)
+        corner = _region_mean(path, 0, 600, 300, 780)
+        if panel is None or corner is None:
+            return False
+        if panel - corner > self.PANEL_DELTA:
+            self.ready_at = elapsed
+            return True
+        return False
+
+
 def run_vm(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run([str(VM), *args], cwd=REPO, check=check)
 
 
 def capture(mon: Monitor, frames_dir: Path, fps: float, seconds: float,
             login_at: float | None, auto_login: bool, serial: Path,
-            after_login: float | None) -> list[tuple[float, Path | None]]:
+            after_login: float | None, user: str, password: str,
+            settle: float) -> list[tuple[float, Path | None]]:
     """Dump frames until the time budget runs out. Returns (timestamp, path|None)."""
     interval = 1.0 / fps
+    watch = GreeterWatch()
+
+    def do_login() -> None:
+        # Typed over the monitor connection this recorder already holds. Going
+        # through `vm.sh keys` spawns a container per keystroke, so clearing the
+        # field and typing two words took minutes -- the take ended on an empty
+        # login box while the keys were still being delivered.
+        time.sleep(settle)          # let it finish painting before typing
+        def send(k: str) -> None:
+            mon.cmd(f"sendkey {k}")
+            time.sleep(0.03)
+        for _ in range(24):         # clear whatever username is remembered
+            send("backspace")
+        for ch in user:
+            send(key_for(ch))
+        send("tab")                 # Return here submits; the form wants Tab
+        for ch in password:
+            send(key_for(ch))
+        send("ret")
+        log("login typed")
     t0 = time.monotonic()
     shots: list[tuple[float, Path | None]] = []
     n = 0
@@ -155,12 +278,13 @@ def capture(mon: Monitor, frames_dir: Path, fps: float, seconds: float,
 
         if not logged_in and (
                 (login_at is not None and elapsed >= login_at)
-                or (auto_login and greeter_up(serial))):
+                or (auto_login and greeter_up(serial) and watch.ready_at is not None)):
             log(f"t+{elapsed:.1f}s: greeter is up, typing the login")
-            # Driven through vm.sh so the greeter's own quirks (clearing the
-            # remembered user first) stay in one place.
-            subprocess.Popen([str(VM), "login"], cwd=REPO,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # `vm.sh login` submits the username with Return, which this greeter
+            # reads as "log in" and answers with "Enter a password" while the
+            # password lands nowhere. Its form is two fields: clear the
+            # remembered username, type it, Tab to the password, and submit.
+            threading.Thread(target=do_login, daemon=True).start()
             logged_in = True
             login_t = elapsed
 
@@ -180,6 +304,8 @@ def capture(mon: Monitor, frames_dir: Path, fps: float, seconds: float,
                     break
                 time.sleep(0.005)
             shots.append((elapsed, path if path.exists() else None))
+            if auto_login and not logged_in and path.exists():
+                watch.feed(path, elapsed)
         n += 1
 
         if n % 50 == 0:
@@ -272,6 +398,10 @@ def main() -> int:
                     help="seconds into the boot to type the greeter login")
     ap.add_argument("--login", action="store_true",
                     help="type the login as soon as greetd reports itself up")
+    ap.add_argument("--user", default=os.environ.get("QOS_USER", "tester"))
+    ap.add_argument("--password", default=os.environ.get("QOS_PASS", "quickdesktop"))
+    ap.add_argument("--login-settle", type=float, default=6.0,
+                    help="seconds to let the greeter paint before typing")
     ap.add_argument("--after-login", type=float, default=None,
                     help="stop this many seconds after the login (keeps the clip tight)")
     ap.add_argument("--disk", default=None)
@@ -314,7 +444,8 @@ def main() -> int:
     log(f"recording {args.seconds:.0f}s at {args.fps:g} fps")
     try:
         shots = capture(mon, raw, args.fps, args.seconds, args.login_at,
-                        args.login, run_dir / "serial.log", args.after_login)
+                        args.login, run_dir / "serial.log", args.after_login,
+                        args.user, args.password, args.login_settle)
     finally:
         mon.close()
 
