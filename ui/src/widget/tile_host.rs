@@ -1428,6 +1428,104 @@ mod tests {
         }
     }
 
+    /// Focus is a change to the window's own edge, and it stays inside
+    /// the card's silhouette.
+    ///
+    /// The regression this guards is specific. Focus-ish states used to
+    /// be stroked as sharp-cornered rectangles around the *group's*
+    /// bounding box, a pixel outside a card whose corners are rounded.
+    /// At the corner that produces two lines — a square one and a round
+    /// one — and diagonally outside the arc it paints a saturated pixel
+    /// on bare desktop, which is what made the whole thing read as a
+    /// fence rather than as part of the window.
+    ///
+    /// So: on the flat of the edge the focused window shows the focus
+    /// colour and the unfocused one does not; and diagonally outside the
+    /// rounded corner, where a square fence would have to paint, both
+    /// show untouched desktop. Rendered through `TileHost::draw` — the
+    /// same call the shell makes — on every theme preset, because the
+    /// hardcoded indigo this replaces was correct on exactly one.
+    #[test]
+    fn focus_lights_the_card_s_edge_and_never_squares_off_its_corner() {
+        use crate::offscreen::OffscreenRenderer;
+
+        let (w, h) = (200u32, 200u32);
+        let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
+        // Desktop stand-in. Deliberately a colour no palette contains, so
+        // "still desktop" cannot be confused with "some theme token".
+        let ground = vello::peniko::Color::from_rgb8(0x00, 0xFF, 0x00);
+
+        for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            let name = theme.name.clone();
+            let focus = theme.tokens.colors.border_focus;
+            let (fr, fg, fb) = {
+                let c = focus.to_rgba8();
+                (c.r, c.g, c.b)
+            };
+
+            let mut shot = |focused: bool| {
+                let mut host = TileHost::new(TileContent::Stub {
+                    kind: AppKind::Editor,
+                    label: String::new(),
+                });
+                host.rect = rect;
+                host.set_focused(focused);
+                let mut tr = TextRenderer::new();
+                let mut scene = Scene::new();
+                host.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                let mut renderer = OffscreenRenderer::new(w, h);
+                renderer.render(&scene, ground)
+            };
+
+            let lit = shot(true);
+            let dark = shot(false);
+
+            // Mid-span of the top edge: the band the stroke occupies sits
+            // just outside the card boundary.
+            let (x, y) = (100u32, rect.y0 as u32 - 1);
+            let (lr, lg, lb, _) = OffscreenRenderer::sample(&lit, w, x, y);
+            assert_eq!(
+                (lr, lg, lb),
+                (fr, fg, fb),
+                "{name}: the focused window's edge is not the theme's focus                  colour at ({x},{y}) — got ({lr},{lg},{lb}), expected                  ({fr},{fg},{fb}). Focus has to come from the theme: a baked                  constant is right on one palette and meaningless on the rest",
+            );
+            let (ur, ug, ub, _) = OffscreenRenderer::sample(&dark, w, x, y);
+            assert_ne!(
+                (ur, ug, ub),
+                (fr, fg, fb),
+                "{name}: an unfocused window paints the focus colour on its                  edge at ({x},{y}), so focus distinguishes nothing",
+            );
+
+            // Diagonally outside the rounded corner. The card's radius
+            // is `radii.xl`, so a point two pixels in from the corner of
+            // the bounding box on both axes lies well outside the arc —
+            // exactly where a square fence around the box had to paint.
+            // The window's ambient shadow legitimately darkens this
+            // pixel, so the claim is not "untouched": it is that the
+            // focus colour is not there, and that the desktop still
+            // reads as the desktop rather than as a stroke laid over it.
+            let (cx, cy) = (rect.x0 as u32 - 2, rect.y0 as u32 - 2);
+            for (label, buf) in [("focused", &lit), ("unfocused", &dark)] {
+                let (r, g, b, _) = OffscreenRenderer::sample(buf, w, cx, cy);
+                assert_ne!(
+                    (r, g, b),
+                    (fr, fg, fb),
+                    "{name}: the {label} window painted the focus colour at ({cx},{cy}), outside its own rounded corner on bare desktop. Only a sharp-cornered rectangle drawn around the window reaches that pixel, which is the artefact this replaced",
+                );
+                assert!(
+                    g > r && g > b,
+                    "{name}: the {label} window covered the desktop at ({cx},{cy}) with ({r},{g},{b}). Outside its rounded corner the desktop must still read as the desktop, shadowed at most, never stroked over",
+                );
+            }
+        }
+    }
+
     #[test]
     fn needs_animation_frame_reflects_spawn_anim_state() {
         let mut h = stub_host();
