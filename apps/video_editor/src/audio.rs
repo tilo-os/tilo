@@ -49,6 +49,10 @@ pub struct AudioLayer {
     pub source_time: f64,
     /// Clip volume times the fade envelope, 0..1.
     pub gain: f64,
+    /// Signed playback rate: how many source seconds pass per timeline
+    /// second, negative when the clip is reversed. 1.0 at normal speed, and
+    /// then the mixer reads the source one-for-one.
+    pub rate: f64,
 }
 
 /// Whether `kind` has any soloed track in this project.
@@ -71,12 +75,16 @@ pub fn plan_audio(project: &Project, t: f64) -> Vec<AudioLayer> {
         if !clip.covers(t) {
             continue;
         }
-        let gain = (clip.volume * clip.envelope(t)).clamp(0.0, 1.0);
+        // Volume goes through the animation door, so a keyframed level is
+        // just a different number here.
+        let level = clip.param_at(crate::param::Param::Volume, t);
+        let gain = (level * clip.envelope(t)).clamp(0.0, 1.0);
         out.push(AudioLayer {
             clip: clip.id,
             media: clip.media,
             source_time: crate::preview::source_time_for(clip, t),
             gain,
+            rate: clip.speed.signed(),
         });
     }
     out
@@ -122,11 +130,18 @@ pub fn mix_block(
     // Gains are read at the middle of the block so a ramp is centred on it
     // rather than lagging or leading by a whole block.
     let mid = start + (frames as f64 / SAMPLE_RATE as f64) * 0.5;
-    for layer in plan_audio(project, mid) {
+    for mut layer in plan_audio(project, mid) {
         if layer.gain <= 0.0 {
             continue;
         }
-        let Some(samples) = source.samples(layer.media, layer.source_time, frames) else {
+        // The *gain* belongs at the block's middle; the read position does
+        // not. Planning at the middle and reading there too made every
+        // block start half a block into the source it should have covered
+        // — a constant offset between the sound and the picture.
+        if let Some(clip) = project.clip(layer.clip) {
+            layer.source_time = clip.source_time(start);
+        }
+        let Some(samples) = fetch_at_rate(source, &layer, frames) else {
             continue;
         };
         let g = layer.gain as f32;
@@ -140,6 +155,80 @@ pub fn mix_block(
         *s = s.clamp(-1.0, 1.0);
     }
     out
+}
+
+/// Read `frames` output frames for `layer`, resampling when it does not
+/// play at normal speed.
+///
+/// At rate 1.0 this is the plain read it always was. Otherwise it pulls the
+/// span of source the block covers and resamples it, which changes the
+/// pitch along with the tempo — the tape-speed behaviour, not a
+/// time-stretch. That is deliberate: a pitch-preserving stretch is a real
+/// signal-processing job (overlap-add or a phase vocoder), and shipping a
+/// half-built one that smears transients would be worse than an honest
+/// varispeed the user can hear is a varispeed.
+fn fetch_at_rate(
+    source: &mut dyn PcmSource,
+    layer: &AudioLayer,
+    frames: usize,
+) -> Option<Vec<f32>> {
+    let rate = layer.rate;
+    if (rate - 1.0).abs() < 1e-9 {
+        return source.samples(layer.media, layer.source_time, frames);
+    }
+    if !rate.is_finite() || rate.abs() < 1e-9 || frames == 0 {
+        return None;
+    }
+    let span = frames as f64 * rate.abs();
+    // One extra frame so the last output sample has a right-hand neighbour
+    // to interpolate toward.
+    let need = span.ceil() as usize + 2;
+    // Reversed, the block covers the source *behind* the current position,
+    // so the read starts there and the samples are walked backwards.
+    let from = if rate < 0.0 {
+        (layer.source_time - span / SAMPLE_RATE as f64).max(0.0)
+    } else {
+        layer.source_time
+    };
+    let src = source.samples(layer.media, from, need)?;
+    let have = src.len() / CHANNELS;
+    if have == 0 {
+        return None;
+    }
+    let mut out = vec![0.0f32; frames * CHANNELS];
+    for i in 0..frames {
+        // Where this output frame falls in the source block.
+        //
+        // Reversed, the block covers `(source_time - span, source_time]`,
+        // so its first output frame is the *last sample before* the source
+        // time — not the sample at it, which for a clip whose out-point is
+        // the end of the media is one frame past anything that exists.
+        let pos = if rate < 0.0 {
+            span - ((i as f64 + 1.0) * rate.abs())
+        } else {
+            i as f64 * rate
+        };
+        if pos < 0.0 {
+            continue;
+        }
+        let j = pos.floor() as usize;
+        if j >= have {
+            // Past what the source gave: the rest of the block is silent
+            // rather than a repeat of the last frame.
+            break;
+        }
+        let frac = (pos - j as f64) as f32;
+        for ch in 0..CHANNELS {
+            let a = src[j * CHANNELS + ch];
+            // The window's final sample has no right-hand neighbour to
+            // interpolate toward. Hold it for that one frame rather than
+            // ramping into a zero the source never contained, which would
+            // put a click on the edge of every block that lands there.
+            let b = if j + 1 < have { src[(j + 1) * CHANNELS + ch] } else { a };
+            out[i * CHANNELS + ch] = a + (b - a) * frac;
+        }
+    }
+    Some(out)
 }
 
 /// Interleaved `f32` in -1..1 as little-endian signed 16-bit, which is what
@@ -580,6 +669,185 @@ impl Drop for SystemSink {
 
 #[cfg(test)]
 mod tests {
+
+    /// A source whose samples encode *where they came from*: frame `n` of a
+    /// media is the value `n`. A resampler's output can then be read
+    /// straight back as "which source frames did this block cover", which is
+    /// the only way to check a rate change without hand-waving.
+    struct RampSource {
+        len: usize,
+    }
+
+    impl PcmSource for RampSource {
+        fn samples(&mut self, _media: MediaId, from_secs: f64, frames: usize) -> Option<Vec<f32>> {
+            let start = (from_secs * SAMPLE_RATE as f64).round() as usize;
+            let mut out = Vec::with_capacity(frames * CHANNELS);
+            for i in 0..frames {
+                let n = start + i;
+                if n >= self.len {
+                    break;
+                }
+                // Both channels carry the frame index, normalised by the
+                // source length so the ramp never leaves -1..1 and gets
+                // clamped by the mixer (which would erase the very thing
+                // this source exists to report).
+                let v = n as f32 / self.len as f32;
+                out.push(v);
+                out.push(v);
+            }
+            if out.is_empty() { None } else { Some(out) }
+        }
+    }
+
+    /// A project with one audio clip covering `[0, len)` at `rate`.
+    fn speed_project(rate: f64, reverse: bool, len: f64) -> (Project, MediaId) {
+        let mut p = Project::new("s");
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "a.wav".into(),
+            kind: MediaKind::Audio,
+            duration: len,
+            fps: 0.0,
+            ..Default::default()
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track {
+            id: tid,
+            name: "A1".into(),
+            kind: TrackKind::Audio,
+            index: 1,
+            ..Default::default()
+        });
+        let cid = p.add_clip(tid, mid, 0.0).expect("media exists");
+        let c = p.clip_mut(cid).unwrap();
+        c.out_point = len;
+        c.speed = crate::model::Speed::new(rate, reverse);
+        (p, mid)
+    }
+
+    /// Which source frame a block's first and last output samples came from,
+    /// read back out of the ramp.
+    fn span_of(block: &[f32], len: usize) -> (f64, f64) {
+        let first = block[0] as f64 * len as f64;
+        let last = block[block.len() - CHANNELS] as f64 * len as f64;
+        (first, last)
+    }
+
+    #[test]
+    fn at_normal_speed_a_block_covers_exactly_its_own_frames() {
+        let (p, _) = speed_project(1.0, false, 10.0);
+        let mut src = RampSource { len: 10 * SAMPLE_RATE as usize };
+        let block = mix_block(&p, 0.0, 1000, &mut src);
+        let (a, b) = span_of(&block, src.len);
+        assert!(a.abs() < 1.0, "starts at source frame 0, got {a}");
+        assert!((b - 999.0).abs() < 2.0, "and ends at frame 999, got {b}");
+    }
+
+    #[test]
+    fn doubling_the_rate_covers_twice_as_much_source_in_a_block() {
+        let (p, _) = speed_project(2.0, false, 10.0);
+        let mut src = RampSource { len: 10 * SAMPLE_RATE as usize };
+        let block = mix_block(&p, 0.0, 1000, &mut src);
+        let (a, b) = span_of(&block, src.len);
+        assert!(a.abs() < 2.0, "still starts at the in-point, got {a}");
+        assert!(
+            (b - 1998.0).abs() < 4.0,
+            "a 1000-frame block at 2x reads ~2000 source frames, got {b}",
+        );
+    }
+
+    #[test]
+    fn halving_the_rate_covers_half_as_much() {
+        let (p, _) = speed_project(0.5, false, 10.0);
+        let mut src = RampSource { len: 10 * SAMPLE_RATE as usize };
+        let block = mix_block(&p, 0.0, 1000, &mut src);
+        let (a, b) = span_of(&block, src.len);
+        assert!(a.abs() < 2.0, "starts at the in-point, got {a}");
+        assert!(
+            (b - 499.5).abs() < 4.0,
+            "a 1000-frame block at 0.5x reads ~500 source frames, got {b}",
+        );
+    }
+
+    #[test]
+    fn reversing_walks_the_source_backwards() {
+        let (p, _) = speed_project(1.0, true, 10.0);
+        let mut src = RampSource { len: 10 * SAMPLE_RATE as usize };
+        // A block partway in, so there is source on both sides of it.
+        let block = mix_block(&p, 2.0, 1000, &mut src);
+        let (a, b) = span_of(&block, src.len);
+        assert!(a > b, "a reversed clip's block runs from later source to earlier: {a} → {b}");
+        assert!(
+            (a - b - 999.0).abs() < 6.0,
+            "and covers a block's worth of it: {a} → {b}",
+        );
+        // A reversed clip starts on the source's *out* point.
+        let head = mix_block(&p, 0.0, 64, &mut src);
+        let (h, _) = span_of(&head, src.len);
+        let end = 10.0 * SAMPLE_RATE as f64;
+        assert!(
+            (h - end).abs() < 200.0,
+            "the first timeline frame of a reversed clip is the source's last, got {h}",
+        );
+    }
+
+    #[test]
+    fn resampling_interpolates_rather_than_dropping_to_silence() {
+        // A slow clip has to invent samples between source frames. Those
+        // must lie between their neighbours — a resampler that returned
+        // zeroes would show up as a block full of holes.
+        let (p, _) = speed_project(0.25, false, 10.0);
+        let mut src = RampSource { len: 10 * SAMPLE_RATE as usize };
+        let block = mix_block(&p, 0.0, 400, &mut src);
+        assert!(
+            block.iter().all(|s| s.is_finite()),
+            "no NaNs or infinities out of the resampler",
+        );
+        // The ramp must be monotonic: every sample at least as large as the
+        // one before it.
+        let mono = block
+            .chunks(CHANNELS)
+            .zip(block.chunks(CHANNELS).skip(1))
+            .all(|(a, b)| b[0] >= a[0] - 1e-6);
+        assert!(mono, "a slowed ramp is still a ramp, not a staircase with gaps");
+        let zeros = block.iter().filter(|s| **s == 0.0).count();
+        assert!(zeros < 8, "a slowed block is not mostly silence, got {zeros} zero samples");
+    }
+
+    #[test]
+    fn a_speed_change_moves_where_a_later_block_reads_from() {
+        // The whole point: the same timeline instant reads different source
+        // depending on the rate.
+        let mut src = RampSource { len: 60 * SAMPLE_RATE as usize };
+        let (slow, _) = speed_project(1.0, false, 30.0);
+        let (fast, _) = speed_project(3.0, false, 30.0);
+        let n = src.len;
+        let (a, _) = span_of(&mix_block(&slow, 4.0, 256, &mut src), n);
+        let (b, _) = span_of(&mix_block(&fast, 4.0, 256, &mut src), n);
+        assert!(
+            (b - a * 3.0).abs() < a * 0.02,
+            "at 3x, four timeline seconds in is twelve source seconds in: {a} vs {b}",
+        );
+    }
+
+    #[test]
+    fn a_keyframed_volume_is_heard_as_a_ramp() {
+        let (mut p, _) = speed_project(1.0, false, 10.0);
+        let cid = p.clips[0].id;
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.set_key_at(crate::param::Param::Volume, 0.0, 0.0, crate::param::Interp::Linear);
+            c.set_key_at(crate::param::Param::Volume, 8.0, 1.0, crate::param::Interp::Linear);
+        }
+        let plan = |t: f64| plan_audio(&p, t)[0].gain;
+        let early = plan(1.0);
+        let mid = plan(4.0);
+        let late = plan(7.0);
+        assert!(early < mid && mid < late, "the curve rises: {early} {mid} {late}");
+        assert!((mid - 0.5).abs() < 0.02, "and is linear through the middle: {mid}");
+    }
+
     use super::*;
     use crate::model::{MediaItem, MediaKind, Track, TrackKind};
     use uuid::Uuid;
