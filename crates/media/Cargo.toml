@@ -12,6 +12,13 @@ default = []
 # and no media pipeline; the synthesized-frame fallback keeps those green.
 # Enable on a host that has the gstreamer stack: `--features decode`.
 decode = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
+# Lets `encode` consult the real GStreamer registry when picking an encoder.
+# The preference order and the bitrate-unit table in `encode` are pure and
+# always compiled; this feature is only what allows the crate to *look* at
+# which elements are installed, rather than assume. A consumer that encodes
+# (the video editor's export) turns it on; one that only decodes does not need
+# it, and `decode` already links gstreamer so both together add nothing.
+encode = ["dep:gstreamer"]
 
 [dependencies]
 # Transport CRDT. A tiny automerge document carries follow-the-host playback
