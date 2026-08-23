@@ -65,8 +65,12 @@ pub struct ReaderHudStyle {
     pub surface: Color,
     /// The bar's hairline border.
     pub border: Color,
-    /// Drop-shadow colour (already alpha-premultiplied by the caller if needed).
-    pub shadow: Color,
+    /// The elevation this HUD floats at. A token rather than a colour:
+    /// the strength, the offset and the blur are one decision, and a
+    /// caller handed only a colour has no choice but to invent the other
+    /// two — which is how this came to paint a hard-edged dark copy of
+    /// the pill peeking out from under it.
+    pub elevation: crate::tokens::Shadow,
     /// Primary label ink.
     pub text: Color,
     /// Fill under a hovered control.
@@ -158,8 +162,11 @@ impl SelectionHud {
 
         // ---- body -----------------------------------------------------------
         let radius = HEIGHT / 2.0;
-        let shadow = Rect::new(rect.x0 - 1.0, rect.y0 + 3.0, rect.x1 + 1.0, rect.y1 + 5.0);
-        fill_round(scene, transform, shadow, radius, style.shadow);
+        // Shared painter, so the HUD is lifted by the same material as
+        // every other surface. This was a single hard-edged rounded rect
+        // nudged down a few px — a dark copy of the pill peeking out from
+        // under it, not a shadow.
+        crate::surface::shadow(scene, transform, rect, radius, &style.elevation);
         fill_round(scene, transform, rect, radius, style.surface);
         stroke_round(scene, transform, rect, radius, style.border, 1.0);
 
@@ -374,7 +381,7 @@ mod tests {
         ReaderHudStyle {
             surface: c,
             border: c,
-            shadow: c,
+            elevation: crate::theme::Theme::dark().tokens.elevation.e2,
             text: c,
             hover: c,
             pill: c,
