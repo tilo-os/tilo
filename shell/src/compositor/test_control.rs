@@ -1756,6 +1756,7 @@ mod tests {
             let params: &[crate::shell::search::action_api::ActionParam] = match (provider, id) {
                 ("shell.actions", "settings.open") => &[],
                 ("shell.actions", "text.insert") => MOCK_INSERT_PARAMS,
+                ("shell.actions", "rate.set") => MOCK_RATE_PARAMS,
                 _ => {
                     return Err(ActionRefusal::unknown(format!(
                         "no visible action addressed by ({provider}, {id})"
@@ -1783,6 +1784,19 @@ mod tests {
             "at",
             crate::shell::search::action_api::ParamType::Integer,
             "character offset",
+        ),
+    ];
+
+    /// A parameter whose values are genuinely fractional. Rates, opacities
+    /// and volumes are the bulk of what an app's actions take, and rounding
+    /// one to an integer discards the value it exists to carry — so the
+    /// shared vocabulary has a `number` type, and the socket has to be able
+    /// to carry it.
+    const MOCK_RATE_PARAMS: &[crate::shell::search::action_api::ActionParam] = &[
+        crate::shell::search::action_api::ActionParam::required(
+            "rate",
+            crate::shell::search::action_api::ParamType::Number,
+            "playback rate",
         ),
     ];
 
@@ -1941,20 +1955,96 @@ mod tests {
 
     /// A JSON shape no parameter type can hold is refused by name
     /// rather than coerced into one that nearly fits.
+    ///
+    /// "By name" is asserted, not just described. A caller that cannot see
+    /// the screen has only the message to correct against, so a refusal
+    /// that dropped the parameter name would satisfy a code-only check
+    /// while leaving that caller with nowhere to look.
     #[test]
     fn a_json_shape_with_no_parameter_type_is_refused() {
-        for bad in [
-            serde_json::json!({"text": null}),
-            serde_json::json!({"text": ["a"]}),
-            serde_json::json!({"text": "ok", "at": 1.5}),
+        for (bad, at_fault) in [
+            (serde_json::json!({"text": null}), "text"),
+            (serde_json::json!({"text": ["a"]}), "text"),
+            (serde_json::json!({"text": {"a": 1}}), "text"),
+            (serde_json::json!({"text": "ok", "at": 1.5}), "at"),
         ] {
             let (resp, actions) = dispatch_command(&invoke_with("text.insert", bad), &ActionState);
             assert!(actions.is_empty(), "got {actions:?}");
-            let Response::Err { code, .. } = resp else {
+            let Response::Err { code, message } = resp else {
                 panic!("expected Response::Err, got {resp:?}");
             };
             assert_eq!(code, "invalid_arguments");
+            assert!(
+                message.contains(at_fault),
+                "the refusal must name the parameter at fault ({at_fault}), got {message:?}"
+            );
         }
+    }
+
+    /// The integer→number widening is one-way, and that has to hold at the
+    /// socket rather than only in the binder.
+    ///
+    /// JSON has a single numeric type and spells `1.0` as `1`, so a `number`
+    /// parameter must accept a whole number. Making that symmetric would be
+    /// the obvious "fix" for the refusal below — and would turn `{"at": 1.5}`
+    /// into a silent character offset of 1, which is precisely the
+    /// guessed-intent failure this surface exists to remove.
+    #[test]
+    fn a_fractional_argument_is_refused_for_an_integer_parameter() {
+        let (resp, actions) = dispatch_command(
+            &invoke_with("text.insert", serde_json::json!({"text": "ok", "at": 1.5})),
+            &ActionState,
+        );
+        assert!(
+            actions.is_empty(),
+            "a refused invocation must plan nothing; got {actions:?}"
+        );
+        let Response::Err { code, message } = resp else {
+            panic!("expected Response::Err, got {resp:?}");
+        };
+        assert_eq!(code, "invalid_arguments");
+        assert!(
+            message.contains("at") && message.contains("integer"),
+            "the refusal must say which parameter wanted what, got {message:?}"
+        );
+    }
+
+    /// A `number` parameter carries its fractional value intact all the way
+    /// to the planned invocation.
+    ///
+    /// This is the half of the shared vocabulary the compositor did not have
+    /// before: the transport used to refuse every non-integral number ahead
+    /// of binding, so an action declaring `number` could not have been
+    /// invoked over this socket at all. Asserting the value — not merely an
+    /// `ok` — is what distinguishes "it was carried" from "it was rounded".
+    #[test]
+    fn a_number_parameter_carries_a_fractional_argument_over_the_wire() {
+        let (resp, actions) = dispatch_command(
+            &invoke_with("rate.set", serde_json::json!({"rate": 0.5})),
+            &ActionState,
+        );
+        assert!(matches!(resp, Response::Answer(_)), "got {resp:?}");
+        let [PlannedAction::InvokeAction { args, .. }] = actions.as_slice() else {
+            panic!("expected exactly one planned invocation, got {actions:?}");
+        };
+        assert_eq!(
+            args["rate"].as_f64(),
+            Some(0.5),
+            "the fractional rate must reach the invocation unrounded"
+        );
+    }
+
+    /// …and a whole number satisfies a `number` parameter, because JSON has
+    /// no way to spell `1.0` differently from `1`. Refusing it would make a
+    /// perfectly ordinary rate of `1` un-passable over the wire.
+    #[test]
+    fn a_whole_number_satisfies_a_number_parameter() {
+        let (resp, actions) = dispatch_command(
+            &invoke_with("rate.set", serde_json::json!({"rate": 1})),
+            &ActionState,
+        );
+        assert!(matches!(resp, Response::Answer(_)), "got {resp:?}");
+        assert_eq!(actions.len(), 1, "got {actions:?}");
     }
 
     /// Arguments are checked against the action the *address* resolves
