@@ -30,13 +30,22 @@ use crate::shell::state::WorkspaceTree;
 
 pub const TOPBAR_HEIGHT_PX: f32 = 40.0;
 
-/// Concept §1.1 top-bar backdrop is `bg-black/80 backdrop-blur-xl`. Until the
-/// pinned Vello supports `push_blur_layer`, we honour just the alpha split
-/// (gap #3 in `docs/nirios/visual-gaps.md`): the top-bar surface is tinted
-/// at 0.80 over whatever sits beneath it. The `surfaces.overlay` token in
-/// `ui::tokens::colors` is defined as `rgba8(0, 0, 0, 204)` —
-/// `204 / 255 ≈ 0.8` — so this constant is the single source of truth the
-/// `shell_chrome_test` suite pins the token against.
+/// Opacity of the top-bar surface: the toolkit's shared chrome opacity, so
+/// the bar cannot drift away from the popovers that hang off it.
+///
+/// The concept's §1.1 backdrop is `bg-black/80 backdrop-blur-xl`, and this
+/// used to honour "just the alpha split" on the grounds that vello has no
+/// backdrop filter. A tint without its blur is not glass, though — it is a
+/// contrast loss that tracks whatever is open behind the surface — so
+/// chrome is opaque and the depth comes from the surface's own ground and
+/// edge. See `ui::chrome::shell::CHROME_SURFACE_ALPHA`.
+///
+/// Note that [`TopBarChrome::draw`] fills `surfaces.overlay` directly and
+/// never consults this constant, so the bar is currently painting the
+/// declared tier raw rather than resolving `ChromeRole::Bar`. That is why
+/// the dark bar is darker than the desktop while a panel is lighter — the
+/// two are not, in fact, one material on screen yet, whatever
+/// `bar_and_panel_share_one_material` proves about the roles themselves.
 pub const TOP_BAR_SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
 
 /// Weight of the SystemMonitor sparkline fill. Low enough that the bars
@@ -656,11 +665,9 @@ impl TopBarChrome {
         self.overview_btn_rect
     }
 
-    /// Translucent-tint fallback alpha for the top-bar surface. Concept
-    /// §1.1 uses `bg-black/80 backdrop-blur-xl`; without the `backdrop-blur`
-    /// primitive we at least honour the /80 alpha split (visual-gap #3 in
-    /// `docs/nirios/visual-gaps.md`). Pinned so a future regression that
-    /// reverts the topbar to an opaque fill fails the chrome-test suite.
+    /// Opacity of the top-bar surface. See [`TOP_BAR_SURFACE_ALPHA`];
+    /// pinned by `shell_chrome_test` so the bar cannot drift away from the
+    /// chrome constant the popovers share.
     pub fn top_bar_alpha() -> f32 {
         TOP_BAR_SURFACE_ALPHA
     }

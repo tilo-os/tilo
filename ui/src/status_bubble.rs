@@ -157,16 +157,13 @@ pub fn draw_pill(
 ) {
     let radius = rect.height() / 2.0;
 
-    // Soft drop shadow (two stacked translucent copies, tinted from the
-    // elevation token so it tracks the theme), matching the tooltip chip.
-    let elev = &theme.tokens.elevation.e2;
-    let base = elev.color;
-    for (inflate, dy, scale) in [(3.0_f64, 5.0_f64, 0.5_f32), (1.0, 2.0, 1.0)] {
-        let a = (base.a() as f32 * scale).round() as u8;
-        let col = Color::from_rgba8(base.r(), base.g(), base.b(), a);
-        let sr = Rect::new(rect.x0 - inflate, rect.y0 - inflate + dy, rect.x1 + inflate, rect.y1 + inflate + dy);
-        scene.fill(vello::peniko::Fill::NonZero, transform, col, None, &RoundedRect::from_rect(sr, radius + inflate));
-    }
+    // Drop shadow through the shared painter, so the pill is lifted by
+    // the same material as every other surface. This was two stacked
+    // hard-edged rounded rects with their own inflates and offsets —
+    // "soft" in the comment only; a stack of two solid copies has two
+    // visible steps in it, and neither the offsets nor the strength came
+    // from the token it claimed to be tinted from.
+    crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e2);
 
     let shape = RoundedRect::from_rect(rect, radius);
     scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.surfaces.overlay, None, &shape);
