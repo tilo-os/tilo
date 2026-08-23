@@ -1035,12 +1035,23 @@ mod tests {
 
         let action = set_paragraph_style_action(vec![block.clone()], "heading", Some(1), None);
         dispatch(&mut state.doc, &action);
-        state.record_committed_action(before_heads.clone(), None, None);
+        // Record it the way the host does: attributed to the local user.
+        // Undo is author-scoped, so an anonymous entry is one this user's own
+        // Ctrl+Z steps straight past - reverting an older action instead.
+        let local_author = ui::collaboration::local_user_id();
+        state.record_committed_action_authored(
+            before_heads.clone(),
+            None,
+            None,
+            Some(local_author.clone()),
+        );
 
         assert_eq!(kind_of(&state.doc).as_deref(), Some("heading"), "the action made it a heading");
         assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
 
-        state.undo(None, None).expect("an undo entry to pop");
+        state
+            .undo_as(Some(&local_author), None, None)
+            .expect("an undo entry to pop");
         assert_eq!(
             kind_of(&state.doc).as_deref(),
             Some("paragraph"),

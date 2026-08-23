@@ -341,7 +341,16 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads.clone(), None, None);
+        // Record it the way the host does: attributed to the local user.
+        // Undo is author-scoped, so an anonymous entry is one this user's own
+        // Ctrl+Z steps straight past - reverting an older action instead.
+        let local_author = ui::collaboration::local_user_id();
+        state.record_committed_action_authored(
+            before_heads.clone(),
+            None,
+            None,
+            Some(local_author.clone()),
+        );
 
         assert_eq!(
             HexDoc::read_bytes(&state.doc).unwrap(),
@@ -350,7 +359,9 @@ mod tests {
         );
         assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
 
-        state.undo(None, None).expect("an undo entry to pop");
+        state
+            .undo_as(Some(&local_author), None, None)
+            .expect("an undo entry to pop");
         assert_eq!(
             HexDoc::read_bytes(&state.doc).unwrap(),
             vec![0x00, 0x11, 0x22, 0x33],
