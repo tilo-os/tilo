@@ -4,6 +4,8 @@
 //! Layers:
 //!   * [`model`]   — pure data + editing math (split / trim / move / ripple /
 //!                   snap / paste, filters + fades), tested.
+//!   * [`curve`]   — tone curves, baked to the 256-entry lookup table the
+//!                   compositor reads; the fine half of the colour grade.
 //!   * [`media`]   — the FUSE-media seam: clips reference workspace paths
 //!                   (`/var/workspace/…`); bytes hydrate on demand.
 //!   * [`doc`]     — Automerge projection of the project (the collaborative,
@@ -29,6 +31,7 @@
 pub mod actions;
 pub mod audio;
 pub mod app;
+pub mod curve;
 pub mod doc;
 pub mod export;
 pub mod gpu;

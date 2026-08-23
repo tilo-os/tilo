@@ -75,6 +75,18 @@ impl Rgb {
     pub fn with_effects(self, effects: &[ClipEffect]) -> Rgb {
         effects.iter().fold(self, apply_effect)
     }
+
+    /// Push the colour through a clip's tone curve — the same table the
+    /// shader looks up, evaluated directly. Sits between the grade and the
+    /// effect stack, exactly where the compositor puts it, so this
+    /// representative colour and the composited frame agree about order.
+    pub fn with_curve(self, curve: &crate::curve::Curve) -> Rgb {
+        if curve.is_identity() {
+            return self;
+        }
+        let (r, g, b) = curve.apply(self.r, self.g, self.b);
+        Rgb::new(r, g, b)
+    }
 }
 
 /// Blend `a` toward `b` by `t` (0..1).
@@ -145,7 +157,10 @@ pub fn composite(project: &Project, playhead: f64) -> CompositedFrame {
     let Some(clip) = project.top_video_clip_at(playhead) else {
         return CompositedFrame::Empty;
     };
-    let base = palette_rgb(clip.palette).graded(&clip.filters).with_effects(&clip.effects);
+    let base = palette_rgb(clip.palette)
+        .graded(&clip.filters)
+        .with_curve(&clip.curves_at(playhead))
+        .with_effects(&clip.effects);
     let envelope = clip.envelope(playhead) * clip.opacity;
     let flash = transition_flash(clip, playhead);
     CompositedFrame::Clip {
@@ -475,6 +490,10 @@ pub struct Layer {
     /// texture resolves (hermetic `--shots`, un-hydrated bytes).
     pub palette: u8,
     pub filters: Filters,
+    /// The tone curve, sampled at this instant. Baked into a lookup table
+    /// by the compositor; identity on a clip nobody has graded, which is
+    /// what lets that clip take no lookup at all.
+    pub curve: crate::curve::Curve,
     pub effects: Vec<ClipEffect>,
     /// Uniform coverage in 0..1: fade envelope × clip opacity ×
     /// transition weight.
@@ -541,6 +560,7 @@ fn layer_at(
         source_time,
         palette: clip.palette,
         filters: clip.filters_at(at),
+        curve: clip.curves_at(at),
         effects: clip.effects_at(at),
         alpha: alpha.clamp(0.0, 1.0),
         wipe,
