@@ -478,9 +478,16 @@ incremental = false
 # thin binaries stay as small + fast as the static ones. This profile is
 # how `runtime-dylib` and the thin apps that link it are compiled:
 #
-#   cargo build --profile thin-app -p runtime-dylib          # the .so
-#   RUSTFLAGS='-C prefer-dynamic' \
-#     cargo build --profile thin-app -p <app> --features thin
+#   cargo rustc --profile thin-app -p runtime-dylib -- -C prefer-dynamic
+#   cargo rustc --profile thin-app -p <app> --features thin \
+#     --bin <bin> -- -C prefer-dynamic
+#
+# Pass the flag after `--`, never as RUSTFLAGS. The environment variable
+# REPLACES `build.rustflags` from .cargo/config.toml rather than adding
+# to it, so `RUSTFLAGS='-C prefer-dynamic'` silently drops
+# target-cpu=x86-64-v3 and every link-time hardening flag -- full RELRO,
+# BIND_NOW, noexecstack and the GNU_PROPERTY shadow-stack mark. The `--`
+# form is additive and keeps them.
 #
 # It is opt-in: nothing builds under it unless `--profile thin-app` is
 # passed, so the default `panic = "abort"` release path is untouched.
