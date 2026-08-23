@@ -693,7 +693,7 @@ enum FilterField {
 /// One-shot capture scenarios selected by the `--shots` entry points. Each
 /// deterministically arranges editor state so a single offscreen frame shows
 /// a specific feature (filters, a fresh split). `None` is the live editor.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ShotScenario {
     /// Default: the live editor with its auto-selected clip.
     Live,

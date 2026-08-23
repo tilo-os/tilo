@@ -34,17 +34,25 @@
 pub mod action;
 pub mod envelope;
 pub mod executor;
+pub mod params;
 pub mod registry;
 pub mod resource;
+pub mod wire;
 
 pub use action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
 pub use envelope::ActionEnvelope;
 pub use executor::{
     apply_local, dispatch, replay, ActionTransport, Dispatched, HostDecision, LocalTransport,
 };
+pub use params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 pub use registry::ActionRegistry;
 pub use resource::{
-    flatten, ActionInput, ActionSpec, FlatAction, Resource, ResourceId, ResourceProvider, KEY_SEP,
+    flatten, ActionInput, ActionSpec, ArgsBuilder, FlatAction, Resource, ResourceId,
+    ResourceProvider, KEY_SEP, PROMPTED_PARAM,
+};
+pub use wire::{
+    build_from_flat, build_from_json, project, project_flat, read_message, resolve, FlatSpec,
+    InvokeError, IoTransport, SerializableResource, SerializableSpec, WireMessage,
 };
 
 #[cfg(test)]
