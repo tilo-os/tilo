@@ -1173,6 +1173,7 @@ pub fn catalogue() -> Vec<Scenario> {
         narrow_groups_side_by_side(),
         tab_pill_reveal(),
         tab_pill_reveal_narrow(),
+        tab_pill_states(),
         new_tab_from_the_plus_chip(),
         status_tray_states(),
         media_key_osd(),
@@ -1518,6 +1519,52 @@ const REVEAL_SAMPLES: &[u64] = &[0, 20, 40, 60, 90, 130, 180];
 /// which is the property that keeps the pointer's target under the
 /// pointer. Sampling the curve rather than only its endpoints is the
 /// only way to see that in a capture.
+/// The three tab states side by side in one row — the comparison a
+/// reader actually makes.
+///
+/// A tab row's whole job is to say which tab you are looking at, so the
+/// states have to separate at a glance rather than under a colour picker.
+/// Captured together in one frame because that is how they are seen: an
+/// active pill that reads well against a black backdrop and badly against
+/// its own idle neighbours has still failed. The boot group hands us four
+/// tabs, so activating the third and parking the pointer over the fourth
+/// puts idle, active and hover in the same row with no synthetic state.
+fn tab_pill_states() -> Scenario {
+    Scenario {
+        name: "tab_pill_states",
+        description: "One tab row carrying all three pill states at once: two \
+                      idle, one active, one hovered.",
+        actions: vec![
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::Relayout,
+            // Activate the third tab, then let the lift settle.
+            Action::ClickNamed("tab:Terminal"),
+            Action::Relayout,
+            Action::Wait(24),
+            // Pointer off the bar: active against three idle pills, with
+            // no hover anywhere to blur the comparison.
+            Action::MoveCursor(Point::new(800.0, 500.0)),
+            Action::Relayout,
+            Action::Wait(24),
+            Action::Snapshot("01-active-vs-idle"),
+            // Now hover the fourth pill so all three tiers are in frame.
+            //
+            // The `Relayout` has to come *before* the wait, not after it.
+            // A pill's reveal curve is latched during layout and then read
+            // off wall-clock elapsed, so relayouting last starts the
+            // animation at the instant of capture and photographs the
+            // hovered pill at zero — no body, no chips, only the brighter
+            // title. Which is a picture of the frame the pointer arrived
+            // on, not of a hovered tab.
+            Action::MoveCursorNamed("tab:Document"),
+            Action::Relayout,
+            Action::Wait(24),
+            Action::Snapshot("02-three-states"),
+        ],
+    }
+}
+
 fn tab_pill_reveal() -> Scenario {
     Scenario {
         name: "tab_pill_reveal",
