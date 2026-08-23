@@ -2032,7 +2032,8 @@ def focus_leftmost_group(s: Session) -> None:
          f"back and both windows are in frame")
 
 
-def focus_app_group(s: Session, app_id: str) -> bool:
+def focus_app_group(s: Session, app_id: str,
+                    prefer: dict | None = None) -> bool:
     """Scroll the strip to the group holding `app_id`, and say whether it
     worked.
 
@@ -2047,12 +2048,22 @@ def focus_app_group(s: Session, app_id: str) -> bool:
     a click in the body reaches the client and selects whatever is under
     it.
     """
-    tiles = [t for t in painted_tiles(s).values() if t["app_id"] == app_id]
+    laid = painted_tiles(s)
+    tiles = [t for sid, t in sorted(laid.items()) if t["app_id"] == app_id]
     if not tiles:
         note(f"{s.name}: nothing on screen is {app_id}, so the strip is "
              f"left where it is")
         return False
-    x, y, w, _h = tiles[0]["rect"]
+    # By the end of the film two windows on this screen announce the same
+    # app id — the session's own, and the peer's, replicated in. They are
+    # showing the same document, so either would do; `prefer` names the
+    # one the beat has been talking about, so the shot is of the window
+    # the audience watched arrive.
+    want = (prefer or {}).get("surface_id")
+    chosen = next((laid[int(want)] for _ in (0,)
+                   if want is not None and int(want) in laid
+                   and laid[int(want)]["app_id"] == app_id), tiles[0])
+    x, y, w, _h = chosen["rect"]
     py = y - 18.0
     if py < TOPBAR_H:
         # One window filling the strip wears no pill, and 18px above it is
@@ -3464,7 +3475,7 @@ def beat_five(ada: Session, registry, shots: str) -> dict | None:
 
 
 def beat_six(ada: Session, bob: Session, baseline: dict,
-             shots: str) -> str | None:
+             opened: list[str], shots: str) -> str | None:
     banner("6.  bob's screen — the window, and what ada wrote in it")
 
     # Both halves of the rule get asserted, because either alone is easy
@@ -3487,10 +3498,17 @@ def beat_six(ada: Session, bob: Session, baseline: dict,
     # rather than two beats apart.
     before_view = baseline["view"]
     before_groups = baseline["groups"]
-    q_tabs = set(ada.tabs_here())
-    fresh = [t for t in q_tabs if t not in baseline["tabs"]]
-    note(f"ada holds {len(q_tabs)} tab(s); bob holds "
-         f"{len(bob.tabs_here())}; {len(fresh)} opened since the baseline")
+    # Handed in, not diffed here. Since this beat moved after beat 7 there
+    # is a second word processor in the room — the one bob opened on his
+    # own machine — and a tab that is new since the baseline could be
+    # either. Watching *his own* tab arrive in his own tree is a claim
+    # that cannot fail, printed under a heading about replication. What is
+    # watched is the tab ada's machine opened, identified before
+    # bob opened anything.
+    fresh = list(opened)
+    note(f"ada holds {len(ada.tabs_here())} tab(s); bob holds "
+         f"{len(bob.tabs_here())}; the tab under test is the one his "
+         f"machine opened in beat 5, taken before bob opened his own")
 
     # Keep this beat on one of qOS's own apps. Those replicate through
     # the room document and are drawn from it on the far side, which is
@@ -4250,7 +4268,7 @@ def beat_nine(ada: Session, bob: Session, agent: Session,
     # manager showing an empty folder, under a caption about a document
     # two other participants had just written into.
     frame_both_windows(ada, VIEWPORT)
-    focus_app_group(ada, WORD_PROCESSOR)
+    focus_app_group(ada, WORD_PROCESSOR, prefer=ada_wp)
     read_hold(READ_HOLD_S * 2)
     ada.snapshot(os.path.join(shots, "12-agent-table.png"))
     bob.snapshot(os.path.join(shots, "12b-bob-agent-table.png"))
@@ -4265,20 +4283,29 @@ def run(ada: Session, bob: Session, agent: Session, shots: str,
     rather than inside the beats, so the shape of the film is one
     readable page instead of nineteen scattered decisions.
 
-    The shape is: ada, once to bob to watch him let himself in,
-    back to ada for the length of the story, and once to bob at the
-    end for what turned up on his screen while he was not touching it.
-    Three cuts. The previous cut had eleven, and a stranger watching it
-    spent most of them working out whose machine they were on instead of
-    watching what was happening on it.
+    The shape is one excursion: ada's screen for the length of the
+    story, out to bob once at the moment his machine is holding
+    something worth crossing for — a window he never opened, carrying a
+    sentence he never typed — and back. Two cuts. The previous version
+    had eleven, and a stranger watching it spent most of them working out
+    whose machine they were on instead of watching what happened on it.
+
+    The other two participants are visible *through* ada's screen
+    rather than by going to theirs: bob arrives as a row in a roster
+    and a cursor on the backdrop, and the agent as a chip in that same
+    roster and then an edit landing in the document on camera. Which is
+    also what collaboration software looks like when it works — you stay
+    on your own screen.
 
     The beats that are run but not filmed are not filler — they are the
     proof for claims the film makes elsewhere, or beats good enough to
     deserve their own minute rather than fifteen seconds of this one.
     """
     host_ws, files = beat_one(ada, shots)
-    # Beat 2 carries the only cut in the first half of the film: ada
-    # raises the invitation, and bob redeems it on his own machine.
+    # ada raises the invitation on camera, at length, because it is
+    # the gesture the whole collaboration story hangs off. bob redeeming
+    # it is a person pasting a string into a dialog, and happens off
+    # camera inside the beat.
     beat_two(ada, bob, host_ws, shots)
     with off_camera("the agent's invitation — the same card, a different "
                     "name on it — and the permission check that follows, "
@@ -4306,8 +4333,15 @@ def run(ada: Session, bob: Session, agent: Session, shots: str,
     #
     # Beat 7 opens the excursion at its own last step; beat 6 runs inside
     # it and closes it with that shot. Beat 9 cuts back.
+    #
+    # Which tab beat 5 opened, read now — before beat 7 puts a second
+    # word processor in the room and makes "new since the baseline"
+    # ambiguous. Beat 6 is asked about this one specifically.
+    opened = [t for t in ada.tabs_here() if t not in baseline["tabs"]]
+    note(f"beat 5 opened {len(opened)} tab(s) on ada's machine: "
+         f"{opened or 'none'}")
     beat_seven(ada, bob, host_ws, wp, shots)
-    beat_six(ada, bob, baseline, shots)
+    beat_six(ada, bob, baseline, opened, shots)
     with off_camera("the photograph dragged between two sandboxes: the "
                     "longest beat here, and not one of the things this "
                     "cut is arguing"):
