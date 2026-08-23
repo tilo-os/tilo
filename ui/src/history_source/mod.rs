@@ -155,6 +155,15 @@ impl HistorySource {
 
         let mut out = Vec::with_capacity(versions.len() - start);
         for v in versions.iter().skip(start) {
+            // The schema genesis is a change in the graph that no person wrote —
+            // every document in the world carries the same one. It is a point on
+            // the timeline you can travel to, but it is not a revision, and a row
+            // for it credits an author who does not exist. The snapshot still
+            // advances so the next row is a delta from it and not from nothing.
+            if qdoc::history::is_schema_genesis(v) {
+                prev_snapshot = qdoc::history::materialize_at(doc, v.index).ok();
+                continue;
+            }
             let cur_snapshot = qdoc::history::materialize_at(doc, v.index).ok();
             let before = heads
                 .get(&v.index.wrapping_sub(1))
