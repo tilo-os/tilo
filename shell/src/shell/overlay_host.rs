@@ -202,6 +202,9 @@ pub struct ShellOverlayHost {
     /// only on Released so a fast drag doesn't spawn a subprocess per
     /// pixel of motion.
     qs_slider_drag: Option<usize>,
+    /// When the workspace invite link was last copied, so the button can
+    /// confirm it happened.
+    ws_invite_copied_at: Option<Instant>,
     /// Ribbon segment under the pointer, if any. Paint-only.
     strip_ribbon_hover: Option<usize>,
     /// Off-thread reader for the OS state quick settings displays.
@@ -933,6 +936,7 @@ impl ShellOverlayHost {
             qs_transition: ui::Transition::closed(),
             qs_was_open: false,
             qs_slider_drag: None,
+            ws_invite_copied_at: None,
             strip_ribbon_hover: None,
             qs_refresh: crate::shell::qs_refresh::QsRefresh::new(),
             ws_settings_was_open: false,
@@ -977,6 +981,9 @@ impl ShellOverlayHost {
         actions: Box<dyn crate::shell::qs_actions::QsActions>,
     ) -> Self {
         self.qs_actions = actions;
+        // Replacing where quick settings writes means this host is not
+        // driving the real machine, so it must not read from it either.
+        self.qs_refresh.disable_os_reads();
         self
     }
 
@@ -4193,6 +4200,30 @@ impl ShellOverlayHost {
         self.strip_ribbon()
     }
 
+    /// The workspace-settings "Copy" button next to the invite link.
+    ///
+    /// Shared by the draw pass and the click router. It previously
+    /// existed only inside the draw pass, was never registered as a hit
+    /// rect, and never called the clipboard — a painted rectangle that
+    /// looked like the primary action of the whole tab and did nothing
+    /// when pressed.
+    fn ws_settings_copy_rect(&self) -> Rect {
+        let rect = self.ws_settings_rect();
+        // Mirrors the draw pass: body_y = rect.y0 + 168, invite_y = body_y + 80.
+        let invite_y = rect.y0 + 168.0 + 80.0;
+        Rect::new(rect.x1 - 24.0 - 72.0, invite_y + 20.0, rect.x1 - 24.0, invite_y + 52.0)
+    }
+
+    /// Copy-button geometry for integration tests.
+    pub fn ws_settings_copy_rect_for_tests(&self) -> Rect {
+        self.ws_settings_copy_rect()
+    }
+
+    /// When the invite link was last copied, for integration tests.
+    pub fn ws_invite_copied_at_for_tests(&self) -> Option<Instant> {
+        self.ws_invite_copied_at
+    }
+
     /// Public alias for [`Self::quick_settings_rect`] so integration
     /// tests can compute drill-in row coordinates without duplicating
     /// the popover-rect math.
@@ -7012,6 +7043,36 @@ impl Widget for ShellOverlayHost {
                             return;
                         }
                     }
+                    // Copy the workspace invite link. The button was
+                    // painted but never routed, so the most prominent
+                    // control on the General tab did nothing at all when
+                    // pressed.
+                    let on_general = self
+                        .chrome
+                        .as_ref()
+                        .is_some_and(|c| matches!(c.borrow().ws_settings_tab, WsTab::General));
+                    if on_general && self.ws_settings_copy_rect().contains(p)
+                    {
+                        let link = self
+                            .chrome
+                            .as_ref()
+                            .and_then(|c| {
+                                c.borrow()
+                                    .tree()
+                                    .active_workspace()
+                                    .map(crate::shell::workspace_settings::invite_link)
+                            })
+                            .unwrap_or_default();
+                        if !link.is_empty() {
+                            ui::text_selection::clipboard_copy(&link);
+                            self.ws_invite_copied_at = Some(Instant::now());
+                            if let Some(chrome) = self.chrome.clone() {
+                                chrome.borrow_mut().bump();
+                            }
+                        }
+                        *handled = true;
+                        return;
+                    }
                     // Click inside the modal: routes to the Name input rect
                     // (begins an edit) or — on any other click inside the
                     // modal — commits the pending edit if one is in flight.
@@ -9202,20 +9263,28 @@ impl ShellOverlayHost {
             transform * Affine::translate((url_pill.x0 + 12.0, url_pill.y0 + 8.0)),
             None,
         );
-        let copy_btn = Rect::new(
-            rect.x1 - 24.0 - 72.0,
-            invite_y + 20.0,
-            rect.x1 - 24.0,
-            invite_y + 52.0,
-        );
+        let copy_btn = self.ws_settings_copy_rect();
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[5], // indigo-500 — concept WorkspaceSettingsModal.tsx:108 bg-indigo-500
+            colors.accent[5],
             None,
-            &RoundedRect::from_rect(copy_btn, tokens.radii.sm as f64),
+            &RoundedRect::from_rect(
+                copy_btn,
+                ui::chrome::ChromeRole::Control.radius(theme, copy_btn.height()),
+            ),
         );
-        let copy_label = "Copy";
+        // "Copied" replaces the label for a moment after a successful
+        // copy. Without it the button was indistinguishable from a
+        // button that had done nothing, which is what it used to be.
+        let copy_label = if self
+            .ws_invite_copied_at
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(1_600))
+        {
+            "Copied"
+        } else {
+            "Copy"
+        };
         let (cw, _ch) = text_renderer.measure(copy_label, tokens.typography.scale.sm, None);
         text_renderer.draw_text(
             scene,

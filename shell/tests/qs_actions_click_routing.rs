@@ -452,3 +452,75 @@ fn wifi_drill_in_row_click_routes_to_connect_wifi() {
         scanned[0].ssid,
     );
 }
+
+/// The workspace-settings "Copy" button copies the invite link.
+///
+/// It was painted, never registered as a hit rect, and never called the
+/// clipboard — the most prominent control on the General tab, and
+/// pressing it did nothing. Worse, the parity test above it counted
+/// accent pixels, so the button existed partly to satisfy that count.
+///
+/// This drives the production click path at the button's own geometry
+/// and asserts the copy happened, so a regression that unroutes it
+/// fails here rather than being discovered by a user pressing it.
+#[test]
+fn workspace_settings_copy_button_copies_the_invite_link() {
+    use shell::shell::chrome_state::WsTab;
+
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    {
+        let mut st = chrome.borrow_mut();
+        st.overlays.ws_settings = true;
+        st.ws_settings_tab = WsTab::General;
+        st.bump();
+    }
+    let (taffy, host_node) = layout_host(&mut host);
+    host.force_ws_settings_settled();
+    // Paint once so the modal's geometry is populated the way it is in
+    // a real frame before any click arrives.
+    let _ = &taffy;
+
+    let btn = host.ws_settings_copy_rect_for_tests();
+    assert!(btn.area() > 0.0, "the Copy button has no geometry to click");
+    assert!(
+        host.ws_invite_copied_at_for_tests().is_none(),
+        "nothing should have been copied before the click"
+    );
+
+    let c = btn.center();
+    click_at(&mut host, &taffy, host_node, c.x, c.y);
+
+    assert!(
+        host.ws_invite_copied_at_for_tests().is_some(),
+        "clicking Copy did not run the copy path — the button is painted but not routed"
+    );
+}
+
+/// A click that misses the Copy button does not copy. Guards against a
+/// hit rect widened until it swallows the rest of the tab.
+#[test]
+fn a_click_beside_the_copy_button_does_not_copy() {
+    use shell::shell::chrome_state::WsTab;
+
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    {
+        let mut st = chrome.borrow_mut();
+        st.overlays.ws_settings = true;
+        st.ws_settings_tab = WsTab::General;
+        st.bump();
+    }
+    let (taffy, host_node) = layout_host(&mut host);
+    host.force_ws_settings_settled();
+
+    let btn = host.ws_settings_copy_rect_for_tests();
+    // Well left of the button, still inside the modal body.
+    let p = Point::new(btn.x0 - 160.0, btn.center().y);
+    click_at(&mut host, &taffy, host_node, p.x, p.y);
+
+    assert!(
+        host.ws_invite_copied_at_for_tests().is_none(),
+        "a click beside the Copy button copied anyway"
+    );
+}

@@ -65,6 +65,16 @@ pub struct QsRefresh {
     fast_in_flight: bool,
     wifi_in_flight: bool,
     bt_in_flight: bool,
+    /// Whether dispatches actually reach the OS.
+    ///
+    /// Turned off when the host's action dispatcher has been replaced
+    /// (see `ShellOverlayHost::with_qs_actions`): a caller that has
+    /// substituted where quick settings *writes* is not talking to this
+    /// machine, so it must not be reading from it either. Without the
+    /// pairing, a test that seeds a known Wi-Fi list had it replaced
+    /// mid-test by a real `nmcli` scan of whatever network the machine
+    /// running the suite happened to be near.
+    enabled: bool,
 }
 
 impl Default for QsRefresh {
@@ -76,7 +86,14 @@ impl Default for QsRefresh {
 impl QsRefresh {
     pub fn new() -> Self {
         let (tx, rx) = channel();
-        Self { tx, rx, fast_in_flight: false, wifi_in_flight: false, bt_in_flight: false }
+        Self {
+            tx,
+            rx,
+            fast_in_flight: false,
+            wifi_in_flight: false,
+            bt_in_flight: false,
+            enabled: true,
+        }
     }
 
     /// Whether any tier is still outstanding.
@@ -89,10 +106,18 @@ impl QsRefresh {
         self.fast_in_flight || self.wifi_in_flight || self.bt_in_flight
     }
 
+    /// Stop this refresher from reaching the OS. See [`Self::enabled`].
+    pub fn disable_os_reads(&mut self) {
+        self.enabled = false;
+    }
+
     fn spawn<F>(&mut self, tier: Tier, work: F)
     where
         F: FnOnce() -> QsReading + Send + 'static,
     {
+        if !self.enabled {
+            return;
+        }
         let busy = match tier {
             Tier::Fast => &mut self.fast_in_flight,
             Tier::Wifi => &mut self.wifi_in_flight,
@@ -172,6 +197,11 @@ impl QsRefresh {
         F: FnOnce() -> QsReading + Send + 'static,
     {
         self.spawn(Tier::Fast, work);
+    }
+
+    /// Whether dispatches reach the OS.
+    pub fn os_reads_enabled(&self) -> bool {
+        self.enabled
     }
 }
 
