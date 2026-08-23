@@ -143,23 +143,31 @@ struct RevealAnim {
     started: Instant,
 }
 
-/// Whether a pill casts a drop shadow this frame.
+/// Whether a pill casts a drop shadow this frame. It never does.
 ///
-/// A shadow is cast *by* something: it is how a surface reports that it stands
-/// off the one behind it. An idle inactive pill has no body — the tier table
-/// above gives it a transparent fill and no border — so a shadow under it is a
-/// shadow of nothing, and it is gated on the same [`PillAppearance::fill`]
-/// alpha its `×` already is.
+/// Selection is a **lift**, not an elevation — a chosen tab is not floating
+/// above the bar, it is picked on it. That is the rule
+/// [`crate::chrome::shell::selection_tier`] is written around, and the strip
+/// simply never followed it: it kept four stacked black rings per pill from
+/// the mockup it was transliterated from, which composite to roughly a third
+/// of black under every pill with a body.
 ///
-/// Left ungated, the four stacked rings composite to roughly a third of black
-/// under *every* pill in the row. Over a dark desktop that is nearly
-/// invisible, which is why it survived; over a light one it painted a solid
-/// mid-grey slab beneath each inactive pill, dropping the ground under the
-/// label from the bar's own value to a shade that left `text_dim` at under
-/// 2:1 — well beneath the 4.5:1 floor for body text, and unreadable in
-/// practice.
-pub(crate) fn shadow_visible(look: &PillAppearance) -> bool {
-    look.fill.a() > 0
+/// Gating them on having a body was a partial fix — it stopped idle pills
+/// sitting on a smear of shadow with no surface on top — but it could not fix
+/// the hovered one, which has a body by definition. Measured on the light
+/// preset the rings drop the ground under a hovered pill by about 50 levels
+/// while that pill's own film moves it by 2, so what a person saw when they
+/// pointed at a tab was, almost entirely, its shadow. Under the old opaque
+/// active pill the rings were simply hidden; the moment its body became
+/// glass they showed straight through it, which is the same thing
+/// [`crate::chrome::shell::paint_panel_elevation`] exists to stop happening
+/// to translucent panels.
+///
+/// What reports that a pill is a surface is now its own lit edge, which is
+/// cheaper, survives a light theme, and does not darken the label it sits
+/// under.
+pub(crate) fn casts_shadow(_look: &PillAppearance) -> bool {
+    false
 }
 
 /// A tab whose close button was clicked and is now fading out. Kept
@@ -523,50 +531,6 @@ impl TabBar {
         } else {
             transform
         };
-        // Per-pill drop shadow, approximating the concept's
-        // `shadow-[0_8px_32px_rgba(0,0,0,0.2)]`.
-        //
-        // Cast in proportion to how much body there is to cast it. Every
-        // pill used to lay one down whether it painted anything or not,
-        // so each idle tab sat on a dark rounded smear with no surface
-        // on top of it — four soft black rings over the backdrop, which
-        // is a large part of why the row read as muddy rather than as
-        // chrome. Riding the reveal curve also means the shadow arrives
-        // and leaves with the surface instead of switching underneath it.
-        // The drag-ghost is a lifted pill by definition and keeps a full
-        // shadow regardless of the source's hover state.
-        let shadow_strength = if is_active || look.scale < 1.0 || suppress_hover {
-            1.0
-        } else {
-            self.reveal_fade(i)
-        };
-        let shadow_y_offset = 6.0_f64;
-        let shadow_rings: [(f64, u8); 4] = [
-            (2.0, 51), // ~0.20
-            (5.0, 30), // ~0.12
-            (9.0, 15), // ~0.06
-            (14.0, 5), // ~0.02
-        ];
-        for (spread, alpha) in shadow_rings.into_iter().filter(|_| shadow_visible(&look)) {
-            let alpha = (alpha as f64 * shadow_strength).round() as u8;
-            if alpha == 0 {
-                continue;
-            }
-            let shadow_rect = Rect::new(
-                r.x0 - spread,
-                r.y0 - spread + shadow_y_offset,
-                r.x1 + spread,
-                r.y1 + spread + shadow_y_offset,
-            );
-            let shadow_shape = RoundedRect::from_rect(shadow_rect, radius + spread);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                pill_transform,
-                vello::peniko::Color::from_rgba8(0, 0, 0, alpha),
-                None,
-                &shadow_shape,
-            );
-        }
         // Pill body, in the shared glass material — film, lit edge, and
         // for the active pill a lit inner rim. The three states are one
         // substance at three commitments rather than three recipes; what
@@ -834,32 +798,6 @@ impl TabBar {
         let pill_height = (r.height()).max(0.0);
         let radius = pill_height / 2.0;
         let text_dim = theme.tokens.colors.text_dim;
-        // Per-pill drop shadow — same rings as `draw_pill_inner` so
-        // the fade-out feels continuous with the pill chrome the user
-        // was just looking at.
-        let shadow_y_offset = 6.0_f64;
-        let shadow_rings: [(f64, u8); 4] = [
-            (2.0, 51),
-            (5.0, 30),
-            (9.0, 15),
-            (14.0, 5),
-        ];
-        for (spread, alpha) in shadow_rings {
-            let shadow_rect = Rect::new(
-                r.x0 - spread,
-                r.y0 - spread + shadow_y_offset,
-                r.x1 + spread,
-                r.y1 + spread + shadow_y_offset,
-            );
-            let shadow_shape = RoundedRect::from_rect(shadow_rect, radius + spread);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                vello::peniko::Color::from_rgba8(0, 0, 0, alpha),
-                None,
-                &shadow_shape,
-            );
-        }
         // Pill body: the hovered tier — the closing pill is no longer the
         // active tab (active-id shifted at close-start), and an inactive
         // pill is fully transparent, which would leave the title and the
@@ -4063,33 +4001,34 @@ mod tests {
         }
     }
 
-    /// A pill with no body casts no shadow.
+    /// No pill casts a shadow, in any state, on any theme.
     ///
-    /// The four stacked shadow rings composite to roughly a third of black.
-    /// Painted under an idle inactive pill — which has no body at all — that
-    /// is a shadow of nothing, invisible over a dark desktop and a solid grey
-    /// slab over a light one. The slab is what dropped the ground under an
-    /// inactive tab's label far enough to make it unreadable, so the gate is
-    /// asserted directly rather than left to the render.
+    /// Selection is a lift, not an elevation: a chosen tab is picked on the
+    /// bar, not floating above it. The strip used to lay four stacked black
+    /// rings under every pill with a body, which is a third of black, and
+    /// gating them on having a body only ever fixed the idle case. A hovered
+    /// pill has a body by definition, and on the light preset the rings move
+    /// the ground under it by about 50 levels while its own film moves it by
+    /// 2 — so what a person saw when they pointed at a tab was its shadow.
+    ///
+    /// Asserted as an invariant rather than left to the render because the
+    /// failure is invisible on the dark theme the strip is usually looked at
+    /// on, which is exactly how it survived this long.
     #[test]
-    fn only_a_pill_with_a_body_casts_a_shadow() {
+    fn no_pill_casts_a_shadow_in_any_state() {
         for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            let idle = pill_appearance(&theme, false, false, false);
-            assert!(
-                !shadow_visible(&idle),
-                "{}: an idle inactive pill has no body, so it must cast no \
-                 shadow — the rings darken the bar under its label instead",
-                theme.name,
-            );
             for (name, look) in [
+                ("idle", pill_appearance(&theme, false, false, false)),
                 ("hovered", pill_appearance(&theme, false, true, false)),
                 ("active", pill_appearance(&theme, true, false, false)),
                 ("pressed", pill_appearance(&theme, false, false, true)),
+                ("active+hover", pill_appearance(&theme, true, true, false)),
             ] {
                 assert!(
-                    shadow_visible(&look),
-                    "{}: a {name} pill has a body and must keep its shadow — \
-                     that is what makes it read as standing off the bar",
+                    !casts_shadow(&look),
+                    "{}: a {name} pill casts a shadow — elevation is a \
+                     different vocabulary from selection, and under a \
+                     translucent body the rings show straight through",
                     theme.name,
                 );
             }
