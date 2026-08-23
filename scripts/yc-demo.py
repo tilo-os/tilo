@@ -2912,9 +2912,23 @@ def image_is_in_the_document(session: Session, room: str, png: bytes,
     appeared on screen" and "the image is in the document", which is the
     claim that matters, because it is the one that replicates.
 
-    The needle is the PNG's signature plus its IHDR: enough to be *this*
-    file rather than any file, short enough to survive being stored
-    across an Automerge column boundary.
+    What it looks for is the **reference**, and it asserts the bytes are
+    *not* there.
+
+    This used to search the document for the PNG's own signature, on the
+    reasoning that an image in a document is findable in it. That
+    stopped being true today, and the reversal is the point: images now
+    travel as a hash with the bytes in a content-addressed store beside
+    the document, because a 146 kB change exceeded the publish ceiling,
+    was dropped, and — since Automerge holds a change whose ancestors
+    are missing — froze every other machine's copy at that point,
+    permanently and silently. A document still carrying the bytes would
+    now be the bug.
+
+    The needle is `blob_w`, one of the metadata keys an image reference
+    always carries (`blob`, `blob_mime`, `blob_bytes`, `blob_w`,
+    `blob_h`). A key name rather than the hash, because it is stable
+    ASCII that needs no hashing tool on the machine running this.
 
     Deliberately run after the camera has stopped: attaching announces a
     presence, and a phantom collaborator arriving mid-take would be a
@@ -2927,11 +2941,17 @@ def image_is_in_the_document(session: Session, room: str, png: bytes,
     try:
         deadline = time.time() + timeout
         newest = 0
-        needle = png[:24]
+        reference = b"blob_w"
+        raw_bytes = png[:24]
         while time.time() < deadline:
             for blob in reader.documents() + reader.deltas():
                 newest = max(newest, len(blob))
-                if carries_bytes(blob, needle):
+                if carries_bytes(blob, raw_bytes):
+                    note("the document carries the photograph's own bytes, "
+                         "which is the behaviour that froze every peer's "
+                         "copy; it should carry a reference instead")
+                    return False, len(blob)
+                if carries_bytes(blob, reference):
                     return True, len(blob)
             time.sleep(0.5)
         return False, newest
