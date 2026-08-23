@@ -40,6 +40,15 @@ pub const TYPING_FADE: std::time::Duration = std::time::Duration::from_millis(25
 /// several times that and still refuses the absurd.
 const TYPING_DERIVE_MAX_RUN: usize = 512;
 
+/// How long after a remote text edit an advancing caret may still be read
+/// as that peer having written what it crossed.
+///
+/// Spans one network hop — the gap between a peer's delta and the caret
+/// frame that follows it — and nothing more. Widening it would let one
+/// real edit license markers for every caret that happened to move in the
+/// seconds after it, which is the reader case coming back in slow motion.
+const EDIT_PULSE_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
+
 /// Stable RGB color for a collaborator, used by every widget that paints a
 /// per-peer affordance (tab presence dots, remote cursor, per-folder
 /// presence dots, etc.).
@@ -559,6 +568,30 @@ pub struct PresenceCtx {
     /// [`TYPING_FADE`]. Not serialised — purely a local render effect
     /// driven by the inbound presence stream.
     typing: HashMap<(UserId, PresenceKey), Vec<TypingMark>>,
+    /// When a remote *document* change was last applied, as opposed to a
+    /// remote caret move.
+    ///
+    /// The two are different events and only one of them is an edit. A
+    /// caret moves whenever somebody reads — clicking into a paragraph to
+    /// look at it, arrowing along a line, dragging to select — and a
+    /// marker painted for that would be claiming a person changed text
+    /// they only looked at. In a document two people are reading together
+    /// that is the common case, not the edge one.
+    ///
+    /// So the caret answers *who* and *where*, this answers *whether
+    /// anything actually happened*, and the `Caret` arm of
+    /// [`Self::apply_remote_presence`] needs both before it will paint.
+    /// Fed by [`Self::note_remote_text_edit`], which the `App` calls when
+    /// a delta it applied genuinely changed text.
+    ///
+    /// The join is by time, not by author, and that is a known
+    /// limitation rather than a design: `CollabEvent::CRDTIncremental`
+    /// carries no user id (the capnp broker stamps unsigned frames with
+    /// an empty one), so the delta cannot say who sent it. While one
+    /// person is genuinely editing, another peer's forward caret movement
+    /// can still be attributed a marker. Closing it means attributing the
+    /// delta — the signed op path already carries `from_user_id`.
+    last_remote_text_edit: Option<Instant>,
     /// Current draw-time visibility window in scene-space pixels.
     /// Threaded through the draw recursion so widgets can early-out
     /// when their `get_rect()` doesn't intersect the active viewport
@@ -886,6 +919,29 @@ impl PresenceCtx {
             name: self.display_name(user),
             color: self.color_for(user),
         }
+    }
+
+    /// Note that a remote delta which actually changed text has just been
+    /// applied. See [`Self::last_remote_text_edit`].
+    ///
+    /// Called by the `App` after it diffs the document either side of
+    /// applying a remote change — not on every delta, because a delta that
+    /// only moved metadata is not an edit either.
+    pub fn note_remote_text_edit(&mut self, now: Instant) {
+        self.last_remote_text_edit = Some(now);
+    }
+
+    /// Whether a remote text edit landed recently enough for an advancing
+    /// caret to be read as that peer having written the run it crossed.
+    ///
+    /// The window is deliberately short. It only has to span the gap
+    /// between the delta and the caret frame that follows it, which is one
+    /// network hop, not a human pause — a long window would let a single
+    /// edit license marks for every caret that moved for seconds
+    /// afterwards.
+    fn edit_landed_recently(&self, now: Instant) -> bool {
+        self.last_remote_text_edit
+            .is_some_and(|t| now.saturating_duration_since(t) <= EDIT_PULSE_WINDOW)
     }
 
     /// Record a peer's freshly-typed run under `key`, born `now`. Adjacent
@@ -1325,13 +1381,23 @@ impl PresenceCtx {
                 // coalescing in `record_peer_typing` merges the pair into
                 // a single span, so it stays one marker rather than two
                 // tints stacked into an illegible band.
+                //
+                // Gated on a document change having actually landed, so
+                // that reading paints nothing: a caret sweeping forward
+                // through a document nobody is editing is somebody looking
+                // at it, and a marker there would claim they changed text
+                // they only read.
+                let now = Instant::now();
                 if let Some(prev) = self.caret_for(&key, &uid) {
-                    if pos > prev && pos - prev <= TYPING_DERIVE_MAX_RUN {
+                    if pos > prev
+                        && pos - prev <= TYPING_DERIVE_MAX_RUN
+                        && self.edit_landed_recently(now)
+                    {
                         self.record_peer_typing(
                             uid.clone(),
                             key.clone(),
                             SelectionRange { start: prev, end: pos },
-                            Instant::now(),
+                            now,
                         );
                     }
                 }

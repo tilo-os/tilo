@@ -1437,6 +1437,37 @@ impl App {
             .send(CollabRequest::Presence { key, payload });
     }
 
+    /// Apply a remote delta and report whether it actually changed any
+    /// *text* in the document.
+    ///
+    /// The answer is what lets a peer's advancing caret be read as them
+    /// having written something. A caret moves whenever somebody reads,
+    /// so on its own it cannot tell an edit from a person looking at a
+    /// paragraph; a delta that spliced text is the evidence that anything
+    /// happened at all. See `PresenceCtx::note_remote_text_edit`.
+    ///
+    /// "Changed text" specifically, not "changed anything": a delta that
+    /// only moved a cursor-adjacent property or some metadata is not an
+    /// edit either, and marking on it would put the reader case back.
+    fn apply_remote_delta(&mut self, data: &[u8]) -> bool {
+        let before = self.state.doc.get_heads();
+        if self.state.load_incremental(data).is_err() {
+            return false;
+        }
+        let after = self.state.doc.get_heads();
+        if before == after {
+            return false;
+        }
+        self.state.doc.diff(&before, &after).iter().any(|p| {
+            matches!(
+                p.action,
+                automerge::PatchAction::SpliceText { .. }
+                    | automerge::PatchAction::DeleteSeq { .. }
+                    | automerge::PatchAction::Insert { .. }
+            )
+        })
+    }
+
     /// Broadcast the document changes made since the last call as an
     /// incremental CRDT delta, so peers see local edits in near-real-time.
     /// This is the live-edit path (the late-join handshake still ships a
@@ -1682,7 +1713,9 @@ impl App {
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
                         eprintln!("[app] recv CRDTIncremental {}B", data.len());
                     }
-                    let _ = self.state.load_incremental(&data);
+                    if self.apply_remote_delta(&data) {
+                        self.presence_ctx.note_remote_text_edit(Instant::now());
+                    }
                     self.needs_sync = true;
                     self.layout_dirty = true;
                 }
@@ -1702,7 +1735,9 @@ impl App {
                             envelope.payload.len()
                         );
                     }
-                    let _ = self.state.load_incremental(&envelope.payload);
+                    if self.apply_remote_delta(&envelope.payload) {
+                        self.presence_ctx.note_remote_text_edit(Instant::now());
+                    }
                     self.needs_sync = true;
                     self.layout_dirty = true;
                 }
