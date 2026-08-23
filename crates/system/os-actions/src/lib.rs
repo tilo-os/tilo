@@ -145,13 +145,12 @@ pub fn log_get<T>(op: &str, result: Result<T, String>) -> Option<T> {
     }
 }
 
-/// Default short timeout for any future async/blocking guard — kept as a
-/// constant so call-sites that want to enforce a deadline have a single
-/// value to import. Not used by the sync shell-outs because
-/// `std::process::Command::output` already inherits the OS-level SIGTERM
-/// behaviour of the parent shell, and the controls are user-driven so a
-/// hung command surfaces as visible latency.
-#[allow(dead_code)]
+/// Deadline enforced on every shell-out in this crate.
+///
+/// Applied by [`process::run_capture`], and therefore by every getter and
+/// setter here. A tool that exceeds it is killed and reported as a
+/// timeout, so a wedged daemon degrades to a stale reading instead of
+/// blocking its caller indefinitely.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(2_500);
 
 #[cfg(test)]

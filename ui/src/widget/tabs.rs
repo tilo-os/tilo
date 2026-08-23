@@ -71,103 +71,45 @@ const CLOSE_SCALE_END: f64 = 0.95;
 /// `y: -20` exit keyframe.
 const CLOSE_Y_OFFSET_END: f64 = -20.0;
 
-/// Uniform scale applied to a pill while the user is pressing on it.
-/// Mirrors the concept's `active:scale-95` (Tailwind shorthand for 0.95);
-/// we use 0.97 so the compression reads as a tactile "click feedback"
-/// without making the title appear to jump.
-const PRESS_SCALE: f64 = 0.97;
 
 /// How far a hovered-but-inactive pill travels from the chrome's ground
 /// toward the raised tier. Half a step: hover is a promise of the active
 /// state, not the state itself, so it has to be clearly less than a full
 /// lift while still being unmistakably more than nothing.
-const HOVER_LIFT_T: f32 = 0.5;
+const HOVER_LIFT_T: f32 = crate::chrome::shell::HOVER_LIFT_T;
 
-/// Alpha of a raised pill's outer hairline (the concept's `border-white/10`,
-/// kept as a weight now that the colour is derived from the ground).
-const PILL_BORDER_ALPHA: u8 = 26;
+/// Alpha of a raised pill's outer hairline, and of its inset inner glow.
+/// Aliases of the shell-wide chrome weights so the tab strip and the rest
+/// of the chrome cannot drift apart — see `ui/HIG.md` §9.5.
+const PILL_BORDER_ALPHA: u8 = crate::chrome::shell::HAIRLINE_ALPHA;
+const PILL_GLOW_ALPHA: u8 = crate::chrome::shell::GLOW_ALPHA;
 
-/// Alpha of a raised pill's inset inner glow (the concept's `border-white/20`).
-const PILL_GLOW_ALPHA: u8 = 51;
-
-/// Resolved per-pill appearance for a single draw frame. Computed once
-/// in `pill_appearance` and consumed by `draw_pill_inner` so the
-/// active / hover / pressed visual contract lives in one place — and is
-/// directly testable without scraping a Vello scene.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct PillAppearance {
-    /// Rounded-rect body fill. `Color::TRANSPARENT` (alpha 0) for idle
-    /// inactive pills; a half lift off the chrome's ground on hover; the
-    /// full lift when active (see [`crate::tokens::Colors::lift`]).
-    /// Callers must skip the fill call when alpha is 0 so we don't emit a
-    /// no-op draw command per pill per frame.
-    pub fill: vello::peniko::Color,
-    /// Optional 1-px outer border. `None` for idle / hover (concept's
-    /// `border border-transparent`); a ground-derived hairline at
-    /// [`PILL_BORDER_ALPHA`] when active.
-    pub border: Option<vello::peniko::Color>,
-    /// Optional 1-px-inset stroke that gives the active pill a subtle
-    /// inner glow. `None` unless active. Painted as a ground-derived
-    /// hairline at [`PILL_GLOW_ALPHA`].
-    pub inner_glow: Option<vello::peniko::Color>,
-    /// Uniform scale applied around the pill centre. `1.0` for normal;
-    /// `PRESS_SCALE` while pressed (composes with drag-source-dim so a
-    /// drag-in-flight still visibly compresses).
-    pub scale: f64,
-}
+/// Resolved per-pill appearance for a single draw frame.
+///
+/// This is the shell-wide selection tier under its tab-strip name — see
+/// [`crate::chrome::shell::SelectionTier`]. The tiers themselves used to
+/// be defined here, `pub(crate)`, which meant the compositor could not
+/// reach them and grew its own incompatible ways of saying "this one is
+/// chosen". They now live in `chrome::shell` so the top bar, quick
+/// settings, the workspace disc and the strip ribbon express selection
+/// the same way this strip does.
+pub(crate) type PillAppearance = crate::chrome::shell::SelectionTier;
 
 /// Decide a pill's body appearance for one frame given the three input
-/// states (active / hover / pressed). Encodes the contrast contract from
-/// `nirios-concept/src/components/WindowFrame.tsx`:
+/// states (active / hover / pressed).
 ///
-/// | State                        | Fill              | Border         | Inner glow      |
-/// |------------------------------|-------------------|----------------|-----------------|
-/// | idle (inactive, !hover)      | transparent       | none           | none            |
-/// | hover (inactive, hover)      | `lift(0.5)`       | none           | none            |
-/// | active                       | `lift(1.0)`       | hairline @ /10 | hairline @ /20  |
-/// | active + hover               | same as active    | same           | same            |
-/// | pressed                      | same as active    | same           | same, scale 0.97|
-///
-/// The active-tier fill / border / glow stay the same when hovered so
-/// an active pill never gets *more* prominent on hover — the contrast
-/// gain is solely on inactive pills brightening into the active tier.
+/// Delegates to [`crate::chrome::shell::selection_tier`]; the tier table
+/// and the reasoning behind it live there.
 pub(crate) fn pill_appearance(
     theme: &Theme,
     is_active: bool,
     is_hover: bool,
     is_pressed: bool,
 ) -> PillAppearance {
-    let colors = &theme.tokens.colors;
-    // Pressed implies active-tier visuals (the user only ever presses
-    // the tab they intend to focus next), even if the pill isn't the
-    // currently-active one yet — gives instant click feedback before
-    // the activation propagates through the parent.
-    let raised = is_active || is_pressed;
-    // Body tiers come from `Colors::lift`, which measures the move against
-    // the chrome's own ground, rather than from a fixed white wash that only
-    // lifts over a dark one. See that method for why.
-    let fill = if raised {
-        colors.lift(1.0)
-    } else if is_hover {
-        colors.lift(HOVER_LIFT_T)
-    } else {
-        vello::peniko::Color::TRANSPARENT
-    };
-    // Same reasoning for the pill's two hairlines: derived against the ground
-    // they are drawn on rather than fixed at white, so an active pill keeps a
-    // defined edge on a light theme instead of dissolving into its own fill.
-    let border = if raised {
-        Some(Colors::hairline_on(colors.surfaces.base, PILL_BORDER_ALPHA))
-    } else {
-        None
-    };
-    let inner_glow = if raised {
-        Some(Colors::hairline_on(colors.surfaces.base, PILL_GLOW_ALPHA))
-    } else {
-        None
-    };
-    let scale = if is_pressed { PRESS_SCALE } else { 1.0 };
-    PillAppearance { fill, border, inner_glow, scale }
+    crate::chrome::shell::selection_tier(
+        theme,
+        crate::chrome::shell::SelectionState::new(is_active, is_hover, is_pressed),
+    )
 }
 
 /// Whether a pill paints its close `×` this frame.
