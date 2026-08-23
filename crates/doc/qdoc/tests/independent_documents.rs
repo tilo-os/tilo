@@ -147,3 +147,42 @@ fn a_third_participant_does_not_displace_the_first_two() {
         "{lost}/{ROUNDS} three-way merges dropped at least one participant's content"
     );
 }
+
+/// Adopting the genesis must not cost the caller an edit.
+///
+/// `init` is reached from `sync`, where the host may already have ops pending in
+/// the open transaction — a record stamping its identity, a widget mid-edit.
+/// Applying a change into the document from underneath that has to keep them.
+#[test]
+fn adopting_the_schema_keeps_ops_already_pending() {
+    use automerge::{transaction::Transactable, AutoCommit, ROOT};
+
+    let mut doc = AutoCommit::new();
+    // An op the host wrote before the schema was ever asked for, still sitting
+    // in the open transaction.
+    doc.put(&ROOT, "host_wrote_this", "before the schema existed").unwrap();
+
+    let c = qdoc::model::init(&mut doc, &ROOT);
+    let id = {
+        let mut ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
+        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let id = dm.insert_block(None, "paragraph");
+        dm.splice_text(&id, 0, 0, "and after");
+        id
+    };
+    doc.commit();
+
+    use automerge::ReadDoc;
+    assert_eq!(
+        doc.get(&ROOT, "host_wrote_this")
+            .unwrap()
+            .and_then(|(v, _)| v.to_str().map(str::to_string)),
+        Some("before the schema existed".to_string()),
+        "the pending op survived the schema being adopted underneath it"
+    );
+    assert_eq!(
+        qdoc::model::block_text(&doc, &c, &id).as_deref(),
+        Some("and after"),
+        "and the document is editable afterwards"
+    );
+}
