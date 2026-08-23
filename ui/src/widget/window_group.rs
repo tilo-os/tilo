@@ -631,6 +631,20 @@ impl WindowGroup {
             host.bind_record(store.clone(), record_for(*tab_id));
         }
     }
+    /// Whether *any* tab in this group is still holding a place for an app
+    /// that has not drawn yet.
+    ///
+    /// Deliberately not [`Widget::opening`], which asks whether the whole
+    /// group is a placeholder and is therefore false as soon as one tab has
+    /// drawn. A tab behind that one can still be starting, and its tile
+    /// still paints an opening card with a turning spinner — so the group
+    /// keeps asking for animation frames while reporting that it is not
+    /// opening. That pair is not a contradiction, but anything waiting for
+    /// the tree to go quiet has to ask this question rather than that one.
+    pub fn any_tile_opening(&self) -> bool {
+        self.hosts.iter().any(|(_, h)| Widget::opening(h))
+    }
+
 
     pub fn active_host_mut(&mut self) -> Option<&mut TileHost> {
         let id = self.bar.active_id();
