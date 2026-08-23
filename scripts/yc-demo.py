@@ -255,7 +255,22 @@ TYPED_TEXT = "the same document on both machines"
 # carries each one. `Session.type_prose` presses a real Shift across
 # these; without it a client resolves the bare keycode and puts the
 # character *below* the one that was asked for on screen.
-SHIFTED_KEYS = {c: c.lower() for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
+# Letters are deliberately absent.
+#
+# They used to be here, mapping "C" to a Shift-held "c", because a
+# client resolves a bare keycode through xkb and a keycode carries no
+# case — so a scripted capital arrived lowercase in a document.
+#
+# The compositor holds Shift for an ASCII capital itself now
+# (`test_control.rs`), which fixed that at the source and turned this
+# into the opposite bug: chrome does not resolve keycodes, it reads the
+# event's logical key. Sending a Shift-held "c" therefore put a
+# lowercase letter into the invite composer, and the card that names the
+# person an invitation is for read "claude".
+#
+# What remains is the punctuation, which genuinely has no keycode of its
+# own and can only be reached through its unshifted twin.
+SHIFTED_KEYS = {}
 SHIFTED_KEYS.update({
     "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6",
     "&": "7", "*": "8", "(": "9", ")": "0", "_": "-", "+": "=",
@@ -828,6 +843,24 @@ class Session:
         while time.time() < deadline:
             for f in self.foreign_frames():
                 if f.get("surface_id") not in before and f.get("frame_seq", 0) > 0:
+                    # The strip's share, re-applied the instant the group
+                    # exists.
+                    #
+                    # `set_group_widths` walks the groups that are there
+                    # when it is called — so settling it once before
+                    # filming, on an empty desktop, set nothing at all,
+                    # and every group opened afterwards took the default
+                    # three-quarters. Two of those overflow the strip,
+                    # which is what put a word processor 514px past the
+                    # right edge in a shot that was supposed to hold two
+                    # windows.
+                    #
+                    # Here rather than in the beats: the group has just
+                    # been created and its window is still behind the
+                    # opening card, so the width lands before anything
+                    # is on screen to see it change. A beat that
+                    # remembers to do this is a beat that will forget.
+                    self.set_group_width(FILM_GROUP_SHARE)
                     return f
             time.sleep(0.75)
         return None
