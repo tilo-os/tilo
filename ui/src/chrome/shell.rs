@@ -254,10 +254,10 @@ pub const GLASS_HOVER_ALPHA: u8 = 44;
 /// of opaque so the pill keeps the property that makes it glass. Glass is
 /// the reason this is a fraction rather than a full body: the ground has
 /// to come through, or the material is over.
-pub const GLASS_ACTIVE_ALPHA: u8 = 156;
+pub const GLASS_ACTIVE_ALPHA: u8 = 132;
 
 /// Film density at the lit end of a selector, relative to its own alpha.
-pub const GLASS_LIT_GAIN: f32 = 1.7;
+pub const GLASS_LIT_GAIN: f32 = 1.9;
 
 /// Film density at the seated end, relative to its own alpha.
 pub const GLASS_SEAT_FALLOFF: f32 = 0.68;
@@ -269,12 +269,22 @@ pub const GLASS_SEAT_FALLOFF: f32 = 0.68;
 /// pill, the extra film reads as "this pill is a lighter grey"; concentrated
 /// near the edge it reads as light landing on a surface, and the rest of the
 /// body stays dark enough to keep looking like something you can see through.
-pub const GLASS_LIT_SPAN: f32 = 0.5;
+pub const GLASS_LIT_SPAN: f32 = 0.2;
 
 /// Edge alpha of a hovered selector. Below [`HAIRLINE_ALPHA`] — a hovered
 /// pill is being pointed at, not chosen, and a full hairline on it reads
 /// as a second active tab.
-pub const GLASS_EDGE_HOVER_ALPHA: u8 = 20;
+///
+/// It carries more of the state than it looks like it should, and that is
+/// deliberate. A translucent body can only move the ground as far as the
+/// palette leaves room for: on the light preset the bar sits about 19
+/// levels below white, so a hover film lands about 3 levels off its ground
+/// no matter how the film is derived, while the same film moves a graphite
+/// ground by twelve. The edge does not have that problem, because
+/// [`Colors::hairline_on`] picks whichever polarity moves the ground it is
+/// actually drawn on — the same division of labour a floating panel already
+/// makes, where a stark palette leaves nearly all the work to its border.
+pub const GLASS_EDGE_HOVER_ALPHA: u8 = 28;
 
 /// Edge alpha of an active selector, at the lit end. Runs down to
 /// [`GLASS_EDGE_SEAT_SCALE`] of itself at the seated end, which is what
@@ -460,9 +470,9 @@ pub fn paint_glass_body(
     if let Some(glow) = tier.inner_glow {
         let inset = Rect::new(rect.x0 + 1.0, rect.y0 + 1.0, rect.x1 - 1.0, rect.y1 - 1.0);
         if inset.width() <= 0.0 || inset.height() <= 0.0 {
-            return;
+            return; // a pill this narrow has no inside to light
         }
-        let glow = glow.with_alpha_factor(opacity);
+        let glow = scaled(glow, opacity);
         let (lit, seated) = ends;
         let y = |t: f64| Point::new(inset.x0, inset.y0 + inset.height() * t);
         let grad = vello::peniko::Gradient::new_linear(y(lit), y(seated))
