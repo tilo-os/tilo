@@ -2252,19 +2252,35 @@ fn tab_drag_hover_line_indicator() -> Scenario {
 
 /// Switch to workspace index 1 (Research in the bootstrap tree),
 /// capture, then back to 0.
+///
+/// The `-immediately` captures take `gap_frames: 0`, so they are the
+/// **first frame rendered after the switch**, with no animation ticks in
+/// between. That is where the shell's old whole-screen slide showed
+/// itself: it started the entire content tree — wallpaper and top bar
+/// included — a full viewport off-axis, so the first frame of every
+/// switch was blank. These captures must be complete desktops, and must
+/// be indistinguishable from the settled ones taken a frame later.
 fn workspace_switch() -> Scenario {
     Scenario {
         name: "workspace_switch",
-        description: "Switch to workspace index 1, then back to 0.",
+        description: "Switch to workspace index 1, then back to 0, capturing \
+             the first frame after each switch as well as the settled one.",
         actions: vec![
             Action::Snapshot("01-ws0"),
             Action::SwitchWorkspace(1),
-            // One frame is the whole transition: a switch swaps the
-            // content and nothing moves, so there is no curve to wait
-            // out before the snapshot is of the settled desktop.
+            Action::SnapshotSequence {
+                prefix: "02-ws1-immediately",
+                frames: 2,
+                gap_frames: 0,
+            },
             Action::Wait(1),
             Action::Snapshot("02-ws1"),
             Action::SwitchWorkspace(0),
+            Action::SnapshotSequence {
+                prefix: "03-ws0-immediately",
+                frames: 2,
+                gap_frames: 0,
+            },
             Action::Wait(1),
             Action::Snapshot("03-ws0-again"),
         ],
