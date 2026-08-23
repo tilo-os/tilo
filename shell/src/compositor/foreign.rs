@@ -866,6 +866,10 @@ impl ForeignFrameStore {
                 return false;
             }
             e.presented = true;
+            let (tab_w, tab_h) = (
+                tile.width().round() as u32,
+                tile.height().round() as u32,
+            );
             // Reaching the backstop is a defect every time: the window
             // was a hole in the strip for ten seconds, and the buffer
             // and tab printed beside it are what has to be reconciled
@@ -873,10 +877,6 @@ impl ForeignFrameStore {
             // is indistinguishable from an app that was simply slow —
             // which is how a client short by its own title bar went
             // unnoticed while it delayed every launch on this machine.
-            let (tab_w, tab_h) = (
-                tile.width().round() as u32,
-                tile.height().round() as u32,
-            );
             if backstop {
                 tracing::warn!(
                     target: "shell::compositor::foreign",
