@@ -361,6 +361,18 @@ This is `ui::chrome::selection_tier` (promoted out of `widget::tabs`, where it
 was `pub(crate)` and therefore unreachable from the shell — which is precisely
 why the shell grew its own incompatible answers). Call it; do not restate it.
 
+**One caveat the tier cannot absorb for you.** `Colors::lift` interpolates from
+`surfaces.base` toward `surfaces.raised`, and where those two are close it
+falls back to a derived step against the ground. That fallback is by design and
+is what the default dark palette already uses. But it is *weak*, and on the
+high-contrast palette — where `base` and `raised` are both pure black — it is
+weaker than a fixed floor. A control that gives its unselected state a floor of
+its own (because it has no row around it to supply context, as the strip ribbon
+does) can therefore end up painting the **selected** state less prominently
+than the unselected one. If a control needs its own floor, derive all of its
+states from one ordered ramp against the ground and assert the ordering per
+theme; do not mix a floor with the tier.
+
 Why lift rather than an accent fill:
 
 - `Colors::lift` measures its move against the chrome's *own ground* by relative
