@@ -332,6 +332,60 @@ pub enum VideoEditorAction {
     RemoveMedia { id: String, clips: Vec<String> },
     /// Replace the project settings (name / fps / resolution).
     SetProjectMeta(ProjectMeta),
+    /// Replace the **whole** project: settings, media bin, tracks and clips.
+    ///
+    /// This is what opening a project file does. It is an action rather than a
+    /// side-door document swap for three reasons that all matter:
+    ///
+    ///   * **Undo.** Opening a file lands on one boundary, so Ctrl+Z after an
+    ///     accidental Open puts the previous project back rather than leaving
+    ///     the user staring at someone else's timeline.
+    ///   * **Replication.** A collaborator's session follows into the project
+    ///     that was opened, instead of the two peers silently diverging.
+    ///   * **One write path.** The document is only ever mutated by
+    ///     [`VideoDoc`], so a project that arrives from a file is stored
+    ///     exactly like one that was built by hand.
+    ///
+    /// Everything absent from the payload is *removed*, which is the
+    /// difference between opening a project and merging one — see
+    /// [`ProjectData::to_project`].
+    LoadProject(ProjectData),
+}
+
+/// A whole project, in the shape [`Action::apply`] can write without
+/// re-deriving anything. Composed from the existing per-entity payloads so
+/// there is exactly one definition of "a clip on the wire".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectData {
+    pub meta: ProjectMeta,
+    #[serde(default)]
+    pub media: Vec<MediaData>,
+    #[serde(default)]
+    pub tracks: Vec<TrackData>,
+    #[serde(default)]
+    pub clips: Vec<ClipData>,
+}
+
+impl ProjectData {
+    pub fn from_project(p: &Project) -> Self {
+        Self {
+            meta: ProjectMeta::from_project(p),
+            media: p.media.iter().map(MediaData::from_media).collect(),
+            tracks: p.tracks.iter().map(TrackData::from_track).collect(),
+            clips: p.clips.iter().map(ClipData::from_clip).collect(),
+        }
+    }
+
+    /// Rebuild the model. A payload entry that will not parse is skipped
+    /// rather than failing the whole load, matching the determinism contract:
+    /// a malformed field must not wedge a peer replaying the change.
+    pub fn to_project(&self) -> Project {
+        let mut p = self.meta.to_project();
+        p.media = self.media.iter().filter_map(MediaData::to_media).collect();
+        p.tracks = self.tracks.iter().filter_map(TrackData::to_track).collect();
+        p.clips = self.clips.iter().filter_map(ClipData::to_clip).collect();
+        p
+    }
 }
 
 impl Action for VideoEditorAction {
@@ -397,6 +451,9 @@ impl Action for VideoEditorAction {
             }
             VideoEditorAction::SetProjectMeta(meta) => {
                 VideoDoc::write_project_meta(doc, &meta.to_project());
+            }
+            VideoEditorAction::LoadProject(data) => {
+                VideoDoc::replace_project(doc, &data.to_project());
             }
         }
         Ok(())
@@ -471,6 +528,11 @@ pub fn remove_media_action(id: &Uuid, clips: &[Uuid]) -> VideoEditorAction {
 
 pub fn set_project_meta_action(p: &Project) -> VideoEditorAction {
     VideoEditorAction::SetProjectMeta(ProjectMeta::from_project(p))
+}
+
+/// Replace the whole project — what opening a project file dispatches.
+pub fn load_project_action(p: &Project) -> VideoEditorAction {
+    VideoEditorAction::LoadProject(ProjectData::from_project(p))
 }
 
 // ===========================================================================
@@ -1205,6 +1267,95 @@ mod tests {
         p.tracks.push(Track { id: tid, name: "V1".into(), index: 1, ..Default::default() });
         let cid = p.add_clip(tid, mid, 0.0).expect("media exists");
         (VideoResourceCtx { project: p, playhead: 4.0 }, cid)
+    }
+
+    #[test]
+    fn opening_a_project_replays_as_one_action_that_replaces_everything() {
+        // Opening a file is an action, so it undoes and replicates. That is
+        // only true if the *encoded* form carries the whole project — a
+        // payload that dropped the media bin would replay on a peer as a
+        // timeline of clips with no sources.
+        let (ctx, _cid) = ctx_fixture();
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, &ctx.project);
+
+        let mut opened = Project::new("Opened");
+        opened.fps = 24.0;
+        let mid = Uuid::new_v4();
+        opened.media.push(MediaItem {
+            id: mid,
+            name: "New.mp4".into(),
+            kind: MediaKind::Video,
+            duration: 8.0,
+            width: 1280,
+            height: 720,
+            ..Default::default()
+        });
+        let tid = Uuid::new_v4();
+        opened.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            index: 1,
+            solo: true,
+            ..Default::default()
+        });
+        opened.clips.push(Clip {
+            id: Uuid::new_v4(),
+            track: tid,
+            media: mid,
+            start: 2.0,
+            out_point: 8.0,
+            ..Default::default()
+        });
+
+        // Through the wire, not through the struct: this is the exact path a
+        // peer replaying the change takes.
+        let encoded = encode(&load_project_action(&opened));
+        let decoded: VideoEditorAction =
+            serde_json::from_slice(&encoded.payload).expect("payload decodes");
+        decoded.apply(&mut doc).expect("applies");
+
+        let back = VideoDoc::load_project(&doc);
+        assert_eq!(back.name, "Opened");
+        assert_eq!(back.fps, 24.0);
+        assert_eq!(back.media.len(), 1, "the previous bin is replaced, not merged");
+        assert_eq!(back.media[0].name, "New.mp4");
+        assert_eq!(back.tracks.len(), 1);
+        assert!(back.tracks[0].solo);
+        assert_eq!(back.clips.len(), 1);
+        assert_eq!(back.clips[0].media, mid);
+    }
+
+    #[test]
+    fn a_whole_project_survives_the_wire_with_every_field_intact() {
+        // `ProjectData` is composed from the per-entity payloads so there is
+        // one definition of "a clip on the wire" — this proves the
+        // composition did not quietly drop a layer.
+        let (ctx, cid) = ctx_fixture();
+        let mut p = ctx.project;
+        p.add_marker(3.5, "Beat", 2);
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.set_speed(0.5, false);
+            c.transition_duration = 0.75;
+            c.set_key_at(Param::Opacity, 1.0, 0.4, Interp::Linear);
+        }
+
+        let json = serde_json::to_vec(&load_project_action(&p)).unwrap();
+        let back: VideoEditorAction = serde_json::from_slice(&json).unwrap();
+        let VideoEditorAction::LoadProject(data) = back else {
+            panic!("the action round-trips as itself");
+        };
+        let rebuilt = data.to_project();
+
+        assert_eq!(rebuilt.markers.len(), 1);
+        assert_eq!(rebuilt.markers[0].name, "Beat");
+        assert_eq!(rebuilt.media.len(), p.media.len());
+        assert_eq!(rebuilt.tracks.len(), p.tracks.len());
+        let c = rebuilt.clip(cid).expect("the clip kept its id");
+        assert_eq!(c.speed, p.clip(cid).unwrap().speed);
+        assert!((c.transition_duration - 0.75).abs() < 1e-9);
+        assert_eq!(c.anim, p.clip(cid).unwrap().anim);
     }
 
     #[test]

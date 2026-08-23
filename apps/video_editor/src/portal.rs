@@ -1,9 +1,11 @@
-//! Media import through the host file chooser.
+//! Media import, project open/save, and the export destination — everything
+//! the editor reaches through the host file chooser.
 //!
 //! The portal client — the worker thread, the Tokio runtime, the `ashpd`
 //! round-trip, and the URI→path rule that makes this the file-access security
 //! boundary — lives in [`ui::portal`]. All this module carries is the filter
-//! set and the labels this app wants on its multi-select import dialog.
+//! sets, the labels this app wants on each dialog, and the open-vs-save
+//! distinction the project flow needs when a chosen path comes back.
 //!
 //! Import is *multi-select*: the user picks arbitrarily many clips at once and
 //! every local one comes back to be probed and added to the media bin. A
@@ -101,9 +103,146 @@ pub fn request_export_destination(suggested_name: &str, ext: &str) -> ExportDest
         .send()
 }
 
+// ---------------------------------------------------------------------------
+// Project files
+// ---------------------------------------------------------------------------
+
+/// The chooser filter for the editor's own project file. Both the glob and a
+/// MIME type, for the same reason the media filter carries both.
+fn project_filter() -> FileFilter {
+    FileFilter::new(crate::project_file::KIND_LABEL)
+        .glob(&format!("*.{}", crate::project_file::EXTENSION))
+        .mimetype("application/x-qos-video-project")
+}
+
+/// Which of the two project dialogs a chosen path came back from.
+///
+/// The portal hands back the same shape either way — one path — and the two
+/// mean opposite things: one is a file to read, the other a file to write.
+/// Getting them the wrong way round would overwrite the project the user
+/// meant to open, so the distinction is carried in the type rather than
+/// remembered in a flag beside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectOutcome {
+    Open(std::path::PathBuf),
+    Save(std::path::PathBuf),
+    Cancelled,
+    Failed(String),
+}
+
+/// Receiver the UI thread drains for an in-flight project open/save.
+pub struct ProjectChannel {
+    rx: ui::portal::PortalChannel,
+    save: bool,
+}
+
+impl ProjectChannel {
+    /// Non-blocking drain, mirroring [`std::sync::mpsc::Receiver::try_recv`].
+    pub fn try_recv(&self) -> Result<ProjectOutcome, std::sync::mpsc::TryRecvError> {
+        self.rx.try_recv().map(|outcome| match outcome {
+            ui::portal::PortalOutcome::Opened(p) if self.save => ProjectOutcome::Save(p),
+            ui::portal::PortalOutcome::Opened(p) => ProjectOutcome::Open(p),
+            ui::portal::PortalOutcome::Cancelled => ProjectOutcome::Cancelled,
+            ui::portal::PortalOutcome::Failed(e) => ProjectOutcome::Failed(e),
+        })
+    }
+}
+
+/// Open the host chooser for a project file to load.
+pub fn request_open_project() -> ProjectChannel {
+    ProjectChannel {
+        rx: PickRequest::open("Open project", "Open")
+            .thread_name("video-editor-open-project")
+            .filter(project_filter())
+            .all_files()
+            .send(),
+        save: false,
+    }
+}
+
+/// Open the host Save dialog for a project file.
+///
+/// Under `landlock = "strict"` this round-trip is not a nicety — the app has
+/// no standing grant to write anywhere, so the grant that follows the file
+/// the user picked is what *earns* the write. Exactly the boundary
+/// [`request_import`] relies on for reads and
+/// [`request_export_destination`] for the rendered video.
+///
+/// `suggested_name` seeds the filename field with the project's name plus
+/// the project extension, so the user is not made to invent either.
+pub fn request_save_project(suggested_name: &str) -> ProjectChannel {
+    ProjectChannel {
+        rx: PickRequest::save("Save project", "Save", suggested_name)
+            .thread_name("video-editor-save-project")
+            .filter(project_filter())
+            .send(),
+        save: true,
+    }
+}
+
+/// Test-only: deliver a project `outcome` on the exact per-frame drain path
+/// the real worker feeds.
+#[cfg(test)]
+pub fn inject_project_for_test(outcome: ProjectOutcome) -> ProjectChannel {
+    let (single, save) = match outcome {
+        ProjectOutcome::Open(p) => (ui::portal::PortalOutcome::Opened(p), false),
+        ProjectOutcome::Save(p) => (ui::portal::PortalOutcome::Opened(p), true),
+        ProjectOutcome::Cancelled => (ui::portal::PortalOutcome::Cancelled, false),
+        ProjectOutcome::Failed(e) => (ui::portal::PortalOutcome::Failed(e), false),
+    };
+    ProjectChannel { rx: ui::portal::inject_for_test(single), save }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_project_dialogs_are_each_configured_for_their_own_job() {
+        let open = PickRequest::open("Open project", "Open")
+            .filter(project_filter())
+            .all_files();
+        assert_eq!(open.title(), "Open project");
+        assert!(!open.is_multiple(), "one project is opened at a time");
+        assert_eq!(open.suggested_name(), None);
+        // The escape hatch stays on Open: a project someone renamed away from
+        // .qvp is still openable, and the header is what decides.
+        assert_eq!(open.filter_names(), vec!["Video project", "All files"]);
+
+        // Save deliberately has no "All files": a project is always written as
+        // .qvp, and an extensionless save is a file the Open dialog then hides.
+        let save = PickRequest::save("Save project", "Save", "Coastline_Doc_v3.qvp")
+            .filter(project_filter());
+        assert_eq!(save.suggested_name(), Some("Coastline_Doc_v3.qvp"));
+        assert_eq!(save.filter_names(), vec!["Video project"]);
+    }
+
+    #[test]
+    fn the_project_channel_remembers_which_flow_asked_for_the_path() {
+        // The same chosen path means "load this" for one flow and "write
+        // here" for the other. Confusing them destroys the file the user
+        // meant to read, so the channel is what keeps them apart.
+        let p = std::path::PathBuf::from("/home/alice/Holiday.qvp");
+        assert_eq!(
+            inject_project_for_test(ProjectOutcome::Open(p.clone())).try_recv(),
+            Ok(ProjectOutcome::Open(p.clone())),
+        );
+        assert_eq!(
+            inject_project_for_test(ProjectOutcome::Save(p.clone())).try_recv(),
+            Ok(ProjectOutcome::Save(p)),
+        );
+        assert_eq!(
+            inject_project_for_test(ProjectOutcome::Cancelled).try_recv(),
+            Ok(ProjectOutcome::Cancelled),
+        );
+    }
+
+    #[test]
+    fn an_empty_project_channel_reports_empty_rather_than_blocking() {
+        let (_tx, rx) = std::sync::mpsc::channel::<ui::portal::PortalOutcome>();
+        let ch = ProjectChannel { rx, save: false };
+        assert_eq!(ch.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty));
+    }
 
     #[test]
     fn export_destination_is_a_save_dialog_seeded_with_the_project_name() {
