@@ -1186,6 +1186,26 @@ mod tests {
         std::fs::remove_file(&tone).ok();
     }
 
+    /// The peak helper has to be able to say "I could not read this". While it
+    /// answered `0.0` for an unreadable file, every level assertion below was
+    /// one decode hiccup away from reporting a working export as a silent one
+    /// -- which is precisely how this file's audio tests flaked under load,
+    /// and the failure then named the wrong thing as broken.
+    ///
+    /// The bundled demo clip is a screen recording: `vide` handlers, no
+    /// `soun`. There is no level to read off it, and asking for one has to
+    /// fail rather than come back with a number.
+    #[cfg(feature = "gst")]
+    #[test]
+    #[should_panic(expected = "no readable audio stream")]
+    #[serial_test::serial(video_editor_gst)]
+    fn a_file_with_no_audio_track_cannot_be_asked_for_its_level() {
+        let Some(clip) = demo_clip() else {
+            panic!("this test needs the bundled demo clip");
+        };
+        let _ = audio_peak(&clip);
+    }
+
     /// Per-clip volume and track mute exist in the CRDT and the inspector but
     /// reached no audio path at all. Prove both now change the encoded file.
     #[cfg(feature = "gst")]
