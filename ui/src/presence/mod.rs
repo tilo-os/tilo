@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use crate::permissions::UserId;
 
 mod key;
@@ -20,6 +20,25 @@ pub use render::{
 /// document doesn't accumulate permanent smears of colour — you see where
 /// a peer is *currently* working, then it quietly clears.
 pub const TYPING_FADE: std::time::Duration = std::time::Duration::from_millis(2500);
+
+/// The longest forward caret jump still read as "this peer just wrote
+/// that" when deriving a highlight from carets alone (see the `Caret`
+/// arm of [`PresenceCtx::apply_remote_presence`]).
+///
+/// Not an attempt to tell typing from seeking — the two cannot be told
+/// apart from presence alone, and the sending-side detection in `App`
+/// has never tried either. It rejects the one jump that would look like
+/// a fault rather than a mistake: a click landing far down a long
+/// paragraph, painting the whole span it crossed.
+///
+/// Generous on purpose. A caret key is per *block*, so a spurious mark
+/// is bounded by one paragraph however wrong it is, whereas a cap that
+/// clipped a real insert would silently drop the marker on the edit
+/// most worth seeing — an agent replacing a line with a whole sentence
+/// is a single jump of that line's length. The largest such edit in
+/// this tree is well under a hundred characters; this leaves room for
+/// several times that and still refuses the absurd.
+const TYPING_DERIVE_MAX_RUN: usize = 512;
 
 /// Stable RGB color for a collaborator, used by every widget that paints a
 /// per-peer affordance (tab presence dots, remote cursor, per-folder
@@ -498,6 +517,28 @@ pub enum RemotePresenceEffect {
 pub struct PresenceCtx {
     pub here: HashMap<PresenceKey, Vec<UserId>>,
     pub pointers: HashMap<PresenceKey, Vec<(UserId, (f32, f32))>>,
+    /// When each pointer in [`Self::pointers`] was last heard about.
+    ///
+    /// A pointer is a live claim, and this is what lets it stop being
+    /// one. Without it the map only ever grows: a peer that goes quiet
+    /// — crashed, closed the lid, walked away, or simply stopped having
+    /// anything to say about where it is pointing — keeps a cursor and
+    /// a name pill painted on everyone else's desktop for the rest of
+    /// the session, because nothing in the store can tell the last frame
+    /// received from a frame received just now.
+    ///
+    /// The sibling store already knew this: cursors painted inside an
+    /// app go through `shell::cursor_interp`, which fades a peer out
+    /// after a few seconds of silence and retires it. The desktop store
+    /// had no such notion, so the same peer was permanent in one place
+    /// and transient in the other — the exact drift
+    /// [`Self::apply_remote_presence`] warns about, since a peer painted
+    /// by one and not the other is indistinguishable from a peer who is
+    /// not there.
+    ///
+    /// Reclaimed by [`Self::prune_pointers`], the way
+    /// [`Self::prune_typing`] reclaims faded typing marks.
+    pointer_seen: HashMap<(PresenceKey, UserId), Instant>,
     pub selections: HashMap<PresenceKey, Vec<(UserId, SelectionRange)>>,
     pub carets: HashMap<PresenceKey, Vec<(UserId, usize)>>,
     pub remote_cursors: Vec<RemoteCursor>,
@@ -667,12 +708,79 @@ impl PresenceCtx {
     }
 
     pub fn set_pointer(&mut self, key: &PresenceKey, user: UserId, pos: (f32, f32)) {
+        self.set_pointer_at(key, user, pos, Instant::now());
+    }
+
+    /// [`Self::set_pointer`] with the clock supplied, so retirement can
+    /// be exercised without sleeping.
+    ///
+    /// Records the peer as *present* as well as pointing, and the two
+    /// are deliberately not the same record. The pointer expires; being
+    /// here does not. Somebody who joined a room and put their mouse
+    /// down is still in it, so a roster built from this must not lose
+    /// them when their cursor is retired — a peer's own row blinking
+    /// between "here" and "invited" while they read is worse than the
+    /// stale cursor this fixes.
+    pub fn set_pointer_at(
+        &mut self,
+        key: &PresenceKey,
+        user: UserId,
+        pos: (f32, f32),
+        now: Instant,
+    ) {
         let list = self.pointers.entry(key.clone()).or_default();
         if let Some(entry) = list.iter_mut().find(|(u, _)| *u == user) {
             entry.1 = pos;
         } else {
-            list.push((user, pos));
+            list.push((user.clone(), pos));
         }
+        self.pointer_seen.insert((key.clone(), user.clone()), now);
+        // Desktop scopes only. A pointer under a workspace is somebody
+        // on that desktop, which is what the roster asks about; a
+        // pointer inside a widget is a position in a document, and
+        // registering it here would put a presence dot on whatever the
+        // peer's mouse happened to be over.
+        if matches!(key, PresenceKey::Workspace { .. }) {
+            self.register_presence(key, user);
+        }
+    }
+
+    /// Retire every pointer nobody has restated within `horizon`, and
+    /// any scope left with none. Returns whether anything was retired —
+    /// a cursor leaving the screen is a reason to repaint. Call once a
+    /// frame, beside [`Self::prune_typing`].
+    ///
+    /// A session restates a stationary pointer roughly once a second so
+    /// that somebody who joins the room late is not shown an empty
+    /// desktop. `horizon` therefore has to be comfortably longer than
+    /// that: this is meant to notice a peer that has *stopped talking*,
+    /// not to blink the cursor of one whose keepalive was briefly
+    /// delayed by a slow frame or a dropped gossip message.
+    ///
+    /// Only the pointer goes. The peer stays in [`Self::here`], keeps
+    /// its name, its colour, its caret and its selection — it has gone
+    /// quiet about where it is pointing, which is not the same as
+    /// leaving, and a caret in a document nobody is touching is exactly
+    /// what a participant with no screen looks like.
+    pub fn prune_pointers(&mut self, now: Instant, horizon: Duration) -> bool {
+        let seen = &mut self.pointer_seen;
+        let mut retired = false;
+        self.pointers.retain(|key, list| {
+            list.retain(|(user, _)| {
+                let fresh = seen
+                    .get(&(key.clone(), user.clone()))
+                    .is_some_and(|t| now.saturating_duration_since(*t) < horizon);
+                if !fresh {
+                    retired = true;
+                }
+                fresh
+            });
+            !list.is_empty()
+        });
+        if retired {
+            seen.retain(|_, t| now.saturating_duration_since(*t) < horizon);
+        }
+        retired
     }
 
     pub fn set_caret(&mut self, key: &PresenceKey, user: UserId, pos: usize) {
@@ -1190,6 +1298,43 @@ impl PresenceCtx {
                 // `carets` (set_caret); the cross-process overlay reads
                 // the `remote_caret` map (set_remote_caret).
                 let uid = UserId(user_id.clone());
+                // A caret that advanced under the same scope is a run of
+                // text this peer just wrote, so mark it — the marker is
+                // derived here, on the receiving side, rather than only
+                // trusted from a `Typing` payload.
+                //
+                // `App::broadcast_focus_presence` already synthesises
+                // `Typing` from its own focused widget's caret, and that
+                // covers exactly one kind of collaborator: one running
+                // this toolkit. An agent, a headless client, or any other
+                // SDK peer publishes the single thing every collaborator
+                // publishes — where its caret is — and so arrived with a
+                // cursor and nothing to show for what it had done, which
+                // is the half of presence you actually want when someone
+                // else edits a document you are reading.
+                //
+                // Deriving it from the caret makes that peer no longer a
+                // special case: `apps/agent` announces the caret at the
+                // block's pre-edit length and then ships the delta, so
+                // the run between two consecutive carets is precisely the
+                // text it inserted — and, because the mark is only born
+                // when the *second* caret arrives, that text is already
+                // in the document and always has glyphs to sit behind.
+                //
+                // A peer sending both reports one run twice; the
+                // coalescing in `record_peer_typing` merges the pair into
+                // a single span, so it stays one marker rather than two
+                // tints stacked into an illegible band.
+                if let Some(prev) = self.caret_for(&key, &uid) {
+                    if pos > prev && pos - prev <= TYPING_DERIVE_MAX_RUN {
+                        self.record_peer_typing(
+                            uid.clone(),
+                            key.clone(),
+                            SelectionRange { start: prev, end: pos },
+                            Instant::now(),
+                        );
+                    }
+                }
                 self.set_caret(&key, uid, pos);
                 self.set_remote_caret(user_id, key, pos);
             }
@@ -1268,6 +1413,7 @@ impl PresenceCtx {
         for list in self.pointers.values_mut() {
             list.retain(|(u, _)| u != &uid);
         }
+        self.pointer_seen.retain(|(_, u), _| u != &uid);
         // carets
         for list in self.carets.values_mut() {
             list.retain(|(u, _)| u != &uid);
@@ -2016,5 +2162,116 @@ mod own_identity_tests {
             RemotePresenceEffect::None,
         );
         assert!(ctx.peer_view(&UserId("quinten".into())).is_none());
+    }
+
+    /// A pointer nobody restates is retired; everything else about that
+    /// peer stays.
+    ///
+    /// The store could not previously tell the last frame it will ever
+    /// receive from one that arrived this instant, so a publisher that
+    /// went quiet — idle, crashed, or gone from the mesh without a word
+    /// — left its cursor and name pill painted for the rest of the
+    /// session. Cursors drawn inside an app were always retired this way
+    /// by `shell::cursor_interp`; the desktop store simply had no notion
+    /// of it, which is how one peer could be permanent in one place and
+    /// transient in the other.
+    ///
+    /// Retiring a cursor is not evicting a peer, and the second half is
+    /// the load-bearing one: the peer stays in the room, keeps its
+    /// caret, and keeps its name. Otherwise this would trade a stale
+    /// cursor for a participant that vanishes from the roster whenever
+    /// it stops moving — which is the state an agent is in permanently.
+    #[test]
+    fn a_pointer_nobody_restates_is_retired_and_nothing_else_is() {
+        let t0 = Instant::now();
+        let horizon = Duration::from_secs(4);
+        let room = PresenceKey::Workspace { id: "r".into() };
+        let block = PresenceKey::Widget { path: vec![PathSegment::Index(0)] };
+        let claude = UserId("peer@7".into());
+        let xaver = UserId("peer@8".into());
+
+        let mut ctx = PresenceCtx::default();
+        ctx.set_display_name(claude.clone(), "Claude");
+        ctx.set_pointer_at(&room, claude.clone(), (1178.31, 582.0), t0);
+        ctx.set_caret(&block, claude.clone(), 12);
+
+        assert_eq!(ctx.pointer_for(&room, &claude), Some((1178.31, 582.0)));
+        assert!(
+            !ctx.prune_pointers(t0 + Duration::from_secs(1), horizon),
+            "a peer heard from a moment ago is not stale",
+        );
+        assert_eq!(
+            ctx.pointer_for(&room, &claude),
+            Some((1178.31, 582.0)),
+            "and is still painted",
+        );
+
+        // Somebody else keeps talking; the first one stops.
+        let t1 = t0 + horizon + Duration::from_secs(1);
+        ctx.set_pointer_at(&room, xaver.clone(), (300.0, 200.0), t1);
+        assert!(
+            ctx.prune_pointers(t1, horizon),
+            "the one that went quiet is retired, which is a reason to repaint",
+        );
+        assert_eq!(
+            ctx.pointer_for(&room, &claude),
+            None,
+            "no cursor for a peer that has stopped saying where it is pointing",
+        );
+        assert_eq!(
+            ctx.pointer_for(&room, &xaver),
+            Some((300.0, 200.0)),
+            "and the peer still talking is untouched - this retires one \
+             pointer, not the scope",
+        );
+
+        // The peer did not leave.
+        assert!(
+            ctx.peers_on(&room).contains(&claude),
+            "a peer that has gone quiet about pointing is still in the room",
+        );
+        assert_eq!(
+            ctx.caret_for(&block, &claude),
+            Some(12),
+            "and its caret in the document is untouched",
+        );
+        assert_eq!(
+            ctx.display_name(&claude),
+            "Claude",
+            "and the room still knows what to call it",
+        );
+
+        // And it comes back the instant it says something again.
+        ctx.set_pointer_at(&room, claude.clone(), (10.0, 20.0), t1);
+        assert_eq!(ctx.pointer_for(&room, &claude), Some((10.0, 20.0)));
+    }
+
+    /// A workspace-scoped pointer registers its peer as present; a
+    /// widget-scoped one does not.
+    ///
+    /// The roster asks "who is in this room" and the overlay asks "where
+    /// is that peer pointing", and only the second expires. Filing both
+    /// from one decode is what stops them drifting into two stores that
+    /// can disagree — a roster listing somebody the desktop does not
+    /// draw, or the reverse. A pointer inside a widget is a position in
+    /// a document rather than a person on a desktop, so it stays out of
+    /// the registry the roster reads.
+    #[test]
+    fn a_desktop_pointer_registers_its_peer_and_an_in_app_one_does_not() {
+        let t0 = Instant::now();
+        let room = PresenceKey::Workspace { id: "r".into() };
+        let block = PresenceKey::Widget { path: vec![PathSegment::Index(0)] };
+        let alice = UserId("peer@1".into());
+        let bob = UserId("peer@2".into());
+
+        let mut ctx = PresenceCtx::default();
+        ctx.set_pointer_at(&room, alice.clone(), (5.0, 6.0), t0);
+        ctx.set_pointer_at(&block, bob.clone(), (7.0, 8.0), t0);
+
+        assert!(ctx.peers_on(&room).contains(&alice));
+        assert!(
+            !ctx.peers_on(&block).contains(&bob),
+            "a pointer over a widget must not put a presence dot on it",
+        );
     }
 }

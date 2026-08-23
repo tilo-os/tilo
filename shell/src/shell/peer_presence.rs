@@ -150,6 +150,49 @@ pub const MIN_PUBLISH_GAP: Duration = Duration::from_millis(33);
 /// show an empty desktop until they moved again.
 pub const CURSOR_KEEPALIVE: Duration = Duration::from_millis(1000);
 
+/// How long a session goes without any input at all before it stops
+/// telling the room where its pointer is.
+///
+/// The keepalive above restates a stationary pointer so a late joiner
+/// is not shown an empty desktop. On its own it restates it forever,
+/// which turns *where the pointer was last put* into a permanent claim
+/// that somebody is pointing there — and a session acquires a pointer
+/// position the first time anything presses a button on it, which is
+/// how a session joins a room at all. One press on a **Join** button
+/// and a cursor with a name pill sat on every peer's desktop for the
+/// rest of the session, at a control that had long since been
+/// dismissed.
+///
+/// Measured from the last input of *any* kind, not the last motion:
+/// somebody typing has not touched their mouse and is plainly still
+/// there, and a desktop cursor's real claim is that somebody is at the
+/// machine. Any input revives it on the next frame, so the worst case
+/// is a cursor briefly missing for somebody genuinely idle rather than
+/// a stale one nobody can clear.
+///
+/// Long enough that nobody using their machine ever reaches it — every
+/// keystroke, wheel notch and twitch resets it, so it is only crossed
+/// by a session that has had *nothing* for fifteen seconds — and short
+/// enough that a position left behind at start-up is gone well before
+/// anybody could read a name off it.
+pub const POINTER_IDLE: Duration = Duration::from_secs(15);
+
+/// How long a peer's pointer survives in the local store without being
+/// restated, before the overlay stops painting it.
+///
+/// The receiving half of the same fact. A publisher that has gone quiet
+/// — idle, crashed, or gone from the mesh without a word — would
+/// otherwise leave its last position painted for the rest of the
+/// session, because the store cannot tell a frame that arrived just now
+/// from the last one that ever will. Cursors drawn *inside* an app have
+/// always been retired this way by `cursor_interp`; the desktop store
+/// simply had no notion of it.
+///
+/// Comfortably longer than [`CURSOR_KEEPALIVE`], so a live peer whose
+/// restatement was delayed by a slow frame or a dropped gossip message
+/// does not blink.
+pub const POINTER_STALE_AFTER: Duration = Duration::from_secs(4);
+
 /// Should this session put its pointer on the wire again?
 ///
 /// `last` is what it last published for this room and when. Pure so
@@ -370,9 +413,27 @@ impl PeerPresence {
     /// answered level-triggered by `refresh_roster`, because somebody
     /// who joined and never moved a pointer publishes nothing here.
     pub fn pump(&self, presence: &mut PresenceCtx) -> bool {
+        self.pump_at(presence, Instant::now())
+    }
+
+    /// [`Self::pump`] with the clock supplied, so retirement can be
+    /// exercised without sleeping.
+    pub fn pump_at(&self, presence: &mut PresenceCtx, now: Instant) -> bool {
+        // Retire whatever nobody has restated, before folding in what
+        // just arrived — so a peer heard from this frame is refreshed by
+        // the fold rather than aged out by its own arrival.
+        //
+        // Counted as a landing: a cursor leaving the screen changes the
+        // screen exactly as much as one moving across it does, and a
+        // caller that repainted for the second and not the first would
+        // leave the retired one painted until something else happened.
+        let retired = presence.prune_pointers(now, POINTER_STALE_AFTER);
         let drained: Vec<_> = {
+            // Still a landing if a cursor came off the screen just now:
+            // the retirement already happened, and reporting it as
+            // nothing would leave the repaint owed.
             let Ok(mut buf) = self.inbound.lock() else {
-                return false;
+                return retired;
             };
             std::mem::take(&mut *buf)
         };
@@ -385,12 +446,13 @@ impl PeerPresence {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default();
-        fold_inbound(
+        let landed = fold_inbound(
             drained,
             presence,
             &|room| net.peer_labels(room),
             &|room| mine.iter().any(|r| r == room),
-        )
+        );
+        landed || retired
     }
 
     /// Write the active room's people into the tree, where the roster
@@ -462,21 +524,28 @@ impl PeerPresence {
 /// same evidence rather than two stores that can disagree — which is
 /// what the roster listing somebody the desktop does not draw, or the
 /// reverse, would mean.
+///
+/// Taken from the room's presence *registration* rather than from the
+/// live pointer list, because the two answer different questions and
+/// only one of them expires. A cursor is a claim about right now and is
+/// retired when nobody restates it; having turned up in a room is not
+/// undone by going quiet. Reading the pointer list here would have made
+/// a person's own row flicker between present and merely invited while
+/// they sat reading, which is a worse thing to put on screen than the
+/// stale cursor that retirement exists to remove.
+///
+/// Both are still one arrival, filed by one decode:
+/// [`PresenceCtx::set_pointer_at`] registers a workspace-scoped pointer
+/// as presence at the moment it stores it, so there is no second path
+/// to drift from.
 fn handles_seen_in(presence: &PresenceCtx, room: &str) -> std::collections::BTreeSet<u64> {
     let mut out = std::collections::BTreeSet::new();
-    for (key, peers) in &presence.pointers {
-        let PresenceKey::Workspace { id } = key else {
-            continue;
-        };
-        if id.as_str() != room {
-            continue;
-        }
-        for (user, _) in peers {
-            if let Some(handle) = user.0.strip_prefix("peer@")
-                && let Ok(handle) = handle.parse::<u64>()
-            {
-                out.insert(handle);
-            }
+    let key = PresenceKey::Workspace { id: room.to_string() };
+    for user in presence.peers_on(&key) {
+        if let Some(handle) = user.0.strip_prefix("peer@")
+            && let Ok(handle) = handle.parse::<u64>()
+        {
+            out.insert(handle);
         }
     }
     out
@@ -1603,6 +1672,131 @@ mod two_sessions {
                 })
                 .map(|p| p[0].1),
             Some((640.0, 610.0)),
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session that was pressed once, minutes ago, wears no cursor on
+    /// anybody's desktop — and is still in the room.
+    ///
+    /// This is the bug as it was actually photographed, which the
+    /// previous gate was the wrong shape to catch. That gate refused a
+    /// pointer that had never been anywhere; the session in the picture
+    /// had been somewhere, exactly once, because pressing **Join** is
+    /// how a session enters a room and a press puts the pointer on the
+    /// button. The position was real, the gate passed it, and the
+    /// keepalive restated it to the room every second for the rest of
+    /// the run — a name pill parked on a control that had been
+    /// dismissed several beats earlier.
+    ///
+    /// Driven end to end for that reason: the input state a real press
+    /// leaves behind, the value the frame loop reads out of it, the
+    /// publisher, the wire, and the store the overlay paints from. Every
+    /// previous version of this fix passed a test that stopped short of
+    /// one of those and left the pill on screen.
+    ///
+    /// The second half is the part that must not regress. Retiring a
+    /// cursor is not evicting a participant: the room still holds them,
+    /// the roster still lists them, and a caret they place in a document
+    /// still appears. A participant with no screen is precisely a peer
+    /// that is present, silent about pointing, and visible where it
+    /// acts.
+    #[test]
+    fn a_session_pressed_once_and_then_left_alone_stops_wearing_a_cursor() {
+        let guest_peer = peer_id(24);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "Claude")]);
+        let guest_tree = guest_joining(&mut host_tree, room);
+
+        let host_handle = host_tree.shared();
+        let guest_handle = guest_tree.shared();
+        let (host_net, _host_cmds) = shell_network_for_test(host_handle.clone(), 0xD0Cu64);
+        let (guest_net, mut guest_cmds) =
+            shell_network_for_test(guest_handle.clone(), handle_of(&guest_peer));
+        let host_net = Arc::new(host_net);
+        let guest_net = Arc::new(guest_net);
+
+        let dir = std::env::temp_dir().join(format!("qos-pressed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let host_broker = broker(&dir, "ph.sock");
+        let guest_broker = broker(&dir, "pg.sock");
+        let host = PeerPresence::attach(&host_broker, Arc::clone(&host_net), Vec::new());
+        let guest = PeerPresence::attach(&guest_broker, Arc::clone(&guest_net), Vec::new());
+        host.set_rooms(rooms_of(&host_handle));
+        guest.set_rooms(rooms_of(&guest_handle));
+
+        // The press. `Join` sits here at the size this was filmed at,
+        // and the harness clicks it by name — the pointer is moved to
+        // the control and the button goes down, which is all a person
+        // pressing it does either.
+        let joined_at = Instant::now();
+        let mut input = crate::compositor::client_input::ClientInput::default();
+        input.note_input_for_test(Some((1178.31, 582.0)), joined_at);
+        assert_eq!(
+            input.pointer_position(),
+            Some((1178.31, 582.0)),
+            "the fixture has to be a session that really was pointed at, \
+             or it proves nothing about the run that was photographed",
+        );
+
+        // The frame loop, on the frame the press landed.
+        guest.set_cursor_position(input.live_pointer(joined_at, POINTER_IDLE));
+        assert!(
+            guest.publish_local_cursor_at(&room.to_string(), joined_at),
+            "somebody is pressing a button on this session, so it is pointing",
+        );
+        over_the_wire(published(&mut guest_cmds), &host_net);
+
+        let mut on_host = PresenceCtx::default();
+        let ws = PresenceKey::Workspace { id: room.to_string() };
+        assert!(host.pump_at(&mut on_host, joined_at));
+        assert_eq!(
+            on_host.pointers.get(&ws).map(|p| p[0].1),
+            Some((1178.31, 582.0)),
+            "and the host paints it, which is correct at this instant",
+        );
+
+        // Nothing touches the session again. The card is dismissed, the
+        // room gets on with itself, and the frame loop keeps running.
+        let later = joined_at + POINTER_IDLE + Duration::from_secs(1);
+        guest.set_cursor_position(input.live_pointer(later, POINTER_IDLE));
+        assert!(
+            !guest.publish_local_cursor_at(&room.to_string(), later),
+            "nobody is at this session, so it has nothing to say about \
+             where it is pointing",
+        );
+        assert!(
+            guest_cmds.try_recv().is_err(),
+            "and nothing may reach the wire for it",
+        );
+
+        // The host stops hearing about it, and stops painting it.
+        let host_gives_up = later + POINTER_STALE_AFTER + Duration::from_secs(1);
+        host.pump_at(&mut on_host, host_gives_up);
+        assert!(
+            on_host.pointers.get(&ws).map(|p| p.len()).unwrap_or(0) == 0,
+            "so no pill is left parked on a control that was dismissed \
+             several beats ago, got {:?}",
+            on_host.pointers.get(&ws),
+        );
+
+        // But the participant did not leave, and nothing about it may
+        // suggest it did.
+        assert!(
+            on_host.peers_on(&ws).iter().any(|u| u.0 == format!("peer@{}", handle_of(&guest_peer))),
+            "a peer that has gone quiet about pointing is still in the room",
+        );
+        let block = PresenceKey::Widget {
+            path: vec![ui::presence::PathSegment::Field("wp_block".to_string())],
+        };
+        let claude = ui::permissions::UserId(format!("peer@{}", handle_of(&guest_peer)));
+        on_host.set_caret(&block, claude.clone(), 12);
+        host.pump_at(&mut on_host, host_gives_up + POINTER_STALE_AFTER * 4);
+        assert_eq!(
+            on_host.caret_for(&block, &claude),
+            Some(12),
+            "and its caret in the document is untouched by any of this - \
+             which is where a participant with no screen is supposed to appear",
         );
 
         let _ = std::fs::remove_dir_all(&dir);
