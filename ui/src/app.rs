@@ -3204,10 +3204,27 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let mut window_attributes = Window::default_attributes()
             .with_title(title)
             .with_window_icon(icon.clone())
-            // Draw a normal, draggable title bar (winit's sctk-adwaita CSD)
-            // on compositors that don't provide server-side decorations —
-            // e.g. GNOME/mutter. Explicit even though it's the winit
-            // default, so the intent is unmistakable.
+            // "Decorated" — which on Wayland means *ask the compositor to
+            // decorate*, not "draw one yourself". winit maps this to
+            // `WindowDecorations::RequestServer`, so the toolkit binds
+            // `zxdg_decoration_manager_v1` and requests `ServerSide`; only
+            // when there is no such global (or the compositor answers
+            // `ClientSide`) does it fall back to drawing the sctk-adwaita
+            // title bar itself.
+            //
+            // On qOS the compositor answers `ServerSide` — a window lives
+            // in a tab and the tab's chrome is its decoration — so this is
+            // the value that makes an app *not* draw a title bar. It is
+            // also what makes the window fill its tab: a client that
+            // decorates itself subtracts the title bar from the size it
+            // was configured to and commits the remainder, leaving a band
+            // of empty tab beneath it.
+            //
+            // Elsewhere (GNOME/mutter, which offers no server-side mode)
+            // the same value gets a normal draggable CSD title bar, which
+            // is what an app run outside qOS should have. Explicit even
+            // though it is the winit default, because "true" reads like
+            // the wrong answer until you know it means "ask".
             .with_decorations(true)
             .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
