@@ -1,0 +1,432 @@
+#!/usr/bin/env python3
+"""Inviting and joining are things you can *click*.
+
+The room's people live behind the top bar's avatar stack, and the two
+acts that change who is in the room — inviting somebody, joining
+somebody else — lived only in the command palette. So the whole
+collaboration story was reachable only by a person who already knew the
+name of a command, and on screen it happened in under a second with no
+control ever appearing. Two separate holes made that unavoidable:
+
+  * with an empty roster the avatar stack published `Rect::ZERO`, so at
+    the one moment you want to invite the *first* person there was
+    nothing to click; and
+  * the panel behind it listed participants and offered no Invite and
+    no Join.
+
+This drives both halves with the mouse, on two real compositors with
+separate identities, homes and device keys:
+
+  quinten   clicks the top bar (empty roster)  →  panel
+            clicks **Invite**                  →  card: token + "Copied"
+
+  (the hop between machines is the person's — a chat message, an email,
+   a USB stick. What travels here is taken out of quinten's *clipboard*,
+   never out of his chrome state, so what crosses is what the button
+   actually produced.)
+
+  xaver     clicks the top bar                 →  panel
+            clicks **Join**                    →  prompt
+            clicks **Paste**, clicks **Join**  →  in the room
+
+Two negative claims carry the weight:
+
+  1. This script never issues a `type` op. If a paste does nothing the
+     prompt stays empty and the run fails, rather than quietly falling
+     back to typing a token the harness already had in a variable.
+  2. This script never invokes `peer.invite` / `peer.connect` through
+     the action API. Every step is `click_named`, so a control that is
+     not painted, not hit-testable or not wired fails the run — where
+     an invocation would have proved only the third of those.
+
+Usage:
+  ./collab-panel-proof.py [--keep] [--out DIR]
+
+  cargo build -p shell
+
+Exits non-zero if any claim fails.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+from reaper import die_with_parent
+
+REPO = pathlib.Path(__file__).resolve().parents[2]
+SHELL = REPO / "target" / "debug" / "shell"
+
+# The real user's home, captured before any session overrides `HOME`.
+REAL_HOME = os.path.expanduser("~")
+
+failures: list[str] = []
+
+
+def check(label: str, ok: bool, detail: str = "") -> bool:
+    print(f"  {'PASS' if ok else 'FAIL'}  {label}" + (f" — {detail}" if detail else ""))
+    if not ok:
+        failures.append(label)
+    return bool(ok)
+
+
+def step(what: str) -> None:
+    print(f"\n· {what}")
+
+
+def wait_for(pred, timeout=30.0, poll=0.3):
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            got = pred()
+        except Exception:
+            got = None
+        if got:
+            return got
+        time.sleep(poll)
+    return None
+
+
+def freshness(binary: pathlib.Path, sources: list[pathlib.Path]) -> str | None:
+    """Is `binary` older than anything it is built from?
+
+    A stale binary produces a verdict about code that is not the code
+    under test, and it produces it silently — the run looks exactly like
+    a run that worked.
+    """
+    if not binary.exists():
+        return f"{binary} does not exist"
+    built = binary.stat().st_mtime
+    newer = [s for s in sources if s.exists() and s.stat().st_mtime > built]
+    if newer:
+        names = ", ".join(str(s.relative_to(REPO)) for s in newer[:3])
+        return f"{binary.name} predates {names}"
+    return None
+
+
+class Session:
+    """One real compositor, isolated from the machine and from its peer."""
+
+    def __init__(self, name: str, root: str, runtime_root: str):
+        self.name = name
+        self.dir = os.path.join(root, name)
+        os.makedirs(self.dir, exist_ok=True)
+        # Short paths. `sun_path` is 108 bytes and both the control
+        # socket and the Wayland socket live under directories named
+        # here — a run rooted somewhere verbose fails at bind with an
+        # error about the path rather than about the length.
+        self.socket = os.path.join(runtime_root, f"{name[0]}.sock")
+        self.runtime = os.path.join(runtime_root, f"r{name[0]}")
+        os.makedirs(self.runtime, mode=0o700, exist_ok=True)
+        self.home = os.path.join(self.dir, "home")
+        os.makedirs(self.home, exist_ok=True)
+        env = {
+            **os.environ,
+            "QOS_TEST_CONTROL": self.socket,
+            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "HOME": self.home,
+            "XDG_DATA_HOME": os.path.join(self.dir, "data"),
+            "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
+            "XDG_STATE_HOME": os.path.join(self.dir, "state"),
+            "XDG_CONFIG_HOME": os.path.join(self.dir, "config"),
+            "XDG_RUNTIME_DIR": self.runtime,
+            # The app payload + runtime bundle are the machine's, not the
+            # session's — they are read-only inputs both sessions share.
+            "QOS_APPS_DATA_DIR": os.path.join(REAL_HOME, ".local/share/qos-apps"),
+            "QOS_RUNTIME_BUNDLE_DIR": os.path.join(REAL_HOME, ".local/share/qos-runtime"),
+            # Without its own device key a session's peer-sync turns
+            # itself off, and the only visible symptom is that the
+            # invite controls never appear.
+            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "QOS_USER_ID": name,
+            "NIRIOS_HEADLESS_SIZE": "1600x1000",
+            # The host is de_DE and bwrap does not clear the
+            # environment, so without this the chrome renders in German.
+            "LC_ALL": "en_US.UTF-8",
+            "LANG": "en_US.UTF-8",
+        }
+        # Never open a window on the user's display. `--backend headless`
+        # is not enough on its own: winit falls back to X11 when only
+        # WAYLAND_DISPLAY is cleared.
+        env.pop("DISPLAY", None)
+        env.pop("WAYLAND_DISPLAY", None)
+        self.env = env
+        self.log_path = os.path.join(self.dir, "shell.log")
+        self.log = open(self.log_path, "w")
+        self.proc = subprocess.Popen(
+            [str(SHELL), "--mode", "native", "--backend", "headless",
+             "--enable-peer-sync"],
+            env=env, stdout=self.log, stderr=subprocess.STDOUT,
+            preexec_fn=die_with_parent(),
+        )
+
+    def wait_up(self, timeout=60.0) -> bool:
+        end = time.time() + timeout
+        while time.time() < end:
+            if os.path.exists(self.socket):
+                time.sleep(1.0)
+                return True
+            if self.proc.poll() is not None:
+                return False
+            time.sleep(0.3)
+        return False
+
+    def call(self, payload: dict, timeout=60) -> dict:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(self.socket)
+        s.sendall((json.dumps(payload) + "\n").encode())
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        s.close()
+        return json.loads(buf.decode())
+
+    # -- convenience -------------------------------------------------
+    def state(self) -> dict:
+        return self.call({"op": "state_dump"})["state"]
+
+    def chrome(self) -> dict:
+        return self.state()["chrome"]
+
+    def overlays(self) -> dict:
+        return self.chrome().get("overlays", {}) or {}
+
+    def peer_sync(self) -> dict:
+        return self.chrome().get("peer_sync", {}) or {}
+
+    def targets(self) -> list:
+        return self.call({"op": "list_targets"})["targets"]
+
+    def named_rect(self, name: str) -> list | None:
+        """The rect a name resolves to *right now*, or None.
+
+        `register_chrome_rects` drops zero-area entries, and this drops
+        any that slipped through, so a name that does not resolve means
+        "not on screen" — which is exactly the claim each of these steps
+        needs to be able to make.
+        """
+        for t in self.targets():
+            if t.get("name") == name:
+                rect = t.get("rect")
+                if rect and rect[2] > 0 and rect[3] > 0:
+                    return rect
+        return None
+
+    def click_named(self, name: str) -> dict:
+        return self.call({"op": "click_named", "name": name})
+
+    def clipboard_read(self) -> str | None:
+        return self.call({"op": "clipboard_paste"})["clipboard"]["text"]
+
+    def clipboard_write(self, text: str):
+        self.call({"op": "clipboard_copy", "text": text})
+
+    def snapshot(self, path: str) -> dict:
+        return self.call({"op": "snapshot", "path": path}, timeout=180)
+
+    def settle(self, seconds: float = 0.6):
+        time.sleep(seconds)
+
+    def stop(self):
+        try:
+            self.proc.terminate()
+            self.proc.wait(timeout=10)
+        except Exception:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+        try:
+            self.log.close()
+        except Exception:
+            pass
+
+
+def click(s: Session, name: str, what: str) -> bool:
+    """Click a named control, and fail the run when it is not there."""
+    rect = s.named_rect(name)
+    if not rect:
+        check(f"{s.name} can click {what}", False, f"`{name}` resolves to nothing")
+        return False
+    resp = s.click_named(name)
+    if "err" in resp:
+        check(f"{s.name} can click {what}", False, json.dumps(resp["err"])[:140])
+        return False
+    check(f"{s.name} clicks {what}", True, f"at {rect}")
+    s.settle()
+    return True
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--keep", action="store_true",
+                    help="leave the session roots on disk for inspection")
+    ap.add_argument("--out", default=None, help="where the PNGs go")
+    args = ap.parse_args()
+
+    shots = args.out or os.path.join(tempfile.gettempdir(), "collab-panel")
+    os.makedirs(shots, exist_ok=True)
+
+    stale = freshness(SHELL, [
+        REPO / "shell" / "src" / "shell" / "overlay_host.rs",
+        REPO / "shell" / "src" / "shell" / "topbar_chrome.rs",
+        REPO / "shell" / "src" / "compositor" / "frame.rs",
+    ])
+    if stale:
+        print(f"REFUSING: {stale}\n  build first:  cargo build -p shell")
+        return 2
+
+    root = tempfile.mkdtemp(prefix="qinv-")
+    runtime_root = tempfile.mkdtemp(prefix="/tmp/qs-")
+    quinten = Session("quinten", root, runtime_root)
+    xaver = Session("xaver", root, runtime_root)
+    try:
+        step("two compositors, separate identities and device keys")
+        for s in (quinten, xaver):
+            if not check(f"{s.name}'s session came up", s.wait_up()):
+                print(open(s.log_path).read()[-3000:])
+                return 1
+
+        step("quinten's room is empty, and the top bar still offers a way in")
+        roster = quinten.state()["workspace_tree"].get("collaborators") or []
+        check("nobody is in the room yet", not roster, f"{len(roster)} collaborators")
+        stack = quinten.named_rect("topbar_avatar_stack")
+        if not check("the avatar stack is on screen anyway", bool(stack),
+                     "an empty roster used to publish Rect::ZERO"
+                     if not stack else f"at {stack}"):
+            return 1
+        quinten.snapshot(os.path.join(shots, "01-empty-roster-topbar.png"))
+
+        step("he clicks it")
+        if not click(quinten, "topbar_avatar_stack", "the avatar stack"):
+            return 1
+        check("the collaborators panel opened",
+              bool(quinten.overlays().get("collaborators")))
+        quinten.snapshot(os.path.join(shots, "02-quinten-panel.png"))
+
+        step("and the panel offers Invite")
+        invite_rect = quinten.named_rect("collab_invite")
+        if not check("there is an Invite button to press", bool(invite_rect),
+                     "the panel listed people and offered no way to add one"
+                     if not invite_rect else f"at {invite_rect}"):
+            return 1
+        check("and a Join button beside it", bool(quinten.named_rect("collab_join")))
+        if not click(quinten, "collab_invite", "Invite"):
+            return 1
+
+        token = wait_for(lambda: quinten.peer_sync().get("invite_token"), timeout=30)
+        if not check("a token was minted", bool(token), f"{len(token or '')} chars"):
+            return 1
+        status = quinten.peer_sync().get("status") or ""
+        check("and the card says it was copied, where he is looking",
+              "copied" in status.lower(), repr(status))
+        copied = wait_for(lambda: quinten.clipboard_read(), timeout=10)
+        check("the token really is on his system clipboard",
+              copied == token,
+              "clipboard is empty" if not copied
+              else ("matches the minted token" if copied == token
+                    else f"clipboard holds something else ({len(copied)} chars)"))
+        quinten.snapshot(os.path.join(shots, "03-quinten-invite-copied.png"))
+        if not copied:
+            return 1
+
+        step("the token travels — by hand, off quinten's clipboard")
+        # Deliberately `copied`, not `token`: what crosses is what the
+        # button produced, so a copy that silently truncated fails the
+        # join rather than passing on a value it never wrote.
+        xaver.clipboard_write(copied)
+        check("it is on xaver's clipboard now", xaver.clipboard_read() == copied)
+
+        step("xaver clicks his top bar too")
+        if not click(xaver, "topbar_avatar_stack", "the avatar stack"):
+            return 1
+        check("his collaborators panel opened",
+              bool(xaver.overlays().get("collaborators")))
+        xaver.snapshot(os.path.join(shots, "04-xaver-panel.png"))
+
+        step("and clicks Join")
+        if not click(xaver, "collab_join", "Join"):
+            return 1
+        if not check("the connect prompt opened",
+                     wait_for(lambda: xaver.peer_sync().get("connect_input")
+                              is not None, timeout=15) is not None):
+            return 1
+        xaver.snapshot(os.path.join(shots, "05-xaver-prompt.png"))
+
+        step("he pastes with the card's own Paste button")
+        if not click(xaver, "peer_sync_paste", "Paste"):
+            return 1
+        pasted = xaver.peer_sync().get("connect_input")
+        check("the prompt filled itself from the clipboard",
+              pasted == token,
+              "prompt is still empty — the paste did nothing" if not pasted
+              else ("holds the whole token" if pasted == token
+                    else f"holds {len(pasted)} chars, token is {len(token)}"))
+        xaver.snapshot(os.path.join(shots, "06-xaver-pasted.png"))
+        if pasted != token:
+            return 1
+
+        step("and presses Join on the card")
+        if not click(xaver, "peer_sync_join", "Join"):
+            return 1
+        joined = wait_for(
+            lambda: (xaver.peer_sync().get("status") or "").startswith("Joined"),
+            timeout=45)
+        check("xaver joined quinten's room", bool(joined),
+              repr(xaver.peer_sync().get("status")))
+        xaver.snapshot(os.path.join(shots, "07-xaver-joined.png"))
+
+        step("and quinten sees him")
+        # The roster is what a person reads to know somebody arrived, so
+        # that is what this asserts — not the transport's own opinion.
+        present = wait_for(
+            lambda: (quinten.state()["workspace_tree"].get("collaborators") or [])
+            or (quinten.state().get("peers") or []),
+            timeout=60)
+        check("a peer shows up on quinten's side", bool(present),
+              json.dumps(present)[:200] if present else "roster still empty")
+        if not quinten.overlays().get("collaborators"):
+            click(quinten, "topbar_avatar_stack", "the avatar stack again")
+        quinten.snapshot(os.path.join(shots, "08-quinten-roster.png"))
+
+        step("the negative claims")
+        check("no token was ever typed — only copied and pasted", True,
+              "this script issues no `type` op at all")
+        check("no invite was made through the action API", True,
+              "every step above is `click_named`, so an unpainted or "
+              "unwired control fails the run")
+
+        print(f"\nshots in {shots}")
+        for name in sorted(os.listdir(shots)):
+            print(f"  {os.path.join(shots, name)}")
+        print()
+        if failures:
+            print(f"FAILED: {len(failures)}")
+            for f in failures:
+                print(f"  - {f}")
+            return 1
+        print("all claims hold")
+        return 0
+    finally:
+        xaver.stop()
+        quinten.stop()
+        if args.keep:
+            print(f"session roots kept at {root}")
+        else:
+            shutil.rmtree(root, ignore_errors=True)
+            shutil.rmtree(runtime_root, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
