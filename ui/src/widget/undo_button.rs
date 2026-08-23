@@ -238,7 +238,7 @@ impl Widget for UndoButton {
             .accessible_name(&name)
             .hovered(self.is_hovered && self.is_available())
             .pressed(self.is_pressed && self.is_available())
-            .focused(self.is_focused)
+            .focused(self.is_focused && self.is_available())
             .disabled(!self.is_available());
         Button::paint(scene, transform, text_renderer, theme, &face);
     }
@@ -379,7 +379,7 @@ impl Widget for UndoButton {
                 // description of an action that is not on the stack.
                 .with_description(self.access.status().description(self.kind))
                 .with_state(AccessState {
-                    focused: self.is_focused,
+                    focused: self.is_focused && available,
                     focusable: available,
                     disabled: !available,
                     ..Default::default()
@@ -389,6 +389,15 @@ impl Widget for UndoButton {
 
     fn set_undo_status(&mut self, status: &UndoStatus) {
         self.access.publish(status);
+        // Surrender focus when the verb goes away. Undoing the last action
+        // with the keyboard empties the stack under the control the user is
+        // standing on: it drops out of `focusable_order` the same instant, so
+        // keeping the ring would leave a focus indicator on something Tab can
+        // no longer reach and an AT told it was focused.
+        if !self.is_available() && self.is_focused {
+            self.is_focused = false;
+            self.dirty = true;
+        }
         if self.paint_state() != self.last_paint_state {
             self.dirty = true;
         }
@@ -542,6 +551,29 @@ mod tests {
         b.set_undo_status(&status(false, true));
         assert!(b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT));
         assert_eq!(b.take_undo_request(), Some(UndoRequest::Redo));
+    }
+
+    /// Undoing the last action with the keyboard empties the stack under the
+    /// control the user is standing on. It must not keep the focus ring, and
+    /// must not keep telling an assistive technology it is focused — it has
+    /// just left the focus order.
+    #[test]
+    fn a_control_that_goes_unavailable_surrenders_focus() {
+        let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
+        b.set_undo_status(&status(true, false));
+        b.set_focus(true);
+        assert!(b.is_focused());
+        assert!(
+            Widget::accessibility(&b).unwrap().state.focused,
+            "a live, focused control reports focus"
+        );
+
+        // The action is undone; the stack is empty.
+        b.set_undo_status(&status(false, true));
+        assert!(!b.is_focused(), "focus is surrendered with the verb");
+        let node = Widget::accessibility(&b).unwrap();
+        assert!(!node.state.focused, "and is not reported to an AT");
+        assert!(node.state.disabled);
     }
 
     /// A status arriving on a control that painted dimmed has to repaint it,
