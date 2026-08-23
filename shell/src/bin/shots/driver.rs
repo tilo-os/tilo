@@ -921,6 +921,91 @@ impl ShellDriver {
                     st.bump();
                 });
             }
+            // One window filling the strip. Maximizing used to stroke a
+            // 2 px accent rectangle around the group's bounding box —
+            // sharp corners a pixel outside a rounded card — and there
+            // was no scene that showed it, which is how it survived to
+            // be reported from a live session instead of from a review.
+            "maximized" => {
+                let mut target = None;
+                self.with_chrome(|st| {
+                    {
+                        let mut tree = st.tree_mut();
+                        if let Some(strip) = tree
+                            .active_workspace_mut()
+                            .and_then(|ws| ws.strips.first_mut())
+                        {
+                            let sid = strip.id;
+                            if let Some(g) = strip.window_groups.first_mut() {
+                                g.maximized = true;
+                                target = Some((sid, g.id));
+                            }
+                        }
+                    }
+                    if let Some((_, gid)) = target {
+                        st.set_maximized_group(Some(gid));
+                    }
+                    st.bump();
+                });
+                let Some((strip_id, group_id)) = target else {
+                    return Err("maximized: active workspace has no window group".into());
+                };
+                // The widget tree is built before `scene_setup` runs, so
+                // the flag has to land on the live group as well — the
+                // same pair of writes the maximize click performs.
+                if let Some(row) = self.host_mut().group_row_mut_for_tests(strip_id) {
+                    for g in row.groups.iter_mut() {
+                        if g.id == group_id {
+                            g.maximized = true;
+                        }
+                    }
+                }
+            }
+            // Two half-width windows side by side, keyboard focus on the
+            // right-hand one. The configuration the focus signal exists
+            // for: nothing about the layout says which of the two takes
+            // the next keystroke, so it has to be painted.
+            "two-groups-focus" => {
+                use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+                self.with_chrome(|st| {
+                    let mut sibling = None;
+                    {
+                        let mut tree = st.tree_mut();
+                        let mut strip_id = None;
+                        if let Some(ws) = tree.active_workspace_mut() {
+                            if let Some(strip) = ws.strips.first_mut() {
+                                for g in strip.window_groups.iter_mut() {
+                                    g.width = WindowWidth::Fraction(500);
+                                }
+                                let gid = 9101u64;
+                                let tid = 9111u64;
+                                strip.window_groups.push(WindowGroup {
+                                    id: gid,
+                                    tabs: vec![Tab {
+                                        id: tid,
+                                        title: "Settings".to_string(),
+                                        tile: TileContent::Stub {
+                                            kind: shell::shell::state::AppKind::Settings,
+                                            label: "Settings".to_string(),
+                                        },
+                                    }],
+                                    active_tab: tid,
+                                    width: WindowWidth::Fraction(500),
+                                    maximized: false,
+                                });
+                                strip_id = Some(strip.id);
+                                sibling = Some(gid);
+                            }
+                        }
+                        // Focus the newly-added right-hand window, so the
+                        // scene shows the signal moving off the default.
+                        if let (Some(sid), Some(gid)) = (strip_id, sibling) {
+                            tree.set_active_group(sid, gid);
+                        }
+                    }
+                    st.bump();
+                });
+            }
             "multi-strip" => {
                 // Three strips in the active workspace, with focus on
                 // the middle one. Nothing in the previous catalogue had
@@ -977,6 +1062,8 @@ impl ShellDriver {
         "desktop",
         "multi-group",
         "multi-strip",
+        "maximized",
+        "two-groups-focus",
         "overview",
         "overview-shared",
         "palette",
