@@ -1097,7 +1097,7 @@ NEVER_ON_CAMERA = "Claude"
 # on an unchanged screen while it waits for a sandbox, and a card nobody
 # has had time to read is the opposite case. Frames taken inside `hold`
 # are marked, and trimming skips them. See `Recorder._timeline`.
-READ_HOLD_S = 2.6
+READ_HOLD_S = 2.0
 
 FONTS_REGULAR = (
     "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
@@ -3903,10 +3903,15 @@ def beat_five(quinten: Session, registry, shots: str) -> dict | None:
     # than settled quietly, because an app coming up is worth watching
     # and this is the moment the beat is for.
     quinten.settle(2.0)
+    # Two and a half seconds, not five. The five was set when an app took
+    # ten seconds to appear and the hold was covering the tail of that
+    # wait; a window now arrives in about three, and holding on a
+    # finished, motionless window for five more is the beat asking for
+    # patience it has not earned.
     if RECORDER:
-        RECORDER.hold(5.0)
+        RECORDER.hold(2.5)
     else:
-        quinten.settle(5.0)
+        quinten.settle(2.5)
     quinten.snapshot(os.path.join(shots, "05-word-processor.png"))
     return painted
 
@@ -4106,7 +4111,21 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     # Both apps have to have attached to their broker and announced their
     # address before either types, or the first keystrokes go out to
     # nobody and it reads as a transport failure.
-    xaver.settle(6.0)
+    #
+    # Waited *for*, not waited *out*. Six fixed seconds was a guess that
+    # was too long whenever the machine was quick and would still have
+    # been too short on a loaded one — the worst of both, and six seconds
+    # of an unmoving screen in a seventy-five second film. This asks the
+    # far session whether its app is on the wire and stops as soon as it
+    # says yes.
+    attached = wait_for(
+        lambda: any((t.get("title") or "").lower().startswith("word processor")
+                    for t in xaver.tabs_here().values()),
+        timeout=8.0)
+    if not attached:
+        note("xaver's word processor did not announce itself within 8s; "
+             "typing anyway, and the claims below will say what happened")
+    xaver.settle(0.8)
 
     # What xaver's screen looks like before a word of it exists. The
     # claim below is answered over a socket, and a socket cannot tell you
