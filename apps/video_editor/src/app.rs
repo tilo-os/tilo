@@ -307,6 +307,7 @@ struct PaneCursor {
 /// folding hides controls but never hides state.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Section {
+    Curves,
     Transform,
     Speed,
     Key,
@@ -319,6 +320,7 @@ enum Section {
 impl Section {
     fn label(self) -> &'static str {
         match self {
+            Section::Curves => "CURVES",
             Section::Transform => "TRANSFORM",
             Section::Speed => "SPEED",
             Section::Key => "CHROMA KEY",
@@ -359,6 +361,8 @@ enum NumField {
     Speed,
     TitleSize,
     TitleBackdrop,
+    /// How much of the clip's tone curve is mixed in.
+    CurveMix,
 }
 
 impl NumField {
@@ -385,6 +389,7 @@ impl NumField {
             NumField::Speed => "Rate",
             NumField::TitleSize => "Size",
             NumField::TitleBackdrop => "Backdrop",
+            NumField::CurveMix => "Amount",
         }
     }
 
@@ -408,6 +413,7 @@ impl NumField {
             NumField::MaskH => Param::MaskH,
             NumField::MaskRotation => Param::MaskRotation,
             NumField::MaskFeather => Param::MaskFeather,
+            NumField::CurveMix => Param::CurveMix,
             _ => return None,
         })
     }
@@ -446,6 +452,7 @@ impl NumField {
             NumField::Speed => (MIN_SPEED, MAX_SPEED),
             NumField::TitleSize => (0.02, 0.4),
             NumField::TitleBackdrop => (0.0, 1.0),
+            NumField::CurveMix => (0.0, 1.0),
         }
     }
 
@@ -495,6 +502,7 @@ impl NumField {
             NumField::Speed => format!("{v:.2}×"),
             NumField::TitleSize => format!("{:.0}%", v * 100.0),
             NumField::TitleBackdrop => format!("{:.0}%", v * 100.0),
+            NumField::CurveMix => format!("{:.0}%", v * 100.0),
         }
     }
 }
@@ -541,6 +549,11 @@ enum Drag {
     TransitionLen,
     /// Dragging the intensity slider of the effect at `idx` on the selected clip.
     EffectAmount { idx: usize },
+    /// Dragging control point `idx` of `channel`'s tone curve. Released
+    /// outside the editor's box, an interior point is removed — the standard
+    /// way to take a point off a curve, and the only one that does not need
+    /// a second control per point on a 300px column.
+    CurvePoint { channel: crate::curve::Channel, idx: usize },
     /// Dragging one of the ranged controls — geometry, rate, title size. See
     /// [`NumField`], which carries the range, the readout and where the value
     /// is written.
@@ -735,6 +748,10 @@ pub enum ShotScenario {
     /// A project that has been saved to a file: the button carries the file's
     /// name and no unsaved badge, and the notice says where it went.
     SavedProject,
+    /// The tone-curve editor, shaped: an S on the master with the amount
+    /// keyed, so the box, the channel chooser, the amount slider and its
+    /// key control are all on screen at once.
+    Curves,
 }
 
 impl ShotScenario {
@@ -760,6 +777,7 @@ impl ShotScenario {
                 | ShotScenario::Markers
                 | ShotScenario::KeyMenu
                 | ShotScenario::ProjectMenu
+                | ShotScenario::Curves
         )
     }
 
@@ -792,6 +810,7 @@ impl ShotScenario {
             "filedrop" => ShotScenario::FileDrop,
             "discard" => ShotScenario::DiscardOpen,
             "saved" => ShotScenario::SavedProject,
+            "curves" => ShotScenario::Curves,
             _ => return None,
         })
     }
@@ -955,6 +974,10 @@ pub struct VideoEditorApp {
     /// Inspector sections the reader has folded away. Presentation, never in
     /// the document — see [`Section`]. Empty means everything is open.
     collapsed: HashSet<Section>,
+    /// Which channel the curve editor is showing. Presentation, like
+    /// `collapsed`: the curve itself carries all four channels whatever is on
+    /// screen, so this never reaches the document.
+    curve_channel: crate::curve::Channel,
     /// In-flight inline edit of the selected title's words, through the same
     /// shared `EditableLabel` the bin rename uses.
     title_edit: Option<(MediaId, EditableLabel)>,
@@ -1194,6 +1217,7 @@ impl VideoEditorApp {
             bin_menu: ContextMenu::new(),
             menu_target: None,
             collapsed: HashSet::new(),
+            curve_channel: crate::curve::Channel::Master,
             title_edit: None,
             marker_rename: None,
             key_menu_param: None,
@@ -3704,6 +3728,30 @@ impl VideoEditorApp {
             *y += SECTION_H + 4.0;
             !self.collapsed.contains(&s)
         };
+        // Tone curves, video only — it is the same grade the three sliders
+        // above start, so it sits directly under them.
+        if is_video && header(&mut l, &mut y, Section::Curves) {
+            let cw = (x1 - x0) / crate::curve::Channel::ALL.len() as f64;
+            for (i, ch) in crate::curve::Channel::ALL.iter().enumerate() {
+                let cx = x0 + i as f64 * cw;
+                l.curve_channels.push((*ch, Rect::new(cx, y, cx + cw - 3.0, y + 24.0)));
+            }
+            y += 32.0;
+            // Square, so the diagonal that means "unchanged" really is a
+            // diagonal — on a squashed box a curve reads as steeper or
+            // flatter than it is.
+            let side = (x1 - x0).min(200.0);
+            l.curve_canvas = Some(Rect::new(x0, y, x0 + side, y + side));
+            // Room for the gesture hint under the box *and* clear air before
+            // the amount row's own label: at the bare 12px gap the two shared
+            // a baseline and drew through each other.
+            y += side + 34.0;
+            l.nums.push((NumField::CurveMix, track_at(y)));
+            l.keys.push((Param::CurveMix, key_at(y)));
+            y += row;
+            l.curve_reset = Some(Rect::new(x0, y, x1, y + 26.0));
+            y += 34.0;
+        }
         // Geometry, video only — an audio clip has no picture to place.
         if is_video && header(&mut l, &mut y, Section::Transform) {
             for f in [
@@ -3899,6 +3947,106 @@ impl VideoEditorApp {
         l.content_height = y - top;
         l.valid = true;
         l
+    }
+
+    /// Draw the tone-curve editor: the grid, the "unchanged" diagonal, the
+    /// curve, and its control points.
+    ///
+    /// This is canvas drawing rather than a toolkit widget for the same
+    /// reason the timeline and the waveform are: a 2D control-point editor
+    /// is content, not a control the fleet shares. Everything around it —
+    /// the channel chooser, the amount slider, the reset — goes through the
+    /// shared widgets.
+    fn draw_curve_editor(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        canvas: Rect,
+        clip: &Clip,
+    ) {
+        let c = &theme.tokens.colors;
+        let ch = self.curve_channel;
+        let spline = clip.curves.spline(ch);
+        fill_rrect(scene, tf, c.surface_white_5, canvas, 8.0);
+        stroke_rrect(scene, tf, c.border_standard, canvas, 8.0, 1.0);
+
+        // Quarter grid. Faint, because it is a reading aid and the curve is
+        // the content.
+        let grid = with_alpha(c.text_dim, 0.22);
+        for i in 1..4 {
+            let f = i as f64 / 4.0;
+            let x = canvas.x0 + canvas.width() * f;
+            let y = canvas.y0 + canvas.height() * f;
+            let mut v = BezPath::new();
+            v.move_to((x, canvas.y0 + 1.0));
+            v.line_to((x, canvas.y1 - 1.0));
+            let mut h = BezPath::new();
+            h.move_to((canvas.x0 + 1.0, y));
+            h.line_to((canvas.x1 - 1.0, y));
+            scene.stroke(&Stroke::new(1.0), tf, grid, None, &v);
+            scene.stroke(&Stroke::new(1.0), tf, grid, None, &h);
+        }
+        // The identity: where every tone would land if the curve did nothing.
+        // Without it a lifted curve and a steep one look the same.
+        let mut diag = BezPath::new();
+        diag.move_to((canvas.x0, canvas.y1));
+        diag.line_to((canvas.x1, canvas.y0));
+        scene.stroke(&Stroke::new(1.0), tf, with_alpha(c.text_dim, 0.45), None, &diag);
+
+        // The curve itself, sampled densely enough that the cubic reads as a
+        // curve rather than as the polyline it is drawn with.
+        let tint = curve_channel_color(theme, ch);
+        let mut path = BezPath::new();
+        const STEPS: usize = 64;
+        for i in 0..=STEPS {
+            let t = i as f64 / STEPS as f64;
+            let p = curve_point(canvas, t, spline.eval(t));
+            if i == 0 {
+                path.move_to((p.x, p.y));
+            } else {
+                path.line_to((p.x, p.y));
+            }
+        }
+        scene.stroke(&Stroke::new(2.0), tf, tint, None, &path);
+
+        // Control points. The one under the pointer (or being dragged) is
+        // larger as well as brighter, so it is legible without relying on a
+        // hue difference.
+        let dragging = match self.drag {
+            Some(Drag::CurvePoint { channel, idx }) if channel == ch => Some(idx),
+            _ => None,
+        };
+        let hovered = canvas
+            .contains(self.last_mouse)
+            .then(|| {
+                let (mx, my) = curve_coords(canvas, self.last_mouse);
+                spline.point_near(mx, my, POINT_GRAB)
+            })
+            .flatten();
+        for (i, cp) in spline.points.iter().enumerate() {
+            let at = curve_point(canvas, cp.x, cp.y);
+            let live = dragging == Some(i) || (dragging.is_none() && hovered == Some(i));
+            let r = if live { 6.0 } else { 4.0 };
+            scene.fill(Fill::NonZero, tf, tint, None, &Circle::new(at, r));
+            scene.stroke(
+                &Stroke::new(1.5),
+                tf,
+                if live { c.text_primary } else { c.surfaces.base },
+                None,
+                &Circle::new(at, r),
+            );
+        }
+
+        // What the gesture is, stated rather than left to be discovered. It
+        // sits under the box so it never covers the curve.
+        let hint = if dragging.is_some() {
+            "Drag out of the box to remove"
+        } else {
+            "Click to add a point · drag to shape"
+        };
+        text(scene, tr, tf, hint, 10.5, c.text_dim, canvas.x0, canvas.y1 + 12.0);
     }
 
     /// Draw the marker list: one row per marked instant, with rename and
@@ -4279,6 +4427,39 @@ impl VideoEditorApp {
                 // Past the levels, onto the geometry and rate sections.
                 self.inspector_scroll = (self.inspector_max_scroll(r) * 0.62).max(0.0);
             }
+            ShotScenario::Curves => {
+                if let Some(c) = self.project.top_video_clip_at(23.0) {
+                    let cid = c.id;
+                    self.selection.select_only(cid);
+                    self.playhead = 23.0;
+                    if let Some(c) = self.project.clip_mut(cid) {
+                        // An S on the master and a lifted blue, so the
+                        // chooser's other channels are not empty either.
+                        c.curves.master.set_point(0.28, 0.14);
+                        c.curves.master.set_point(0.72, 0.88);
+                        c.curves.blue.set_point(0.5, 0.62);
+                        c.curves.mix = 0.8;
+                        // Keyed, so the amount row reads as animated and the
+                        // clip body carries its diamonds.
+                        let start = c.start;
+                        c.set_key_at(Param::CurveMix, start + 0.4, 0.0, Interp::Ease);
+                        c.set_key_at(Param::CurveMix, start + 3.0, 0.8, Interp::Ease);
+                    }
+                }
+                // The section sits at the top of the controls, so nothing has
+                // to be folded away for the whole of it to fit.
+                self.inspector_scroll = 0.0;
+                let head = self
+                    .inspector_layout(r)
+                    .sections
+                    .iter()
+                    .find(|(s, _)| *s == Section::Curves)
+                    .map(|(_, rect)| rect.y0);
+                if let Some(y) = head {
+                    let want = y - r.inspector.y0 - 22.0;
+                    self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
+                }
+            }
             ShotScenario::KeyAndMask => {
                 if let Some(c) = self.project.top_video_clip_at(23.0) {
                     let cid = c.id;
@@ -4510,15 +4691,23 @@ impl VideoEditorApp {
         if self.initialised_selection || self.project.clips.is_empty() {
             return;
         }
-        if let Some(id) = self
+        let first = self
             .project
             .top_video_clip_at(self.playhead)
             .map(|c| c.id)
-            .or_else(|| self.project.clips.first().map(|c| c.id))
-        {
+            .or_else(|| self.project.clips.first().map(|c| c.id));
+        if let Some(id) = first {
             self.selection.select_only(id);
         }
-        self.selected_media = self.project.media.first().map(|m| m.id);
+        // The bin points at the clip that was selected, so the two panes open
+        // agreeing with each other. It used to take `project.media.first()`,
+        // which is the document's map-key order — arbitrary, and re-rolled
+        // every run because the ids are fresh UUIDs, so the same project
+        // opened twice highlighted two different bin rows.
+        self.selected_media = first
+            .and_then(|id| self.project.clip(id))
+            .map(|c| c.media)
+            .or_else(|| self.bin_order().first().copied());
         self.initialised_selection = true;
     }
 
@@ -4600,6 +4789,13 @@ struct InspectorLayout {
     title_colors: Vec<([f64; 4], Rect)>,
     title_bold: Option<Rect>,
     title_italic: Option<Rect>,
+    // ---- tone curves ------------------------------------------------------
+    /// Which channel the editor is showing, as a segmented row.
+    curve_channels: Vec<(crate::curve::Channel, Rect)>,
+    /// The square the curve is drawn and dragged in.
+    curve_canvas: Option<Rect>,
+    /// Puts the shown channel back to the straight line.
+    curve_reset: Option<Rect>,
     // ---- keyframes --------------------------------------------------------
     /// The key control at the head of each animatable row.
     keys: Vec<(Param, Rect)>,
@@ -5696,6 +5892,7 @@ impl VideoEditorApp {
         // effect, and the panel draws none of those headers for one.
         let mut v = Vec::new();
         if is_video {
+            v.push(Section::Curves);
             v.push(Section::Transform);
         }
         v.push(Section::Speed);
@@ -5719,6 +5916,10 @@ impl VideoEditorApp {
             return Vec::new();
         };
         match section {
+            // The amount slider is the section's only ranged control; the
+            // curve itself is a 2D editor, which is reported as its own node
+            // rather than as a knob (see `a11y_section_summary`).
+            Section::Curves => vec![NumField::CurveMix],
             Section::Transform => vec![
                 NumField::ScaleX,
                 NumField::ScaleY,
@@ -6106,6 +6307,11 @@ impl VideoEditorApp {
             (Section::Markers, _) => {
                 let n = self.project.markers.len();
                 format!("{n} marker{}", if n == 1 { "" } else { "s" })
+            }
+            // The same words the folded header shows, so a reader is never
+            // told a tidier story than the panel tells.
+            (Section::Curves, Some(c)) => {
+                curve_summary(c).unwrap_or_else(|| "unchanged".into())
             }
             (Section::Title, Some(_)) => "title properties".into(),
             _ => "collapsed".into(),
@@ -7534,6 +7740,29 @@ impl VideoEditorApp {
             self.open_effect_menu(p);
             return;
         }
+        // Tone curves: the channel chooser, then the editor's box.
+        for (ch, rect) in l.curve_channels.clone() {
+            if rect.contains(p) {
+                self.curve_channel = ch;
+                self.collapsed.remove(&Section::Curves);
+                return;
+            }
+        }
+        if let Some(canvas) = l.curve_canvas {
+            if canvas.contains(p) {
+                self.press_curve(state, canvas, p);
+                return;
+            }
+        }
+        if let Some(rect) = l.curve_reset {
+            if rect.contains(p) {
+                let ch = self.curve_channel;
+                self.edit_selected(state, move |c| {
+                    *c.curves.spline_mut(ch) = crate::curve::Spline::identity();
+                });
+                return;
+            }
+        }
         // Key controls. An unkeyed parameter takes one click to start
         // animating; a keyed one opens the menu that shapes, removes and
         // steps between its keys, because "what do I do with this key" has
@@ -7704,6 +7933,47 @@ impl VideoEditorApp {
         if l.delete.contains(p) {
             self.delete_selected(state);
         }
+    }
+
+    /// A press inside the curve editor: grab the point under the pointer, or
+    /// put a new one there.
+    ///
+    /// Adding on a plain click is what makes the curve editable at all — a
+    /// separate "add point" button would need somewhere to add it, and the
+    /// answer is always "where I clicked". A click too close to an existing
+    /// point grabs that one instead, so points cannot be stacked.
+    fn press_curve(&mut self, doc: &mut AutoCommit, canvas: Rect, p: Point) {
+        let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else { return };
+        let ch = self.curve_channel;
+        let (x, y) = curve_coords(canvas, p);
+        let existing = clip.curves.spline(ch).point_near(x, y, POINT_GRAB);
+        let idx = match existing {
+            Some(i) => i,
+            None => {
+                // A new point is a discrete edit, so it commits now; the drag
+                // that follows previews and commits again on release.
+                let mut placed = None;
+                self.edit_selected(doc, |c| {
+                    placed = c.curves.spline_mut(ch).set_point(x, y);
+                });
+                match placed {
+                    Some(i) => i,
+                    // Refused — too close to a neighbour for a point to mean
+                    // anything. Grab the neighbour rather than doing nothing.
+                    None => {
+                        let Some(clip) = self.selected().and_then(|id| self.project.clip(id))
+                        else {
+                            return;
+                        };
+                        match clip.curves.spline(ch).point_near(x, y, POINT_GRAB * 2.0) {
+                            Some(i) => i,
+                            None => return,
+                        }
+                    }
+                }
+            }
+        };
+        self.drag = Some(Drag::CurvePoint { channel: ch, idx });
     }
 
     fn press_export(&mut self, state: &mut AutoCommit, r: &Regions, p: Point) {
@@ -8227,6 +8497,16 @@ impl VideoEditorApp {
         let Some(drag) = self.drag else { return };
         let p = self.last_mouse;
         match drag {
+            Drag::CurvePoint { channel, idx } => {
+                // The box is re-derived from the live layout rather than
+                // captured at press: the inspector scrolls, and a captured
+                // rect would leave the point tracking a box that has moved.
+                let Some(canvas) = self.inspector_layout(r).curve_canvas else { return };
+                let (x, y) = curve_coords(canvas, p);
+                self.preview_edit(move |c| {
+                    c.curves.spline_mut(channel).move_point(idx, x, y);
+                });
+            }
             Drag::Playhead => {
                 self.playhead = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps)
                     .clamp(0.0, self.project.duration());
@@ -8401,7 +8681,40 @@ impl VideoEditorApp {
                     self.dispatch_clip(doc, id);
                 }
             }
+            Drag::CurvePoint { channel, idx } => {
+                // Released well outside the box, an interior point comes off
+                // the curve — the standard gesture, and the only one that
+                // fits without a second control per point. The endpoints
+                // stay: a curve with no value at 0 or 1 has undefined ends.
+                if let Some(canvas) = self.curve_canvas_now() {
+                    let out = self.last_mouse.x < canvas.x0 - POINT_DROP_MARGIN
+                        || self.last_mouse.x > canvas.x1 + POINT_DROP_MARGIN
+                        || self.last_mouse.y < canvas.y0 - POINT_DROP_MARGIN
+                        || self.last_mouse.y > canvas.y1 + POINT_DROP_MARGIN;
+                    if out {
+                        self.preview_edit(move |c| {
+                            c.curves.spline_mut(channel).remove_point(idx);
+                        });
+                    }
+                }
+                if let Some(id) = self.selected() {
+                    self.dispatch_clip(doc, id);
+                }
+            }
         }
+    }
+
+    /// The curve editor's box as the inspector has it laid out right now, or
+    /// `None` when the section is not on screen.
+    ///
+    /// `commit_drag` has no `Regions` to hand, and re-deriving them is what
+    /// keeps the drop test honest — a stale rect would decide "outside the
+    /// box" against a box that is no longer there.
+    fn curve_canvas_now(&self) -> Option<Rect> {
+        let r = self.regions();
+        self.inspector_is_visible(&r)
+            .then(|| self.inspector_layout(&r).curve_canvas)
+            .flatten()
     }
 
     /// True while a drag that edits a clip is in flight, so [`Widget::sync`]
@@ -8424,6 +8737,7 @@ impl VideoEditorApp {
                     | Drag::TransitionLen
                     | Drag::EffectAmount { .. }
                     | Drag::Num(_)
+                    | Drag::CurvePoint { .. }
             )
         )
     }
@@ -9682,6 +9996,29 @@ impl VideoEditorApp {
                 on, rect.contains(self.last_mouse),
             );
         }
+        // ---- tone curves ------------------------------------------------
+        if !l.curve_channels.is_empty() {
+            let rects: Vec<Rect> = l.curve_channels.iter().map(|(_, r)| *r).collect();
+            let labels: Vec<&str> = l.curve_channels.iter().map(|(c, _)| c.label()).collect();
+            let sel = l
+                .curve_channels
+                .iter()
+                .position(|(c, _)| *c == self.curve_channel)
+                .unwrap_or(0);
+            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+        }
+        if let Some(canvas) = l.curve_canvas {
+            self.draw_curve_editor(scene, tf, tr, theme, canvas, &clip);
+        }
+        if let Some(rect) = l.curve_reset {
+            let ch = self.curve_channel;
+            let shaped = !clip.curves.spline(ch).is_identity();
+            draw_button_enabled(
+                scene, tf, tr, theme, rect,
+                &format!("Reset {}", ch.label()),
+                false, rect.contains(self.last_mouse), shaped,
+            );
+        }
         // ---- colour key -----------------------------------------------
         if let Some(rect) = l.key_enable {
             let on = clip.key.enabled;
@@ -9936,6 +10273,7 @@ impl VideoEditorApp {
         media: Option<&MediaItem>,
     ) -> Option<String> {
         match section {
+            Section::Curves => curve_summary(clip),
             Section::Transform => {
                 if clip.transform.is_identity() {
                     return None;
@@ -10958,6 +11296,72 @@ fn draw_key_control(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect, st
         scene.stroke(&Stroke::new(1.0), tf, with_alpha(col, 0.5), None, &Circle::new(ctr, r + 3.0));
     } else {
         scene.stroke(&Stroke::new(1.4), tf, col, None, &d);
+    }
+}
+
+/// What a clip's tone curves amount to, in one line — or `None` when they
+/// amount to nothing.
+///
+/// One function so the folded header and the reader's summary cannot drift
+/// apart. It reports which channels have been shaped, and says plainly when
+/// a shaped curve is turned down or bypassed: "RGB" and "RGB · bypassed" are
+/// different states, and a summary that showed only the first would hide the
+/// second.
+fn curve_summary(clip: &Clip) -> Option<String> {
+    let shaped = clip.curves.shaped_channels();
+    if shaped.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = shaped.iter().map(|c| c.label()).collect();
+    let mut s = names.join(", ");
+    let mix = clip.curves.mix;
+    if mix <= 1e-9 {
+        s.push_str(" · bypassed");
+    } else if mix < 0.999 {
+        s.push_str(&format!(" · {:.0}%", mix * 100.0));
+    }
+    Some(s)
+}
+
+/// How close the pointer has to be to a curve point, in curve units (the box
+/// is 0..1 on both axes), to grab it rather than add a new one.
+const POINT_GRAB: f64 = 0.055;
+
+/// How far outside the curve box a drag has to end for the point to be
+/// removed. Generous, because a small overshoot at the edge of the box is an
+/// ordinary way to pin a point to 0 or 1 and must not delete it.
+const POINT_DROP_MARGIN: f64 = 22.0;
+
+/// Where curve coordinates land on the editor's box. Output runs **up**, so
+/// the y axis is flipped: a curve that lifts is a curve that rises.
+fn curve_point(canvas: Rect, x: f64, y: f64) -> Point {
+    Point::new(
+        canvas.x0 + x.clamp(0.0, 1.0) * canvas.width(),
+        canvas.y1 - y.clamp(0.0, 1.0) * canvas.height(),
+    )
+}
+
+/// The inverse of [`curve_point`]: a pointer position as curve coordinates,
+/// unclamped so a drag past the edge still reports where it went.
+fn curve_coords(canvas: Rect, p: Point) -> (f64, f64) {
+    let w = canvas.width().max(1e-6);
+    let h = canvas.height().max(1e-6);
+    ((p.x - canvas.x0) / w, (canvas.y1 - p.y) / h)
+}
+
+/// The colour a channel's curve is drawn in.
+///
+/// Resolved from the theme rather than hardcoded to pure red/green/blue: the
+/// OS owns the palette, and a raw `#f00` line is both off-theme and hard to
+/// read on a light surface. The three are still unmistakably red-, green- and
+/// blue-ish, because that is what the letters on the chooser say.
+fn curve_channel_color(theme: &Theme, ch: crate::curve::Channel) -> Color {
+    let c = &theme.tokens.colors;
+    match ch {
+        crate::curve::Channel::Master => c.accent[5],
+        crate::curve::Channel::Red => c.semantic.danger,
+        crate::curve::Channel::Green => c.semantic.success,
+        crate::curve::Channel::Blue => c.semantic.info,
     }
 }
 
@@ -15755,5 +16159,264 @@ mod tests {
         };
         assert!(after > before, "raising brightness brightens the composite ({before} -> {after})");
     }
+
+    // ---- tone curves -----------------------------------------------------
+
+    /// Select the demo's top video clip and open the curves section, with the
+    /// panel scrolled so the editor's box is really on screen.
+    fn app_with_curve_editor() -> (VideoEditorApp, AutoCommit, Rect) {
+        let (mut app, mut doc) = app_and_doc();
+        let cid = app.project.top_video_clip_at(23.0).expect("a clip at 23s").id;
+        app.selection.select_only(cid);
+        app.playhead = 23.0;
+        app.collapsed.remove(&Section::Curves);
+        // Scroll the section's header to the top of the panel, so the box
+        // below it is inside the pane rather than clipped off the bottom.
+        let r = app.regions();
+        let head = app
+            .inspector_layout(&r)
+            .sections
+            .iter()
+            .find(|(s, _)| *s == Section::Curves)
+            .map(|(_, rect)| rect.y0);
+        if let Some(y) = head {
+            let want = y - r.inspector.y0 - 22.0;
+            app.inspector_scroll = want.clamp(0.0, app.inspector_max_scroll(&r));
+        }
+        let canvas = app
+            .inspector_layout(&app.regions())
+            .curve_canvas
+            .expect("the curve editor is laid out for a video clip");
+        let _ = &mut doc;
+        (app, doc, canvas)
+    }
+
+    #[test]
+    fn clicking_the_curve_box_puts_a_point_where_the_pointer_landed() {
+        let (mut app, mut doc, canvas) = app_with_curve_editor();
+        let cid = app.selected().unwrap();
+        assert!(
+            app.project.clip(cid).unwrap().curves.master.is_identity(),
+            "the clip starts on the straight line",
+        );
+
+        // A quarter in, three quarters up.
+        let at = curve_point(canvas, 0.25, 0.75);
+        app.press_curve(&mut doc, canvas, at);
+        let s = &app.project.clip(cid).unwrap().curves.master;
+        assert_eq!(s.points.len(), 3, "a point was added between the ends: {:?}", s.points);
+        let p = s.points[1];
+        assert!((p.x - 0.25).abs() < 0.02 && (p.y - 0.75).abs() < 0.02, "{p:?}");
+        // And the curve really passes through it.
+        assert!((s.eval(0.25) - 0.75).abs() < 1e-6, "{}", s.eval(0.25));
+        assert!(
+            matches!(app.drag, Some(Drag::CurvePoint { idx: 1, .. })),
+            "the new point is grabbed, so the same gesture places and shapes it",
+        );
+    }
+
+    #[test]
+    fn a_press_on_an_existing_point_grabs_it_rather_than_stacking_another() {
+        let (mut app, mut doc, canvas) = app_with_curve_editor();
+        let cid = app.selected().unwrap();
+        app.edit_selected(&mut doc, |c| {
+            c.curves.master.set_point(0.5, 0.5);
+        });
+        // A press a couple of pixels off the point.
+        let near = curve_point(canvas, 0.51, 0.52);
+        app.press_curve(&mut doc, canvas, near);
+        assert_eq!(
+            app.project.clip(cid).unwrap().curves.master.points.len(),
+            3,
+            "still three points — the press grabbed, it did not add",
+        );
+        assert!(matches!(app.drag, Some(Drag::CurvePoint { idx: 1, .. })));
+    }
+
+    #[test]
+    fn dragging_a_point_reshapes_the_curve_and_commits_once() {
+        let (mut app, mut doc, canvas) = app_with_curve_editor();
+        let cid = app.selected().unwrap();
+        let r = app.regions();
+        app.press_curve(&mut doc, canvas, curve_point(canvas, 0.5, 0.5));
+        // Drag it up.
+        app.last_mouse = curve_point(canvas, 0.5, 0.9);
+        app.apply_drag(&r);
+        let mid = app.project.clip(cid).unwrap().curves.master.eval(0.5);
+        assert!((mid - 0.9).abs() < 0.02, "the drag moved the point: {mid}");
+
+        // Releasing inside the box keeps it, and writes it to the document.
+        app.commit_drag(&mut doc);
+        app.drag = None;
+        let stored = VideoDoc::load_project(&mut doc);
+        let back = stored.clip(cid).expect("the clip survived");
+        assert!(
+            (back.curves.master.eval(0.5) - 0.9).abs() < 0.02,
+            "the shaped curve reached the document: {:?}",
+            back.curves.master.points,
+        );
+    }
+
+    #[test]
+    fn a_point_dragged_out_of_the_box_comes_off_the_curve() {
+        let (mut app, mut doc, canvas) = app_with_curve_editor();
+        let cid = app.selected().unwrap();
+        app.press_curve(&mut doc, canvas, curve_point(canvas, 0.4, 0.7));
+        assert_eq!(app.project.clip(cid).unwrap().curves.master.points.len(), 3);
+
+        // Release well past the left edge.
+        app.last_mouse = Point::new(canvas.x0 - POINT_DROP_MARGIN - 10.0, canvas.center().y);
+        app.commit_drag(&mut doc);
+        app.drag = None;
+        assert!(
+            app.project.clip(cid).unwrap().curves.master.is_identity(),
+            "the point was dropped out of the box, so the curve is a line again",
+        );
+    }
+
+    #[test]
+    fn a_small_overshoot_at_the_edge_keeps_the_point() {
+        // Pinning a point hard against 0 or 1 means dragging to the very edge
+        // and a little past it. That must not delete what the user is placing.
+        let (mut app, mut doc, canvas) = app_with_curve_editor();
+        let cid = app.selected().unwrap();
+        app.press_curve(&mut doc, canvas, curve_point(canvas, 0.4, 0.7));
+        let r = app.regions();
+        app.last_mouse = Point::new(canvas.center().x, canvas.y0 - POINT_DROP_MARGIN + 6.0);
+        app.apply_drag(&r);
+        app.commit_drag(&mut doc);
+        app.drag = None;
+        let s = &app.project.clip(cid).unwrap().curves.master;
+        assert_eq!(s.points.len(), 3, "still there: {:?}", s.points);
+        assert!(s.points[1].y > 0.98, "and pinned to the top: {:?}", s.points[1]);
+    }
+
+    #[test]
+    fn the_channel_chooser_switches_which_curve_is_edited() {
+        let (mut app, mut doc, canvas) = app_with_curve_editor();
+        let cid = app.selected().unwrap();
+        let r = app.regions();
+        let blue = app
+            .inspector_layout(&r)
+            .curve_channels
+            .iter()
+            .find(|(c, _)| *c == crate::curve::Channel::Blue)
+            .map(|(_, rect)| *rect)
+            .expect("a blue segment");
+        app.press_inspector(&mut doc, &r, blue.center());
+        assert_eq!(app.curve_channel, crate::curve::Channel::Blue);
+
+        // The canvas moves with the layout, so re-read it before clicking in.
+        let canvas = app.inspector_layout(&app.regions()).curve_canvas.unwrap_or(canvas);
+        app.press_curve(&mut doc, canvas, curve_point(canvas, 0.5, 0.8));
+        let c = app.project.clip(cid).unwrap();
+        assert!(!c.curves.blue.is_identity(), "blue was shaped");
+        assert!(c.curves.master.is_identity(), "and the master was left alone");
+        assert!(c.curves.red.is_identity() && c.curves.green.is_identity());
+    }
+
+    #[test]
+    fn reset_returns_only_the_shown_channel_to_the_straight_line() {
+        let (mut app, mut doc, _canvas) = app_with_curve_editor();
+        let cid = app.selected().unwrap();
+        app.edit_selected(&mut doc, |c| {
+            c.curves.master.set_point(0.5, 0.8);
+            c.curves.red.set_point(0.5, 0.2);
+        });
+        let r = app.regions();
+        let reset = app.inspector_layout(&r).curve_reset.expect("a reset button");
+        app.press_inspector(&mut doc, &r, reset.center());
+        let c = app.project.clip(cid).unwrap();
+        assert!(c.curves.master.is_identity(), "the shown channel was reset");
+        assert!(!c.curves.red.is_identity(), "and the others were not");
+    }
+
+    #[test]
+    fn the_curve_summary_is_the_same_story_for_the_eye_and_for_a_reader() {
+        let (mut app, mut doc) = app_and_doc();
+        let cid = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selection.select_only(cid);
+
+        let clip = app.project.clip(cid).unwrap().clone();
+        assert_eq!(
+            app.section_summary(Section::Curves, &clip, None),
+            None,
+            "an untouched curve has nothing to report",
+        );
+        assert_eq!(
+            app.a11y_section_summary(Section::Curves),
+            "unchanged",
+            "and the reader hears the same",
+        );
+
+        app.edit_selected(&mut doc, |c| {
+            c.curves.master.set_point(0.5, 0.8);
+            c.curves.blue.set_point(0.4, 0.2);
+            c.curves.mix = 0.5;
+        });
+        let clip = app.project.clip(cid).unwrap().clone();
+        let seen = app
+            .section_summary(Section::Curves, &clip, None)
+            .expect("a shaped curve reports itself");
+        assert_eq!(seen, app.a11y_section_summary(Section::Curves));
+        assert!(seen.contains("RGB") && seen.contains('B'), "it names the channels: {seen}");
+        assert!(seen.contains("50%"), "and says it is turned down: {seen}");
+
+        // A curve that is shaped but mixed all the way out is a different
+        // state from one at full strength, and both have to be reported.
+        app.edit_selected(&mut doc, |c| c.curves.mix = 0.0);
+        let clip = app.project.clip(cid).unwrap().clone();
+        let off = app.section_summary(Section::Curves, &clip, None).expect("still reported");
+        assert!(off.contains("bypassed"), "a bypassed curve says so: {off}");
+        assert_eq!(off, app.a11y_section_summary(Section::Curves));
+    }
+
+    #[test]
+    fn an_audio_clip_is_offered_no_curve_editor_at_all() {
+        let (mut app, _doc) = app_and_doc();
+        let audio = app
+            .project
+            .clips
+            .iter()
+            .find(|c| {
+                app.project
+                    .track(c.track)
+                    .is_some_and(|t| t.kind == TrackKind::Audio)
+            })
+            .map(|c| c.id)
+            .expect("the demo has an audio clip");
+        app.selection.select_only(audio);
+        let r = app.regions();
+        let l = app.inspector_layout(&r);
+        assert!(l.curve_canvas.is_none(), "there is no picture to grade");
+        assert!(l.curve_channels.is_empty());
+        assert!(
+            !l.sections.iter().any(|(s, _)| *s == Section::Curves),
+            "and no header claiming otherwise",
+        );
+    }
+
+    #[test]
+    fn the_curve_amount_is_keyframable_from_its_own_diamond() {
+        let (mut app, mut doc, _canvas) = app_with_curve_editor();
+        let cid = app.selected().unwrap();
+        let r = app.regions();
+        let diamond = app
+            .inspector_layout(&r)
+            .keys
+            .iter()
+            .find(|(p, _)| *p == Param::CurveMix)
+            .map(|(_, rect)| *rect)
+            .expect("the amount row carries a key control");
+        assert_eq!(app.key_state(Param::CurveMix), KeyState::Off);
+        app.press_inspector(&mut doc, &r, diamond.center());
+        assert_eq!(
+            app.key_state(Param::CurveMix),
+            KeyState::OnKey,
+            "one click plants a key at the playhead",
+        );
+        assert!(app.project.clip(cid).unwrap().anim.is_animated(Param::CurveMix));
+    }
+
 }
 
