@@ -4975,53 +4975,65 @@ def beat_nine(quinten: Session, xaver: Session, agent: Session,
     baseline = agent.input_ops
     note(f"synthetic-input commands sent to the agent so far: {baseline}")
 
-    step("it enumerates what this session exports")
-    surface = agent.enumerate_actions("")
-    actions = surface["actions"]
-    providers: dict[str, int] = {}
-    for a in actions:
-        providers[a["provider"]] = providers.get(a["provider"], 0) + 1
-    note(f"{surface['count']} addressable actions across "
-         f"{len(providers)} providers")
-    claim("every entry carries provider, id, kind and title",
-          all(isinstance(a.get(k), str) and a[k]
-              for a in actions for k in ("provider", "id", "kind", "title")), True)
-    claim("no entry carries a screen position",
-          any(k in a for a in actions for k in ("rect", "x", "y")), False)
+    # Filmed as nothing, because it is nothing to look at.
+    #
+    # The comment above already said none of this is filmed; the
+    # camera was on quinten the whole time regardless, holding a
+    # still desktop through four steps whose claims are all about
+    # things that did *not* happen -- a palette that did not open, a
+    # revision that did not move, an input count that did not rise.
+    # Those are worth proving and there is no frame in them.
+    #
+    # What stays on camera is the half a viewer can see: the agent
+    # changing the document two other people are looking at.
+    with off_camera("the agent is asked what it can address, and one action is\n     invoked by name -- claims about things that did not happen"):
+        step("it enumerates what this session exports")
+        surface = agent.enumerate_actions("")
+        actions = surface["actions"]
+        providers: dict[str, int] = {}
+        for a in actions:
+            providers[a["provider"]] = providers.get(a["provider"], 0) + 1
+        note(f"{surface['count']} addressable actions across "
+             f"{len(providers)} providers")
+        claim("every entry carries provider, id, kind and title",
+              all(isinstance(a.get(k), str) and a[k]
+                  for a in actions for k in ("provider", "id", "kind", "title")), True)
+        claim("no entry carries a screen position",
+              any(k in a for a in actions for k in ("rect", "x", "y")), False)
 
-    step("enumerating is read-only: surveying cannot fire a side-effect")
-    before_chrome = agent.chrome()
-    for query in ("", "room", "word"):
-        agent.enumerate_actions(query)
-    after_chrome = agent.chrome()
-    claim("the chrome revision did not move",
-          after_chrome["revision"], before_chrome["revision"])
-    claim("the palette did not open", after_chrome["palette"]["visible"], False)
+        step("enumerating is read-only: surveying cannot fire a side-effect")
+        before_chrome = agent.chrome()
+        for query in ("", "room", "word"):
+            agent.enumerate_actions(query)
+        after_chrome = agent.chrome()
+        claim("the chrome revision did not move",
+              after_chrome["revision"], before_chrome["revision"])
+        claim("the palette did not open", after_chrome["palette"]["visible"], False)
 
-    step("it invokes one action by its address")
-    picked = next((a for a in actions if a["provider"] == AGENT_PROVIDER
-                   and a["id"] == AGENT_ACTION_ID), None)
-    claim(f"the catalogue offers ({AGENT_PROVIDER}, {AGENT_ACTION_ID})",
-          picked is not None, True)
-    if picked is None:
-        raise SystemExit("the agent's chosen action is not exported")
-    claim("the effect is absent beforehand",
-          agent.overlays()[AGENT_ACTION_EFFECT], False)
-    resp = agent.invoke_action(AGENT_PROVIDER, AGENT_ACTION_ID)
-    claim("the invocation was accepted", "answer" in resp, True)
-    claim("the reply names the address that ran",
-          (resp.get("answer", {}).get("provider"), resp.get("answer", {}).get("id")),
-          (AGENT_PROVIDER, AGENT_ACTION_ID))
-    landed = wait_for(lambda: agent.overlays()[AGENT_ACTION_EFFECT], timeout=8)
-    claim("the action changed live state", bool(landed), True)
-    # Deliberately not filmed: this one opened a panel on the agent's own
-    # session, and the agent's own session is the one screen this film
-    # does not show.
+        step("it invokes one action by its address")
+        picked = next((a for a in actions if a["provider"] == AGENT_PROVIDER
+                       and a["id"] == AGENT_ACTION_ID), None)
+        claim(f"the catalogue offers ({AGENT_PROVIDER}, {AGENT_ACTION_ID})",
+              picked is not None, True)
+        if picked is None:
+            raise SystemExit("the agent's chosen action is not exported")
+        claim("the effect is absent beforehand",
+              agent.overlays()[AGENT_ACTION_EFFECT], False)
+        resp = agent.invoke_action(AGENT_PROVIDER, AGENT_ACTION_ID)
+        claim("the invocation was accepted", "answer" in resp, True)
+        claim("the reply names the address that ran",
+              (resp.get("answer", {}).get("provider"), resp.get("answer", {}).get("id")),
+              (AGENT_PROVIDER, AGENT_ACTION_ID))
+        landed = wait_for(lambda: agent.overlays()[AGENT_ACTION_EFFECT], timeout=8)
+        claim("the action changed live state", bool(landed), True)
+        # Deliberately not filmed: this one opened a panel on the agent's own
+        # session, and the agent's own session is the one screen this film
+        # does not show.
 
-    step("no synthetic input was used to do it")
-    claim("no keystroke, click or modifier reached the agent since",
-          agent.input_ops, baseline)
-    note("the address (provider, id) is the entire input to the invocation")
+        step("no synthetic input was used to do it")
+        claim("no keystroke, click or modifier reached the agent since",
+              agent.input_ops, baseline)
+        note("the address (provider, id) is the entire input to the invocation")
 
     # The action above was a shell action, so it changed the shell: it
     # opened a panel on the agent's own session. The document is reached
