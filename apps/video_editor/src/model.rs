@@ -1427,6 +1427,7 @@ mod tests {
             palette: 0,
             path: media::workspace_path("src.mov"),
             hydration: Hydration::Projected,
+            ..Default::default()
         };
         let mid = m.id;
         p.media.push(m);
