@@ -839,6 +839,51 @@ impl ShellDriver {
                     st.bump();
                 });
             }
+            "multi-strip" => {
+                // Three strips in the active workspace, with focus on
+                // the middle one. Nothing in the previous catalogue had
+                // more than one strip, so the strip ribbon had no scene
+                // that showed it doing its job — which is also why the
+                // absence of any strip affordance went unnoticed for so
+                // long.
+                use shell::shell::state::{
+                    AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
+                };
+                self.with_chrome(|st| {
+                    let mut focus = None;
+                    {
+                        let mut tree = st.tree_mut();
+                        if let Some(ws) = tree.active_workspace_mut() {
+                            for (n, name) in ["Build", "Review"].iter().enumerate() {
+                                let sid = StripId(9200 + n as u64);
+                                let mut strip = Strip::new(sid, (*name).to_string());
+                                let gid = 9300 + n as u64;
+                                let tid = 9400 + n as u64;
+                                strip.window_groups.push(WindowGroup {
+                                    id: gid,
+                                    tabs: vec![Tab {
+                                        id: tid,
+                                        title: (*name).to_string(),
+                                        tile: TileContent::Stub {
+                                            kind: AppKind::Settings,
+                                            label: (*name).to_string(),
+                                        },
+                                    }],
+                                    active_tab: tid,
+                                    width: WindowWidth::Normal,
+                                    maximized: false,
+                                });
+                                ws.strips.push(strip);
+                            }
+                            focus = ws.strips.get(1).map(|s| s.id).map(|sid| (ws.id, sid));
+                        }
+                        if let Some((ws_id, sid)) = focus {
+                            tree.active_strip.insert(ws_id, sid);
+                        }
+                    }
+                    st.bump();
+                });
+            }
             other => return Err(format!("unknown scene '{other}'")),
         }
         Ok(())
@@ -849,6 +894,7 @@ impl ShellDriver {
     pub const ALL_SCENES: &'static [&'static str] = &[
         "desktop",
         "multi-group",
+        "multi-strip",
         "overview",
         "palette",
         "palette_typed",
