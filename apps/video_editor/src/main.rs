@@ -187,6 +187,13 @@ fn render_shot_to_png(
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     widget.sync(&mut state.doc, &state.root);
+    // The host publishes the history's state every frame, and the transport
+    // strip's undo button is drawn from it. A capture that skipped this step
+    // would photograph that button permanently dead however much the
+    // scenario had actually done — the picture has to be of the real
+    // control, not of a control the capture path starved.
+    let status = state.undo_status(None);
+    widget.set_undo_status(&status);
 
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = taffy.new_with_children(
