@@ -312,6 +312,18 @@ pub struct App {
     /// Resolved once from the same environment the broker's `Hello` announces,
     /// so the id here is the id peers see.
     local_author: crate::permissions::UserId,
+    /// The undo status last handed to the widget tree, and the history
+    /// revision it was derived from.
+    ///
+    /// Cached rather than recomputed per frame because deriving the summaries
+    /// reads `AutoCommit::diff`, which **closes the open transaction** — doing
+    /// that mid-typing would commit a half-typed splice out from under the
+    /// pending `commit_action`, and the undo entry that action was about to
+    /// push would silently not exist. Keyed on the revision, which changes only
+    /// when a stack does, so the doc is touched only at moments the host has
+    /// just closed the transaction itself.
+    undo_status: crate::undo::UndoStatus,
+    undo_status_rev: Option<u64>,
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
 
@@ -531,6 +543,8 @@ impl App {
             last_stable_metadata: None,
             collab_manager: CollaborationManager::new(),
             local_author: crate::collaboration::local_user_id(),
+            undo_status: crate::undo::UndoStatus::empty(),
+            undo_status_rev: None,
             presence_ctx: PresenceCtx::empty(),
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
@@ -1897,6 +1911,127 @@ impl App {
                     .send(crate::collaboration::CollabRequest::SyncCRDT { data });
             }
         }
+    }
+
+    /// Undo the local user's most recent action. **The one undo door.**
+    ///
+    /// Ctrl+Z calls this, and so does a widget that asked for an undo through
+    /// [`Widget::take_undo_request`](crate::widget::Widget::take_undo_request).
+    /// Keeping the shortcut and every on-screen control on one method is what
+    /// stops them drifting: an Undo button cannot pick a different author
+    /// scope, forget to restore the caret, or skip the redo bookkeeping,
+    /// because it does not reimplement any of it.
+    ///
+    /// Returns `true` iff something was actually undone.
+    pub fn perform_undo(&mut self) -> bool {
+        let (focus_idx, meta) = self.undo_focus_snapshot();
+        let Some(entry) = self
+            .state
+            .undo_as(Some(&self.local_author), focus_idx, meta)
+        else {
+            return false;
+        };
+        self.apply_undo_entry(entry);
+        self.refresh_undo_status();
+        true
+    }
+
+    /// Redo the local user's most recently undone action — the mirror of
+    /// [`perform_undo`](Self::perform_undo), and equally the only redo door.
+    pub fn perform_redo(&mut self) -> bool {
+        let (focus_idx, meta) = self.undo_focus_snapshot();
+        let Some(entry) = self
+            .state
+            .redo_as(Some(&self.local_author), focus_idx, meta)
+        else {
+            return false;
+        };
+        self.apply_undo_entry(entry);
+        self.refresh_undo_status();
+        true
+    }
+
+    /// Where the caret is *right now*, for the opposite stack's entry.
+    ///
+    /// Captured before undo/redo runs so round-tripping restores the caret
+    /// rather than rehydrating the text at offset 0. `get_state` is the
+    /// non-mutating read half of the get/set pair, so widgets that don't opt
+    /// in are safe.
+    fn undo_focus_snapshot(&self) -> (Option<usize>, Option<String>) {
+        let meta = self.root_widget.get_state();
+        let idx = self
+            .focused_node
+            .and_then(|id| self.focusable_order.iter().position(|x| *x == id));
+        (idx, meta)
+    }
+
+    /// What the history can do for the local user right now.
+    ///
+    /// The same value the widget tree is given, so a test can assert that a
+    /// control's disabled state and the host agree without reaching into the
+    /// stacks.
+    pub fn undo_status(&self) -> &crate::undo::UndoStatus {
+        &self.undo_status
+    }
+
+    /// Recompute the cached status if — and only if — the history moved.
+    ///
+    /// Cheap and safe to call whenever the host has just finished writing to
+    /// the document: when the revision is unchanged this touches neither the
+    /// doc nor the widget tree. See the field docs for why it must not run
+    /// while a transaction is open.
+    fn refresh_undo_status(&mut self) {
+        let rev = self.state.history_revision();
+        if self.undo_status_rev == Some(rev) {
+            return;
+        }
+        self.undo_status_rev = Some(rev);
+        self.undo_status = self.state.undo_status(Some(&self.local_author));
+    }
+
+    /// Hand the current [`UndoStatus`](crate::undo::UndoStatus) to every
+    /// laid-out widget.
+    ///
+    /// Sweeps `node_map` rather than walking `children`, so a control reaches
+    /// the status at any depth and behind containers that keep private child
+    /// storage — the same reason [`Self::resolve_cursor`] works that way.
+    pub fn publish_undo_status(&mut self) {
+        self.refresh_undo_status();
+        let status = self.undo_status.clone();
+        for &w_ptr in self.node_map.values() {
+            // SAFETY: the `node_map` dereference invariant the rest of `App`
+            // relies on — the pointers are valid for the duration of an event
+            // dispatch; the tree is only rebuilt between frames.
+            let w = unsafe { &mut *w_ptr };
+            w.set_undo_status(&status);
+        }
+    }
+
+    /// Perform any undo/redo a widget asked for since the last drain.
+    ///
+    /// Returns `true` if anything happened, so the caller can repaint. Each
+    /// request goes through [`perform_undo`](Self::perform_undo) /
+    /// [`perform_redo`](Self::perform_redo) — a control never touches the
+    /// stacks itself.
+    pub fn drain_undo_requests(&mut self) -> bool {
+        // Collect first: performing an undo mutates the tree's state, and the
+        // sweep must not be holding raw child pointers while that happens.
+        let mut requests = Vec::new();
+        for &w_ptr in self.node_map.values() {
+            // SAFETY: as in `publish_undo_status`.
+            let w = unsafe { &mut *w_ptr };
+            if let Some(req) = w.take_undo_request() {
+                requests.push(req);
+            }
+        }
+        let mut acted = false;
+        for req in requests {
+            acted |= match req {
+                crate::undo::UndoRequest::Undo => self.perform_undo(),
+                crate::undo::UndoRequest::Redo => self.perform_redo(),
+            };
+        }
+        acted
     }
 
     fn apply_undo_entry(&mut self, entry: crate::state::UndoEntry) {
@@ -3543,6 +3678,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
 
+                // Hand the widget tree the live undo status, after layout has
+                // settled (so a control built this frame is in `node_map`) and
+                // before draw and the accessibility export — the disabled state
+                // an AT is told about has to be the one that gets painted.
+                app.publish_undo_status();
+
                 let t_draw_start = if perf { Some(std::time::Instant::now()) } else { None };
                 // Composite the whole logical scene at the per-output device
                 // scale. Widget rects are logical; Vello rasterises glyphs and
@@ -4019,54 +4160,21 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     } = event
                     {
                         let shift = app.modifiers.state().shift_key();
-                        // Capture the *current* focus + widget metadata so the
-                        // opposite-stack entry carries where the caret is right
-                        // now — otherwise round-tripping undo/redo loses caret
-                        // position. `get_state()` is the non-mutating read half
-                        // of the get/set pair (default returns None, so widgets
-                        // that don't opt in are safe).
-                        let current_meta = app.root_widget.get_state();
-                        let current_focus_idx = app
-                            .focused_node
-                            .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
+                        // The history bindings resolve through
+                        // `undo::shortcut`, the one table both this host and
+                        // the headless driver read, and are performed through
+                        // `perform_undo` / `perform_redo` — the same methods an
+                        // on-screen Undo control reaches. One binding, one
+                        // implementation.
+                        if let Some(req) = crate::undo::shortcut(c.as_str(), true, shift) {
+                            match req {
+                                crate::undo::UndoRequest::Undo => app.perform_undo(),
+                                crate::undo::UndoRequest::Redo => app.perform_redo(),
+                            };
+                            is_undo_redo = true;
+                            handled = true;
+                        }
                         match c.as_str() {
-                            // Ctrl+Shift+Z is the Linux/Mac-native redo binding
-                            // and winit delivers it as character "Z" while shift is
-                            // held, so check the modifier directly rather than
-                            // relying on the capital-letter cue.
-                            "z" | "Z" if shift => {
-                                if let Some(e) = app.state.redo_as(
-                                    Some(&app.local_author),
-                                    current_focus_idx,
-                                    current_meta.clone(),
-                                ) {
-                                    app.apply_undo_entry(e);
-                                }
-                                is_undo_redo = true;
-                                handled = true;
-                            }
-                            "z" | "Z" => {
-                                if let Some(e) = app.state.undo_as(
-                                    Some(&app.local_author),
-                                    current_focus_idx,
-                                    current_meta.clone(),
-                                ) {
-                                    app.apply_undo_entry(e);
-                                }
-                                is_undo_redo = true;
-                                handled = true;
-                            }
-                            "y" | "Y" => {
-                                if let Some(e) = app.state.redo_as(
-                                    Some(&app.local_author),
-                                    current_focus_idx,
-                                    current_meta.clone(),
-                                ) {
-                                    app.apply_undo_entry(e);
-                                }
-                                is_undo_redo = true;
-                                handled = true;
-                            }
                             // Ctrl+K opens the action palette scoped to the
                             // focused app instance's open resources. A second
                             // Ctrl+K (palette already open) closes it.
@@ -4507,6 +4615,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             app.needs_sync = true;
             window.request_redraw();
         }
+
+        // An Undo/Redo control the user activated during the last event. Runs
+        // after the commit block above so an action performed in the same tick
+        // is already on the stack and is what gets reverted. Both verbs take
+        // the same route Ctrl+Z does.
+        if app.drain_undo_requests() {
+            app.needs_sync = true;
+            window.request_redraw();
+        }
+        // Re-derive the status now, at a point where the host has just closed
+        // the transaction itself. A no-op unless a stack actually moved.
+        app.refresh_undo_status();
 
         // Persist whatever the frame just changed. Level-triggered rather
         // than hooked into individual mutations: widgets write to the
@@ -7795,5 +7915,279 @@ mod synthetic_node_dispatch_tests {
             "an unresolvable id must activate nothing at all"
         );
         assert_eq!(app.focused_node, None, "and must not move focus either");
+    }
+}
+
+/// The Undo control, proved end to end against the host.
+///
+/// Every assertion here runs through what production runs: the real
+/// `perform_undo` the Ctrl+Z handler calls, the real `drain_undo_requests` the
+/// idle tick calls, and the real AccessKit tree the bridge exports. Nothing is
+/// asserted against a hand-built status or a stubbed widget list.
+#[cfg(test)]
+mod undo_control_tests {
+    use super::*;
+    use crate::a11y::Action;
+    use crate::state::State;
+    use crate::widget::{Row, UndoButton, Widget};
+    use automerge::{transaction::Transactable, ObjType, ReadDoc, ROOT};
+
+    /// Build the tree an app would: an Undo button and a Redo button in a row.
+    ///
+    /// `Row` does not forward `set_undo_status` or `take_undo_request` — it has
+    /// no idea they exist — so a button that works here proves the host reaches
+    /// nested widgets through `node_map` rather than through container
+    /// cooperation.
+    fn app_with_history_controls() -> App {
+        let row = Row::new()
+            .push(Box::new(UndoButton::undo()))
+            .push(Box::new(UndoButton::redo()));
+        let mut app = App::new(State::new(), Box::new(row));
+        app.init_layout();
+        app
+    }
+
+    /// One real edit, committed the way the host commits one.
+    fn type_action(app: &mut App, text: &str) {
+        let obj = app
+            .state
+            .doc
+            .put_object(&ROOT, "body", ObjType::Text)
+            .unwrap();
+        app.state.doc.splice_text(&obj, 0, 0, text).unwrap();
+        app.commit_action();
+    }
+
+    fn body(app: &App) -> String {
+        match app.state.doc.get(&ROOT, "body") {
+            Ok(Some((_, obj))) => app.state.doc.text(&obj).unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
+    /// The exported AccessKit node for the control labelled `name`.
+    fn exported(app: &App, name: &str) -> accesskit::Node {
+        let update = app.build_a11y_tree_update(1.0);
+        update
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label().as_deref() == Some(name))
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| panic!("no exported node labelled {name}"))
+    }
+
+    fn exported_id(app: &App, name: &str) -> accesskit::NodeId {
+        let update = app.build_a11y_tree_update(1.0);
+        update
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label().as_deref() == Some(name))
+            .map(|(id, _)| *id)
+            .unwrap_or_else(|| panic!("no exported node labelled {name}"))
+    }
+
+    /// What an assistive technology is told must be what the host would
+    /// actually do. Asserted against the exported tree on one side and against
+    /// `perform_undo`'s own return on the other, so a mismatch cannot hide.
+    #[test]
+    fn the_exported_disabled_state_matches_whether_undo_would_do_anything() {
+        let mut app = app_with_history_controls();
+        app.publish_undo_status();
+
+        assert!(
+            exported(&app, "Undo").is_disabled(),
+            "an empty history must export as disabled"
+        );
+        assert_eq!(
+            exported(&app, "Undo").description().as_deref(),
+            Some("Nothing to undo"),
+            "and must not describe an action that is not there"
+        );
+        assert!(exported(&app, "Redo").is_disabled());
+
+        type_action(&mut app, "hello");
+        app.publish_undo_status();
+
+        assert!(
+            !exported(&app, "Undo").is_disabled(),
+            "an action on the stack must export as enabled"
+        );
+        assert_eq!(
+            exported(&app, "Undo").description().as_deref(),
+            Some("Undo: +5 -0 chars")
+        );
+        assert!(
+            exported(&app, "Redo").is_disabled(),
+            "nothing has been undone, so Redo stays disabled"
+        );
+
+        // The claim is now checked against the act itself.
+        assert!(app.perform_undo(), "the tree promised an undo; do it");
+        assert_eq!(body(&app), "");
+        app.publish_undo_status();
+        assert!(
+            exported(&app, "Undo").is_disabled(),
+            "the stack is empty again"
+        );
+        assert!(
+            !exported(&app, "Redo").is_disabled(),
+            "and the action is now redoable"
+        );
+    }
+
+    /// A disabled Undo control must not be reachable by Tab. `focusable_order`
+    /// is the live list the host tabs through, so this is the real traversal.
+    #[test]
+    fn a_dead_undo_control_is_skipped_by_keyboard_focus() {
+        let mut app = app_with_history_controls();
+        app.publish_undo_status();
+        app.update_focusable_order();
+        assert!(
+            app.focusable_order.is_empty(),
+            "nothing to undo or redo, so neither control takes focus"
+        );
+
+        type_action(&mut app, "hello");
+        app.publish_undo_status();
+        app.update_focusable_order();
+        assert_eq!(
+            app.focusable_order.len(),
+            1,
+            "exactly the Undo control becomes focusable"
+        );
+    }
+
+    /// The point of the whole API: a control drives the *same* undo the
+    /// shortcut does.
+    ///
+    /// Two identical apps, one edit each. One is undone through
+    /// `perform_undo` — the method the Ctrl+Z handler calls. The other is
+    /// undone by an assistive technology activating the button, which produces
+    /// a request the host drains. The documents must end up identical.
+    #[test]
+    fn activating_the_control_and_the_shortcut_reach_the_same_undo() {
+        let mut via_shortcut = app_with_history_controls();
+        type_action(&mut via_shortcut, "hello");
+        let before = body(&via_shortcut);
+
+        let mut via_control = app_with_history_controls();
+        type_action(&mut via_control, "hello");
+        assert_eq!(body(&via_control), before, "same starting point");
+
+        // The shortcut's route.
+        assert!(via_shortcut.perform_undo());
+
+        // The control's route: publish, activate through the a11y dispatch
+        // path, then the idle tick's drain.
+        via_control.publish_undo_status();
+        let undo_id = exported_id(&via_control, "Undo");
+        via_control.dispatch_a11y_action(undo_id, &Action::Activate);
+        assert!(
+            via_control.drain_undo_requests(),
+            "the activation must have produced an undo for the host to perform"
+        );
+
+        assert_eq!(
+            body(&via_control),
+            body(&via_shortcut),
+            "the control and the shortcut leave the document in the same state"
+        );
+        assert_eq!(body(&via_control), "", "and that state is pre-edit");
+
+        // Redo through the control lands where redo through the shortcut does.
+        via_shortcut.perform_redo();
+        via_control.publish_undo_status();
+        let redo_id = exported_id(&via_control, "Redo");
+        via_control.dispatch_a11y_action(redo_id, &Action::Activate);
+        assert!(via_control.drain_undo_requests());
+        assert_eq!(body(&via_control), body(&via_shortcut));
+        assert_eq!(body(&via_control), "hello");
+    }
+
+    /// Activating a control the host has said is unavailable must do nothing —
+    /// not silently undo something else.
+    #[test]
+    fn activating_an_unavailable_control_performs_no_undo() {
+        let mut app = app_with_history_controls();
+        type_action(&mut app, "hello");
+        app.publish_undo_status();
+
+        // Redo is unavailable: nothing has been undone.
+        let redo_id = exported_id(&app, "Redo");
+        app.dispatch_a11y_action(redo_id, &Action::Activate);
+        assert!(
+            !app.drain_undo_requests(),
+            "an unavailable verb must not reach the host"
+        );
+        assert_eq!(body(&app), "hello", "and the document is untouched");
+    }
+
+    /// The status must reach a control nested behind a container that knows
+    /// nothing about undo, and must reach one that only appeared this frame.
+    #[test]
+    fn the_status_reaches_controls_the_container_never_forwards_to() {
+        let mut app = app_with_history_controls();
+        type_action(&mut app, "hi");
+        app.publish_undo_status();
+
+        // Read it back off the live widgets, not off the App's cache.
+        let mut seen = Vec::new();
+        for &w_ptr in app.node_map.values() {
+            let w = unsafe { &*w_ptr };
+            if let Some(node) = w.accessibility() {
+                if let Some(name) = node.name.as_deref() {
+                    if name == "Undo" || name == "Redo" {
+                        seen.push((name.to_string(), node.state.disabled));
+                    }
+                }
+            }
+        }
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![("Redo".to_string(), true), ("Undo".to_string(), false)],
+            "both nested controls received the status Row never forwarded"
+        );
+    }
+
+    /// Re-deriving the summaries reads `AutoCommit::diff`, which closes the
+    /// open transaction. If the host did that on a frame where nothing had
+    /// changed, a half-typed edit would be committed out from under the
+    /// pending `commit_action` and its undo entry would never exist.
+    #[test]
+    fn publishing_between_keystrokes_does_not_split_the_pending_edit() {
+        let mut app = app_with_history_controls();
+
+        // An edit in progress: written, not yet committed — exactly the state
+        // a text field is in between keystrokes.
+        let obj = app
+            .state
+            .doc
+            .put_object(&ROOT, "body", ObjType::Text)
+            .unwrap();
+        app.state.doc.splice_text(&obj, 0, 0, "hel").unwrap();
+
+        // Frames go by while the user is still typing.
+        app.publish_undo_status();
+        app.publish_undo_status();
+
+        app.state.doc.splice_text(&obj, 3, 0, "lo").unwrap();
+        app.publish_undo_status();
+
+        // Now the widget signals the boundary, as a text field does.
+        app.commit_action();
+        assert_eq!(body(&app), "hello");
+
+        app.publish_undo_status();
+        assert!(
+            !exported(&app, "Undo").is_disabled(),
+            "the edit must have produced an undo entry"
+        );
+        assert!(app.perform_undo(), "and undoing it must work");
+        assert_eq!(
+            body(&app),
+            "",
+            "one undo reverts the whole edit, not part of it"
+        );
     }
 }
