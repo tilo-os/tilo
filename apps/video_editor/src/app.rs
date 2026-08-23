@@ -112,6 +112,20 @@ const MEDIA_UNREADABLE_SHORT: &str = "Unreadable";
 /// the bin is docked beside the editor (the wide desktop layout).
 const BIN_BREAKPOINT: f64 = 900.0;
 
+/// Below this window width the inspector collapses to an overlay flap from
+/// the right, exactly as the bin does from the left.
+///
+/// A fixed 300px panel is a third of a 900px window and nearly two thirds of
+/// a 500px one — at which point the preview, the transport buttons and the
+/// timecode are all squeezed out by a panel that edits a clip the user can no
+/// longer see. Below the breakpoint the inspector gets out of the way and is
+/// summoned by the topbar toggle.
+///
+/// Unlike the bin, an open inspector paints **no scrim**: its whole purpose
+/// is to change the picture, so dimming the picture while you drag a slider
+/// would hide the thing you are adjusting.
+const INSPECTOR_BREAKPOINT: f64 = 760.0;
+
 /// Computed region rectangles for one frame, derived purely from the root
 /// rect. Recomputed in both `draw` and `handle_event` so the two never
 /// disagree about where anything is.
@@ -121,6 +135,9 @@ struct Regions {
     /// Hamburger toggle in the topbar. Zero-sized (and skipped) while the bin
     /// is docked; present only in the narrow overlay layout.
     menu_btn: Rect,
+    /// Inspector toggle in the topbar. Zero-sized while the inspector is
+    /// docked; present only in the narrow overlay layout.
+    inspector_btn: Rect,
     export_btn: Rect,
     split_btn: Rect,
     import_btn: Rect,
@@ -138,6 +155,9 @@ struct Regions {
     scrim: Rect,
     /// `true` when the bin is collapsed to an overlay flap (narrow window).
     bin_overlay: bool,
+    /// `true` when the inspector is collapsed to an overlay flap. It slides
+    /// from the right and paints no scrim — see [`INSPECTOR_BREAKPOINT`].
+    inspector_overlay: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -514,6 +534,9 @@ pub struct VideoEditorApp {
     /// eased overlay flap behind a scrim on a narrow one. `open_when_docked`
     /// keeps the wide layout pixel-identical to before.
     bin_flap: FlapState,
+    /// The same kernel driving the inspector's docked-vs-overlay reveal from
+    /// the right edge. See [`INSPECTOR_BREAKPOINT`].
+    inspector_flap: FlapState,
     /// Real-time clock for the flap's frame-rate-independent eased slide.
     flap_tick: Instant,
     // --- media-bin clip management ---
@@ -664,6 +687,7 @@ impl VideoEditorApp {
             shuttle: 0.0,
             flap_settled: false,
             bin_flap: FlapState::open_when_docked(),
+            inspector_flap: FlapState::open_when_docked(),
             flap_tick: Instant::now(),
             bin_menu: ContextMenu::new(),
             menu_target: None,
@@ -757,6 +781,19 @@ impl VideoEditorApp {
         SplitLayout::from_width(self.rect.width(), BIN_BREAKPOINT)
     }
 
+    /// Docked or overlay for the inspector, from the same shared kernel the
+    /// bin uses — one rule for "this window is too narrow for a fixed side
+    /// panel", applied at each panel's own breakpoint.
+    fn inspector_split(&self) -> SplitLayout {
+        SplitLayout::from_width(self.rect.width(), INSPECTOR_BREAKPOINT)
+    }
+
+    /// Whether the inspector is on screen right now: always when docked,
+    /// only while the flap is open when it is an overlay.
+    fn inspector_is_visible(&self, r: &Regions) -> bool {
+        !r.inspector_overlay || self.inspector_flap.is_open(self.inspector_split())
+    }
+
     // ---- region geometry -------------------------------------------------
     fn regions(&self) -> Regions {
         let r = self.rect;
@@ -773,11 +810,34 @@ impl VideoEditorApp {
         } else {
             Rect::ZERO
         };
+        // Summons the collapsed inspector. It sits left of Import rather than
+        // on the right with the panel it opens, because the right of the
+        // topbar is already full at the widths where the panel collapses —
+        // and a toggle that does not fit is worse than one on the wrong side.
+        let inspector_btn = if self.inspector_split() == SplitLayout::Overlay {
+            Rect::new(import_btn.x0 - 42.0, r.y0 + 10.0, import_btn.x0 - 14.0, r.y0 + 38.0)
+        } else {
+            Rect::ZERO
+        };
         let timeline_top = (r.y1 - TIMELINE_H).max(topbar.y1 + 80.0);
         let timeline = Rect::new(r.x0, timeline_top, r.x1, r.y1);
         let mid_top = topbar.y1;
         let mid_bot = timeline.y0;
-        let inspector = Rect::new(r.x1 - INSPECTOR_W, mid_top, r.x1, mid_bot);
+        // Docked: the inspector holds its column and the preview ends at it.
+        // Overlay: the preview reclaims the column and the inspector slides in
+        // over it from the right by the eased reveal. `preview_x1` is where
+        // the preview (and so the transport) actually ends, which is the whole
+        // window's edge in the overlay case — that is what gives the transport
+        // room for its five buttons and its timecode on a narrow window.
+        let inspector_overlay = self.inspector_split() == SplitLayout::Overlay;
+        let (inspector, preview_x1) = if inspector_overlay {
+            let slide = self.inspector_flap.slide();
+            let x1 = r.x1 + INSPECTOR_W * (1.0 - slide);
+            (Rect::new(x1 - INSPECTOR_W, mid_top, x1, r.y1), r.x1)
+        } else {
+            let i = Rect::new(r.x1 - INSPECTOR_W, mid_top, r.x1, mid_bot);
+            (i, i.x0)
+        };
         // Docked: the bin occupies its column and the preview starts after it.
         // Overlay: the preview reclaims the bin's column (full editor width)
         // and the bin slides in from the left over a scrim by the eased
@@ -796,7 +856,7 @@ impl VideoEditorApp {
             let bin = Rect::new(r.x0, mid_top, r.x0 + BIN_W, mid_bot);
             (bin, bin.x1, Rect::ZERO)
         };
-        let preview = Rect::new(preview_x0, mid_top, inspector.x0, mid_bot);
+        let preview = Rect::new(preview_x0, mid_top, preview_x1, mid_bot);
         let transport = Rect::new(preview.x0, preview.y1 - TRANSPORT_H, preview.x1, preview.y1);
         let canvas_area = Rect::new(preview.x0 + 10.0, preview.y0 + 10.0, preview.x1 - 10.0, transport.y0 - 8.0);
         let canvas = fit_aspect(canvas_area, self.project.width.max(16) as f64, self.project.height.max(9) as f64);
@@ -804,8 +864,9 @@ impl VideoEditorApp {
         let gutter = Rect::new(timeline.x0, timeline.y0 + RULER_H, timeline.x0 + GUTTER_W, timeline.y1);
         let lanes = Rect::new(timeline.x0 + GUTTER_W, timeline.y0 + RULER_H, timeline.x1, timeline.y1);
         Regions {
-            topbar, menu_btn, export_btn, split_btn, import_btn, bin, preview, canvas, transport,
-            inspector, timeline, ruler, gutter, lanes, scrim, bin_overlay: overlay,
+            topbar, menu_btn, inspector_btn, export_btn, split_btn, import_btn, bin, preview,
+            canvas, transport, inspector, timeline, ruler, gutter, lanes, scrim,
+            bin_overlay: overlay, inspector_overlay,
         }
     }
 
@@ -1296,22 +1357,26 @@ impl VideoEditorApp {
         }
     }
 
-    /// Reconcile the bin flap with the current width and advance its eased
-    /// reveal using real elapsed time. Called once at the top of `draw`.
+    /// Reconcile both side flaps with the current width and advance their
+    /// eased reveal using real elapsed time. Called once at the top of `draw`.
     fn advance_flap(&mut self) {
         let layout = self.bin_layout();
+        let insp = self.inspector_split();
         self.bin_flap.reconcile(layout);
+        self.inspector_flap.reconcile(insp);
         // First settled frame: snap to the width's natural state so a cold
         // narrow launch starts collapsed (no open→closed flash) and a cold
         // wide launch starts docked-open.
         if !self.flap_settled {
             self.bin_flap.snap(layout == SplitLayout::Docked);
+            self.inspector_flap.snap(insp == SplitLayout::Docked);
             self.flap_settled = true;
         }
         let now = Instant::now();
         let dt = now.duration_since(self.flap_tick).as_secs_f64();
         self.flap_tick = now;
         self.bin_flap.tick(layout, dt);
+        self.inspector_flap.tick(insp, dt);
     }
 
     /// Toggle the media bin flap (the topbar hamburger / `B` shortcut).
@@ -1319,9 +1384,26 @@ impl VideoEditorApp {
         self.bin_flap.toggle(self.bin_layout());
     }
 
-    /// Whether the bin flap is animating and the host should keep painting.
+    /// Toggle the inspector flap (the topbar toggle / `Tab`). On a wide
+    /// window the inspector is docked and this collapses it away, which is
+    /// the same affordance the bin's hamburger offers there.
+    fn toggle_inspector(&mut self) {
+        self.inspector_flap.toggle(self.inspector_split());
+    }
+
+    /// Bring the inspector on screen if it is a closed overlay. Called when
+    /// something selects a clip, so "click a clip, edit it" does not need a
+    /// second click on a toggle the user has to find first.
+    fn reveal_inspector(&mut self) {
+        if self.inspector_split() == SplitLayout::Overlay {
+            self.inspector_flap.open();
+        }
+    }
+
+    /// Whether either flap is animating and the host should keep painting.
     fn flap_animating(&self) -> bool {
         self.bin_flap.is_animating(self.bin_layout())
+            || self.inspector_flap.is_animating(self.inspector_split())
     }
 
     fn toggle_play(&mut self) {
@@ -3073,8 +3155,16 @@ impl Widget for VideoEditorApp {
         }
         self.draw_preview(scene, transform, tr, theme, &r);
         self.draw_transport(scene, transform, tr, theme, &r);
-        self.draw_inspector(scene, transform, tr, theme, &r);
+        // Docked, the inspector draws in its column. As an overlay it floats
+        // over the preview it is editing — no scrim, so the picture the
+        // sliders are changing stays visible while they change it.
+        if !r.inspector_overlay {
+            self.draw_inspector(scene, transform, tr, theme, &r);
+        }
         self.draw_timeline(scene, transform, tr, theme, &r);
+        if r.inspector_overlay && self.inspector_flap.reveal() > 0.001 {
+            self.draw_inspector(scene, transform, tr, theme, &r);
+        }
         if r.bin_overlay {
             // Dimming scrim, then the bin sliding in on top of it.
             if r.scrim.width() > 0.0 {
@@ -3248,7 +3338,7 @@ impl Widget for VideoEditorApp {
                 let shift = modifiers.state().shift_key();
                 let over_bin = self.bin_is_visible(&r) && r.bin.contains(self.last_mouse);
                 let over_timeline = r.timeline.contains(self.last_mouse);
-                if r.inspector.contains(self.last_mouse) && !over_bin {
+                if self.inspector_is_visible(&r) && r.inspector.contains(self.last_mouse) && !over_bin {
                     // Scroll the inspector body (its content can exceed the pane).
                     if dy.abs() > 0.0 {
                         let max = self.inspector_max_scroll(&r);
@@ -3384,7 +3474,7 @@ impl Widget for VideoEditorApp {
             return Some(CursorIcon::Crosshair);
         }
         // Inspector controls.
-        if r.inspector.contains(point) {
+        if self.inspector_is_visible(&r) && r.inspector.contains(point) {
             let l = self.inspector_layout(&r);
             let sliders = [
                 l.opacity, l.volume, l.brightness, l.contrast, l.saturation, l.fade_in,
@@ -3597,13 +3687,25 @@ impl VideoEditorApp {
                 self.zoom_by(1.0 / 1.25);
                 true
             }
+            // Tab shows and hides the inspector. On a narrow window that is
+            // the only way back to a panel dismissed by Esc without hunting
+            // for the topbar toggle; on a wide one it reclaims the column.
+            Key::Named(NamedKey::Tab) => {
+                self.toggle_inspector();
+                true
+            }
             Key::Named(NamedKey::Escape) => {
-                // Esc dismisses an open overlay bin first, then clears the
-                // selection — matching the flap kernel's Esc-to-close.
+                // Esc dismisses an open overlay bin first, then an open
+                // overlay inspector, then clears the selection — matching the
+                // flap kernel's Esc-to-close.
                 if self.bin_layout() == SplitLayout::Overlay
                     && self.bin_flap.is_open(SplitLayout::Overlay)
                 {
                     self.bin_flap.close();
+                } else if self.inspector_split() == SplitLayout::Overlay
+                    && self.inspector_flap.is_open(SplitLayout::Overlay)
+                {
+                    self.inspector_flap.close();
                 } else {
                     self.selection.clear();
                 }
@@ -3629,6 +3731,17 @@ impl VideoEditorApp {
         // Hamburger toggle (overlay layout only).
         if r.bin_overlay && r.menu_btn.contains(p) {
             self.toggle_bin();
+            return;
+        }
+        // Inspector toggle (overlay layout only).
+        if r.inspector_overlay && r.inspector_btn.contains(p) {
+            self.toggle_inspector();
+            return;
+        }
+        // An open inspector overlay owns its own rect, before the preview and
+        // timeline underneath it get a look.
+        if r.inspector_overlay && self.inspector_is_visible(r) && r.inspector.contains(p) {
+            self.press_inspector(state, r, p);
             return;
         }
         // Top bar buttons.
@@ -3705,7 +3818,7 @@ impl VideoEditorApp {
             }
         }
         // Inspector controls.
-        if r.inspector.contains(p) {
+        if self.inspector_is_visible(r) && r.inspector.contains(p) {
             self.press_inspector(state, r, p);
             return;
         }
@@ -4431,6 +4544,26 @@ impl VideoEditorApp {
         if r.bin_overlay {
             self.draw_hamburger(scene, tf, theme, r.menu_btn);
         }
+        // Inspector toggle, present only while the inspector is collapsed.
+        if r.inspector_overlay && r.inspector_btn.width() > 0.0 {
+            let rect = r.inspector_btn;
+            let open = self.inspector_flap.is_open(self.inspector_split());
+            let hovered = rect.contains(self.last_mouse);
+            let bg = if open {
+                c.accent[5]
+            } else if hovered {
+                c.surface_white_10
+            } else {
+                c.neutral[3]
+            };
+            fill_rrect(scene, tf, bg, rect, 7.0);
+            let fg = if open { on_fill(theme, bg).1 } else { c.text_primary };
+            // A panel glyph: the pane outline with its right column filled,
+            // which is where the inspector lives and what the toggle reveals.
+            let g = rect.inset(-8.0);
+            stroke_rrect(scene, tf, fg, g, 2.0, 1.4);
+            fill_rect(scene, tf, fg, Rect::new(g.x0 + g.width() * 0.55, g.y0, g.x1, g.y1));
+        }
         // No project meta here. It used to be centred across the topbar, where
         // it collided with these buttons at 720px — the `--narrow` capture
         // width itself — and it carried the project *name*, which belongs to
@@ -4792,11 +4925,31 @@ impl VideoEditorApp {
                 text(scene, tr, tf, msg, 13.0, c.text_dim, canvas.center().x - tw as f64 / 2.0, canvas.center().y - 7.0);
             }
         }
-        // HUD overlays.
-        text_w(scene, tr, tf, &timecode(self.playhead, self.project.fps), 13.0, with_alpha(Color::WHITE, 0.85), canvas.x0 + 10.0, canvas.y0 + 8.0, TextWeight::Bold);
-        let res = format!("{}×{}", self.project.width, self.project.height);
-        let (rw, _) = tr.measure(&res, 12.0, None);
-        text(scene, tr, tf, &res, 12.0, with_alpha(Color::WHITE, 0.7), canvas.x1 - 10.0 - rw as f64, canvas.y0 + 8.0);
+        // HUD overlays: the playhead's time, and nothing else.
+        //
+        // The frame size used to be painted in the canvas's top-right, which
+        // is exactly where a corner picture-in-picture sits — and now that
+        // `Transform` is real and `Transform::pip()` puts a layer there by
+        // design, that collision is systematic rather than unlucky. Frame size
+        // is static project metadata, so it belongs beside the timecode in the
+        // transport (which states it) and in the export dialog, not painted
+        // over the user's composition for the life of the project.
+        //
+        // What stays is per-frame information, and it takes a chip so it reads
+        // over a bright picture as well as a dark one.
+        let tc = timecode(self.playhead, self.project.fps);
+        let (tcw, _) = tr.measure_weighted(&tc, 13.0, None, TextWeight::Bold);
+        let tc_chip = Rect::new(
+            canvas.x0 + 8.0,
+            canvas.y0 + 6.0,
+            canvas.x0 + 8.0 + tcw as f64 + 14.0,
+            canvas.y0 + 28.0,
+        );
+        if tc_chip.x1 < canvas.x1 {
+            fill_rrect(scene, tf, with_alpha(Color::BLACK, 0.55), tc_chip, 5.0);
+            let baseline = text_baseline(tc_chip, 13.0, tr);
+            text_w(scene, tr, tf, &tc, 13.0, Color::WHITE, tc_chip.x0 + 7.0, baseline, TextWeight::Bold);
+        }
         // The clip under the playhead has no bytes on this device: say so on the
         // canvas, because the picture behind this line is a stand-in generated
         // from metadata, not the user's footage.
@@ -4836,6 +4989,9 @@ impl VideoEditorApp {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.raised, r.transport);
         stroke_line(scene, tf, c.border_standard, r.transport.x0, r.transport.y0, r.transport.x1, r.transport.y0, 1.0);
+        // Everything below is clipped to the transport, so no control drawn
+        // at a fixed offset can reach into the pane beside it.
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &r.transport);
         for (action, rect) in self.transport_buttons(r) {
             let is_play = action == TransportAction::PlayPause;
             let hovered = rect.contains(self.last_mouse);
@@ -4844,29 +5000,38 @@ impl VideoEditorApp {
             let col = if is_play { on_fill(theme, bg).1 } else { c.text_primary };
             self.draw_transport_icon(scene, tf, action, rect.center(), col);
         }
-        // Timecode readout.
+        // Timecode readout. Each part is drawn only when it fits *whole*
+        // inside the transport: a number the pane edge cuts mid-digit does not
+        // read as a clipped number, it reads as a shorter one — "00:42:00"
+        // arriving as "00:4" states a project length that is simply false.
+        // Dropping the part is the honest narrow-window answer, and the parts
+        // go in order of what the user cannot get elsewhere.
         let big = timecode(self.playhead, self.project.fps);
-        text_w(scene, tr, tf, &big, 18.0, c.text_primary, r.transport.x0 + 220.0, r.transport.y0 + 8.0, TextWeight::Bold);
         let total = format!("/  {}", timecode(self.project.duration(), self.project.fps));
-        let (bw, _) = tr.measure_weighted(&big, 18.0, None, TextWeight::Bold);
-        let total_x = r.transport.x0 + 224.0 + bw as f64;
-        let (tw, _) = tr.measure(&total, 13.0, None);
-        text(scene, tr, tf, &total, 13.0, c.text_dim, total_x, r.transport.y0 + 13.0);
-        // Project format, right-aligned in the transport — the app's own
-        // content area, rather than the OS's title slot. Dropped entirely when
-        // the transport is too narrow to hold it clear of the timecode.
+        // Project format — the app's own content area, rather than the OS's
+        // title slot. This is the only place the frame size is stated now that
+        // the canvas HUD no longer paints it over the picture.
         let meta = format!(
             "{}×{} · {:.0} fps",
             self.project.width, self.project.height, self.project.fps
         );
+        let (bw, _) = tr.measure_weighted(&big, 18.0, None, TextWeight::Bold);
+        let (tw, _) = tr.measure(&total, 13.0, None);
         let (mw, _) = tr.measure(&meta, 11.5, None);
-        let meta_x = r.transport.x1 - 16.0 - mw as f64;
-        if meta_x > total_x + tw as f64 + 16.0 {
-            text(scene, tr, tf, &meta, 11.5, c.text_dim, meta_x, r.transport.y0 + 14.0);
+        let fit = readout_fit(r.transport, bw as f64, tw as f64, mw as f64);
+        if let Some(x) = fit.big_x {
+            text_w(scene, tr, tf, &big, 18.0, c.text_primary, x, r.transport.y0 + 8.0, TextWeight::Bold);
+        }
+        if let Some(x) = fit.total_x {
+            text(scene, tr, tf, &total, 13.0, c.text_dim, x, r.transport.y0 + 13.0);
+        }
+        if let Some(x) = fit.meta_x {
+            text(scene, tr, tf, &meta, 11.5, c.text_dim, x, r.transport.y0 + 14.0);
         }
         // Scrubber.
         let scrub = self.scrubber_rect(r);
         if scrub.width() <= 1.0 {
+            scene.pop_layer();
             return;
         }
         fill_rrect(scene, tf, c.neutral[3], scrub, 4.0);
@@ -4879,6 +5044,7 @@ impl VideoEditorApp {
         if self.playing {
             text(scene, tr, tf, "PLAYING", 10.0, c.semantic.success, scrub.x0, scrub.y0 - 16.0);
         }
+        scene.pop_layer();
     }
 
     fn draw_transport_icon(&self, scene: &mut Scene, tf: Affine, action: TransportAction, ctr: Point, col: Color) {
@@ -4963,6 +5129,33 @@ impl VideoEditorApp {
                 .unwrap_or(r.inspector.y0 + 170.0);
             let veil = Rect::new(r.inspector.x0, top.max(r.inspector.y0), r.inspector.x1, r.inspector.y1);
             fill_rect(scene, tf, with_alpha(c.surfaces.raised, 0.6), veil);
+        }
+        // Soft edges where the pane cuts its content. A row sliced in half by
+        // a hard boundary reads as a broken control; the same row fading out
+        // reads as "this scrolls", which is what it is. Only drawn on the edge
+        // that actually has content beyond it.
+        let max = self.inspector_max_scroll(r);
+        let fade = |scene: &mut Scene, from_y: f64, dir: f64| {
+            const STEPS: i32 = 14;
+            const H: f64 = 22.0;
+            for i in 0..STEPS {
+                let f = i as f64 / STEPS as f64;
+                let y0 = from_y + dir * H * f;
+                let y1 = y0 + dir * (H / STEPS as f64);
+                let band = Rect::new(
+                    r.inspector.x0,
+                    y0.min(y1),
+                    r.inspector.x1,
+                    y0.max(y1),
+                );
+                fill_rect(scene, tf, with_alpha(c.surfaces.raised, 0.10 + 0.9 * f), band);
+            }
+        };
+        if self.inspector_scroll > 0.5 {
+            fade(scene, r.inspector.y0, 1.0);
+        }
+        if self.inspector_scroll < max - 0.5 {
+            fade(scene, r.inspector.y1, -1.0);
         }
         scene.pop_layer();
         // Real, grabbable scrollbar. What stood here was a painted indicator
@@ -5883,6 +6076,44 @@ fn draw_segmented(
         .radius(6.0)
         .text_size(11.5);
     ui::widget::ToggleGroup::paint(scene, tf, tr, theme, &face);
+}
+
+/// Where each part of the transport's readout goes, or `None` for a part
+/// that does not fit **whole**.
+///
+/// The rule this encodes: a number the pane edge cuts mid-digit does not read
+/// as a clipped number, it reads as a shorter one — a 42-second project
+/// arriving as "00:4" states a length that is simply false. So a part that
+/// cannot be drawn in full is not drawn at all, and the parts are dropped in
+/// reverse order of what the user cannot get anywhere else: the playhead's
+/// own time is the last to go, the total next, the static frame size first.
+#[derive(Debug, Default, PartialEq)]
+struct ReadoutFit {
+    big_x: Option<f64>,
+    total_x: Option<f64>,
+    meta_x: Option<f64>,
+}
+
+fn readout_fit(transport: Rect, big_w: f64, total_w: f64, meta_w: f64) -> ReadoutFit {
+    let right_edge = transport.x1 - 12.0;
+    let big_x = transport.x0 + 220.0;
+    let mut fit = ReadoutFit::default();
+    // Nothing at all when even the playhead time would overrun.
+    if big_x + big_w > right_edge {
+        return fit;
+    }
+    fit.big_x = Some(big_x);
+    let mut used_to = big_x + big_w;
+    let total_x = used_to + 4.0;
+    if total_x + total_w <= right_edge {
+        fit.total_x = Some(total_x);
+        used_to = total_x + total_w;
+    }
+    let meta_x = transport.x1 - 16.0 - meta_w;
+    if meta_x > used_to + 16.0 {
+        fit.meta_x = Some(meta_x);
+    }
+    fit
 }
 
 fn hit_slider(track: Rect, p: Point) -> bool {
@@ -7680,6 +7911,160 @@ mod tests {
             y += 2;
         }
         seen.len()
+    }
+
+    // ---- narrow-window panes ---------------------------------------------
+
+    /// A number cut in half by the pane edge is not a clipped number, it is a
+    /// wrong one.
+    ///
+    /// Regression: the transport drew its total duration at a fixed offset
+    /// with no width check, so at 900x700 "00:42:00" landed as `00:4` — a
+    /// plausible-looking project length that was four seconds instead of
+    /// forty-two. Every part now goes through [`readout_fit`], which drops
+    /// what will not fit whole.
+    #[test]
+    fn the_transport_readout_drops_parts_it_cannot_draw_whole() {
+        // Widths in the neighbourhood of the real measurements: an 18px bold
+        // "00:23:00" is ~74px, the "/  00:42:00" tail ~62px, the meta ~96px.
+        let (big, total, meta) = (74.0, 62.0, 96.0);
+        // Roomy: all three, in order, none overlapping.
+        let wide = readout_fit(Rect::new(0.0, 0.0, 700.0, 58.0), big, total, meta);
+        assert_eq!(wide.big_x, Some(220.0));
+        assert_eq!(wide.total_x, Some(298.0));
+        assert!(wide.meta_x.unwrap() > wide.total_x.unwrap() + total);
+        // The 900x700 case: the pane holds the playhead time but not the
+        // total, so the total goes rather than arriving as "00:4".
+        let mid = readout_fit(Rect::new(268.0, 0.0, 600.0, 58.0), big, total, meta);
+        assert_eq!(mid.big_x, Some(488.0), "the playhead time still fits");
+        assert_eq!(mid.total_x, None, "and the total is dropped, not clipped");
+        assert_eq!(mid.meta_x, None);
+        // Narrower still: nothing is drawn rather than a fragment of a time.
+        let tight = readout_fit(Rect::new(0.0, 0.0, 260.0, 58.0), big, total, meta);
+        assert_eq!(tight, ReadoutFit::default());
+        // Whatever is drawn always ends inside the pane.
+        for w in [200.0_f64, 260.0, 300.0, 420.0, 500.0, 700.0, 1200.0] {
+            let t = Rect::new(0.0, 0.0, w, 58.0);
+            let f = readout_fit(t, big, total, meta);
+            for (x, width) in [(f.big_x, big), (f.total_x, total), (f.meta_x, meta)] {
+                if let Some(x) = x {
+                    assert!(x + width <= t.x1, "{w}px: a part overruns the transport");
+                }
+            }
+        }
+    }
+
+    /// Below its breakpoint the inspector gets out of the way, exactly as the
+    /// bin does — so the preview and the transport get the width back.
+    ///
+    /// Regression: a fixed 300px inspector was 60% of a 500px window, which
+    /// left the transport ~200px and clipped its fifth button.
+    #[test]
+    fn a_narrow_window_collapses_the_inspector_and_gives_the_transport_its_width_back() {
+        for (w, h) in [(420.0_f64, 560.0_f64), (500.0, 640.0), (620.0, 700.0), (720.0, 820.0)] {
+            let (mut app, _doc) = app_sized(w, h);
+            app.flap_settled = true;
+            app.inspector_flap.snap(false);
+            let r = app.regions();
+            assert!(r.inspector_overlay, "{w}x{h} must collapse the inspector");
+            assert!(!app.inspector_is_visible(&r), "and start it closed");
+            assert!(
+                r.inspector.x0 >= w - 0.5,
+                "{w}x{h}: a closed inspector is off the right edge",
+            );
+            // The five transport buttons are the point: they must all land
+            // inside the transport now that it has the window's width.
+            for (_, rect) in app.transport_buttons(&r) {
+                assert!(
+                    rect.x1 <= r.transport.x1,
+                    "{w}x{h}: a transport button is cut off at {} (pane ends {})",
+                    rect.x1, r.transport.x1,
+                );
+            }
+        }
+        // Wide windows are unchanged: the inspector keeps its column.
+        for (w, h) in [(900.0_f64, 700.0_f64), (1280.0, 800.0), (1920.0, 1080.0)] {
+            let (mut app, _doc) = app_sized(w, h);
+            app.flap_settled = true;
+            let r = app.regions();
+            assert!(!r.inspector_overlay, "{w}x{h} keeps the inspector docked");
+            assert!(app.inspector_is_visible(&r));
+            assert_eq!(r.inspector.x1, w, "docked against the right edge");
+            assert_eq!(r.preview.x1, r.inspector.x0, "the preview ends at it");
+        }
+    }
+
+    #[test]
+    fn the_inspector_toggle_shows_and_hides_the_collapsed_panel() {
+        let (mut app, mut doc) = app_sized(500.0, 640.0);
+        app.flap_settled = true;
+        app.inspector_flap.snap(false);
+        let r = app.regions();
+        assert!(r.inspector_btn.width() > 0.0, "a collapsed inspector offers a toggle");
+        assert!(!app.inspector_is_visible(&r));
+        // Press the toggle: it opens.
+        app.last_mouse = r.inspector_btn.center();
+        app.handle_press(&mut doc, &r, false);
+        app.inspector_flap.snap(true);
+        let r = app.regions();
+        assert!(app.inspector_is_visible(&r));
+        assert!(r.inspector.x1 <= 500.0 + 0.5, "an open flap is on screen");
+        // Esc puts it away again.
+        app.handle_key(
+            &Key::Named(NamedKey::Escape),
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &r,
+        );
+        app.inspector_flap.snap(false);
+        assert!(!app.inspector_is_visible(&app.regions()));
+        // The docked layout has no toggle to offer.
+        let (mut wide, _d) = app_sized(1280.0, 800.0);
+        wide.flap_settled = true;
+        assert_eq!(wide.regions().inspector_btn.width(), 0.0);
+    }
+
+    /// The canvas HUD must not paint over the composition.
+    ///
+    /// Regression: the frame size was drawn in the canvas's top-right, which
+    /// is exactly where `Transform::pip()` places a corner inset — so every
+    /// top-right picture-in-picture had "1920x1080" burned across it.
+    #[test]
+    fn the_canvas_hud_leaves_a_corner_inset_alone() {
+        let mut app = VideoEditorApp::new_for_shot(ShotScenario::Composed);
+        let (w, h) = (900.0_f64, 700.0_f64);
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        app.rect = Rect::new(0.0, 0.0, w, h);
+        app.sync(&mut doc, &automerge::ROOT);
+        let px = render_pixels(&mut app, w as u32, h as u32, &Theme::dark());
+        let r = app.regions();
+        // The top-right quarter of the canvas: where the scenario's inset is.
+        let corner = Rect::new(
+            r.canvas.x0 + r.canvas.width() * 0.6,
+            r.canvas.y0,
+            r.canvas.x1,
+            r.canvas.y0 + r.canvas.height() * 0.25,
+        );
+        // The inset is a mid-tone amber. HUD text was near-white at 70% over
+        // it, which is far brighter than anything the picture itself holds.
+        let mut whites = 0;
+        let (x0, y0) = (corner.x0 as u32, corner.y0 as u32);
+        let (x1, y1) = ((corner.x1 as u32).min(w as u32), (corner.y1 as u32).min(h as u32));
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = ((y * w as u32 + x) * 4) as usize;
+                if i + 2 < px.len()
+                    && px[i] > 200 && px[i + 1] > 200 && px[i + 2] > 200
+                {
+                    whites += 1;
+                }
+            }
+        }
+        assert_eq!(whites, 0, "HUD text is painted over the corner inset");
+        // The one HUD readout that stays is per-frame information, and it is
+        // pinned to the left so it cannot reach a right-hand inset.
+        assert!(r.canvas.width() > 0.0);
     }
 
     /// The overlay media bin dims the editor behind it; it must never erase it.

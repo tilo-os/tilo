@@ -734,6 +734,12 @@ impl Default for Clip {
 /// given one. Matches the constant the compositor used to hardcode.
 pub const DEFAULT_TRANSITION_SECS: f64 = 0.6;
 
+/// How close a keyframe has to be to an instant to count as sitting *on*
+/// it: half a frame at 60fps. One constant so "is there a key here",
+/// "remove the key here" and "re-shape the key here" can never disagree
+/// about which key they mean.
+pub const KEY_TOL: f64 = 1.0 / 60.0;
+
 impl Clip {
     /// The effective length of this clip's incoming transition: its own
     /// `transition_duration` when set, else [`DEFAULT_TRANSITION_SECS`], and
@@ -863,16 +869,82 @@ impl Clip {
         self.anim.ensure(param).set_key(local, value, interp);
     }
 
-    /// Remove `param`'s keyframe near `playhead` (within half a frame at
-    /// 30fps). Returns whether one went.
+    /// Remove `param`'s keyframe near `playhead` (within [`KEY_TOL`]).
+    /// Returns whether one went.
     pub fn remove_key_at(&mut self, param: Param, playhead: f64) -> bool {
         let local = playhead - self.start;
         let Some(track) = self.anim.track_mut(param) else { return false };
-        let gone = track.remove_key_near(local, 1.0 / 60.0);
+        let gone = track.remove_key_near(local, KEY_TOL);
         if gone && track.keys.is_empty() {
             self.anim.clear(param);
         }
         gone
+    }
+
+    /// Whether `param` has a key sitting on `playhead` (within
+    /// [`KEY_TOL`]). This is what tells a keyframe control apart from
+    /// "animated, but the playhead is between keys" — three states the UI
+    /// has to keep distinct, so it goes through one predicate.
+    pub fn has_key_at(&self, param: Param, playhead: f64) -> bool {
+        let local = playhead - self.start;
+        self.anim
+            .track(param)
+            .is_some_and(|t| t.keys.iter().any(|k| (k.t - local).abs() <= KEY_TOL))
+    }
+
+    /// The interpolation of `param`'s key at `playhead`, or `None` when
+    /// there is no key there to have one.
+    pub fn key_interp_at(&self, param: Param, playhead: f64) -> Option<Interp> {
+        let local = playhead - self.start;
+        self.anim
+            .track(param)?
+            .keys
+            .iter()
+            .find(|k| (k.t - local).abs() <= KEY_TOL)
+            .map(|k| k.interp)
+    }
+
+    /// Re-shape how `param`'s key at `playhead` leaves itself. Returns
+    /// whether there was a key there to re-shape.
+    pub fn set_interp_at(&mut self, param: Param, playhead: f64, interp: Interp) -> bool {
+        let local = playhead - self.start;
+        let Some(track) = self.anim.track_mut(param) else { return false };
+        let Some(k) = track.keys.iter_mut().find(|k| (k.t - local).abs() <= KEY_TOL) else {
+            return false;
+        };
+        k.interp = interp;
+        true
+    }
+
+    /// Every instant this clip has a key on, in **absolute timeline
+    /// seconds**, sorted and deduplicated across parameters.
+    ///
+    /// Absolute because the callers are the timeline (drawing ticks on the
+    /// clip body) and the playhead (stepping between keys), both of which
+    /// work in timeline time. Deduplicated because two parameters keyed
+    /// together are one instant to a reader, not two.
+    pub fn key_times(&self) -> Vec<f64> {
+        let mut out: Vec<f64> = self
+            .anim
+            .tracks
+            .iter()
+            .flat_map(|t| t.keys.iter().map(|k| self.start + k.t))
+            .collect();
+        out.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        out.dedup_by(|a, b| (*a - *b).abs() <= KEY_TOL);
+        out
+    }
+
+    /// The first key strictly after `playhead`, absolute. `None` at or past
+    /// the last one — navigation stops at the end rather than wrapping,
+    /// because a wrap reads as "nothing happened" when there is one key.
+    pub fn next_key_after(&self, playhead: f64) -> Option<f64> {
+        self.key_times().into_iter().find(|t| *t > playhead + KEY_TOL)
+    }
+
+    /// The last key strictly before `playhead`, absolute.
+    pub fn prev_key_before(&self, playhead: f64) -> Option<f64> {
+        self.key_times().into_iter().rev().find(|t| *t < playhead - KEY_TOL)
     }
 
     /// The grade at `playhead`, with any animated axis substituted in.
@@ -1052,6 +1124,29 @@ impl Project {
         }
         out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         out
+    }
+
+    /// The next / previous marked instant after / before `t`, in absolute
+    /// seconds, across **every** marker — the project's own and each
+    /// clip's, rebased onto where its clip sits.
+    ///
+    /// [`Self::next_marker`] answers with a project marker so the caller can
+    /// name it; these answer with a time, because navigation only needs to
+    /// know where to go and a clip marker is just as valid a destination.
+    pub fn next_marker_at(&self, t: f64) -> Option<f64> {
+        self.all_markers()
+            .into_iter()
+            .map(|(at, _, _)| at)
+            .filter(|at| *at > t + 1e-4)
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+    }
+
+    pub fn prev_marker_at(&self, t: f64) -> Option<f64> {
+        self.all_markers()
+            .into_iter()
+            .map(|(at, _, _)| at)
+            .filter(|at| *at < t - 1e-4)
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
     }
 
     pub fn media(&self, id: MediaId) -> Option<&MediaItem> {
@@ -2118,5 +2213,73 @@ mod tests {
     fn clip_kind_reads_through_to_the_media() {
         let (p, _m, _v1, cid) = project_with_clip();
         assert_eq!(p.clip_kind(cid), TrackKind::Video);
+    }
+
+    // --- keyframe navigation (what the inspector's key control reads) ----
+
+    #[test]
+    fn a_key_control_can_tell_its_three_states_apart() {
+        let (mut p, cid) = speed_fixture();
+        let c = p.clip_mut(cid).unwrap();
+        // Nothing keyed: not animated anywhere.
+        assert!(!c.anim.is_animated(Param::Opacity));
+        assert!(!c.has_key_at(Param::Opacity, 2.0));
+        // Keyed at 2s: animated, and the key is *on* 2s.
+        c.set_key_at(Param::Opacity, 2.0, 0.4, Interp::Linear);
+        assert!(c.anim.is_animated(Param::Opacity));
+        assert!(c.has_key_at(Param::Opacity, 2.0));
+        // 5s is animated but between keys — the third, distinct state.
+        assert!(!c.has_key_at(Param::Opacity, 5.0));
+        // Half a frame away still counts as on the key; a whole frame does not.
+        assert!(c.has_key_at(Param::Opacity, 2.0 + KEY_TOL * 0.9));
+        assert!(!c.has_key_at(Param::Opacity, 2.0 + 0.1));
+    }
+
+    #[test]
+    fn key_times_are_absolute_deduplicated_and_navigable() {
+        let (mut p, cid) = speed_fixture();
+        let c = p.clip_mut(cid).unwrap();
+        c.start = 10.0;
+        // Two parameters keyed at the same instant are one instant.
+        c.set_key_at(Param::Opacity, 12.0, 0.5, Interp::Linear);
+        c.set_key_at(Param::Brightness, 12.0, 0.7, Interp::Linear);
+        c.set_key_at(Param::Opacity, 16.0, 1.0, Interp::Linear);
+        assert_eq!(c.key_times(), vec![12.0, 16.0], "absolute, sorted, deduped");
+        assert_eq!(c.next_key_after(10.0), Some(12.0));
+        assert_eq!(c.next_key_after(12.0), Some(16.0));
+        assert_eq!(c.next_key_after(16.0), None, "navigation stops, never wraps");
+        assert_eq!(c.prev_key_before(16.0), Some(12.0));
+        assert_eq!(c.prev_key_before(12.0), None);
+    }
+
+    #[test]
+    fn interpolation_is_read_and_rewritten_at_the_playhead() {
+        let (mut p, cid) = speed_fixture();
+        let c = p.clip_mut(cid).unwrap();
+        c.set_key_at(Param::PosX, 3.0, 0.25, Interp::Linear);
+        assert_eq!(c.key_interp_at(Param::PosX, 3.0), Some(Interp::Linear));
+        assert_eq!(c.key_interp_at(Param::PosX, 9.0), None, "no key, no shape");
+        assert!(c.set_interp_at(Param::PosX, 3.0, Interp::Ease));
+        assert_eq!(c.key_interp_at(Param::PosX, 3.0), Some(Interp::Ease));
+        assert!(!c.set_interp_at(Param::PosX, 9.0, Interp::Hold), "nothing there to re-shape");
+        // Re-shaping must not disturb the value the key holds.
+        assert_eq!(c.param_at(Param::PosX, 3.0), 0.25);
+    }
+
+    #[test]
+    fn marker_navigation_crosses_project_and_clip_markers() {
+        let (mut p, cid) = speed_fixture();
+        p.add_marker(4.0, "act two", 1);
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.start = 0.0;
+            c.add_marker(9.0, "beat", 2);
+        }
+        // The clip marker is stored clip-local but navigates absolutely.
+        assert_eq!(p.next_marker_at(0.0), Some(4.0));
+        assert_eq!(p.next_marker_at(4.0), Some(9.0), "a clip marker is a destination too");
+        assert_eq!(p.next_marker_at(9.0), None);
+        assert_eq!(p.prev_marker_at(9.0), Some(4.0));
+        assert_eq!(p.prev_marker_at(4.0), None);
     }
 }
