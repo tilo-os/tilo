@@ -72,17 +72,11 @@ const CLOSE_SCALE_END: f64 = 0.95;
 const CLOSE_Y_OFFSET_END: f64 = -20.0;
 
 
-/// How far a hovered-but-inactive pill travels from the chrome's ground
-/// toward the raised tier. Half a step: hover is a promise of the active
-/// state, not the state itself, so it has to be clearly less than a full
-/// lift while still being unmistakably more than nothing.
-const HOVER_LIFT_T: f32 = crate::chrome::shell::HOVER_LIFT_T;
-
-/// Alpha of a raised pill's outer hairline, and of its inset inner glow.
-/// Aliases of the shell-wide chrome weights so the tab strip and the rest
-/// of the chrome cannot drift apart — see `ui/HIG.md` §9.5.
+/// Alpha of the dotted outline the idle "+" slot is drawn with. An alias
+/// of the shell-wide hairline weight so the tab strip and the rest of the
+/// chrome cannot drift apart — see `ui/HIG.md` §9.5. The pills' own edges
+/// come from the glass material rather than from a local constant.
 const PILL_BORDER_ALPHA: u8 = crate::chrome::shell::HAIRLINE_ALPHA;
-const PILL_GLOW_ALPHA: u8 = crate::chrome::shell::GLOW_ALPHA;
 
 /// Resolved per-pill appearance for a single draw frame.
 ///
@@ -106,7 +100,7 @@ pub(crate) fn pill_appearance(
     is_hover: bool,
     is_pressed: bool,
 ) -> PillAppearance {
-    crate::chrome::shell::selection_tier(
+    crate::chrome::shell::glass_selector(
         theme,
         crate::chrome::shell::SelectionState::new(is_active, is_hover, is_pressed),
     )
@@ -573,59 +567,23 @@ impl TabBar {
                 &shadow_shape,
             );
         }
-        // Pill body. Concept's Tailwind tiers (WindowFrame.tsx):
-        //   idle   → transparent (no fill, no border)
-        //   hover  → a half lift + text brighten
-        //   active → a full lift + hairline border + inner glow
-        // The washes are derived per theme by `Colors::lift` /
-        // `Colors::hairline_on` rather than fixed at white, so the tiers
-        // read the same way on either side of the light/dark line.
+        // Pill body, in the shared glass material — film, lit edge, and
+        // for the active pill a lit inner rim. The three states are one
+        // substance at three commitments rather than three recipes; what
+        // each state *is* lives in `chrome::shell::glass_selector`, and
+        // how the substance paints lives in `paint_glass_body`, so the
+        // strip cannot drift from the rest of the chrome by editing a
+        // gradient here.
         let shape = RoundedRect::from_rect(r, radius);
-        if look.fill.a() > 0 {
-            // Light from above rather than a single flat wash: the fill
-            // is brightest along the pill's top edge and settles to the
-            // token value by its middle. One gradient is what separates
-            // "a rectangle of slightly lighter grey" from a surface that
-            // sits above the backdrop, and it is derived from the same
-            // `surface_white_*` token the tier table names rather than
-            // introducing a colour of its own.
-            let top = look.fill.with_alpha_factor(1.9);
-            let grad = vello::peniko::Gradient::new_linear(
-                Point::new(r.x0, r.y0),
-                Point::new(r.x0, r.y0 + r.height() * 0.8),
-            )
-            .with_extend(vello::peniko::Extend::Pad)
-            .with_stops(
-                &[
-                    vello::peniko::ColorStop { offset: 0.0, color: top.into() },
-                    vello::peniko::ColorStop { offset: 1.0, color: look.fill.into() },
-                ][..],
-            );
-            scene.fill(vello::peniko::Fill::NonZero, pill_transform, &grad, None, &shape);
-        }
-        if let Some(border) = look.border {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                pill_transform,
-                border,
-                None,
-                &shape,
-            );
-        }
-        // Active-only inner glow: a 1-px-inset stroke at border_white_20
-        // sits just inside the outer border, giving the active pill a
-        // subtle "lit edge" that pops against the dotted-grid backdrop.
-        if let Some(glow_color) = look.inner_glow {
-            let inset = Rect::new(r.x0 + 1.0, r.y0 + 1.0, r.x1 - 1.0, r.y1 - 1.0);
-            let inset_shape = RoundedRect::from_rect(inset, (radius - 1.0).max(0.0));
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                pill_transform,
-                glow_color,
-                None,
-                &inset_shape,
-            );
-        }
+        crate::chrome::shell::paint_glass_body(
+            scene,
+            pill_transform,
+            r,
+            radius,
+            theme,
+            &look,
+            1.0,
+        );
         // From here on the rest of the pill chrome paints under
         // `pill_transform` so it compresses with the body when pressed.
         let transform = pill_transform;
@@ -902,16 +860,22 @@ impl TabBar {
                 &shadow_shape,
             );
         }
-        // Pill body: use the "inactive" tier — the closing pill is no
-        // longer the active tab (active-id shifted at close-start). With
-        // the new contrast pass an inactive pill is fully transparent;
-        // the closing pill keeps a faint half-lift fill so the user can
-        // still read the title + close glyph clearly during the
-        // fade-out. Same derivation as a hovered pill, so it stays
-        // visible on a light theme too.
-        let shape = RoundedRect::from_rect(r, radius);
-        let fill = theme.tokens.colors.lift(HOVER_LIFT_T);
-        scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+        // Pill body: the hovered tier — the closing pill is no longer the
+        // active tab (active-id shifted at close-start), and an inactive
+        // pill is fully transparent, which would leave the title and the
+        // × the user just clicked floating on the bar for the length of
+        // the fade. Painted through the shared material so the pill the
+        // user is watching leave is made of the same glass it was made of
+        // a frame ago.
+        crate::chrome::shell::paint_glass_body(
+            scene,
+            transform,
+            r,
+            radius,
+            theme,
+            &pill_appearance(theme, false, true, false),
+            1.0,
+        );
         let text_size = theme.tokens.typography.scale.sm;
         let title_weight = TextWeight::Semibold;
         let (_tw, th) = tr.measure_weighted(&c.desc.title, text_size, None, title_weight);
@@ -1593,26 +1557,33 @@ impl TabBar {
         let is_pressed =
             !suppress_hover && self.press_origin.is_some_and(|(j, _)| j == idx);
         let mut look = pill_appearance(theme, is_active, is_hover, is_pressed);
-        // An inactive pill's body wash rides its reveal curve instead of
-        // switching on and off with the pointer, so the fill fades out
-        // over exactly the frames its chips are sliding back under its
-        // right edge. Without it the body would vanish on the first
-        // un-hovered frame and the chips would spend the rest of the
-        // shrink painting against nothing — the "loose × marks with no
-        // pill around them" shape [`close_affordance_visible`] exists to
-        // prevent. Fully hovered the factor is 1, so a settled pill is
-        // the same `surface_white_5` the tier table specifies.
+        // An inactive pill's body rides its reveal curve instead of
+        // switching on and off with the pointer, so it fades out over
+        // exactly the frames its chips are sliding back under its right
+        // edge. Without it the body would vanish on the first un-hovered
+        // frame and the chips would spend the rest of the shrink painting
+        // against nothing — the "loose × marks with no pill around them"
+        // shape [`close_affordance_visible`] exists to prevent.
+        //
+        // The whole material fades, edge included. Fading only the film
+        // left the hairline switching off a frame later than the body it
+        // was drawn around, which is visible as a flicker of bare outline
+        // at the end of the shrink. Fully hovered the factor is 1, so a
+        // settled pill is exactly the hovered tier.
         if !is_active && !is_pressed {
             let fade = if suppress_hover {
                 0.0
             } else {
                 self.reveal_fade(idx)
             };
-            look.fill = if fade > 0.0 {
-                theme.tokens.colors.surface_white_5.with_alpha_factor(fade as f32)
+            if fade > 0.0 {
+                let hovered = pill_appearance(theme, false, true, false);
+                look.fill = hovered.fill.with_alpha_factor(fade as f32);
+                look.border = hovered.border.map(|c| c.with_alpha_factor(fade as f32));
             } else {
-                vello::peniko::Color::TRANSPARENT
-            };
+                look.fill = vello::peniko::Color::TRANSPARENT;
+                look.border = None;
+            }
         }
         look
     }
@@ -2281,19 +2252,17 @@ impl Widget for TabBar {
             // derived against the ground the way a pill's are, so the row
             // keeps one hover language in every theme.
             if self.hover_new_tab {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+                // The same glass a hovered pill is made of. It stands in
+                // the row with them, so an opaque body here would read as
+                // a different substance parked at the end of the strip.
+                crate::chrome::shell::paint_glass_body(
+                    scene,
                     transform,
-                    colors.lift(1.0),
-                    None,
-                    &shape,
-                );
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    Colors::hairline_on(colors.surfaces.base, PILL_GLOW_ALPHA),
-                    None,
-                    &shape,
+                    r,
+                    radius,
+                    theme,
+                    &pill_appearance(theme, false, true, false),
+                    1.0,
                 );
             } else {
                 scene.stroke(
