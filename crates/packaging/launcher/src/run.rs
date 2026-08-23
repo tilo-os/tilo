@@ -282,40 +282,6 @@ pub fn resolve_capabilities(manifest: &MinimalManifest, opts: &RunOptions) -> Ca
     plan
 }
 
-/// Move each resolved service socket onto the descriptor number the
-/// app was told to look at, and keep it open across `exec`.
-///
-/// Runs inside `pre_exec`, so everything here is async-signal-safe:
-/// `dup2` and `fcntl` only, no allocation and no locks.
-///
-/// This is the whole of the service handoff. bwrap has no flag that
-/// hands a live socket to the sandboxed process — `--file FD DEST`
-/// copies the descriptor's *contents* into a regular file and blocks
-/// reading a socket that never reaches EOF — so the descriptor travels
-/// the way descriptors normally do: left open, at a known number,
-/// inherited through bwrap's exec and the `__sandbox-exec` re-exec.
-///
-/// `child_fd`s start above the fixed seccomp descriptor so this cannot
-/// land on top of it. `dup2` onto a number that is already the right
-/// one is a no-op that still clears CLOEXEC, which is why the flag is
-/// cleared afterwards rather than before.
-fn place_service_fds(fds: &[(RawFd, RawFd)]) -> std::io::Result<()> {
-    for (host_fd, child_fd) in fds {
-        // SAFETY: async-signal-safe syscalls on descriptors this
-        // process owns; the child is single-threaded post-fork.
-        unsafe {
-            if host_fd != child_fd && libc::dup2(*host_fd, *child_fd) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            let flags = libc::fcntl(*child_fd, libc::F_GETFD);
-            if flags != -1 {
-                let _ = libc::fcntl(*child_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Resolve which runtime bundle to mount, if any.
 ///
 /// Priority:
@@ -728,6 +694,72 @@ fn start_egress_gate(
     }
 }
 
+/// Put every opened service socket on the fd number the app was told
+/// to look at, in the child, before `exec`.
+///
+/// This is the whole of the service handoff, and it is how a
+/// descriptor actually crosses into the sandbox: left open, at a known
+/// number, inherited through bwrap's exec and the `__sandbox-exec`
+/// re-exec. bwrap forwards fds it was not asked about untouched, so an
+/// fd placed here survives the namespace setup and arrives in the app
+/// as a live connection. `child_fd`s start above the fixed seccomp
+/// descriptor, so this cannot land on top of it.
+///
+/// What does *not* work — and used to be what this did — is bwrap's
+/// `--file FD DEST`. That is the flag that looks right and is not: it
+/// copies the descriptor's *contents* into a regular file at DEST, so
+/// pointed at a connected socket it blocks reading for an EOF the
+/// broker will never send. The launch hangs before it ever reaches
+/// `exec` and the only symptom is an app that never appears.
+///
+/// The two passes matter. Target numbers start at 17 and sources are
+/// whatever `connect` handed out, so a source *can* already be sitting
+/// on a target we have not written yet; relocating every source above
+/// the target window first means no `dup2` can clobber a descriptor
+/// still waiting to be placed.
+///
+/// Returns an error rather than continuing quietly: we are here only
+/// because the socket existed and we connected to it, so a failure at
+/// this point is a bug, not an absent service — and an app that starts
+/// with collaboration silently off is exactly the outcome worth
+/// refusing.
+///
+/// # Safety
+/// Call only from `Command::pre_exec` (post-fork, pre-exec). Uses only
+/// `fcntl` and `dup2`, both async-signal-safe; allocates nothing.
+unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
+    let Some(highest) = pairs.iter().map(|(_, dst)| *dst).max() else {
+        return Ok(());
+    };
+    let floor = highest + 1;
+    for (src, _) in pairs.iter_mut() {
+        // F_DUPFD returns the lowest free fd >= floor, i.e. clear of
+        // every target.
+        let moved = unsafe { libc::fcntl(*src, libc::F_DUPFD, floor) };
+        if moved >= 0 {
+            *src = moved;
+        }
+    }
+    for (src, dst) in pairs.iter() {
+        if unsafe { libc::dup2(*src, *dst) } == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // dup2 leaves the target without FD_CLOEXEC, which is what we
+        // want: it has to survive bwrap's exec and the app's. Cleared
+        // again explicitly because `dup2` onto a number that is
+        // already correct is a no-op, and the relocation above is only
+        // best-effort — a source that could not be moved may still be
+        // sitting on its own target.
+        unsafe {
+            let flags = libc::fcntl(*dst, libc::F_GETFD);
+            if flags != -1 {
+                let _ = libc::fcntl(*dst, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn run_with(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -1115,12 +1147,13 @@ pub fn run_with(
             argv.push("--rw".to_string());
             argv.push(p.to_string());
         }
-        // Service sockets get no Landlock rule, deliberately. They
+        // Service sockets need no Landlock rule, deliberately. They
         // reach the app as already-connected descriptors dup2'd into
         // place by `place_service_fds`, so nothing under
-        // `/run/qos/services` is ever mounted and no open() is ever
-        // performed on one — a path rule here would name a file that
-        // does not exist and be skipped every launch.
+        // `/run/qos/services` is ever mounted and no `open()` is ever
+        // performed on one. A rule for a path that does not exist
+        // inside the sandbox would be skipped every launch, and would
+        // only make the shim report itself partially enforced.
         //
         // The gate socket is reached with connect(2), which is a
         // write-flavoured access on a pathname socket — a read-only
@@ -1163,13 +1196,18 @@ pub fn run_with(
     let mut cmd = Command::new(&bwrap);
     cmd.args(&argv);
 
-    // pre_exec: dup the seccomp blob fd into SECCOMP_CHILD_FD; install
-    // Landlock; clear CLOEXEC on all the service fds we passed via
-    // --file (bwrap should keep them, but stripping CLOEXEC is belt +
-    // suspenders).
+    // pre_exec: dup the seccomp blob fd into SECCOMP_CHILD_FD, and put
+    // each service socket on the fd number the app was told to read.
     let host_seccomp_fd = seccomp_fd.as_raw_fd();
-    let resolved_fds: Vec<(RawFd, RawFd)> =
+    let mut service_fds: Vec<(RawFd, RawFd)> =
         resolved.iter().map(|r| (r.host_fd, r.child_fd as RawFd)).collect();
+    for r in &resolved {
+        tracing::info!(
+            service = %r.name,
+            child_fd = r.child_fd,
+            "service socket connected; handing the descriptor to the app",
+        );
+    }
     // Landlock plan: derived here so we can log it from the parent.
     // We deliberately do NOT install Landlock in `pre_exec` on the
     // bwrap process — bwrap needs broad FS access to mount and pivot
@@ -1215,7 +1253,7 @@ pub fn run_with(
             if flags != -1 {
                 let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
             }
-            place_service_fds(&resolved_fds)?;
+            place_service_fds(&mut service_fds)?;
             // Landlock is NOT installed here — bwrap needs broad FS
             // access to set up the namespace. It's installed by the
             // __sandbox-exec shim after bwrap's mount setup completes.
@@ -1355,7 +1393,7 @@ pub fn run_with_captured(
     cmd.stdout(std::process::Stdio::piped());
 
     let host_seccomp_fd = seccomp_fd.as_raw_fd();
-    let resolved_fds: Vec<(RawFd, RawFd)> =
+    let mut service_fds: Vec<(RawFd, RawFd)> =
         resolved.iter().map(|r| (r.host_fd, r.child_fd as RawFd)).collect();
     unsafe {
         cmd.pre_exec(move || {
@@ -1366,7 +1404,7 @@ pub fn run_with_captured(
             if flags != -1 {
                 let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
             }
-            place_service_fds(&resolved_fds)?;
+            place_service_fds(&mut service_fds)?;
             Ok(())
         });
     }

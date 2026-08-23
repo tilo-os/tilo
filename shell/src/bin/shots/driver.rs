@@ -57,6 +57,13 @@ impl ShellDriver {
     }
 
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
+        // Boot adopts every ownerless workspace before the session ever
+        // paints (`compositor::hosted`), so a room you made is a room
+        // you own. A harness that skipped it rendered surfaces reporting
+        // "no members" for rooms that on a real machine are yours —
+        // a state no user has ever seen.
+        let mut tree = tree;
+        tree.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
         Self {
             fb: FrameBuilder::with_tree(tree, viewport),
             state: AutoCommit::new(),
@@ -382,6 +389,74 @@ impl ShellDriver {
         }
     }
 
+    /// Record what an accepted invite and a couple of shares would have
+    /// recorded: memberships in this room and in Research (whose peers
+    /// are already present, so their faces are backed by a capability
+    /// rather than by hearsay), and two resources handed to named
+    /// people.
+    fn seed_shared_room(&mut self) {
+        use shell::shell::state::{CapOverride, Scope, Subject, Verb};
+        let handle = self.chrome_handle();
+        let owner = handle.borrow().local_user_id.clone();
+        {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            let ws_id = tree.active;
+            let room = ws_id.raw().to_string();
+            for (member, verb) in [("ada", Verb::Write), ("bo", Verb::Read)] {
+                tree.grant_in_workspace(
+                    ws_id,
+                    &owner,
+                    CapOverride::membership(Subject::person(member), room.clone(), verb),
+                );
+            }
+            // Both members are at their desks. A room only carries a
+            // person's display name while a session of theirs is in it,
+            // so a member with nobody home shows as the principal the
+            // capability names — true, and the seam a room document
+            // grows names through.
+            if let Some(ws) = tree.active_workspace_mut() {
+                ws.collaborators
+                    .push(shell::shell::state::Collaborator::new("ada", "Ada"));
+                ws.collaborators
+                    .push(shell::shell::state::Collaborator::new("bo", "Bo"));
+            }
+            for (path, who, verb) in [
+                ("/var/workspace/design", "ada", Verb::Write),
+                ("/var/workspace/brief.pdf", "bo", Verb::Read),
+            ] {
+                tree.grant_in_workspace(
+                    ws_id,
+                    &owner,
+                    CapOverride::grant(
+                        Subject::person(who),
+                        Scope::FsPath(path.to_string()),
+                        verb,
+                    ),
+                );
+            }
+            // Research already has two people present. Give them the
+            // membership their presence implies, so the row shows the
+            // faces of people who can actually reach it.
+            let research: Vec<_> = tree
+                .workspaces
+                .iter()
+                .filter(|w| w.name == "Research")
+                .map(|w| (w.id, w.id.raw().to_string()))
+                .collect();
+            for (id, room) in research {
+                for (member, verb) in [("alice", Verb::Write), ("bob", Verb::Read)] {
+                    tree.grant_in_workspace(
+                        id,
+                        &owner,
+                        CapOverride::membership(Subject::person(member), room.clone(), verb),
+                    );
+                }
+            }
+        }
+        self.with_chrome(|_| {});
+    }
+
     fn seed_workspace_permissions(&mut self) {
         use shell::shell::state::{CapOverride, Expiry, Scope, Subject, Verb};
         let handle = self.chrome_handle();
@@ -442,6 +517,13 @@ impl ShellDriver {
         match name {
             "desktop" => {}
             "overview" => {
+                self.with_chrome(|st| st.overlays.overview = true);
+                self.fb.host_mut().force_overview_settled(true);
+            }
+            // The same panel with the room actually shared: members on
+            // this room and on Research, and two resources handed out.
+            "overview-shared" => {
+                self.seed_shared_room();
                 self.with_chrome(|st| st.overlays.overview = true);
                 self.fb.host_mut().force_overview_settled(true);
             }
@@ -839,6 +921,51 @@ impl ShellDriver {
                     st.bump();
                 });
             }
+            "multi-strip" => {
+                // Three strips in the active workspace, with focus on
+                // the middle one. Nothing in the previous catalogue had
+                // more than one strip, so the strip ribbon had no scene
+                // that showed it doing its job — which is also why the
+                // absence of any strip affordance went unnoticed for so
+                // long.
+                use shell::shell::state::{
+                    AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
+                };
+                self.with_chrome(|st| {
+                    let mut focus = None;
+                    {
+                        let mut tree = st.tree_mut();
+                        if let Some(ws) = tree.active_workspace_mut() {
+                            for (n, name) in ["Build", "Review"].iter().enumerate() {
+                                let sid = StripId(9200 + n as u64);
+                                let mut strip = Strip::new(sid, (*name).to_string());
+                                let gid = 9300 + n as u64;
+                                let tid = 9400 + n as u64;
+                                strip.window_groups.push(WindowGroup {
+                                    id: gid,
+                                    tabs: vec![Tab {
+                                        id: tid,
+                                        title: (*name).to_string(),
+                                        tile: TileContent::Stub {
+                                            kind: AppKind::Settings,
+                                            label: (*name).to_string(),
+                                        },
+                                    }],
+                                    active_tab: tid,
+                                    width: WindowWidth::Normal,
+                                    maximized: false,
+                                });
+                                ws.strips.push(strip);
+                            }
+                            focus = ws.strips.get(1).map(|s| s.id).map(|sid| (ws.id, sid));
+                        }
+                        if let Some((ws_id, sid)) = focus {
+                            tree.active_strip.insert(ws_id, sid);
+                        }
+                    }
+                    st.bump();
+                });
+            }
             other => return Err(format!("unknown scene '{other}'")),
         }
         Ok(())
@@ -849,7 +976,9 @@ impl ShellDriver {
     pub const ALL_SCENES: &'static [&'static str] = &[
         "desktop",
         "multi-group",
+        "multi-strip",
         "overview",
+        "overview-shared",
         "palette",
         "palette_typed",
         "palette_in_app_query",

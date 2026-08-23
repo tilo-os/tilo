@@ -5,7 +5,7 @@ qOS is a bootable, container-based operating system built on the **Fedora Bootc*
 ## Core Components
 
 ### 1. Compositor (`shell`)
-A Wayland compositor responsible for the spatial desktop environment. It handles window management, input, and basic UI elements. Located in `shell/`.
+A Wayland compositor responsible for the desktop environment. It handles window management, input, and basic UI elements. Located in `shell/`.
 
 **Window Management Paradigm:**
 - **Spatial model:** Windows cannot overlap. Apps are organized as `Workspace → Strip → WindowGroup → Tab`: tabs tile within a group, groups scroll horizontally within a strip (Niri-inspired), strips stack within a workspace, and workspaces are switched via a wheel disc.
@@ -21,7 +21,7 @@ A P2P collaborative filesystem mounted at `/var/workspace`.
 ### 3. System Applications & QuickUI Toolkit
 -   **QuickUI Framework:** A custom, lightweight retained-mode UI framework built over wgpu/Vello. It is fundamentally designed around Automerge CRDTs to provide Out-Of-The-Box (OOTB) multi-cursor and collaborative text editing. It enforces OS-controlled styling for consistent, user-themeable presentation.
 -   **terminal**: A GPU-accelerated terminal emulator.
--   **file-explorer**: A spatial file manager for browsing the local and collaborative filesystem.
+-   **file-explorer**: A file manager for browsing the local and collaborative filesystem.
 -   **browser**: A modern web browser with native collaborative features.
 
 ## Image Structure

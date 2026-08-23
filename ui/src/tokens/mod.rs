@@ -6,12 +6,12 @@ pub mod elevation;
 pub mod motion;
 pub mod terminal_palette;
 
-pub use colors::{Colors, ColorRamp, PaletteSpec, SemanticColors, Surfaces};
+pub use colors::{Colors, ColorRamp, OnCard, PaletteSpec, SemanticColors, Surfaces};
 pub use typography::{Typography, TypeScale, WeightScale, FontFamily};
 pub use spacing::Spacing;
 pub use radii::Radii;
 pub use elevation::{Elevation, Shadow};
-pub use motion::{Motion, SpringParams, SpringPresets, Durations};
+pub use motion::{Durations, Gesture, Motion, SpringParams, SpringPresets, rubber_band};
 pub use terminal_palette::TerminalPalette;
 
 #[derive(Clone, Debug)]

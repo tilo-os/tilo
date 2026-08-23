@@ -23,7 +23,7 @@ pub const PERMISSION_DENIED_SCRIM: Color = Color::from_rgba8(0, 0, 0, 77);
 /// Mix two colours in straight (non-premultiplied) 8-bit sRGB space.
 /// `t = 0` → `a`, `t = 1` → `b`. This is the same space the Themes app and
 /// most widget draw paths blend in, so tints stay consistent.
-fn mix8(a: Color, b: Color, t: f32) -> Color {
+pub(crate) fn mix8(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let l = |x: u8, y: u8| ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8;
     Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
@@ -33,6 +33,37 @@ fn mix8(a: Color, b: Color, t: f32) -> Color {
 fn with_a(c: Color, a: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }
+
+/// Composite a (possibly translucent) `over` onto an opaque `ground` in
+/// straight sRGB and return the opaque result — the colour the eye actually
+/// receives where the two meet.
+///
+/// Needed because a token's own RGBA says nothing about how it will read:
+/// `white/20` is the same token over a black desktop and over a white page,
+/// and only the composite distinguishes "a quiet rim light" from "a glaring
+/// line". Every derivation below measures the composite, never the token.
+fn composite(over: Color, ground: Color) -> Color {
+    let a = over.a() as f32 / 255.0;
+    let ch = |o: u8, g: u8| ((o as f32) * a + (g as f32) * (1.0 - a)).round() as u8;
+    Color::from_rgb8(
+        ch(over.r(), ground.r()),
+        ch(over.g(), ground.g()),
+        ch(over.b(), ground.b()),
+    )
+}
+
+/// How much a hairline must move the ground it is painted on before a person
+/// can see it, in WCAG relative-luminance units.
+///
+/// A hairline is meant to be quiet, so this sits far below any text threshold.
+/// It only has to catch the failure that makes an edge *not an edge*: a wash
+/// that composites to within rounding distance of the surface under it.
+const HAIRLINE_MIN_DELTA: f64 = 0.02;
+
+/// Alpha of the wash [`Colors::lift`] falls back to when a preset's surface
+/// family gives it no raised tier to aim at. 15 % — enough to read as a
+/// distinct body, quiet enough that ink painted on it keeps its contrast.
+const LIFT_FALLBACK_ALPHA: u8 = 38;
 
 #[derive(Clone, Debug)]
 pub struct ColorRamp { pub stops: [Color; 11] }
@@ -75,13 +106,65 @@ pub struct Surfaces {
     pub scrim: Color,
     pub glass: Color,
     pub glass_blur_px: f32,
-    /// The card that frames each window tile. Sits on top of the shell
-    /// backdrop; for dark themes a light card (dark app content reads on it),
-    /// for light themes plain white.
+    /// The card that frames each window tile — the ground a window shows
+    /// where the app it hosts has painted nothing.
+    ///
+    /// It belongs to the theme's own surface family, so an empty window
+    /// reads as *this desktop's* window rather than as a sheet of paper
+    /// dropped onto it. That matters because it is the only window ground
+    /// the user ever compares side by side: apps that fill their own
+    /// background (the terminal, the file explorer, the word processor's
+    /// desk) cover the card entirely, so if the card came from a different
+    /// colour family than they do, switching tabs would flip the window
+    /// between two grounds.
+    ///
+    /// A *document* surface that wants to read as paper — a page in the
+    /// word processor, a page in the PDF viewer — draws that page itself,
+    /// inset on its own canvas with an edge and a shadow. Paper is content
+    /// there, and looks deliberate; a whole window bleached to paper-white
+    /// just looks like the app failed to paint.
+    ///
+    /// Ink for text painted straight onto this surface comes from
+    /// [`Colors::on_card`], never from an assumption about which way round
+    /// the card is.
     pub window_card: Color,
     /// Subtle border around the window card.
     pub window_card_border: Color,
 }
+
+/// The ink tiers for content painted **directly onto the window card**
+/// ([`Surfaces::window_card`]) — a hosted app that fills no background of
+/// its own, a stub tile, the placeholder a foreign surface shows before its
+/// first frame.
+///
+/// This exists because "what colour is text on the card" is not answerable
+/// from the chrome's palette alone: the card is a surface in its own right,
+/// and across the preset set it lands on both sides of the light/dark line
+/// (`#F4F5F7` on the graphite default, black under high contrast, near-black
+/// on OLED, white on the preserved concept palette). Every call site used to
+/// answer it by hard-coding one ramp end, which is correct for exactly the
+/// themes whose card matches that guess and renders the text invisible on
+/// the rest. Derive it here, once, from the card's actual luminance.
+#[derive(Clone, Copy, Debug)]
+pub struct OnCard {
+    /// Body / title ink. Clears WCAG AA (4.5:1) against the card.
+    pub ink: Color,
+    /// Secondary ink — sub-labels, captions, a gutter's line numbers.
+    pub ink_dim: Color,
+    /// Tertiary ink — the quietest legible tier (hints, comments).
+    pub ink_tertiary: Color,
+    /// A whisper-tinted surface *on* the card: a gutter strip, a zebra row.
+    /// Always a small step from the card toward its own ink, so it reads as
+    /// a tint in either direction instead of a light-theme assumption.
+    pub tint: Color,
+}
+
+/// Minimum contrast the chrome's own ink must clear against the card before
+/// it is reused there. WCAG 2.1 AA for body text.
+const ON_CARD_MIN_CONTRAST: f64 = 4.5;
+
+/// How far a [`OnCard::tint`] surface is pulled from the card toward its ink.
+const ON_CARD_TINT_T: f32 = 0.07;
 
 #[derive(Clone, Debug)]
 pub struct SemanticColors { pub success: Color, pub warning: Color, pub danger: Color, pub info: Color }
@@ -114,6 +197,112 @@ pub struct Colors {
     pub border_white_10: Color,
     /// Translucent border ≈ `border-white/20` (alpha 51).
     pub border_white_20: Color,
+}
+
+/// How many distinct colours [`Colors::categorical`] cycles through before
+/// repeating. Six keeps neighbours 60° of hue apart, which is a plain
+/// difference at a glance rather than a shade you have to compare.
+pub const CATEGORICAL_LEN: usize = 6;
+
+/// Total hue sweep of the categorical series, centred on the accent. Wide
+/// enough to tell six workspaces apart, narrow enough that the last one is
+/// still the same family as the first.
+const CATEGORICAL_HUE_ARC_DEG: f32 = 70.0;
+
+/// How far the series walks in lightness across its span. Carries most of
+/// the separation, and unlike hue it survives a desaturated theme.
+const CATEGORICAL_LIGHT_SPREAD: f32 = 0.13;
+
+impl Colors {
+    /// A categorical colour series grown from the theme's own accent.
+    ///
+    /// For things that are *different from each other* rather than
+    /// ranked — workspaces, calendars, participants, tags. Index `0` is
+    /// the accent itself; each subsequent index rotates the hue by a
+    /// full share of the colour wheel while keeping the accent's
+    /// saturation and lightness exactly.
+    ///
+    /// Holding saturation and lightness is what makes this a theme
+    /// token rather than a fixed list. A theme with a restrained blue
+    /// accent gets a restrained series; the high-contrast theme's vivid
+    /// accent gets a vivid one that still reads on pure black; a light
+    /// theme's accent keeps the series dark enough to see on paper. A
+    /// hardcoded palette can be right for at most one of those, and the
+    /// theme cannot reach it to fix the others.
+    ///
+    /// Hue is the axis that varies because it is the one that survives
+    /// every ground: two colours of equal lightness are still obviously
+    /// different colours, whereas a series built by walking a ramp's
+    /// lightness collapses into "several similar greys" the moment the
+    /// theme lowers its contrast.
+    pub fn categorical(&self, idx: usize) -> Color {
+        let base = self.accent[ACCENT_PRIMARY_IDX];
+        let (h, s, l) = rgb_to_hsl(base);
+        let i = idx % CATEGORICAL_LEN;
+        // Fan around the accent, do not walk the wheel.
+        //
+        // Rotating a full 360/N per entry made every hue reachable, which
+        // is exactly the problem: from a blue accent the second workspace
+        // landed on purple and the third on pink — colours with nothing to
+        // do with the theme, indistinguishable in kind from the hardcoded
+        // palette this replaced. Sweeping a bounded arc keeps the whole
+        // series recognisably one family, and the separation the eye
+        // actually needs comes from lightness as much as hue.
+        // Index 0 is the accent itself; the rest alternate outward from it
+        // (+1, -1, +2, -2, …) so the first workspace a user sees is their
+        // own accent and later ones fan symmetrically either side.
+        let k = (i + 1) / 2;
+        let sign = if i % 2 == 1 { 1.0 } else { -1.0 };
+        let step = sign * k as f32 / (CATEGORICAL_LEN / 2) as f32; // -1 … +1
+        let hue = (h + step * CATEGORICAL_HUE_ARC_DEG / 2.0).rem_euclid(360.0);
+        let light = (l + step * CATEGORICAL_LIGHT_SPREAD).clamp(0.22, 0.78);
+        hsl_to_rgb(hue, s, light)
+    }
+}
+
+/// sRGB → HSL, hue in degrees. Straight sRGB rather than a perceptual
+/// space: the point here is *separation*, and the cheap conversion
+/// separates hues perfectly well.
+fn rgb_to_hsl(c: Color) -> (f32, f32, f32) {
+    let (r, g, b) = (
+        c.r() as f32 / 255.0,
+        c.g() as f32 / 255.0,
+        c.b() as f32 / 255.0,
+    );
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d <= f32::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let s = d / (1.0 - (2.0 * l - 1.0).abs()).max(f32::EPSILON);
+    let h = if max == r {
+        60.0 * (((g - b) / d) % 6.0)
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    (h.rem_euclid(360.0), s.clamp(0.0, 1.0), l)
+}
+
+/// HSL → sRGB, the inverse of [`rgb_to_hsl`].
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Color {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let q = |v: f32| (((v + m) * 255.0).round().clamp(0.0, 255.0)) as u8;
+    Color::from_rgb8(q(r1), q(g1), q(b1))
 }
 
 /// A compact description of a full palette. Every qOS theme is expressed as
@@ -178,9 +367,13 @@ impl Colors {
         accent.stops[ACCENT_HOVER_IDX] = p.accent_hover;
         accent.stops[ACCENT_PRIMARY_IDX] = p.accent;
 
-        let window_card = p.window_card.unwrap_or_else(|| {
-            if p.dark { Color::from_rgb8(0xF4, 0xF5, 0xF7) } else { Color::WHITE }
-        });
+        // The window ground is the theme's ground. A window whose app has
+        // painted nothing then matches the window beside it whose app filled
+        // `surfaces.base`, so moving between tabs does not flip the frame
+        // between a light and a dark surface. (The OLED preset reached the
+        // same conclusion by hand before this was derived — see its
+        // `window_card` override.)
+        let window_card = p.window_card.unwrap_or(if p.dark { p.base } else { Color::WHITE });
         let window_card_border = if p.dark {
             Color::from_rgba8(255, 255, 255, 51)
         } else {
@@ -222,6 +415,134 @@ impl Colors {
             surface_white_20: Color::from_rgba8(255, 255, 255, 51),
             border_white_10:  Color::from_rgba8(255, 255, 255, 26),
             border_white_20:  Color::from_rgba8(255, 255, 255, 51),
+        }
+    }
+
+    /// Ink for content painted directly on [`Surfaces::window_card`].
+    ///
+    /// Two cases, decided by measurement rather than by a `dark` flag:
+    ///
+    /// * The card is in the **same family as the chrome** (a dark card on a
+    ///   dark theme, a white card on a light one). The chrome's own three
+    ///   text tiers already read on it, so they are what a widget gets —
+    ///   which keeps a hosted app's typography identical to the rest of the
+    ///   UI instead of quietly forking into a second scale.
+    /// * The card is in the **opposite family** (the preserved concept
+    ///   palette's white card under a dark chrome). The chrome's near-white
+    ///   ink would vanish, so ink comes from whichever end of the neutral
+    ///   ramp actually contrasts with the card.
+    ///
+    /// Either way the result clears AA against the card, which is the
+    /// property the three former copies of this logic did not have: each
+    /// assumed a light card and derived dark ink from it, so under the
+    /// high-contrast preset (black card) and OLED (`#0A0A0A` card) they
+    /// painted dark-on-dark and the text disappeared.
+    pub fn on_card(&self) -> OnCard {
+        use crate::a11y::contrast_ratio;
+        let card = self.surfaces.window_card;
+
+        let (ink, ink_dim, ink_tertiary) =
+            if contrast_ratio(self.text_primary, card) >= ON_CARD_MIN_CONTRAST {
+                (self.text_primary, self.text_dim, self.text_tertiary)
+            } else {
+                // One step in from the ramp end, not the end itself: pure
+                // black on white (or pure white on black) is harsher than
+                // the typography the rest of the UI uses.
+                let from_low = contrast_ratio(self.neutral[0], card)
+                    >= contrast_ratio(self.neutral[10], card);
+                if from_low {
+                    (self.neutral[1], self.neutral[4], self.neutral[4])
+                } else {
+                    (self.neutral[9], self.neutral[6], self.neutral[6])
+                }
+            };
+
+        OnCard {
+            ink,
+            ink_dim,
+            ink_tertiary,
+            tint: mix8(card, ink, ON_CARD_TINT_T),
+        }
+    }
+
+    /// A hairline that stays visible on `ground`, whichever side of the
+    /// light/dark line `ground` happens to fall on.
+    ///
+    /// White at a low alpha is the usual way to draw a quiet edge, and it is
+    /// what every `*_white_*` token in this file assumes. That assumption
+    /// holds only over a dark ground; over a light one the same wash
+    /// composites to within a shade of the surface and the edge disappears.
+    /// Branching on the palette's `dark` flag would not fix it either — a
+    /// preset can be dark overall while an individual surface sits the other
+    /// way round, which is exactly how the concept palette ends up with a
+    /// white card under dark chrome. So try both polarities at `alpha` and
+    /// keep whichever moves `ground` further.
+    pub fn hairline_on(ground: Color, alpha: u8) -> Color {
+        use crate::a11y::relative_luminance;
+        let g = relative_luminance(ground);
+        let light = Color::from_rgba8(255, 255, 255, alpha);
+        let dark = Color::from_rgba8(0, 0, 0, alpha);
+        let moved = |c: Color| (relative_luminance(composite(c, ground)) - g).abs();
+        if moved(light) >= moved(dark) { light } else { dark }
+    }
+
+    /// The hairline that separates a window from the desktop behind it.
+    ///
+    /// This is deliberately **not** a property of the window card. The edge is
+    /// painted on the desktop, outside the card's silhouette, because the
+    /// pixels inside the card belong to the hosted app and the shell never
+    /// samples them: a constant stroked over app content lands on whatever the
+    /// app happened to paint, so one token reads as a soft rim light over a
+    /// dark app and as a glaring near-white line over one painting light
+    /// chrome. No alpha satisfies both — the two grounds are at opposite ends
+    /// of the ramp. Deriving the edge from the one ground the shell *does*
+    /// know, and keeping it off the app's pixels entirely, makes the edge
+    /// legible without the shell having to guess what is underneath it.
+    /// [`crate::widget::tile_host::TileHost`] owns the matching geometry.
+    ///
+    /// A preset's declared [`Surfaces::window_card_border`] is honoured
+    /// wherever it actually registers against that ground; only a declaration
+    /// the ground would swallow gets its polarity flipped.
+    /// The body a control takes when it is **lifted** off the chrome's own
+    /// ground — a hovered or active tab pill, a selected row. `t` runs from
+    /// `0.0` (flat on the ground) to `1.0` (the full lift).
+    ///
+    /// The concept expressed this as `bg-white/5` / `bg-white/10`, which only
+    /// performs the lift over a dark ground: composited over a light one the
+    /// same wash lands within a shade of the surface, so "active" stops
+    /// looking active. `surfaces.base` and `surfaces.raised` already name both
+    /// ends of the move — the ground, and the tier of cards and panels above
+    /// it — and every preset defines them on its own side of the light/dark
+    /// line, so interpolating between them keeps the lift pointing the right
+    /// way with no `dark` flag to get wrong.
+    ///
+    /// Some presets have no tier to aim at: high contrast paints every surface
+    /// pure black on purpose, so `raised` *is* `base`. Those fall back to a
+    /// wash whose polarity is chosen against the ground the same way
+    /// [`Colors::hairline_on`] chooses an edge, which keeps a lift available
+    /// even where the surface family is deliberately flat.
+    pub fn lift(&self, t: f32) -> Color {
+        use crate::a11y::relative_luminance;
+        let base = self.surfaces.base;
+        let g = relative_luminance(base);
+        let raised = self.surfaces.raised;
+        let target = if (relative_luminance(raised) - g).abs() >= HAIRLINE_MIN_DELTA {
+            raised
+        } else {
+            composite(Self::hairline_on(base, LIFT_FALLBACK_ALPHA), base)
+        };
+        mix8(base, target, t)
+    }
+
+    pub fn window_edge(&self) -> Color {
+        use crate::a11y::relative_luminance;
+        let ground = self.surfaces.base;
+        let declared = self.surfaces.window_card_border;
+        let g = relative_luminance(ground);
+        if (relative_luminance(composite(declared, ground)) - g).abs() >= HAIRLINE_MIN_DELTA {
+            declared
+        } else {
+            Self::hairline_on(ground, declared.a())
         }
     }
 
@@ -518,5 +839,113 @@ mod tests {
         assert_eq!(rgba(c.surface_white_20), [255, 255, 255, 51], "white/20");
         assert_eq!(rgba(c.border_white_10),  [255, 255, 255, 26], "border-white/10");
         assert_eq!(rgba(c.border_white_20),  [255, 255, 255, 51], "border-white/20");
+    }
+
+    /// The series has to be *legible as different colours* in every
+    /// theme, which is the whole reason it is derived instead of fixed.
+    /// Checks the two properties that carry that: adjacent entries are
+    /// far apart in hue, and every entry keeps enough contrast against
+    /// the theme's own ground to be seen at all.
+    #[test]
+    fn categorical_series_stays_distinguishable_in_every_theme() {
+        use crate::theme::Theme;
+
+        let hue = |c: Color| super::rgb_to_hsl(c).0;
+        let rel_luma = |c: Color| {
+            let f = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+        };
+
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high_contrast", Theme::high_contrast()),
+        ] {
+            let c = &theme.tokens.colors;
+            // Index 0 is the theme's own accent, untouched.
+            assert_eq!(
+                c.categorical(0),
+                c.accent[ACCENT_PRIMARY_IDX],
+                "{name}: the series must start from the theme's accent"
+            );
+            // It cycles rather than running off the end.
+            assert_eq!(
+                c.categorical(CATEGORICAL_LEN),
+                c.categorical(0),
+                "{name}: the series must wrap at CATEGORICAL_LEN"
+            );
+
+            for i in 0..CATEGORICAL_LEN {
+                let a = c.categorical(i);
+                let b = c.categorical((i + 1) % CATEGORICAL_LEN);
+                // Distinguishable — by whatever combination of hue and
+                // lightness the theme affords, not by hue alone. Hue-only
+                // separation is what drove the series around the whole
+                // wheel and produced colours foreign to the theme.
+                let d = |x: Color, y: Color| {
+                    let (dr, dg, db) = (
+                        x.r() as f32 - y.r() as f32,
+                        x.g() as f32 - y.g() as f32,
+                        x.b() as f32 - y.b() as f32,
+                    );
+                    (2.0 * dr * dr + 4.0 * dg * dg + 3.0 * db * db).sqrt()
+                };
+                assert!(
+                    d(a, b) > 28.0,
+                    "{name}: workspaces {i} and {} are only {:.0} apart — \
+                     adjacent sectors would read as the same colour",
+                    (i + 1) % CATEGORICAL_LEN,
+                    d(a, b)
+                );
+
+                // …and still this theme's family. This is the property the
+                // old hue-only rule gave up: it let the series reach any
+                // colour at all, which is how a blue accent produced a
+                // purple workspace.
+                let dh_acc = (hue(a) - hue(c.accent[ACCENT_PRIMARY_IDX])).abs();
+                let from_accent = dh_acc.min(360.0 - dh_acc);
+                assert!(
+                    from_accent <= CATEGORICAL_HUE_ARC_DEG / 2.0 + 1.0,
+                    "{name}: workspace colour {i} sits {from_accent:.0}° from the \
+                     accent — outside the theme's own family"
+                );
+
+                // Visible against the ground the theme actually paints.
+                let ground = rel_luma(c.surfaces.base);
+                let fg = rel_luma(a);
+                let contrast = (fg.max(ground) + 0.05) / (fg.min(ground) + 0.05);
+                assert!(
+                    contrast > 1.6,
+                    "{name}: workspace colour {i} has only {contrast:.2}:1 against \
+                     the base surface — it would disappear"
+                );
+            }
+        }
+    }
+
+    /// The HSL round-trip has to be tight, or a colour changes every
+    /// time it passes through the derivation.
+    #[test]
+    fn hsl_round_trips_within_one_step() {
+        for c in [
+            Color::from_rgb8(0x58, 0x91, 0xE8),
+            Color::from_rgb8(0x2F, 0x6F, 0xD6),
+            Color::from_rgb8(0, 153, 255),
+            Color::from_rgb8(0xFF, 0xFF, 0xFF),
+            Color::from_rgb8(0x10, 0x10, 0x10),
+            Color::from_rgb8(0xE2, 0xA9, 0x3C),
+        ] {
+            let (h, s, l) = super::rgb_to_hsl(c);
+            let back = super::hsl_to_rgb(h, s, l);
+            for (a, b) in [(c.r(), back.r()), (c.g(), back.g()), (c.b(), back.b())] {
+                assert!(
+                    (a as i32 - b as i32).abs() <= 1,
+                    "round-trip drifted: {c:?} -> {back:?}"
+                );
+            }
+        }
     }
 }
