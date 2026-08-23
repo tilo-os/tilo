@@ -709,6 +709,18 @@ impl PeerTable {
         self.peer_id_counter.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// How many connections this broker has ever accepted, across both
+    /// transports.
+    ///
+    /// Read as a generation rather than a count: it only ever rises, so
+    /// a value different from the one recorded beside an announcement
+    /// means somebody has connected who was not there to hear it. See
+    /// [`remote_participant_id`], which uses it to decide that a name
+    /// already said still needs saying.
+    pub(crate) fn connections_seen(&self) -> u64 {
+        self.peer_id_counter.load(Ordering::Relaxed)
+    }
+
     /// Attach the capnp fanout sink. Called at most once at
     /// broker-spawn time. Silently ignores repeat calls (defensive
     /// but not expected).
@@ -1777,7 +1789,7 @@ pub fn spawn_full_with_identity(
                     // roster it implies changes almost never, so the
                     // announcement is made when the answer changes and
                     // not on every frame.
-                    let mut announced: std::collections::HashMap<(String, u64), String> =
+                    let mut announced: std::collections::HashMap<(String, u64), (String, u64)> =
                         std::collections::HashMap::new();
                     // And what the room said, the last time it was
                     // asked. Reading it means taking the replica's lock
@@ -2202,7 +2214,7 @@ fn remote_participant_id(
     labels_of: &dyn Fn(&str) -> PeerLabels,
     table: &PeerTable,
     labels: &mut HashMap<String, (Instant, PeerLabels)>,
-    announced: &mut HashMap<(String, u64), String>,
+    announced: &mut HashMap<(String, u64), (String, u64)>,
 ) -> String {
     // Attributed to the publishing host, not to a local peer slot:
     // this is what the receiving app colours the caret by, so two
@@ -2220,16 +2232,29 @@ fn remote_participant_id(
     // named has no entry, and is left labelled with the id above
     // rather than given a name nobody chose.
     let slot = (cluster_id.to_string(), peer);
-    let say = roster_announcement(
-        announced.get(&slot).map(String::as_str),
-        labels
-            .get(cluster_id)
-            .and_then(|(_, m)| m.get(&peer))
-            .map(String::as_str),
-        &user_id,
-    );
+    let known = labels
+        .get(cluster_id)
+        .and_then(|(_, m)| m.get(&peer))
+        .map(String::as_str);
+    let prior = announced.get(&slot);
+    let generation = table.connections_seen();
+    let say = roster_announcement(prior.map(|(n, _)| n.as_str()), known, &user_id)
+        // A name is said when the answer changes, which is right for a
+        // roster that changes almost never and wrong for an app that
+        // connected after it was said: the audience for that
+        // announcement did not include it, and nothing would ever say
+        // it again. That is how a caret ended up showing a handle on a
+        // screen whose chrome, which reads the room directly, showed
+        // the name — the app had simply missed the one broadcast.
+        //
+        // So a connection this answer has not been said in front of is
+        // itself a reason to say it again.
+        .or_else(|| {
+            let unheard = prior.is_some_and(|(_, at)| *at != generation);
+            unheard.then(|| known.unwrap_or(&user_id).to_string())
+        });
     if let Some(name) = say {
-        announced.insert(slot, name.clone());
+        announced.insert(slot, (name.clone(), generation));
         let roster = CollabEvent::Context {
             collaborators: vec![ui::collaboration::Collaborator {
                 id: user_id.clone(),
@@ -2358,6 +2383,76 @@ mod tests {
             vec![(format!("peer@{HANDLE}"), "Xaver".to_string())],
             "the room's name is announced exactly once, against the id \
              both frames arrived under",
+        );
+    }
+
+    /// An app that starts after the name was said still learns it.
+    ///
+    /// The roster is published when the room's answer changes, because
+    /// presence arrives at pointer rate and a roster update per pointer
+    /// move is not a roster. But "changes" was measured against what
+    /// had been *said*, not against who had *heard* it, so an app that
+    /// connected a second later missed the one broadcast and nothing
+    /// ever repeated it. Its caret drew the peer's handle while the
+    /// chrome two centimetres away — which reads the room directly —
+    /// drew the name. Both were reporting honestly; only one had been
+    /// told.
+    #[test]
+    fn a_name_already_announced_is_said_again_for_an_app_that_missed_it() {
+        let table = Arc::new(super::PeerTable::new());
+        let heard: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&heard);
+        let _sub = table.subscribe_rooms(
+            vec!["room-1".to_string()],
+            Box::new(move |event, _route| {
+                if let CollabEvent::Context { collaborators, .. } = event {
+                    for c in collaborators {
+                        if let Ok(mut g) = sink.lock() {
+                            g.push(c.name.clone());
+                        }
+                    }
+                }
+            }),
+        );
+
+        const HANDLE: u64 = 4_242_424_242;
+        let room = |_c: &str| {
+            let mut m = PeerLabels::new();
+            m.insert(HANDLE, "Xaver".to_string());
+            m
+        };
+        let mut labels = HashMap::new();
+        let mut announced = HashMap::new();
+        let mut say = || {
+            super::remote_participant_id(
+                "room-1", HANDLE, &room, &table, &mut labels, &mut announced,
+            );
+        };
+
+        say();
+        say();
+        assert_eq!(
+            heard.lock().unwrap().clone(),
+            vec!["Xaver".to_string()],
+            "a name that has not changed is not re-broadcast per frame",
+        );
+
+        // Somebody connects — an app opening, on either transport.
+        let _ = table.next_peer_id();
+        say();
+        assert_eq!(
+            heard.lock().unwrap().clone(),
+            vec!["Xaver".to_string(), "Xaver".to_string()],
+            "the app that just connected was not in the audience for the \
+             first announcement, so the name has to be said again",
+        );
+
+        // And then it settles again.
+        say();
+        assert_eq!(
+            heard.lock().unwrap().len(),
+            2,
+            "once everyone connected has heard it, it stops being said",
         );
     }
 
