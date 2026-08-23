@@ -2253,4 +2253,55 @@ mod tests {
             "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
         );
     }
+
+    /// The bar shows the room's people once there are any.
+    ///
+    /// The empty-roster slot says "Invite", which is right for a room
+    /// nobody is in and wrong the moment somebody joins one: a bar
+    /// offering to invite the first person, with a person already
+    /// there, is the OS contradicting its own collaborators panel.
+    ///
+    /// Both states are asserted together because only the pair says
+    /// anything. A stack that is empty in both cases and a stack that
+    /// is full in both cases each pass half of this.
+    #[test]
+    fn a_peer_in_the_room_replaces_the_invite_slot_with_their_avatar() {
+        let empty = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: Default::default(),
+            active_group: Default::default(),
+            collaborators: Vec::new(),
+            ..Default::default()
+        };
+        let mut empty = empty;
+        empty.active = empty.workspaces[0].id;
+        let bar = TopBarChrome::from_tree(&empty);
+        assert!(
+            bar.collaborator_initials().is_empty(),
+            "a room nobody is in has nobody to show, so the slot offers \
+             the invite instead",
+        );
+
+        // What `PeerPresence::refresh_roster` writes when somebody
+        // joins: a tree-level collaborator, id spelled the way the
+        // presence path spells a peer.
+        let mut joined = empty.clone();
+        joined.collaborators = vec![crate::shell::state::Collaborator::new(
+            "peer@11895642303397647149",
+            "bob",
+        )];
+        let bar = TopBarChrome::from_tree(&joined);
+        assert_eq!(
+            bar.collaborator_initials(),
+            &['X'],
+            "with somebody in the room the bar must show them, not an \
+             offer to invite the first person",
+        );
+        assert_eq!(
+            bar.collaborator_overflow(),
+            0,
+            "one peer is not an overflow",
+        );
+    }
 }

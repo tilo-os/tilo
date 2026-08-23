@@ -8036,19 +8036,30 @@ pub struct RosterRow {
     pub color: Color,
     /// True for an agent admitted by capability, false for a person.
     pub is_agent: bool,
+    /// What this participant may do here, as the room's own capability
+    /// list says — `owner`, `editor`, `commenter`, `viewer`, `blocked`.
+    ///
+    /// `None` when the room records nothing about them, which is the
+    /// ordinary case for somebody who walked in on a plain invite. A
+    /// row with no role shows none rather than a default: inventing one
+    /// would be the OS telling a user what a person is allowed to do in
+    /// their room on no evidence.
+    pub role: Option<String>,
 }
 
 /// The rows the collaborators dropdown shows: the peers this session
 /// knows about, then the agents the active room has admitted.
 ///
 /// The two halves come from different places on purpose. A peer is
-/// somebody a session has *met* — it is in `tree.collaborators` because
-/// presence arrived from them. An agent meets nobody and announces
-/// nothing a session could notice, so the only honest evidence it is
-/// here is the capability the room recorded when it was admitted, which
-/// is what `Workspace::agent_members` reads. The consequence worth
-/// stating: no agent row can exist before a grant did, and revoking the
-/// grant removes it.
+/// somebody the room knows is in it — it is in `tree.collaborators`
+/// because [`crate::shell::peer_presence::PeerPresence::refresh_roster`]
+/// put it there, from the room document's own list of named peers and
+/// from the presence this session has actually had. An agent meets
+/// nobody and announces nothing a session could notice, so the only
+/// honest evidence it is here is the capability the room recorded when
+/// it was admitted, which is what `Workspace::agent_members` reads. The
+/// consequence worth stating: no agent row can exist before a grant
+/// did, and revoking the grant removes it.
 ///
 /// Shared by the rect math and the paint so the two cannot drift — a
 /// card sized for one row painting two clipped the second.
@@ -8067,11 +8078,12 @@ pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Ve
                 label: p.name.clone(),
                 color: Color::from_rgb8(r, g, b),
                 is_agent: false,
+                role: p.role_id.clone(),
             }
         })
         .collect();
     if let Some(ws) = tree.active_workspace() {
-        for (agent, _role) in ws.agent_members() {
+        for (agent, role) in ws.agent_members() {
             // The label is the principal itself. An agent has no display
             // name in the room document yet — when peers grow one, this
             // is the seam it arrives through, and until then showing the
@@ -8082,6 +8094,11 @@ pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Ve
                 label: agent,
                 color: Color::from_rgb8(r, g, b),
                 is_agent: true,
+                // The verb on the membership capability that admitted
+                // it. An agent's authority is nothing but that grant,
+                // so this is the one number a person needs in order to
+                // decide whether to revoke it.
+                role: Some(crate::shell::state::role_label(role).to_string()),
             });
         }
     }
@@ -11149,6 +11166,27 @@ impl ShellOverlayHost {
                     tokens.typography.scale.xs,
                     colors.text_dim,
                     transform * Affine::translate((rect.x1 - 56.0, row_y + 9.0)),
+                    None,
+                );
+            }
+            // And what they may do here, when the room says. Right-
+            // aligned under the name rather than beside the tag above,
+            // so an agent shows both what it is and what it holds
+            // without the two colliding in the same 56 px.
+            if let Some(role) = &row.role {
+                let (rw, _) = text_renderer.measure_weighted(
+                    role,
+                    tokens.typography.scale.xs,
+                    None,
+                    TextWeight::Regular,
+                );
+                text_renderer.draw_text(
+                    scene,
+                    role,
+                    tokens.typography.scale.xs,
+                    colors.text_dim,
+                    transform
+                        * Affine::translate((rect.x1 - 16.0 - rw as f64, row_y + 21.0)),
                     None,
                 );
             }
@@ -15145,5 +15183,46 @@ mod roster_rows {
             "an agent listed without its tag is the OS reporting a person",
         );
         assert_eq!(rows[1].initial, 'S');
+    }
+
+    /// A row says what its participant may do here, and where the room
+    /// says nothing it says nothing.
+    ///
+    /// The agent's role is the verb on the capability that admitted it,
+    /// which the roster used to discard — so the one row whose entire
+    /// authority *is* a grant showed no sign of what the grant was. The
+    /// peer's comes from the room's own list too, carried on the
+    /// `Collaborator` the presence path writes; a peer the room has
+    /// recorded nothing about gets no chip rather than a default.
+    #[test]
+    fn a_row_carries_the_role_the_room_recorded_and_no_other() {
+        let mut tree = tree_with_room();
+        tree.collaborators
+            .push(Collaborator::new("peer@7", "peer@7"));
+        tree.collaborators
+            .push(Collaborator::new("bob", "bob").with_role("editor"));
+        {
+            let ws = tree.active_workspace_mut().expect("fixture has a room");
+            let room = ws.id.raw().to_string();
+            ws.grant_as(
+                &"ada".to_string(),
+                CapOverride::membership(Subject::agent("scribe"), room, Verb::Comment),
+            )
+            .expect("the owner may admit an agent");
+        }
+
+        let rows = collaborator_roster_rows(&tree);
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert_eq!(
+            rows[0].role, None,
+            "a peer the room recorded nothing about must not acquire a role",
+        );
+        assert_eq!(rows[1].role.as_deref(), Some("editor"));
+        assert_eq!(
+            rows[2].role.as_deref(),
+            Some("commenter"),
+            "an agent's row must show the verb its membership grant carries, \
+             which is the whole of what revoking it takes back: {rows:?}",
+        );
     }
 }
