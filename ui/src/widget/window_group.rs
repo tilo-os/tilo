@@ -212,13 +212,24 @@ pub struct WindowGroup {
     /// The shell paints the floating controls on top of this rect while
     /// set; click the maximize icon again to un-maximize (restore).
     pub maximized: bool,
-    /// Concept parity for `WindowFrame.isSearching`: the user clicked the
-    /// search glyph on one of this group's tabs. We paint a thicker indigo
-    /// ring + outer glow around the card while set, matching the concept's
-    /// `ring-4 ring-indigo-500/50 shadow-[0_0_60px_rgba(99,102,241,0.6)]`.
-    /// Toggled off by clicking the same icon again or pressing Esc while
-    /// the group is focused.
+    /// The user clicked the search glyph on one of this group's tabs, so
+    /// the shell's search is scoped to this app. Toggled off by clicking
+    /// the same icon again or pressing Esc while the group is focused.
     pub search_active: bool,
+    /// This is the group the keyboard is aimed at: the active group of
+    /// the active strip. Set by the shell each frame from the persisted
+    /// `WorkspaceTree::active_group` pointer, which until now had no
+    /// representation on screen at all — a strip of non-overlapping
+    /// windows has no z-order, so with nothing painted there was no way
+    /// to tell which of three side-by-side windows would take the next
+    /// keystroke.
+    ///
+    /// Consumed by the active [`TileHost`], which carries the signal on
+    /// the window's own edge and shadow. The group deliberately paints
+    /// nothing of its own for this: the group's rect spans its tab row
+    /// *and* its card, so anything stroked around it is a box around a
+    /// region rather than a ring around an object.
+    pub focused: bool,
     /// Hit region for the floating "restore" pill drawn while maximized.
     /// Populated each draw so clicks always map to what's on screen.
     restore_rect: Rect,
@@ -330,6 +341,7 @@ impl WindowGroup {
             hover_resize: false,
             maximized: false,
             search_active: false,
+            focused: false,
             restore_rect: Rect::ZERO,
             restore_hover: false,
             close_rect: Rect::ZERO,
@@ -356,6 +368,21 @@ impl WindowGroup {
         self.maximized = maximized;
         self
     }
+
+    /// Mark this group as the one the keyboard is aimed at. Called by the
+    /// shell each frame for the active group of the active strip; every
+    /// other group is told `false` in the same pass, so focus cannot be
+    /// left latched on a group that lost it.
+    pub fn set_focused(&mut self, focused: bool) -> bool {
+        if self.focused == focused {
+            return false;
+        }
+        self.focused = focused;
+        true
+    }
+
+    /// Whether this group currently holds keyboard focus.
+    pub fn focused(&self) -> bool { self.focused }
 
     /// Latch the concept-faithful spawn fade-in: opacity 0→1, scale
     /// 0.92→1, and a -16 px → 0 horizontal settle over `SPAWN_ANIM_MS`,
@@ -725,6 +752,7 @@ impl WindowGroup {
             hover_resize: false,
             maximized: false,
             search_active: false,
+            focused: false,
             restore_rect: Rect::ZERO,
             restore_hover: false,
             close_rect: Rect::ZERO,
@@ -1200,10 +1228,12 @@ impl Widget for WindowGroup {
             self.bar.draw(scene, transform, tr, theme, presence);
         }
         let active_id = self.bar.active_id();
-        // Mirror `search_active` onto the active host so its card paints
-        // the concept's focused indigo bloom
-        // (`shadow-[0_0_60px_rgba(99,102,241,0.6)]`, WindowFrame.tsx:359).
-        let focused = self.search_active;
+        // The window the keyboard is aimed at lights its own edge and
+        // shadow (see `TileHost::draw_steady_state`). A search scoped to
+        // this group lights it too: scoping the search *is* aiming the
+        // keyboard here, and it is the group's card the results will act
+        // on.
+        let focused = self.focused || self.search_active;
         if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             h.set_focused(focused);
             h.draw(scene, transform, tr, theme, presence);
@@ -1289,79 +1319,35 @@ impl Widget for WindowGroup {
         scene.fill(vello::peniko::Fill::NonZero, transform, grip_col, None, &bar(-2.0));
         scene.fill(vello::peniko::Fill::NonZero, transform, grip_col, None, &bar(2.0));
 
-        // Drag-in-flight visual: subtle accent ring around the whole group
-        // so the user has a spatial signal the drag is live. Matches the
-        // concept's "drag-over" border state for the source group. Skipped
-        // while maximized — the 2 px maximized outline takes priority.
-        if self.bar.drag_in_flight() && !self.maximized {
-            let ring = Rect::new(
-                self.rect.x0 - 1.0,
-                self.rect.y0 - 1.0,
-                self.rect.x1 + 1.0,
-                self.rect.y1 + 1.0,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.5),
-                transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(0.6),
-                None,
-                &ring,
-            );
-        }
-
-        // Search-active visual: concept's `ring-4 ring-indigo-500/50` +
-        // `shadow-[0_0_60px_rgba(99,102,241,0.6)]`. We paint two concentric
-        // indigo strokes (inner 4 px at 50% alpha, outer 8 px at 24% alpha)
-        // to approximate the ring + shadow pair without introducing a blur
-        // primitive. Draws behind the maximized outline so a group can be
-        // simultaneously maximized and searching (as the concept allows).
-        if self.search_active {
-            let ring_outer = Rect::new(
-                self.rect.x0 - 6.0,
-                self.rect.y0 - 6.0,
-                self.rect.x1 + 6.0,
-                self.rect.y1 + 6.0,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(8.0),
-                transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(0.24),
-                None,
-                &ring_outer,
-            );
-            let ring_inner = Rect::new(
-                self.rect.x0 - 2.0,
-                self.rect.y0 - 2.0,
-                self.rect.x1 + 2.0,
-                self.rect.y1 + 2.0,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(4.0),
-                transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(0.5),
-                None,
-                &ring_inner,
-            );
-        }
-
-        // Maximized visual: 2 px accent outline around the whole group so
-        // the user gets immediate feedback from the tab's maximize click
-        // even before the shell paints concept-style floating controls.
+        // Three rings used to be stroked around `self.rect` here — one
+        // for a tab drag in flight, two concentric ones for a scoped
+        // search, and a 2 px accent outline while maximized. All four
+        // strokes were sharp-cornered rectangles around the group's
+        // bounding box, which spans the tab row *and* the rounded card
+        // below it. So each painted a hard right-angled fence a pixel
+        // outside a rounded window, in a saturated accent, at a weight
+        // and a corner radius that matched nothing else in the chrome.
+        //
+        // What each was actually reporting is now said where it belongs:
+        //
+        // * **drag in flight** — the tab bar already draws the drop line
+        //   at the target gap and `GroupRow` draws the accent capsule at
+        //   the destination. A third cue, wrapped around the source, told
+        //   the user something they could already see and competed with
+        //   the two cues that say where the tab will land.
+        // * **scoped search** — folded into the focus signal above: the
+        //   group's own card lights, and the shell's search bar (which
+        //   the same click opens) is the substantive feedback.
+        // * **maximized** — a maximized group is the only thing on the
+        //   strip; its siblings are gone and its tab row has collapsed
+        //   into the floating pill drawn just below. The outline was
+        //   added as interim feedback "even before the shell paints
+        //   concept-style floating controls"; the shell paints them now.
+        //
+        // Per `ui/HIG.md` §9.4 the accent means *live*, not *chosen*, so
+        // maximize and search — both things the user picked — had no
+        // claim on it in the first place.
         if self.maximized {
-            let outline = Rect::new(
-                self.rect.x0 - 1.0,
-                self.rect.y0 - 1.0,
-                self.rect.x1 + 1.0,
-                self.rect.y1 + 1.0,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(2.0),
-                transform,
-                theme.tokens.colors.accent[5],
-                None,
-                &outline,
-            );
-
             // Concept-parity auto-hide: only paint the floating chrome
             // (title pill + Restore + close) while the cursor sits in
             // the reveal band (y <= MAXIMIZED_CHROME_REVEAL_Y). Mirrors
