@@ -372,8 +372,11 @@ pub enum AuthPhase {
 }
 
 impl AuthPhase {
-    /// Whether an attempt currently owns the form: inputs disabled, submit
-    /// ignored, the primary action inert.
+    /// Whether an attempt currently owns the form: inputs disabled and
+    /// submit ignored. The primary action stays enabled — it is inert
+    /// because [`GreeterApp::attempt_login`] refuses a second attempt, not
+    /// because it is greyed out — so it remains the card's keyboard home
+    /// instead of the focus ring falling through to the power actions.
     pub fn is_busy(self) -> bool {
         matches!(self, AuthPhase::Authenticating | AuthPhase::Starting)
     }
@@ -707,7 +710,11 @@ impl GreeterApp {
     /// While an attempt is in flight the inputs are **disabled** (dimmed and
     /// dropped from the focus order), which deliberately changes the
     /// focusable set; the phase transition raises `take_focus_reset` so the
-    /// App re-seats focus rather than preserving a now-invalid ordinal.
+    /// App re-seats focus rather than preserving a now-invalid ordinal. That
+    /// re-seat always lands on the *first* focusable, so the primary action
+    /// must stay enabled through the busy phases — otherwise the first
+    /// focusable is Restart, and the ring parks on a destructive control at
+    /// the exact moment the user is most likely to hit Enter.
     fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
         let busy = self.phase.is_busy();
         let c = &theme.tokens.colors;
@@ -799,14 +806,24 @@ impl GreeterApp {
         // is quieter than this by construction — paired with the single
         // status voice directly beneath it, so feedback lands where the eye
         // already is after a click.
+        //
+        // It stays *enabled* while an attempt is in flight, and that is
+        // load-bearing rather than an oversight: the App drops disabled
+        // widgets from the focus order, so with every credential control
+        // greyed out the only focusable widgets left on the card would be
+        // Restart and Shut down — and the focus reset the phase transition
+        // raises would seat the keyboard ring on the first of them. Enter on
+        // a login screen would reboot the machine. Pressing the primary
+        // action mid-attempt is already a no-op (`attempt_login` returns
+        // early unless the phase is Idle), so keeping it live costs nothing
+        // and keeps the ring on the control the screen is about.
         children.push(Box::new(VStack::new(
             ACTION_STATUS_GAP,
             vec![
                 Box::new(
                     Button::new("greeter.login", self.login_label(), Some(SUBMIT_PATH))
                         .primary()
-                        .with_size(CONTENT_WIDTH, ACTION_HEIGHT)
-                        .with_enabled(!busy),
+                        .with_size(CONTENT_WIDTH, ACTION_HEIGHT),
                 ),
                 Box::new(self.build_status(theme)),
             ],
@@ -1409,11 +1426,18 @@ mod tests {
             .unwrap_or_else(|| w.name().to_string())
     }
 
-    /// Every focusable widget under `w`, in the depth-first order the App
-    /// builds `focusable_order` in.
+    /// Every keyboard-reachable widget under `w`, in the depth-first order
+    /// the App builds `focusable_order` in.
+    ///
+    /// The enabled check is not optional. `App::update_focusable_order`
+    /// keeps a widget only when it is focusable **and** enabled, while
+    /// `Button::is_focusable` is unconditionally true — so a walk that
+    /// checks focusability alone reports disabled buttons as reachable and
+    /// any assertion built on it is satisfied by a control the keyboard can
+    /// never actually get to.
     fn collect_focusables(w: &dyn Widget, out: &mut Vec<String>) {
         for child in w.children() {
-            if child.is_focusable() {
+            if child.is_focusable() && child.is_enabled() {
                 out.push(ident(child));
             }
             collect_focusables(child, out);
@@ -1446,7 +1470,9 @@ mod tests {
 
     fn collect_focus_shape(w: &dyn Widget, out: &mut Vec<String>) {
         for child in w.children() {
-            if child.is_focusable() {
+            // Same enabled check as `collect_focusables` — the ordinals the
+            // App restores by are positions in the enabled-only order.
+            if child.is_focusable() && child.is_enabled() {
                 out.push(child.name().to_string());
             }
             collect_focus_shape(child, out);
@@ -2120,6 +2146,92 @@ mod tests {
             assert!(
                 f.contains(&app.login_label().to_string()),
                 "{scenario:?} lost the primary action, got {f:?}"
+            );
+        }
+    }
+
+    /// The greeter wired up exactly as `main.rs` wires it: startup autofocus
+    /// on, plus focus re-seating across the structural rebuilds an auth-phase
+    /// transition triggers. Tests that assert on focus must go through this,
+    /// not through a hand-rolled tree walk — the App is what decides where
+    /// the ring lands, and it skips widgets that are focusable but disabled.
+    fn live_app(greeter: GreeterApp) -> ui::App {
+        let mut app = ui::App::new(ui::State::new(), Box::new(greeter));
+        app.autofocus_first = true;
+        app.autofocus_on_structure_change = true;
+        app.init_layout();
+        app
+    }
+
+    /// What a screen reader would announce for whatever currently holds
+    /// keyboard focus, read out of the App's own semantic tree — the same
+    /// model the AT-SPI bridge and the action surface are driven from. The
+    /// App folds its `focused_node` into exactly one node's state, so this
+    /// names the widget the App actually gave the keyboard to rather than
+    /// re-deriving it from a parallel tree walk.
+    ///
+    /// Falls back to the role for a control that carries no name of its own
+    /// (the credential fields are named by an adjacent label, not by the
+    /// input), so "focused something unnamed" stays distinguishable from
+    /// "focused nothing at all".
+    fn focused_name(app: &mut ui::App) -> Option<String> {
+        app.refresh_semantic_tree();
+        app.semantic_tree()
+            .iter()
+            .find(|n| n.state.focused)
+            .map(|n| n.name.clone().unwrap_or_else(|| format!("{:?}", n.role)))
+    }
+
+    /// Entering the authenticating phase must never hand the keyboard to the
+    /// power strip.
+    ///
+    /// Every credential control is disabled while an attempt is in flight. If
+    /// the primary action is disabled with them, the only focusable widgets
+    /// left on the card are Restart and Shut down — and the focus reset the
+    /// phase transition raises seats the ring on the first of those. Enter on
+    /// a login screen would then reboot the machine.
+    #[test]
+    fn authenticating_keeps_focus_on_the_primary_action() {
+        let mut greeter = GreeterApp::with_sessions(test_sessions());
+        greeter.begin_authenticating();
+        let primary = greeter.login_label().to_string();
+
+        let mut app = live_app(greeter);
+        // The phase transition raised `take_focus_reset`; this is the rebuild
+        // that consumes it and re-seats the ring.
+        app.rebuild_structure();
+
+        let focused = focused_name(&mut app);
+        assert_eq!(
+            focused.as_deref(),
+            Some(primary.as_str()),
+            "the ring must sit on the primary action while an attempt is in flight, got {focused:?}"
+        );
+    }
+
+    /// The same guarantee stated as the thing that actually hurts: no state
+    /// of the greeter may open with the ring parked on a destructive control.
+    #[test]
+    fn no_state_opens_with_focus_on_a_power_action() {
+        for scenario in [
+            AuthScenario::Form,
+            AuthScenario::Hint,
+            AuthScenario::Error,
+            AuthScenario::Authenticating,
+            AuthScenario::Fingerprint,
+            AuthScenario::Starting,
+            AuthScenario::CapsLock,
+            AuthScenario::LongName,
+        ] {
+            let mut app = live_app(GreeterApp::for_shot(scenario));
+            let focused = focused_name(&mut app);
+            assert!(
+                focused.is_some(),
+                "{scenario:?} opened with no keyboard focus at all"
+            );
+            assert!(
+                focused.as_deref() != Some("Restart") && focused.as_deref() != Some("Shut down"),
+                "{scenario:?} opened with keyboard focus on a power action ({focused:?})"
             );
         }
     }

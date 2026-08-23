@@ -134,6 +134,30 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
     }
 }
 
+/// Give the keyboard to the first control that can hold it, mirroring
+/// `ui::App::init_layout`'s `autofocus_first`: walk the widget tree and the
+/// taffy tree in lock-step and focus the first widget that is both focusable
+/// and **enabled**. The enabled half is what the App applies too — a
+/// disabled control is skipped by focus traversal, so a snapshot that
+/// ignored it would put the ring somewhere the keyboard never goes.
+///
+/// Returns whether a control was focused, so the walk stops at the first hit.
+fn autofocus_first(widget: &mut dyn Widget, taffy: &TaffyTree<()>, node: NodeId) -> bool {
+    let Ok(child_nodes) = taffy.children(node) else {
+        return false;
+    };
+    for (child, &child_node) in widget.children_mut().into_iter().zip(child_nodes.iter()) {
+        if child.is_focusable() && child.is_enabled() {
+            child.set_focus(true);
+            return true;
+        }
+        if autofocus_first(child, taffy, child_node) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Run one offscreen frame against `widget` at `viewport` and write the
 /// resulting RGBA to `out` as a PNG. Mirrors `ui::App`'s
 /// `sync → build_layout → compute_layout → apply_layout → draw` cycle.
@@ -178,6 +202,12 @@ fn render_shot_to_png(
 
     // Second sync so the freshly-composed children pull from the doc.
     widget.sync(&mut state.doc, &state.root);
+
+    // Seat the keyboard where a live run would (`App::autofocus_first`), so
+    // the snapshot carries the focus ring. Without it every state renders
+    // ringless and a screen that hands the keyboard to the wrong control
+    // looks exactly like one that gets it right.
+    autofocus_first(widget.as_mut(), &taffy, child);
 
     let root = taffy.new_with_children(
         Style {
