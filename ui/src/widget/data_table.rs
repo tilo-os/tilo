@@ -1222,6 +1222,80 @@ mod tests {
     }
 
     #[test]
+    fn the_keyboard_cursor_row_is_exported_as_the_active_descendant() {
+        // Exactly one row may claim focus, and it must be the row Up/Down moved
+        // the cursor to — that is what puts a reader on the row rather than on
+        // the table.
+        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+        t.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }, R { name: "c".into() }]);
+        t.selection_mut().move_to(1, false);
+        let node = Widget::accessibility(&t).unwrap();
+        let focused: Vec<usize> = node
+            .children
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.state.focused)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(focused, vec![1], "the cursor row, and only it, is focused");
+        assert!(
+            node.children.iter().all(|r| r.state.focusable),
+            "every row must be focusable or an AT cannot navigate to it"
+        );
+
+        t.selection_mut().move_to(2, false);
+        let node = Widget::accessibility(&t).unwrap();
+        assert!(node.children[2].state.focused, "focus follows the cursor");
+        assert!(!node.children[1].state.focused);
+    }
+
+    #[test]
+    fn a_read_only_tables_rows_are_not_focusable() {
+        // Nothing to operate, so nothing should advertise itself as operable.
+        let mut t = DataTable::<R>::new(sample_cols());
+        t.set_rows(rows4());
+        assert!(!t.selectable, "the default table is read-only");
+        let node = Widget::accessibility(&t).unwrap();
+        assert!(node.children.iter().all(|r| !r.state.focusable));
+        assert!(node.children.iter().all(|r| !r.state.focused));
+    }
+
+    #[test]
+    fn a_routed_action_naming_a_row_that_no_longer_exists_does_nothing() {
+        // An assistive technology can hold a node id across a row being
+        // removed. Acting on whatever now sits at that index would operate on
+        // the wrong record — so an out-of-range row must be dropped, not
+        // clamped.
+        let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::<usize>::new()));
+        let sink = fired.clone();
+        let mut t = DataTable::<R>::new(sample_cols())
+            .selectable(true)
+            .on_activate(move |i| sink.borrow_mut().push(i));
+        t.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }]);
+        t.selection_mut().move_to(0, false);
+
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let handled = Widget::perform_action_at(
+            &mut t,
+            &crate::a11y::Action::Activate,
+            &[7],
+            &mut doc,
+            &root,
+        );
+        assert!(!handled, "a vanished row cannot be activated");
+        assert!(
+            fired.borrow().is_empty(),
+            "and must not activate some other row in its place"
+        );
+        assert_eq!(
+            t.selection.primary(),
+            Some(0),
+            "nor move the cursor off the row the user was on"
+        );
+    }
+
+    #[test]
     fn accessibility_exposes_per_row_and_cell_structure() {
         use crate::a11y::Role;
         let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
