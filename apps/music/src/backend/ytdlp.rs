@@ -11,11 +11,19 @@
 //! network has largely collapsed, so in practice no instance serves media.
 //!
 //! `yt-dlp` resolves a googlevideo URL through the **`android_vr`** client,
-//! which is *not* SABR-gated: it serves arbitrary byte ranges over the whole
-//! file, so the entire track streams. rustypipe cannot use that client (its
-//! player-client order is fixed to `[Ios, Tv]` and not configurable), so when
-//! `yt-dlp` is present we shell out to it for the full-stream URL and hand that
-//! to the ordinary staging + playback path.
+//! which has historically not been SABR-gated: it serves arbitrary byte ranges
+//! over the whole file, so the entire track streams. rustypipe cannot use that
+//! client (its player-client order is fixed to `[Ios, Tv]` and not
+//! configurable), so when `yt-dlp` is present we shell out to it for the
+//! full-stream URL and hand that to the ordinary staging + playback path.
+//!
+//! Whether the gating applies is YouTube's decision on the day, and it has been
+//! observed refusing every range past the first ~1 MB on an `android_vr` URL
+//! too. So this is the *best available* source, not a guarantee: what actually
+//! landed is reported by
+//! [`AudioEngine::staging_complete`](crate::audio::AudioEngine::staging_complete),
+//! and the transport ends a track whose staged bytes run out rather than
+//! freezing on it.
 //!
 //! ## Runtime-optional, not a build dependency
 //!
