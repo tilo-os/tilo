@@ -279,12 +279,27 @@ def main() -> int:
         check("bob's overlay has a peer pointer to paint", bool(seen),
               json.dumps(seen)[:200] if seen else "NO PEER after 45s")
         if seen:
-            check("and it is ada, where ada pointed",
-                  any(p.get("user") == "ada"
-                      and abs(p.get("x", 0) - target[0]) < 40
+            check("and it is where ada pointed",
+                  any(abs(p.get("x", 0) - target[0]) < 40
                       and abs(p.get("y", 0) - target[1]) < 40
                       for p in seen),
                   json.dumps(seen)[:200])
+            # Who the pill says it is. The name is a governance fact —
+            # written into the room document by the room's authority and
+            # refused from anyone else — so this is a claim about what
+            # the room says, not about what the sending session claimed
+            # about itself. ada hosts this room, so the room names
+            # him when he mints the invite.
+            here = [p for p in seen
+                    if abs(p.get("x", 0) - target[0]) < 40
+                    and abs(p.get("y", 0) - target[1]) < 40]
+            check("and the room says it is ada",
+                  any(p.get("name") == "ada" for p in here),
+                  json.dumps(here)[:200])
+            check("labelled by the room, not by a raw handle",
+                  all(not str(p.get("name", "")).startswith("peer@")
+                      for p in here),
+                  json.dumps(here)[:200])
 
         print("\n[5] and the picture it painted")
         os.makedirs(args.out, exist_ok=True)

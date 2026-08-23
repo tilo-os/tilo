@@ -236,6 +236,13 @@ pub struct WindowGroup {
     /// create a brand-new group (e.g. split-tab-into-new-group in
     /// [`crate::widget::GroupRow::split_tab_into_new_group`]).
     spawned_at: Option<Instant>,
+    /// Set on any `draw` this group sat out because nothing in it had
+    /// presented yet. Drained on the first `draw` that does paint, which
+    /// is what latches the arrival fade to the moment the window turns
+    /// up rather than to the moment its tab was created. A group that is
+    /// never held back never sets it, and so animates exactly as it did
+    /// before this existed.
+    held_back: bool,
     /// Hosts whose matching tab pill is in the middle of the
     /// concept-parity close fade. Keyed by `(tab_id, Instant)` where
     /// the `Instant` is the close-start timestamp — the same stamp
@@ -336,6 +343,7 @@ impl WindowGroup {
             close_hover: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
+            held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
             style_dirty: false,
@@ -731,6 +739,7 @@ impl WindowGroup {
             close_hover: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
+            held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
             style_dirty: false,
@@ -954,6 +963,19 @@ impl WindowGroup {
     /// fade elapses.
     #[cfg(test)]
     pub fn host_count(&self) -> usize { self.hosts.len() }
+    /// The tile hosting tab `tab_id`, for a caller that needs to change
+    /// what is *in* a tab without disturbing the tab.
+    ///
+    /// Detaching and re-inserting would do the same job and three other
+    /// things nobody asked for: it makes the tab active, plays the
+    /// arrival fade, and moves it to the caller's index. A window filling
+    /// in behind a card should do none of those to the person watching.
+    pub fn host_for_tab_mut(&mut self, tab_id: u64) -> Option<&mut TileHost> {
+        self.hosts
+            .iter_mut()
+            .find(|(id, _)| *id == tab_id)
+            .map(|(_, h)| h)
+    }
 
     /// Test-only: whether a host with `id` is still present. Paired
     /// with `host_count` for the "closing host stays until fade
@@ -1105,6 +1127,36 @@ impl Widget for WindowGroup {
         }
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+        // Nothing in this group has drawn yet, and it has not been long
+        // enough to be worth saying so. The group has still been through
+        // `build_layout` and `apply_layout`, so its width is already out
+        // of the strip and its neighbours already stand where they will
+        // stand — the window arrives into a space that was held for it
+        // rather than shouldering one open.
+        //
+        // The wait is passed over in silence only while it is too short
+        // to be a wait. An app already on this machine can be on screen
+        // in well under the delay behind `Widget::opening`, and an
+        // indicator that appears and disappears inside it would be a
+        // flicker on the way to a window that was never slow.
+        if !Widget::presented(self) && !Widget::opening(self) {
+            self.held_back = true;
+            return;
+        }
+        // The frame this group was waiting for has landed, so the
+        // arrival curve starts here — restarted, not merely started.
+        // The shell latches that fade when it splices the group in,
+        // which is before the app has drawn, so by the time there is
+        // something to fade in the fade has already run its course
+        // against an invisible group and the window would pop.
+        //
+        // Gated on having actually been held back, so a group that had
+        // something to show from its first draw — every group at shell
+        // start, and every group rebuilt from an unchanged tree — is
+        // painted exactly as before.
+        if std::mem::take(&mut self.held_back) {
+            self.spawned_at = Some(Instant::now());
+        }
         // Per-group spawn / close fades are mutually exclusive in
         // practice — a group can't be both "just arrived" and "last
         // tab just left" on the same frame. We check close first so
@@ -1200,11 +1252,25 @@ impl Widget for WindowGroup {
             self.bar.draw(scene, transform, tr, theme, presence);
         }
         let active_id = self.bar.active_id();
+        // The tab pill is where a wayland app-id becomes the app's own
+        // name. A tile holding a place for an app that has not arrived
+        // needs that name — it is the whole content of the card it paints
+        // — and takes it from the pill directly above it, so the two can
+        // never name the same window differently.
+        let opening_name = self
+            .bar
+            .tabs()
+            .iter()
+            .find(|t| t.id == active_id)
+            .map(|t| t.title.clone());
         // Mirror `search_active` onto the active host so its card paints
         // the concept's focused indigo bloom
         // (`shadow-[0_0_60px_rgba(99,102,241,0.6)]`, WindowFrame.tsx:359).
         let focused = self.search_active;
         if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
+            if let Some(name) = &opening_name {
+                h.set_opening_name(name);
+            }
             h.set_focused(focused);
             h.draw(scene, transform, tr, theme, presence);
         }
@@ -1796,6 +1862,26 @@ impl Widget for WindowGroup {
         }
     }
     fn name(&self) -> &str { "WindowGroup" }
+    /// Whether any window in this group has something to show.
+    ///
+    /// **Any**, not all: a group holding a live window and a second one
+    /// still starting is a window the person is looking at, and it does
+    /// not blink out because a tab beside it has not drawn. The gate is
+    /// for the group that is *only* a starting app — which is what a
+    /// launch makes, since a launch opens its own group.
+    fn presented(&self) -> bool {
+        self.hosts.is_empty() || self.hosts.iter().any(|(_, h)| h.presented())
+    }
+    /// Whether this group is a window's place being held for an app that
+    /// is still starting — see [`Widget::opening`].
+    ///
+    /// Only while *nothing* in it has presented. A group holding one live
+    /// window and one tab whose app is still starting is a window the
+    /// person is looking at; that tab waits its turn without turning the
+    /// whole group into a placeholder.
+    fn opening(&self) -> bool {
+        !Widget::presented(self) && self.hosts.iter().any(|(_, h)| h.opening())
+    }
     fn get_rect(&self) -> Rect { self.rect }
     /// East-west resize cursor while the pointer sits in the group's
     /// right-edge resize band (the `RESIZE_HANDLE_PX`-wide grip that
@@ -1913,6 +1999,207 @@ mod tests {
             ),
         ];
         WindowGroup::new(10, tabs, 1, WindowWidth::Normal)
+    }
+
+
+    /// A tab whose app has been asked for and has not drawn.
+    struct Starting {
+        presented: bool,
+        opening: bool,
+    }
+
+    impl Widget for Starting {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _t: &crate::theme::Theme,
+            _m: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.new_leaf(taffy::Style::default()).unwrap()
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _tr: &mut TextRenderer,
+            _th: &crate::theme::Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _event: &winit::event::WindowEvent,
+            _scale: f64,
+            _m: &winit::event::Modifiers,
+            _state: &mut automerge::AutoCommit,
+            _path: &automerge::ObjId,
+            _handled: &mut bool,
+            _focus: &mut Option<NodeId>,
+            _node: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &str {
+            "Starting"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+        fn presented(&self) -> bool {
+            self.presented
+        }
+        fn opening(&self) -> bool {
+            self.opening
+        }
+    }
+
+    impl crate::widget::app_widget::AppWidget for Starting {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Files
+        }
+        fn app_title(&self) -> &str {
+            "Starting"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("S")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+
+    fn group_opening(title: &str, presented: bool, opening: bool) -> WindowGroup {
+        let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
+            TabDescriptor::new(1, title),
+            TileContent::App(Box::new(Starting { presented, opening })),
+        )];
+        let mut g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
+        g.rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        g
+    }
+
+    /// Lay the group out for real and paint it, and report whether
+    /// anything at all landed in the scene.
+    ///
+    /// The full layout pass matters: a group whose tabs have no rects
+    /// paints nothing for reasons that have nothing to do with what is
+    /// being tested here, and would make the "nothing on screen" case
+    /// pass for free.
+    fn painted_anything(g: &mut WindowGroup) -> bool {
+        use taffy::prelude::TaffyMaxContent;
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        g.apply_layout(&taffy, node, Point::ZERO);
+
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        g.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        !scene.encoding().path_data.is_empty()
+    }
+
+    /// The layout pass alone must not paint: proof that
+    /// [`painted_anything`] is reading the draw and not the layout.
+    #[test]
+    fn the_paint_probe_reports_an_untouched_scene_as_empty() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let scene = Scene::new();
+        let _ = (&theme, &mut tr);
+        assert!(
+            scene.encoding().path_data.is_empty(),
+            "an untouched scene must read as nothing painted, or the \
+             held-back case passes for free",
+        );
+    }
+
+    /// An app that opens in a blink must not flash an indicator on its
+    /// way past.
+    ///
+    /// The delay is the whole reason this branch exists: for the first
+    /// fraction of a second a launch is indistinguishable from an
+    /// instantaneous one, and a card that appears and vanishes inside it
+    /// is a flicker rather than information. Nothing at all is the right
+    /// thing to paint while that is still true.
+    #[test]
+    fn a_group_paints_nothing_while_the_wait_is_still_too_short_to_be_one() {
+        let mut g = group_opening("Files", false, false);
+        assert!(
+            !painted_anything(&mut g),
+            "a window frame went up for an app that has not drawn and has \
+             not been waiting long enough to say so — which is a card \
+             flashing on and off in front of an app that opened fast",
+        );
+    }
+
+    /// Past the delay, the wait gets said out loud — and in the window's
+    /// own place, which is where the person is already looking.
+    #[test]
+    fn a_group_holds_the_window_place_once_the_wait_is_worth_naming() {
+        let mut g = group_opening("Files", false, true);
+        assert!(
+            Widget::opening(&g),
+            "the group must report that it is holding a place",
+        );
+        assert!(
+            painted_anything(&mut g),
+            "the desktop stayed empty for an app the person asked for and \
+             is still waiting on — the whole defect this exists to fix",
+        );
+    }
+
+    /// The card names the app, and it takes that name from the tab above
+    /// it rather than resolving one of its own.
+    ///
+    /// A card reading `dev.qos.file-explorer` is the failure this guards:
+    /// the person asked for Files, and a package id is not an answer.
+    #[test]
+    fn the_card_takes_the_apps_name_from_its_tab() {
+        let mut g = group_opening("Files", false, true);
+        let _ = painted_anything(&mut g);
+        let (_, host) = g.hosts.first().expect("the group has its one tab");
+        assert_eq!(
+            host.opening_name_for_test(),
+            "Files",
+            "the card must say what the tab says; anything else is two \
+             names for one window",
+        );
+    }
+
+    /// A group with a live window in it is a window, not a placeholder.
+    ///
+    /// Opening a second tab beside one the person is working in must not
+    /// turn the whole group into a card saying something is on its way.
+    #[test]
+    fn a_group_with_a_live_window_is_never_holding_a_place() {
+        let tabs: Vec<(TabDescriptor, TileContent)> = vec![
+            (
+                TabDescriptor::new(1, "Files"),
+                TileContent::App(Box::new(Starting { presented: true, opening: false })),
+            ),
+            (
+                TabDescriptor::new(2, "Notes"),
+                TileContent::App(Box::new(Starting { presented: false, opening: true })),
+            ),
+        ];
+        let g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
+        assert!(Widget::presented(&g), "one of its tabs is a window on screen");
+        assert!(
+            !Widget::opening(&g),
+            "a group holding a window the person is using must never be \
+             replaced by a card about the tab beside it",
+        );
     }
 
     /// Pressing the per-tab Maximize2 hit rect flips

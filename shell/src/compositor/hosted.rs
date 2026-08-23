@@ -245,6 +245,10 @@ pub fn run_with_full_options(opts: HostedOptions) {
                     let active = tree_for_bridge.read().active;
                     net.issue_invite(active, INVITE_EXPIRY_SECONDS)
                 }
+                crate::shell::overlay_host::PeerSyncRequest::IssueInviteFor(name) => {
+                    let active = tree_for_bridge.read().active;
+                    net.issue_invite_named(active, INVITE_EXPIRY_SECONDS, &name)
+                }
                 crate::shell::overlay_host::PeerSyncRequest::AcceptInvite(token) => {
                     let active = tree_for_bridge.read().active;
                     net.accept_invite(active, &token).map(|room| room.to_string())

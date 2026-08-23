@@ -1138,7 +1138,9 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
 fn tile_app_id(tile: &crate::shell::state::TileContent) -> Option<String> {
     use crate::shell::state::TileContent;
     match tile {
-        TileContent::Foreign { app_id, .. } => Some(app_id.clone()),
+        TileContent::Foreign { app_id, .. } | TileContent::PeerWindow { app_id, .. } => {
+            Some(app_id.clone())
+        }
         TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
             Some(kind.as_str().to_string())
         }
