@@ -1020,6 +1020,31 @@ impl ShellDriver {
     /// (e.g. `command_palette_input`, `wheel_disc`) or by its path key
     /// (e.g. `ShellOverlayHost/TopBarChrome` if the widget didn't opt in
     /// to a `test_id`).
+    ///
+    /// # A client tile has two names, and only one of them is the one
+    /// you guessed
+    ///
+    /// A foreign surface is registered as `foreign-surface-<id>`, and
+    /// when the compositor knows which tab it belongs to it appends that
+    /// in brackets: `foreign-surface-<id>[<tab_id>]`. Both forms turn up
+    /// within a single session, because the second only exists once the
+    /// surface has been bound to a tab.
+    ///
+    /// So look a client tile up **by prefix on the surface id**, never by
+    /// the bare name:
+    ///
+    /// ```ignore
+    /// let stem = format!("foreign-surface-{surface_id}");
+    /// let named = names.iter().find(|n| **n == stem || n.starts_with(&format!("{stem}[")));
+    /// ```
+    ///
+    /// Getting this wrong fails in the worst available way. The lookup
+    /// returns `None` — indistinguishable from "that window is not
+    /// open" — while the window is plainly on screen in the very
+    /// screenshot you are looking at, and a harness that then declines
+    /// to click reports whatever the *next* assertion was as broken.
+    /// One demo run blamed a document-sync failure on the network for
+    /// this reason; nothing was wrong with the network.
     pub fn resolve_named_rect(&self, name: &str) -> Option<Rect> {
         let host = self.fb.host();
         let curated = match name {

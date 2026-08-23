@@ -246,6 +246,7 @@ dependencies = [
  "hex",
  "qdoc",
  "qos-actions",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
@@ -12251,6 +12252,7 @@ version = "0.1.0"
 dependencies = [
  "cli",
  "runtime",
+ "ui",
 ]
 
 [[package]]
@@ -17963,6 +17965,7 @@ dependencies = [
  "qdoc-rtf",
  "qos-actions",
  "regex",
+ "runtime-dylib",
  "serde",
  "serde_json",
  "spellcheck",

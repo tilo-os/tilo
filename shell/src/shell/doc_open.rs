@@ -161,7 +161,7 @@ impl OpenError {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| path.display().to_string());
                 match ext {
-                    Some(ext) => format!("no installed app opens .{ext} files ({name})"),
+                    Some(ext) => format!("no app on this desktop opens .{ext} files ({name})"),
                     None => format!("{name} has no file type to open it by"),
                 }
             }

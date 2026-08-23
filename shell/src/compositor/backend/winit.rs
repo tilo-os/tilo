@@ -41,6 +41,43 @@ use crate::compositor::present::Presenter;
 const INITIAL_WIDTH: u32 = 1600;
 const INITIAL_HEIGHT: u32 = 900;
 
+/// Override for the initial window size, as `WxH`.
+///
+/// Named rather than left to a resize because resizing this backend is
+/// not free: reconfiguring the surface while a frame is in flight panics
+/// the present thread (`Surface::configure` finds a live
+/// `SurfaceOutput`), which takes the session with it. A harness that
+/// needs an exact size — recording at a video's own resolution, so no
+/// frame is ever resampled — can ask for it here and never resize at
+/// all. Mirrors `NIRIOS_HEADLESS_SIZE`, which the headless backend reads
+/// for the same reason, rather than adding another CLI flag.
+const SIZE_ENV: &str = "NIRIOS_WINIT_SIZE";
+
+/// The size the host window is created at.
+///
+/// Falls back to the constants above for anything unparseable, a zero
+/// dimension, or an absent variable: a typo in an env var should give
+/// the ordinary window, never a zero-sized surface.
+fn initial_size() -> (u32, u32) {
+    let Ok(raw) = std::env::var(SIZE_ENV) else {
+        return (INITIAL_WIDTH, INITIAL_HEIGHT);
+    };
+    let parsed = raw
+        .split_once(['x', 'X'])
+        .and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)))
+        .filter(|(w, h): &(u32, u32)| *w > 0 && *h > 0);
+    match parsed {
+        Some(size) => size,
+        None => {
+            eprintln!(
+                "nirios compositor: {SIZE_ENV}={raw:?} is not a usable WxH; \
+                 using {INITIAL_WIDTH}x{INITIAL_HEIGHT}"
+            );
+            (INITIAL_WIDTH, INITIAL_HEIGHT)
+        }
+    }
+}
+
 /// Default base color used for the first few frames before any
 /// `BackendEvent::OutputResized` has carried a theme through. Matches
 /// `ui::theme::Theme::dark().bg_app` so the host window doesn't
@@ -90,11 +127,7 @@ impl WinitBackend {
     /// only fails if winit can't construct the event loop at all.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let event_loop = EventLoop::new()?;
-        let outputs = vec![Output::new(
-            OutputId(0),
-            (INITIAL_WIDTH, INITIAL_HEIGHT),
-            1.0,
-        )];
+        let outputs = vec![Output::new(OutputId(0), initial_size(), 1.0)];
         let mut me = Self {
             event_loop,
             inner: Inner {
@@ -369,7 +402,10 @@ impl ApplicationHandler for Inner {
         }
         let attrs = WindowAttributes::default()
             .with_title("nirios")
-            .with_inner_size(winit::dpi::PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT));
+            .with_inner_size({
+                let (w, h) = initial_size();
+                winit::dpi::PhysicalSize::new(w, h)
+            });
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -461,6 +497,29 @@ impl ApplicationHandler for Inner {
                 if size.width == 0 || size.height == 0 {
                     return;
                 }
+                // A configure that changes nothing still arrives as a
+                // `Resized` — going fullscreen at the size the window
+                // already is, a window manager re-asserting geometry —
+                // and reconfiguring the surface for it is not free: it
+                // is the operation that panics the present thread when a
+                // frame is in flight (`Surface::configure` finding a
+                // live `SurfaceOutput`). Doing nothing when nothing
+                // changed removes a whole class of avoidable crash, and
+                // costs a comparison.
+                //
+                // Scale is compared too, because the same pixel size at
+                // a new scale factor is a real change and must still
+                // reach the chrome.
+                let incoming_scale = self
+                    .window
+                    .as_ref()
+                    .map(|w| w.scale_factor() as f32)
+                    .unwrap_or(1.0);
+                if self.outputs.first().is_some_and(|o| {
+                    o.size == (size.width, size.height) && o.scale == incoming_scale
+                }) {
+                    return;
+                }
                 // Only reachable on the inline path. Once the render
                 // state has moved to the render thread this is `None`
                 // and the resize travels through the present pipe
@@ -471,11 +530,7 @@ impl ApplicationHandler for Inner {
                         .render_cx
                         .resize_surface(&mut render.surface, size.width, size.height);
                 }
-                let scale = self
-                    .window
-                    .as_ref()
-                    .map(|w| w.scale_factor() as f32)
-                    .unwrap_or(1.0);
+                let scale = incoming_scale;
                 if let Some(out) = self.outputs.first_mut() {
                     out.size = (size.width, size.height);
                     out.scale = scale;

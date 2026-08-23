@@ -701,6 +701,31 @@ impl NavShell {
         Rect::new(r.x0, (r.y0 + band).min(r.y1), r.x1, r.y1)
     }
 
+    /// `r` — a content pane's rect — with the top-left affordance chip's
+    /// band reserved, but only when the chip actually floats over *that*
+    /// pane. A docked sidebar holds the corner in the wide layout, and the
+    /// detail pane is nowhere near it, so both come back untouched.
+    ///
+    /// The counterpart of [`Self::sidebar_content_rect`] for the content
+    /// side. Resolving it here is the point: this runs in the same pass
+    /// that positions the chip, so it reads *this* frame's geometry. A host
+    /// that works the band out for itself can only consult the shell's rect
+    /// from the frame before, so its content starts in one place on the
+    /// frame it is built and somewhere else once the shell has been
+    /// measured — and a list that moves between frames is a list the
+    /// pointer cannot reliably hit.
+    fn content_child_rect(&self, r: Rect) -> Rect {
+        if self.affordance == Affordance::None || r.width() <= 0.0 || r.height() <= 0.0 {
+            return r;
+        }
+        let chip = self.affordance_rect;
+        if chip.x1 <= r.x0 || chip.x0 >= r.x1 {
+            return r;
+        }
+        let band = CHIP_INSET * 2.0 + CHIP_SIZE;
+        Rect::new(r.x0, (r.y0 + band).min(r.y1), r.x1, r.y1)
+    }
+
     /// Paint the sidebar's own opaque panel. The drawer slides *over* live
     /// content, so without a fill the content reads straight through it — the
     /// file list showing through the places list. Drawn under the child so a
@@ -729,9 +754,11 @@ impl NavShell {
             .map(|s| s.build_layout(&mut taffy, theme, &mut map));
 
         let sidebar_child_rect = self.sidebar_content_rect();
-        let mut jobs: Vec<(NodeId, Rect)> = vec![(o_node, self.overview_rect)];
+        let overview_child_rect = self.content_child_rect(self.overview_rect);
+        let detail_child_rect = self.content_child_rect(self.detail_rect);
+        let mut jobs: Vec<(NodeId, Rect)> = vec![(o_node, overview_child_rect)];
         if let Some(dn) = d_node {
-            jobs.push((dn, self.detail_rect));
+            jobs.push((dn, detail_child_rect));
         }
         if let Some(sn) = s_node {
             jobs.push((sn, sidebar_child_rect));
@@ -756,10 +783,17 @@ impl NavShell {
             );
         }
 
-        self.overview
-            .apply_layout(&taffy, o_node, Point::new(self.overview_rect.x0, self.overview_rect.y0));
+        self.overview.apply_layout(
+            &taffy,
+            o_node,
+            Point::new(overview_child_rect.x0, overview_child_rect.y0),
+        );
         if let (Some(d), Some(dn)) = (self.detail.as_mut(), d_node) {
-            d.apply_layout(&taffy, dn, Point::new(self.detail_rect.x0, self.detail_rect.y0));
+            d.apply_layout(
+                &taffy,
+                dn,
+                Point::new(detail_child_rect.x0, detail_child_rect.y0),
+            );
         }
         if let (Some(sb), Some(sn)) = (self.sidebar.as_mut(), s_node) {
             sb.apply_layout(
@@ -1347,6 +1381,52 @@ mod tests {
         // Every assertion here is about the settled frame.
         ns.snap();
         ns
+    }
+
+    // --- the chip's band over the content --------------------------------
+
+    /// The chip floats over the content pane's top-left in the narrow
+    /// layout, so the shell holds a band clear for it. Hosts must not have
+    /// to work this out for themselves: the only width they can consult
+    /// while building their content is the one the shell was measured at on
+    /// the *previous* frame, so a host-side reserve is applied a frame late
+    /// and the content jumps the first time anything rebuilds it.
+    #[test]
+    fn narrow_content_starts_below_the_chip_that_floats_over_it() {
+        let ns = sidebar_content_shell(600.0);
+        assert_eq!(ns.top_left_affordance(), Affordance::SidebarToggle);
+        let pane = ns.overview_rect();
+        let child = ns.content_child_rect(pane);
+        assert_eq!(
+            child.y0,
+            pane.y0 + CHIP_INSET * 2.0 + CHIP_SIZE,
+            "the content has to start below the chip, not under it",
+        );
+        assert!(
+            child.y0 >= ns.affordance_rect.y1,
+            "the reserved band must clear the chip's own rect ({:?})",
+            ns.affordance_rect,
+        );
+        assert_eq!(
+            (child.x0, child.x1),
+            (pane.x0, pane.x1),
+            "the band is vertical only",
+        );
+    }
+
+    /// Wide docks the sidebar under the chip, so the content is already
+    /// clear of it and must not be pushed down — otherwise every list in
+    /// every shell grows a 60px gap it never had.
+    #[test]
+    fn wide_content_keeps_its_full_height_because_the_sidebar_holds_the_corner() {
+        let ns = sidebar_content_shell(1200.0);
+        assert_eq!(ns.mode(), ShellMode::Wide);
+        let pane = ns.overview_rect();
+        assert_eq!(
+            ns.content_child_rect(pane),
+            pane,
+            "a docked sidebar owns the top-left corner; the content is untouched",
+        );
     }
 
     // --- sidebar + single content pane (HIG §1a, no §1b split) -----------
