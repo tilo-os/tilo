@@ -447,6 +447,37 @@ def main() -> int:
                       for r in (roster or [])),
               json.dumps(roster)[:160])
 
+        step("and xaver sees quinten — by name, and without a pointer")
+        # The other direction, and not the same claim. Quinten is named
+        # in the room document: `issue_invite` records the inviter's own
+        # name there, on the authority-checked channel, so that a guest
+        # reads a person rather than a number. That name replicated to
+        # xaver when he joined, which is why his side can say "quinten"
+        # while quinten's side can only say `peer@…` for him.
+        #
+        # No pointer is waited on here on purpose. A session whose
+        # pointer has never been anywhere publishes nothing, so a roster
+        # that needed one would leave somebody who joined and sat still
+        # out of the room they had just joined.
+        if not xaver.overlays().get("collaborators"):
+            click(xaver, "topbar_avatar_stack", "the avatar stack again")
+        guest_roster = wait_for(
+            lambda: ((xaver.peers() or {}).get("roster") or None), timeout=60)
+        check("xaver's panel lists the host of the room he joined",
+              bool(guest_roster),
+              json.dumps(guest_roster)[:200] if guest_roster
+              else "the guest's roster is empty inside the room he joined")
+        check("under the name the room gave him, not a number",
+              any((r.get("label") or "") == quinten.name
+                  for r in (guest_roster or [])),
+              json.dumps(guest_roster)[:200])
+        check("and with the role the room's own capability list records",
+              any((r.get("label") or "") == quinten.name
+                  and r.get("role") == "owner"
+                  for r in (guest_roster or [])),
+              json.dumps(guest_roster)[:200])
+        xaver.snapshot(os.path.join(shots, "09-xaver-roster.png"))
+
         step("the negative claims")
         check("no token was ever typed — only copied and pasted", True,
               "this script issues no `type` op at all")
