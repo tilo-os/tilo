@@ -2293,18 +2293,20 @@ def frame_one_window(s: Session, app_id: str, prefer: dict | None = None,
     squared off into equal thirds. Which is also the more honest picture
     of the layout model, and the one the strip is for.
     """
-    # Scrolled to first, then widened, then scrolled to again. Widening
-    # moves every tile, and a tile that has been pushed off the edge has
-    # no pill on screen to click — so the strip is brought to it while
-    # everything is still small enough to be in view, and confirmed
-    # afterwards.
+    # Scrolled to, and only scrolled to.
+    #
+    # This used to widen the group to `share` first. It made the subject
+    # bigger, and it did it a second after the app appeared, so every
+    # window on screen jumped to a new size and position at the moment a
+    # viewer was working out what had just opened. That reads as a fault,
+    # not as a layout. The proportions are settled once by
+    # `establish_strip` before the first frame; a beat only ever pans.
+    #
+    # `share` is kept in the signature and ignored, so the two call sites
+    # that pass one do not have to change in the same breath as this.
+    _ = share
     focus_app_group(s, app_id, prefer=prefer)
-    resp = s.set_group_width(share)
-    if "err" in resp:
-        note(f"{s.name}: could not widen the strip — "
-             f"{json.dumps(resp['err'])[:120]}")
     s.settle(0.6)
-    focus_app_group(s, app_id, prefer=prefer)
     # Measured, not assumed — the same rule the two-window framing keeps.
     # Focusing a group scrolls it *into view*, which is not the same as
     # scrolling it *wholly* into view: at 720 permille the shot came out
