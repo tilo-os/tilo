@@ -1948,7 +1948,16 @@ mod tests {
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
         let t = &foreign_tabs(&rendered)[0];
         assert_eq!(t.app_id, "io.example.late");
-        assert_eq!(t.title, "late");
+        // The identifier propagates; the *title* is humanised from it.
+        // `a50d47498` ("Put the app's own name on its tab") made that so,
+        // because Files was appearing as `app` and the word processor as
+        // `word-processor` — machine identifiers nobody chose, on camera.
+        // This test predates it and expected the raw trailing component,
+        // which is what a revert would restore and what this fails on.
+        assert_eq!(
+            t.title, "Late",
+            "a tab wears a name, not the last segment of an app id"
+        );
     }
 
     #[test]
