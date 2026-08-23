@@ -51,6 +51,7 @@ open, and nothing about `--release` changes.
 """
 from __future__ import annotations
 
+import ast
 import argparse
 import contextlib
 import hashlib
@@ -79,6 +80,38 @@ from reaper import die_with_parent, track   # noqa: E402
 KEEP_SESSIONS = False
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _shadowed_definitions() -> list[str]:
+    """Top-level names this file defines more than once.
+
+    Python resolves a redefinition silently, in favour of whichever came
+    last, so a duplicate name is not an error anywhere — it is a
+    different function than the one at the call site, called with the
+    wrong kind of argument, failing inside a `try` that turns it into a
+    plausible-looking answer. That is exactly how a second
+    `peer_id_of` — one taking a Session, one taking an invite token —
+    reported that three separate compositors shared one identity, and
+    sent people looking for a regression in the shell.
+
+    A harness whose whole purpose is to tell truth from plausible
+    failure should not be able to fail that way quietly.
+    """
+    try:
+        tree = ast.parse(open(os.path.abspath(__file__)).read())
+    except (OSError, SyntaxError):
+        return []
+    seen: dict[str, int] = {}
+    dupes: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.ClassDef)):
+            continue
+        if node.name in seen:
+            dupes.append(f"{node.name} (lines {seen[node.name]} and "
+                         f"{node.lineno})")
+        seen[node.name] = node.lineno
+    return dupes
 
 
 def _doc_text_bin() -> str | None:
@@ -1373,8 +1406,17 @@ def mint_invite(host: Session) -> str | None:
     return token
 
 
-def peer_id_of(token: str) -> str | None:
+def peer_id_in_token(token: str) -> str | None:
     """The peer id inside a session's own invite.
+
+    Named for the token rather than for the peer, because a
+    `peer_id_of(session)` already exists a few dozen lines up and reads
+    the same id out of a session log. Two functions with one name is a
+    collision Python resolves silently in favour of whichever is defined
+    last — here that handed a `Session` to a base64 decoder, which
+    raised, which the `except` turned into `None` for all three
+    sessions, which read as "three sessions share one identity". The
+    shell was fine.
 
     A token names the machine that issued it, so a session's own invite
     is also how that session says who it is. That is what lets one
@@ -1419,7 +1461,7 @@ def introduce(guest: Session) -> str | None:
     token = wait_for(lambda: guest.chrome()["peer_sync"]["invite_token"],
                      timeout=20)
     dismiss_peer_sync_card(guest, "invite")
-    return peer_id_of(token or "")
+    return peer_id_in_token(token or "")
 
 
 def join_room(guest: Session, token: str, by_action_api: bool) -> bool:
@@ -2607,6 +2649,14 @@ def main() -> int:
     shutil.rmtree(args.out, ignore_errors=True)
     shots = os.path.join(args.out, "shots")
     os.makedirs(shots, exist_ok=True)
+
+    shadowed = _shadowed_definitions()
+    if shadowed:
+        print("\nrefusing to record: this file defines a name twice, so a "
+              "call site is reaching a function it does not mean")
+        for d in shadowed:
+            print(f"    {d}")
+        return 2
 
     # Refuse to film a binary older than the code it is meant to show.
     #
