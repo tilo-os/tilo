@@ -791,6 +791,20 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 "expiry": format!("{:?}", chrome.ws_grant_draft.expiry),
             },
             "palette": palette_json(self.fb),
+            // Where along each strip the user is looking. Two frames with
+            // an identical tree can show entirely different windows, so a
+            // caller asserting that an affordance left the viewport alone
+            // has no subject without this.
+            "strip_scroll": self
+                .fb
+                .host()
+                .strip_scroll_offsets()
+                .into_iter()
+                .map(|(strip, scroll_x)| serde_json::json!({
+                    "strip": strip,
+                    "scroll_x": scroll_x,
+                }))
+                .collect::<Vec<_>>(),
         })
     }
 }
@@ -806,6 +820,10 @@ fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
         "visible": visible,
         "query": query,
         "selected_id": selected,
+        // Which kind chips are lit. "Filtered to apps" and "asked a query
+        // only apps matched" produce the same row list, and only the
+        // first of those survives the next keystroke.
+        "kind_filter": fb.host().palette_kind_filter(),
         // Label *and* subtitle. The subtitle is the half that says what
         // the row will do, so a harness asserting on how an app is
         // offered has to be able to read it — a row that grew a badge
