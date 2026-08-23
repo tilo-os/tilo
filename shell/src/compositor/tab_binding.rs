@@ -473,7 +473,11 @@ pub fn close_tab_for_destroyed_surface(
 /// not `word-processor`. This is the same transformation the package
 /// registry applies to a manifest with no declared name, so an app
 /// reaches the same label by either route.
-fn tab_label_for_foreign(app_id: &str) -> String {
+///
+/// Shared with the cards the compositor paints in a window's own place,
+/// which name the app for the same reason a tab does. One rule, so a
+/// window cannot be called two different things at once.
+pub(crate) fn tab_label_for_foreign(app_id: &str) -> String {
     if let Some(name) = crate::shell::launcher::display_name_for_app_id(app_id) {
         return name;
     }
