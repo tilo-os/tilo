@@ -61,6 +61,7 @@ use std::os::unix::net::UnixStream;
 #[cfg(test)]
 use std::os::fd::RawFd;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -164,6 +165,38 @@ pub enum CollabRequest {
         /// be premature flexibility.
         max: u16,
     },
+    /// "I have just stored this content; the room may need it."
+    ///
+    /// A document holds a *reference* to its binaries, never the bytes —
+    /// inlining a photograph made one Automerge change larger than the
+    /// transport would carry, and a change that is dropped freezes every
+    /// replica downstream of it. So the reference travels in the document and
+    /// the bytes travel here.
+    ///
+    /// This frame is the app's only way to hand them over. An app's blobs live
+    /// in its own sandbox — the launcher gives every app a private `HOME` and
+    /// `XDG_CACHE_HOME`, deliberately — so there is no directory an app and
+    /// its shell can both read, and there must not be one. Without this the
+    /// shell held the reference its own app had just published and none of the
+    /// content behind it, so it classified its own photograph as something it
+    /// was missing and sent the room nothing at all.
+    ///
+    /// Sent by the transport `connect` installs, so an app that calls `qdoc`'s
+    /// `put_blob` needs no code of its own for this.
+    OfferBlob {
+        /// blake3 hex of the content — its name in every store on every peer.
+        hash: String,
+        /// The content itself.
+        bytes: Vec<u8>,
+    },
+    /// "A document here names content I do not have. Send it if you can."
+    ///
+    /// Raised by a `qdoc` read that missed. The shell answers from its own
+    /// store when it has the bytes, and otherwise asks the room for them.
+    WantBlob {
+        /// blake3 hex of the content wanted.
+        hash: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -229,6 +262,20 @@ pub enum CollabEvent {
         /// in-memory storage. False means there's more on the broker
         /// that the app can fetch with another request.
         exhausted: bool,
+    },
+    /// Content this app asked for, or that a peer offered the room while this
+    /// app had a document referencing it.
+    ///
+    /// Delivered straight into this process's blob store by `poll`, so the
+    /// next frame a widget draws finds the picture where it looks for it and
+    /// the placeholder becomes a photograph. Verified against `hash` on the
+    /// way in — the key *is* the content, so bytes that do not hash to the
+    /// name they arrived under are not that content and are refused.
+    BlobArrived {
+        /// blake3 hex of the content.
+        hash: String,
+        /// The content itself.
+        bytes: Vec<u8>,
     },
 }
 
@@ -871,6 +918,7 @@ impl CollaborationManager {
     /// via the next sync round) and the SDK path preserves it. Apps
     /// that need delivery confirmation build on top of `poll` events.
     pub fn send(&mut self, req: CollabRequest) {
+        arm_blob_transport();
         match &mut self.backend {
             Backend::Disabled => {}
             Backend::Sdk(ch) => {
@@ -913,6 +961,35 @@ impl CollaborationManager {
     /// already `for event in manager.poll()`. Migrating to Option would
     /// touch every caller for zero win.
     pub fn poll(&mut self) -> Vec<CollabEvent> {
+        arm_blob_transport();
+        // Anything the blob store raised since the last frame — content this
+        // app stored and the room may need, or content a document references
+        // and this process does not hold — goes out here.
+        for req in drain_blob_outbox() {
+            self.send(req);
+        }
+        let events = self.poll_backend();
+        // Content that arrived belongs in this process's store *before* the
+        // caller sees the event, so the very next frame a widget draws finds
+        // the picture where it looks for it.
+        for e in &events {
+            if let CollabEvent::BlobArrived { hash, bytes } = e {
+                if !qdoc::blobstore::store().put(hash, bytes) {
+                    // The key is the content's identity: bytes that hash to
+                    // something else are not the content that was asked for,
+                    // and accepting them would poison every later read.
+                    tracing::warn!(
+                        hash = %hash, bytes = bytes.len(),
+                        "collab: refused arriving content — it does not hash to the name \
+                         it arrived under, so the image using it stays a placeholder",
+                    );
+                }
+            }
+        }
+        events
+    }
+
+    fn poll_backend(&mut self) -> Vec<CollabEvent> {
         match &mut self.backend {
             Backend::Disabled => Vec::new(),
             Backend::Sdk(ch) => {
@@ -970,6 +1047,81 @@ impl CollaborationManager {
                 events
             }
         }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Document content: the door between an app's blob store and its shell.
+// -----------------------------------------------------------------------------
+
+/// Requests raised by `qdoc`'s blob store, waiting for the next `poll`.
+///
+/// A queue rather than a direct call because the store's hooks are `&self` on
+/// a process-wide singleton, while sending needs `&mut CollaborationManager`.
+/// The manager drains this every frame, which is also what keeps a `want`
+/// raised deep inside a `draw` off the socket until a sane moment.
+static BLOB_OUTBOX: OnceLock<Mutex<Vec<CollabRequest>>> = OnceLock::new();
+
+fn blob_outbox() -> &'static Mutex<Vec<CollabRequest>> {
+    BLOB_OUTBOX.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn push_blob_request(req: CollabRequest) {
+    if let Ok(mut q) = blob_outbox().lock() {
+        // Bounded: a document referencing a great many missing blobs must not
+        // grow this without limit if nothing is draining it. Dropping the
+        // oldest is safe — a `want` is re-raised by the next failed read.
+        if q.len() >= 256 {
+            q.remove(0);
+        }
+        q.push(req);
+    }
+}
+
+/// Carries an app's document content to its shell, and asks for content the
+/// document references but this process does not hold.
+///
+/// # Why this exists at all
+///
+/// An app's blobs live in its own sandbox: the launcher gives every app a
+/// private `HOME` and `XDG_CACHE_HOME`, so there is no directory an app and
+/// its shell can both read, and there must not be one. The collaboration
+/// socket is the app's one sanctioned door, and content goes through it for
+/// the same reason every change does.
+///
+/// Installing this is what lets an app put a photograph in a document without
+/// knowing anything about how it travels: `qdoc`'s `put_blob` offers, a failed
+/// `blob` read asks, and no call site in any app mentions either.
+struct ShellBlobTransport;
+
+impl qdoc::blobstore::BlobTransport for ShellBlobTransport {
+    fn offer(&self, hash: &str, bytes: &[u8]) {
+        push_blob_request(CollabRequest::OfferBlob {
+            hash: hash.to_string(),
+            bytes: bytes.to_vec(),
+        });
+    }
+
+    fn want(&self, hash: &str) {
+        push_blob_request(CollabRequest::WantBlob { hash: hash.to_string() });
+    }
+}
+
+static BLOB_TRANSPORT_ARMED: std::sync::Once = std::sync::Once::new();
+
+/// Arm the blob transport for this process. Idempotent; called from `poll` and
+/// `send` so any live manager installs it without every app remembering to.
+fn arm_blob_transport() {
+    BLOB_TRANSPORT_ARMED.call_once(|| {
+        qdoc::blobstore::set_transport(Arc::new(ShellBlobTransport));
+    });
+}
+
+/// Take everything the blob store has raised since the last drain.
+fn drain_blob_outbox() -> Vec<CollabRequest> {
+    match blob_outbox().lock() {
+        Ok(mut q) => std::mem::take(&mut *q),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -1527,6 +1679,23 @@ async fn drive_shovel(
                     }
                 }
             }
+            // The capnp channel surface has no content verb. Reporting is
+            // the whole obligation here: an image whose bytes cannot cross
+            // must not look, from the log, like an image nobody added.
+            CollabRequest::OfferBlob { hash, bytes } => {
+                tracing::warn!(
+                    hash = %hash, bytes = bytes.len(),
+                    "collab: this transport cannot carry document content; peers will \
+                     show a placeholder for the image using it",
+                );
+            }
+            CollabRequest::WantBlob { hash } => {
+                tracing::warn!(
+                    hash = %hash,
+                    "collab: this transport cannot fetch document content; the image \
+                     using it stays a placeholder",
+                );
+            }
         }
     }
 }
@@ -1602,6 +1771,25 @@ async fn drive_relay(
                         {
                             break;
                         }
+                    }
+                    // The relay session carries deltas, signed ops and
+                    // presence; it has no content verb. Say so once per
+                    // request rather than dropping it silently — a picture
+                    // that will not cross is exactly the kind of thing the
+                    // absence of a log line used to hide.
+                    CollabRequest::OfferBlob { hash, bytes } => {
+                        tracing::warn!(
+                            hash = %hash, bytes = bytes.len(),
+                            "collab: this relay session cannot carry document content; \
+                             peers on it will show a placeholder for the image using it",
+                        );
+                    }
+                    CollabRequest::WantBlob { hash } => {
+                        tracing::warn!(
+                            hash = %hash,
+                            "collab: this relay session cannot fetch document content; \
+                             the image using it stays a placeholder",
+                        );
                     }
                 }
             }
@@ -1925,6 +2113,15 @@ pub mod broker {
                         exhausted: true,
                     }
                 }
+                // The in-toolkit test broker fans frames verbatim between
+                // two peers in one process, which is all content needs: an
+                // offer becomes an arrival for everyone else.
+                CollabRequest::OfferBlob { hash, bytes } => {
+                    CollabEvent::BlobArrived { hash, bytes }
+                }
+                // Nothing here holds a store to answer from; the offer above
+                // is what moves content on this transport.
+                CollabRequest::WantBlob { .. } => continue,
             };
 
             let Ok(bytes) = serde_json::to_vec(&event) else { continue };

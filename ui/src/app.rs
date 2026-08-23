@@ -1758,6 +1758,20 @@ impl App {
                     self.needs_sync = true;
                     self.layout_dirty = true;
                 }
+                CollabEvent::BlobArrived { hash, bytes } => {
+                    // The bytes are already in this process's blob store —
+                    // `CollaborationManager::poll` puts them there before
+                    // handing the event on, so that a widget drawing this
+                    // frame finds them. What is left is to make sure a frame
+                    // actually happens: the page was showing a placeholder,
+                    // and nothing else about the document changed, so without
+                    // a repaint the picture would not appear until the next
+                    // keystroke.
+                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                        eprintln!("[app] recv BlobArrived {hash} ({}B)", bytes.len());
+                    }
+                    self.layout_dirty = true;
+                }
             }
         }
         any

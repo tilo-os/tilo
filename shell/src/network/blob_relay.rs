@@ -61,6 +61,16 @@ pub const MAX_BLOB_BYTES: usize = 8 * 1024 * 1024;
 /// Most partially-received blobs to hold at once, across all peers.
 const MAX_PARTIALS: usize = 16;
 
+/// How long to wait for an answer before asking the room again.
+///
+/// Short enough that a picture missed by a mesh that was still forming appears
+/// within a beat rather than a minute; long enough that a 146 KB transfer
+/// already in flight completes before a duplicate is asked for.
+const RETRY_AFTER: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// How many times to ask before declaring the content unobtainable and saying so.
+const MAX_ASKS: u32 = 5;
+
 /// Most per-record mirrors to keep. Mirrors are small now that content lives
 /// outside the document, but the count still wants a bound.
 const MAX_MIRRORS: usize = 64;
@@ -92,8 +102,15 @@ struct Partial {
 
 /// Per-room content relay: tracks what each shared document refers to, what
 /// this machine holds, and reassembles what arrives.
-#[derive(Default)]
+///
+/// The store is *held* rather than looked up per call. `qdoc::blobstore`'s is
+/// a process-wide singleton, and a singleton cannot express the one thing this
+/// code exists to get right: two peers are two stores. Holding a handle is
+/// what lets a test stand two machines up in one process and actually prove a
+/// transfer, rather than have both ends read the same map and prove nothing.
 pub struct BlobRelay {
+    /// What this machine holds. Defaults to the process-wide store.
+    store: std::sync::Arc<dyn qdoc::blobstore::BlobStore>,
     /// A replica of each shared record, fed by every frame this shell sends or
     /// receives for it. Only used to answer two questions the raw frame bytes
     /// cannot: what content does this document reference, and is its history
@@ -102,12 +119,52 @@ pub struct BlobRelay {
     /// Content already offered to a room, so a document that is edited a
     /// hundred times does not re-send its photograph a hundred times.
     announced: HashSet<(String, String)>,
+    /// Content this machine has asked a room for and not yet received, with
+    /// when it last asked and how many times. Kept so a request can be
+    /// repeated — the first ask can be missed for reasons the asker cannot
+    /// see — and so an ask that is never answered can be *reported* instead of
+    /// leaving a placeholder that silently never resolves.
+    wanted: HashMap<(String, String), Want>,
     partials: HashMap<(u64, String), Partial>,
+}
+
+/// An outstanding request for content.
+struct Want {
+    asked_at: std::time::Instant,
+    /// When the want was first raised, so an unanswered one can say how long
+    /// it has gone unanswered rather than just that it is outstanding.
+    since: std::time::Instant,
+    attempts: u32,
+    /// Whether the "nobody answered" report has already been made, so it is
+    /// said once per request rather than on every sweep.
+    reported: bool,
+}
+
+impl Default for BlobRelay {
+    fn default() -> Self {
+        Self::with_store(qdoc::blobstore::store())
+    }
 }
 
 impl BlobRelay {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A relay backed by `store` rather than the process-wide one.
+    pub fn with_store(store: std::sync::Arc<dyn qdoc::blobstore::BlobStore>) -> Self {
+        Self {
+            store,
+            mirrors: HashMap::new(),
+            announced: HashSet::new(),
+            wanted: HashMap::new(),
+            partials: HashMap::new(),
+        }
+    }
+
+    /// What this relay reads and writes.
+    pub fn store(&self) -> std::sync::Arc<dyn qdoc::blobstore::BlobStore> {
+        std::sync::Arc::clone(&self.store)
     }
 
     /// Fold a document frame into the mirror for `record` and report what it
@@ -148,9 +205,8 @@ impl BlobRelay {
             // Not a qdoc document — nothing to say about its content.
             Err(_) => return obs,
         };
-        let store = qdoc::blobstore::store();
         for hash in qdoc::model::blob_hashes(mirror, &c) {
-            if store.has(&hash) {
+            if self.store.has(&hash) {
                 obs.have.push(hash);
             } else {
                 obs.missing.push(hash);
@@ -167,6 +223,83 @@ impl BlobRelay {
     /// Mark `hash` as offered to `cluster`.
     pub fn mark_announced(&mut self, cluster: &str, hash: &str) {
         self.announced.insert((cluster.to_string(), hash.to_string()));
+    }
+
+    /// Whether to ask `cluster` for `hash` right now.
+    ///
+    /// True the first time, and again once `RETRY_AFTER` has passed with no
+    /// answer, up to [`MAX_ASKS`]. The retry is the point: the first ask can be
+    /// lost to a mesh that has not finished forming, and without a second one
+    /// a picture that was merely early stays missing forever.
+    ///
+    /// Giving up after a bounded number of tries is deliberate too — an ask
+    /// nobody in the room can answer must stop costing the room traffic, and
+    /// must be *said*, which is what [`Self::unanswered`] is for.
+    pub fn should_ask(&mut self, cluster: &str, hash: &str) -> bool {
+        let key = (cluster.to_string(), hash.to_string());
+        let now = std::time::Instant::now();
+        match self.wanted.get_mut(&key) {
+            None => {
+                self.wanted.insert(
+                    key,
+                    Want { asked_at: now, since: now, attempts: 1, reported: false },
+                );
+                true
+            }
+            Some(w) => {
+                if w.attempts >= MAX_ASKS || now.duration_since(w.asked_at) < RETRY_AFTER {
+                    return false;
+                }
+                w.asked_at = now;
+                w.attempts += 1;
+                true
+            }
+        }
+    }
+
+    /// Forget any outstanding request for `hash` — the content is here.
+    pub fn note_arrived(&mut self, hash: &str) {
+        self.wanted.retain(|(_, h), _| h != hash);
+    }
+
+    /// Requests that have run out of attempts and are still unanswered, as
+    /// `(room, hash, seconds waiting)`. Reported once each.
+    ///
+    /// This exists because the defect this whole area came from was a failure
+    /// that said nothing. A fetch that nobody answers is a picture that will
+    /// not appear, and the log is the only place that can say so before a
+    /// person notices a grey box.
+    pub fn unanswered(&mut self) -> Vec<(String, String, u64)> {
+        let now = std::time::Instant::now();
+        let mut out = Vec::new();
+        for ((room, hash), w) in self.wanted.iter_mut() {
+            if w.reported || w.attempts < MAX_ASKS {
+                continue;
+            }
+            if now.duration_since(w.asked_at) < RETRY_AFTER {
+                continue;
+            }
+            w.reported = true;
+            out.push((room.clone(), hash.clone(), now.duration_since(w.since).as_secs()));
+        }
+        out
+    }
+
+    /// Whether this machine holds `hash` and can therefore answer for it.
+    pub fn holds(&self, hash: &str) -> bool {
+        self.store.has(hash)
+    }
+
+    /// Store content that arrived, and clear any request for it.
+    ///
+    /// Returns false when the store refused it, which is a real failure with a
+    /// user-visible consequence, so callers report it rather than dropping it.
+    pub fn store_arrived(&mut self, hash: &str, bytes: &[u8]) -> bool {
+        let ok = self.store.put(hash, bytes);
+        if ok {
+            self.note_arrived(hash);
+        }
+        ok
     }
 
     /// Split `bytes` into publishable chunks.
