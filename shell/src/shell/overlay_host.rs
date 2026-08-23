@@ -747,18 +747,29 @@ fn draw_invite_code(
     let size = tokens.typography.scale.lg.max(15.0);
     let (_, fh) = text_renderer.measure(code, size, None);
     let field = Rect::new(at.x, at.y, at.x + avail, at.y + fh as f64 + 20.0);
-    scene.fill(
-        Fill::NonZero,
+    let shape = RoundedRect::from_rect(field, tokens.radii.md as f64);
+    // The on-card tint, not a white wash. `surface_white_5` is 5 % white,
+    // which is a step *away* from a dark card's ink and therefore reads
+    // as a field there — and is invisible on a light one, where the card
+    // is already white. The tint token is defined as a step from the card
+    // toward its own ink in whichever direction that is, which is exactly
+    // the thing a field needs to be to read as a field on every palette.
+    let on = theme.on_card();
+    scene.fill(Fill::NonZero, transform, on.tint, None, &shape);
+    // And a hairline, so the field has an edge even where the tint and
+    // the card are close enough to be nearly the same colour.
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
         transform,
-        colors.surface_white_5,
+        colors.border_standard,
         None,
-        &RoundedRect::from_rect(field, tokens.radii.md as f64),
+        &shape,
     );
     text_renderer.draw_text(
         scene,
         code,
         size,
-        colors.text_primary,
+        ui::widget::ModalFrame::ink(theme).0,
         transform * Affine::translate((field.x0 + 14.0, field.y0 + 10.0)),
         None,
     );
@@ -10407,10 +10418,13 @@ impl ShellOverlayHost {
 
             let field_h = 38.0_f64;
             let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + field_h);
+            // The on-card tint rather than a white wash, for the reason
+            // spelled out in `draw_invite_code`: 5 % white is a field on
+            // a dark card and nothing at all on a light one.
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.surface_white_5,
+                theme.on_card().tint,
                 None,
                 &RoundedRect::from_rect(field, tokens.radii.sm as f64),
             );
