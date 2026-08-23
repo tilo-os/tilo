@@ -636,3 +636,549 @@ fn speed_shortens_the_encoded_file() {
     );
     tidy(&path);
 }
+
+// ---------------------------------------------------------------------------
+// Audio: proving the export's second branch writes a real, correct track.
+//
+// The bundled demo clip has no audio stream at all — `vide` handlers, no
+// `soun` — so nothing in this file could check the audio branch against it.
+// Worse, it could appear to: a length check against a stream of silence
+// passes, which is how an "audio" test on this branch once went green over a
+// file with no audio in it. So the fixture here is *generated*, and its
+// content is known sample by sample before anything encodes it.
+// ---------------------------------------------------------------------------
+
+/// Everything mixes and muxes at this rate; the fixture is written at it so
+/// nothing resamples on the way in.
+const FIXTURE_RATE: u32 = 48_000;
+/// Amplitude of each tone, leaving headroom so the mixer's ±1 clamp never
+/// engages and the encoded peak is the tone's own.
+const TONE_AMPLITUDE: f64 = 0.45;
+
+/// The fixture's left-channel tone, constant for its whole length.
+const LEFT_HZ: f64 = 440.0;
+/// The right channel's tone before [`SWITCH_SECS`] …
+const RIGHT_HZ_EARLY: f64 = 880.0;
+/// … and after it.
+const RIGHT_HZ_LATE: f64 = 1760.0;
+/// When the right channel changes tone. Both tones complete a whole number of
+/// cycles by this instant, so the change happens at a zero crossing and adds
+/// no click for a codec to smear.
+const SWITCH_SECS: f64 = 1.0;
+/// The fixture's length.
+const FIXTURE_SECS: f64 = 2.0;
+
+/// The sample a channel of the fixture holds at `t` seconds.
+fn fixture_sample(channel: usize, t: f64) -> f64 {
+    let hz = match channel {
+        0 => LEFT_HZ,
+        _ if t < SWITCH_SECS => RIGHT_HZ_EARLY,
+        _ => RIGHT_HZ_LATE,
+    };
+    (std::f64::consts::TAU * hz * t).sin() * TONE_AMPLITUDE
+}
+
+/// Write the fixture as a 16-bit stereo PCM WAV.
+///
+/// Written by hand rather than encoded, so the file's contents are decided
+/// here and not by whatever an encoder felt like doing — the point of a
+/// fixture is that its signal is known before the code under test sees it.
+fn write_fixture_wav(path: &std::path::Path) {
+    let frames = (FIXTURE_SECS * FIXTURE_RATE as f64).round() as usize;
+    let channels = 2u16;
+    let bits = 16u16;
+    let block_align = channels * bits / 8;
+    let data_len = frames as u32 * block_align as u32;
+
+    let mut out: Vec<u8> = Vec::with_capacity(44 + data_len as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes()); // PCM fmt chunk size
+    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&FIXTURE_RATE.to_le_bytes());
+    out.extend_from_slice(&(FIXTURE_RATE * block_align as u32).to_le_bytes());
+    out.extend_from_slice(&block_align.to_le_bytes());
+    out.extend_from_slice(&bits.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    for i in 0..frames {
+        let t = i as f64 / FIXTURE_RATE as f64;
+        for ch in 0..2 {
+            let v = (fixture_sample(ch, t).clamp(-1.0, 1.0) * 32767.0).round() as i16;
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    std::fs::write(path, &out).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+}
+
+/// The fixture on disk, generated once per test process and **verified**.
+///
+/// The verification is the whole point: a fixture that turns out to be silent
+/// makes every assertion downstream vacuous, and this file has already been
+/// fooled once by exactly that. So the written file is decoded back through
+/// the same path the editor's mixer uses and checked to carry the tones it was
+/// built from — before any test is allowed to draw a conclusion from it.
+fn audio_fixture() -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("qos-ve-tone-{}.wav", std::process::id()));
+    if !path.exists() {
+        write_fixture_wav(&path);
+    }
+    let pcm = decode_audio(&path);
+    let frames = pcm.len() / 2;
+    assert!(
+        frames > (FIXTURE_SECS * FIXTURE_RATE as f64 * 0.9) as usize,
+        "the generated fixture decodes to {frames} frames, not the ~{} it was written with — \
+         a short or silent fixture makes every audio assertion below meaningless",
+        (FIXTURE_SECS * FIXTURE_RATE as f64) as usize,
+    );
+    let left = channel(&pcm, 0);
+    let right = channel(&pcm, 1);
+    assert!(
+        peak(&left) > 0.3 && peak(&right) > 0.3,
+        "the fixture is audible on both channels before anything encodes it: \
+         peaks {:.3} / {:.3}",
+        peak(&left),
+        peak(&right),
+    );
+    // And it holds the tones it was written with, in the channels it wrote
+    // them to. If this fails the generator is wrong, not the export.
+    let early = ..(SWITCH_SECS * FIXTURE_RATE as f64) as usize;
+    assert!(
+        goertzel(&left[early], LEFT_HZ) > goertzel(&left[early], RIGHT_HZ_EARLY) * 4.0,
+        "the fixture's left channel is {LEFT_HZ} Hz",
+    );
+    assert!(
+        goertzel(&right[early], RIGHT_HZ_EARLY) > goertzel(&right[early], LEFT_HZ) * 4.0,
+        "and its right channel is {RIGHT_HZ_EARLY} Hz",
+    );
+    path
+}
+
+/// One channel of an interleaved stereo block.
+fn channel(pcm: &[f32], ch: usize) -> Vec<f32> {
+    pcm.iter().skip(ch).step_by(2).copied().collect()
+}
+
+/// The largest absolute sample in a block.
+fn peak(block: &[f32]) -> f64 {
+    block.iter().fold(0.0f64, |m, s| m.max(s.abs() as f64))
+}
+
+/// Energy at `hz` in `block`, by Goertzel.
+///
+/// One bin of a DFT, which is all that is wanted here: the fixture's tones are
+/// known in advance, so the question is only how much of each one is present.
+/// Normalised by length so windows of different sizes compare directly.
+fn goertzel(block: &[f32], hz: f64) -> f64 {
+    if block.is_empty() {
+        return 0.0;
+    }
+    let w = std::f64::consts::TAU * hz / FIXTURE_RATE as f64;
+    let coeff = 2.0 * w.cos();
+    let (mut s1, mut s2) = (0.0f64, 0.0f64);
+    for &x in block {
+        let s0 = x as f64 + coeff * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    let power = s1 * s1 + s2 * s2 - coeff * s1 * s2;
+    power.max(0.0).sqrt() / block.len() as f64
+}
+
+/// What a file's audio track turned out to be.
+struct DecodedAudio {
+    /// Interleaved stereo `f32` at [`FIXTURE_RATE`] — converted, so it can be
+    /// compared with the fixture whatever the file held.
+    pcm: Vec<f32>,
+    /// The rate and channel count the file *itself* declares, read off the
+    /// decoder's pad before `audioconvert` touches it. `None` when the file
+    /// has no audio track, which is a finding and not a failure to look.
+    native: Option<(i32, i32)>,
+}
+
+impl DecodedAudio {
+    fn frames(&self) -> usize {
+        self.pcm.len() / 2
+    }
+    fn secs(&self) -> f64 {
+        self.frames() as f64 / FIXTURE_RATE as f64
+    }
+}
+
+/// [`decode_audio_full`], keeping only the samples.
+fn decode_audio(path: &std::path::Path) -> Vec<f32> {
+    decode_audio_full(path).pcm
+}
+
+/// Decode `path`'s **audio** track to interleaved stereo `f32` at
+/// [`FIXTURE_RATE`], reporting the rate and channel count the file declares.
+///
+/// The video counterpart of this is [`decode_frame`]; the two are deliberately
+/// separate so a file can be found to have a picture and no sound, which is
+/// exactly the state the export used to leave every file in.
+fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
+    gst::init().expect("gstreamer init");
+    let uri = format!("file://{}", path.display());
+    let pipeline = gst::Pipeline::new();
+    let src = gst::ElementFactory::make("uridecodebin")
+        .property("uri", &uri)
+        .build()
+        .expect("uridecodebin");
+    let convert = gst::ElementFactory::make("audioconvert").build().expect("audioconvert");
+    let resample = gst::ElementFactory::make("audioresample").build().expect("audioresample");
+    let sink = gst_app::AppSink::builder()
+        .caps(
+            &gst::Caps::builder("audio/x-raw")
+                .field("format", "F32LE")
+                .field("channels", 2i32)
+                .field("rate", FIXTURE_RATE as i32)
+                .field("layout", "interleaved")
+                .build(),
+        )
+        .sync(false)
+        .build();
+    pipeline
+        .add_many([&src, &convert, &resample, sink.upcast_ref()])
+        .expect("assemble");
+    gst::Element::link_many([&convert, &resample, sink.upcast_ref()]).expect("link");
+    let convert_weak = convert.downgrade();
+    // The decoder's own output caps, captured before `audioconvert` rewrites
+    // them — asking the sink instead would only report back the caps this
+    // function requested, which proves nothing about the file.
+    let native = std::sync::Arc::new(std::sync::Mutex::new(None::<(i32, i32)>));
+    let native_w = native.clone();
+    src.connect_pad_added(move |_, pad| {
+        let caps = pad.current_caps();
+        let is_audio = caps
+            .as_ref()
+            .and_then(|c| c.structure(0).map(|s| s.name().starts_with("audio/")))
+            .unwrap_or(false);
+        if !is_audio {
+            return;
+        }
+        if let Some(st) = caps.as_ref().and_then(|c| c.structure(0)) {
+            if let (Ok(rate), Ok(ch)) = (st.get::<i32>("rate"), st.get::<i32>("channels")) {
+                *native_w.lock().expect("caps slot") = Some((rate, ch));
+            }
+        }
+        if let Some(c) = convert_weak.upgrade() {
+            if let Some(target) = c.static_pad("sink") {
+                if !target.is_linked() {
+                    let _ = pad.link(&target);
+                }
+            }
+        }
+    });
+    pipeline.set_state(gst::State::Playing).expect("play");
+
+    let mut out: Vec<f32> = Vec::new();
+    // A file with no audio stream never links the sink, so nothing is ever
+    // pulled and `pull_sample` would block. Bounded pulls turn that into an
+    // empty result — "this file has no audio" — rather than a hang.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        if std::time::Instant::now() >= deadline {
+            panic!("decoding audio from {} timed out", path.display());
+        }
+        match sink.try_pull_sample(gst::ClockTime::from_mseconds(500)) {
+            Some(sample) => {
+                let Some(buffer) = sample.buffer() else { continue };
+                let Ok(map) = buffer.map_readable() else { continue };
+                for c in map.chunks_exact(4) {
+                    out.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+                }
+            }
+            None => {
+                if sink.is_eos() || out.is_empty() {
+                    break;
+                }
+            }
+        }
+    }
+    let _ = pipeline.set_state(gst::State::Null);
+    let native = *native.lock().expect("caps slot");
+    DecodedAudio { pcm: out, native }
+}
+
+/// A project with the demo footage on a video track and the generated tone on
+/// an audio track, both running from t=0 for [`FIXTURE_SECS`].
+///
+/// Both branches of the export graph therefore have real content to carry,
+/// which is the configuration the audio branch exists for.
+fn av_project(name: &str, video: &std::path::Path, audio: &std::path::Path) -> Project {
+    let mut p = project_over(video, FIXTURE_SECS, name);
+    let aid = uuid::Uuid::new_v4();
+    p.media.push(MediaItem {
+        id: aid,
+        name: "tone".into(),
+        kind: MediaKind::Audio,
+        duration: FIXTURE_SECS,
+        path: audio.to_string_lossy().into_owned(),
+        hydration: video_editor::media::Hydration::Local,
+        ..Default::default()
+    });
+    let tid = uuid::Uuid::new_v4();
+    p.tracks.push(Track {
+        id: tid,
+        name: "A1".into(),
+        kind: TrackKind::Audio,
+        index: 2,
+        ..Default::default()
+    });
+    let cid = p.add_clip(tid, aid, 0.0).expect("the media exists");
+    let c = p.clip_mut(cid).expect("clip");
+    c.in_point = 0.0;
+    c.out_point = FIXTURE_SECS;
+    p
+}
+
+/// The demo footage carries no sound, so an audio assertion made against it
+/// would be an assertion about silence.
+///
+/// This is not a remark, it is the trap: an earlier audio test on this branch
+/// went green over a stream with no audio in it, because a length check passes
+/// on silence. Every test below builds its own tone fixture instead, and this
+/// one states — by decoding — the reason they have to.
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn the_demo_footage_has_no_audio_to_test_against() {
+    let clip = demo_clip();
+    let decoded = decode_audio_full(&clip);
+    assert!(
+        decoded.native.is_none() && decoded.pcm.is_empty(),
+        "{} has grown an audio track ({:?}, {} samples). The audio tests here build their \
+         own fixture precisely because it had none; if this clip now has sound, they are \
+         still right to, but this note is stale",
+        clip.display(),
+        decoded.native,
+        decoded.pcm.len(),
+    );
+
+    // And the fixture the audio tests do use is audible, at the rate and
+    // channel count they expect. A silent fixture would make them vacuous.
+    let fixture = audio_fixture();
+    let f = decode_audio_full(&fixture);
+    assert_eq!(
+        f.native,
+        Some((FIXTURE_RATE as i32, 2)),
+        "the generated fixture is {FIXTURE_RATE} Hz stereo",
+    );
+    println!(
+        "demo clip: no audio track. fixture: {:?}, {:.3}s, peak {:.3}",
+        f.native,
+        f.secs(),
+        peak(&f.pcm),
+    );
+}
+
+/// The export's audio branch, end to end, for one container.
+///
+/// Decodes the written file's **audio track** back and checks it against the
+/// signal that went in: that there is one at all, at the declared rate and
+/// channel count, running the length of the timeline, and carrying the tones
+/// the fixture holds in the channels it holds them in.
+///
+/// Until now nothing did this. The branch's unit tests measure the mixer, and
+/// `volume_and_mute_reach_the_encoded_audio` measures peaks, but no test had
+/// opened an exported file and found real sound inside it — so an audio branch
+/// that muxed an empty or a silent track would have passed everything.
+fn assert_audio_round_trip(container: Container) {
+    let video = demo_clip();
+    let audio = audio_fixture();
+    let name = format!("ve audio {} {}", container.extension(), std::process::id());
+    let project = av_project(&name, &video, &audio);
+    let out = export_as(&project, container);
+
+    let decoded = decode_audio_full(&out);
+    println!(
+        "{container:?}: audio via {} -> native {:?}, {} frames ({:.3}s), peak {:.3}",
+        video_editor::export::audio_encoder(container).describe(),
+        decoded.native,
+        decoded.frames(),
+        decoded.secs(),
+        peak(&decoded.pcm),
+    );
+
+    // 1. There is an audio track, and it is the shape the mixer produces.
+    let (rate, channels) = decoded.native.unwrap_or_else(|| {
+        panic!(
+            "{} carries no audio track at all — the export muxed picture only",
+            out.display(),
+        )
+    });
+    assert_eq!(
+        rate, FIXTURE_RATE as i32,
+        "the encoded track runs at the rate the mixer produces",
+    );
+    assert_eq!(channels, 2, "and is stereo, as the appsrc's caps declare");
+
+    // 2. It runs the length of the timeline. A muxer handed one buffer and an
+    //    EOS also produces a valid file with an audio track in it.
+    assert!(
+        (decoded.secs() - FIXTURE_SECS).abs() < 0.15,
+        "the encoded audio covers the timeline: {:.3}s of an expected {FIXTURE_SECS}",
+        decoded.secs(),
+    );
+
+    // 3. It is audible. Silence would satisfy everything above.
+    let left = channel(&decoded.pcm, 0);
+    let right = channel(&decoded.pcm, 1);
+    assert!(
+        peak(&left) > 0.15 && peak(&right) > 0.15,
+        "the encoded track is audible on both channels, peaks {:.3} / {:.3} — a silent \
+         track passes every structural check above",
+        peak(&left),
+        peak(&right),
+    );
+
+    // 4. And it is *this* signal, in the right channels. A tone generator
+    //    wired in by mistake, a mono downmix, or a channel swap all survive a
+    //    peak check; none of them survives this.
+    let early = ..(SWITCH_SECS * FIXTURE_RATE as f64 * 0.9) as usize;
+    let (l440, l880) = (goertzel(&left[early], LEFT_HZ), goertzel(&left[early], RIGHT_HZ_EARLY));
+    let (r440, r880) = (goertzel(&right[early], LEFT_HZ), goertzel(&right[early], RIGHT_HZ_EARLY));
+    println!(
+        "{container:?} tone energy — left: {LEFT_HZ}Hz={l440:.4} {RIGHT_HZ_EARLY}Hz={l880:.4}  \
+         right: {LEFT_HZ}Hz={r440:.4} {RIGHT_HZ_EARLY}Hz={r880:.4}",
+    );
+    assert!(
+        l440 > l880 * 4.0,
+        "the left channel of the export is the fixture's {LEFT_HZ} Hz tone \
+         ({l440:.4} vs {l880:.4} at {RIGHT_HZ_EARLY} Hz)",
+    );
+    assert!(
+        r880 > r440 * 4.0,
+        "and the right channel is its {RIGHT_HZ_EARLY} Hz one ({r880:.4} vs {r440:.4} at \
+         {LEFT_HZ} Hz) — the two channels have not been swapped or summed",
+    );
+
+    tidy(&out);
+}
+
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn an_mp4_export_carries_the_timelines_real_audio() {
+    assert_audio_round_trip(Container::Mp4);
+}
+
+/// The same for WebM, whose audio is a different encoder into a different
+/// muxer — `opusenc` into `webmmux`, not AAC into `mp4mux`. The WebM *video*
+/// chain went unproven until recently for exactly this reason; its audio chain
+/// shares none of MP4's elements either.
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn a_webm_export_carries_the_timelines_real_audio() {
+    assert_audio_round_trip(Container::WebM);
+}
+
+/// Where in the decoded audio the right channel changes tone, in seconds, or
+/// `None` when it never does.
+///
+/// Found as the boundary between the last window still dominated by the early
+/// tone and the first dominated by the late one. Short windows, so the
+/// boundary is located to about their width rather than smeared across a
+/// long one.
+fn tone_switch_secs(right: &[f32]) -> Option<f64> {
+    let win = (FIXTURE_RATE as f64 * 0.01) as usize; // 10ms
+    let dominant_late: Vec<bool> = right
+        .chunks_exact(win)
+        .map(|b| goertzel(b, RIGHT_HZ_LATE) > goertzel(b, RIGHT_HZ_EARLY))
+        .collect();
+    // The first late-dominant window with no early-dominant window after it:
+    // a lone flipped window in the middle of the early tone is noise, not the
+    // landmark.
+    let last_early = dominant_late.iter().rposition(|&late| !late)?;
+    let first_late = last_early + 1;
+    (first_late < dominant_late.len())
+        .then(|| first_late as f64 * win as f64 / FIXTURE_RATE as f64)
+}
+
+/// Where the sound sits in time relative to the picture.
+///
+/// The fixture's right channel changes tone at a known instant, so the
+/// exported audio can be asked where that instant ended up. A video frame's
+/// timeline position is fixed by the frame clock the export counts with, so
+/// audio landing at the wrong second *is* the two streams disagreeing.
+///
+/// Measured in **both** containers, which is what makes the reading
+/// attributable. A lossy codec has priming samples of its own, and AAC's are
+/// not fully compensated on this round trip — the track comes back 2.048s long
+/// for a 2s timeline, one AAC frame of padding at each end. Opus in WebM is
+/// delay-compensated and comes back at exactly 2.000s. If the *export* were
+/// misplacing audio, both would be displaced together; a displacement in one
+/// container and not the other is that container's codec. So the two are
+/// asserted at their own tolerances and the difference between them is
+/// asserted too — that last is the part that no codec delay can explain away.
+///
+/// This still cannot resolve a fraction of a block, which is the size of the
+/// half-block offset `mix_block` once had; that one is pinned in the mixer's
+/// own tests, where no codec sits in between.
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn the_exported_audio_sits_where_the_timeline_puts_it() {
+    let video = demo_clip();
+    let audio = audio_fixture();
+    let pid = std::process::id();
+
+    let mut found = Vec::new();
+    for container in [Container::Mp4, Container::WebM] {
+        let name = format!("ve sync {} {pid}", container.extension());
+        let out = export_as(&av_project(&name, &video, &audio), container);
+        let decoded = decode_audio_full(&out);
+        let right = channel(&decoded.pcm, 1);
+        assert!(!right.is_empty(), "there is no audio in {} to locate", out.display());
+
+        let at = tone_switch_secs(&right).unwrap_or_else(|| {
+            panic!(
+                "the {container:?} export never changes from {RIGHT_HZ_EARLY} Hz to \
+                 {RIGHT_HZ_LATE} Hz; the fixture's second half did not survive it",
+            )
+        });
+        println!(
+            "{container:?}: landmark at {at:.3}s (fixture has it at {SWITCH_SECS:.3}s, \
+             {:+.1} ms), track {:.3}s of an expected {FIXTURE_SECS}",
+            (at - SWITCH_SECS) * 1000.0,
+            decoded.secs(),
+        );
+        found.push((container, at, decoded.secs()));
+        tidy(&out);
+    }
+
+    for (container, at, secs) in &found {
+        let offset_ms = (at - SWITCH_SECS) * 1000.0;
+        // Opus is delay-compensated end to end, so its landmark is the
+        // export's own placement with nothing added. AAC's priming is not
+        // compensated on this path, so it gets the wider band — and both are
+        // far tighter than the displacement a mis-fed audio branch produces.
+        let (limit_ms, limit_len) = match container {
+            Container::WebM => (25.0, 0.02),
+            _ => (80.0, 0.08),
+        };
+        assert!(
+            offset_ms.abs() < limit_ms,
+            "the {container:?} export puts the {SWITCH_SECS}s landmark at {at:.3}s \
+             ({offset_ms:+.1} ms), past the {limit_ms} ms this container allows",
+        );
+        // Running long or short is the other way to lose sync: right at the
+        // start, wrong by the end.
+        assert!(
+            (secs - FIXTURE_SECS).abs() < limit_len,
+            "the {container:?} audio ends where the video does: {secs:.3}s of an \
+             expected {FIXTURE_SECS}",
+        );
+    }
+
+    // The part no codec delay explains: the two containers must agree on
+    // where the landmark is, to within their own priming. An export that fed
+    // its audio branch from the wrong point in the timeline would shift both
+    // equally — and that common shift is exactly what comparing them removes.
+    let spread_ms = (found[0].1 - found[1].1).abs() * 1000.0;
+    println!("landmark spread between containers: {spread_ms:.1} ms");
+    assert!(
+        spread_ms < 80.0,
+        "the two containers disagree by {spread_ms:.1} ms about where the same timeline \
+         instant is, which no codec priming accounts for",
+    );
+}
