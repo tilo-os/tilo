@@ -369,6 +369,23 @@ pub struct ShellOverlayHost {
     /// permanently, and every assertion made against the tree passes while
     /// the person is still looking at the old thing.
     tab_tiles: std::collections::HashMap<u64, String>,
+    /// Tabs whose contents have changed in the tree but are not being
+    /// handed the change yet, because what they would be handed is a
+    /// client window that has drawn nothing.
+    ///
+    /// Non-empty means [`Self::resync_strips_from_tree`] has to run again
+    /// whether or not the tree moved. That is the entire reason this
+    /// exists: the wait ends when the client commits its first buffer,
+    /// which is not a change to any workspace, strip, group or tab, so
+    /// the revision counter beside this never notices it. The card would
+    /// otherwise stay up until some unrelated edit to the tree happened
+    /// along — and on the machine this matters for, a guest watching
+    /// somebody else work, nothing does.
+    ///
+    /// Bounded by the open it belongs to: an id goes in when a swap is
+    /// put off, and comes out the moment the swap is made, the tab is
+    /// closed, or the tab is no longer one this pass can reach.
+    deferred_tile_swaps: std::collections::HashSet<u64>,
     /// Side-effect dispatcher for quick-settings actions. Production
     /// builds use [`crate::shell::qs_actions::RealQsActions`]; tests
     /// can swap in a recording impl via [`Self::with_qs_actions`] to
@@ -1321,6 +1338,7 @@ impl ShellOverlayHost {
             notification_stack: None,
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
+            deferred_tile_swaps: std::collections::HashSet::new(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
             status_bridge: None,
             room_activity: crate::shell::room_activity::RoomActivityPane::new(),
@@ -2432,12 +2450,22 @@ impl ShellOverlayHost {
     /// Cheap on the no-op path: `chrome.revision` is a single u64
     /// compare against the cached `last_chrome_revision`. The diff
     /// only runs when something changed.
+    ///
+    /// …or when a swap this pass already decided to put off is still
+    /// waiting. The revision answers "has the tree changed", and one
+    /// thing here is not waiting on the tree: a tab whose window has been
+    /// bound but has drawn nothing keeps its card, and what ends that
+    /// wait is the client committing a buffer — an event that touches no
+    /// workspace, strip, group or tab, and so moves no revision. Left to
+    /// the revision alone the retry is unreachable and the card is
+    /// permanent, which is what a guest saw over a window that had opened
+    /// and was drawing. See [`Self::deferred_tile_swaps`].
     fn resync_strips_from_tree(&mut self) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
         let current_rev = chrome.borrow().revision;
-        if current_rev == self.last_chrome_revision {
+        if current_rev == self.last_chrome_revision && self.deferred_tile_swaps.is_empty() {
             return false;
         }
         let mut any_change = false;
@@ -2445,6 +2473,10 @@ impl ShellOverlayHost {
         // pointers taken from `&mut self`, so a field borrowed across them
         // would alias. Put back before returning.
         let mut tab_tiles = std::mem::take(&mut self.tab_tiles);
+        let mut deferred = std::mem::take(&mut self.deferred_tile_swaps);
+        // Every tab this walk reached, so a debt can be carried forward
+        // only for a tab that is still somewhere this pass can settle it.
+        let mut seen_tabs: std::collections::HashSet<u64> = std::collections::HashSet::new();
         let st = chrome.borrow();
         let records = st.records().clone();
         let tree = st.tree();
@@ -2502,6 +2534,7 @@ impl ShellOverlayHost {
                         g.tabs.iter().map(|t| t.id).collect();
                     for (idx, tab) in g.tabs.iter().enumerate() {
                         let signature = tile_signature(&tab.tile);
+                        seen_tabs.insert(tab.id);
                         if live_tab_ids.contains(&tab.id) {
                             // The tab is already on screen. What is *in*
                             // it can still have changed under it — a tab
@@ -2519,16 +2552,27 @@ impl ShellOverlayHost {
                             // instance of says exactly that — and
                             // swapping it for a surface that has not
                             // drawn replaces a sentence that is true with
-                            // a blank frame. The tile signature is left
-                            // unrecorded, so the swap is retried until
-                            // the window can be shown.
-                            if tab_tiles.get(&tab.id) != Some(&signature)
-                                && !window_is_still_starting(&tab.tile)
-                                && let Some(host) = live.host_for_tab_mut(tab.id)
-                            {
-                                host.replace_content(crate::shell::to_ui_tile(&tab.tile));
-                                tab_tiles.insert(tab.id, signature);
-                                any_change = true;
+                            // a blank frame.
+                            //
+                            // So the swap waits, and the tab is written
+                            // down as owing one. Its signature stays
+                            // unrecorded so the comparison below still
+                            // reads as changed next time round, and
+                            // `deferred_tile_swaps` is what brings a next
+                            // time round about: the client's first commit
+                            // is not a tree change and moves no revision,
+                            // so nothing else would ask again.
+                            if tab_tiles.get(&tab.id) != Some(&signature) {
+                                if window_is_still_starting(&tab.tile) {
+                                    deferred.insert(tab.id);
+                                } else if let Some(host) = live.host_for_tab_mut(tab.id) {
+                                    host.replace_content(crate::shell::to_ui_tile(&tab.tile));
+                                    tab_tiles.insert(tab.id, signature);
+                                    deferred.remove(&tab.id);
+                                    any_change = true;
+                                }
+                            } else {
+                                deferred.remove(&tab.id);
                             }
                             continue;
                         }
@@ -2554,6 +2598,13 @@ impl ShellOverlayHost {
                     for stale in live_tab_ids.difference(&tree_tab_ids) {
                         if live.detach_tab(*stale).is_some() {
                             tab_tiles.remove(stale);
+                            // A tab that has gone is owed nothing. The
+                            // peer closed the window while we were
+                            // starting ours, and a debt against a tab
+                            // that no longer exists would keep this walk
+                            // running every frame for the rest of the
+                            // session.
+                            deferred.remove(stale);
                             any_change = true;
                         }
                     }
@@ -2563,6 +2614,11 @@ impl ShellOverlayHost {
         drop(tree);
         drop(st);
         self.tab_tiles = tab_tiles;
+        // Only tabs this pass actually saw, and still owes a swap, are
+        // carried forward — a tab in a strip or workspace that is no
+        // longer here is not something a later pass can settle.
+        deferred.retain(|id| seen_tabs.contains(id));
+        self.deferred_tile_swaps = deferred;
         self.last_chrome_revision = current_rev;
         any_change
     }
@@ -16850,6 +16906,164 @@ mod resync_strips_tests {
             host.group_at_for_tests(strip_id, 1).is_none(),
             "no phantom group inserted by repeated no-op ticks"
         );
+    }
+}
+
+#[cfg(test)]
+mod peer_window_takeover_tests {
+    //! A window that arrives for a tab which already exists has to be
+    //! handed that tab once it draws.
+    //!
+    //! Every other window is born with its tab: `adopt_toplevel` mints a
+    //! tab and the reconcile below builds a host for it in one step, with
+    //! nothing to decide. A peer's window is the one that does not. Its
+    //! tab is already on screen, holding a card that says what is being
+    //! done about it (`shell::peer_windows`), and the window that turns
+    //! up has to displace that card in place — the only path in the shell
+    //! that replaces a live tab's contents.
+    //!
+    //! That replacement is deferred while the client has drawn nothing,
+    //! so the sentence on the card is not traded for a blank frame. The
+    //! deferral is right; what it needs is for the shell to come back and
+    //! ask again, because the answer changes on an event that touches no
+    //! part of the tree: a wayland client committing its first buffer.
+    use super::*;
+    use crate::compositor::tab_binding::{Placement, adopt_toplevel_at};
+    use crate::shell::build_nirios_overlay_host_with_chrome;
+    use crate::shell::state::{
+        GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
+    };
+    use std::collections::HashMap as StdHashMap;
+
+    const APP: &str = "dev.qos.word-processor";
+    const SURFACE: u64 = 77_010_442;
+    const TAB: u64 = 4_242;
+
+    /// One room, one strip, one group, holding a tab for a window a peer
+    /// has open — the shape `WorkspaceTree::apply_room_changes` leaves
+    /// behind once `peer_windows::examine` has answered for it.
+    fn tree_with_a_peer_s_window() -> (WorkspaceTree, StripId, GroupId) {
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let group_id: GroupId = 700;
+        let strip = Strip {
+            id: strip_id,
+            name: "main".into(),
+            window_groups: vec![StateGroup {
+                id: group_id,
+                tabs: vec![Tab {
+                    id: TAB,
+                    title: "Word Processor".into(),
+                    tile: TileContent::PeerWindow {
+                        app_id: APP.into(),
+                        label: "Word Processor".into(),
+                        note: "Opening here…".into(),
+                    },
+                }],
+                active_tab: TAB,
+                width: StateWidth::Normal,
+                maximized: false,
+            }],
+        };
+        let ws = Workspace {
+            owner: Some("quinten".into()),
+            capabilities: Vec::new(),
+            id: ws_id,
+            room: crate::shell::state::RoomId::new(),
+            name: "shared".into(),
+            strips: vec![strip],
+            collaborators: vec![],
+            shared_surfaces: StdHashMap::new(),
+        };
+        let mut active_strip = StdHashMap::new();
+        active_strip.insert(ws_id, strip_id);
+        let mut active_group = StdHashMap::new();
+        active_group.insert(strip_id, group_id);
+        (
+            WorkspaceTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                collaborators: vec![],
+                ..Default::default()
+            },
+            strip_id,
+            group_id,
+        )
+    }
+
+    /// What the tab is showing, as the thing that draws it sees it.
+    fn showing(host: &mut ShellOverlayHost, strip_id: StripId) -> &'static str {
+        match host
+            .group_at_for_tests(strip_id, 0)
+            .and_then(|g| g.host_for_tab_mut(TAB))
+            .map(|h| h.content())
+        {
+            Some(ui::widget::TileContent::App(_)) => "the window",
+            Some(ui::widget::TileContent::Notice { .. }) => "a card",
+            Some(ui::widget::TileContent::Stub { .. }) => "a stub",
+            None => "nothing",
+        }
+    }
+
+    /// The whole beat, in the order the machine lives it.
+    ///
+    /// The last step is the one that was missing. A client's first commit
+    /// changes no workspace, strip, group or tab, so the chrome's
+    /// revision does not move — and the reconcile that would hand the tab
+    /// over is gated on that revision. The window stayed a card for as
+    /// long as nothing else happened to touch the tree, which on a guest
+    /// watching somebody else work is indefinitely.
+    #[test]
+    fn a_peer_s_window_takes_over_its_tab_on_the_frame_it_draws() {
+        let store = crate::compositor::foreign::store();
+        store.forget(SURFACE);
+        let (tree, strip_id, _group) = tree_with_a_peer_s_window();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let _ = host.take_structure_dirty();
+        assert_eq!(
+            showing(&mut host, strip_id),
+            "a card",
+            "precondition: the tab is holding the window's place",
+        );
+
+        // The local instance's toplevel arrives and is bound into the tab
+        // the launch was started for — `peer_windows::open_for`'s
+        // `Placement::IntoTab`, through the compositor's own adoption.
+        {
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            let bound = adopt_toplevel_at(
+                &mut tree,
+                SURFACE,
+                Some(APP.to_string()),
+                Placement::IntoTab(TAB),
+            );
+            assert_eq!(bound, TAB, "precondition: it bound into the peer's tab");
+        }
+        chrome.borrow_mut().bump();
+        let _ = host.take_structure_dirty();
+        assert_eq!(
+            showing(&mut host, strip_id),
+            "a card",
+            "a client that has drawn nothing must not take the tab: the \
+             card says what is being done and a blank frame says nothing",
+        );
+
+        // The client commits its first buffer. Nothing in the tree moved.
+        store.publish_rgba(SURFACE, &vec![0u8; 800 * 600 * 4], 800, 600);
+        let _ = host.take_structure_dirty();
+
+        assert_eq!(
+            showing(&mut host, strip_id),
+            "the window",
+            "the window has drawn, so the tab is its own; leaving the card \
+             up strands the window behind it for as long as nothing else \
+             happens to change the tree",
+        );
+        store.forget(SURFACE);
     }
 }
 
