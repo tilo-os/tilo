@@ -4723,9 +4723,10 @@ const OVERVIEW_ROW_RADIUS_PX: f64 = 10.0;
 const OVERVIEW_FACE_RADIUS_PX: f64 = 12.0;
 /// Horizontal step between overlapping faces.
 const OVERVIEW_FACE_STEP_PX: f64 = 18.0;
-/// Opacity an away member's face is drawn at. Quiet enough to read as
-/// "not here right now", strong enough to still be a face — at a third
-/// it vanished against a light ground, which lost the member entirely.
+/// How much of their own colour an away member's face keeps, the rest
+/// being the panel behind it. Quiet enough to read as "not here right
+/// now", strong enough to still be a face — at a third it vanished
+/// against a light ground and lost the member altogether.
 const OVERVIEW_FACE_AWAY_ALPHA: f32 = 0.55;
 /// Most faces drawn before the rest collapse into a "+N" disc.
 const OVERVIEW_FACES_MAX: usize = 4;
@@ -5188,6 +5189,15 @@ impl Widget for ShellOverlayHost {
             .draw(scene, content_xform, text_renderer, theme, presence);
         self.draw_real_peers(scene, transform, text_renderer, theme, presence);
 
+        // Floating sidebar wheel: above the desktop content, below every
+        // overlay — including the scrims. It used to paint after the
+        // overview, which put an undimmed disc on top of the dim while
+        // the rest of the desktop receded behind it; the wheel is part
+        // of the desktop, so it dims with the desktop.
+        if let Some(sidebar) = self.sidebar.as_mut() {
+            sidebar.draw(scene, content_xform, text_renderer, theme, presence);
+        }
+
         // Sandbox Phase 4 Task 4.2: inline permission prompt. Painted
         // as a thin bar at the top of the content viewport (just below
         // the topbar) when `chrome.pending_grants.front().is_some()`.
@@ -5255,13 +5265,6 @@ impl Widget for ShellOverlayHost {
                 self.draw_overview(scene, panel_xform, text_renderer, theme);
                 scene.pop_layer();
             }
-        }
-
-        // Floating sidebar wheel: draws above the desktop content but
-        // below overlay-stacked UI (palette / settings), and moves with
-        // the desktop rather than with any overlay.
-        if let Some(sidebar) = self.sidebar.as_mut() {
-            sidebar.draw(scene, content_xform, text_renderer, theme, presence);
         }
 
         // Workspace settings modal — concept wraps the content in
@@ -7931,6 +7934,19 @@ fn pick_group_at(candidates: &[(StripId, GroupId, Rect)], p: Point) -> Option<(S
         .map(|(s, g, _)| (*s, *g))
 }
 
+/// `a` moved `t` of the way toward `b`, opaque throughout.
+///
+/// The opaque form matters wherever something is drawn *on* the result —
+/// a monogram, an icon — because those pick their own contrast from the
+/// colour they sit on, and can only do that if it is a real colour
+/// rather than a partly-transparent one.
+fn mix_toward(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let (a, b) = (a.to_rgba8(), b.to_rgba8());
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
+    Color::from_rgb8(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
+}
+
 fn slate_900_tint(theme: &Theme, alpha: f32) -> Color {
     // `neutral[1]` is slate-900 in the dark ramp (see
     // `ui::tokens::colors::ColorRamp`). Using the theme token rather
@@ -7985,6 +8001,12 @@ impl ShellOverlayHost {
     /// Paint an overlapping stack of member faces, right-aligned at
     /// `right_x` and centred on `cy`.
     ///
+    /// `ground` is the colour actually behind the stack. The separator
+    /// ring between overlapping faces is a hole punched in the face
+    /// below, so it has to be painted in the surface the stack sits on:
+    /// ringed with anything else, the ring reads as a smudge and the
+    /// faces run together into one shape.
+    ///
     /// Presence is carried by opacity, not by omission: a member who has
     /// gone home is still someone this room admits, so they stay on the
     /// stack at reduced strength rather than disappearing and making the
@@ -7999,6 +8021,7 @@ impl ShellOverlayHost {
         cy: f64,
         people: &[crate::shell::overview::RoomPerson],
         colors_for: &std::collections::HashMap<String, (u8, u8, u8)>,
+        ground: Color,
     ) -> f64 {
         let c = &theme.tokens.colors;
         let r = OVERVIEW_FACE_RADIUS_PX;
@@ -8019,10 +8042,16 @@ impl ShellOverlayHost {
             let fill = Color::from_rgb8(cr, cg, cb);
             // Away members read as a quieter version of the same face,
             // so the stack still says who belongs here.
+            //
+            // Mixed toward the ground rather than made translucent: the
+            // monogram picks its ink from the fill it is drawn on, and a
+            // fill that is only *partly* there is not the colour the eye
+            // ends up seeing. On a light panel an alpha-reduced face left
+            // white letters on a pale disc, which was unreadable.
             let fill = if person.present {
                 fill
             } else {
-                fill.with_alpha_factor(OVERVIEW_FACE_AWAY_ALPHA)
+                mix_toward(fill, ground, 1.0 - OVERVIEW_FACE_AWAY_ALPHA)
             };
             let initial = person
                 .name
@@ -8037,7 +8066,7 @@ impl ShellOverlayHost {
                 Rect::new(cx - r, cy - r, cx + r, cy + r),
                 &initial,
                 fill,
-                c.surfaces.base,
+                ground,
                 2.0,
                 theme,
                 text_renderer,
@@ -8051,7 +8080,7 @@ impl ShellOverlayHost {
                 Rect::new(cx - r, cy - r, cx + r, cy + r),
                 overflow,
                 c.surfaces.raised,
-                c.surfaces.base,
+                ground,
                 2.0,
                 c.text_dim,
                 text_renderer,
@@ -8096,6 +8125,7 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+        let ground = slate_900_tint(theme, MODAL_SURFACE_ALPHA);
         let hover = self.last_cursor.map(|c| rect.contains(c)).unwrap_or(false);
 
         let rr = RoundedRect::from_rect(rect, OVERVIEW_ROW_RADIUS_PX);
@@ -8134,6 +8164,7 @@ impl ShellOverlayHost {
             rect.center().y,
             &card.people,
             &colors_for,
+            ground,
         );
         let text_w = (faces_left - 12.0 - x0).max(40.0);
 
@@ -8217,15 +8248,10 @@ impl ShellOverlayHost {
         // The same fill / hairline / lift as the workspace-settings modal:
         // one floating-surface language across the shell's overlays.
         let panel = self.overview_panel_rect();
+        let ground = slate_900_tint(theme, MODAL_SURFACE_ALPHA);
         ui::surface::elevation(scene, transform, panel, &tokens.elevation.e4);
         let card_rr = RoundedRect::from_rect(panel, tokens.radii.lg as f64);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            slate_900_tint(theme, MODAL_SURFACE_ALPHA),
-            None,
-            &card_rr,
-        );
+        scene.fill(Fill::NonZero, transform, ground, None, &card_rr);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
@@ -8286,6 +8312,7 @@ impl ShellOverlayHost {
                 here_rect.y0 + 22.0,
                 &card.people,
                 &colors_for,
+                ground,
             );
 
             // "You are here" states which of these rooms you are in, in
@@ -8377,14 +8404,29 @@ impl ShellOverlayHost {
             shares: Vec::new(),
         };
         let here_card = here_idx.map(|i| &cards[i]).unwrap_or(&empty_card);
+        // One vertical rule for the whole section: the glyph and both
+        // texts centre on the row's middle line. Nudged offsets per
+        // element are what left the icon riding above its own label.
+        let body_size = tokens.typography.scale.base;
+        let glyph = 14.0_f64;
+        let (_, body_h) = text_renderer.measure("Ag", body_size, None);
+        let body_top = |row_y: f64| row_y + (row_h - body_h as f64) / 2.0;
+        let glyph_rect = |row_y: f64| {
+            let cy = row_y + row_h / 2.0;
+            Rect::new(
+                content.x0,
+                cy - glyph / 2.0,
+                content.x0 + glyph,
+                cy + glyph / 2.0,
+            )
+        };
         if here_card.shares.is_empty() {
             // An honest zero-state: nothing is invented to fill the row,
             // and "nothing" is itself the answer to the question.
-            let glyph = 14.0_f64;
             ui::icons::draw_icon(
                 scene,
                 transform,
-                Rect::new(content.x0, sy + 4.0, content.x0 + glyph, sy + 4.0 + glyph),
+                glyph_rect(sy),
                 ui::icons::Icon::Shield,
                 colors.text_tertiary,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
@@ -8392,19 +8434,18 @@ impl ShellOverlayHost {
             text_renderer.draw_text(
                 scene,
                 "Nothing in this room is shared out of it",
-                tokens.typography.scale.base,
+                body_size,
                 colors.text_dim,
-                transform * Affine::translate((content.x0 + glyph + 8.0, sy + 3.0)),
+                transform * Affine::translate((content.x0 + glyph + 8.0, body_top(sy))),
                 None,
             );
         } else {
             let shown = here_card.shares.len().min(OVERVIEW_SHARES_MAX_ROWS);
             for share in here_card.shares.iter().take(shown) {
-                let glyph = 14.0_f64;
                 ui::icons::draw_icon(
                     scene,
                     transform,
-                    Rect::new(content.x0, sy + 4.0, content.x0 + glyph, sy + 4.0 + glyph),
+                    glyph_rect(sy),
                     ui::icons::Icon::ExternalLink,
                     colors.text_tertiary,
                     ui::icons::LUCIDE_DEFAULT_STROKE_PX,
@@ -8422,42 +8463,45 @@ impl ShellOverlayHost {
                     with
                 };
                 let with_size = tokens.typography.scale.sm;
-                let (with_w, _) = text_renderer.measure(&with, with_size, None);
+                let (with_w, with_h) = text_renderer.measure(&with, with_size, None);
                 text_renderer.draw_text(
                     scene,
                     &with,
                     with_size,
                     colors.text_dim,
-                    transform
-                        * Affine::translate((content.x1 - with_w as f64, sy + 5.0)),
+                    transform * Affine::translate((
+                        content.x1 - with_w as f64,
+                        sy + (row_h - with_h as f64) / 2.0,
+                    )),
                     None,
                 );
                 let what_x = content.x0 + glyph + 8.0;
                 let what_avail = (content.x1 - with_w as f64 - 12.0 - what_x).max(40.0);
-                let what = text_renderer.elide_to_width(
-                    &share.what,
-                    tokens.typography.scale.base,
-                    what_avail as f32,
-                );
+                let what =
+                    text_renderer.elide_to_width(&share.what, body_size, what_avail as f32);
                 text_renderer.draw_text(
                     scene,
                     &what,
-                    tokens.typography.scale.base,
+                    body_size,
                     colors.text_primary,
-                    transform * Affine::translate((what_x, sy + 3.0)),
+                    transform * Affine::translate((what_x, body_top(sy))),
                     None,
                 );
                 sy += row_h;
             }
             let hidden = here_card.shares.len() - shown;
             if hidden > 0 {
+                let more = format!("and {hidden} more");
+                let (_, more_h) = text_renderer.measure(&more, tokens.typography.scale.sm, None);
                 text_renderer.draw_text(
                     scene,
-                    &format!("and {hidden} more"),
+                    &more,
                     tokens.typography.scale.sm,
                     colors.text_tertiary,
-                    transform
-                        * Affine::translate((content.x0 + 22.0, sy + 5.0)),
+                    transform * Affine::translate((
+                        content.x0 + glyph + 8.0,
+                        sy + (row_h - more_h as f64) / 2.0,
+                    )),
                     None,
                 );
             }
