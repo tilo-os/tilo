@@ -2608,10 +2608,30 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        // Groups fading out are not focus candidates: the pointer keeps
+        // resolving to a closing group for the length of its fade, and
+        // lighting a corpse tells the user their keystrokes are going
+        // somewhere they are not.
+        let closing: std::collections::HashSet<GroupId> = self
+            .group_row_ptrs
+            .values()
+            .flat_map(|&ptr| {
+                // SAFETY: see field doc on `group_row_ptrs`.
+                let row: &GroupRow = unsafe { &*ptr };
+                row.groups
+                    .iter()
+                    .filter(|g| g.is_closing())
+                    .map(|g| g.id)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         // Which strip owns focus, resolved exactly the way
         // `publish_strip_viewport` resolves it — including the fallback
         // to the first strip, so a workspace whose pointer was never
-        // seeded still lights one window instead of none.
+        // seeded still lights one window instead of none. The group is
+        // resolved through `resolve_active_group`, which brings the same
+        // guarantee one level down: an unseeded strip falls back to its
+        // leftmost surviving group rather than lighting nothing.
         let focused: Option<(StripId, GroupId)> = {
             let st = chrome.borrow();
             let tree = st.tree();
@@ -2623,7 +2643,10 @@ impl ShellOverlayHost {
                         .filter(|id| ws.strips.iter().any(|s| s.id == *id))
                         .or_else(|| ws.strips.first().map(|s| s.id))
                 })
-                .and_then(|sid| tree.active_group_for(sid).map(|gid| (sid, gid)))
+                .and_then(|sid| {
+                    tree.resolve_active_group(sid, |gid| closing.contains(&gid))
+                        .map(|gid| (sid, gid))
+                })
         };
         for (&strip_id, &ptr) in self.group_row_ptrs.iter() {
             // SAFETY: see field doc on `group_row_ptrs`.
