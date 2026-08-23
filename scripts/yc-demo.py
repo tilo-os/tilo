@@ -276,8 +276,23 @@ SHIFTED_KEYS.update({
 # (`plan.rs::bullets_above`), and a run of plain paragraphs is what
 # produced a table with empty cells. The `: ` splits each line into two
 # columns (`plan.rs::split_cells`).
+#
+# The prose above the bullets disagrees with them, deliberately. "Doors
+# open at seven" against "Doors: 18:00" is a contradiction a person would
+# catch, and the sound check at 18:30 falling *after* doors is an
+# ordering that cannot happen. Both are there so the agent has something
+# to notice rather than something to reformat — and without a real
+# disagreement to point at, the model declines to raise one about half
+# the time, which is the correct behaviour and a poor beat.
+AGENT_PROSE = ("Doors open at seven and the room seats two hundred "
+               "and forty.\n")
 AGENT_BULLETS = "\n- Doors: 18:00\nSound check: 18:30\nSeating: 240\n\n"
-AGENT_INSTRUCTION = "Claude: turn the bullets into a table\n"
+# Asking for a run sheet rather than a table. A table is a shape and the
+# app has a button for it; a run sheet is a judgement about which of
+# these lines is a scheduled item, what order they belong in, and
+# whether they are consistent — which is the difference between a
+# formatting command and something worth filming.
+AGENT_INSTRUCTION = "Claude: make this a run sheet\n"
 # One cell's text, looked for in the document afterwards. If the table
 # came out empty this is gone, and the claim fails instead of passing on
 # the existence of a grid.
@@ -3241,7 +3256,7 @@ def run_the_agent(agent: Session, room: str, shots: str,
         proc = subprocess.Popen(
             [binary, "--workspace", str(room), "--name", "Claude",
              "--app", WORD_PROCESSOR,
-             "--socket", agent.collab_json_sock, "--no-model", "--once",
+             "--socket", agent.collab_json_sock, "--once",
              "--pace-ms", "250"],
             stdout=log, stderr=subprocess.STDOUT, cwd=REPO,
             preexec_fn=die_with_parent(enabled=not KEEP_SESSIONS))
@@ -4592,9 +4607,13 @@ def beat_nine(quinten: Session, xaver: Session, agent: Session,
     # letter points at. What follows is the beat that was wanted
     # instead: the agent changes the document the other two are looking
     # at, and it is read back off somebody else's screen.
-    step("quinten writes a list, and asks Claude for a table")
+    step("quinten writes the notes, and asks Claude for a run sheet")
     cut("quinten")
-    if not type_into_the_document(quinten, quinten_wp, AGENT_BULLETS):
+    # The prose first, then the bullets that contradict it. Order
+    # matters: the agent reads the page it is given, and a disagreement
+    # it can only see half of is one it cannot raise.
+    if not type_into_the_document(quinten, quinten_wp,
+                                  AGENT_PROSE + AGENT_BULLETS):
         gap("nothing could be typed into quinten's document, so there is "
             "no list for the agent to act on")
         return
