@@ -498,6 +498,32 @@ fn parse_unit(s: &str) -> f64 {
     s.trim().parse::<f64>().unwrap_or(0.5).clamp(0.0, 1.0)
 }
 
+/// Parse a title colour: `#rrggbb` / `rrggbb`, or three comma-separated
+/// `0..1` components. `None` for anything else, so a typo leaves the colour
+/// alone rather than blanking a title to black.
+fn parse_colour(s: &str) -> Option<[f64; 4]> {
+    let s = s.trim();
+    let hex = s.strip_prefix('#').unwrap_or(s);
+    if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        let v = u32::from_str_radix(hex, 16).ok()?;
+        return Some([
+            ((v >> 16) & 0xff) as f64 / 255.0,
+            ((v >> 8) & 0xff) as f64 / 255.0,
+            (v & 0xff) as f64 / 255.0,
+            1.0,
+        ]);
+    }
+    let parts: Vec<f64> = s
+        .split(',')
+        .filter_map(|p| p.trim().parse::<f64>().ok())
+        .collect();
+    match parts.len() {
+        3 => Some([parts[0], parts[1], parts[2], 1.0]),
+        4 => Some([parts[0], parts[1], parts[2], parts[3]]),
+        _ => None,
+    }
+}
+
 /// Build the resource tree the editor currently has open: the project, its
 /// tracks (top-to-bottom display order), and the clips on each track — every
 /// document-mutating operation exported as an action.
@@ -829,6 +855,34 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     },
                 ));
             }
+            // Crop, one edge at a time. The inspector offers these as four
+            // sliders; the palette takes the same fraction as a number.
+            for (id, label, edge) in [
+                ("crop-left", "Crop left edge", CropEdge::Left),
+                ("crop-right", "Crop right edge", CropEdge::Right),
+                ("crop-top", "Crop top edge", CropEdge::Top),
+                ("crop-bottom", "Crop bottom edge", CropEdge::Bottom),
+            ] {
+                let base = clip.clone();
+                cr = cr.with_action(ActionSpec::prompted(
+                    id,
+                    label,
+                    "Fraction cut off, e.g. 0.1",
+                    "0.1",
+                    ExecutionLocus::ClientLocal,
+                    move |arg: &str| {
+                        let v = parse_unit(arg);
+                        let mut next = base.clone();
+                        match edge {
+                            CropEdge::Left => next.transform.crop_left = v,
+                            CropEdge::Right => next.transform.crop_right = v,
+                            CropEdge::Top => next.transform.crop_top = v,
+                            CropEdge::Bottom => next.transform.crop_bottom = v,
+                        }
+                        encode(&upsert_clip_action(&next))
+                    },
+                ));
+            }
             if !clip.transform.is_identity() {
                 let mut flat = clip.clone();
                 flat.transform = crate::model::Transform::default();
@@ -958,6 +1012,60 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     encode(&upsert_media_action(&next))
                 },
             ));
+            // The title's colour, as `#rrggbb` or `r,g,b` in 0..1. Stored as
+            // a real value rather than a palette slot: a title's colour is
+            // authored content and has to survive a theme change.
+            let color_base = m.clone();
+            mr = mr.with_action(ActionSpec::prompted(
+                "set-title-colour",
+                "Set title colour",
+                "#ffcc00, or r,g,b in 0..1",
+                "#ffffff",
+                ExecutionLocus::ClientLocal,
+                move |arg: &str| {
+                    let mut next = color_base.clone();
+                    let mut t = next.text.clone().unwrap_or_default();
+                    if let Some(rgb) = parse_colour(arg) {
+                        t.color = rgb;
+                    }
+                    next.text = Some(t);
+                    encode(&upsert_media_action(&next))
+                },
+            ));
+            let backdrop_base = m.clone();
+            mr = mr.with_action(ActionSpec::prompted(
+                "set-title-backdrop",
+                "Set title backdrop",
+                "Opacity 0-1 of the plate behind the words",
+                "0.3",
+                ExecutionLocus::ClientLocal,
+                move |arg: &str| {
+                    let mut next = backdrop_base.clone();
+                    let mut t = next.text.clone().unwrap_or_default();
+                    t.backdrop = parse_unit(arg);
+                    next.text = Some(t);
+                    encode(&upsert_media_action(&next))
+                },
+            ));
+            for (id, bold) in [("toggle-title-bold", true), ("toggle-title-italic", false)] {
+                let base = m.clone();
+                let on = if bold { text.bold } else { text.italic };
+                let label = match (bold, on) {
+                    (true, true) => "Unset bold",
+                    (true, false) => "Set bold",
+                    (false, true) => "Unset italic",
+                    (false, false) => "Set italic",
+                };
+                let mut next = base.clone();
+                let mut t = next.text.clone().unwrap_or_default();
+                if bold {
+                    t.bold = !t.bold;
+                } else {
+                    t.italic = !t.italic;
+                }
+                next.text = Some(t);
+                mr = mr.with_action(immediate(id, label, &upsert_media_action(&next)));
+            }
         }
 
         mr = mr.with_action(ActionSpec::prompted(
@@ -999,6 +1107,15 @@ enum GeomAxis {
     PosX,
     PosY,
     Rotation,
+}
+
+/// Which edge a prompted crop action cuts.
+#[derive(Clone, Copy)]
+enum CropEdge {
+    Left,
+    Right,
+    Top,
+    Bottom,
 }
 
 /// Map a palette transition name to the stored [`Transition`], tolerant of the
