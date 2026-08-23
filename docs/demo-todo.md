@@ -1,141 +1,61 @@
-# Demo video — what is left
+# Demo video — the issue list
 
-Status read from live runs and from watched frames, not from assertions.
-Updated 2026-08-22, late.
+Every known defect between here and a finished video. Updated 2026-08-23 13:47,
+from the 13:31 recorded run plus frames read by hand.
 
-## What changed today
+**An item is done only when a frame shows it.** Code landing is not done — that
+distinction is the whole reason this file exists.
 
-Someone finally watched the recording frame by frame instead of reading the
-harness output. Six of nine beats did not show what they claimed. Three of
-those were storyboard problems rather than bugs — a beat cannot be filmed if
-it has no on-screen surface, however well it works underneath.
+## Blocking the shoot
 
-`scripts/demo-verify.py` is the tool that caught it: it locates a beat inside
-a finished video and pulls frames from that span. No cut ships again without
-it.
+| # | Issue | State |
+|---|---|---|
+| 1 | Beats 2 and 3 do not use the panel's Invite. The script opens the panel, prints a hardcoded gap claiming no Invite row exists, closes it, and invites by address — so the flow the owner asked for is never on camera | fixing |
+| 2 | Stale gap: "joining has no semantic op — the token had to be typed". Paste and Join are both addressable and work | fixing |
+| 3 | Stale gap: "the agent cannot change the shared document by address". It can; that text describes a different call | fixing |
+| 4 | A window sits 788px past the right edge, and "both windows wholly on screen" fails | fixing |
+| 5 | Every other `gap()` in the script is unaudited and may be equally stale | fixing |
 
-## Blocking the video
+## Fixed in code, not yet shown on screen
 
-**1. Beat 4 — peer cursors on the desktop.** *In progress.*
+| # | Issue |
+|---|---|
+| 6 | A session painted its own name as a peer, over its own document |
+| 7 | Placeholder read `dev.qos.file-explorer / waiting for first frame` — now a card with the app's name and a quiet indicator |
+| 8 | Windows stacked vertically instead of scrolling horizontally |
+| 9 | The roster never listed a peer who joined |
+| 10 | Invited and joined looked identical — now an empty seat that fills in place |
+| 11 | The invite card showed a 900-character base64 wall |
+| 12 | The host's roster showed `peer@…` rather than a name |
+| 13 | The Files breadcrumb exposed our own source tree |
+| 14 | Files reported "0 items" on a populated home |
+| 15 | Files rows responded ~17px above where they were drawn |
+| 16 | A `ui` app could not start a drag at all |
+| 17 | The drag chip said "Image" rather than the filename |
+| 18 | The agent adopted the file manager's document and died on a merge collision |
+| 19 | Typed capitals were silently lost on the client keycode path |
 
-Filmed, this beat is twenty-eight seconds of empty desktop.
-`RemoteCursorOverlay::new()` is called only in
-`shell/tests/remote_cursors_test.rs`; the compositor never mounts it. Presence
-does cross the network and does render *inside an app window* — the desktop
-layer simply has nothing drawing it.
+## Known, deliberately not fixed
 
-**2. Beat 6 — a replicated window must be drawn.** *In progress.*
+| # | Issue | Why |
+|---|---|---|
+| 20 | Under load a window shows "This app isn't responding", then the app appears | 10s backstop; the final shoot runs on a quiet box |
+| 21 | `execute_snapshot_*` aborts the whole test process | wgpu reads a thread-local during teardown after it is gone; pre-existing, unrelated, and it makes a full-suite green unobtainable for anyone |
+| 22 | Apps are 4.16 MB against the letter's "<2 MB" | shared toolkit landed (24.8 → 4.36 MB). The rest is spellcheck's 708 KB embedded word list and moving qdoc into the shared object |
+| 23 | A peer's *external* window shows a placeholder rather than streamed pixels | out of scope; every app in this demo is ours |
 
-The assertion passes and the screen is blank. The room document carries the
-window, the peer's own tree holds it, and the peer's compositor renders
-nothing. This one is the most dangerous of the set, because green reads as
-proof.
+## Needs the owner
 
-**3. Beat 3 — inviting an agent has no on-screen surface.** *Undecided.*
+| # | Item |
+|---|---|
+| 24 | The drag take, driven by hand. Staging is verified in dry-run. Ask only once everything above is clear |
 
-The grant is real and goes through the capability model, but it happens over
-the control socket, so nothing appears. On camera the only visible artifact is
-beat 2's leftover invite card, which a viewer will read as the agent invite.
-Either give the grant a visible affordance, or fold it into beat 2 and stop
-claiming it as a separate beat.
+## Rules learned the hard way
 
-**4. Peers need names.** *In progress.*
-
-A caret labelled `peer@5537458103208628978` does not say who is there. Names
-come from the inviter and live in the room document beside the capability
-grant — never self-declared, which would be spoofable.
-
-**5. The word processor films in German.** *Handed to the recorder.*
-
-`apps/word-processor/src/i18n.rs:88` reads `LC_ALL`/`LANGUAGE`/`LANG`, the
-host is `de_DE`, and bwrap does not clear the environment. The shell chrome
-renders English above a German toolbar. A real qOS install sets its own
-locale; this is a nested-development artifact. Fix is `LC_ALL=en_US.UTF-8` in
-the session environment.
-
-**6. Re-shoot, then watch it.** Beats 3, 4, 6, 8 and 9 all need re-shooting
-once the above land. Watching is not optional and is not the same as reading
-assertions.
-
-## Blocking the opening shot
-
-**7. OS boot footage.** *Blocked on one manual step.*
-
-`podman login code.sandbox.example` — the image cannot be pulled without it. The
-recorder (`os/dev/record-boot.py`) is proven against real firmware: 180
-frames, 12.0s. A CI image build is in flight; the missing `COPY` for
-`qos-identity.service` that had broken it for six days is fixed.
-
-## Settled
-
-- **Beat 7 converges.** Two real packaged word processors. The op-stream
-  reader was discarding every unsigned frame, including the snapshot two
-  independent documents need to find each other.
-- **Beat 9 was blocked on beat 7** — the agent's edits were real and attributed
-  but only on its own screen. Convergence should carry them; re-shoot and
-  confirm rather than assuming.
-- **Beat 5 is measured**: median 6.7s keystroke to first frame, spread
-  5.0–9.5s, on a 446 MB debug package over a loopback registry. Say "a few
-  seconds", never "instant" — a viewer can time it off the recording.
-- **Beat 8 films the file chooser, not a drag.** The launched Files is a
-  sandboxed Wayland client and neither it nor the toolkit opens a
-  `wl_data_source`, so there is no client drag to promote. The chooser is the
-  better beat regardless: the app asks, the OS chooses, the app is handed
-  bytes rather than a path it has no right to read.
-- **The fake "Ada" peer is deleted**, not gated. Any footage from before
-  2026-08-22 contains a collaborator who does not exist. Three compositor logs
-  and ~40 frames from the current cut are clean.
-- **First boot is honest** — one empty workspace, no invented people,
-  workspaces, tabs or documents.
-
-## Found while re-shooting, 2026-08-23
-
-Each of these is a fault in the product that the film happens to expose,
-not a staging problem. Numbers are measured on `target/demo/shell` at a
-1920-wide viewport.
-
-**Files shows an absolute path where it should say "Home".** The app
-resolves the directory to *open* from `QOS_USER_HOME` — the launcher sets
-it when a grant binds the real home (`crates/packaging/launcher/src/sandbox.rs:816`,
-read at `apps/file-explorer/src/model.rs:236`) — but resolves the home
-the *breadcrumb* measures against from `dirs::home_dir()`
-(`apps/file-explorer/src/files_app.rs:239`). Under a sandbox that is the
-app's own directory, `/run/qos/app`, so the trail never matches and every
-window falls back to drawing the full host path, component by component.
-The fix is for `FileExplorerWidget::new` to prefer
-`ui::sysdirs::user_home_override()` exactly as `model.rs` already does.
-Until then the demo has to pick a home path that is inoffensive when
-spelled out, which is the wrong lever.
-
-**The avatar stack cannot be clicked on an empty room.** Clicking it
-toggles the collaborators panel (`shell/src/shell/topbar_chrome.rs:1736`),
-but its rect is `Rect::ZERO` whenever the roster is empty
-(`topbar_chrome.rs:1611`) — so the affordance is missing at exactly the
-moment somebody wants to invite the first person. The local user is a
-collaborator in their own room and should be in the stack.
-
-**The collaborators panel offers no way to invite anyone.** It draws a
-header, the roster (or "No peers connected") and a "Room activity" row
-(`shell/src/shell/overlay_host.rs:10832`). Inviting and joining are only
-reachable from the palette or by address, so the panel a person opens to
-manage the room's people cannot change who is in it. An **Invite** row
-raising the existing peer-sync card, and a **Join** row raising the
-connect prompt, would make the whole flow clickable — both cards already
-work, and their buttons are already addressable (`peer_sync_copy`,
-`peer_sync_paste`, `peer_sync_join`).
-
-**Opening a second window scrolls the strip and never scrolls back.**
-With two even groups at 1920 wide the windows land at `-222 … 578` and
-`586 … 1386`: the first is cut by 222px on the left while 534px of empty
-backdrop sits on the right. The offset is fixed — narrowing the groups
-shrinks the windows and leaves the first at `-222`, and scrolling over
-the backdrop does not move it. Focusing the leftmost group does
-(`291 … 1091` and `1099 … 1899`, both whole), which is what the demo now
-does to get its shot. A strip whose content fits should show all of it
-rather than centring the newest group.
-
-## Things that must not be said
-
-- that a beat works because its assertion passed
-- "install is instant" — it is a few seconds, and measurable on camera
-- that the peer cursor in old footage is a person
+- **A stale binary invalidates a run.** Five verifications died this way, twice with an agent judging its own fix against a build that predated it. The rig now refuses to record against one.
+- **A stale *payload* is worse.** Rebuilding breaks the hardlink the registry relies on, so the old app is served silently. Copy payloads explicitly.
+- **The git index is shared.** Never `git commit` without pathspecs — it sweeps up other agents' staged work.
+- **`git add <file>` is not isolation** when two agents are inside one file. Split the diff and stage your own hunks.
+- **`TaskStop` does not stop a distrobox-routed build.** The wrapper dies; the container-side cargo keeps compiling and holding memory.
+- **A gap describing a limitation that has since been fixed is worse than no gap** — it reports a working feature as broken, and has already sent people to "fix" things that worked.
+- **Twelve times in two days the test or the claim was wrong rather than the code.** Make a check fail for the right reason before believing it passes.
