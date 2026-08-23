@@ -174,7 +174,16 @@ impl Instruction {
     /// or a call that was slow, failed, or answered outside the catalogue.
     /// It is the floor the demo cannot drop below, not the intended path.
     pub fn from_keywords(rest: &str) -> Instruction {
-        if rest.contains("table") {
+        // "run sheet" reaches `Instruction::Table` here and `"runsheet"`
+        // through the model, and the difference between the two is the
+        // point rather than a wrinkle. The model drafts the rows and can
+        // say something about them; this turns the bullets above into a
+        // table and no more. Asking for a run sheet in as many words was
+        // previously `Unknown` on this path, so with no model reachable
+        // the agent's answer to the one instruction it is ever given was
+        // that it did not understand it — a floor the demo drops
+        // through, which is what this vocabulary exists to prevent.
+        if rest.contains("table") || rest.contains("run sheet") || rest.contains("runsheet") {
             Instruction::Table
         } else if rest.contains("caption") {
             Instruction::Caption
@@ -814,6 +823,30 @@ mod tests {
         assert_eq!(
             Instruction::addressed("Scribe:", "Scribe"),
             Some(String::new())
+        );
+    }
+
+    #[test]
+    fn a_run_sheet_is_understood_without_a_model() {
+        // The keyword vocabulary is what answers when no model is
+        // reachable, and asking for a run sheet in those words used to
+        // land in `Unknown` — so the agent's reply to the only
+        // instruction it is ever given was that it did not understand
+        // it. Spelt both ways, because people write it both ways.
+        assert_eq!(
+            Instruction::parse("Scribe: make this a run sheet", "Scribe"),
+            Some(Instruction::Table)
+        );
+        assert_eq!(
+            Instruction::parse("Scribe: build a runsheet from these", "Scribe"),
+            Some(Instruction::Table)
+        );
+        // And the floor still has one: an instruction it genuinely has
+        // no answer for is still reported as such rather than quietly
+        // turned into the nearest thing it can do.
+        assert_eq!(
+            Instruction::parse("Scribe: book the venue", "Scribe"),
+            Some(Instruction::Unknown("book the venue".into()))
         );
     }
 
