@@ -31,6 +31,10 @@
 pub mod a11y;
 pub mod a11y_tree;
 pub mod accesskit_bridge;
+/// The AccessKit types the bridge and [`headless::Driver`] hand back, re-exported
+/// so an app crate can name them (`ui::accesskit::Role`) without taking its own
+/// dependency on a version that must match this one exactly.
+pub use accesskit;
 pub mod screen_reader;
 pub mod action_host;
 pub mod action_palette;

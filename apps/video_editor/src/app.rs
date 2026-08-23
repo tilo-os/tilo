@@ -28,6 +28,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::a11y::{AccessNode, AccessState, Role};
 use ui::widget::{
     ContextMenu, EditOutcome, EditableLabel, FlapState, MenuItem, SplitLayout, Widget,
 };
@@ -182,6 +183,69 @@ enum TransportAction {
     PlayPause,
     StepFwd,
     ToEnd,
+}
+
+/// One of the editor's four keyboard/reader panes.
+///
+/// The editor paints itself, so it has no child widgets for the host's focus
+/// walk to visit: without a pane cursor of its own the whole application is a
+/// single Tab stop, and a keyboard-only user can scrub the playhead and do
+/// nothing else. Tab moves between panes, arrows move within the focused one,
+/// and the element the cursor is on is exported as the accessibility tree's
+/// active descendant, so a screen reader lands on the clip rather than on "the
+/// video editor".
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum Pane {
+    /// The media bin's rows.
+    Bin,
+    /// The five transport buttons.
+    Transport,
+    /// Tracks and the clips on them.
+    #[default]
+    Timeline,
+    /// The inspector's section headers and controls.
+    Inspector,
+}
+
+impl Pane {
+    /// Tab order, left to right and top to bottom as the panes are painted.
+    const ORDER: [Pane; 4] = [Pane::Bin, Pane::Transport, Pane::Timeline, Pane::Inspector];
+
+    fn label(self) -> &'static str {
+        match self {
+            Pane::Bin => "Media bin",
+            Pane::Transport => "Transport",
+            Pane::Timeline => "Timeline",
+            Pane::Inspector => "Inspector",
+        }
+    }
+
+    /// The key an accessibility node uses for this pane's group. Stable across
+    /// repaints because it is derived from the pane, not from its position.
+    fn key(self) -> u64 {
+        ui::a11y::hash_key(&self.label())
+    }
+
+    fn step(self, back: bool) -> Pane {
+        let i = Self::ORDER.iter().position(|p| *p == self).unwrap_or(0);
+        let n = Self::ORDER.len();
+        Self::ORDER[if back { (i + n - 1) % n } else { (i + 1) % n }]
+    }
+}
+
+/// Where the keyboard is inside each pane.
+///
+/// One cursor per pane rather than one global index, so Tab away and back
+/// returns you where you were — the behaviour every pane-based editor has and
+/// the only one that makes Tab usable for navigation rather than a reset.
+/// The timeline's cursor is the clip selection itself (there is no second
+/// notion of "the current clip"), so it is not stored here.
+#[derive(Clone, Copy, Debug, Default)]
+struct PaneCursor {
+    pane: Pane,
+    bin: usize,
+    transport: usize,
+    inspector: usize,
 }
 
 /// A collapsible block of inspector controls.
@@ -785,6 +849,20 @@ pub struct VideoEditorApp {
     /// any means.
     bin_scroll: f64,
     /// Representative (or, under decode, real) thumbnail frames per source.
+    /// Which pane the keyboard is in, and where inside each one. Drives both
+    /// arrow navigation and the accessibility tree's active descendant.
+    focus: PaneCursor,
+    /// Whether the host has given this widget keyboard focus. The exported
+    /// tree only nominates an active descendant while it has — an unfocused
+    /// widget must not move a screen reader's cursor.
+    has_focus: bool,
+    /// Whether the keyboard-shortcut sheet is open. ~15 shortcuts exist and
+    /// none of them were written down anywhere in the product; a sheet is also
+    /// the only way a reader user learns the editor has shortcuts at all.
+    show_help: bool,
+    /// An in-progress timecode entry, or `None`. Typing a timecode and
+    /// pressing Enter jumps the playhead there.
+    goto_entry: Option<String>,
     thumbnails: crate::thumbnail::ThumbnailCache,
     /// Real audio waveform peaks per source, computed off-thread and cached.
     waveforms: crate::waveform::WaveformCache,
@@ -922,6 +1000,10 @@ impl VideoEditorApp {
             file_hovering: false,
             inspector_scroll: 0.0,
             bin_scroll: 0.0,
+            focus: PaneCursor::default(),
+            has_focus: false,
+            show_help: false,
+            goto_entry: None,
             thumbnails: crate::thumbnail::ThumbnailCache::new(),
             waveforms: crate::waveform::WaveformCache::new(),
             warm_waveforms_sync: false,
@@ -4753,6 +4835,157 @@ impl Widget for VideoEditorApp {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.has_focus = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.has_focus
+    }
+
+    /// The export dialog traps the keyboard while it is open.
+    ///
+    /// Without this, Tab out of a modal walks the content behind it — the user
+    /// is editing a dialog they can no longer see, and a screen reader reads a
+    /// pane the dimming scrim says is unavailable.
+    fn traps_focus(&self) -> bool {
+        self.show_export
+    }
+
+    /// The widgets this editor mounts inside itself. They paint and take
+    /// events already; exposing them here is what puts them in the
+    /// accessibility tree and the host's hit-testing, so an open context menu
+    /// or an in-flight rename is something a reader can find rather than an
+    /// invisible mode.
+    fn children(&self) -> Vec<&dyn Widget> {
+        let mut v: Vec<&dyn Widget> = Vec::new();
+        if self.bin_menu.is_open() {
+            v.push(&self.bin_menu);
+        }
+        if let Some((_, label)) = &self.bin_rename {
+            v.push(label);
+        }
+        if let Some((_, label)) = &self.title_edit {
+            v.push(label);
+        }
+        if let Some((_, label)) = &self.marker_rename {
+            v.push(label);
+        }
+        v
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let mut v: Vec<&mut (dyn Widget + '_)> = Vec::new();
+        if self.bin_menu.is_open() {
+            v.push(&mut self.bin_menu);
+        }
+        if let Some((_, label)) = &mut self.bin_rename {
+            v.push(label);
+        }
+        if let Some((_, label)) = &mut self.title_edit {
+            v.push(label);
+        }
+        if let Some((_, label)) = &mut self.marker_rename {
+            v.push(label);
+        }
+        v
+    }
+
+    /// The whole editor's semantics: an application region whose contents are
+    /// entirely synthetic, because the editor paints its own panes rather than
+    /// composing child widgets.
+    ///
+    /// Every pane, track, clip, control and toggle is described here. The
+    /// element the pane cursor is on carries `focused`, which the export layer
+    /// turns into the tree's active descendant — so a reader lands on the clip
+    /// the user is on rather than on "video editor, canvas".
+    fn accessibility(&self) -> Option<AccessNode> {
+        let mut kids = vec![
+            self.a11y_bin(),
+            self.a11y_transport(),
+            self.a11y_timeline(),
+            self.a11y_inspector(),
+        ];
+        if self.show_export {
+            kids.push(self.a11y_export_dialog());
+        }
+        if self.show_help {
+            kids.push(self.a11y_help_sheet());
+        }
+        Some(
+            AccessNode::new(Role::Canvas)
+                .with_name("Video editor")
+                .with_value(format!(
+                    "{}, {} in {} pane",
+                    self.project.name,
+                    crate::timecode::timecode(self.playhead, self.project.fps),
+                    self.focus.pane.label()
+                ))
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.has_focus,
+                    ..Default::default()
+                })
+                .with_children(kids),
+        )
+    }
+
+    /// Route an assistive technology's action to the element it named.
+    ///
+    /// `key_path` is the chain of keys from this widget down: `[pane]` for a
+    /// pane, `[pane, item]` for a bin row / transport button / track, and
+    /// `[timeline, track, clip]` for a clip. Keys are identity hashes, so a
+    /// path resolves to the same clip after it has been dragged somewhere else
+    /// — and a path naming something that no longer exists matches nothing and
+    /// is dropped rather than applied to whatever took its place.
+    fn perform_action_at(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use ui::a11y::{hash_key, Action};
+        let Some(&pane_key) = key_path.first() else {
+            return false;
+        };
+        let Some(pane) = Pane::ORDER.iter().copied().find(|p| p.key() == pane_key) else {
+            // Not a pane: the export dialog or the help sheet.
+            if pane_key == hash_key(&"export") {
+                return self.a11y_export_action(action, &key_path[1..]);
+            }
+            if pane_key == hash_key(&"help") {
+                if matches!(action, Action::Activate) {
+                    self.show_help = false;
+                    return true;
+                }
+            }
+            return false;
+        };
+        let rest = &key_path[1..];
+        // Focusing anything inside a pane also moves the pane cursor there, so
+        // the keyboard and the reader stay on the same element.
+        match pane {
+            Pane::Bin => self.a11y_bin_action(action, rest, state),
+            Pane::Transport => self.a11y_transport_action(action, rest),
+            Pane::Timeline => self.a11y_timeline_action(action, rest, state),
+            Pane::Inspector => self.a11y_inspector_action(action, rest, state),
+        }
+    }
+
+    /// The label an icon-only control shows on hover — the same words its
+    /// accessible name uses, so the tooltip and the reader never disagree.
+    ///
+    /// The editor is one widget, so the host asks it once and it answers for
+    /// whatever the pointer is actually over.
+    fn tooltip(&self) -> Option<&str> {
+        self.tooltip_at(self.last_mouse)
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -4768,6 +5001,766 @@ impl Widget for VideoEditorApp {
     ) {
         self.draw(scene, transform, tr, theme, presence);
     }
+}
+
+// ==========================================================================
+// Accessibility
+// ==========================================================================
+
+/// Which transport button each index addresses, with the name a reader speaks.
+///
+/// The glyphs alone do not carry the meaning — two of the five pairs were once
+/// drawn near-identically — so the name is the control's real label, not a
+/// decoration on top of a picture that already says it.
+const TRANSPORT_NAMES: [(TransportAction, &str); 5] = [
+    (TransportAction::ToStart, "Jump to start"),
+    (TransportAction::StepBack, "Step back one frame"),
+    (TransportAction::PlayPause, "Play"),
+    (TransportAction::StepFwd, "Step forward one frame"),
+    (TransportAction::ToEnd, "Jump to end"),
+];
+
+impl VideoEditorApp {
+    /// The media rows the bin currently lists, in painted order.
+    fn a11y_bin_items(&self) -> Vec<MediaId> {
+        self.project.media.iter().map(|m| m.id).collect()
+    }
+
+    /// The inspector rows the keyboard can land on, in painted order: every
+    /// section header (so a folded one can be opened without a mouse) followed
+    /// by that section's controls when it is open.
+    fn a11y_inspector_rows(&self) -> Vec<InspectorRow> {
+        let mut out = Vec::new();
+        let clip = self.selected().and_then(|id| self.project.clip(id)).cloned();
+        for section in self.a11y_sections(clip.as_ref()) {
+            out.push(InspectorRow::Header(section));
+            if self.collapsed.contains(&section) {
+                continue;
+            }
+            for f in Self::a11y_section_fields(section, clip.as_ref()) {
+                out.push(InspectorRow::Field(f));
+            }
+        }
+        out
+    }
+
+    /// Which sections the inspector shows for the current selection. Title is
+    /// only meaningful for a title clip; Markers belong to the project and are
+    /// listed whether or not a clip is selected.
+    fn a11y_sections(&self, clip: Option<&Clip>) -> Vec<Section> {
+        let Some(clip) = clip else {
+            return vec![Section::Markers];
+        };
+        let media = self.project.media(clip.media);
+        let is_title = media.map(|m| m.text.is_some()).unwrap_or(false);
+        let mut v = vec![Section::Transform, Section::Speed];
+        if is_title {
+            v.push(Section::Title);
+        }
+        v.push(Section::Effects);
+        v.push(Section::Markers);
+        v
+    }
+
+    /// The numeric knobs inside a section, in painted order.
+    fn a11y_section_fields(section: Section, clip: Option<&Clip>) -> Vec<NumField> {
+        if clip.is_none() {
+            return Vec::new();
+        }
+        match section {
+            Section::Transform => vec![
+                NumField::ScaleX,
+                NumField::ScaleY,
+                NumField::PosX,
+                NumField::PosY,
+                NumField::Rotation,
+                NumField::CropLeft,
+                NumField::CropRight,
+                NumField::CropTop,
+                NumField::CropBottom,
+            ],
+            Section::Speed => vec![NumField::Speed],
+            Section::Title => vec![NumField::TitleSize, NumField::TitleBackdrop],
+            Section::Effects | Section::Markers => Vec::new(),
+        }
+    }
+
+    /// A clip's accessible name: the media it places, so the reader says
+    /// "Interview" rather than a UUID the user has never seen.
+    fn a11y_clip_name(&self, clip: &Clip) -> String {
+        self.project
+            .media(clip.media)
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| "Missing media".into())
+    }
+
+    /// What a reader says about a clip beyond its name: where it sits, how long
+    /// it runs, and which track it is on. Everything the eye reads off the bar's
+    /// position and width, in words.
+    fn a11y_clip_value(&self, clip: &Clip) -> String {
+        let fps = self.project.fps;
+        let len = (clip.out_point - clip.in_point).max(0.0);
+        let track = self
+            .project
+            .track(clip.track)
+            .map(|t| t.name.clone())
+            .unwrap_or_else(|| "track".into());
+        format!(
+            "{} to {}, {} long, on {track}",
+            crate::timecode::timecode(clip.start, fps),
+            crate::timecode::timecode(clip.start + len, fps),
+            crate::timecode::clock(len),
+        )
+    }
+
+    /// Build one pane's group node, marking it focused when the keyboard is in
+    /// it so the export layer can nominate an active descendant inside.
+    fn a11y_pane(&self, pane: Pane, children: Vec<AccessNode>) -> AccessNode {
+        AccessNode::new(Role::Group)
+            .with_name(pane.label())
+            .with_key(pane.key())
+            .with_children(children)
+    }
+
+    /// The media bin's rows.
+    fn a11y_bin(&self) -> AccessNode {
+        let items = self.a11y_bin_items();
+        let n = items.len();
+        let cursor = self.focus.pane == Pane::Bin;
+        let rows: Vec<AccessNode> = items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, mid)| {
+                let m = self.project.media(*mid)?;
+                let projected = self.projected_media.contains(mid);
+                let mut value = format!("{}, {}", m.kind.label(), crate::timecode::clock(m.duration));
+                if projected {
+                    // A source whose bytes are not here yet is a real, visible
+                    // state; saying so is the difference between "empty" and
+                    // "not fetched".
+                    value.push_str(", not downloaded yet");
+                }
+                Some(
+                    AccessNode::new(Role::ListItem)
+                        .with_name(m.name.clone())
+                        .with_value(value)
+                        // Identity-keyed: a bin row keeps its node across a
+                        // rename, a re-sort, or another import landing above it.
+                        .with_hashed_key(m.id)
+                        .with_position(i + 1, n)
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: cursor && self.focus.bin == i,
+                            selected: self.selected_media == Some(*mid),
+                            ..Default::default()
+                        }),
+                )
+            })
+            .collect();
+        if rows.is_empty() {
+            return self.a11y_pane(
+                Pane::Bin,
+                vec![AccessNode::new(Role::StaticText)
+                    .with_name("No media yet. Press Ctrl+O to import, or drop files anywhere in the window.")
+                    .with_key(0)],
+            );
+        }
+        self.a11y_pane(Pane::Bin, rows)
+    }
+
+    /// The five transport buttons, named.
+    fn a11y_transport(&self) -> AccessNode {
+        let cursor = self.focus.pane == Pane::Transport;
+        let buttons: Vec<AccessNode> = TRANSPORT_NAMES
+            .iter()
+            .enumerate()
+            .map(|(i, (action, name))| {
+                // The play button is the one whose name changes with state; a
+                // reader must hear what pressing it will do now.
+                let name = if *action == TransportAction::PlayPause && self.playing {
+                    "Pause"
+                } else {
+                    name
+                };
+                AccessNode::new(Role::Button)
+                    .with_name(name)
+                    .with_key(ui::a11y::hash_key(&i))
+                    .with_position(i + 1, TRANSPORT_NAMES.len())
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: cursor && self.focus.transport == i,
+                        ..Default::default()
+                    })
+            })
+            .collect();
+        let mut node = self.a11y_pane(Pane::Transport, buttons);
+        // The playhead is a live readout: it changes without focus moving, so
+        // it rides on the pane as a value the reader can re-read on demand.
+        node = node.with_value(crate::timecode::timecode(self.playhead, self.project.fps));
+        node
+    }
+
+    /// Tracks as containers, clips as the items inside them, plus each track's
+    /// mute / solo / lock toggles.
+    fn a11y_timeline(&self) -> AccessNode {
+        let cursor = self.focus.pane == Pane::Timeline;
+        let primary = self.selection.primary();
+        let mut tracks: Vec<AccessNode> = Vec::new();
+        let track_count = self.project.tracks.len();
+        for (ti, track) in self.project.tracks.iter().enumerate() {
+            let mut kids: Vec<AccessNode> = Vec::new();
+            for (name, on) in [
+                ("Mute", track.muted),
+                ("Solo", track.solo),
+                ("Lock", track.locked),
+            ] {
+                kids.push(
+                    AccessNode::new(Role::ToggleButton)
+                        .with_name(format!("{name} {}", track.name))
+                        .with_hashed_key((track.id, name))
+                        .with_state(AccessState {
+                            focusable: true,
+                            checked: Some(on),
+                            ..Default::default()
+                        }),
+                );
+            }
+            let clips = self.project.clips_on(track.id);
+            let n = clips.len();
+            for (i, clip) in clips.iter().enumerate() {
+                kids.push(
+                    AccessNode::new(Role::ListItem)
+                        .with_name(self.a11y_clip_name(clip))
+                        .with_value(self.a11y_clip_value(clip))
+                        // Identity-keyed: a clip dragged along its track, or to
+                        // another track, keeps the node an AT is holding.
+                        .with_hashed_key(clip.id)
+                        .with_position(i + 1, n)
+                        .with_state(AccessState {
+                            focusable: true,
+                            selected: self.selection.contains(clip.id),
+                            focused: cursor && primary == Some(clip.id),
+                            ..Default::default()
+                        }),
+                );
+            }
+            tracks.push(
+                AccessNode::new(Role::Group)
+                    .with_name(track.name.clone())
+                    .with_value(format!(
+                        "{} track, {} clip{}",
+                        match track.kind {
+                            TrackKind::Video => "video",
+                            TrackKind::Audio => "audio",
+                        },
+                        n,
+                        if n == 1 { "" } else { "s" }
+                    ))
+                    .with_hashed_key(track.id)
+                    .with_position(ti + 1, track_count)
+                    .with_children(kids),
+            );
+        }
+        if tracks.is_empty() {
+            tracks.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name("Timeline is empty. Add media from the bin to start editing.")
+                    .with_key(0),
+            );
+        }
+        let mut node = self.a11y_pane(Pane::Timeline, tracks);
+        node = node.with_value(format!(
+            "playhead at {}, {} of {} clips selected",
+            crate::timecode::timecode(self.playhead, self.project.fps),
+            self.selection.len(),
+            self.project.clips.len()
+        ));
+        node
+    }
+
+    /// The inspector: one group per section carrying its folded state, with the
+    /// section's controls inside when it is open. A folded header still states
+    /// what it contains, so folding hides controls and never hides state.
+    fn a11y_inspector(&self) -> AccessNode {
+        let cursor = self.focus.pane == Pane::Inspector;
+        let rows = self.a11y_inspector_rows();
+        let clip = self.selected().and_then(|id| self.project.clip(id)).cloned();
+        if clip.is_none() && self.project.clips.is_empty() {
+            return self.a11y_pane(
+                Pane::Inspector,
+                vec![AccessNode::new(Role::StaticText)
+                    .with_name("Nothing selected. Select a clip on the timeline to edit it.")
+                    .with_key(0)],
+            );
+        }
+        // Rows are a flat painted list but a nested tree: walk it once, opening
+        // a group at each header and dropping the controls into it.
+        let mut groups: Vec<AccessNode> = Vec::new();
+        let mut current: Option<(Section, Vec<AccessNode>)> = None;
+        for (i, row) in rows.iter().enumerate() {
+            let focused = cursor && self.focus.inspector == i;
+            match row {
+                InspectorRow::Header(section) => {
+                    if let Some((sec, kids)) = current.take() {
+                        groups.push(self.a11y_section_node(sec, kids, false));
+                    }
+                    current = Some((*section, Vec::new()));
+                    if let Some((_, kids)) = current.as_mut() {
+                        // The header itself is the focus stop that folds and
+                        // unfolds; it lives on the group as its own state, and
+                        // the group carries `focused` for the cursor.
+                        let _ = kids;
+                    }
+                    if focused {
+                        groups.push(AccessNode::new(Role::Unknown).with_key(u64::MAX)); // placeholder, replaced below
+                        groups.pop();
+                    }
+                }
+                InspectorRow::Field(f) => {
+                    let value = self.num_value(*f);
+                    let node = AccessNode::new(Role::Slider)
+                        .with_name(f.label())
+                        .with_optional_value(value.map(|v| f.readout(v)))
+                        .with_hashed_key(f.label())
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused,
+                            ..Default::default()
+                        });
+                    if let Some((_, kids)) = current.as_mut() {
+                        kids.push(node);
+                    } else {
+                        groups.push(node);
+                    }
+                }
+            }
+        }
+        if let Some((sec, kids)) = current.take() {
+            groups.push(self.a11y_section_node(sec, kids, false));
+        }
+        // Re-mark the focused header now that every group exists: a header's
+        // focus lives on its group node.
+        if cursor {
+            if let Some(InspectorRow::Header(target)) = rows.get(self.focus.inspector) {
+                for g in groups.iter_mut() {
+                    if g.key == Some(ui::a11y::hash_key(&target.label())) {
+                        g.state.focused = true;
+                    }
+                }
+            }
+        }
+        self.a11y_pane(Pane::Inspector, groups)
+    }
+
+    /// One inspector section, carrying whether it is folded and — when it is —
+    /// a summary of what is inside, so a reader never has to unfold a section
+    /// to learn its state.
+    fn a11y_section_node(&self, section: Section, kids: Vec<AccessNode>, focused: bool) -> AccessNode {
+        let folded = self.collapsed.contains(&section);
+        AccessNode::new(Role::Group)
+            .with_name(section.label())
+            .with_optional_value(folded.then(|| self.a11y_section_summary(section)))
+            .with_hashed_key(section.label())
+            .with_state(AccessState {
+                focusable: true,
+                focused,
+                expanded: Some(!folded),
+                ..Default::default()
+            })
+            .with_children(kids)
+    }
+
+    /// What a folded section says about itself.
+    fn a11y_section_summary(&self, section: Section) -> String {
+        let clip = self.selected().and_then(|id| self.project.clip(id));
+        match (section, clip) {
+            (Section::Transform, Some(c)) => format!(
+                "scale {:.2}×, position {:+.2}, {:+.2}, rotation {:.0}°",
+                c.transform.scale_x, c.transform.pos_x, c.transform.pos_y, c.transform.rotation
+            ),
+            (Section::Speed, Some(c)) => c.speed.label(),
+            (Section::Effects, Some(c)) => {
+                let n = c.effects.len();
+                format!("{n} effect{}", if n == 1 { "" } else { "s" })
+            }
+            (Section::Markers, _) => {
+                let n = self.project.markers.len();
+                format!("{n} marker{}", if n == 1 { "" } else { "s" })
+            }
+            (Section::Title, Some(_)) => "title properties".into(),
+            _ => "collapsed".into(),
+        }
+    }
+
+    /// The export dialog as a real dialog: modal, named, and reporting its own
+    /// progress. It traps focus while open (see `Widget::traps_focus`).
+    fn a11y_export_dialog(&self) -> AccessNode {
+        let mut kids = vec![
+            AccessNode::new(Role::StaticText)
+                .with_name("Destination")
+                .with_value(format!(
+                    "{}, {}",
+                    self.export.resolution.label(),
+                    self.export.container.label()
+                ))
+                .with_key(0),
+            AccessNode::new(Role::Button)
+                .with_name("Start export")
+                .with_key(1)
+                .with_state(AccessState {
+                    focusable: true,
+                    disabled: !self.export_is_offered(),
+                    ..Default::default()
+                }),
+            AccessNode::new(Role::Button)
+                .with_name("Close export")
+                .with_key(2)
+                .with_state(AccessState { focusable: true, ..Default::default() }),
+        ];
+        if let ExportStatus::Rendering { progress } = self.export_status {
+            kids.push(
+                AccessNode::new(Role::ProgressBar)
+                    .with_name("Export progress")
+                    .with_value(format!("{}%", (progress * 100.0).round() as i32))
+                    .with_key(3)
+                    // A render's progress changes with no focus movement, so it
+                    // must announce itself or the user is left guessing.
+                    .with_live(ui::a11y::Politeness::Polite)
+                    .with_state(AccessState { busy: true, ..Default::default() }),
+            );
+        }
+        AccessNode::new(Role::Dialog)
+            .with_name("Export video")
+            .with_key(ui::a11y::hash_key(&"export"))
+            .with_state(AccessState { modal: true, ..Default::default() })
+            .with_children(kids)
+    }
+}
+
+/// The keyboard shortcuts the editor answers to, grouped as the sheet shows
+/// them. Fifteen shortcuts existed and none of them were written down anywhere
+/// in the product; a sheet is also how a reader user learns they exist at all,
+/// which is why it is an accessibility affordance and not just a convenience.
+const SHORTCUTS: [(&str, &[(&str, &str)]); 4] = [
+    (
+        "Playback",
+        &[
+            ("Space", "Play / pause"),
+            ("J / K / L", "Shuttle back, stop, forward"),
+            ("Home / End", "Jump to start / end"),
+            (", / .", "Previous / next marker"),
+            ("G", "Go to timecode"),
+        ],
+    ),
+    (
+        "Editing",
+        &[
+            ("I / O", "Set in / out point at playhead"),
+            ("S", "Split at playhead"),
+            ("M", "Add marker"),
+            ("T", "Add title"),
+            ("Delete", "Delete selected (Shift: ripple)"),
+            ("Arrows", "Nudge selection, or step playhead"),
+        ],
+    ),
+    (
+        "Clipboard",
+        &[
+            ("Ctrl+X / C / V", "Cut, copy, paste"),
+            ("Ctrl+D", "Duplicate selection"),
+            ("Ctrl+A", "Select all clips"),
+            ("Ctrl+Z", "Undo"),
+        ],
+    ),
+    (
+        "View",
+        &[
+            ("Tab", "Next pane (Shift+Tab: previous)"),
+            ("Z", "Zoom to fit"),
+            ("+ / -", "Zoom in / out"),
+            ("B", "Toggle media bin"),
+            ("Ctrl+I", "Toggle inspector"),
+            ("Ctrl+E / Ctrl+O", "Export / import"),
+            ("?", "This sheet"),
+        ],
+    ),
+];
+
+impl VideoEditorApp {
+    /// The shortcut sheet as accessible content — every binding readable in
+    /// order, so the sheet is as useful to a reader as it is to the eye.
+    fn a11y_help_sheet(&self) -> AccessNode {
+        let mut kids: Vec<AccessNode> = Vec::new();
+        let mut key = 0u64;
+        for (group, rows) in SHORTCUTS {
+            kids.push(
+                AccessNode::new(Role::Heading { level: 2 })
+                    .with_name(group)
+                    .with_key(key),
+            );
+            key += 1;
+            for (combo, what) in rows {
+                kids.push(
+                    AccessNode::new(Role::StaticText)
+                        .with_name(*what)
+                        .with_value(*combo)
+                        .with_key(key),
+                );
+                key += 1;
+            }
+        }
+        kids.push(
+            AccessNode::new(Role::Button)
+                .with_name("Close shortcuts")
+                .with_key(key)
+                .with_state(AccessState { focusable: true, ..Default::default() }),
+        );
+        AccessNode::new(Role::Dialog)
+            .with_name("Keyboard shortcuts")
+            .with_key(ui::a11y::hash_key(&"help"))
+            .with_state(AccessState { modal: true, ..Default::default() })
+            .with_children(kids)
+    }
+
+    /// The hover label for whatever icon-only control sits under `p`, or
+    /// `None` over anything that already carries its own words.
+    fn tooltip_at(&self, p: Point) -> Option<&'static str> {
+        let r = self.regions();
+        for (action, rect) in self.transport_buttons(&r) {
+            if rect.contains(p) {
+                return Some(match action {
+                    TransportAction::ToStart => "Jump to start",
+                    TransportAction::StepBack => "Step back one frame",
+                    TransportAction::PlayPause => {
+                        if self.playing { "Pause" } else { "Play" }
+                    }
+                    TransportAction::StepFwd => "Step forward one frame",
+                    TransportAction::ToEnd => "Jump to end",
+                });
+            }
+        }
+        if r.export_btn.contains(p) {
+            return Some("Export video (Ctrl+E)");
+        }
+        if r.import_btn.contains(p) {
+            return Some("Import media (Ctrl+O)");
+        }
+        if r.split_btn.contains(p) {
+            return Some("Split at playhead (S)");
+        }
+        if r.menu_btn.area() > 0.0 && r.menu_btn.contains(p) {
+            return Some("Toggle media bin (B)");
+        }
+        if r.inspector_btn.area() > 0.0 && r.inspector_btn.contains(p) {
+            return Some("Toggle inspector (Ctrl+I)");
+        }
+        None
+    }
+
+    // ---- routed accessibility actions ------------------------------------
+
+    fn a11y_bin_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        rest: &[u64],
+        state: &mut AutoCommit,
+    ) -> bool {
+        use ui::a11y::{hash_key, Action};
+        let Some(&key) = rest.first() else { return false };
+        let items = self.a11y_bin_items();
+        // A row an AT is holding can be gone; match nothing rather than acting
+        // on whichever import now occupies that slot.
+        let Some(i) = items.iter().position(|m| hash_key(m) == key) else {
+            return false;
+        };
+        self.focus.pane = Pane::Bin;
+        self.focus.bin = i;
+        match action {
+            Action::Focus => {
+                self.selected_media = Some(items[i]);
+                true
+            }
+            Action::Activate => {
+                self.selected_media = Some(items[i]);
+                self.add_media_to_timeline(state, items[i]);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn a11y_transport_action(&mut self, action: &ui::a11y::Action, rest: &[u64]) -> bool {
+        use ui::a11y::{hash_key, Action};
+        let Some(&key) = rest.first() else { return false };
+        let Some(i) = (0..TRANSPORT_NAMES.len()).find(|i| hash_key(i) == key) else {
+            return false;
+        };
+        self.focus.pane = Pane::Transport;
+        self.focus.transport = i;
+        match action {
+            Action::Focus => true,
+            Action::Activate => {
+                self.transport_action(TRANSPORT_NAMES[i].0);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn a11y_timeline_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        rest: &[u64],
+        state: &mut AutoCommit,
+    ) -> bool {
+        use ui::a11y::{hash_key, Action};
+        let Some(&track_key) = rest.first() else { return false };
+        let Some(track) = self.project.tracks.iter().find(|t| hash_key(&t.id) == track_key) else {
+            return false;
+        };
+        let tid = track.id;
+        self.focus.pane = Pane::Timeline;
+        let Some(&child_key) = rest.get(1) else {
+            // The track itself: focus is all a container affords.
+            return matches!(action, Action::Focus);
+        };
+        // A track's own toggles come first, then its clips.
+        for name in ["Mute", "Solo", "Lock"] {
+            if hash_key(&(tid, name)) == child_key {
+                return match action {
+                    Action::Focus => true,
+                    Action::Activate | Action::ToggleCheck => {
+                        match name {
+                            "Mute" => self.toggle_track_mute(state, tid),
+                            "Solo" => self.toggle_track_solo(state, tid),
+                            _ => self.toggle_track_lock(state, tid),
+                        }
+                        true
+                    }
+                    _ => false,
+                };
+            }
+        }
+        let Some(clip) = self
+            .project
+            .clips_on(tid)
+            .into_iter()
+            .find(|c| hash_key(&c.id) == child_key)
+            .map(|c| c.id)
+        else {
+            return false;
+        };
+        match action {
+            Action::Focus => {
+                self.selection.set_primary(clip);
+                true
+            }
+            Action::Activate => {
+                // Activating a clip selects it alone and parks the playhead at
+                // its head — what double-clicking it does.
+                self.selection.select_only(clip);
+                if let Some(c) = self.project.clip(clip) {
+                    self.playhead = c.start;
+                    self.chase_playhead = true;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn a11y_inspector_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        rest: &[u64],
+        doc: &mut AutoCommit,
+    ) -> bool {
+        use ui::a11y::{hash_key, Action};
+        let Some(&section_key) = rest.first() else { return false };
+        self.focus.pane = Pane::Inspector;
+        let rows = self.a11y_inspector_rows();
+        // A control lives inside its section, so its path is
+        // `[inspector, section, control]`; the section header itself is one
+        // level shorter. Address whichever the path actually names.
+        let key = rest.get(1).copied().unwrap_or(section_key);
+        for (i, row) in rows.iter().enumerate() {
+            match row {
+                InspectorRow::Header(sec)
+                    if rest.len() == 1 && hash_key(&sec.label()) == key =>
+                {
+                    self.focus.inspector = i;
+                    return match action {
+                        Action::Focus => true,
+                        Action::Activate | Action::Expand | Action::Collapse => {
+                            if self.collapsed.contains(sec) {
+                                self.collapsed.remove(sec);
+                            } else {
+                                self.collapsed.insert(*sec);
+                            }
+                            true
+                        }
+                        _ => false,
+                    };
+                }
+                InspectorRow::Field(f) if hash_key(&f.label()) == key => {
+                    self.focus.inspector = i;
+                    return match action {
+                        Action::Focus => true,
+                        Action::Increment => self.a11y_nudge_field(*f, 1.0, doc),
+                        Action::Decrement => self.a11y_nudge_field(*f, -1.0, doc),
+                        _ => false,
+                    };
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Step a numeric control one twentieth of its span — the same grain a
+    /// keyboard arrow gives a slider elsewhere in the toolkit — through the
+    /// same `set_num` a mouse drag writes, then commit it the way releasing a
+    /// drag does. An adjustment an assistive technology makes must land in the
+    /// document exactly like a dragged one, or the two disagree about what the
+    /// clip is.
+    fn a11y_nudge_field(&mut self, f: NumField, dir: f64, doc: &mut AutoCommit) -> bool {
+        let Some(v) = self.num_value(f) else { return false };
+        let next = f.from_frac((f.to_frac(v) + dir * 0.05).clamp(0.0, 1.0));
+        self.set_num(f, next);
+        if f.is_media() {
+            self.dispatch_selected_media(doc);
+        } else if let Some(id) = self.selected() {
+            self.dispatch_clip(doc, id);
+        }
+        true
+    }
+
+    fn a11y_export_action(&mut self, action: &ui::a11y::Action, rest: &[u64]) -> bool {
+        use ui::a11y::Action;
+        let Some(&key) = rest.first() else { return false };
+        match (key, action) {
+            (1, Action::Activate) => {
+                if self.export_is_offered() {
+                    self.request_export();
+                }
+                true
+            }
+            (2, Action::Activate) => {
+                self.show_export = false;
+                true
+            }
+            (_, Action::Focus) => true,
+            _ => false,
+        }
+    }
+}
+
+/// A focus stop in the inspector: a section header, or one control inside an
+/// open section.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum InspectorRow {
+    Header(Section),
+    Field(NumField),
 }
 
 // ==========================================================================
@@ -8086,6 +9079,222 @@ mod tests {
         app
     }
 
+    // ---- Accessibility: the editor's synthetic tree ----------------------
+    //
+    // Everything here is asserted against the REAL exported tree and the REAL
+    // routed-action path, through `ui::headless::Driver` — the same bridge that
+    // reaches AT-SPI2 and Orca. A test that inspected `accessibility()`'s return
+    // value directly would prove the app builds nodes, not that a screen reader
+    // can reach or operate them.
+
+    fn a11y_driver() -> ui::headless::Driver {
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let mut state = ui::State::new();
+        state.doc = doc;
+        let mut app = VideoEditorApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        ui::headless::Driver::new(state, Box::new(app), (1280, 800))
+    }
+
+    /// Every exported node's `(role, label)`, so a test can state what a reader
+    /// would find without caring where it sits.
+    fn exported(d: &ui::headless::Driver) -> Vec<(ui::accesskit::Role, String)> {
+        d.a11y_nodes()
+            .into_iter()
+            .map(|(_, n)| (n.role(), n.label().unwrap_or_default().to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn the_editor_is_no_longer_an_empty_window_to_a_screen_reader() {
+        // Before: one leaf widget contributing zero nodes — a reader found a
+        // window with nothing in it.
+        let d = a11y_driver();
+        let nodes = exported(&d);
+        assert!(
+            nodes.len() > 20,
+            "the editor must describe its contents, got {} nodes",
+            nodes.len()
+        );
+        for pane in ["Media bin", "Transport", "Timeline", "Inspector"] {
+            assert!(
+                nodes.iter().any(|(_, l)| l == pane),
+                "the {pane} pane must reach the tree; got {nodes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_transport_button_carries_the_meaning_its_glyph_does_not() {
+        // Two glyph pairs were once drawn near-identically, so the name is the
+        // control's real label rather than a decoration on a picture.
+        let d = a11y_driver();
+        let nodes = exported(&d);
+        for name in [
+            "Jump to start",
+            "Step back one frame",
+            "Play",
+            "Step forward one frame",
+            "Jump to end",
+        ] {
+            let hit = nodes
+                .iter()
+                .find(|(_, l)| l == name)
+                .unwrap_or_else(|| panic!("no transport button named {name}: {nodes:?}"));
+            assert_eq!(hit.0, ui::accesskit::Role::Button, "{name} is a button");
+        }
+    }
+
+    #[test]
+    fn a_clip_says_where_it_is_how_long_it_runs_and_what_it_is_on() {
+        // What the eye reads off the bar's position and width, in words.
+        let d = a11y_driver();
+        let clips: Vec<_> = d
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, n)| n.role() == ui::accesskit::Role::ListItem && n.value().is_some())
+            .collect();
+        assert!(!clips.is_empty(), "clips must reach the tree");
+        let (_, sample) = clips
+            .iter()
+            .find(|(_, n)| n.value().map(|v| v.contains(" long, on ")).unwrap_or(false))
+            .expect("a clip states its span, length and track");
+        let v = sample.value().unwrap();
+        assert!(v.contains(" to "), "a clip states where it starts and ends: {v}");
+        assert!(sample.position_in_set().is_some(), "a clip knows its place in its track");
+    }
+
+    #[test]
+    fn tracks_expose_their_mute_solo_and_lock_as_real_toggles() {
+        let d = a11y_driver();
+        let toggles: Vec<_> = d
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, n)| {
+                n.role() == ui::accesskit::Role::Button && n.toggled().is_some()
+            })
+            .collect();
+        assert!(
+            toggles.len() >= 6,
+            "each track exposes mute, solo and lock; got {}",
+            toggles.len()
+        );
+        for (_, t) in &toggles {
+            let l = t.label().unwrap_or_default().to_string();
+            assert!(
+                l.starts_with("Mute ") || l.starts_with("Solo ") || l.starts_with("Lock "),
+                "a toggle names what it does and to which track: {l}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_assistive_technology_can_play_the_video() {
+        // The proof that the tree is operable and not merely readable.
+        let mut d = a11y_driver();
+        let play = d.a11y_node_named("Play").expect("the play button is addressable");
+        d.perform_a11y_action(play, &ui::a11y::Action::Activate).unwrap();
+        // Once playing, the same button renames itself so a reader hears what
+        // pressing it will do NOW.
+        assert!(
+            d.a11y_node_named("Pause").is_some(),
+            "the transport button must say Pause while playing"
+        );
+        assert!(d.a11y_node_named("Play").is_none());
+    }
+
+    #[test]
+    fn activating_a_clip_selects_that_clip_and_parks_the_playhead_on_it() {
+        let mut d = a11y_driver();
+        // Pick a clip that is not the auto-selected one.
+        let names: Vec<String> = d
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, n)| {
+                n.role() == ui::accesskit::Role::ListItem
+                    && n.value().map(|v| v.contains(" long, on ")).unwrap_or(false)
+            })
+            .map(|(_, n)| n.label().unwrap_or_default().to_string())
+            .collect();
+        let target = names.last().expect("clips exist").clone();
+        let id = d.a11y_node_named(&target).unwrap();
+        d.perform_a11y_action(id, &ui::a11y::Action::Activate).unwrap();
+
+        let (_, focused) = d.a11y_focus().expect("something is focused");
+        assert_eq!(
+            focused.label(),
+            Some(target.as_str()),
+            "the reader must land on the clip that was activated"
+        );
+    }
+
+    #[test]
+    fn folding_a_section_hides_its_controls_but_never_its_state() {
+        let mut d = a11y_driver();
+        assert!(
+            d.a11y_node_named("Rotation").is_some(),
+            "an open Transform section lists its controls"
+        );
+        let header = d.a11y_node_named("TRANSFORM").expect("the section header is addressable");
+        d.perform_a11y_action(header, &ui::a11y::Action::Activate).unwrap();
+
+        assert!(
+            d.a11y_node_named("Rotation").is_none(),
+            "folding hides the controls"
+        );
+        let folded = d
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, n)| n.label() == Some("TRANSFORM"))
+            .map(|(_, n)| n)
+            .unwrap();
+        assert_eq!(folded.is_expanded(), Some(false), "the header reports it is folded");
+        let summary = folded.value().unwrap_or_default().to_string();
+        assert!(
+            summary.contains("scale") && summary.contains("rotation"),
+            "a folded header still states what is inside it: {summary:?}"
+        );
+    }
+
+    #[test]
+    fn an_inspector_slider_can_be_adjusted_without_a_mouse() {
+        let mut d = a11y_driver();
+        let before = d
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, n)| n.label() == Some("Rotation"))
+            .and_then(|(_, n)| n.value().map(|v| v.to_string()))
+            .expect("Rotation reports its value");
+        let id = d.a11y_node_named("Rotation").unwrap();
+        d.perform_a11y_action(id, &ui::a11y::Action::Increment).unwrap();
+        let after = d
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, n)| n.label() == Some("Rotation"))
+            .and_then(|(_, n)| n.value().map(|v| v.to_string()))
+            .unwrap();
+        assert_ne!(before, after, "incrementing a slider must move its value");
+    }
+
+    #[test]
+    fn a_stale_clip_reference_operates_nothing() {
+        // An id an AT held across a delete must not activate whichever clip
+        // slid into that slot.
+        let mut d = a11y_driver();
+        let real = d
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, n)| {
+                n.role() == ui::accesskit::Role::ListItem
+                    && n.value().map(|v| v.contains(" long, on ")).unwrap_or(false)
+            })
+            .map(|(id, _)| id)
+            .unwrap();
+        let stale = ui::accesskit::NodeId(real.0 ^ 0x9e37_79b9);
+        assert!(d.perform_a11y_action(stale, &ui::a11y::Action::Activate).is_err());
+    }
+
     #[test]
     fn sync_seeds_and_selects() {
         let app = app_with_sample();
@@ -11051,3 +12260,4 @@ mod tests {
         assert!(after > before, "raising brightness brightens the composite ({before} -> {after})");
     }
 }
+
