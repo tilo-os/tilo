@@ -35,7 +35,7 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 use video_editor::app::ShotScenario;
 use video_editor::doc::VideoDoc;
-use video_editor::model::ClipId;
+use video_editor::model::{ClipId, MediaKind};
 use video_editor::presence as vp;
 use video_editor::{VideoEditorApp, shot};
 use winit::event::{ElementState, WindowEvent};
@@ -443,6 +443,64 @@ fn a_participants_selected_clip_alone_reaches_the_screen() {
          her absence did ({without}) -- a ring round the clip and her name on \
          it should be unmistakable",
         with.saturating_sub(without),
+    );
+}
+
+/// Typing is the third thing a participant can be doing, and it moves their
+/// point off the ruler and into the words — one person, one caret.
+///
+/// What matters on the wire is that the caret is keyed to something the other
+/// participant can resolve. A field caret keyed to a local-only handle would
+/// publish perfectly and land nowhere, and the room would look as though
+/// nobody was typing.
+#[test]
+fn a_participant_typing_in_a_field_is_keyed_to_a_shared_object() {
+    let mut ada = Participant::opening();
+
+    let mut room = PresenceCtx::empty();
+    ada.relay(&mut room, "ada");
+    assert_eq!(
+        vp::peer_playheads(&room).len(),
+        1,
+        "before typing, Ada's point is her playhead",
+    );
+
+    // "T" adds a title and opens its words for editing.
+    ada.press(Key::Character("t".into()));
+    ada.frame(&PresenceCtx::empty());
+    ada.relay(&mut room, "ada");
+
+    // The title she just made, as the *document* holds it — which is what a
+    // second participant would receive.
+    let title = VideoDoc::load_project(&mut ada.doc)
+        .media
+        .iter()
+        .find(|m| m.kind == MediaKind::Text)
+        .map(|m| m.id)
+        .expect("pressing T added a title to the document");
+
+    let carets = vp::peer_field_carets(&room, vp::FIELD_TITLE_WORDS, title);
+    assert_eq!(
+        carets.len(),
+        1,
+        "Ada's caret should be in the title's words, keyed to the title the \
+         document holds; found {carets:?}",
+    );
+    assert_eq!(carets[0].0, UserId("ada".to_string()));
+    assert!(
+        vp::peer_playheads(&room).is_empty(),
+        "and her ghost playhead steps aside while she types -- a person has \
+         one point, not two",
+    );
+
+    // A joiner receives the very object that key names, so it resolves.
+    let mut bo = Participant::joining(&ada);
+    assert!(
+        VideoDoc::load_project(&mut bo.doc)
+            .media
+            .iter()
+            .any(|m| m.id == title),
+        "the title Ada's caret is keyed to reached the other participant",
     );
 }
 
