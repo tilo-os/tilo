@@ -609,6 +609,63 @@ mod tests {
         ]
     }
 
+    /// How many paint operations the material emits for one selector, by
+    /// state, counted off the real encoding.
+    fn glass_fill_count(theme: &Theme, state: SelectionState) -> usize {
+        let rect = Rect::new(0.0, 0.0, 120.0, 28.0);
+        let mut scene = Scene::new();
+        paint_glass_body(
+            &mut scene,
+            Affine::IDENTITY,
+            rect,
+            rect.height() / 2.0,
+            theme,
+            &glass_selector(theme, state),
+            1.0,
+        );
+        // Every paint, not only the flat ones: the material's body and
+        // edge are gradient brushes, and a shadow ring would be a plain
+        // fill, so counting one kind would miss whichever kind came back.
+        scene.encoding().draw_tags.len()
+    }
+
+    /// The material paints a body, an edge and (when lifted) a rim — and
+    /// nothing else.
+    ///
+    /// Pinned against the encoding rather than against a predicate,
+    /// because the thing worth forbidding is a *paint*, and a helper that
+    /// returns `false` is only ever a restatement of itself. The strip used
+    /// to lay four stacked black rings under every pill with a body; if
+    /// they ever come back here the count moves and this fails, on the dark
+    /// theme where the rings are almost invisible as well as on the light
+    /// one where they are a grey slab.
+    ///
+    /// Elevation and selection are different vocabularies. A chosen tab is
+    /// picked on the bar, not floating above it, so what reports that a
+    /// pill is a surface is its own lit edge.
+    #[test]
+    fn the_material_paints_a_body_an_edge_and_a_rim_and_nothing_else() {
+        for (name, theme) in themes() {
+            assert_eq!(
+                glass_fill_count(&theme, SelectionState::default()),
+                0,
+                "{name}: an idle selector has no body, so it must paint nothing \
+                 at all — not an edge, and certainly not a shadow of nothing",
+            );
+            assert_eq!(
+                glass_fill_count(&theme, SelectionState::new(false, true, false)),
+                2,
+                "{name}: a hovered selector is exactly a film and its edge",
+            );
+            assert_eq!(
+                glass_fill_count(&theme, SelectionState::active(true)),
+                3,
+                "{name}: a lifted selector is exactly a film, its edge and its \
+                 lit rim — anything more is elevation smuggled into selection",
+            );
+        }
+    }
+
     /// Every state a glass selector paints has to keep the ground
     /// visible through it.
     ///
