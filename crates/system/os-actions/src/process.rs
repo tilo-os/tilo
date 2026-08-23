@@ -27,23 +27,53 @@ fn which_cache() -> &'static Mutex<HashMap<String, bool>> {
 
 /// Probe whether `binary` is on `$PATH`. Memoised for the process
 /// lifetime — see [`which_cache`].
+///
+/// The lookup walks `$PATH` here rather than shelling out to `which`.
+/// It used to spawn `which`, which made the answer depend on a binary
+/// that is not part of a base system any more: Fedora's container image
+/// ships no `which(1)`, so the spawn failed, the `unwrap_or(false)` read
+/// that as "not on `$PATH`", and every probe answered no. A missing
+/// probe tool reported as a missing subject — the failure mode where a
+/// check cannot look and says so in the voice of having looked. Doing
+/// the walk in-process removes the third binary from the question, and
+/// costs no spawn at all.
 pub(crate) fn which(binary: &str) -> bool {
     if let Ok(cache) = which_cache().lock()
         && let Some(hit) = cache.get(binary)
     {
         return *hit;
     }
-    let found = Command::new("which")
-        .arg(binary)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let found = path_lookup(binary);
     if let Ok(mut cache) = which_cache().lock() {
         cache.insert(binary.to_string(), found);
     }
     found
+}
+
+/// Is `binary` an executable file reachable from `$PATH`?
+///
+/// A name with a separator in it is a path, not a `$PATH` lookup, and is
+/// answered directly — the same split `execvp` makes.
+fn path_lookup(binary: &str) -> bool {
+    fn is_executable_file(p: &std::path::Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+
+    if binary.is_empty() {
+        return false;
+    }
+    if binary.contains('/') {
+        return is_executable_file(std::path::Path::new(binary));
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .any(|dir| is_executable_file(&dir.join(binary)))
 }
 
 /// Run `binary args...` under [`DEFAULT_TIMEOUT`], capturing stdout.
@@ -170,6 +200,34 @@ mod tests {
             "run_capture returned after {elapsed:?}, past its own {DEFAULT_TIMEOUT:?} \
              deadline — the kill path did not fire"
         );
+    }
+
+    /// The probe answers from `$PATH` itself, with no third binary in
+    /// the question.
+    ///
+    /// This is a regression test with a name: the probe used to spawn
+    /// `which(1)`, and Fedora's container image does not ship one. The
+    /// spawn failed, that was read as "the binary is not installed", and
+    /// every shell-out in this crate was told its tool was missing —
+    /// including the deadline test below, which then refused to run at
+    /// all. Asserting on a binary that is guaranteed present (`sh`, which
+    /// `run_capture`'s own callers rely on) is what makes "the answer is
+    /// about the subject, not about the prober" checkable.
+    #[test]
+    fn which_answers_from_path_without_the_which_binary() {
+        assert!(
+            which("sh"),
+            "`sh` is on $PATH in every environment this runs in; a probe \
+             that cannot see it is answering about itself"
+        );
+        assert!(
+            !which("qos-no-such-binary-should-ever-exist"),
+            "a name that is on no $PATH entry must not be reported as found"
+        );
+        // A name containing a separator is a path, not a $PATH lookup.
+        assert!(which("/bin/sh") || which("/usr/bin/sh"));
+        assert!(!which("/definitely/not/here/sh"));
+        assert!(!which(""), "the empty name is not a binary");
     }
 
     /// `which` answers from its memo after the first probe, so repeated

@@ -32,13 +32,37 @@ use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 use crate::tokens::Colors;
 
-/// Translucency shared by every [`ChromeRole::Bar`] and
-/// [`ChromeRole::Panel`] surface, so the whole chrome reads as one
-/// material at one opacity.
+/// Opacity shared by every [`ChromeRole::Bar`] and [`ChromeRole::Panel`]
+/// surface, so the whole chrome reads as one material.
 ///
-/// Per-surface alpha literals are what made quick settings look like a
-/// different substance from the bar it hangs off.
-pub const CHROME_SURFACE_ALPHA: f32 = 0.80;
+/// That material is **opaque**, and the constant survives as the one
+/// place that says so rather than as a dial to turn.
+///
+/// Chrome used to be painted at 0.80. Translucency is only worth its cost
+/// when the backdrop is blurred, and nothing here can blur a backdrop:
+/// vello can blur a *shape* (see [`crate::surface::shadow`]) but has no
+/// backdrop filter, and giving it one means rendering the scene to a
+/// texture, convolving it and compositing it back — a change to the paint
+/// pipeline, not to a colour. Unblurred, 20 % of whatever is behind the
+/// panel is simply added to it, and that is not glass, it is a loss of
+/// contrast that varies with what the user happens to have open. Measured
+/// on the light palette, the quick-settings panel's own body ran
+/// `#ffffff` where it overlapped a document window and `#f7f7f7` where it
+/// overlapped the desktop — one flat surface, two colours, a seam across
+/// the middle of it. Over a white document the panel was the *same
+/// colour as the document*, leaving a hairline and a heavy shadow as the
+/// only evidence a panel was there at all.
+///
+/// This finishes a migration the shell had already started and tested. A
+/// 2026-07-09 report ("search bar / file viewer are too transparent —
+/// looks terrible") took the palette and the workspace-settings modal
+/// opaque, pinned by `overlay_host::tests::
+/// palette_surface_alpha_lifts_off_desktop`. The quick-settings popover
+/// kept 0.80 and drew the same complaint in 2026-08. Depth is carried by
+/// the scrim under a modal, by [`panel_ground`] and [`panel_border`]
+/// against the desktop, and by a subtle `e4` — not by letting the desktop
+/// through.
+pub const CHROME_SURFACE_ALPHA: f32 = 1.0;
 
 /// Alpha of the hairline that gives a lifted control a defined edge.
 pub const HAIRLINE_ALPHA: u8 = 26;
@@ -56,6 +80,17 @@ pub const PANEL_BORDER_ALPHA: u8 = 92;
 /// distinct surface rather than as a slightly different patch of the
 /// desktop. Matches the toolkit's hairline threshold.
 const PANEL_MIN_DELTA: f64 = 0.02;
+
+/// Alphas [`chrome_ground`] tries, in order, when the declared overlay
+/// tier is swallowed by a ground the surface has to sit on.
+///
+/// Ascending, and the first that clears every ground wins, so a surface
+/// moves the smallest distance from its theme's declared colour that
+/// still leaves it legible. Relative luminance is heavily compressed at
+/// the dark end, so the same luminance delta costs far more RGB on a dark
+/// palette than a light one — which is exactly why this is a ladder to
+/// climb rather than one tuned constant.
+const PANEL_GROUND_STEPS: &[u8] = &[16, 24, 32, 40, 56, 72, 96];
 
 /// Alpha of the inset stroke that gives an active control its inner glow.
 pub const GLOW_ALPHA: u8 = 51;
@@ -496,45 +531,73 @@ pub fn paint_glass_body(
     }
 }
 
-/// The opaque colour a floating chrome surface is built from, guaranteed
-/// to register against the desktop behind it.
+/// The opaque colour a chrome surface is built from, guaranteed to
+/// register against the grounds it actually meets.
 ///
 /// `surfaces.overlay` is the theme's declared popover tier and is used
-/// verbatim wherever it actually separates from `surfaces.base`. It does
-/// not always: on the default light palette `overlay` is `#ffffff` against
-/// a `#f3f3f1` ground — a contrast ratio of about 1.06:1 — and on the
-/// high-contrast palette the two are *the same colour*. Painting the
-/// declared token there gives a panel that is, literally, the desktop
-/// with a faint line around it. Rendered side by side, the light and
-/// high-contrast quick-settings panels were all but invisible while the
-/// dark one looked deliberate, which is what surfaced this.
+/// verbatim wherever it separates. It does not always: on the default
+/// dark palette `overlay` is `#0d0e11` against a `#16171b` ground, and on
+/// high-contrast the two are *the same colour*. Painting the declared
+/// token there gives a surface that is, literally, the desktop with a
+/// faint line around it.
 ///
-/// Where the declared tier would be swallowed, the ground is moved away
-/// from the desktop by the same luminance reasoning
-/// [`Colors::hairline_on`] uses, so the panel keeps a body on every
-/// theme. This is the fill half; [`PANEL_BORDER_ALPHA`] is the edge half,
-/// and a panel needs both — on high-contrast the edge does nearly all the
-/// work, because a stark ground with a bright edge *is* that palette's
-/// idiom, and lifting its fill would fight it.
+/// Where the declared tier would be swallowed, the ground is walked away
+/// from it by the same luminance reasoning [`Colors::hairline_on`] uses,
+/// so chrome keeps a body on every theme. This is the fill half;
+/// [`PANEL_BORDER_ALPHA`] is the edge half, and a surface needs both — on
+/// high-contrast the edge does nearly all the work, because a stark
+/// ground with a bright edge *is* that palette's idiom.
+///
+/// The grounds chrome has to stay distinguishable from are the desktop
+/// **and the window card**. A Bar meets only the desktop, but a Panel
+/// floats over app content, and Bar and Panel are deliberately one
+/// material (see `bar_and_panel_share_one_material`) — a popover has to
+/// read as belonging to the bar it hangs off, not as a foreign slab — so
+/// the stricter of the two constraints sets the material for both.
+///
+/// Adding the window card is the fix for a panel that was invisible over
+/// a document. On the light palette the declared overlay tier is
+/// `#ffffff`, and so is `window_card`: quick settings dropped over a
+/// document was exactly the colour of the document, leaving a hairline
+/// and a heavy shadow as the only evidence a panel was there. Measured,
+/// its body ran `#ffffff` where it overlapped the window and `#f7f7f7`
+/// where it overlapped the desktop — one surface reading as two. A
+/// shadow forced to make up for a surface that does not separate is the
+/// shadow that gets called too big.
 pub fn panel_ground(theme: &Theme) -> Color {
     use crate::a11y::relative_luminance;
     let colors = &theme.tokens.colors;
     let base = colors.surfaces.base;
     let declared = colors.surfaces.overlay;
-    if (relative_luminance(declared) - relative_luminance(base)).abs() >= PANEL_MIN_DELTA {
+    let grounds = [base, colors.surfaces.window_card];
+    let clears = |c: Color| {
+        grounds.iter().all(|g| {
+            (relative_luminance(c) - relative_luminance(*g)).abs() >= PANEL_MIN_DELTA
+        })
+    };
+    if clears(declared) {
         return declared;
     }
     // Composite a derived step over the declared tier so the result stays
     // in the theme's own colour family rather than jumping to a grey.
-    let step = Colors::hairline_on(base, 40);
-    let a = step.components[3];
-    let d = declared.components;
-    Color::new([
-        step.components[0] * a + d[0] * (1.0 - a),
-        step.components[1] * a + d[1] * (1.0 - a),
-        step.components[2] * a + d[2] * (1.0 - a),
-        1.0,
-    ])
+    // `hairline_on` picks the direction that moves away from the desktop,
+    // and the steps climb until the surface clears every ground it meets.
+    let mut last = declared;
+    for alpha in PANEL_GROUND_STEPS {
+        let step = Colors::hairline_on(base, *alpha);
+        let a = step.components[3];
+        let d = declared.components;
+        last = Color::new([
+            step.components[0] * a + d[0] * (1.0 - a),
+            step.components[1] * a + d[1] * (1.0 - a),
+            step.components[2] * a + d[2] * (1.0 - a),
+            1.0,
+        ]);
+        if clears(last) {
+            return last;
+        }
+    }
+    last
 }
 
 /// The edge around a floating [`ChromeRole::Panel`]. See
@@ -546,16 +609,25 @@ pub fn panel_border(theme: &Theme) -> Color {
 /// Lay down a floating panel's elevation, clipped to the ring *outside*
 /// its own silhouette.
 ///
-/// The clip is the point. Chrome panels are translucent
-/// ([`CHROME_SURFACE_ALPHA`]), and the shared soft-shadow painter ramps
-/// its bands inward from the rect's edges as well as outward — which is
-/// invisible under an opaque modal, and shows straight through a panel
-/// you can see through. Painted unclipped, the quick-settings panel grew
-/// pale horizontal bands across its own interior where the shadow's
-/// inner ramp met the gaps between its sections.
+/// The shadow is [`crate::surface::shadow`]: a Gaussian blur of the
+/// panel's **own rounded rect**, at the strength `e4` declares. Being the
+/// panel's own shape is what makes it even — the previous painter blurred
+/// a square-cornered field, so around a 24 px rounded corner the shadow
+/// kept a hard corner of its own and composited about a fifth of what the
+/// flat edges did. Measured on the light palette against a white
+/// document, that shadow darkened the ground by 140/255 under the bottom
+/// edge and 19/255 beside it: a seven-fold swing around one panel, which
+/// is what "boxy and uneven" looks like from the outside.
 ///
-/// Panels are elevated rather than merely tinted because on some
-/// palettes the tint alone cannot separate them: see [`panel_ground`].
+/// It was also painting at full black. `soft_shadow` ignores its colour's
+/// alpha in favour of a separate `intensity`, and this passed `1.0`, so
+/// `e4`'s 110/255 never reached the screen.
+///
+/// The ring clip stays. A blurred rounded rect is solid in the middle,
+/// and a surface must never see its own shadow through itself — chrome is
+/// opaque now ([`CHROME_SURFACE_ALPHA`]), but `intensity` can fade a
+/// panel in, and a half-faded panel would otherwise darken its own
+/// interior on the way.
 pub fn panel_shadow(
     scene: &mut Scene,
     transform: Affine,
@@ -568,13 +640,14 @@ pub fn panel_shadow(
         return;
     }
     let e = &theme.tokens.elevation.e4;
-    let spread = e.blur as f64;
-    let offset_y = e.offset_y as f64;
+    // The visible falloff ends about 2.5 standard deviations out; the ring
+    // is given a little more than that so nothing is clipped mid-ramp.
+    let reach = crate::surface::std_dev_for(e.blur) * 3.0 + e.offset_y as f64;
     let outer = Rect::new(
-        rect.x0 - spread * 2.0,
-        rect.y0 - spread * 2.0,
-        rect.x1 + spread * 2.0,
-        rect.y1 + spread * 2.0 + offset_y,
+        rect.x0 - reach,
+        rect.y0 - reach,
+        rect.x1 + reach,
+        rect.y1 + reach,
     );
     // Even-odd across [outer, card]: a point inside both winds twice and
     // is excluded, so only the ring around the card paints.
@@ -582,7 +655,9 @@ pub fn panel_shadow(
     ring.extend(outer.path_elements(0.1));
     ring.extend(RoundedRect::from_rect(rect, radius).path_elements(0.1));
     scene.push_layer(Fill::EvenOdd, BlendMode::default(), 1.0, transform, &ring);
-    crate::surface::soft_shadow(scene, transform, rect, e.color, spread, offset_y, intensity);
+    let mut token = e.clone();
+    token.color = token.color.with_alpha_factor(intensity.clamp(0.0, 1.0));
+    crate::surface::shadow(scene, transform, rect, radius, &token);
     scene.pop_layer();
 }
 
