@@ -442,29 +442,61 @@ mod tests {
         );
     }
 
-    /// Outside a guest nothing has restricted this process, and creating an
-    /// entry at `/` is refused by ordinary permissions rather than by Landlock.
-    /// The probe must not read that as enforcement — a status line that says
-    /// "enforcing" on an unconfined process is worse than none.
+    /// The probe's answer has to follow from what `/` actually allows, and
+    /// it has to leave nothing behind either way.
+    ///
+    /// Which arm it takes is a property of the machine, not of the code, so
+    /// the precondition is established here rather than assumed. This used
+    /// to assume the unprivileged one — "`/` is not writable, so this
+    /// exercises the third arm" — and that is false wherever the suite runs
+    /// as root, which is every container. There, creating an entry at `/`
+    /// succeeds and `NotEnforced` is simply the true answer: nothing is
+    /// restricting this process. Failing on it asserted that the machine
+    /// was a workstation, not that the probe was right.
     #[test]
-    fn the_landlock_probe_does_not_mistake_a_read_only_root_for_enforcement() {
-        // Running as an unprivileged user on a normal machine, `/` is not
-        // writable, so this exercises the third arm.
+    fn the_landlock_probe_answers_for_what_root_actually_allows() {
+        // Ask `/` the same question the probe will, under a different name,
+        // so the two cannot collide.
+        let canary =
+            std::path::Path::new("/").join(format!(".ush-landlock-canary-{}", std::process::id()));
+        let root_is_writable = match std::fs::create_dir(&canary) {
+            Ok(()) => {
+                let _ = std::fs::remove_dir(&canary);
+                true
+            }
+            Err(_) => false,
+        };
+
         let outcome = landlock_probe();
-        assert!(
-            matches!(
+        if root_is_writable {
+            // Nothing stopped the write, so nothing is enforcing. Claiming
+            // otherwise on an unconfined process is the failure this guards.
+            assert_eq!(
                 outcome,
-                LandlockOutcome::FullyEnforced | LandlockOutcome::Errored
-            ),
-            "the probe must never report NotEnforced by creating a directory it \
-             could not clean up: {outcome:?}"
-        );
+                LandlockOutcome::NotEnforced,
+                "`/` accepted a new directory, so the probe must not claim \
+                 anything is enforcing: {outcome:?}"
+            );
+        } else {
+            // The write was refused. Whatever refused it, the probe must not
+            // read the refusal as "unconfined".
+            assert!(
+                matches!(
+                    outcome,
+                    LandlockOutcome::FullyEnforced | LandlockOutcome::Errored
+                ),
+                "`/` refused a new directory, so the probe must not report \
+                 NotEnforced: {outcome:?}"
+            );
+        }
+
         assert!(
             !std::path::Path::new("/")
                 .join(format!(".ush-landlock-probe-{}", std::process::id()))
                 .exists(),
             "the probe left something behind at /"
         );
+        assert!(!canary.exists(), "the canary was left behind at /");
     }
 
     #[test]

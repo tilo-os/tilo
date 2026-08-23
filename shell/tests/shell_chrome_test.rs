@@ -326,18 +326,35 @@ fn topbar_chrome_clock_renders_at_bold_weight() {
     );
 }
 
-/// Gap #3: the top-bar surface is tinted at `bg-black/80` (α = 0.80) until
-/// the pinned Vello supports the real `backdrop-blur-xl` primitive. Pin
-/// the exact numeric alpha via the `TopBarChrome::top_bar_alpha` accessor
-/// so a future regression that reverts the topbar to an opaque fill
-/// (α = 1.0) flips this test to red without needing a pixel snapshot.
+/// The top bar is opaque, and it takes its opacity from the one chrome
+/// constant rather than a number of its own.
+///
+/// This used to pin α = 0.80, honouring "just the alpha split" of the
+/// concept's `bg-black/80 backdrop-blur-xl` on the grounds that vello has
+/// no `backdrop-blur`. That reasoning does not survive contact with the
+/// result: a tint without its blur is not glass but a contrast loss that
+/// changes with whatever the user has open behind it, and measured at
+/// 0.80 a single quick-settings panel's own body ran `#ffffff` over a
+/// document and `#f7f7f7` over the desktop — one surface reading as two.
+/// The palette and the settings modal had already gone opaque for the
+/// same reason (see `palette_surface_is_opaque` below); a 2026-08 report
+/// on the popover's transparency finished the job.
+///
+/// Pinned against the toolkit constant rather than a literal, which is
+/// the stronger guard: the bar and the popovers that hang off it are one
+/// material by construction, and neither can be retuned alone.
 #[test]
-fn topbar_chrome_surface_alpha_is_80_percent() {
+fn topbar_chrome_surface_alpha_tracks_the_shared_chrome_opacity() {
     use shell::shell::topbar_chrome::TopBarChrome;
     let a = TopBarChrome::top_bar_alpha();
     assert!(
-        (a - 0.80).abs() < f32::EPSILON,
-        "top-bar surface alpha must be 0.80 per visual-gap #3; got {a}"
+        (a - ui::chrome::shell::CHROME_SURFACE_ALPHA).abs() < f32::EPSILON,
+        "top-bar alpha must be the shared chrome opacity so the bar and          its popovers stay one material; got {a} against {}",
+        ui::chrome::shell::CHROME_SURFACE_ALPHA
+    );
+    assert!(
+        (a - 1.0).abs() < f32::EPSILON,
+        "chrome is opaque: this renderer has no backdrop filter, so a          translucent bar is not glass but a contrast loss that varies          with what is open behind it; got {a}"
     );
 }
 
