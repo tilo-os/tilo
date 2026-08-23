@@ -205,6 +205,15 @@ class Session:
     def peer_sync(self) -> dict:
         return self.chrome().get("peer_sync", {}) or {}
 
+    def peers(self) -> dict:
+        """Pointers and roster, as this session's own frame holds them.
+
+        `roster` is built from the function that paints the
+        collaborators panel, so asserting on it is asserting on the
+        rows a person would see rather than on a field behind them.
+        """
+        return self.state().get("peers") or {}
+
     def targets(self) -> list:
         return self.call({"op": "list_targets"})["targets"]
 
@@ -282,6 +291,11 @@ def main() -> int:
         REPO / "shell" / "src" / "shell" / "overlay_host.rs",
         REPO / "shell" / "src" / "shell" / "topbar_chrome.rs",
         REPO / "shell" / "src" / "compositor" / "frame.rs",
+        # The roster: who the panel lists, and the state dump that
+        # reports it. A binary older than either answers the last
+        # question this script asks with code that is not under test.
+        REPO / "shell" / "src" / "shell" / "peer_presence.rs",
+        REPO / "shell" / "src" / "compositor" / "native.rs",
     ])
     if stale:
         print(f"REFUSING: {stale}\n  build first:  cargo build -p shell")
@@ -397,25 +411,41 @@ def main() -> int:
             click(ada, "topbar_avatar_stack", "the avatar stack again")
         ada.snapshot(os.path.join(shots, "08-ada-roster.png"))
 
-        # And the part that does *not* hold, stated rather than papered
-        # over. The panel's rows come from `collaborator_roster_rows`,
-        # which reads `WorkspaceTree::collaborators` plus the active
-        # workspace's agent members. Nothing writes a peer that joined by
-        # token into either, so the surface that answers "who is in this
-        # room" still answers "No peers connected" after somebody
-        # demonstrably arrived — the frame this step just captured says
-        # so. A peer's arrival is currently visible only as a cursor.
+        # And the panel lists him.
         #
-        # This is not something the panel's new buttons introduced and
-        # not something they can fix: the roster's source is the gap.
-        # It is asserted here so a run reports it every time rather than
-        # leaving it to whoever looks closely at the screenshot.
-        roster = ada.state()["workspace_tree"].get("collaborators") or []
-        if not roster:
-            print("  GAP   the roster does not list him — "
-                  "`WorkspaceTree::collaborators` is never written by a "
-                  "token join, so the panel still reads 'No peers "
-                  "connected' (see 08-ada-roster.png)")
+        # Read from `peers()["roster"]`, which is built from
+        # `collaborator_roster_rows` — the same function that paints the
+        # rows in 08-ada-roster.png. Asserting the painted list
+        # rather than the field behind it is the difference between "the
+        # data arrived" and "the surface shows it", and only the second
+        # is the claim this script makes.
+        #
+        # He is unnamed on purpose: ada pressed plain **Invite**,
+        # which mints a token and says nothing about who it is for. So
+        # the honest label is bob's id, and that is what must appear —
+        # never blank, and never a name nobody chose.
+        roster = wait_for(
+            lambda: ((ada.peers() or {}).get("roster") or None), timeout=60)
+        check("the panel lists the person who joined", bool(roster),
+              json.dumps(roster)[:200] if roster
+              else "the roster is empty after somebody demonstrably arrived")
+        people = [r for r in (roster or []) if not r.get("is_agent")]
+        check("and lists him as a person, not an agent", len(people) == 1,
+              f"{len(people)} people in {json.dumps(roster)[:160]}")
+        if people:
+            label = people[0].get("label") or ""
+            check("under a label that is his identity, not a blank",
+                  label.startswith("peer@"),
+                  f"{label!r} — a plain invite names nobody, so the id is "
+                  "the only honest label")
+        # The negative half: ada must not be in his own list of
+        # other people. He names himself when he mints an invite, so
+        # that his guests read a name rather than a number, and reading
+        # that back would put the person holding the machine in it.
+        check("and ada is not listed as a peer of his own",
+              not any((r.get("label") or "") == ada.name
+                      for r in (roster or [])),
+              json.dumps(roster)[:160])
 
         step("the negative claims")
         check("no token was ever typed — only copied and pasted", True,
