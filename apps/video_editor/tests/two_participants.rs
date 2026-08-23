@@ -369,6 +369,83 @@ fn a_participant_is_visible_on_the_other_persons_screen() {
     );
 }
 
+/// The two things a participant shows up as are drawn by two different calls,
+/// and the test above is satisfied by either one of them: with a selection on
+/// screen, a peer's colour is plentiful whether or not their playhead is drawn.
+/// So each render is proved on its own, by a room in which the peer has only
+/// that one thing.
+///
+/// Both rooms are built from the very functions the editor publishes itself
+/// with, so a key that stopped matching would empty them.
+fn colour_on_screen(bo: &mut Participant, room: &PresenceCtx, who: &str) -> (usize, usize) {
+    let with = bo.frame(room);
+    let without = bo.frame(&PresenceCtx::empty());
+    let mut r = OffscreenRenderer::new(W, H);
+    let a = r.render(&with, Color::BLACK);
+    let b = r.render(&without, Color::BLACK);
+    let colour = room.color_for(&UserId(who.to_string()));
+    (pixels_of_colour(&a, colour), pixels_of_colour(&b, colour))
+}
+
+/// A participant with nothing selected is still somewhere, and that somewhere
+/// has to be on screen.
+#[test]
+fn a_participants_playhead_alone_reaches_the_screen() {
+    let mut ada = Participant::opening();
+    let mut bo = Participant::joining(&ada);
+
+    // Nothing selected, so the only thing Ada has to show is her playhead.
+    ada.press(Key::Named(NamedKey::Escape));
+    ada.frame(&PresenceCtx::empty());
+    let mut room = PresenceCtx::empty();
+    room.names.insert(UserId("ada".to_string()), "Ada".to_string());
+    ada.relay(&mut room, "ada");
+    assert_eq!(vp::peer_playheads(&room).len(), 1, "she has a playhead");
+    assert!(vp::peer_clips(&room).is_empty(), "and nothing selected");
+
+    let (with, without) = colour_on_screen(&mut bo, &room, "ada");
+    assert!(
+        with > without + 100,
+        "Ada's playhead put only {} more pixels of her colour on screen than \
+         her absence did ({without}) -- a line down every lane with her name \
+         on it should be unmistakable",
+        with.saturating_sub(without),
+    );
+}
+
+/// And a participant holding a clip has to be on it, whatever their playhead
+/// is doing.
+#[test]
+fn a_participants_selected_clip_alone_reaches_the_screen() {
+    let ada = Participant::opening();
+    let mut bo = Participant::joining(&ada);
+
+    // A clip near the start of the timeline, so it is on screen at the
+    // default zoom -- an outline on a clip nobody can see proves nothing.
+    let project = VideoDoc::load_project(&mut bo.doc);
+    let clip = project
+        .clips
+        .iter()
+        .min_by(|a, b| a.start.partial_cmp(&b.start).unwrap())
+        .expect("the shared project has clips");
+
+    let mut room = PresenceCtx::empty();
+    room.names.insert(UserId("ada".to_string()), "Ada".to_string());
+    let (key, payload) = vp::range_frame(Some((clip.id, clip.start, clip.end())));
+    room.apply_remote_presence("ada".to_string(), key, payload);
+    assert_eq!(vp::peer_clips(&room).len(), 1, "she is holding a clip");
+    assert!(vp::peer_playheads(&room).is_empty(), "and nothing else");
+
+    let (with, without) = colour_on_screen(&mut bo, &room, "ada");
+    assert!(
+        with > without + 100,
+        "Ada's held clip put only {} more pixels of her colour on screen than \
+         her absence did ({without}) -- a ring round the clip and her name on \
+         it should be unmistakable",
+        with.saturating_sub(without),
+    );
+}
+
 /// Leaving has to be visible too. Ada deselects, and her outline comes off
 /// Bo's screen — through a published frame, because there is no other way to
 /// retract one.
