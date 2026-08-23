@@ -1237,7 +1237,13 @@ pub const RAIL_MARGIN: f64 = 10.0;
 pub const RAIL_HIT_H: f64 = 32.0;
 
 /// Weight of a segment whose group is off screen.
-const RAIL_ABSENT_ALPHA: u8 = 40;
+///
+/// Deliberately heavier than the ribbon's idle step. An unfocused
+/// *strip* segment only has to hint that another strip exists; an
+/// off-screen *window* segment is the rail's entire message — it is the
+/// mark that says the strip continues past the edge of the display, and
+/// a mark nobody notices does not deliver it.
+const RAIL_ABSENT_ALPHA: u8 = 64;
 /// Weight of a segment whose group is on screen but not focused.
 const RAIL_PRESENT_ALPHA: u8 = 110;
 /// Weight of a hovered segment, whether or not its group is on screen.

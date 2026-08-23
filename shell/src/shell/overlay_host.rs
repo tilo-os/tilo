@@ -4557,8 +4557,14 @@ impl ShellOverlayHost {
     /// same tree and the same chrome can show completely different
     /// windows. An assertion that the viewport did not move has no
     /// subject without this.
-    pub fn strip_scroll_offsets(&self) -> Vec<(u64, f64)> {
-        let mut out: Vec<(u64, f64)> = self
+    /// Reported with the pan it is a bound on, because on a strip whose
+    /// content fits the display the pan is pinned at zero — and then
+    /// "the viewport did not move" is true of every possible change and
+    /// proves nothing. A caller checking that something left the
+    /// viewport alone has to be able to see whether it could have moved
+    /// at all.
+    pub fn strip_scroll_offsets(&self) -> Vec<(u64, f64, f64)> {
+        let mut out: Vec<(u64, f64, f64)> = self
             .group_row_ptrs
             .iter()
             .map(|(sid, &ptr)| {
@@ -4566,10 +4572,10 @@ impl ShellOverlayHost {
                 // accessor — the pointer is captured from a `Box<GroupRow>`
                 // owned through the content tree, and the host outlives it.
                 let row: &GroupRow = unsafe { &*ptr };
-                (sid.0, row.scroll_x())
+                (sid.0, row.scroll_x(), row.max_scroll_x())
             })
             .collect();
-        out.sort_by_key(|(sid, _)| *sid);
+        out.sort_by_key(|(sid, _, _)| *sid);
         out
     }
 
