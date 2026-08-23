@@ -2362,6 +2362,169 @@ mod tests {
         }
     }
 
+    /// The whole product claim, on the production path: a photograph goes into
+    /// a shared document, everything the room has to send fits the transport,
+    /// the far side reassembles the picture byte-for-byte, and the typing that
+    /// happened *after* the image is on the far document.
+    ///
+    /// This drives the real `publish_app_crdt_incremental` — so the real
+    /// `sync_content`, the real chunking, and the real reassembly-and-verify —
+    /// and inspects the actual `NeighbourMsg` stream it puts on the wire.
+    /// That the stream then crosses two machines is proven separately by
+    /// `network::actor::tests::two_actors_exchange_publish_via_loopback`, which
+    /// runs the same messages over real libp2p on loopback.
+    ///
+    /// Against the previous code this could not pass: the photograph's frame
+    /// alone measured ~146 KB against a 64 KiB ceiling, so it was refused by
+    /// the transport and dropped, and every keystroke after it stayed queued on
+    /// the far replica forever.
+    #[test]
+    fn a_photograph_crosses_and_typing_after_it_keeps_arriving() {
+        use automerge::{AutoCommit, ROOT};
+        use qdoc::model::{self, DocMut, IdGen};
+
+        const ROOM: &str = "6b3f9a10-0000-4000-8000-00000000000c";
+        const RECORD: &str = "file:/work/shared/notes.qdoc";
+        // libp2p-gossipsub's default max RPC; `NiriosBehaviour` does not raise it.
+        const GOSSIP_MAX: usize = 65_536;
+
+        // A photograph: incompressible bytes behind a real PNG header, so its
+        // size on the wire is its size on disk.
+        let photo: Vec<u8> = {
+            let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            v.extend_from_slice(&13u32.to_be_bytes());
+            v.extend_from_slice(b"IHDR");
+            v.extend_from_slice(&1200u32.to_be_bytes());
+            v.extend_from_slice(&800u32.to_be_bytes());
+            v.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+            let mut x = 0x2545_F491_4F6C_DD1Du64;
+            while v.len() < 146_492 {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                v.push((x >> 33) as u8);
+            }
+            v
+        };
+        let photo_hash = qdoc::blobstore::hash_bytes(&photo);
+
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xA11CEu64);
+
+        // --- the authoring session -------------------------------------
+        let mut doc = AutoCommit::new();
+        let c = model::init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let mut publish = |doc: &mut AutoCommit| {
+            net.publish_app_crdt_incremental(
+                "dev.qos.word-processor".into(),
+                ROOM.into(),
+                RECORD.into(),
+                doc.save_incremental(),
+            );
+        };
+
+        let first = {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let p = dm.insert_block(None, "paragraph");
+            dm.splice_text(&p, 0, 0, "Before the photograph.");
+            p
+        };
+        publish(&mut doc);
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let h = dm.put_blob(&photo);
+            let img = dm.insert_block(Some(&first), "image");
+            dm.set_attr(&img, "blob", h.as_str());
+        }
+        publish(&mut doc);
+        for i in 0..10 {
+            {
+                let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+                let p = dm.insert_block(None, "paragraph");
+                dm.splice_text(&p, 0, 0, &format!("Line {i} after the photograph."));
+            }
+            publish(&mut doc);
+        }
+
+        // --- what actually goes on the wire ----------------------------
+        let mut far_doc = AutoCommit::new();
+        let mut far_relay = crate::network::blob_relay::BlobRelay::new();
+        let mut arrived: Option<Vec<u8>> = None;
+        let mut frames = 0usize;
+        let mut chunks = 0usize;
+
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            let NetCmd::Publish { msg, .. } = cmd else { continue };
+            let encoded = serde_json::to_vec(&msg).expect("the actor encodes with serde_json");
+            assert!(
+                encoded.len() <= GOSSIP_MAX,
+                "a {} of {} bytes cannot be published: the transport refuses it and the \
+                 publish path drops it",
+                msg.kind(),
+                encoded.len(),
+            );
+            match msg {
+                NeighbourMsg::AppCrdtIncremental { data, .. } => {
+                    frames += 1;
+                    far_doc.load_incremental(&data).expect("a delivered frame applies");
+                }
+                NeighbourMsg::BlobChunk { hash, index, count, data, .. } => {
+                    chunks += 1;
+                    if let Some(whole) = far_relay.accept_chunk(1, &hash, index, count, data) {
+                        arrived = Some(whole);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(frames, 12, "every edit must produce a publishable frame");
+        assert!(chunks > 1, "the photograph must have been split, got {chunks} chunk(s)");
+
+        // The picture crossed, intact.
+        assert_eq!(
+            arrived.as_deref(),
+            Some(photo.as_slice()),
+            "the photograph must arrive byte-for-byte and verify against its hash",
+        );
+
+        // The document is whole, and still receiving.
+        let missing = far_doc.get_missing_deps(&[]);
+        assert!(
+            missing.is_empty(),
+            "the far document must not be waiting on a change it was never sent, got {} \
+             missing ancestor(s)",
+            missing.len(),
+        );
+        let far_c = model::open(&far_doc, &ROOT).expect("the far side has the document");
+        let text = model::materialize(&far_doc, &far_c)
+            .blocks
+            .iter()
+            .map(|b| b.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Before the photograph."), "got: {text:?}");
+        assert!(
+            text.contains("Line 0 after the photograph."),
+            "typing after the photograph must keep arriving — this is the line that used \
+             to be lost forever. Got: {text:?}",
+        );
+        assert!(text.contains("Line 9 after the photograph."), "got: {text:?}");
+
+        // And the far side can name the picture it now holds.
+        let img = model::materialize(&far_doc, &far_c)
+            .blocks
+            .into_iter()
+            .find(|b| b.kind == "image")
+            .expect("the image block crossed");
+        assert_eq!(
+            img.attrs.get("blob"),
+            Some(&qdoc::snapshot::AttrVal::Str(photo_hash)),
+            "the reference must name the content that arrived",
+        );
+    }
+
     #[test]
     fn handle_app_crdt_message_buffers_for_drain() {
         // The inbound receive-side adapter pushes onto the buffer
