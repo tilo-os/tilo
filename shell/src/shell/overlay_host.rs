@@ -37,8 +37,8 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    CrossStripDetach, GroupRow, OutputSpan, PROMPT_HEIGHT, PermissionPrompt, PromptChoice, Widget,
-    WindowGroup as UiWindowGroup,
+    CrossStripDetach, GroupRow, ModalAction, ModalFrame, ModalSpec, OutputSpan, PROMPT_HEIGHT,
+    PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
 };
 use ui::{CommandEntry, CommandPalette};
 
@@ -321,6 +321,15 @@ pub struct ShellOverlayHost {
     /// when the prompt is not painted, so a click cannot reach a button
     /// that is not on screen.
     peer_sync_prompt_rects: Vec<(PeerSyncPromptButton, Rect)>,
+    /// The card rect the last frame actually drew.
+    ///
+    /// Hit-testing reads this rather than recomputing the geometry: the
+    /// frame decides where the card lands, and a second opinion computed
+    /// on the side is a second opinion that drifts.
+    peer_sync_card_rect: Rect,
+    /// Where the last frame's body content ended. Proves the measured
+    /// body height was big enough for what got drawn into it.
+    peer_sync_body_end: f64,
     /// Top-right notification stack. Painted above the desktop content
     /// but below the permission prompt and modal overlays so a
     /// permission prompt always wins focus. `None` until
@@ -422,6 +431,21 @@ pub enum PeerSyncAction {
     /// ([`ShellOverlayHost::draw_peer_sync`]); submitting it sends a
     /// [`PeerSyncRequest::AcceptInvite`] through the bridge.
     PromptConnect,
+    /// Redeem this token: the operation the card's Join button performs,
+    /// with the pointer taken out.
+    ///
+    /// `PromptConnect` raises the card and stops there, so finishing a
+    /// join meant clicking — paste, then Join. A participant with no
+    /// pointer therefore could not join a room at all, and the way round
+    /// it was to synthesise clicks into their session, which gave them a
+    /// cursor position they then published to everybody as a phantom
+    /// caret parked on the button.
+    ///
+    /// This carries the token instead. It lands in the same
+    /// [`PeerSyncRequest::AcceptInvite`] the button raises, through the
+    /// same bridge and therefore the same authorisation — the point is
+    /// two ways to reach one operation, not two implementations of it.
+    AcceptInvite(String),
 }
 
 /// A peer-sync operation the widget layer wants performed, handed to
@@ -471,7 +495,23 @@ pub enum PeerSyncPromptButton {
     CopyToken,
     /// Pull an invite token off the system clipboard into the prompt.
     PasteToken,
+    /// The title row's close control.
+    ///
+    /// Does what Cancel does, and exists separately from it because not
+    /// every face of the card carries a Cancel — the face holding a
+    /// minted token offers only Copy, and used to have no way out but
+    /// Escape, explained in a sentence. A modal with no visible exit is
+    /// the defect; a distinct variant is what lets the exit be named and
+    /// clicked on every face.
+    Close,
 }
+
+/// Widest the peer-sync card is drawn.
+///
+/// The card holds a name, a line of state and a fingerprint. A surface
+/// three times wider than its content reads as one that failed to load
+/// rather than one that is finished.
+const PEER_SYNC_CARD_WIDTH: f64 = 520.0;
 
 /// Total duration of the desktop ↔ overview crossfade. The concept wraps
 /// the two views in `AnimatePresence mode="wait"` with `duration: 0.2`
@@ -1249,6 +1289,8 @@ impl ShellOverlayHost {
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
             peer_sync_prompt_rects: Vec::new(),
+            peer_sync_card_rect: Rect::ZERO,
+            peer_sync_body_end: 0.0,
             notification_stack: None,
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
@@ -1694,6 +1736,20 @@ impl ShellOverlayHost {
                         st.bump();
                     }
                 }
+                PeerSyncAction::AcceptInvite(token) => {
+                    // Show the token on the card before redeeming it, so
+                    // a join that came in without a pointer still leaves
+                    // the same trail on screen a clicked one does —
+                    // somebody watching sees what was redeemed, not a
+                    // room that silently appeared.
+                    if let Some(chrome) = self.chrome.clone() {
+                        let mut st = chrome.borrow_mut();
+                        st.peer_sync_invite_name = None;
+                        st.peer_sync_connect_input = Some(token.clone());
+                        st.bump();
+                    }
+                    let _ = self.redeem_invite(&token);
+                }
             }
         }
     }
@@ -1769,6 +1825,25 @@ impl ShellOverlayHost {
     /// Closes the prompt on success and leaves it open on failure with
     /// the reason underneath, so a mistyped token can be corrected
     /// rather than retyped from scratch.
+    /// Put the peer-sync card away, whichever face it is showing.
+    ///
+    /// Clears the minted token too. Cancel used to leave it standing,
+    /// which was invisible while only the composer and the prompt could
+    /// be cancelled — the face holding a token had no exit at all. Now
+    /// that the title row's close control appears on every face, an exit
+    /// that left the token behind would leave the card up.
+    fn dismiss_peer_sync_card(&mut self) {
+        if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            st.peer_sync_connect_input = None;
+            st.peer_sync_invite_name = None;
+            st.peer_sync_invite_token = None;
+            st.peer_sync_invite_for = None;
+            st.peer_sync_status = None;
+            st.bump();
+        }
+    }
+
     fn submit_connect_prompt(&mut self) {
         let token = match self.chrome.as_ref() {
             Some(chrome) => match chrome.borrow().peer_sync_connect_input.clone() {
@@ -1777,10 +1852,36 @@ impl ShellOverlayHost {
             },
             None => return,
         };
-        let outcome = self.peer_sync_call(PeerSyncRequest::AcceptInvite(token.trim().to_string()));
+        let _ = self.redeem_invite(&token);
+    }
+
+    /// Redeem an invite token, and put the outcome where a person can
+    /// read it.
+    ///
+    /// **The one implementation of joining.** The card's Join button
+    /// reaches it through [`Self::submit_connect_prompt`]; the `peer.join`
+    /// action reaches it through [`PeerSyncAction::AcceptInvite`]. Both
+    /// arrive at the same [`PeerSyncRequest::AcceptInvite`] over the same
+    /// bridge, so the authorisation a click is subject to is the
+    /// authorisation the action is subject to — an action that could join
+    /// a room the button would have been refused is a hole, and the way
+    /// to not have one is to not have a second code path that could
+    /// disagree.
+    ///
+    /// Returns the room id on success so a caller that has no screen —
+    /// which is the whole point of the action — gets the answer rather
+    /// than only the side effect.
+    fn redeem_invite(&mut self, token: &str) -> Result<String, String> {
+        let token = token.trim().to_string();
+        if token.is_empty() {
+            let e = "an invite token is required".to_string();
+            self.set_peer_sync_status(format!("Refused: {e}"));
+            return Err(e);
+        }
+        let outcome = self.peer_sync_call(PeerSyncRequest::AcceptInvite(token));
         if let Some(chrome) = self.chrome.clone() {
             let mut st = chrome.borrow_mut();
-            match outcome {
+            match &outcome {
                 Ok(room) => {
                     st.peer_sync_connect_input = None;
                     st.peer_sync_status = Some(format!("Joined room {room}"));
@@ -1789,6 +1890,16 @@ impl ShellOverlayHost {
                     st.peer_sync_status = Some(format!("Refused: {e}"));
                 }
             }
+            st.bump();
+        }
+        outcome.map_err(|e| e.to_string())
+    }
+
+    /// Write a line of peer-sync state onto the card.
+    fn set_peer_sync_status(&mut self, status: String) {
+        if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            st.peer_sync_status = Some(status);
             st.bump();
         }
     }
@@ -1972,27 +2083,29 @@ impl ShellOverlayHost {
                             PeerSyncPromptButton::Join => self.submit_connect_prompt(),
                             PeerSyncPromptButton::CopyToken => self.copy_invite_token(),
                             PeerSyncPromptButton::PasteToken => self.paste_invite_token(),
-                            PeerSyncPromptButton::Cancel => {
-                                if let Some(chrome) = self.chrome.clone() {
-                                    let mut st = chrome.borrow_mut();
-                                    st.peer_sync_connect_input = None;
-                                    st.peer_sync_invite_name = None;
-                                    st.peer_sync_status = None;
-                                    st.bump();
-                                }
+                            PeerSyncPromptButton::Cancel | PeerSyncPromptButton::Close => {
+                                self.dismiss_peer_sync_card();
                             }
                         }
                         return true;
                     }
                 }
-                self.peer_sync_rect().contains(p)
+                // Outside every control. A click on the card itself is
+                // swallowed; a click on the scrim puts the card away.
+                //
+                // Both halves matter. The card takes the keyboard while
+                // it is up, so letting a click reach the desktop behind
+                // it would leave the pointer acting on one surface and
+                // the keys on another — and a modal you can click past
+                // is one a person can lose without ever seeing it close.
+                if !self.peer_sync_card_rect.contains(p) {
+                    self.dismiss_peer_sync_card();
+                }
+                true
             }
             WindowEvent::CursorMoved { .. }
             | WindowEvent::MouseWheel { .. }
-            | WindowEvent::MouseInput { .. } => self
-                .last_cursor
-                .map(|p| self.peer_sync_rect().contains(p))
-                .unwrap_or(false),
+            | WindowEvent::MouseInput { .. } => true,
             _ => false,
         }
     }
@@ -3973,6 +4086,7 @@ impl ShellOverlayHost {
                     PeerSyncPromptButton::Cancel => "cancel",
                     PeerSyncPromptButton::CopyToken => "copy",
                     PeerSyncPromptButton::PasteToken => "paste",
+                    PeerSyncPromptButton::Close => "close",
                 };
                 (name, *rect)
             })
@@ -8635,15 +8749,20 @@ pub struct RosterRow {
 /// Shared by the rect math and the paint so the two cannot drift — a
 /// card sized for one row painting two clipped the second.
 pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Vec<RosterRow> {
-    // The people in the room the user is looking at, with the
-    // tree-level roster standing in only when that workspace has none
-    // of its own — the same precedence the top bar and the wheel disc
-    // apply. Reading the tree-level list unconditionally showed one
-    // workspace's peers under another workspace's heading.
-    let roster: &[crate::shell::state::Collaborator] = match tree.active_workspace() {
-        Some(ws) if !ws.collaborators.is_empty() => &ws.collaborators,
-        _ => &tree.collaborators,
-    };
+    // The people actually in the room the user is looking at.
+    //
+    // The live roster wins; the workspace's own list answers only when
+    // there is no live one — fixtures, a session with no network, the
+    // demo tree. The precedence used to run the other way, and it was
+    // wrong in a way only a guest could see: redeeming an invite admits
+    // exactly one row into the workspace — the inviter, under a raw
+    // session handle, because a signed token carries no name — so a
+    // guest's panel pinned itself to that placeholder and nobody who
+    // subsequently joined could ever appear in it. A host never redeems
+    // an invite, so its workspace list stays empty, it fell through to
+    // the live roster, and the panel looked right from the one side
+    // anybody was checking. The top bar had the same defect.
+    let roster = crate::shell::state::active_room_roster(tree);
     // Settled over the room rather than picked per row: `roster_colors`
     // honours an explicit `cursor_color` and moves anyone who would
     // otherwise land on it, so a peer's row avatar matches their cursor
@@ -10199,29 +10318,9 @@ impl ShellOverlayHost {
         }
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let rect = self.peer_sync_rect();
-        let card = RoundedRect::from_rect(rect, tokens.radii.lg as f64);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            panel_surface(theme, MODAL_SURFACE_ALPHA),
-            None,
-            &card,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &card,
-        );
-
-        let pad = 20.0_f64;
-        let mut y = rect.y0 + pad;
-        let title_size = (tokens.typography.scale.base).max(14.0);
         let body_size = (tokens.typography.scale.xs).max(10.0);
         let name_size = (tokens.typography.scale.sm).max(12.0);
-        let avail = rect.width() - pad * 2.0;
+
         let title = if invite_name.is_some() {
             "Invite someone"
         } else if input.is_some() {
@@ -10229,15 +10328,65 @@ impl ShellOverlayHost {
         } else {
             "Workspace invite"
         };
-        text_renderer.draw_text(
-            scene,
-            title,
-            title_size,
-            colors.text_primary,
-            transform * Affine::translate((rect.x0 + pad, y)),
-            None,
+
+        // Every face of the card carries actions, because every step of
+        // moving an invite is a gesture: naming the person, getting the
+        // token onto the clipboard, getting it off again.
+        //
+        // Given left-to-right, so the last entry is the one at the right
+        // edge — which is where the primary action goes.
+        let buttons: &[(&str, PeerSyncPromptButton)] = if invite_name.is_some() {
+            &[
+                ("Cancel", PeerSyncPromptButton::Cancel),
+                ("Create invite", PeerSyncPromptButton::CreateInvite),
+            ]
+        } else if input.is_some() {
+            &[
+                ("Paste", PeerSyncPromptButton::PasteToken),
+                ("Cancel", PeerSyncPromptButton::Cancel),
+                ("Join", PeerSyncPromptButton::Join),
+            ]
+        } else {
+            &[("Copy", PeerSyncPromptButton::CopyToken)]
+        };
+        let actions: Vec<ModalAction<'_>> = buttons
+            .iter()
+            .map(|(label, which)| match which {
+                PeerSyncPromptButton::Join
+                | PeerSyncPromptButton::CopyToken
+                | PeerSyncPromptButton::CreateInvite => ModalAction::primary(label),
+                _ => ModalAction::secondary(label),
+            })
+            .collect();
+
+        // How tall the body under the title wants to be. Measured rather
+        // than fixed: the card used to carry one hard-coded height per
+        // face, so a face whose content grew was a face that overflowed
+        // its own surface silently.
+        let body_h = self.peer_sync_body_height(
+            text_renderer,
+            theme,
+            invite_name.as_deref(),
+            input.as_deref(),
+            token.as_deref(),
+            status.as_deref(),
         );
-        y += title_size as f64 + 14.0;
+
+        let spec = ModalSpec::new(title)
+            .actions(&actions)
+            .body_height(body_h)
+            .max_width(PEER_SYNC_CARD_WIDTH);
+        let layout = ModalFrame::layout(self.rect, &spec, text_renderer, theme);
+        self.peer_sync_card_rect = layout.card;
+        ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
+
+        // The body arithmetic below is written against the card and its
+        // padding, which is exactly what the frame's body rect is — so
+        // rebinding these two keeps it unchanged.
+        let rect = layout.card;
+        let pad = ui::widget::modal_frame::MODAL_PAD;
+        let mut y = layout.body.y0;
+        let avail = layout.body.width();
 
         if let Some(typed) = invite_name.as_deref() {
             // --- Asking who ------------------------------------------
@@ -10430,65 +10579,86 @@ impl ShellOverlayHost {
             y += body_size as f64 + 16.0;
         }
 
-        // Every face of the card carries buttons, because every step of
-        // moving an invite is a gesture: naming the person, getting the
-        // token onto the clipboard, getting it off again.
-        {
-            let buttons: &[(&str, PeerSyncPromptButton)] = if invite_name.is_some() {
-                &[
-                    ("Create invite", PeerSyncPromptButton::CreateInvite),
-                    ("Cancel", PeerSyncPromptButton::Cancel),
-                ]
-            } else if input.is_some() {
-                &[
-                    ("Join", PeerSyncPromptButton::Join),
-                    ("Cancel", PeerSyncPromptButton::Cancel),
-                    ("Paste", PeerSyncPromptButton::PasteToken),
-                ]
-            } else {
-                &[("Copy", PeerSyncPromptButton::CopyToken)]
-            };
-            let bh = 30.0_f64;
-            let by = rect.y1 - pad - bh;
-            let mut bx = rect.x1 - pad;
-            for (label, which) in buttons.iter().copied() {
-                let (tw, th) = text_renderer.measure(label, body_size, None);
-                let bw = tw as f64 + 26.0;
-                let brect = Rect::new(bx - bw, by, bx, by + bh);
-                let is_primary = matches!(
-                    which,
-                    PeerSyncPromptButton::Join
-                        | PeerSyncPromptButton::CopyToken
-                        | PeerSyncPromptButton::CreateInvite
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    if is_primary {
-                        colors.accent[5]
-                    } else {
-                        colors.surface_white_5
-                    },
-                    None,
-                    &RoundedRect::from_rect(brect, bh / 2.0),
-                );
-                text_renderer.draw_text(
-                    scene,
-                    label,
-                    body_size,
-                    colors.text_primary,
-                    transform
-                        * Affine::translate((
-                            (brect.x0 + brect.x1) / 2.0 - tw as f64 / 2.0,
-                            (brect.y0 + brect.y1) / 2.0 - th as f64 / 2.0,
-                        )),
-                    None,
-                );
-                self.peer_sync_prompt_rects.push((which, brect));
-                bx = brect.x0 - 8.0;
-            }
+        // Where the body actually ended, so a test can prove the content
+        // fits the space the frame measured for it rather than trusting
+        // the arithmetic that asked for it.
+        self.peer_sync_body_end = y;
 
+        ModalFrame::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
+
+        // The action rects are what clicks resolve against, and what
+        // `peer_sync_prompt_rects_for_tests` names — so registering them
+        // from the frame's layout is what keeps `peer_sync_join` and
+        // friends addressable after the port.
+        for ((_, which), brect) in buttons.iter().zip(layout.actions.iter()) {
+            self.peer_sync_prompt_rects.push((*which, *brect));
         }
+        // The close control. The card had no way out but Escape, and
+        // said so in a sentence; this is that sentence replaced by the
+        // control it was standing in for.
+        if let Some(close) = layout.close {
+            self.peer_sync_prompt_rects
+                .push((PeerSyncPromptButton::Close, close));
+        }
+    }
+
+    /// How tall the peer-sync card's body wants to be, for the face the
+    /// chrome is currently showing.
+    ///
+    /// Mirrors the arithmetic in [`Self::draw_peer_sync`]'s body, and is
+    /// checked against it by `peer_sync_body_fits_the_frame` — a measure
+    /// that drifted from the draw would give the frame a body height that
+    /// clips content, which is the failure the fixed heights had.
+    #[allow(clippy::too_many_arguments)]
+    fn peer_sync_body_height(
+        &self,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        invite_name: Option<&str>,
+        input: Option<&str>,
+        token: Option<&str>,
+        status: Option<&str>,
+    ) -> f64 {
+        let tokens = &theme.tokens;
+        let body_size = (tokens.typography.scale.xs).max(10.0);
+        let name_size = (tokens.typography.scale.sm).max(12.0);
+        let code_size = tokens.typography.scale.lg.max(15.0);
+
+        // A person row: name over sub-label, as `draw_invite_person_row`
+        // lays it out (its sub-label takes the same `xs` tier this body
+        // text does), plus the gap that follows it.
+        let person_row = 2.0 + name_size as f64 + 6.0 + body_size as f64 + 12.0;
+        // The code field: the glyph height plus its own padding.
+        let code_field = |tr: &mut TextRenderer| -> f64 {
+            let (_, fh) = tr.measure("0000 0000 0000 0000", code_size, None);
+            fh as f64 + 20.0
+        };
+
+        let mut h = if invite_name.is_some() {
+            // label, field, gap, note
+            body_size as f64 + 8.0 + 38.0 + 12.0 + body_size as f64 + 10.0
+        } else if let Some(token) = token {
+            let mut h = person_row;
+            if parse_invite(token).is_some() {
+                h += code_field(text_renderer);
+            }
+            h
+        } else {
+            let typed = input.unwrap_or("");
+            if parse_invite(typed).is_some() {
+                person_row + code_field(text_renderer)
+            } else {
+                let mut h = name_size as f64 + 8.0;
+                if !typed.is_empty() {
+                    h += body_size as f64 + 8.0;
+                }
+                h
+            }
+        };
+        if status.is_some() {
+            h += body_size as f64 + 16.0;
+        }
+        h
     }
 
     fn draw_search_banner(
@@ -12936,6 +13106,16 @@ mod palette_dispatch_tests {
     use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
     use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
 
+    /// A left-button press. The card reads the position from
+    /// `last_cursor`, the way the real event stream delivers it.
+    fn left_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+        }
+    }
+
     fn key_event(key: Key) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = key;
@@ -13229,15 +13409,345 @@ mod palette_dispatch_tests {
         );
     }
 
+    /// A screen for the card to be laid out on.
+    ///
+    /// The host starts with a zero rect until a layout pass gives it one,
+    /// and the modal frame centres on whatever viewport it is handed — so
+    /// a fixture that skipped this would be measuring a card on a screen
+    /// with no area, and would not be asking about anything a person can
+    /// see.
+    const TEST_VIEWPORT: Rect = Rect::new(0.0, 0.0, 1600.0, 1000.0);
+
     fn draw_and_collect_peer_sync_buttons(h: &mut ShellOverlayHost) -> Vec<&'static str> {
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
+        h.rect = TEST_VIEWPORT;
         h.draw_peer_sync(&mut scene, Affine::IDENTITY, &mut tr, &theme);
         h.peer_sync_prompt_rects_for_tests()
             .into_iter()
             .map(|(name, _)| name)
             .collect()
+    }
+
+    // -----------------------------------------------------------------
+    // The card is a modal, and is composed from the shared modal frame.
+    // -----------------------------------------------------------------
+
+    /// Draw one face and hand back the host, so the rects it registered
+    /// can be inspected.
+    fn draw_peer_sync_face(h: &mut ShellOverlayHost, theme: &Theme) {
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        h.rect = TEST_VIEWPORT;
+        h.draw_peer_sync(&mut scene, Affine::IDENTITY, &mut tr, theme);
+    }
+
+    /// Set the card to each of its three faces in turn.
+    fn peer_sync_faces(chrome: &crate::shell::chrome_state::Chrome) -> Vec<&'static str> {
+        {
+            let mut st = chrome.borrow_mut();
+            st.peer_sync_invite_name = None;
+            st.peer_sync_invite_token = None;
+            st.peer_sync_connect_input = None;
+            st.peer_sync_status = None;
+        }
+        vec!["composer", "token", "connect"]
+    }
+
+    fn set_peer_sync_face(chrome: &crate::shell::chrome_state::Chrome, face: &str) {
+        let mut st = chrome.borrow_mut();
+        st.peer_sync_invite_name = None;
+        st.peer_sync_invite_token = None;
+        st.peer_sync_connect_input = None;
+        st.peer_sync_status = None;
+        match face {
+            "composer" => st.peer_sync_invite_name = Some("Xaver".to_string()),
+            "token" => {
+                st.peer_sync_invite_token = Some(SAMPLE_TOKEN.to_string());
+                st.peer_sync_invite_for = Some("Xaver".to_string());
+            }
+            _ => st.peer_sync_connect_input = Some(String::new()),
+        }
+    }
+
+    /// Every face of the card offers a close control.
+    ///
+    /// The face holding a minted token used to offer only Copy: no
+    /// Cancel, no close, and Escape as the only way out — which the card
+    /// explained in a sentence, because it had to. A modal whose exit has
+    /// to be described in prose does not have one.
+    #[test]
+    fn every_face_of_the_peer_sync_card_offers_a_close_control() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let (mut h, chrome) = host_with_chrome();
+            for face in peer_sync_faces(&chrome) {
+                set_peer_sync_face(&chrome, face);
+                draw_peer_sync_face(&mut h, &theme);
+                let rects = h.peer_sync_prompt_rects_for_tests();
+                let close = rects.iter().find(|(n, _)| *n == "close");
+                let (_, rect) = close.unwrap_or_else(|| {
+                    panic!(
+                        "{} face has no close control; it offers {:?}",
+                        face,
+                        rects.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+                    )
+                });
+                assert!(
+                    rect.area() > 0.0,
+                    "{face}: the close control has no area, so it is not clickable",
+                );
+                assert!(
+                    h.peer_sync_card_rect.contains(rect.center()),
+                    "{face}: the close control is outside the card",
+                );
+            }
+        }
+    }
+
+    /// Clicking the close control puts the card away — including the face
+    /// holding a live token, which is the one that had no exit.
+    #[test]
+    fn the_close_control_dismisses_the_card_on_the_token_face() {
+        let (mut h, chrome) = host_with_chrome();
+        set_peer_sync_face(&chrome, "token");
+        draw_peer_sync_face(&mut h, &Theme::dark());
+        let close = h
+            .peer_sync_prompt_rects_for_tests()
+            .into_iter()
+            .find(|(n, _)| *n == "close")
+            .map(|(_, r)| r)
+            .expect("the token face must have a close control");
+
+        h.last_cursor = Some(close.center());
+        assert!(
+            h.handle_peer_sync_event(&left_press(), &Modifiers::default()),
+            "the card owns a click on its own close control",
+        );
+        let st = chrome.borrow();
+        assert!(
+            st.peer_sync_invite_token.is_none(),
+            "closing left the token behind, so the card stays up",
+        );
+        assert!(st.peer_sync_connect_input.is_none());
+        assert!(st.peer_sync_invite_name.is_none());
+    }
+
+    /// A click on the scrim dismisses; a click on the card does not; and
+    /// neither reaches the desktop behind.
+    #[test]
+    fn the_scrim_dismisses_and_the_card_swallows() {
+        let (mut h, chrome) = host_with_chrome();
+
+        // On the card, away from any control.
+        set_peer_sync_face(&chrome, "token");
+        draw_peer_sync_face(&mut h, &Theme::dark());
+        let card = h.peer_sync_card_rect;
+        h.last_cursor = Some(Point::new(card.x0 + 4.0, card.y1 - 4.0));
+        assert!(
+            h.handle_peer_sync_event(&left_press(), &Modifiers::default()),
+            "a click on the card must not reach the desktop behind it",
+        );
+        assert!(
+            chrome.borrow().peer_sync_invite_token.is_some(),
+            "a click on the card's own surface must not dismiss it",
+        );
+
+        // On the scrim.
+        set_peer_sync_face(&chrome, "token");
+        draw_peer_sync_face(&mut h, &Theme::dark());
+        h.last_cursor = Some(Point::new(h.peer_sync_card_rect.x0 - 40.0, 8.0));
+        assert!(
+            h.handle_peer_sync_event(&left_press(), &Modifiers::default()),
+            "the scrim swallows the click rather than passing it through",
+        );
+        assert!(
+            chrome.borrow().peer_sync_invite_token.is_none(),
+            "a click on the scrim puts the card away",
+        );
+    }
+
+    /// The body content fits the space the frame measured for it.
+    ///
+    /// The card used to carry one hard-coded height per face, so content
+    /// that grew ran past the surface it was drawn on. The measurement
+    /// and the drawing are separate pieces of arithmetic, so this checks
+    /// that they still agree — on both themes, since the type scale is a
+    /// theme token.
+    #[test]
+    fn the_peer_sync_body_fits_the_frame_it_was_measured_for() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let (mut h, chrome) = host_with_chrome();
+            for face in peer_sync_faces(&chrome) {
+                for status in [None, Some("Joined room abc")] {
+                    set_peer_sync_face(&chrome, face);
+                    if let Some(s) = status {
+                        chrome.borrow_mut().peer_sync_status = Some(s.to_string());
+                    }
+                    draw_peer_sync_face(&mut h, &theme);
+                    // Where the body was allowed to end: the card's
+                    // bottom, less the action row and the padding.
+                    let limit = h.peer_sync_card_rect.y1
+                        - ui::widget::modal_frame::MODAL_ACTION_ROW_H
+                        - ui::widget::modal_frame::MODAL_PAD;
+                    assert!(
+                        h.peer_sync_body_end <= limit + 0.5,
+                        "{face} (status {status:?}): body ran to {} but the frame \
+                         gave it until {limit}",
+                        h.peer_sync_body_end,
+                    );
+                }
+            }
+        }
+    }
+
+    /// The names the click-driven proof resolves survive the port.
+    ///
+    /// `collab-panel-proof.py` drives the whole invite flow with
+    /// `click_named` and nothing else, so these four names are the
+    /// interface that proof is written against.
+    #[test]
+    fn the_ported_card_still_publishes_the_names_the_proof_clicks() {
+        let (mut h, chrome) = host_with_chrome();
+
+        set_peer_sync_face(&chrome, "composer");
+        let names = draw_and_collect_peer_sync_buttons(&mut h);
+        assert!(names.contains(&"create"), "composer lost `create`, got {names:?}");
+
+        set_peer_sync_face(&chrome, "token");
+        let names = draw_and_collect_peer_sync_buttons(&mut h);
+        assert!(names.contains(&"copy"), "token face lost `copy`, got {names:?}");
+
+        set_peer_sync_face(&chrome, "connect");
+        let names = draw_and_collect_peer_sync_buttons(&mut h);
+        assert!(names.contains(&"paste"), "connect lost `paste`, got {names:?}");
+        assert!(names.contains(&"join"), "connect lost `join`, got {names:?}");
+    }
+
+    // -----------------------------------------------------------------
+    // Joining without a pointer.
+    // -----------------------------------------------------------------
+
+    /// A bridge that records what it was asked and answers `Ok`.
+    fn recording_bridge() -> (
+        std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>,
+        std::rc::Rc<std::cell::RefCell<Vec<PeerSyncRequest>>>,
+    ) {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = seen.clone();
+        let bridge: std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>> =
+            std::rc::Rc::new(move |req| {
+                sink.borrow_mut().push(req);
+                Ok("abc".to_string())
+            });
+        (bridge, seen)
+    }
+
+    /// `peer.join` redeems a token, and reaches the network by the same
+    /// request the Join button raises.
+    ///
+    /// The gap this closes: `peer.connect` only raises the card, so
+    /// finishing a join needed two clicks. A participant with no pointer
+    /// — an agent — therefore could not accept an invitation at all
+    /// without having clicks synthesised into its session, which is how
+    /// it came to own a cursor position and publish it to the room.
+    #[test]
+    fn the_join_action_redeems_a_token_without_a_pointer() {
+        let (mut h, chrome) = host_with_chrome();
+        let (bridge, seen) = recording_bridge();
+        h.set_peer_sync_bridge(bridge);
+
+        chrome
+            .borrow_mut()
+            .push_peer_sync_request(PeerSyncAction::AcceptInvite(SAMPLE_TOKEN.to_string()));
+        h.pump_peer_sync();
+
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &[PeerSyncRequest::AcceptInvite(SAMPLE_TOKEN.to_string())],
+            "the action must reach the network by the same request the button raises",
+        );
+        assert_eq!(
+            chrome.borrow().peer_sync_status.as_deref(),
+            Some("Joined room abc"),
+            "and the outcome has to land where a person can read it",
+        );
+        // No pointer was involved: nothing in this test set one, and the
+        // host still has none. That is the property the action exists
+        // for, so it is asserted rather than assumed.
+        assert!(
+            h.last_cursor.is_none(),
+            "redeeming through the action must not give the session a cursor",
+        );
+    }
+
+    /// The button and the action are one operation, not two.
+    ///
+    /// Asserted by driving both and comparing what the network was asked
+    /// — a second implementation that authorised differently is exactly
+    /// the hole this shape avoids.
+    #[test]
+    fn the_join_button_and_the_join_action_raise_the_same_request() {
+        let by_action = {
+            let (mut h, chrome) = host_with_chrome();
+            let (bridge, seen) = recording_bridge();
+            h.set_peer_sync_bridge(bridge);
+            chrome
+                .borrow_mut()
+                .push_peer_sync_request(PeerSyncAction::AcceptInvite(SAMPLE_TOKEN.to_string()));
+            h.pump_peer_sync();
+            seen.borrow().clone()
+        };
+
+        let by_click = {
+            let (mut h, chrome) = host_with_chrome();
+            let (bridge, seen) = recording_bridge();
+            h.set_peer_sync_bridge(bridge);
+            chrome.borrow_mut().peer_sync_connect_input = Some(SAMPLE_TOKEN.to_string());
+            draw_peer_sync_face(&mut h, &Theme::dark());
+            let join = h
+                .peer_sync_prompt_rects_for_tests()
+                .into_iter()
+                .find(|(n, _)| *n == "join")
+                .map(|(_, r)| r)
+                .expect("the connect face has a Join button");
+            h.last_cursor = Some(join.center());
+            h.handle_peer_sync_event(&left_press(), &Modifiers::default());
+            seen.borrow().clone()
+        };
+
+        assert_eq!(
+            by_action, by_click,
+            "the pointer-free path must ask the network for exactly what the click asks for",
+        );
+        assert_eq!(by_click.len(), 1, "and it must ask exactly once");
+    }
+
+    /// An empty token is refused before anything is asked of the network.
+    #[test]
+    fn joining_with_an_empty_token_asks_the_network_for_nothing() {
+        let (mut h, chrome) = host_with_chrome();
+        let (bridge, seen) = recording_bridge();
+        h.set_peer_sync_bridge(bridge);
+
+        chrome
+            .borrow_mut()
+            .push_peer_sync_request(PeerSyncAction::AcceptInvite("   ".to_string()));
+        h.pump_peer_sync();
+
+        assert!(
+            seen.borrow().is_empty(),
+            "an empty token must be refused here, not handed to the transport",
+        );
+        assert!(
+            chrome
+                .borrow()
+                .peer_sync_status
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("Refused"),
+            "and the refusal has to be visible",
+        );
     }
 
     // -----------------------------------------------------------------

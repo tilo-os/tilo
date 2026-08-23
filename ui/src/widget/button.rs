@@ -331,6 +331,15 @@ pub struct ButtonFace<'a> {
     weight: crate::text_render::TextWeight,
     text_size: f32,
     accessible_name: Option<&'a str>,
+    /// Overrides the label colour `face_colors` would resolve.
+    ///
+    /// Exists for callers that have *measured* the contrast of the label
+    /// against the resolved fill and found the default wanting — the
+    /// accent ramp is themeable, so a label colour that clears AA on one
+    /// palette does not necessarily clear it on the next. `None` (the
+    /// default) keeps the shared resolution, so every existing caller is
+    /// unaffected.
+    label_color: Option<vello::peniko::Color>,
 }
 
 impl<'a> ButtonFace<'a> {
@@ -345,6 +354,7 @@ impl<'a> ButtonFace<'a> {
             weight: crate::text_render::TextWeight::Medium,
             text_size: 14.0,
             accessible_name: None,
+            label_color: None,
         }
     }
     pub fn style(mut self, style: ButtonStyle) -> Self { self.style = style; self }
@@ -371,7 +381,17 @@ impl<'a> ButtonFace<'a> {
     /// border, label)` colours. Exposed for tests and callers that want the
     /// resolved palette without painting.
     pub fn colors(&self, theme: &Theme) -> (vello::peniko::Color, Option<vello::peniko::Color>, vello::peniko::Color) {
-        face_colors(theme, self.style, self.interact)
+        let (bg, border, fg) = face_colors(theme, self.style, self.interact);
+        (bg, border, self.label_color.unwrap_or(fg))
+    }
+
+    /// Paint the label in `color` instead of the one the style resolves.
+    ///
+    /// For callers that check the label against the fill at runtime — see
+    /// [`Self::label_color`](#structfield.label_color).
+    pub fn with_label_color(mut self, color: vello::peniko::Color) -> Self {
+        self.label_color = Some(color);
+        self
     }
 }
 
@@ -390,7 +410,7 @@ impl Button {
         theme: &Theme,
         face: &ButtonFace<'_>,
     ) {
-        let (bg, border, fg) = face_colors(theme, face.style, face.interact);
+        let (bg, border, fg) = face.colors(theme);
         let shape = RoundedRect::from_rect(face.rect, face.radius);
 
         // Disabled faces dim as one layer so fill + border + label fade

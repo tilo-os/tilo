@@ -773,6 +773,7 @@ pub mod color_picker;     pub use color_picker::ColorPicker;
 pub mod popover_widget;   pub use popover_widget::PopoverWidget;
 pub mod popover;          pub use popover::Popover;
 pub mod modal_dialog;     pub use modal_dialog::ModalDialog;
+pub mod modal_frame;      pub use modal_frame::{ModalAction, ModalEmphasis, ModalFrame, ModalHit, ModalLayout, ModalSpec};
 pub mod modal_prompt;     pub use modal_prompt::PromptBody;
 pub mod toolbar;          pub use toolbar::Toolbar;
 pub mod breadcrumb;       pub use breadcrumb::Breadcrumb;
