@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::curve::Curve;
 use crate::media::{self, Hydration};
 use crate::param::{ClipAnimation, Interp, Param};
 
@@ -973,6 +974,11 @@ pub struct Clip {
     /// Per-clip colour grade. Identity by default.
     #[serde(default)]
     pub filters: Filters,
+    /// Tone curves, applied straight after the three grade axes. The
+    /// straight line by default, which is why an untouched clip binds no
+    /// lookup table at all — see [`crate::curve`].
+    #[serde(default, skip_serializing_if = "Curve::is_identity")]
+    pub curves: Curve,
     /// Fade-in length in seconds (audio ramp / video dip from black at the
     /// head). 0 = no fade.
     #[serde(default)]
@@ -1032,6 +1038,7 @@ impl Default for Clip {
             transition: Transition::None,
             palette: 0,
             filters: Filters::default(),
+            curves: Curve::default(),
             fade_in: 0.0,
             fade_out: 0.0,
             transition_duration: 0.0,
@@ -1168,6 +1175,7 @@ impl Clip {
             Param::MaskH => self.mask.h,
             Param::MaskRotation => self.mask.rotation,
             Param::MaskFeather => self.mask.feather,
+            Param::CurveMix => self.curves.mix,
             Param::EffectAmount(i) => self.effects.get(i as usize)?.amount,
         })
     }
@@ -1201,6 +1209,7 @@ impl Clip {
             Param::MaskH => self.mask.h = v,
             Param::MaskRotation => self.mask.rotation = v,
             Param::MaskFeather => self.mask.feather = v,
+            Param::CurveMix => self.curves.mix = v,
             Param::EffectAmount(i) => {
                 if let Some(e) = self.effects.get_mut(i as usize) {
                     e.amount = v;
@@ -1335,6 +1344,21 @@ impl Clip {
             contrast: self.param_at(Param::Contrast, playhead),
             saturation: self.param_at(Param::Saturation, playhead),
         }
+    }
+
+    /// The tone curve at `playhead`, with an animated [`Param::CurveMix`]
+    /// substituted in. The shapes themselves are static — only how much of
+    /// them lands is a curve of its own.
+    ///
+    /// The result is [`Curve::normalised`] whatever the source, so a
+    /// document or a peer cannot hand the bake a spline with points out of
+    /// order or off the ends.
+    pub fn curves_at(&self, playhead: f64) -> Curve {
+        let mut c = self.curves.normalised();
+        if !self.anim.is_empty() {
+            c.mix = self.param_at(Param::CurveMix, playhead).clamp(0.0, 1.0);
+        }
+        c
     }
 
     /// The geometry at `playhead`. Crop and anchor are not animatable —

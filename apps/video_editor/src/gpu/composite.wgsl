@@ -56,6 +56,9 @@ struct Params {
     mask_a: vec4<f32>,
     // x/y: full extent as a fraction of the frame, z: feather, w: invert
     mask_b: vec4<f32>,
+    // Tone curve — x: 1 when this layer has a baked table, y: which row of
+    // the LUT texture is this layer's. z/w unused.
+    lut: vec4<f32>,
     // per effect — x: kind, y: amount
     effects: array<vec4<f32>, 8>,
 };
@@ -65,6 +68,9 @@ struct Params {
 @group(0) @binding(2) var src_tex: texture_2d<f32>;
 @group(0) @binding(3) var samp: sampler;
 @group(0) @binding(4) var dst: texture_storage_2d<rgba8unorm, write>;
+// One row per layer, 256 entries across. A curve and a 1D LUT are the same
+// thing here: whatever filled the row, this reads it the same way.
+@group(0) @binding(5) var lut_tex: texture_2d<f32>;
 
 // Matches `preview::Rgb::graded` exactly: brightness scales, contrast
 // pivots around mid-grey, saturation lerps toward luma.
@@ -74,6 +80,33 @@ fn grade_rgb(c: vec3<f32>, bright: f32, contrast: f32, sat: f32) -> vec3<f32> {
     let l = dot(x, LUMA);
     x = vec3<f32>(l) + (x - vec3<f32>(l)) * sat;
     return clamp(x, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// Push a colour through this layer's baked tone curve.
+//
+// The table already has the curve's `mix` folded into it (see
+// `curve::Curve::bake`), so there is no blend term here — a curve at half
+// strength is a table that is half way to the identity ramp.
+//
+// Between two entries the lookup interpolates rather than snapping to the
+// nearer one: 256 entries over a smooth gradient would otherwise band
+// visibly, and the CPU mirror in `Curve::apply` is continuous.
+fn apply_lut(c: vec3<f32>) -> vec3<f32> {
+    if (p.lut.x < 0.5) {
+        return c;
+    }
+    let row = i32(p.lut.y + 0.5);
+    let x = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)) * 255.0;
+    let lo = vec3<i32>(floor(x));
+    let hi = min(lo + vec3<i32>(1), vec3<i32>(255));
+    let f = x - floor(x);
+    let r = mix(textureLoad(lut_tex, vec2<i32>(lo.x, row), 0).r,
+                textureLoad(lut_tex, vec2<i32>(hi.x, row), 0).r, f.x);
+    let g = mix(textureLoad(lut_tex, vec2<i32>(lo.y, row), 0).g,
+                textureLoad(lut_tex, vec2<i32>(hi.y, row), 0).g, f.y);
+    let b = mix(textureLoad(lut_tex, vec2<i32>(lo.z, row), 0).b,
+                textureLoad(lut_tex, vec2<i32>(hi.z, row), 0).b, f.z);
+    return vec3<f32>(r, g, b);
 }
 
 // Matches `preview::apply_effect`, except Vignette — which here is a real
@@ -328,6 +361,10 @@ fn cs_layer(@builtin(global_invocation_id) gid: vec3<u32>) {
     col = despill(col);
 
     col = grade_rgb(col, p.grade.x, p.grade.y, p.grade.z);
+    // The curve is the fine half of the same grade, so it runs with it —
+    // after the three coarse axes and before the look effects, which are
+    // applied to a graded picture rather than being part of the grade.
+    col = apply_lut(col);
     let n = min(i32(p.palette.w + 0.5), MAX_EFFECTS);
     for (var i = 0; i < n; i = i + 1) {
         col = apply_effect(col, p.effects[i].x, p.effects[i].y, uv);
