@@ -348,6 +348,22 @@ pub struct GroupRow {
     /// retirement. Only ever set by [`Self::hold_shift_at`], which the
     /// capture harness uses; always `None` in a running shell.
     shift_hold: Option<Duration>,
+    /// The group the strip was last asked to bring into view — the
+    /// subject of the frame, as far as the row knows.
+    ///
+    /// Recorded even when the pan itself was a no-op, because "already
+    /// whole on screen" is the ordinary case at the moment focus lands,
+    /// and that window is still what the strip is about. It matters
+    /// later: when a layout pass overflows the row — every group
+    /// widened, a window opened — this is the one that has to come
+    /// through the overflow whole, because it is the one being looked
+    /// at.
+    ///
+    /// Not a focus pointer. The shell owns focus; this only remembers
+    /// what the row was last panned toward. A group that leaves the
+    /// strip stops matching any span, and the framing rule falls back to
+    /// its two-sided-cut repair.
+    into_view_group: Option<u64>,
 }
 
 /// One display's horizontal extent in the compositor's combined
@@ -396,6 +412,7 @@ impl GroupRow {
             shift_armed: false,
             shift_anim: None,
             shift_hold: None,
+            into_view_group: None,
         }
     }
 
@@ -749,6 +766,7 @@ impl GroupRow {
     }
 
     pub fn scroll_group_into_view(&mut self, group_id: u64) -> bool {
+        self.remember_into_view_subject(group_id);
         let Some(sx) = self.into_view_target(group_id) else {
             return false;
         };
@@ -766,6 +784,7 @@ impl GroupRow {
     /// cut — the way Niri's `focus-column-left/right` slides the view to
     /// the newly-focused column. Returns `true` when a pan was started.
     pub fn scroll_group_into_view_animated(&mut self, group_id: u64, now: Instant) -> bool {
+        self.remember_into_view_subject(group_id);
         let Some(sx) = self.into_view_target(group_id) else {
             return false;
         };
@@ -777,6 +796,21 @@ impl GroupRow {
         self.last_wheel_at = None;
         self.scroll_dirty = true;
         true
+    }
+
+    /// Note which group the strip is being brought to, so a later
+    /// layout pass can keep it framed.
+    ///
+    /// Deliberately runs before the pan is computed: the pan is a no-op
+    /// whenever the group is already on screen, which is most of the
+    /// time focus lands, and "no pan was needed" is not "this is not the
+    /// subject". Only records a group this row actually holds, so a
+    /// request aimed at another strip cannot displace a live subject
+    /// with an id that will never match a span.
+    fn remember_into_view_subject(&mut self, group_id: u64) {
+        if self.groups.iter().any(|g| g.id == group_id) {
+            self.into_view_group = Some(group_id);
+        }
     }
 
     /// Shared target math for [`Self::scroll_group_into_view`] and its
@@ -884,19 +918,24 @@ impl GroupRow {
     /// Where the strip should be resting, given what was just laid out.
     /// `None` — the common case — means it already is.
     ///
-    /// Two rules, in order:
+    /// Three rules, in order:
     ///
     /// 1. If the groups could all be on screen together, none of them
     ///    may be cut. There is a whole window of offsets that shows them
     ///    all; the strip is moved to the nearest edge of it, which is
     ///    the smallest correction that gets there.
-    /// 2. Otherwise the strip genuinely overflows and something has to
-    ///    hang off an end — but not off both. The offsets that end a
-    ///    two-sided cut are the ones putting some group's leading edge
-    ///    flush with the row's left or its trailing edge flush with the
-    ///    row's right, and the nearest of those wins.
+    /// 2. Otherwise the strip genuinely overflows, so something has to
+    ///    hang off an end — but not the window the strip was last
+    ///    brought to. That one is the subject of the frame, so it is
+    ///    moved to the nearest offset that shows it whole and its
+    ///    neighbour takes the cut instead.
+    /// 3. With no such subject, something still has to hang off an end —
+    ///    but not off both. The offsets that end a two-sided cut are the
+    ///    ones putting some group's leading edge flush with the row's
+    ///    left or its trailing edge flush with the row's right, and the
+    ///    nearest of those wins.
     ///
-    /// Nearest, in both rules, because the smallest move preserves most
+    /// Nearest, in every rule, because the smallest move preserves most
     /// of what is already framed. It also lands on the right subject
     /// without being told what the subject is: a strip is normally
     /// scrolled toward whatever was last brought into view, so the
@@ -918,6 +957,35 @@ impl GroupRow {
             let hi = leftmost.clamp(0.0, max).max(lo);
             let target = self.scroll_x.clamp(lo, hi);
             return ((target - self.scroll_x).abs() > 0.5).then_some(target);
+        }
+
+        // The strip overflows, so one of these windows is going to run
+        // off an end. It may not be the one the strip was brought to:
+        // that is the window being looked at, and cutting it shows the
+        // viewer part of the thing the frame is about while its
+        // neighbour sits whole beside it. Framing it costs the
+        // neighbour, which is a scrolling strip doing exactly its job.
+        //
+        // A group wider than the row is skipped for the same reason
+        // `cut_on_both_edges_at` skips it: no offset frames it, so
+        // chasing one would move the strip on every geometry change and
+        // never arrive.
+        if let Some(subject) = self.into_view_group
+            && let Some(&(_, x0, x1)) = spans.iter().find(|(id, _, _)| *id == subject)
+            && x1 - x0 > 0.0
+            && x1 - x0 <= row_w
+        {
+            // Nearest offset that shows it whole — the same "smallest
+            // correction" the everything-fits rule uses, over the
+            // narrower window of offsets that frames this one group.
+            let lo = (x1 - row_w).clamp(0.0, max);
+            let hi = x0.clamp(0.0, max).max(lo);
+            let target = self.scroll_x.clamp(lo, hi);
+            if (target - self.scroll_x).abs() > 0.5 {
+                return Some(target);
+            }
+            // Already whole: fall through, so a strip that is *also* cut
+            // on both edges still gets its neighbour repair.
         }
 
         if !self.cut_on_both_edges_at(spans, self.scroll_x) {
@@ -4385,6 +4453,65 @@ mod tests {
             "both windows are on screen and whole — spans {:?} at scroll_x {:.0}",
             row.laid_spans,
             row.scroll_x(),
+        );
+    }
+
+    /// The window the strip was brought to stays whole when every group
+    /// is widened underneath it.
+    ///
+    /// The last shot of the demo capture came out with the word
+    /// processor — the subject of the beat — sliced up its right-hand
+    /// column, 684px of it past the output. The sequence that produced
+    /// it: two groups that both fit, the right-hand one focused (a pan
+    /// the strip did not need, because nothing was off screen yet), then
+    /// every group widened to give that window a readable share. The
+    /// widening overflows the output, and the offset chosen when the
+    /// pair fitted leaves the *left* group framed and the subject
+    /// hanging off the right.
+    ///
+    /// Neither re-framing path caught it. The row's own rule only
+    /// repairs a strip cut on *both* edges, and this one is cut on one;
+    /// the shell's into-view pan is edge-triggered on which group is
+    /// focused, and focus never moved. So a strip may overflow — that is
+    /// what a scrolling strip is for — but the window it was last
+    /// brought to is the one that has to survive the overflow whole.
+    #[test]
+    fn widening_keeps_the_window_brought_into_view_whole() {
+        let mut row = strip_at(2, 1920.0, 291.0, 500);
+        let subject = 200; // the right-hand group
+        assert_eq!(
+            whole_groups(&row).len(),
+            2,
+            "test setup: two groups at 500 permille both fit 1920 — spans {:?}",
+            row.laid_spans,
+        );
+        // Asks for a pan the strip does not need: the subject is already
+        // whole, so nothing moves. It is still the window the strip was
+        // brought to, which is what the widening has to respect.
+        row.scroll_group_into_view(subject);
+
+        set_strip_permille(&mut row, 720);
+        relayout_strip(&mut row, 1920.0);
+
+        let overflows = row
+            .laid_spans
+            .last()
+            .zip(row.laid_spans.first())
+            .map(|((_, _, r), (_, l, _))| r - l)
+            .unwrap_or_default();
+        assert!(
+            overflows > 1920.0,
+            "test setup: two groups at 720 permille must overflow 1920, got {overflows:.0}",
+        );
+        assert!(
+            whole_groups(&row).contains(&subject),
+            "the window the strip was brought to is cut by the output edge \
+             after the widening — spans {:?} at scroll_x {:.0}, whole {:?}, \
+             cut {:?}",
+            row.laid_spans,
+            row.scroll_x(),
+            whole_groups(&row),
+            row.groups_cut_by_row_edges(),
         );
     }
 
