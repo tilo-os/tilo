@@ -2654,9 +2654,31 @@ def join_room(guest: Session, token: str, via: str,
             return False
         guest.settle(0.8)
     elif via == "action":
-        resp = guest.invoke_action(AGENT_PROVIDER, "peer.connect")
+        # One call, and no pointer anywhere in it.
+        #
+        # This used to raise `peer.connect` — which opens the card and
+        # stops — and then click Paste and Join, because redeeming a
+        # token had no address. So a participant with no mouse had to
+        # borrow one, and the position those clicks left behind was
+        # republished to the whole room once a second afterwards as a
+        # cursor labelled `Claude`, parked on the Join button. Three
+        # separate fixes chased that pill before the cause turned out to
+        # be that this is how the agent joined.
+        #
+        # `peer.join` takes the token and routes to `redeem_invite`, the
+        # same function the card's Join button calls, so the capability
+        # check is identical by construction rather than by review.
+        resp = guest.invoke_action(AGENT_PROVIDER, "peer.join",
+                                   {"token": token})
         if "err" in resp:
-            raise RuntimeError(f"{guest.name}: peer.connect refused: {resp['err']}")
+            raise RuntimeError(f"{guest.name}: peer.join refused: {resp['err']}")
+        if not wait_for(lambda: (guest.active_workspace() or {}).get("room"),
+                        timeout=15):
+            gap(f"{guest.name}: peer.join was accepted but no room arrived")
+            return False
+        claim(f"{guest.name} joined without touching a pointer",
+              guest.input_ops, 0)
+        return True
     else:
         raise ValueError(f"unknown join route {via!r}")
 
