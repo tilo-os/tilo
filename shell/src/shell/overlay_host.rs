@@ -2987,6 +2987,13 @@ impl ShellOverlayHost {
             st.search_scope = crate::shell::chrome_state::SearchScope::All;
             st.bump();
         }
+        // …and narrowed to the kinds that can *be* a tab. A "+" on a tab
+        // row asks for a program, so a picker that answers with notes,
+        // files and chrome actions has answered a different question —
+        // the user has to read past them to reach the one row they came
+        // for. The chips stay lit and clickable, so widening back out is
+        // one click away.
+        self.active_kind_filter = app_kind_filter();
         // Force-open rather than routing through `open_palette_with_scope`:
         // that helper toggles closed on a same-scope repeat, which is the
         // right behaviour for a chord and the wrong one for a button the
@@ -3768,6 +3775,15 @@ impl ShellOverlayHost {
         self.harvest_pending_new_tab()
     }
 
+    /// Test-only one-shot: mirror the widget-side active tab back into
+    /// the tree. Runs immediately before the focus-follow scroll in
+    /// [`Widget::update`], and a harness that skips it is reading a tree
+    /// one frame behind the clicks it just made.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_active_tab_writeback_for_tests(&mut self) {
+        self.harvest_active_tab_writeback();
+    }
+
     /// Test-only one-shot: run the focus-follow scroll reconcile from
     /// outside `update`. Mirrors what [`Widget::update`] runs each frame.
     #[cfg(any(test, debug_assertions))]
@@ -4282,6 +4298,25 @@ impl ShellOverlayHost {
         }
         tree.active_strip.insert(ws_id, strip_id);
         tree.active_group.insert(strip_id, group_id);
+        drop(tree);
+        drop(st);
+        // Tell the focus-follow reconciler this strip is already where it
+        // should be for this group, so it does not pan.
+        //
+        // The pointer is the one input with a fixed place on screen. A
+        // click can only land on something already visible, so there is
+        // nothing to reveal — while panning to bring the *rest* of that
+        // group into view drags the thing the user just pressed out from
+        // under their cursor. That is what made pressing a group's "+"
+        // scroll the desktop: the chip sits near the middle of the tab
+        // row, so it stays clickable on a group whose right edge hangs
+        // off the display, and the focus stamp then asked for the whole
+        // group.
+        //
+        // Keyboard and wheel navigation keep the pan — they can address a
+        // window that is entirely off screen, so revealing it is the
+        // whole point.
+        self.last_scrolled_active_group.insert(strip_id, group_id);
     }
 
     /// Toggle a kind in the chip filter. Multiple kinds may be active
@@ -6898,6 +6933,10 @@ impl Widget for ShellOverlayHost {
                                         crate::shell::chrome_state::SearchScope::All;
                                     st.bump();
                                     drop(st);
+                                    // Super+T is the chord form of the
+                                    // tab row's "+", so it asks the same
+                                    // question and gets the same picker.
+                                    self.active_kind_filter = app_kind_filter();
                                     self.palette_visible = true;
                                     self.palette.set_focus(true);
                                     self.palette.set_query("");
@@ -8723,6 +8762,17 @@ fn roster_initial(name: &str) -> char {
         .next()
         .map(|c| c.to_ascii_uppercase())
         .unwrap_or('•')
+}
+
+/// The kind chips a picker opened by "give me a new window" starts lit.
+///
+/// Both kinds are programs the user can start; they are separate chips
+/// because one runs sandboxed in the room and the other does not, which
+/// is a difference worth seeing — but neither is the odd one out when the
+/// question is "what do you want to open".
+fn app_kind_filter() -> Vec<crate::shell::search::ResourceKind> {
+    use crate::shell::search::ResourceKind;
+    vec![ResourceKind::Application, ResourceKind::HostApplication]
 }
 
 fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
