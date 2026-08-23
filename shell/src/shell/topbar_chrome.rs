@@ -459,8 +459,20 @@ impl TopBarChrome {
         self.collaborator_overflow = peer_count.saturating_sub(3);
     }
 
+    /// The clock as the top bar shows it.
+    ///
+    /// `QOS_CLOCK` pins it, for the same reason `QOS_SHOTS_THEME` pins
+    /// the palette: a harness that compares whole rendered frames has to
+    /// be able to hold every part of the frame still. Now that overlays
+    /// let the desktop show through instead of covering it, the top bar
+    /// is in shot for surfaces that never used to include it, and a
+    /// running clock would make those comparisons fail once a minute.
+    /// Unset — which is every real session — reads the wall clock.
     fn current_clock_string() -> String {
-        Local::now().format("%H:%M").to_string()
+        match std::env::var("QOS_CLOCK") {
+            Ok(pinned) if !pinned.is_empty() => pinned,
+            _ => Local::now().format("%H:%M").to_string(),
+        }
     }
 
     /// Initials painted as avatars (up to 3). Exposed for integration tests.
