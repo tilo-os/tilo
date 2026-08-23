@@ -433,7 +433,6 @@ impl TopBarChrome {
 
     pub fn sync_from_tree(&mut self, tree: &WorkspaceTree) {
         self.workspace_total = tree.workspaces.len().max(1);
-        let active_ws = tree.workspaces.iter().find(|w| w.id == tree.active);
         let (idx, name) = tree
             .workspaces
             .iter()
@@ -443,23 +442,20 @@ impl TopBarChrome {
             .unwrap_or((0, String::from("Workspace")));
         self.workspace_index = idx;
         self.workspace_name = name;
-        // Roster source: prefer the active workspace's own collaborators —
-        // people actually admitted to *this* workspace — and
-        // fall back to the tree-level roster only when the active workspace
-        // carries no peers — mirrors the precedence applied by
-        // `sidebar_wheel_chrome::sync_from_tree`. The local user (`id ==
-        // "me"`) is filtered out of the avatar stack: the right cluster
-        // shows *other* peers in the workspace, not the local user. Drop
-        // collaborators whose name has no starting char and take at most
-        // 3 — the rest flows into `collaborator_overflow`.
+        // Roster source: the room on screen, as
+        // `crate::shell::state::active_room_roster` settles it — the live
+        // roster the frame loop restates, with the workspace's own list
+        // answering only where there is no live one. Reading the
+        // workspace's list first, as this did, showed a guest nothing but
+        // the placeholder row its own join had written.
         //
-        // Everyone on it arrived: an accepted invite or a presence frame
-        // off the wire is what puts a row here (`admit_collaborator_in_room`
-        // / `note_peer_present`). An empty stack means an empty room.
-        let roster: &[crate::shell::state::Collaborator] = match active_ws {
-            Some(ws) if ws.collaborators.iter().any(|c| c.id != "me") => &ws.collaborators,
-            _ => &tree.collaborators,
-        };
+        // The local user (`id == "me"`) is filtered out of the avatar
+        // stack: the right cluster shows *other* peers in the room, not
+        // the local user. Collaborators whose name has no starting char
+        // are dropped, and at most 3 are drawn — the rest flows into
+        // `collaborator_overflow`.
+        let roster: &[crate::shell::state::Collaborator] =
+            crate::shell::state::active_room_roster(tree);
         // Somebody who has been invited and has not arrived is not in
         // the avatar cluster. An avatar there is a claim that a specific
         // person is in this workspace, and the empty-roster slot exists
@@ -2448,6 +2444,88 @@ mod tests {
             bar.collaborator_overflow(),
             0,
             "and does not show up in the +N chip either",
+        );
+    }
+
+    /// A guest shows the room, not the placeholder its own join left.
+    ///
+    /// The two lists the bar can read say different things, and only on
+    /// a guest. Redeeming an invite admits exactly one row into the
+    /// *workspace* — the inviter, under its session handle, because a
+    /// signed token carries no name
+    /// (`network::invite::accept_invite_token`). A moment later
+    /// [`crate::shell::peer_presence::PeerPresence::refresh_roster`]
+    /// computes the room's real people into the *tree-level* roster:
+    /// named out of the room document, and including every peer that
+    /// took part in it — which is how a participant with no pointer to
+    /// move is counted at all.
+    ///
+    /// The bar preferred the workspace list whenever it held any
+    /// non-`me` row, so a guest's stack was pinned to the single
+    /// placeholder its join wrote: one avatar, initialled `P` from
+    /// `p<hex>`, and nobody else arriving could ever add to it. A host
+    /// never redeems an invite, so its workspace list stays empty and it
+    /// saw the room correctly — which is why this only ever looked
+    /// broken from the guest's side.
+    #[test]
+    fn a_guest_shows_the_room_rather_than_the_row_its_invite_left() {
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: Default::default(),
+            active_group: Default::default(),
+            collaborators: Vec::new(),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+
+        // Exactly what redeeming the invite leaves behind, built the way
+        // `accept_invite_token` builds it: the inviter's session handle
+        // standing in for a name nobody has said yet.
+        let inviter = 0xfaea_de77_9d28_394eu64;
+        let placeholder = crate::shell::state::session_handle(inviter);
+        tree.workspaces[0].collaborators = vec![
+            crate::shell::state::Collaborator::new(placeholder.clone(), placeholder.clone())
+                .with_session(inviter),
+        ];
+
+        // And what the room itself says a moment later: two people, both
+        // named, both having taken part. Neither is invited-and-absent —
+        // this is a room that is genuinely occupied.
+        tree.collaborators = vec![
+            crate::shell::state::Collaborator::new("peer@18080508259351411022", "quinten"),
+            crate::shell::state::Collaborator::new("peer@7611448496700649778", "Claude"),
+        ];
+
+        let bar = TopBarChrome::from_tree(&tree);
+        assert_eq!(
+            bar.collaborator_initials(),
+            &['Q', 'C'],
+            "a guest's bar must show the room's people; it showed {:?}",
+            bar.collaborator_initials(),
+        );
+        assert!(
+            !bar.collaborator_initials().contains(&'P'),
+            "the row the join left is a stand-in for somebody the room \
+             now names, not a third person to draw beside them",
+        );
+        assert_eq!(
+            crate::shell::state::active_workspace_peer_count(&tree),
+            2,
+            "and the +N chip and the wheel-disc dot count the same room",
+        );
+
+        // The other half, or the assertion above passes on a bar that
+        // ignores the workspace outright: with nothing live to show, the
+        // workspace's own roster is still what there is.
+        let mut quiet = tree.clone();
+        quiet.collaborators = Vec::new();
+        let bar = TopBarChrome::from_tree(&quiet);
+        assert_eq!(
+            bar.collaborator_initials(),
+            &['P'],
+            "with no live room roster the workspace's own list is the \
+             only answer there is, and must still be drawn",
         );
     }
 }

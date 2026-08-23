@@ -178,9 +178,10 @@ fn search_scope_defaults_to_workspace_and_mutates_through_chrome() {
 
 #[test]
 fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
-    // The top bar reads the active workspace's roster first (with a
-    // tree-level fallback only when the workspace is empty), so this
-    // test seeds onto the active workspace directly.
+    // With no live room roster to read — nothing here stands a network
+    // up — the workspace's own list is what the bar draws, so seeding
+    // onto the active workspace is what exercises the take-three and
+    // overflow arithmetic under test.
     let mut tree = WorkspaceTree::bootstrap_default();
     let active_id = tree.active;
     let active_ws = tree
