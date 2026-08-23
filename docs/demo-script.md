@@ -57,8 +57,22 @@ a chord. Accepted for the demo.
 Palette, "Invite peer to workspace". The token is a signed ed25519 blob
 carrying the room id, the owner's address and an expiry.
 
-The token has to be typed — there is no Copy button and no paste in the
-connect prompt. Fine on camera; only a problem if we claim otherwise.
+Nobody types it. The invite card mints the token onto the system
+clipboard and says so where the host is looking — "Copied — paste it on
+the other machine" — beside a **Copy** button; the connect prompt on the
+other machine has a **Paste** button that fills itself from the
+clipboard, and a **Join** that redeems it. `scripts/yc-demo.py` clicks
+all four and asserts the round trip: the token that leaves the card is
+read back off the clipboard, and the prompt is asserted to hold exactly
+it, so a copy that silently truncated fails the join rather than being
+papered over.
+
+Both cards also show the same eight-character check code, spaced in two
+groups, with "reads the same on their screen" beside it on one machine
+and "check it matches the sender's screen" on the other. That is what a
+person compares out loud; the token itself is never read aloud.
+
+*(Until 2026-08 this said the token had to be typed. It did, once.)*
 
 ## 3 · Quinten invites Claude ✅
 
@@ -90,6 +104,16 @@ exactly this beat, published nothing. The pointer is now level-triggered
 from the frame loop, and a stopped one is restated once a second, so
 someone who joins after the last mouse movement still sees who is there.
 
+**Open defect: the agent gets a cursor too, and must not.** Level-
+triggering is per *session*, and the agent is a session, so it publishes
+a pointer it has never moved — a pill reading `Claude` sits on Quinten's
+desktop in `target/v1/shots/05-word-processor.png`. Nothing in the demo
+script moves it (there is no `agent.pointer_move` anywhere in
+`scripts/yc-demo.py`), so this is a `shell` fix. The run reports it as a
+gap rather than shooting around it. A pointer is an instrument for
+pointing at something you are looking at; the agent's presence should be
+a caret in the document at the moment it acts, and nothing else.
+
 ## 5 · Search "word processor" → not installed → installs → opens ✅
 
 The palette offers apps this machine does not have yet in the same rows as the
@@ -115,7 +139,7 @@ number if you want to see it.
 Say "about two seconds", never "instant" — a viewer can time this one off the
 recording. Re-measure with `scripts/headless-examples/install-open-timing.py`.
 
-## 6 · Cut to Xaver — the window opens there too ✅
+## 6 · Xaver's screen — the window, and what Quinten wrote in it ✅
 
 A workspace is shared, so its windows are shared. The room document
 carries that room's strips, groups and tabs, each entry written only by
@@ -136,6 +160,13 @@ is why it looked intermittent rather than broken.
 Keep this beat on qOS's own apps. They replicate through the document
 and are drawn from it; a foreign Wayland surface has nothing to
 replicate and degrades to a card reading "coming soon".
+
+**In the film this runs after beat 7, not before**, and the proof does
+not care: it asks whether a window crossed against a baseline taken
+before beat 5 opened one, so it can be asked at any point afterwards.
+Asking it here is what buys the single shot the excursion exists for —
+the replicated window *and* Quinten's sentence in it, at once, instead of
+a cut for each.
 
 ## 7 · Quinten's writing appears on Xaver's screen ⏳ — one path works
 
@@ -166,33 +197,39 @@ collaboration fails *quietly* — presence works, so the room looks alive
 while nothing is shared. Under fix. This beat is not claimed until a
 frame shows the text arriving on the other machine.
 
-## 8 · An image into the document ✅ — but mind which Files
+## 8 · An image into the document ✅ — run, but not in this cut
 
-Two different things are called Files, and only one of them can start a
-drag.
+**The launched Files app starts a real client drag now.** The toolkit
+grew one: `ui::dnd::start_file_drag` reads the file, offers its bytes
+under a mime type, and hands the gesture to the window
+(`ui/src/dnd/mod.rs`), and `apps/file-explorer/src/files_app.rs:997`
+calls it. The compositor promotes that to a server-side
+`wl_data_device` drag, and the receiving client gets the offer and the
+drop. `scripts/yc-demo.py` asserts both halves off the compositor's own
+log — the source handing the gesture out, and the compositor taking it —
+so a run where the toolkit quietly reported it started nothing fails
+here rather than producing a drag that carries nothing.
 
-The compositor's **own** file manager — a widget inside the compositor,
-in the first-boot demo group — is the one the built drag works from: the
-compositor promotes that in-process drag to a server-side
-`wl_data_device` drag the moment the pointer reaches a client, which then
-receives the offer and the drop. Proof: `shell/tests/clipboard_e2e.rs`,
-`…drops_onto_a_client` and the `QOS_LIVE_APP_DND=1` word-processor lane.
+*(Until 2026-08 this said neither the app nor the toolkit opened a
+`wl_data_source` anywhere, and sent people to the toolbar **Insert
+image** route instead. That route still exists and still works —
+`apps/word-processor/src/widget.rs:2250` against
+`shell/src/portal/file_chooser.rs` — it is simply no longer the only
+one.)*
 
-The **launched** Files app — `dev.qos.file-explorer`, a sandboxed Wayland
-client, which is what a session opens from the palette and what
-`scripts/yc-demo.py` films — cannot. Neither the app nor the toolkit
-opens a `wl_data_source` anywhere (`grep -rn 'start_drag\|wl_data_source'
-apps/file-explorer/src ui/src` finds nothing but in-process tab dragging),
-so there is no client drag for the compositor to promote.
+What makes the beat worth running is what crosses. Files and the word
+processor are two sandboxed clients in two mount namespaces, so the path
+one is holding means nothing in the other's world: the drag carries the
+file's **bytes**, brokered through a compositor pipe, and neither app is
+ever given a path into the other's. The image lands as
+`ScalarValue::Bytes` in the document, so it replicates exactly like
+text.
 
-So a recording whose Files is the launched app takes the toolbar
-**Insert image** route instead: the word processor asks for a file and
-the compositor's own portal chooser answers
-(`apps/word-processor/src/widget.rs:2250`, `shell/src/portal/file_chooser.rs`).
-That is the better beat anyway — the app cannot read the folder, and what
-it receives is the bytes the OS handed it. Either way the image ends up
-as `ScalarValue::Bytes` in the document, so it replicates exactly like
-text, which is what makes it arrive on the other screen.
+**It is run and asserted, and it is not in the one-minute cut** — it is
+the longest beat in the script by a distance, most of it spent moving a
+pointer slowly enough for two processes to hand a drag between them, and
+none of the claims this cut supports is about drag and drop. It deserves
+its own minute rather than fifteen seconds of this one.
 
 ## 9 · Claude does something ✅ — two endings, pick one
 
@@ -226,8 +263,14 @@ Two endings, both live, both attributed:
   The instruction was "make this a proper document"; it never named an
   action.
 
-Still to prove: the edit arriving on a *second* session. The agent's own
-copy is not the shot.
+The edit arriving on a *second* session is asserted:
+`scripts/yc-demo.py` reads Xaver's own word processor back over his
+session's broker and checks the row text survived into the table, not
+merely that a table exists. It is asserted and **not** filmed from his
+screen — the same edit lands in the document already on camera, and an
+agent's work turning up in *your* document the way a colleague's does is
+the claim. The agent's own copy is never the shot, and now cannot be:
+the run fails if any frame came from its session.
 
 
 ---
@@ -238,11 +281,15 @@ copy is not the shot.
   The compositor painted a fake peer unconditionally so the collaboration
   chrome stayed visible in single-process development. Any cut from
   before that date contains a collaborator who does not exist.
-- Not "install is instant". It is a few seconds — median 6.7s — and a
-  viewer can time it off the recording. That honesty is the point.
+- Not "install is instant". It is about two seconds — median 1.87s on a
+  loaded machine — and a viewer can time it off the recording. That
+  honesty is the point. (The 6.7s figure that used to stand here was the
+  449 MB debug payload; see beat 5.)
 - Not that a beat works because its assertion passed. Six of nine beats
   passed every byte-level check today and showed nothing on screen.
 - Nothing about beat 7 until a frame shows the text on the other machine.
+- Not that the agent "has no cursor" — today it has one, and that is a
+  bug being carried, not a property being claimed. See beat 4.
 
 
 ---
@@ -250,8 +297,14 @@ copy is not the shot.
 # Reproducing
 
 ```bash
-cargo build --release -p shell --bin shell --bin qos-control
-cargo build --release -p launcher --bin qos-launcher
+# The demo rig needs debug-assertions on for QOS_TEST_CONTROL, and
+# refuses to record a binary older than the sources under test.
+cargo build --profile demo -p shell --bin shell --bin qos-control
+cargo build -p launcher --bin qos-launcher
+cargo build -p agent --bin qos-agent                # beat 9
+cargo build -p app-catalogue --bins --examples      # beat 5's registry
+cargo build -p qos-install --bin qos-install
+scripts/demo-apps-live.sh                           # the payload it serves
 
 scripts/headless-examples/app-launch-proof.py                 # apps launch and paint
 scripts/headless-examples/app-collab-proof.py                 # what crosses between sessions
