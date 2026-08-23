@@ -178,23 +178,6 @@ pub struct ShellOverlayHost {
     /// re-seeded from the room you are in each time it opens, so it never
     /// reopens pointing at wherever you happened to stop last time.
     overview_selection: Option<usize>,
-    /// Active-workspace id observed during the last `draw` call. When the
-    /// chrome-held active workspace diverges from this, we latch a slide
-    /// animation so the new workspace visibly enters from the edge rather
-    /// than popping. Tracked via `u64` (the raw WorkspaceId) so this
-    /// module doesn't have to depend on the WorkspaceId newtype for a
-    /// single equality check.
-    last_active_ws: Option<u64>,
-    /// `Instant` the current workspace-slide started. `None` once the
-    /// slide has run past its duration — animation finishes by easing
-    /// the translation toward zero, so at rest nothing pops.
-    ws_slide_started: Option<Instant>,
-    /// Vertical direction the new workspace slides *in* from: `+1` means
-    /// from below (user hit Down/next), `-1` means from above (Up/prev).
-    /// The old workspace already rendered last frame and is not carried
-    /// over — we slide the new one toward its rest position from an
-    /// offset of `sign * viewport_height` to 0.
-    ws_slide_dir: f32,
     /// Interruptible open/close driver for the quick-settings popover.
     /// Follows the `quick_settings` flag each frame; unlike the raw flag
     /// it keeps the popover drawn through its close curve so it fades +
@@ -786,11 +769,6 @@ pub struct OutputGeometry {
     pub height: f64,
 }
 
-/// Duration of the vertical workspace-swap slide. Matches the concept's
-/// wheel-spin feel — long enough to register as motion, short enough to
-/// not feel sluggish when rapidly cycling workspaces via keyboard.
-const WS_SLIDE_MS: u64 = 260;
-
 /// Duration of the quick-settings popover entry animation (concept
 /// motion.div springs the panel in roughly this fast). Short enough to
 /// feel snappy on a dropdown; long enough to register as motion.
@@ -940,9 +918,6 @@ impl ShellOverlayHost {
             overview_selection: None,
             transition_started: None,
             transition_from: 0.0,
-            last_active_ws: None,
-            ws_slide_started: None,
-            ws_slide_dir: 0.0,
             qs_transition: ui::Transition::closed(),
             qs_was_open: false,
             qs_slider_drag: None,
@@ -1238,65 +1213,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Return the slide translation to apply to the content widget this
-    /// frame, or `None` if no slide is active. Called from `draw`.
-    ///
-    /// Drives a single vertical slide: when the chrome's active
-    /// workspace id has changed since last frame, latch a fresh
-    /// animation starting `dir * viewport_height` off-axis and easing
-    /// to zero over `WS_SLIDE_MS`. The direction is computed from
-    /// `next_index - prev_index` on the chrome's workspace list:
-    /// later-in-list → slide up from below (+1), earlier → slide down
-    /// from above (-1).
-    fn tick_workspace_slide(&mut self) -> Option<f64> {
-        let chrome = self.chrome.as_ref()?.borrow();
-        let tree = chrome.tree();
-        let active_raw = tree.active.raw();
-        // Find the slide direction by comparing workspace index to the
-        // last-observed one. Fallback to +1 when the prior id isn't in
-        // the current tree (e.g. a workspace was removed).
-        let dir = match self.last_active_ws {
-            Some(prev) if prev == active_raw => 0.0_f32,
-            Some(prev) => {
-                let idx_prev = tree.workspaces.iter().position(|w| w.id.raw() == prev);
-                let idx_next = tree
-                    .workspaces
-                    .iter()
-                    .position(|w| w.id.raw() == active_raw);
-                match (idx_prev, idx_next) {
-                    (Some(a), Some(b)) if b > a => 1.0,
-                    (Some(a), Some(b)) if b < a => -1.0,
-                    _ => 1.0,
-                }
-            }
-            None => 0.0,
-        };
-        drop(tree);
-        drop(chrome);
-
-        if dir != 0.0 && Some(active_raw) != self.last_active_ws {
-            self.ws_slide_started = Some(Instant::now());
-            self.ws_slide_dir = dir;
-        }
-        self.last_active_ws = Some(active_raw);
-
-        let started = self.ws_slide_started?;
-        let elapsed = started.elapsed().as_millis() as f32;
-        let duration = WS_SLIDE_MS as f32;
-        if elapsed >= duration {
-            self.ws_slide_started = None;
-            return None;
-        }
-        let p = (elapsed / duration).clamp(0.0, 1.0);
-        // Ease-out cubic: start fast, slow into rest. The *remaining*
-        // translation is `(1 - eased) * dir * height`, so at t=0 the
-        // new workspace is one full viewport off-screen and at t=1 it
-        // rests at origin.
-        let eased = 1.0 - (1.0 - p).powi(3);
-        let remaining = 1.0 - eased;
-        let height = self.rect.height().max(1.0);
-        Some(remaining as f64 * self.ws_slide_dir as f64 * height)
-    }
 
     /// Advance the overview crossfade toward `overview_target`. Latches
     /// a new transition if the target changed since last frame, then
@@ -5258,12 +5174,6 @@ impl Widget for ShellOverlayHost {
         // animation the machine you were working on ceased to exist.
         let (overview_alpha, overview_dy, overview_scale) = overview_panel_curve(t);
 
-        // Workspace slide-swap: when the active workspace just changed,
-        // translate the content widget vertically so the new workspace
-        // reads as sliding into place. Zero at rest, so idle draws are
-        // identical to pre-animation paths.
-        let slide_dy = self.tick_workspace_slide().unwrap_or(0.0);
-
         // Scale pivot = scene centre (so the shrink/zoom feels anchored
         // to the viewport the user is looking at, not the origin).
         let cx = (self.rect.x0 + self.rect.x1) / 2.0;
@@ -5272,15 +5182,11 @@ impl Widget for ShellOverlayHost {
             Affine::translate((cx, cy)) * Affine::scale(s) * Affine::translate((-cx, -cy))
         };
 
-        // Desktop content transform: workspace-slide only. Nothing an
-        // overlay does moves the desktop any more.
-        let mut content_xform = transform;
-        if slide_dy != 0.0 {
-            content_xform = content_xform * Affine::translate((0.0, slide_dy));
-        }
-
+        // A workspace switch does not move the screen. The content tree
+        // paints the new workspace where the old one was, at rest, on the
+        // very next frame — no translate, no curve, nothing to wait out.
         self.content
-            .draw(scene, content_xform, text_renderer, theme, presence);
+            .draw(scene, transform, text_renderer, theme, presence);
         self.draw_real_peers(scene, transform, text_renderer, theme, presence);
 
         // Floating sidebar wheel: above the desktop content, below every
@@ -5289,7 +5195,7 @@ impl Widget for ShellOverlayHost {
         // the rest of the desktop receded behind it; the wheel is part
         // of the desktop, so it dims with the desktop.
         if let Some(sidebar) = self.sidebar.as_mut() {
-            sidebar.draw(scene, content_xform, text_renderer, theme, presence);
+            sidebar.draw(scene, transform, text_renderer, theme, presence);
         }
 
         // Sandbox Phase 4 Task 4.2: inline permission prompt. Painted
@@ -7573,7 +7479,6 @@ impl Widget for ShellOverlayHost {
     fn needs_animation_frame(&self) -> bool {
         // Continuous redraws while any of:
         //   - overview crossfade (transition_started)
-        //   - workspace slide-swap (ws_slide_started)
         //   - quick-settings open/close (qs_transition)
         //   - any inner widget (tab drop-zones, tab layout spring, …)
         // is in flight. `tick_*` methods clear their own flags once the
@@ -7590,7 +7495,6 @@ impl Widget for ShellOverlayHost {
             .map(|s| s.needs_animation_frame())
             .unwrap_or(false);
         self.transition_started.is_some()
-            || self.ws_slide_started.is_some()
             || qs_in_flight
             || ws_settings_in_flight
             || palette_in_flight
@@ -11904,7 +11808,7 @@ mod palette_dispatch_tests {
 }
 
 #[cfg(test)]
-mod workspace_slide_tests {
+mod two_workspace_host_tests {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::WorkspaceTree;
@@ -11919,59 +11823,46 @@ mod workspace_slide_tests {
         let chrome = ChromeState::new(tree);
         let mut host =
             ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
-        // Give the host a viewport so the slide has a non-zero height
-        // to translate by. The exact value doesn't matter for the
-        // test assertions, only that it's > 0.
+        // Give the host a viewport. The exact value doesn't matter for
+        // the test assertions, only that it's > 0.
         host.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
         (host, chrome)
     }
 
+    /// Switching workspace moves nothing.
+    ///
+    /// The shell used to translate its whole content tree one viewport
+    /// off-axis on every switch and ease it back over 260 ms. That tree
+    /// carries the wallpaper and the top bar as well as the strips, so
+    /// what actually travelled was the entire screen — the first frame
+    /// of a switch rendered empty, and the desktop then flew back into
+    /// place. The content is simply the new workspace on the next frame
+    /// now.
+    ///
+    /// `needs_animation_frame` is the signal that drove those redraws,
+    /// so a switch leaving the host idle is the property that says no
+    /// such animation exists to be reintroduced by accident.
     #[test]
-    fn switching_workspace_starts_slide_animation() {
+    fn switching_workspace_animates_nothing() {
         let (mut h, chrome) = host_with_two_workspaces();
-        // First tick seeds `last_active_ws`; no slide latched yet.
-        let _ = h.tick_workspace_slide();
-        assert!(
-            h.ws_slide_started.is_none(),
-            "first tick on unchanged active ws must not animate"
-        );
-        assert!(!h.needs_animation_frame());
-
-        // Switch to the second workspace — the next tick must latch a
-        // slide animation and request redraws.
-        chrome.borrow_mut().switch_workspace(1);
-        let dy = h.tick_workspace_slide();
-        assert!(
-            dy.is_some(),
-            "switching active ws must return a non-zero slide offset"
-        );
-        assert!(h.ws_slide_started.is_some(), "slide must latch");
-        assert!(
-            h.needs_animation_frame(),
-            "host must request frames while sliding"
-        );
-    }
-
-    #[test]
-    fn slide_clears_itself_after_duration() {
-        let (mut h, chrome) = host_with_two_workspaces();
-        // Seed prior state, switch, latch animation.
-        let _ = h.tick_workspace_slide();
-        chrome.borrow_mut().switch_workspace(1);
-        let _ = h.tick_workspace_slide();
-        assert!(h.ws_slide_started.is_some());
-
-        // Sleep past the slide duration, tick once more: flag must clear.
-        std::thread::sleep(std::time::Duration::from_millis(WS_SLIDE_MS + 30));
-        let dy = h.tick_workspace_slide();
-        assert_eq!(
-            dy, None,
-            "post-duration tick must return no offset (slide completed)"
-        );
-        assert!(h.ws_slide_started.is_none());
         assert!(
             !h.needs_animation_frame(),
-            "host must go idle once slide completes and no other animation is in flight"
+            "an idle host must not be asking for frames"
+        );
+
+        chrome.borrow_mut().switch_workspace(1);
+        assert!(
+            !h.needs_animation_frame(),
+            "a workspace switch must not put the shell into an animation \
+             loop: the content changes, the screen does not move"
+        );
+
+        // And again on the way back — a switch in either direction is
+        // the same non-event.
+        chrome.borrow_mut().switch_workspace(-1);
+        assert!(
+            !h.needs_animation_frame(),
+            "switching back must not animate either"
         );
     }
 
@@ -12106,30 +11997,6 @@ mod workspace_slide_tests {
         }
     }
 
-    #[test]
-    fn slide_direction_follows_workspace_index() {
-        // Down → positive y offset (new workspace enters from below).
-        let (mut h, chrome) = host_with_two_workspaces();
-        let _ = h.tick_workspace_slide();
-        chrome.borrow_mut().switch_workspace(1);
-        let _ = h.tick_workspace_slide();
-        assert!(
-            h.ws_slide_dir > 0.0,
-            "switch_down should slide in from below (+y), got dir={}",
-            h.ws_slide_dir
-        );
-
-        // Wait out the slide, switch back up, direction should flip.
-        std::thread::sleep(std::time::Duration::from_millis(WS_SLIDE_MS + 30));
-        let _ = h.tick_workspace_slide();
-        chrome.borrow_mut().switch_workspace(-1);
-        let _ = h.tick_workspace_slide();
-        assert!(
-            h.ws_slide_dir < 0.0,
-            "switch_up should slide in from above (-y), got dir={}",
-            h.ws_slide_dir
-        );
-    }
 }
 
 #[cfg(test)]
