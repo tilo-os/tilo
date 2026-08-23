@@ -688,50 +688,44 @@ fn draw_invite_person_row(
 /// somebody else's screen, and running prose is not something anybody
 /// reads that way. Returns the y it ends at.
 #[allow(clippy::too_many_arguments)]
-fn draw_fingerprint_line(
+/// The invite code, drawn as the field it is.
+///
+/// It used to be a small chip with a sentence beside it explaining what
+/// it was for. The sentence did no work — it did not say what to do with
+/// the code, and a caption is not how an interface tells you that a
+/// field is readable and copyable. The field says it by being one:
+/// full width, set large, in the face that makes a code legible
+/// character by character.
+fn draw_invite_code(
     scene: &mut Scene,
     transform: Affine,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     at: Point,
-    fingerprint: &str,
-    why: &str,
+    code: &str,
     avail: f64,
 ) -> f64 {
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
-    let size = (tokens.typography.scale.xs).max(10.0);
-    let (fw, fh) = text_renderer.measure(fingerprint, size, None);
-    let chip = Rect::new(at.x, at.y, at.x + fw as f64 + 18.0, at.y + fh as f64 + 10.0);
+    let size = tokens.typography.scale.lg.max(15.0);
+    let (_, fh) = text_renderer.measure(code, size, None);
+    let field = Rect::new(at.x, at.y, at.x + avail, at.y + fh as f64 + 20.0);
     scene.fill(
         Fill::NonZero,
         transform,
         colors.surface_white_5,
         None,
-        &RoundedRect::from_rect(chip, tokens.radii.sm as f64),
+        &RoundedRect::from_rect(field, tokens.radii.md as f64),
     );
     text_renderer.draw_text(
         scene,
-        fingerprint,
+        code,
         size,
         colors.text_primary,
-        transform * Affine::translate((chip.x0 + 9.0, chip.y0 + 5.0)),
+        transform * Affine::translate((field.x0 + 14.0, field.y0 + 10.0)),
         None,
     );
-    let why = text_renderer.elide_to_width(
-        why,
-        size,
-        (avail - chip.width() - 10.0).max(1.0) as f32,
-    );
-    text_renderer.draw_text(
-        scene,
-        &why,
-        size,
-        colors.text_dim,
-        transform * Affine::translate((chip.x1 + 10.0, chip.y0 + 5.0)),
-        None,
-    );
-    chip.y1
+    field.y1
 }
 
 /// Gap between two chips in the filter band.
@@ -1010,17 +1004,22 @@ const QS_OPEN_ANIM_MS: u64 = 180;
 const MODAL_OPEN_ANIM_MS: u64 = 220;
 
 // ---------------------------------------------------------------------------
-// Translucent-tint fallback alphas (gap #3 in `docs/nirios/visual-gaps.md`).
-// The concept uses `backdrop-blur-xl` / `backdrop-blur-md` on top of
-// `bg-slate-900/80` + `/70` tints, but the pinned Vello lacks
-// `scene.push_blur_layer`. The shell therefore honours the alpha split
-// alone — the surfaces sit translucent over whatever is beneath them, so a
-// gradient wallpaper still bleeds through even without a convolution pass.
-// Centralised so the `shell_chrome_test` suite can pin the numeric values.
+// Surface and scrim alphas (gap #3 in `docs/nirios/visual-gaps.md`).
+//
+// The concept layers `backdrop-blur-xl` / `backdrop-blur-md` under
+// `bg-slate-900/80` + `/70` tints. The pinned Vello has no backdrop
+// filter — it can blur a *shape* (`draw_blurred_rounded_rect`, which is
+// what a drop shadow is made of) but not what is behind one — so the
+// tint is all the shell could honour, and a tint without its blur is not
+// glass. It is a contrast loss that changes with whatever the user has
+// open behind it.
+//
+// So the chrome surfaces are opaque and the *scrims* carry the depth
+// instead: a scrim dims a known quantity by a known amount, which is a
+// thing an un-blurred fill can actually do well. Centralised so the
+// `shell_chrome_test` suite can pin the numeric values.
 // ---------------------------------------------------------------------------
 
-/// Alpha applied to the collaborator and QuickSettings popover surfaces.
-/// Concept §1.1 / §3.1 specifies `bg-slate-900/80`.
 /// Height of the "Room activity" row at the foot of the collaborator
 /// dropdown, including the separator above it.
 const COLLAB_FOOTER_H: f64 = 40.0;
@@ -1054,7 +1053,22 @@ const INVITED_TAG: &str = "invited";
 /// moment its peer turns up.
 const INVITED_ROW_ALPHA: f32 = 0.55;
 
-pub const POPOVER_SURFACE_ALPHA: f32 = 0.80;
+/// Alpha applied to the collaborator and QuickSettings popover surfaces.
+///
+/// Opaque, and it defers to the toolkit's own chrome constant so a
+/// popover cannot drift away from the bar it hangs off again. This used
+/// to be a literal `0.80` on the grounds that the concept called for
+/// `bg-slate-900/80 backdrop-blur-md`; the pinned vello has no backdrop
+/// filter, so what shipped was the tint without the blur, which is not
+/// glass but a loss of contrast that varies with whatever the user has
+/// open behind it. A 2026-08 report put it plainly: the transparency
+/// looked bad.
+///
+/// The palette and the workspace-settings modal already went opaque for
+/// the same reason after the 2026-07-09 report ("too transparent — looks
+/// terrible"); see [`MODAL_SURFACE_ALPHA`]. The popover was the one
+/// surface left behind.
+pub const POPOVER_SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
 
 /// Alpha applied to the GlobalSearch palette and Workspace-Settings modal
 /// surfaces. Concept §4.1 / §5.1 specified `bg-slate-900/70`, but at that
@@ -1708,10 +1722,11 @@ impl ShellOverlayHost {
             let mut st = chrome.borrow_mut();
             match outcome {
                 Ok(token) => {
-                    st.peer_sync_status = Some(match invitee.as_deref() {
-                        Some(name) => format!("Invite ready for {name}"),
-                        None => "Invite ready — share this token".to_string(),
-                    });
+                    // Nothing. The card appearing, with the name and
+                    // the code on it, is the whole message — a status
+                    // line restating what the card already shows is one
+                    // more sentence to read and no more information.
+                    st.peer_sync_status = None;
                     st.peer_sync_invite_token = Some(token);
                     st.peer_sync_invite_for = invitee.clone();
                     st.peer_sync_invite_name = None;
@@ -1797,7 +1812,7 @@ impl ShellOverlayHost {
         let Some(token) = token else { return };
         ui::text_selection::clipboard_copy(&token);
         let mut st = chrome.borrow_mut();
-        st.peer_sync_status = Some("Copied — paste it on the other machine".to_string());
+        st.peer_sync_status = Some("Copied".to_string());
         st.bump();
     }
 
@@ -2244,6 +2259,31 @@ impl ShellOverlayHost {
             }
         }
         None
+    }
+
+    /// Whether any tab on screen is still holding a place for an app that
+    /// has not drawn yet — see [`ui::widget::WindowGroup::any_tile_opening`].
+    ///
+    /// The opening card carries a spinner, so a group in this state asks
+    /// for animation frames for as long as it is waiting. That is the
+    /// point of it: a launch that takes three seconds should look like
+    /// something is happening. It does mean
+    /// [`Self::needs_animation_frame`] stays true the whole time, which is
+    /// correct but indistinguishable, from the outside, from an animation
+    /// that is wedged. Anything waiting for the tree to go quiet needs to
+    /// tell those two apart, and this is how.
+    pub fn any_tile_opening(&mut self) -> bool {
+        for &row_ptr in self.group_row_ptrs.values() {
+            // SAFETY: same contract as every other `group_row_ptrs`
+            // accessor — the pointer comes from a `Box<GroupRow>` owned by
+            // the content tree, the host outlives the content, and
+            // `&mut self` gives us unaliased access for this call.
+            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            if row.groups.iter().any(|g| g.any_tile_opening()) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Per-tick wire-up for the data-layer active-group reconciler.
@@ -3117,6 +3157,94 @@ impl ShellOverlayHost {
                 row.scroll_group_into_view_animated(group_id, Instant::now());
             }
             self.last_scrolled_active_group.insert(strip_id, group_id);
+        }
+    }
+
+    /// Tell exactly one window group on screen that the keyboard is
+    /// aimed at it.
+    ///
+    /// The tree has always persisted an `active_group` pointer per strip
+    /// and an `active_strip` pointer per workspace — that pair decides
+    /// where a new window lands, what Ctrl+K scopes to, and which tab
+    /// takes a keystroke. None of it was drawn. In a strip of
+    /// non-overlapping windows there is no z-order to infer focus from,
+    /// so three side-by-side windows looked identical while only one of
+    /// them would receive what the user typed.
+    ///
+    /// Runs every frame rather than edge-triggered on a change: it is a
+    /// handful of bool writes across the groups already in memory, and
+    /// making it a pure function of the tree means focus cannot be left
+    /// latched on a group that a resync spliced in, moved between
+    /// strips, or rebuilt.
+    fn mark_focused_group(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        // Groups fading out are not focus candidates: the pointer keeps
+        // resolving to a closing group for the length of its fade, and
+        // lighting a corpse tells the user their keystrokes are going
+        // somewhere they are not.
+        let closing: std::collections::HashSet<GroupId> = self
+            .group_row_ptrs
+            .values()
+            .flat_map(|&ptr| {
+                // SAFETY: see field doc on `group_row_ptrs`.
+                let row: &GroupRow = unsafe { &*ptr };
+                row.groups
+                    .iter()
+                    .filter(|g| g.is_closing())
+                    .map(|g| g.id)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        // Which strip owns focus, resolved exactly the way
+        // `publish_strip_viewport` resolves it — including the fallback
+        // to the first strip, so a workspace whose pointer was never
+        // seeded still lights one window instead of none. The group is
+        // resolved through `resolve_active_group`, which brings the same
+        // guarantee one level down: an unseeded strip falls back to its
+        // leftmost surviving group rather than lighting nothing.
+        let focused: Option<(StripId, GroupId)> = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            tree.active_workspace()
+                .and_then(|ws| {
+                    tree.active_strip
+                        .get(&ws.id)
+                        .copied()
+                        .filter(|id| ws.strips.iter().any(|s| s.id == *id))
+                        .or_else(|| ws.strips.first().map(|s| s.id))
+                })
+                .and_then(|sid| {
+                    tree.resolve_active_group(sid, |gid| closing.contains(&gid))
+                        .map(|gid| (sid, gid))
+                })
+        };
+        // With one window on the workspace there is nothing to tell
+        // apart, and a permanently lit edge around the only thing on
+        // screen is decoration — the marker has to earn its place. It
+        // is the workspace's total, not the strip's: three strips
+        // holding one window each is exactly the case where "which one
+        // takes the keystroke" is unanswerable without it.
+        let disambiguating = self
+            .group_row_ptrs
+            .values()
+            .map(|&ptr| {
+                // SAFETY: see field doc on `group_row_ptrs`.
+                let row: &GroupRow = unsafe { &*ptr };
+                row.groups.len()
+            })
+            .sum::<usize>()
+            > 1;
+        for (&strip_id, &ptr) in self.group_row_ptrs.iter() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in row.groups.iter_mut() {
+                g.set_focused(disambiguating && focused == Some((strip_id, g.id)));
+            }
         }
     }
 
@@ -5842,6 +5970,10 @@ impl Widget for ShellOverlayHost {
         // Runs after `harvest_active_tab_writeback` so a focus change made
         // this frame is already reflected in `active_group`.
         self.scroll_active_group_into_view();
+        // Light the group that pointer names. Same ordering rationale as
+        // the scroll reconciler above: `active_group` is settled for this
+        // frame by the time both of them read it.
+        self.mark_focused_group();
         // Cross-strip tab drag-drop (#151): drain any `GroupRow` that
         // published a cross-strip detach during this frame's events and
         // splice the dragged tab into whichever strip's row contains the
@@ -10686,8 +10818,8 @@ impl ShellOverlayHost {
             let parsed = parse_invite(token);
             let who = invite_for.as_deref().unwrap_or("Anyone with this invite");
             let sub = match parsed.as_ref() {
-                Some(t) => format!("Invite ready · expires in {}", time_until(t.expiry_unix_seconds)),
-                None => "Invite ready".to_string(),
+                Some(t) => format!("Expires in {}", time_until(t.expiry_unix_seconds)),
+                None => String::new(),
             };
             y = draw_invite_person_row(
                 scene,
@@ -10701,14 +10833,13 @@ impl ShellOverlayHost {
             );
             y += 12.0;
             if let Some(t) = parsed.as_ref() {
-                y = draw_fingerprint_line(
+                y = draw_invite_code(
                     scene,
                     transform,
                     text_renderer,
                     theme,
                     Point::new(rect.x0 + pad, y),
                     &peer_fingerprint(&t.owner_peer_id),
-                    "reads the same on their screen",
                     avail,
                 );
             }
@@ -10728,14 +10859,13 @@ impl ShellOverlayHost {
                     false,
                 );
                 y += 12.0;
-                y = draw_fingerprint_line(
+                y = draw_invite_code(
                     scene,
                     transform,
                     text_renderer,
                     theme,
                     Point::new(rect.x0 + pad, y),
                     &peer_fingerprint(&t.owner_peer_id),
-                    "check it matches the sender's screen",
                     avail,
                 );
             } else {
@@ -10850,25 +10980,7 @@ impl ShellOverlayHost {
                 self.peer_sync_prompt_rects.push((which, brect));
                 bx = brect.x0 - 8.0;
             }
-            // The chord next to the button it duplicates, so the card
-            // teaches the keyboard route rather than hiding it.
-            let hint = if invite_name.is_some() {
-                "Enter to create · Escape to cancel"
-            } else if input.is_some() {
-                "Ctrl+V to paste · Enter to join · Escape to dismiss"
-            } else {
-                "Ctrl+C to copy · Escape to dismiss"
-            };
-            let hint = text_renderer.elide_to_width(hint, body_size, (avail * 0.6) as f32);
-            text_renderer.draw_text(
-                scene,
-                &hint,
-                body_size,
-                colors.text_dim,
-                transform
-                    * Affine::translate((rect.x0 + pad, y.min(rect.y1 - pad - bh + 8.0))),
-                None,
-            );
+
         }
     }
 

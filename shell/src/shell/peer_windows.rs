@@ -89,7 +89,9 @@
 
 use crate::compositor::tab_binding::Placement;
 use crate::shell::launcher;
-use crate::shell::state::{ResourceRef, TabId, TileContent, Verb, Workspace, WorkspaceTree};
+use crate::shell::state::{
+    GroupId, ResourceRef, StripId, TabId, TileContent, Verb, Workspace, WorkspaceTree,
+};
 
 /// Shown while the local instance is starting.
 const OPENING: &str = "Opening here…";
@@ -128,10 +130,10 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         if started.iter().any(|a| a.eq_ignore_ascii_case(&item.app_id)) {
             continue;
         }
-        let Some(ws) = tree.workspaces.get(item.workspace) else {
+        if tree.workspaces.get(item.workspace).is_none() {
             continue;
-        };
-        let note = match open_for(ws, &item) {
+        }
+        let note = match open_for(tree, &item) {
             Ok(()) => {
                 started.push(item.app_id.clone());
                 OPENING.to_string()
@@ -181,8 +183,30 @@ fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
 /// case, never a promise. An app that is not here is not "coming soon";
 /// it is not installed, and saying so is the difference between a user who
 /// knows what to do next and one who waits.
-fn open_for(ws: &Workspace, item: &Pending) -> Result<(), String> {
+fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
+    let Some(ws) = tree.workspaces.get(item.workspace) else {
+        return Err("That workspace is gone".to_string());
+    };
+    let ws_id = ws.id;
     admits(ws, &item.app_id)?;
+    // Whatever a launch from the palette does *around* the launch has to
+    // happen here too, or an app started on the room's behalf is not the
+    // same app the person would have opened from the palette. The file
+    // manager's home grant is the one that bites: without it the window
+    // opens on its own sandbox directory, finds nothing but its dotfiles
+    // and says the folder is empty — which is what a guest's screen
+    // showed while the host's listed the same home's contents.
+    //
+    // After `admits`, so nothing is granted for a launch the room has
+    // just refused.
+    crate::shell::search::providers::applications::grant_file_manager_home(
+        tree,
+        ws_id,
+        &item.app_id,
+    );
+    let Some(ws) = tree.workspaces.get(item.workspace) else {
+        return Err("That workspace is gone".to_string());
+    };
     // The note goes down before the launch: the app can announce its
     // toplevel the moment it starts, and a note written afterwards would
     // be a race the window can win.
@@ -245,6 +269,73 @@ fn set_note(tree: &mut WorkspaceTree, tab: TabId, note: String) -> bool {
     false
 }
 
+/// Where this machine already has the room's copy of `app_id` on screen
+/// in `ws`, if it does.
+///
+/// Returns the coordinates [`crate::shell::chrome_state::ChromeState::focus_tab`]
+/// wants: the strip, the group and the tab.
+///
+/// # What this is for
+///
+/// A person joins a room where somebody already has the word processor
+/// open. [`examine`] starts a local instance for them, bound into the
+/// peer's tab, and they now have a working word processor on screen.
+/// If they then open the word processor themselves — from the palette,
+/// not knowing or caring that the room already had one — they get a
+/// second process, a second group, and two windows side by side showing
+/// the same document, because it is the same room and therefore the same
+/// record.
+///
+/// That is not two windows in the sense the strip means. It is one
+/// window drawn twice, and it also does not stay a local problem: the
+/// second tab is one *this* machine owns, so it projects into the room,
+/// and every other member's [`examine`] then starts an instance of it
+/// too. One person opening an app the room already had turns into a
+/// window apiece for everybody, and a third member makes it three.
+///
+/// So a launch that finds this returns to the window that is already
+/// there instead of starting another.
+///
+/// # Why only a peer's tab counts
+///
+/// The tab has to be one this machine does *not* own. Two windows of one
+/// app that the user opened themselves are two windows they asked for —
+/// two terminals in a workspace is an ordinary thing to want, and
+/// `placement_for_toplevel` is written for a client that opens several
+/// toplevels. What is being collapsed here is narrower: this machine
+/// opening its own instance twice for one room, once because a peer had
+/// the app open and once because the user asked.
+///
+/// A tab still showing a card counts as well, as long as it has been
+/// answered for (`note` non-empty): the instance is starting, and a
+/// launch during that window would race it and produce the same pair.
+pub fn opened_for_the_room(
+    ws: &Workspace,
+    app_id: &str,
+    local_salt: u16,
+) -> Option<(StripId, GroupId, TabId)> {
+    for strip in &ws.strips {
+        for group in &strip.window_groups {
+            for tab in &group.tabs {
+                if crate::shell::state::peer_salt_of(tab.id) == local_salt {
+                    continue;
+                }
+                let hosts = match &tab.tile {
+                    TileContent::Foreign { app_id: a, .. } => a.eq_ignore_ascii_case(app_id),
+                    TileContent::PeerWindow { app_id: a, note, .. } => {
+                        !note.is_empty() && a.eq_ignore_ascii_case(app_id)
+                    }
+                    _ => false,
+                };
+                if hosts {
+                    return Some((strip.id, group.id, tab.id));
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,14 +352,21 @@ mod tests {
         ws
     }
 
+    const FILES: &str = "dev.qos.file-explorer";
+
     /// A workspace holding one peer window, nobody has answered for yet.
     fn tree_with_peer_window(ws: Workspace) -> (WorkspaceTree, u64) {
+        tree_with_peer_window_for(ws, APP)
+    }
+
+    /// [`tree_with_peer_window`] for a named app.
+    fn tree_with_peer_window_for(ws: Workspace, app: &str) -> (WorkspaceTree, u64) {
         let mut ws = ws;
         let tab = Tab {
-            id: next_id(),
+            id: peer_id(),
             title: "Word Processor".into(),
             tile: TileContent::PeerWindow {
-                app_id: APP.into(),
+                app_id: app.into(),
                 label: "Word Processor".into(),
                 note: String::new(),
             },
@@ -291,6 +389,174 @@ mod tests {
             ..Default::default()
         };
         (tree, tab_id)
+    }
+
+    /// An id carrying a salt that is not this process's, so tabs built
+    /// with it look like a peer's the way replication decides it —
+    /// `peer_salt_of(id) != local_salt`.
+    fn peer_id() -> u64 {
+        const SOMEBODY_ELSE: u64 = 0xBEEF;
+        (SOMEBODY_ELSE << crate::shell::state::PEER_ID_SALT_SHIFT) | (next_id() & 0xFFFF)
+    }
+
+    fn may_read(ws: &Workspace, app: &str, path: &std::path::Path) -> bool {
+        ws.allows(
+            &ws.actor_for_app(app),
+            &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
+            Verb::Read,
+        )
+    }
+
+    /// A file manager started because a peer had one open can see the
+    /// user's home, exactly as one opened from the palette can.
+    ///
+    /// Every app is given one directory of its own and nothing else it
+    /// was not granted. For the app whose entire subject is the user's
+    /// files that means opening on a folder holding nothing but its own
+    /// dotfiles and reporting, accurately, that it is empty — which is
+    /// what a guest's screen showed while the host's listed the same
+    /// home's contents. The grant used to be minted only on the palette
+    /// path, and a peer's window does not come through it.
+    ///
+    /// Asserted through `examine` — the path a peer's window actually
+    /// takes — and against `Workspace::allows`, the same call the
+    /// sandbox's own capability resolution bottoms out in.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_file_manager_opened_for_the_room_can_see_the_users_home() {
+        let home = dirs::home_dir().expect("the test machine has a home directory");
+        let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), FILES);
+
+        assert!(
+            !may_read(&tree.workspaces[0], FILES, &home),
+            "fixture sanity: the file manager must start with no grant on the home, \
+             or this test cannot tell a granted one from a pre-granted one"
+        );
+
+        let _ = examine(&mut tree);
+
+        assert!(
+            may_read(&tree.workspaces[0], FILES, &home),
+            "a file manager started on the room's behalf must be able to read the \
+             user's home; without it the window opens on its sandbox directory and \
+             says the folder is empty"
+        );
+    }
+
+    /// The grant is for the file manager and nothing else. It names one
+    /// package id rather than a rule any package could satisfy.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn opening_another_app_for_the_room_grants_it_no_home() {
+        let home = dirs::home_dir().expect("the test machine has a home directory");
+        let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), APP);
+
+        let _ = examine(&mut tree);
+
+        assert!(
+            !may_read(&tree.workspaces[0], APP, &home),
+            "only the file manager gets the user's home; the word processor must not"
+        );
+    }
+
+    /// Nothing is granted for a launch the room has just refused.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_refused_file_manager_is_granted_nothing() {
+        let home = dirs::home_dir().expect("the test machine has a home directory");
+        let mut ws = room_owned_by("quinten");
+        ws.owner = None;
+        let (mut tree, _tab) = tree_with_peer_window_for(ws, FILES);
+
+        let _ = examine(&mut tree);
+
+        assert!(
+            !may_read(&tree.workspaces[0], FILES, &home),
+            "a room that authorises no launch must not hand out the home either"
+        );
+    }
+
+    /// The window a peer's tab is already hosting here is found, so a
+    /// launch can return to it instead of starting a second copy.
+    #[test]
+    fn a_window_this_machine_opened_for_the_room_is_found() {
+        let mut ws = room_owned_by("quinten");
+        let tab = Tab {
+            id: peer_id(),
+            title: "Word Processor".into(),
+            tile: TileContent::Foreign {
+                app_id: APP.into(),
+                surface_id: 4711,
+            },
+        };
+        let tab_id = tab.id;
+        let group = WindowGroup {
+            id: peer_id(),
+            tabs: vec![tab],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        };
+        let mut strip = Strip::new(StripId::from(peer_id()), "main");
+        strip.window_groups = vec![group];
+        ws.strips = vec![strip];
+
+        let found = opened_for_the_room(&ws, APP, 0);
+        assert_eq!(
+            found.map(|(_, _, t)| t),
+            Some(tab_id),
+            "a peer's tab already hosting this machine's window of the app has to be \
+             found, or the launch opens a second one beside it"
+        );
+        assert!(
+            opened_for_the_room(&ws, "dev.qos.terminal", 0).is_none(),
+            "a different app is not this one"
+        );
+    }
+
+    /// Two windows of one app that the user opened *themselves* are two
+    /// windows they asked for. Only this machine's own second copy for
+    /// one room is collapsed, so the tab has to be a peer's.
+    #[test]
+    fn a_window_this_person_opened_is_not_one_to_return_to() {
+        let mut ws = room_owned_by("quinten");
+        let tab = Tab {
+            id: next_id(),
+            title: "Terminal".into(),
+            tile: TileContent::Foreign {
+                app_id: "dev.qos.terminal".into(),
+                surface_id: 99,
+            },
+        };
+        let tab_id = tab.id;
+        let group = WindowGroup {
+            id: next_id(),
+            tabs: vec![tab],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        };
+        let mut strip = Strip::new(StripId::from(next_id()), "main");
+        strip.window_groups = vec![group];
+        ws.strips = vec![strip];
+
+        let salt = crate::shell::state::peer_salt_of(tab_id);
+        assert!(
+            opened_for_the_room(&ws, "dev.qos.terminal", salt).is_none(),
+            "a second terminal is an ordinary thing to want; a window this person \
+             opened must not swallow the next launch of the same app"
+        );
+    }
+
+    /// A card nobody has answered for yet is not a window. Nothing is
+    /// running behind it, so a launch has to proceed.
+    #[test]
+    fn an_unanswered_card_is_not_a_window_to_return_to() {
+        let (tree, _tab) = tree_with_peer_window(room_owned_by("quinten"));
+        assert!(
+            opened_for_the_room(&tree.workspaces[0], APP, 0).is_none(),
+            "an unexamined peer window has no instance behind it yet"
+        );
     }
 
     /// The ordinary case: a room whose owner has arrived with the rest of
