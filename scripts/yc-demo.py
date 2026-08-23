@@ -1217,6 +1217,50 @@ class Recorder:
                 time.sleep(self.cut_dwell_s)
 
     @contextlib.contextmanager
+    def patience(self, seconds: float):
+        """Film the first `seconds` of a wait, then stop filming it.
+
+        The still-picture trim cannot see a wait for what it is. It
+        compares frames byte for byte, and a screen with a caret blinking
+        in it is a different screen every half second — so a minute spent
+        waiting for something to arrive is a minute of *changing* frames
+        and survives the cap in full. One run of this film spent 180 of
+        its 318 seconds on two waits that had already failed, and every
+        frame in them was legitimately different from the last.
+
+        So the wait is bounded by the camera rather than by the trim.
+        What arrives quickly is filmed arriving; what does not is not sat
+        through. The bound is generous enough to cover the thing working
+        — a viewer sees the result appear — and is only ever reached when
+        it is not.
+        """
+        stopped = threading.Event()
+        dropped = threading.Event()
+
+        def drop_after():
+            if not stopped.wait(seconds):
+                with self._lock:
+                    self._off += 1
+                    self._live = None
+                dropped.set()
+
+        waiter = threading.Thread(target=drop_after, name="patience",
+                                  daemon=True)
+        waiter.start()
+        try:
+            yield
+        finally:
+            stopped.set()
+            waiter.join(timeout=5)
+            if dropped.is_set():
+                print(f"     .   [ camera came down after {seconds:.0f}s of "
+                      f"waiting ]", flush=True)
+                with self._lock:
+                    self._off -= 1
+                    if not self._off:
+                        self._live = self._wanted
+
+    @contextlib.contextmanager
     def holding(self):
         """Mark what is filmed in here as a deliberate hold.
 
@@ -1311,6 +1355,39 @@ class Recorder:
                   f"{n / max(1e-6, self.rate()):.1f}s")
         for e in self.errors:
             print(f"  ! {e}")
+
+    def beat_report(self, marks: list[tuple[str, float]], fps: int) -> None:
+        """How many seconds of the finished video each beat accounts for.
+
+        Not wall clock: the sum of the screen time actually given to the
+        frames captured during that beat, after trimming and after any
+        stretch the camera was down for. So it answers the only question
+        that matters when a cut is too long — which beat to take it out
+        of — instead of inviting somebody to guess.
+        """
+        if not marks or not self.frames:
+            return
+        t_start, t_end = self._window()
+        timeline = self._timeline(t_start, t_end, fps)
+        # `_timeline` collapses runs, so walk the frames it kept and
+        # charge each one's screen time to the beat it was taken in.
+        kept = {rel: seconds for rel, _name, seconds in timeline}
+        edges = [t for _title, t in marks] + [float("inf")]
+        spend = [0.0] * len(marks)
+        for taken, rel, _name, _held in self.frames:
+            if rel not in kept:
+                continue
+            for i in range(len(marks)):
+                if edges[i] <= taken < edges[i + 1]:
+                    spend[i] += kept[rel]
+                    break
+        total = sum(spend)
+        print("  of the finished video:")
+        for (title, _t), seconds in zip(marks, spend):
+            share = 100.0 * seconds / total if total else 0.0
+            bar = "#" * int(round(share / 3))
+            print(f"    {seconds:6.1f}s  {share:4.1f}%  {bar:<12} "
+                  f"{title[:52]}")
 
     # -- composition -------------------------------------------------
 
@@ -1561,6 +1638,11 @@ def probe_video(path: str) -> dict:
 
 FAILURES: list[str] = []
 GAPS: list[str] = []
+# (title, wall clock when it started). Only so the report can say how
+# many seconds of the finished video each beat accounts for — which is
+# the question every attempt to shorten this film has had to answer by
+# guessing. See `Recorder.beat_report`.
+BEAT_MARKS: list[tuple[str, float]] = []
 
 RULE = "-" * 70
 
@@ -1631,6 +1713,21 @@ def off_camera(why: str):
     print("\n  [ camera back on ]", flush=True)
 
 
+@contextlib.contextmanager
+def patience(seconds: float):
+    """Give a wait this long on camera, and no longer.
+
+    For the waits that are worth watching succeed and are not worth
+    watching fail: an agent carrying out an instruction, a document
+    crossing a network. See `Recorder.patience`.
+    """
+    if RECORDER is None:
+        yield
+        return
+    with RECORDER.patience(seconds):
+        yield
+
+
 def read_hold(seconds: float = READ_HOLD_S) -> None:
     """Stop on what is on screen, long enough to read it.
 
@@ -1645,6 +1742,7 @@ def read_hold(seconds: float = READ_HOLD_S) -> None:
 
 def banner(title: str) -> None:
     print(f"\n{RULE}\n  {title}\n{RULE}", flush=True)
+    BEAT_MARKS.append((title, time.time()))
     if RECORDER:
         RECORDER.dwell()
 
@@ -2964,6 +3062,32 @@ def run_the_agent(agent: Session, room: str, shots: str,
             proc.kill()
             note(f"the agent did not finish within {timeout:.0f}s; "
                  f"see {log_path}")
+            # A bare timeout sends the next person to read a hung
+            # process. The usual cause is upstream of the agent and is
+            # visible in the session's own log: the broker computes an
+            # addressed channel key and then fans out room-wide anyway,
+            # so every app in the room answers the agent's handshake and
+            # it is offered a document from an app it did not ask for.
+            # Said here so it is diagnosed once rather than every time.
+            try:
+                with open(agent.log_path) as fh:
+                    session = fh.read()
+            except OSError:
+                session = ""
+            wide = [ln for ln in session.splitlines()
+                    if "room_wide=true" in ln and "addressed=" in ln]
+            others = [ln for ln in session.splitlines()
+                      if "recv Arrived" in ln
+                      and WORD_PROCESSOR not in ln.split("]")[0]]
+            if wide or others:
+                note("the broker fanned this session's collaboration "
+                     "traffic room-wide while carrying an addressed "
+                     "channel key, so apps the agent did not ask for "
+                     "answered its handshake:")
+                for ln in (wide[-1:] + others[-2:]):
+                    note(f"    {ln.strip()[:200]}")
+                note("that is a broker fix, not an agent or a demo one — "
+                     f"see {agent.log_path}")
             return False
     if code != 0:
         with open(log_path) as fh:
@@ -3490,12 +3614,17 @@ def beat_six(quinten: Session, xaver: Session, baseline: dict,
     # silence. What is watched instead is the tab that did not exist
     # when the baseline was taken, which is the window beat 5 opened.
     #
-    # No cut here: the camera is already on xaver. This beat runs inside
-    # the film's one excursion, which beat 7 opened at the moment there
-    # was something on his screen worth crossing for — his copy of a
-    # window he never opened, carrying a sentence he never typed. Both
-    # halves in one shot, which is why they are read one after the other
-    # rather than two beats apart.
+    # No cut, and asked *before* beat 7 — because beat 7 has xaver open a
+    # word processor on his own machine, and opening an app moves your
+    # focus to it. Asked afterwards, "his view did not move" is measured
+    # across a window he opened himself: it failed exactly that way once,
+    # reporting a replication bug that was a person clicking on their own
+    # computer. The claim is that *somebody else's* window arriving does
+    # not move you, so nothing of his own may happen in between.
+    #
+    # What the film shows is separate and later — see `show_xavers_screen`,
+    # which frames the same screen once it is also carrying the sentence
+    # quinten typed.
     before_view = baseline["view"]
     before_groups = baseline["groups"]
     # Handed in, not diffed here. Since this beat moved after beat 7 there
@@ -3546,16 +3675,28 @@ def beat_six(quinten: Session, xaver: Session, baseline: dict,
     note("which windows exist is the workspace; which one you are looking "
          "at is you, and the second does not travel")
     xaver.snapshot(os.path.join(shots, "06-xaver-window.png"))
+    return tid
 
-    # The shot the excursion was made for, framed as one: his strip,
-    # every window whole, and the document — the thing carrying both
-    # claims — brought up in front rather than left wherever the last
-    # window to open pushed it.
+
+def show_xavers_screen(xaver: Session, shots: str) -> None:
+    """The shot the film's one excursion was made for.
+
+    Everything in it has already been proven — the window arrived in beat
+    6, the sentence in beat 7 — and neither proof is a picture: both are
+    answers to questions put over a socket. This is where a viewer gets
+    to see the two of them on one screen at the same time, which is the
+    only thing a second machine is worth crossing to.
+
+    Framed rather than merely visited: an even share of the strip, every
+    window whole, and then the document brought up in front. A previous
+    cut ended its excursion on this session's file manager showing an
+    empty folder, under a caption about a document two other participants
+    had just written into.
+    """
     frame_both_windows(xaver, VIEWPORT)
     focus_app_group(xaver, WORD_PROCESSOR)
     read_hold(READ_HOLD_S * 2)
     xaver.snapshot(os.path.join(shots, "06b-xaver-window-and-text.png"))
-    return tid
 
 
 def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
@@ -3714,7 +3855,14 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     doc, carried = None, False
     try:
         reader = DocumentReader(xaver.collab_json_sock, room, record=None)
-        doc, carried = reader.await_document(TYPED_TEXT, DOC_SYNC_TIMEOUT_S)
+        # Filmed for as long as it usually takes, and no longer. When it
+        # works the sentence turns up on his page in a few seconds and
+        # that is the shot; when it does not, a minute of an unchanged
+        # page under a caption about a document arriving is the worst
+        # thing this film could contain.
+        with patience(10.0):
+            doc, carried = reader.await_document(TYPED_TEXT,
+                                                 DOC_SYNC_TIMEOUT_S)
     except OSError as e:
         gap(f"xaver's session has no JSON broker to ask ({e}) — "
             f"looked at {xaver.collab_json_sock}")
@@ -4217,7 +4365,11 @@ def beat_nine(quinten: Session, xaver: Session, agent: Session,
     note(f"the instruction is a line in the document: {AGENT_INSTRUCTION!r}")
 
     step("the agent reads it and carries it out — with no window at all")
-    ran = run_the_agent(agent, host_ws["room"], shots)
+    # The best fifteen seconds in the film when it works — a table
+    # assembling itself in a document nobody is touching — and the worst
+    # two minutes in it when it does not. Bounded accordingly.
+    with patience(15.0):
+        ran = run_the_agent(agent, host_ws["room"], shots)
     if ran is None:
         gap("qos-agent is not built, so the agent could not act on the "
             "document (cargo build -p agent --bin qos-agent)")
@@ -4244,8 +4396,12 @@ def beat_nine(quinten: Session, xaver: Session, agent: Session,
     try:
         reader = DocumentReader(xaver.collab_json_sock, host_ws["room"],
                                 record=None)
-        doc, carried = reader.await_document(AGENT_BULLET_PROOF,
-                                             DOC_SYNC_TIMEOUT_S)
+        # A question over a socket, with the camera on a screen it is not
+        # about. Nothing here is worth a minute of film in either
+        # direction.
+        with patience(3.0):
+            doc, carried = reader.await_document(AGENT_BULLET_PROOF,
+                                                 DOC_SYNC_TIMEOUT_S)
     except OSError as e:
         gap(f"xaver's session has no JSON broker to ask ({e})")
         doc, carried = None, False
@@ -4323,25 +4479,25 @@ def run(quinten: Session, xaver: Session, agent: Session, shots: str,
     }
     beat_four(quinten, xaver, agent, host_ws, shots)
     wp = beat_five(quinten, registry, shots)
-    # 7 before 6, which is the order the *film* needs and costs the proof
-    # nothing: beat 6 asks whether a window crossed, and it asks it
-    # against a baseline taken above rather than against whatever it
-    # finds, so it can be asked at any point after beat 5 opened the
-    # window. Asking it here buys the one thing the excursion is for —
-    # xaver's screen carrying the replicated window *and* the sentence
-    # quinten typed into it, in a single shot, instead of a cut for each.
-    #
-    # Beat 7 opens the excursion at its own last step; beat 6 runs inside
-    # it and closes it with that shot. Beat 9 cuts back.
-    #
     # Which tab beat 5 opened, read now — before beat 7 puts a second
     # word processor in the room and makes "new since the baseline"
     # ambiguous. Beat 6 is asked about this one specifically.
     opened = [t for t in quinten.tabs_here() if t not in baseline["tabs"]]
     note(f"beat 5 opened {len(opened)} tab(s) on quinten's machine: "
          f"{opened or 'none'}")
+    # Proven here, seen later. Beat 6 has to run before beat 7 — beat 7
+    # has xaver open an app on his own machine, and that moves his own
+    # focus, which is the thing beat 6 asserts nothing did. Both its
+    # claims are answers over a socket rather than pictures, so running
+    # it off camera costs the film nothing.
+    with off_camera("xaver's tree, read over a socket: the window is there "
+                    "and his view did not move. His screen is seen holding "
+                    "it, and the sentence, in the excursion below"):
+        beat_six(quinten, xaver, baseline, opened, shots)
+    # The excursion: beat 7 opens it at its own last step, once his screen
+    # has the sentence on it too, and the shot closes it. Beat 9 cuts back.
     beat_seven(quinten, xaver, host_ws, wp, shots)
-    beat_six(quinten, xaver, baseline, opened, shots)
+    show_xavers_screen(xaver, shots)
     with off_camera("the photograph dragged between two sandboxes: the "
                     "longest beat here, and not one of the things this "
                     "cut is arguing"):
@@ -4639,6 +4795,10 @@ def main() -> int:
     video = None
     if RECORDER:
         RECORDER.report()
+        try:
+            RECORDER.beat_report(BEAT_MARKS, args.record_fps)
+        except Exception as exc:  # noqa: BLE001 — never lose the video for it
+            print(f"  (could not attribute video time to beats: {exc})")
         # The claim the whole film rests on, checked against the frames
         # rather than trusted to the beats. `cut` refuses the name, but
         # `cut` is not the only way `_live` could come to point at that
