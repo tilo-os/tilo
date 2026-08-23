@@ -1,23 +1,28 @@
 //! Shared surface-drawing primitives — the reusable "how a card/panel
 //! sits above the desktop" layer.
 //!
-//! The centrepiece is [`soft_shadow`]: a baked Gaussian falloff,
-//! 9-sliced around the rect, that produces a genuinely soft drop
-//! shadow. Vello has no blur primitive, so the historical fallback
-//! everywhere was a stack of concentric rounded rects — which visibly
-//! stair-steps. The toolkit solved this once inside `tile_host` but kept
-//! it private; promoting it here lets the shell chrome (notifications,
-//! the wheel disc glow, the top bar) drop their own stair-stepping
-//! approximations and share one correct implementation.
+//! [`shadow`] is how a surface casts one. It is a true Gaussian blur of
+//! the surface's **own rounded outline**, via vello's
+//! `draw_blurred_rounded_rect`, at the strength its elevation token
+//! declares. A shadow is therefore the same shape as the thing casting
+//! it, and is equally dense the whole way round.
 //!
-//! Sprites are baked once per tint and cached, so repeated shadows of
+//! [`soft_shadow`] is the older painter: a baked falloff 9-sliced around
+//! the rect, written when vello had no blur primitive. Vello 0.9 has one,
+//! so nothing that owns a corner radius should use the sprite path any
+//! more — its corner term is the signed distance to a **square** corner,
+//! which puts a hard box corner around a rounded surface and composites
+//! the corners far lighter than the flat edges. It survives for the
+//! effects that are not drop shadows and have no outline to follow: the
+//! wheel disc's bloom, an accent glow around a dragged card.
+//!
+//! Sprites are baked once per tint and cached, so repeated glows of
 //! the same colour cost only a handful of image stretches.
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{
     Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as Image,
     ImageFormat as Format,
@@ -340,30 +345,76 @@ pub fn soft_shadow(
     }
 }
 
-/// Paint an elevation-token shadow under `rect`. Maps a [`Shadow`] token
-/// (offset_y + blur + tinted-alpha color) onto [`soft_shadow`], so the
-/// whole UI can express depth as `surface::elevation(.., &theme.tokens.elevation.e3)`
-/// instead of hand-tuning spread/alpha at each call site.
-pub fn elevation(scene: &mut Scene, transform: Affine, rect: Rect, shadow: &Shadow) {
-    if shadow.blur <= 0.0 {
+/// Paint the drop shadow an elevation token describes, following `rect`'s
+/// own corner `radius`.
+///
+/// **This is how a surface casts a shadow.** It is a true Gaussian blur of
+/// the surface's own rounded outline, so the shadow is the same shape as
+/// the thing casting it and is equally dense the whole way round.
+///
+/// It replaces a 9-sliced sprite approximation that existed because
+/// "Vello has no blur primitive". Vello 0.9 has one, and the sprite's two
+/// compromises had both become visible on the quick-settings panel:
+///
+/// - Its corner falloff was the signed distance to the rect with a **zero**
+///   corner radius, so around a 24 px rounded corner the shadow kept a
+///   hard square corner set back from the panel's own, and the corner
+///   slice composited about a fifth of what the flat edges did. The eye
+///   reads that as a box with its corners rubbed out.
+/// - Its profile peaked *inside* the rect and was then clipped away, so
+///   what escaped past the edge was the long shallow tail — a smear
+///   rather than a falloff.
+///
+/// The token's `color` alpha is the shadow's strength and is honoured
+/// here. [`soft_shadow`] deliberately ignores it in favour of a separate
+/// `intensity` argument, which is a foot-gun a caller passing `1.0` steps
+/// straight into: that is exactly how `e4`'s 110/255 became an opaque
+/// black skirt on screen.
+///
+/// No-op for a degenerate rect or a token with no blur.
+pub fn shadow(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    radius: f64,
+    token: &Shadow,
+) {
+    if token.blur <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let rgba = shadow.color.to_rgba8();
-    let opaque = Color::from_rgba8(rgba.r, rgba.g, rgba.b, 255);
-    // The token `blur` is a CSS-style blur radius; the sprite needs a bit
-    // more spread to render the same visual softness, plus a small floor
-    // so tight shadows still read.
-    let spread = (shadow.blur as f64) * 1.6 + 6.0;
-    let intensity = rgba.a as f32 / 255.0;
-    soft_shadow(
-        scene,
+    let alpha = token.color.components[3];
+    if alpha <= 0.0 {
+        return;
+    }
+    scene.draw_blurred_rounded_rect(
         transform,
-        rect,
-        opaque,
-        spread,
-        shadow.offset_y as f64,
-        intensity,
+        rect + Vec2::new(0.0, token.offset_y as f64),
+        token.color,
+        radius.clamp(0.0, rect.width().min(rect.height()) / 2.0),
+        std_dev_for(token.blur),
     );
+}
+
+/// The Gaussian standard deviation a CSS-style `blur` radius means.
+///
+/// Halving is the conventional mapping, and vello cuts its kernel at
+/// `2.5 * std_dev`, so a token's visible falloff ends about `1.25 * blur`
+/// past the surface. One function so every surface agrees: the previous
+/// two paths disagreed by 1.85x — `elevation()` inflated the token to
+/// `blur * 1.6 + 6` while `chrome::shell::panel_shadow` used it raw, so
+/// the same `e4` produced a 44 px shadow on the workspace-settings sheet
+/// and a 24 px one on quick settings.
+pub fn std_dev_for(blur: f32) -> f64 {
+    (blur as f64) / 2.0
+}
+
+/// Paint an elevation-token shadow under `rect`, square-cornered.
+///
+/// Retained for callers that genuinely have no radius to follow. Anything
+/// with rounded corners must call [`shadow`] and pass them, or it gets a
+/// shadow of a different shape than itself.
+pub fn elevation(scene: &mut Scene, transform: Affine, rect: Rect, token: &Shadow) {
+    shadow(scene, transform, rect, 0.0, token);
 }
 
 /// The one contract for "is this small selectable chrome element
@@ -518,6 +569,131 @@ mod tests {
                 );
             }
         }
+    }
+
+
+    /// Render the token painter over black. The red channel of the
+    /// result *is* the composited alpha, so a sample reads the
+    /// production output of [`shadow`] directly.
+    fn render_token_shadow(
+        w: u32,
+        h: u32,
+        rect: Rect,
+        radius: f64,
+        token: &Shadow,
+    ) -> impl Fn(f64, f64) -> u8 {
+        use crate::offscreen::OffscreenRenderer;
+        let mut scene = Scene::new();
+        shadow(&mut scene, Affine::IDENTITY, rect, radius, token);
+        let mut r = OffscreenRenderer::new(w, h);
+        let rgba = r.render(&scene, Color::BLACK);
+        move |x: f64, y: f64| {
+            OffscreenRenderer::sample(&rgba, w, x.floor() as u32, y.floor() as u32).0
+        }
+    }
+
+    /// A shadow is as even around a rounded corner as it is along a flat
+    /// edge, because it is a blur of the surface's own outline.
+    ///
+    /// This is the defect that produced the 2026-08 "weirdly boxy and
+    /// uneven" report. The sprite painter's corner term was the signed
+    /// distance to the rect with a **zero** corner radius, so at a 24 px
+    /// radius the corner composited roughly a fifth of what the flat
+    /// edges did and kept a hard square corner of its own — read from
+    /// the outside, a box with the corners rubbed out.
+    ///
+    /// Sampling is at equal *normal* distance from the silhouette: out
+    /// from the flat right edge, and out along the corner arc's own
+    /// diagonal. A blur of the outline gives those the same coverage.
+    #[test]
+    fn token_shadow_is_even_around_a_rounded_corner() {
+        let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
+        let radius = 24.0;
+        // offset_y 0 isolates shape from the deliberate downward shift.
+        let token = Shadow { offset_y: 0.0, blur: 16.0, color: Color::WHITE };
+        let at = render_token_shadow(400, 400, rect, radius, &token);
+
+        // Corner arc centre, and the point where the arc meets the
+        // outward diagonal.
+        let cc = 250.0 - radius;
+        let k = std::f64::consts::FRAC_1_SQRT_2;
+        for d in [2.0_f64, 5.0, 9.0, 14.0] {
+            let edge = at(250.0 + d, 200.0);
+            let corner = at(cc + (radius + d) * k, cc + (radius + d) * k);
+            let (lo, hi) = (edge.min(corner) as f64, edge.max(corner) as f64);
+            assert!(
+                hi - lo <= 14.0,
+                "at {d} px out the shadow must be as dense at the rounded \
+                 corner as along the flat edge: edge {edge}, corner \
+                 {corner}. A corner far lighter than the edge is a shadow \
+                 whose outline is not the surface's outline."
+            );
+        }
+    }
+
+    /// The token's colour alpha is the shadow's strength.
+    ///
+    /// [`soft_shadow`] ignores it in favour of a separate `intensity`
+    /// argument, and every caller that passed `1.0` therefore rendered
+    /// its token at full black — which is how `e4`'s 110/255 reached the
+    /// screen as an opaque skirt. [`shadow`] reads the token.
+    #[test]
+    fn token_shadow_honours_the_token_alpha() {
+        let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
+        let radius = 24.0;
+        let peak = |a: u8| {
+            let token = Shadow {
+                offset_y: 0.0,
+                blur: 16.0,
+                color: Color::from_rgba8(255, 255, 255, a),
+            };
+            let at = render_token_shadow(400, 400, rect, radius, &token);
+            // Just outside the flat right edge, where coverage is ~half.
+            at(251.0, 200.0)
+        };
+        let full = peak(255);
+        let half = peak(128);
+        assert!(
+            full > 60,
+            "a full-strength shadow must actually paint (got {full})"
+        );
+        let ratio = half as f64 / full as f64;
+        assert!(
+            (ratio - 0.5).abs() <= 0.08,
+            "halving the token's alpha must halve the shadow: {full} -> \
+             {half} (ratio {ratio:.3}). A ratio near 1.0 means the token's \
+             alpha is being discarded."
+        );
+    }
+
+    /// A token's visible reach is set by its `blur`, through the one
+    /// shared mapping.
+    ///
+    /// `elevation()` used to inflate the token to `blur * 1.6 + 6` while
+    /// `chrome::shell::panel_shadow` used it raw, so the same `e4` was a
+    /// 44 px shadow on one panel and a 24 px one on another.
+    #[test]
+    fn token_shadow_reach_follows_blur() {
+        let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
+        let token = Shadow { offset_y: 0.0, blur: 16.0, color: Color::WHITE };
+        let at = render_token_shadow(400, 400, rect, 24.0, &token);
+        let reach = std_dev_for(token.blur) * 2.5;
+        let mut last = 0.0_f64;
+        for d in 1..=((reach * 2.0) as u32) {
+            if at(250.0 + d as f64, 200.0) > 2 {
+                last = d as f64;
+            }
+        }
+        assert!(
+            last <= reach + 2.0,
+            "the shadow must die out within 2.5 standard deviations \
+             ({reach:.1} px) of the edge; it was still painting at {last} px"
+        );
+        assert!(
+            last >= reach * 0.5,
+            "the shadow must actually reach most of its blur \
+             ({reach:.1} px); it stopped at {last} px"
+        );
     }
 
     /// Render one full-intensity white shadow over black. The red
