@@ -137,3 +137,26 @@ The demo now aims a caret into the page first, which is what a person
 would end up doing after the first attempt vanished. The app should not
 require it: opening a document should put the caret at the start of the
 body, the same way `Ctrl+End` now puts it at the end.
+
+## A resting pointer stops being published while its owner types
+
+Click into a document, type for thirteen seconds without touching the
+mouse, and your pointer disappears from every other participant's
+screen. Their view of you goes empty at exactly the moment you are most
+active in the room.
+
+Found because a beat asserted a peer's pointer and started failing once
+the demo stopped typing its notes twice — the earlier version clicked
+between the two passes, which refreshed the pointer and hid this.
+
+The caret is still published and still carries the name, so a peer
+writing in a document is not invisible. But a pointer that is merely
+resting is not gone, and the codebase already distinguishes those
+(`PointerEvidence::Resting` / `Actuated`, `PRESENT_GRACE`). Most
+collaborative tools keep a still cursor on screen until its owner
+leaves. Worth deciding deliberately rather than by timeout.
+
+Related: the state dump publishes `pointers` and `roster` and no
+carets (`shell/src/compositor/native.rs`), so a harness cannot assert
+the presence that is actually live while somebody writes — only the one
+that is not.
