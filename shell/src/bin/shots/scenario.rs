@@ -1516,18 +1516,26 @@ fn tab_pill_states() -> Scenario {
             Action::Relayout,
             // Activate the third tab, then let the lift settle.
             Action::ClickNamed("tab:Terminal"),
-            Action::Wait(16),
             Action::Relayout,
+            Action::Wait(24),
             // Pointer off the bar: active against three idle pills, with
             // no hover anywhere to blur the comparison.
             Action::MoveCursor(Point::new(800.0, 500.0)),
-            Action::Wait(16),
             Action::Relayout,
+            Action::Wait(24),
             Action::Snapshot("01-active-vs-idle"),
             // Now hover the fourth pill so all three tiers are in frame.
+            //
+            // The `Relayout` has to come *before* the wait, not after it.
+            // A pill's reveal curve is latched during layout and then read
+            // off wall-clock elapsed, so relayouting last starts the
+            // animation at the instant of capture and photographs the
+            // hovered pill at zero — no body, no chips, only the brighter
+            // title. Which is a picture of the frame the pointer arrived
+            // on, not of a hovered tab.
             Action::MoveCursorNamed("tab:Document"),
-            Action::Wait(16),
             Action::Relayout,
+            Action::Wait(24),
             Action::Snapshot("02-three-states"),
         ],
     }
