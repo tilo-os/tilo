@@ -28,6 +28,14 @@
 //! * [`HwReport`] — which decoder element the pipeline actually plugged and
 //!   what caps the sink negotiated. An observation of what ran, so "hardware
 //!   decode is on" is a checkable fact rather than a configuration claim.
+//! * [`encode`] — the same discipline for the other direction. Encoding has no
+//!   autoplugger, so a pipeline that names `openh264enc` encodes on the CPU
+//!   forever however capable the GPU is. [`encode::select_video`] walks a
+//!   per-codec preference list (VA-API, NVENC, QSV, then `x264enc`, then the
+//!   baseline) against the real registry, carries each encoder's bitrate
+//!   property *and unit* so a target rate means the same thing everywhere, and
+//!   reports the choice as a [`Selection`] that reads as hardware only when one
+//!   was actually observed.
 //! * [`SessionPool`] / [`EngineSession`] / [`FrameCache`] — one decode
 //!   pipeline per source, shared between the preview and every thumbnail, with
 //!   a bounded LRU of decoded frames so stepping and short seeks do not
@@ -43,6 +51,7 @@
 pub mod audio;
 pub mod cache;
 pub mod dmabuf;
+pub mod encode;
 pub mod engine;
 pub mod event;
 pub mod frame;
@@ -70,6 +79,10 @@ pub use audio::{
 };
 pub use cache::{bucket_ms_for_fps, bucket_of, read_ahead_targets, FrameCache, FrameKey, SourceKey};
 pub use dmabuf::{ColorRange, Colorimetry, DmabufImage, DmabufPlane, YuvMatrix};
+pub use encode::{
+    AudioCodec, BitrateUnits, EncodeReport, EncoderKind, EncoderSpec, HwEncPolicy, Selection,
+    VideoCodec,
+};
 pub use engine::{EngineConfig, MediaEngine, SeekMode};
 pub use event::{MediaEvent, VideoFrame};
 pub use frame::{Frame, FrameAcceptance, FramePayload, PlanarFormat, PlanarImage, PlaneData};
