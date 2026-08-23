@@ -155,11 +155,14 @@ impl ExportSettings {
     ///
     /// The distinction is [`media::encode::Selection::bitrate_is_predictive`],
     /// false for an encoder measured to ignore its bitrate and for a build
-    /// that could not confirm any encoder at all. On a machine with no
-    /// hardware encoder every candidate this export can reach is in the first
-    /// group: `openh264enc` asked for 1 Mbit/s of noise writes 59, `vp8enc`
-    /// writes 14, and eight times the request moves either by nothing worth
-    /// counting. A megabyte figure there is a guess dressed as a measurement.
+    /// that could not confirm any encoder at all. Which of those a machine
+    /// lands in depends on what it has installed: `x264enc` and the hardware
+    /// encoders carry no such measurement against them, while `openh264enc`
+    /// asked for 1 Mbit/s of noise writes 59 and `vp8enc` writes 14, and
+    /// eight times the request moves either by nothing worth counting. A box
+    /// with only those two — which is the fallback case, and this one — gets
+    /// no megabyte figure, because there it would be a guess dressed as a
+    /// measurement.
     pub fn estimate_label(&self, project: &Project) -> String {
         let (video, _, _) = encode_chain(self.container);
         self.estimate_label_for(project, &video)
