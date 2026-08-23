@@ -3096,6 +3096,19 @@ impl WorkspaceTree {
         };
         let is_local = |id: u64| peer_salt_of(id) == local_salt;
 
+        // Read before the workspace is borrowed mutably: both live on
+        // the tree rather than on the workspace.
+        let host_strip = self
+            .workspaces
+            .iter()
+            .find(|w| w.room == room)
+            .and_then(|w| {
+                let active = self.active_strip.get(&w.id).copied();
+                active
+                    .filter(|id| w.strips.iter().any(|s| s.id == *id && is_local(id.raw())))
+                    .or_else(|| w.strips.iter().find(|s| is_local(s.id.raw())).map(|s| s.id))
+            });
+
         let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
             return false;
         };
@@ -3106,25 +3119,79 @@ impl WorkspaceTree {
             .map(|s| (s.id, s))
             .collect();
 
+        // **Which strip a peer's windows land in is this machine's
+        // business.** The room replicates contents — that a window is
+        // open, and what is in it — and a strip id is not contents, it
+        // is where this desktop decided to put things.
+        //
+        // Taking the peer's strip id literally minted a second strip
+        // here, and strips stack: their window appeared *below* ours on
+        // a desktop that scrolls horizontally and has no vertical
+        // arrangement to mean anything. Groups scroll along a strip, so
+        // that is where somebody else's window belongs — beside yours,
+        // one scroll away, exactly like a window you opened yourself.
+        //
+        // Their groups are merged into the strip we are using, so they
+        // keep their own ids: `merge_strip` matches by group id, and the
+        // ids are already disjoint per peer. Nothing about the group
+        // — its width, its tabs, whose it is — is changed by moving it.
+        let foreign: Vec<u64> = by_strip.keys().copied().filter(|id| !is_local(*id)).collect();
+        let mut peer_groups: Vec<ReplicatedGroup> = Vec::new();
+        for sid in foreign {
+            let rep = by_strip.remove(&sid).expect("key just listed");
+            peer_groups.extend(rep.groups);
+        }
+        // Nowhere of ours to put them: this workspace has no strip this
+        // machine owns, so one is made. Same outcome the old code
+        // reached, minus the stacking — it is a first strip rather than
+        // a second one.
+        if !peer_groups.is_empty() && host_strip.is_none() {
+            ws.strips.push(Strip::new(StripId::from(next_id()), "Main"));
+            changed = true;
+        }
+        let host_strip = host_strip.or_else(|| ws.strips.last().map(|s| s.id));
+
         // `(order, id, strip)` so local-only strips keep a position too.
         let mut out: Vec<(u64, u64, Strip)> = Vec::new();
+        let mut peer_groups = Some(peer_groups);
         for (i, strip) in std::mem::take(&mut ws.strips).into_iter().enumerate() {
             let sid = strip.id.raw();
-            match by_strip.remove(&sid) {
-                Some(rep) => {
-                    // Ours keeps the position our cache has it in. Taking
-                    // it back from the document would undo a local
-                    // reorder until the next projection re-stated it,
-                    // which reads as the layout twitching.
-                    let order = if is_local(sid) { i as u64 } else { rep.order };
-                    out.push((order, sid, Self::merge_strip(strip, rep, &is_local, &mut changed)));
+            // Everybody else's windows join this one.
+            let adopting = (Some(strip.id) == host_strip)
+                .then(|| peer_groups.take())
+                .flatten()
+                .filter(|g| !g.is_empty());
+            let published = by_strip.remove(&sid);
+            if published.is_none() && adopting.is_none() {
+                if is_local(sid) {
+                    // Ours, and simply not published (new, empty, or
+                    // below the share floor). The document has no say
+                    // over it.
+                    out.push((i as u64, sid, strip));
+                } else {
+                    // Neither ours nor in the room any more. Peers'
+                    // strips no longer become strips here at all, so
+                    // this is one left over from when they did — its
+                    // windows have since been merged into ours.
+                    changed = true;
                 }
-                // Ours, and simply not published (new, empty, or below
-                // the share floor). The document has no say over it.
-                None if is_local(sid) => out.push((i as u64, sid, strip)),
-                // A peer's strip that has left the room.
-                None => changed = true,
+                continue;
             }
+            let mut rep = published.unwrap_or_else(|| ReplicatedStrip {
+                id: sid,
+                order: i as u64,
+                name: None,
+                groups: Vec::new(),
+            });
+            // Ours keeps the position our cache has it in. Taking it
+            // back from the document would undo a local reorder until
+            // the next projection re-stated it, which reads as the
+            // layout twitching.
+            let order = if is_local(sid) { i as u64 } else { rep.order };
+            if let Some(extra) = adopting {
+                rep.groups.extend(extra);
+            }
+            out.push((order, sid, Self::merge_strip(strip, rep, &is_local, &mut changed)));
         }
         for (sid, rep) in by_strip {
             out.push((rep.order, sid, Self::hydrate_strip(rep)));
@@ -6359,6 +6426,86 @@ mod automerge_foundation_tests {
         assert!(guest.set_room(guest_ws, room));
         guest.adopt_ownerless_workspaces(&"xaver".to_string());
         (host, guest, room)
+    }
+
+    /// A window somebody else in the room opened lands *beside* yours,
+    /// not underneath it.
+    ///
+    /// Groups scroll horizontally within a strip; strips stack. So a
+    /// peer's window becoming a strip of its own is not a cosmetic
+    /// difference — it puts two windows one above the other on a
+    /// desktop whose whole spatial model is a horizontal scroll, which
+    /// is a thing this window manager does not do.
+    ///
+    /// The room replicates *contents*. Which strip holds them is this
+    /// machine's layout and nobody else's, so a peer's strip id is not
+    /// a strip this machine has to mint.
+    #[test]
+    fn a_peers_window_lands_beside_yours_and_not_below_it() {
+        const HOST: u16 = 0x2222;
+        const GUEST: u16 = 0x3333;
+        let (mut host, mut guest, room) = two_in_a_room();
+        host.set_salt_override(HOST);
+        guest.set_salt_override(GUEST);
+
+        // Each has one window of their own, in a strip of their own.
+        for (tree, salt, title) in [
+            (&mut host, HOST, "Host window"),
+            (&mut guest, GUEST, "Guest window"),
+        ] {
+            let ws = tree.workspaces.iter().position(|w| w.room == room).unwrap();
+            let tab_id = salted(salt, 3);
+            tree.workspaces[ws].strips = vec![Strip {
+                id: StripId::from(salted(salt, 1)),
+                name: "Main".into(),
+                window_groups: vec![WindowGroup {
+                    id: salted(salt, 2),
+                    tabs: vec![Tab {
+                        id: tab_id,
+                        title: title.into(),
+                        tile: TileContent::AppPlaceholder {
+                            kind: AppKind::Other("Notes".into()),
+                            label: title.into(),
+                        },
+                    }],
+                    active_tab: tab_id,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                }],
+            }];
+            tree.sync_room_doc(room);
+        }
+
+        ship(&mut host, &mut guest, room, 1);
+
+        let ws = guest.workspaces.iter().find(|w| w.room == room).unwrap();
+        let titles: Vec<&str> = ws
+            .strips
+            .iter()
+            .flat_map(|s| s.window_groups.iter())
+            .flat_map(|g| g.tabs.iter())
+            .map(|t| t.title.as_str())
+            .collect();
+        assert!(
+            titles.contains(&"Host window") && titles.contains(&"Guest window"),
+            "the host's window has to arrive at all; got {titles:?}",
+        );
+        assert_eq!(
+            ws.strips.len(),
+            1,
+            "both windows belong in one horizontally-scrolling strip; \
+             {} strips means they are stacked vertically, with strips {:?}",
+            ws.strips.len(),
+            ws.strips
+                .iter()
+                .map(|s| (s.id.raw(), s.window_groups.len()))
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            ws.strips[0].window_groups.len(),
+            2,
+            "one group each, side by side",
+        );
     }
 
     fn ship(from: &mut WorkspaceTree, to: &mut WorkspaceTree, room: RoomId, hub: u64) {
