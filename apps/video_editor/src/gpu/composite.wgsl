@@ -18,6 +18,15 @@
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 const MAX_EFFECTS: i32 = 8;
 
+// `sign` returns 0 at 0, which would erase the direction of an axis whose
+// scale underflows. This keeps a direction either way.
+fn sign_nz(v: f32) -> f32 {
+    if (v < 0.0) {
+        return -1.0;
+    }
+    return 1.0;
+}
+
 struct Params {
     // x: frame width, y: frame height, z: has_prev, w: has_texture
     frame: vec4<f32>,
@@ -29,6 +38,15 @@ struct Params {
     src: vec4<f32>,
     // x: wipe progress, y: wipe softness, z/w: present-pass destination offset
     wipe: vec4<f32>,
+    // x: scale x, y: scale y, z: position x, w: position y
+    // Position is in frame widths / heights; scale multiplies the
+    // aspect-fit size. A negative scale mirrors that axis.
+    xform_a: vec4<f32>,
+    // x: rotation in radians (clockwise), y/z: anchor in source uv,
+    // w: 1 when the source texture's own alpha is meaningful
+    xform_b: vec4<f32>,
+    // The visible source rect after cropping: x/y left,top — z/w right,bottom
+    crop: vec4<f32>,
     // per effect — x: kind, y: amount
     effects: array<vec4<f32>, 8>,
 };
@@ -129,26 +147,66 @@ fn cs_layer(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     var cov = clamp(p.grade.w, 0.0, 1.0);
-    var col: vec3<f32>;
+    let fa = f32(w) / f32(h);
+
+    // Aspect-fit ("contain") the source into the project frame. That is the
+    // placement at the identity transform, and everything the transform
+    // does is relative to it. With no source texture there is no aspect to
+    // fit, so the layer's stand-in fill covers the frame — but it is still
+    // placed by the transform, so a picture-in-picture reads as one even
+    // before its bytes arrive.
+    var occupy = vec2<f32>(1.0, 1.0);
     if (p.frame.w > 0.5) {
-        // Aspect-fit ("contain") the source into the project frame.
-        // Outside the fitted rect the layer contributes nothing, so lower
-        // layers — or the letterbox black — stay visible.
         let sa = max(p.src.x, 1.0) / max(p.src.y, 1.0);
-        let fa = f32(w) / f32(h);
-        var occupy = vec2<f32>(1.0, 1.0);
         if (sa > fa) {
             occupy.y = fa / sa;
         } else {
             occupy.x = sa / fa;
         }
-        let fit = (uv - vec2<f32>(0.5)) / occupy + vec2<f32>(0.5);
-        if (fit.x < 0.0 || fit.x > 1.0 || fit.y < 0.0 || fit.y > 1.0) {
-            cov = 0.0;
+    }
+
+    // Invert the transform to find which source texel lands on this pixel.
+    // Forward it reads: move the anchor to the origin, scale, rotate,
+    // offset by pos — so undoing it runs the other way.
+    var q = uv - vec2<f32>(0.5) - p.xform_a.zw;
+    // Rotate in aspect-corrected space, or a square would come out a
+    // parallelogram on a non-square frame.
+    let ang = -p.xform_b.x;
+    let ca = cos(ang);
+    let sn = sin(ang);
+    let qa = vec2<f32>(q.x * fa, q.y);
+    let qr = vec2<f32>(qa.x * ca - qa.y * sn, qa.x * sn + qa.y * ca);
+    q = vec2<f32>(qr.x / fa, qr.y);
+
+    // A scale of zero collapses the layer to nothing: there is no texel to
+    // sample, so it simply contributes none.
+    let denom = occupy * p.xform_a.xy;
+    if (abs(denom.x) < 1e-6 || abs(denom.y) < 1e-6) {
+        cov = 0.0;
+    }
+    let fit = q / vec2<f32>(sign_nz(denom.x) * max(abs(denom.x), 1e-6),
+                            sign_nz(denom.y) * max(abs(denom.y), 1e-6))
+        + p.xform_b.yz;
+
+    // Outside the source, or outside the crop rect, the layer contributes
+    // nothing — so lower layers, or the letterbox black, stay visible.
+    if (fit.x < p.crop.x || fit.x > p.crop.z || fit.y < p.crop.y || fit.y > p.crop.w) {
+        cov = 0.0;
+    }
+
+    var col: vec3<f32>;
+    if (p.frame.w > 0.5) {
+        let texel = textureSampleLevel(
+            src_tex, samp, clamp(fit, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0);
+        col = texel.rgb;
+        // Only sources that actually carry alpha (a title, an image with
+        // transparency) are cut by it. Decoded video whose alpha channel is
+        // left at zero would otherwise vanish entirely.
+        if (p.xform_b.w > 0.5) {
+            cov = cov * clamp(texel.a, 0.0, 1.0);
         }
-        col = textureSampleLevel(src_tex, samp, clamp(fit, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
     } else {
-        col = representative(uv, p.palette.rgb);
+        col = representative(clamp(fit, vec2<f32>(0.0), vec2<f32>(1.0)), p.palette.rgb);
     }
 
     col = grade_rgb(col, p.grade.x, p.grade.y, p.grade.z);
