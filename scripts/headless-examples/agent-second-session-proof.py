@@ -171,6 +171,12 @@ TITLE = "Quarterly review"
 # carries, and the claim is about the *instruction* being carried out.
 INSTRUCTION_TAIL = "make this a proper document"
 
+# What `launch_word_processor` returns when the app is up and
+# collaborating but has not produced a frame. Distinct from `None`
+# (which means it is not running at all) because the document claims
+# still hold and only the screenshots are lost.
+UNPAINTED = "unpainted"
+
 failures: list[str] = []
 
 
@@ -350,6 +356,11 @@ def launch_word_processor(session: Session, room: str, brief: str,
         "QUICK_APP_ID": session.name,
         "QOS_USER_ID": session.name,
         "RUST_LOG": "warn",
+        # Makes the toolkit say whether it reached the broker. Without it
+        # an app that is up but not collaborating looks exactly like an
+        # app that is up and collaborating, and the difference is the
+        # whole question this script asks.
+        "QUICK_COLLAB_DEBUG": "1",
     })
     log_path = os.path.join(session.dir, "word-processor.log")
     before = {f.get("surface_id") for f in session.frames()}
@@ -367,6 +378,23 @@ def launch_word_processor(session: Session, room: str, brief: str,
             if f.get("surface_id") not in before and f.get("frame_seq", 0) > 0:
                 return f
         time.sleep(1.0)
+
+    # No frame. That is fatal to the screenshots and not necessarily
+    # fatal to the document: these are heavyweight debug binaries and the
+    # compositor renders in software, so on a loaded machine the app
+    # spends minutes short of its first frame while its collaboration is
+    # already up. Those are two different claims and they should not
+    # share one gate — a run that can still answer "what does xaver's app
+    # hold" is worth more than a run that stops because it could not take
+    # a picture of it.
+    try:
+        connected = "collab connected=true" in open(log_path, errors="replace").read()
+    except OSError:
+        connected = False
+    if connected and proc.poll() is None:
+        note(f"{session.name}: the word processor is connected but has not "
+             f"painted; continuing for the document, not for the frames")
+        return UNPAINTED
     note(f"{session.name}: the word processor never painted; see {log_path}")
     return None
 
@@ -598,11 +626,18 @@ def main() -> int:
         brief = os.path.join(root, "brief.md")
         with open(brief, "w") as fh:
             fh.write(DRAFT)
+        painted = True
         for s in sessions:
             win = launch_word_processor(s, room, brief)
-            if not check(f"{s.name}'s word processor painted", win is not None,
+            if not check(f"{s.name}'s word processor is up", win is not None,
                          f"see {s.log_path}"):
                 return 1
+            if win is UNPAINTED:
+                painted = False
+        check("both apps produced a frame, so the screenshots mean something",
+              painted,
+              "no frame under load — the document claims below still stand, "
+              "the pictures do not")
 
         # Both apps must have attached to their broker and announced
         # themselves before anyone types, or the first keystrokes go out
@@ -723,9 +758,15 @@ def main() -> int:
         print(f"\n  xaver before: {before_png}")
         print(f"  xaver after:  {x_png}")
         print(f"  quinten:      {q_png}")
-        print("\nThe frames are evidence too, and worth opening: the claims above")
-        print("are about what the apps hold, and a person still has to look at")
-        print("whether xaver's page renders it.")
+        if painted:
+            print("\nThe frames are evidence too, and worth opening: the claims")
+            print("above are about what the apps hold, and a person still has to")
+            print("look at whether xaver's page renders it.")
+        else:
+            print("\nThe frames are NOT evidence in this run: neither app reached")
+            print("its first paint, so the screenshots show a room without pages")
+            print("in it. What the apps hold is still asserted above; what they")
+            print("draw was not established. Re-run on an idle machine for that.")
 
         if failures:
             print(f"\nFAILED ({len(failures)}): " + "; ".join(failures))
