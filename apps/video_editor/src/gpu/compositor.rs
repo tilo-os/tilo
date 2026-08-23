@@ -23,9 +23,9 @@ use super::{FrameSource, SourceTexture};
 /// `composite.wgsl`.
 pub const MAX_SHADER_EFFECTS: usize = 8;
 
-/// Bytes of the uniform struct in `composite.wgsl`: five `vec4<f32>`
+/// Bytes of the uniform struct in `composite.wgsl`: eight `vec4<f32>`
 /// headers plus the effect array.
-const PARAMS_BYTES: usize = (5 + MAX_SHADER_EFFECTS) * 16;
+const PARAMS_BYTES: usize = (8 + MAX_SHADER_EFFECTS) * 16;
 
 /// Where on the target the composited frame lands, in target pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -358,6 +358,23 @@ impl VideoCompositor {
                     params.wipe[0] = wp.progress as f32;
                     params.wipe[1] = wp.softness as f32;
                 }
+                // Geometry. `Layer::transform` is already sampled at this
+                // instant, so an animated move arrives here as a number.
+                let x = &l.transform;
+                params.xform_a = [
+                    x.scale_x as f32,
+                    x.scale_y as f32,
+                    x.pos_x as f32,
+                    x.pos_y as f32,
+                ];
+                let (cl, ct, cr, cb) = x.crop_rect();
+                params.xform_b = [
+                    x.rotation.to_radians() as f32,
+                    x.anchor_x as f32,
+                    x.anchor_y as f32,
+                    if l.source_alpha { 1.0 } else { 0.0 },
+                ];
+                params.crop = [cl as f32, ct as f32, cr as f32, cb as f32];
             } else {
                 // The empty-timeline clear: fully transparent coverage
                 // leaves the frame at black.
@@ -439,6 +456,9 @@ struct Params {
     palette: [f32; 4],
     src: [f32; 4],
     wipe: [f32; 4],
+    xform_a: [f32; 4],
+    xform_b: [f32; 4],
+    crop: [f32; 4],
     effects: [[f32; 4]; MAX_SHADER_EFFECTS],
 }
 
@@ -451,6 +471,12 @@ impl Default for Params {
             palette: [0.0; 4],
             src: [0.0; 4],
             wipe: [0.0; 4],
+            // The identity placement: unit scale, no offset, no rotation,
+            // centre anchor, opaque source.
+            xform_a: [1.0, 1.0, 0.0, 0.0],
+            xform_b: [0.0, 0.5, 0.5, 0.0],
+            // The whole source is visible.
+            crop: [0.0, 0.0, 1.0, 1.0],
             effects: [[0.0; 4]; MAX_SHADER_EFFECTS],
         }
     }
@@ -471,6 +497,9 @@ impl Params {
         put(self.palette, &mut out, &mut at);
         put(self.src, &mut out, &mut at);
         put(self.wipe, &mut out, &mut at);
+        put(self.xform_a, &mut out, &mut at);
+        put(self.xform_b, &mut out, &mut at);
+        put(self.crop, &mut out, &mut at);
         for e in self.effects {
             put(e, &mut out, &mut at);
         }
