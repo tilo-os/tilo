@@ -46,8 +46,10 @@ use qos_actions::{
 
 use crate::doc::VideoDoc;
 use crate::model::{
-    Clip, EffectKind, Filters, MediaItem, MediaKind, Project, Track, TrackKind, Transition,
+    Clip, EffectKind, Filters, MediaItem, MediaKind, Project, TextSource, Track, TrackKind,
+    Transition,
 };
+use crate::param::{Interp, Param};
 
 /// Registry `type_id` for every video-editor action.
 pub const VIDEO_EDITOR_ACTION_TYPE: &str = "video_editor.action";
@@ -524,6 +526,66 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         ));
     }
 
+    // Project-level: a timeline marker at the playhead, named.
+    {
+        let snap = p.clone();
+        let at = ctx.playhead;
+        root = root.with_action(ActionSpec::prompted(
+            "add-marker",
+            "Add marker at playhead",
+            "Marker name",
+            "Marker",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| {
+                let mut next = snap.clone();
+                let name = if name.trim().is_empty() { "Marker" } else { name.trim() };
+                next.add_marker(at, name, 1);
+                encode(&set_project_meta_action(&next))
+            },
+        ));
+        if let Some(m) = p.markers.iter().find(|m| (m.t - ctx.playhead).abs() < 0.25) {
+            let mut cleared = p.clone();
+            cleared.remove_marker(m.id);
+            root = root.with_action(immediate(
+                "remove-marker",
+                &format!("Remove marker \u{201c}{}\u{201d}", m.name),
+                &set_project_meta_action(&cleared),
+            ));
+        }
+    }
+
+    // Project-level: a title. It lands in the bin like any other source —
+    // the id is minted here, at authoring time, so the action replays
+    // byte-identically on a peer.
+    {
+        let palette = (p.media.len() as u8) % 7;
+        root = root.with_action(ActionSpec::prompted(
+            "add-title",
+            "Add title",
+            "The words",
+            "Title",
+            ExecutionLocus::ClientLocal,
+            move |text: &str| {
+                let content = if text.trim().is_empty() { "Title" } else { text.trim() };
+                let item = MediaItem {
+                    id: Uuid::new_v4(),
+                    name: content.lines().next().unwrap_or("Title").to_string(),
+                    kind: MediaKind::Text,
+                    // Long enough to be trimmed down rather than stretched.
+                    duration: 5.0,
+                    palette,
+                    // A title has no bytes: nothing to hydrate, nothing to
+                    // fetch, and it renders on every peer immediately.
+                    path: String::new(),
+                    hydration: crate::media::Hydration::Local,
+                    text: Some(TextSource::new(content)),
+                    ..Default::default()
+                };
+                encode(&upsert_media_action(&item))
+            },
+        ));
+    }
+
     // Project-level: add a fresh empty track of either kind (index = current
     // max of that kind + 1) — the same whole-track write the timeline's
     // add-track buttons dispatch.
@@ -685,6 +747,141 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 cr = cr.with_action(immediate("clear-effects", "Clear effects", &upsert_clip_action(&cleared)));
             }
 
+            // Speed. The rate is prompted; reverse is a toggle, because
+            // "play it backwards" is a decision, not a number.
+            let speed_base = clip.clone();
+            cr = cr.with_action(ActionSpec::prompted(
+                "set-speed",
+                "Set speed",
+                "Rate, e.g. 0.5 / 1 / 2",
+                "2",
+                ExecutionLocus::ClientLocal,
+                move |arg: &str| {
+                    let mut next = speed_base.clone();
+                    let rate = arg.trim().trim_end_matches(['x', 'X', '\u{d7}']).parse().unwrap_or(1.0);
+                    next.set_speed(rate, next.speed.reverse);
+                    encode(&upsert_clip_action(&next))
+                },
+            ));
+            let mut reversed = clip.clone();
+            reversed.set_speed(clip.speed.rate(), !clip.speed.reverse);
+            cr = cr.with_action(immediate(
+                "toggle-reverse",
+                if clip.speed.reverse { "Play forwards" } else { "Play backwards" },
+                &upsert_clip_action(&reversed),
+            ));
+            if !clip.speed.is_normal() {
+                let mut normal = clip.clone();
+                normal.set_speed(1.0, false);
+                cr = cr.with_action(immediate(
+                    "reset-speed",
+                    "Reset speed to normal",
+                    &upsert_clip_action(&normal),
+                ));
+            }
+
+            // Geometry. The corner insets are the shape people actually
+            // want; anything finer is a prompted scale or position.
+            for (id, label, corner) in [
+                ("pip-tr", "Inset top-right", (1.0, -1.0)),
+                ("pip-tl", "Inset top-left", (-1.0, -1.0)),
+                ("pip-br", "Inset bottom-right", (1.0, 1.0)),
+                ("pip-bl", "Inset bottom-left", (-1.0, 1.0)),
+            ] {
+                let mut inset = clip.clone();
+                inset.transform = crate::model::Transform::pip(0.3, corner, 0.04);
+                cr = cr.with_action(immediate(id, label, &upsert_clip_action(&inset)));
+            }
+            for (id, label, axis) in [
+                ("set-scale", "Set scale", GeomAxis::Scale),
+                ("set-pos-x", "Set position X", GeomAxis::PosX),
+                ("set-pos-y", "Set position Y", GeomAxis::PosY),
+                ("set-rotation", "Set rotation (degrees)", GeomAxis::Rotation),
+            ] {
+                let base = clip.clone();
+                cr = cr.with_action(ActionSpec::prompted(
+                    id,
+                    label,
+                    match axis {
+                        GeomAxis::Rotation => "Degrees, e.g. -15",
+                        GeomAxis::Scale => "Multiplier, e.g. 0.5",
+                        _ => "Frame widths, e.g. -0.25",
+                    },
+                    match axis {
+                        GeomAxis::Scale => "0.5",
+                        GeomAxis::Rotation => "15",
+                        _ => "0.25",
+                    },
+                    ExecutionLocus::ClientLocal,
+                    move |arg: &str| {
+                        let v: f64 = arg.trim().parse().unwrap_or_default();
+                        let mut next = base.clone();
+                        match axis {
+                            GeomAxis::Scale => {
+                                next.transform.scale_x = v;
+                                next.transform.scale_y = v;
+                            }
+                            GeomAxis::PosX => next.transform.pos_x = v,
+                            GeomAxis::PosY => next.transform.pos_y = v,
+                            GeomAxis::Rotation => next.transform.rotation = v,
+                        }
+                        encode(&upsert_clip_action(&next))
+                    },
+                ));
+            }
+            if !clip.transform.is_identity() {
+                let mut flat = clip.clone();
+                flat.transform = crate::model::Transform::default();
+                cr = cr.with_action(immediate(
+                    "reset-transform",
+                    "Reset position and scale",
+                    &upsert_clip_action(&flat),
+                ));
+            }
+
+            // Keyframes, at the playhead. Keying a parameter plants it at
+            // whatever it reads right now, so the first key never moves the
+            // picture — the second one is what makes it animate.
+            if clip.covers(ctx.playhead) {
+                let at = ctx.playhead;
+                for param in Param::SIMPLE {
+                    let base = clip.clone();
+                    let Some(now) = base.param_const(param) else { continue };
+                    let mut keyed = base.clone();
+                    let current = keyed.param_at(param, at);
+                    keyed.set_key_at(param, at, current, Interp::Linear);
+                    cr = cr.with_action(immediate(
+                        &format!("key-{}", param.as_str()),
+                        &format!("Key {} here ({now:.2})", param.label().to_lowercase()),
+                        &upsert_clip_action(&keyed),
+                    ));
+                }
+                for param in clip.anim.animated_params() {
+                    let mut cleared = clip.clone();
+                    cleared.anim.clear(param);
+                    cr = cr.with_action(immediate(
+                        &format!("unkey-{}", param.as_str()),
+                        &format!("Remove {} animation", param.label().to_lowercase()),
+                        &upsert_clip_action(&cleared),
+                    ));
+                }
+                // A marker on the clip, named.
+                let marker_base = clip.clone();
+                cr = cr.with_action(ActionSpec::prompted(
+                    "add-clip-marker",
+                    "Add marker on this clip",
+                    "Marker name",
+                    "Marker",
+                    ExecutionLocus::ClientLocal,
+                    move |arg: &str| {
+                        let mut next = marker_base.clone();
+                        let name = if arg.trim().is_empty() { "Marker" } else { arg.trim() };
+                        next.add_marker(at, name, next.palette);
+                        encode(&upsert_clip_action(&next))
+                    },
+                ));
+            }
+
             // Transition at the head cut — prompted by name.
             let base = clip.clone();
             cr = cr.with_action(ActionSpec::prompted(
@@ -714,6 +911,55 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         let mid = m.id;
         let mut mr = Resource::new(format!("video.media:{mid}"), "video.media", m.name.clone());
         let rename_snap = m.clone();
+        if let Some(text) = m.text.clone() {
+            let base = m.clone();
+            mr = mr.with_action(ActionSpec::prompted(
+                "set-title-text",
+                "Set title text",
+                "The words",
+                &text.content,
+                ExecutionLocus::ClientLocal,
+                move |arg: &str| {
+                    let mut next = base.clone();
+                    let mut t = next.text.clone().unwrap_or_default();
+                    t.content = arg.to_string();
+                    next.name = arg.lines().next().unwrap_or("Title").to_string();
+                    next.text = Some(t);
+                    encode(&upsert_media_action(&next))
+                },
+            ));
+            let size_base = m.clone();
+            mr = mr.with_action(ActionSpec::prompted(
+                "set-title-size",
+                "Set title size",
+                "Fraction of the frame height, e.g. 0.12",
+                "0.12",
+                ExecutionLocus::ClientLocal,
+                move |arg: &str| {
+                    let mut next = size_base.clone();
+                    let mut t = next.text.clone().unwrap_or_default();
+                    t.size = arg.trim().parse().unwrap_or(t.size);
+                    next.text = Some(t);
+                    encode(&upsert_media_action(&next))
+                },
+            ));
+            let align_base = m.clone();
+            mr = mr.with_action(ActionSpec::prompted(
+                "set-title-align",
+                "Set title alignment",
+                "left / center / right",
+                "center",
+                ExecutionLocus::ClientLocal,
+                move |arg: &str| {
+                    let mut next = align_base.clone();
+                    let mut t = next.text.clone().unwrap_or_default();
+                    t.align = crate::model::TextAlign::from_str(arg.trim());
+                    next.text = Some(t);
+                    encode(&upsert_media_action(&next))
+                },
+            ));
+        }
+
         mr = mr.with_action(ActionSpec::prompted(
             "rename-media",
             "Rename media",
@@ -746,6 +992,15 @@ enum FilterAxis {
     Saturation,
 }
 
+/// Which geometric channel a prompted transform action drives.
+#[derive(Clone, Copy)]
+enum GeomAxis {
+    Scale,
+    PosX,
+    PosY,
+    Rotation,
+}
+
 /// Map a palette transition name to the stored [`Transition`], tolerant of the
 /// on-screen labels ("Cut", "Dissolve", …) as well as the stored tags.
 fn parse_transition(s: &str) -> Transition {
@@ -770,6 +1025,224 @@ impl ResourceProvider for crate::app::VideoEditorApp {
 
 #[cfg(test)]
 mod tests {
+
+    /// Every action the palette offers for `ctx`, flattened with its
+    /// resource, so a test can look one up by id.
+    fn all_specs(ctx: &VideoResourceCtx) -> Vec<(String, ActionSpec)> {
+        fn walk(r: &Resource, out: &mut Vec<(String, ActionSpec)>) {
+            for a in &r.actions {
+                out.push((a.id.clone(), a.clone()));
+            }
+            for c in &r.children {
+                walk(c, out);
+            }
+        }
+        let mut out = Vec::new();
+        for r in provide_resources(ctx) {
+            walk(&r, &mut out);
+        }
+        out
+    }
+
+    fn spec(ctx: &VideoResourceCtx, id: &str) -> ActionSpec {
+        all_specs(ctx)
+            .into_iter()
+            .find(|(i, _)| i == id)
+            .unwrap_or_else(|| panic!("the palette offers {id}: {:?}",
+                all_specs(ctx).iter().map(|(i, _)| i.clone()).collect::<Vec<_>>()))
+            .1
+    }
+
+    /// Apply `spec` (immediate or prompted with `arg`) to a document seeded
+    /// from `p`, and read the project back — the whole replay path.
+    fn run(p: &Project, spec: &ActionSpec, arg: Option<&str>) -> Project {
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, p);
+        let encoded = match arg {
+            Some(a) => prompted_encode(spec, a),
+            None => immediate_encode(spec),
+        };
+        let action: VideoEditorAction =
+            serde_json::from_slice(&encoded.payload).expect("payload decodes");
+        action.apply(&mut doc).expect("applies");
+        VideoDoc::load_project(&doc)
+    }
+
+    /// A project with one clip under the playhead.
+    fn ctx_fixture() -> (VideoResourceCtx, Uuid) {
+        let mut p = Project::new("act");
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "v.mp4".into(),
+            kind: MediaKind::Video,
+            duration: 30.0,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            path: "media/v.mp4".into(),
+            hydration: crate::media::Hydration::Local,
+            ..Default::default()
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track { id: tid, name: "V1".into(), index: 1, ..Default::default() });
+        let cid = p.add_clip(tid, mid, 0.0).expect("media exists");
+        (VideoResourceCtx { project: p, playhead: 4.0 }, cid)
+    }
+
+    #[test]
+    fn the_whole_clip_write_carries_geometry_speed_curves_and_markers() {
+        // `UpsertClip` is the one door every per-clip edit goes through, so
+        // anything it drops is an edit that silently does not replicate.
+        let (mut p, cid) = {
+            let (ctx, cid) = ctx_fixture();
+            (ctx.project, cid)
+        };
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.transform = crate::model::Transform::pip(0.3, (1.0, -1.0), 0.05);
+            c.set_speed(2.5, true);
+            c.set_key_at(Param::Opacity, 0.0, 0.2, Interp::Ease);
+            c.set_key_at(Param::Opacity, 3.0, 0.9, Interp::Hold);
+            c.transition_duration = 1.25;
+            c.add_marker(1.0, "beat", 2);
+        }
+        let want = p.clip(cid).unwrap().clone();
+        let data = ClipData::from_clip(&want);
+        let back = data.to_clip().expect("round-trips");
+        assert_eq!(back, want, "the wire payload is lossless");
+
+        // And through a real document.
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, &p);
+        VideoEditorAction::UpsertClip(data).apply(&mut doc).expect("applies");
+        assert_eq!(VideoDoc::load_project(&doc).clip(cid).unwrap(), &want);
+    }
+
+    #[test]
+    fn the_palette_can_set_a_speed_and_reverse_it() {
+        let (ctx, cid) = ctx_fixture();
+        let sped = run(&ctx.project, &spec(&ctx, "set-speed"), Some("2"));
+        let c = sped.clip(cid).unwrap();
+        assert_eq!(c.speed.rate(), 2.0);
+        assert_eq!(c.duration(), 15.0, "and the clip is half as long on the timeline");
+
+        let back = run(&ctx.project, &spec(&ctx, "toggle-reverse"), None);
+        assert!(back.clip(cid).unwrap().speed.reverse);
+    }
+
+    #[test]
+    fn the_palette_can_inset_a_clip_and_put_it_back() {
+        let (ctx, cid) = ctx_fixture();
+        let inset = run(&ctx.project, &spec(&ctx, "pip-tr"), None);
+        let t = inset.clip(cid).unwrap().transform;
+        assert!(!t.is_identity());
+        assert!(t.pos_x > 0.0 && t.pos_y < 0.0, "top-right: {t:?}");
+
+        // With the clip already inset, the palette offers the way back.
+        let ctx2 = VideoResourceCtx { project: inset, ..ctx };
+        let flat = run(&ctx2.project, &spec(&ctx2, "reset-transform"), None);
+        assert!(flat.clip(cid).unwrap().transform.is_identity());
+    }
+
+    #[test]
+    fn the_palette_keys_a_parameter_at_the_playhead_without_moving_the_picture() {
+        let (ctx, cid) = ctx_fixture();
+        let before = ctx.project.clip(cid).unwrap().param_at(Param::Opacity, 4.0);
+        let keyed = run(&ctx.project, &spec(&ctx, "key-opacity"), None);
+        let c = keyed.clip(cid).unwrap();
+        assert!(c.anim.is_animated(Param::Opacity), "a curve exists now");
+        assert_eq!(
+            c.param_at(Param::Opacity, 4.0),
+            before,
+            "the first key is planted where the value already was",
+        );
+
+        // And with a curve present, the palette offers to take it away.
+        let ctx2 = VideoResourceCtx { project: keyed, ..ctx };
+        let cleared = run(&ctx2.project, &spec(&ctx2, "unkey-opacity"), None);
+        assert!(!cleared.clip(cid).unwrap().anim.is_animated(Param::Opacity));
+    }
+
+    #[test]
+    fn the_palette_adds_a_timeline_marker_and_removes_it() {
+        let (ctx, _) = ctx_fixture();
+        let marked = run(&ctx.project, &spec(&ctx, "add-marker"), Some("Act two"));
+        assert_eq!(marked.markers.len(), 1);
+        assert_eq!(marked.markers[0].name, "Act two");
+        assert_eq!(marked.markers[0].t, 4.0, "at the playhead");
+
+        let ctx2 = VideoResourceCtx { project: marked, ..ctx };
+        let gone = run(&ctx2.project, &spec(&ctx2, "remove-marker"), None);
+        assert!(gone.markers.is_empty());
+    }
+
+    #[test]
+    fn the_palette_adds_a_title_to_the_bin() {
+        let (ctx, _) = ctx_fixture();
+        let with_title = run(&ctx.project, &spec(&ctx, "add-title"), Some("Chapter One"));
+        let t = with_title
+            .media
+            .iter()
+            .find(|m| m.kind == MediaKind::Text)
+            .expect("a title landed in the bin");
+        assert_eq!(t.text.as_ref().map(|t| t.content.as_str()), Some("Chapter One"));
+        assert_eq!(t.name, "Chapter One", "and it is named after its words");
+        assert!(t.path.is_empty(), "a title has no bytes to fetch");
+
+        // Its words can then be edited from the bin.
+        let ctx2 = VideoResourceCtx { project: with_title, ..ctx };
+        let edited = run(&ctx2.project, &spec(&ctx2, "set-title-text"), Some("Chapter Two"));
+        let t = edited.media.iter().find(|m| m.kind == MediaKind::Text).unwrap();
+        assert_eq!(t.text.as_ref().map(|t| t.content.as_str()), Some("Chapter Two"));
+    }
+
+    #[test]
+    fn a_clip_marker_from_the_palette_lands_on_the_clip_not_the_project() {
+        let (ctx, cid) = ctx_fixture();
+        let marked = run(&ctx.project, &spec(&ctx, "add-clip-marker"), Some("hit"));
+        assert!(marked.markers.is_empty(), "not a project marker");
+        let m = &marked.clip(cid).unwrap().markers;
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].name, "hit");
+        assert_eq!(m[0].t, 4.0, "clip-local, and this clip starts at zero");
+    }
+
+    #[test]
+    fn every_new_action_replays_to_the_same_document_twice() {
+        // The determinism contract: no RNG, no clock, so applying the same
+        // encoded action to the same base twice lands identically.
+        let (ctx, _) = ctx_fixture();
+        for (id, arg) in [
+            ("set-speed", Some("1.75")),
+            ("toggle-reverse", None),
+            ("pip-bl", None),
+            ("key-scale_x", None),
+            ("add-marker", Some("m")),
+            ("add-clip-marker", Some("m")),
+            ("set-rotation", Some("-12")),
+        ] {
+            // One authoring, applied twice. Ids are minted when the action
+            // is *built* and travel in the payload, so what has to be
+            // deterministic is `apply` — two separate authorings of
+            // "add a marker" are two different markers, and should be.
+            let sp = spec(&ctx, id);
+            let encoded = match arg {
+                Some(a) => prompted_encode(&sp, a),
+                None => immediate_encode(&sp),
+            };
+            let apply_once = || {
+                let mut doc = AutoCommit::new();
+                VideoDoc::write_project(&mut doc, &ctx.project);
+                let action: VideoEditorAction =
+                    serde_json::from_slice(&encoded.payload).expect("decodes");
+                action.apply(&mut doc).expect("applies");
+                serde_json::to_value(VideoDoc::load_project(&doc)).unwrap()
+            };
+            assert_eq!(apply_once(), apply_once(), "{id} replays deterministically");
+        }
+    }
+
     use super::*;
     use crate::app::VideoEditorApp;
     use qos_actions::{ActionInput, ActionRegistry, LocalTransport};
@@ -845,13 +1318,21 @@ mod tests {
         assert!(clip_actions.contains(&"ripple-delete"), "{clip_actions:?}");
         assert!(clip_actions.contains(&"set-brightness"), "{clip_actions:?}");
 
-        // The one palette surfaces the tree's actions as rows.
+        // The one palette surfaces the tree's actions as rows. The result
+        // list is capped, so each is asked for the way a user asks — by
+        // typing — rather than by assuming an unfiltered palette shows the
+        // whole tree at once.
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
-        let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Delete clip")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Rename project")), "{labels:?}");
+        for want in ["Delete clip", "Rename project", "Add title", "Add marker at playhead"] {
+            palette.set_query(want);
+            let labels = palette.result_labels();
+            assert!(
+                labels.iter().any(|l| l.contains(want)),
+                "the palette finds {want:?}: {labels:?}",
+            );
+        }
     }
 
     /// Dispatching `DeleteClip` through the executor removes exactly that clip
