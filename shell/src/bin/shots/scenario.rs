@@ -2283,27 +2283,24 @@ fn wheel_scroll_workspaces() -> Scenario {
 fn strip_horizontal_scroll() -> Scenario {
     Scenario {
         name: "strip_horizontal_scroll",
-        description: "Fire a horizontal-dominant wheel over the strip and assert the active \
-             tab cycled (visible in the topbar's pill highlight).",
+        description: "Swipe sideways over the strip and travel along it — one window \
+             forward, then back — with the rail reading out where that is.",
         actions: vec![
             // Cursor over the active tile / strip area (well below the
-            // topbar's 40 px band and well to the right of the 320 px
-            // sidebar gutter).
+            // topbar's 40 px band and well to the right of the sidebar
+            // gutter).
             Action::MoveCursor(Point::new(900.0, 500.0)),
             Action::Snapshot("00-before"),
-            // Horizontal swipe that pans the strip forward (reveals
-            // content to the right). With the natural sign convention a
-            // swipe-left (dx<0) increases scroll_x, so a negative dx is
-            // what moves the strip off its leftmost (clamped-to-0)
-            // resting position. 10 LineDelta units × 30 px = 300 px of
-            // pan, well inside the viewport*3 upper clamp.
-            Action::MouseWheel { dx: -10.0, dy: 0.0 },
-            Action::Wait(2),
-            Action::Snapshot("01-after-pan"),
-            // And the reverse direction — should bring the strip back to
-            // the leftmost position (clamped to 0).
+            // A sideways swipe steps focus one window along the strip —
+            // the same operation Super+ArrowRight performs — and the
+            // focus-follow pan brings it into view. Positive dx travels
+            // forward, matching the chord's direction.
             Action::MouseWheel { dx: 10.0, dy: 0.0 },
-            Action::Wait(2),
+            Action::Wait(24),
+            Action::Snapshot("01-after-pan"),
+            // And back the way it came.
+            Action::MouseWheel { dx: -10.0, dy: 0.0 },
+            Action::Wait(24),
             Action::Snapshot("02-back-to-start"),
         ],
     }
