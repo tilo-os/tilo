@@ -429,13 +429,20 @@ impl TopBarChrome {
             Some(ws) if ws.collaborators.iter().any(|c| c.id != "me") => &ws.collaborators,
             _ => &tree.collaborators,
         };
+        // Somebody who has been invited and has not arrived is not in
+        // the avatar cluster. An avatar there is a claim that a specific
+        // person is in this workspace, and the empty-roster slot exists
+        // precisely to say "there is nobody here yet, invite someone" —
+        // so filling it with the person you just invited would answer
+        // its own offer and hide the moment they actually turn up.
+        let present = |c: &&crate::shell::state::Collaborator| c.id != "me" && !c.invited;
         self.collaborator_initials.clear();
         self.collaborator_colors.clear();
         // Peer count flows through the shared helper so the top-bar
         // overflow chip and the wheel-disc active-card dot count always
         // agree (audit B-10).
         let peer_count = crate::shell::state::active_workspace_peer_count(tree);
-        for c in roster.iter().filter(|c| c.id != "me").take(3) {
+        for c in roster.iter().filter(present).take(3) {
             let Some(ch) = c.name.chars().next() else {
                 continue;
             };
@@ -2302,6 +2309,29 @@ mod tests {
             bar.collaborator_overflow(),
             0,
             "one peer is not an overflow",
+        );
+
+        // And the state in between, which is the one that can lie. The
+        // room has named him — the invitation is real and the panel
+        // lists it — but he has not redeemed it. An avatar here would
+        // be the bar claiming he is in the workspace, and it would
+        // replace the very affordance that exists to invite him.
+        let mut asked = empty.clone();
+        asked.collaborators = vec![
+            crate::shell::state::Collaborator::new("peer@11895642303397647149", "bob")
+                .as_invited(),
+        ];
+        let bar = TopBarChrome::from_tree(&asked);
+        assert!(
+            bar.collaborator_initials().is_empty(),
+            "somebody invited and not yet arrived is not an avatar in the \
+             cluster: {:?}",
+            bar.collaborator_initials(),
+        );
+        assert_eq!(
+            bar.collaborator_overflow(),
+            0,
+            "and does not show up in the +N chip either",
         );
     }
 }

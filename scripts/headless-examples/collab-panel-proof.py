@@ -355,6 +355,30 @@ def main() -> int:
         if not copied:
             return 1
 
+        # Before anybody redeems it: whoever the room has named is
+        # listed, and listed as *invited*. Naming happens when the token
+        # is minted, so a roster that treated a name as an arrival would
+        # claim bob was here on the strength of a token still sitting
+        # on ada's clipboard — and joining would then change nothing
+        # on screen, which is the whole beat.
+        #
+        # Whether there is anything to check here depends on whether
+        # Invite mints a *named* token. It does not today, so this
+        # usually has nobody to look at — and says so out loud rather
+        # than passing quietly, because a check that cannot tell "held"
+        # from "never ran" is not a check.
+        pending = [r for r in ((ada.peers() or {}).get("roster") or [])
+                   if not r.get("is_agent")]
+        if pending:
+            check("a peer the room has named but who has not redeemed "
+                  "reads as invited, not present",
+                  all(r.get("invited") is True for r in pending),
+                  json.dumps(pending)[:200])
+        else:
+            print("  n/a   nothing to check yet — this Invite minted an "
+                  "unnamed token, so the room has named nobody and there "
+                  "is no row to be invited")
+
         step("the token travels — by hand, off ada's clipboard")
         # Deliberately `copied`, not `token`: what crosses is what the
         # button produced, so a copy that silently truncated fails the
@@ -434,10 +458,29 @@ def main() -> int:
               f"{len(people)} people in {json.dumps(roster)[:160]}")
         if people:
             label = people[0].get("label") or ""
-            check("under a label that is his identity, not a blank",
-                  label.startswith("peer@"),
-                  f"{label!r} — a plain invite names nobody, so the id is "
-                  "the only honest label")
+            # Never blank, and never a name nobody chose. Which of the
+            # two it is depends on whether the Invite button minted a
+            # named token — so the claim is stated as the invariant that
+            # holds either way, rather than pinned to today's answer:
+            # the label is his peer identity, or it is exactly a name
+            # this room's own document records for a peer.
+            recorded = set()
+            for room in (ada.state()["workspace_tree"]
+                         .get("room_peer_names") or {}).values():
+                recorded.update((room or {}).values())
+            check("under a label that is his identity or a name the room "
+                  "recorded — never blank, never invented",
+                  bool(label) and (label.startswith("peer@")
+                                   or label in recorded),
+                  f"{label!r}; the room records {sorted(recorded)}")
+            # And as somebody who *arrived*, not somebody who was asked.
+            # The roster lists both, and draws them differently: a peer
+            # the room has named and who has not redeemed anything reads
+            # as `invited`, dimmed. bob redeemed his, so his row is a
+            # participant — and that flip is the visible half of joining.
+            check("and as a participant, not a pending invitation",
+                  people[0].get("invited") is False,
+                  json.dumps(people[0])[:160])
         # The negative half: ada must not be in his own list of
         # other people. He names himself when he mints an invite, so
         # that his guests read a name rather than a number, and reading
@@ -475,6 +518,14 @@ def main() -> int:
               any((r.get("label") or "") == ada.name
                   and r.get("role") == "owner"
                   for r in (guest_roster or [])),
+              json.dumps(guest_roster)[:200])
+        # ada is a participant on bob's screen, not an invitation.
+        # He is in the room he governs, and bob learned it the way a
+        # guest does: ada answered his request for the room's
+        # changes, under a peer id the transport authenticated.
+        check("as somebody who is in the room, not somebody pending",
+              all(r.get("invited") is False for r in (guest_roster or [])
+                  if (r.get("label") or "") == ada.name),
               json.dumps(guest_roster)[:200])
         bob.snapshot(os.path.join(shots, "09-bob-roster.png"))
 

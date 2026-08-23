@@ -396,8 +396,14 @@ impl PeerPresence {
                 return false;
             }
             let labels = tree.room_peer_labels(ws.room);
-            let seen = handles_seen_in(presence, &ws.room.to_string());
-            let rows = room_roster(ws, &labels, &seen, local);
+            // Both ways somebody can turn up. Presence is a cursor on
+            // the desktop; participation is a peer that asked this
+            // room's document for its changes or answered with them,
+            // which is what a session that never moves a mouse does and
+            // is the signal that survives a peer sitting still.
+            let mut arrived = handles_seen_in(presence, &ws.room.to_string());
+            arrived.extend(replica.participants_in(ws.room));
+            let rows = room_roster(ws, &labels, &arrived, local);
             if tree.collaborators == rows {
                 return false;
             }
@@ -551,10 +557,26 @@ pub fn fold_inbound(
 /// who joined and sat still out of the room they joined. An agent
 /// session never moves a mouse at all.
 ///
-/// `seen` is the peer handles this session has actually had presence
-/// from in that room. It carries somebody the room has *not* named — a
-/// peer who redeemed a plain invite, which says nothing about who it is
-/// for — and the document cannot, because nothing wrote them into it.
+/// `arrived` is the peer handles that have actually turned up in that
+/// room — presence this session received, plus the peers that have
+/// taken part in the room's document
+/// ([`crate::network::replica::WorkspaceTreeReplica::participants_in`]).
+/// It carries somebody the room has *not* named — a peer who redeemed a
+/// plain invite, which says nothing about who it is for — and the
+/// document cannot, because nothing wrote them into it.
+///
+/// The two together are what let a row say **which** it is. A name is
+/// written the moment an invitation is minted, so a roster that treated
+/// naming as arriving would claim somebody was here on the strength of
+/// an invitation they may never have opened — and, worse, would make
+/// joining a room change nothing on the screens of the people already
+/// in it. A named peer that has not arrived is marked
+/// [`Collaborator::invited`]; when it does arrive the same row becomes
+/// an ordinary participant, which is the moment a viewer can see.
+///
+/// Arrival is deliberately not taken from the peer's own claim. The
+/// document half is keyed off the identity the transport authenticated,
+/// so a peer cannot promote its own row by asserting it is here.
 ///
 /// `local` is this session's own handle, and it is dropped. The roster
 /// answers "who else is here". A host names *itself* when it mints an
@@ -574,11 +596,11 @@ pub fn fold_inbound(
 pub fn room_roster(
     ws: &crate::shell::state::Workspace,
     labels: &PeerLabels,
-    seen: &std::collections::BTreeSet<u64>,
+    arrived: &std::collections::BTreeSet<u64>,
     local: u64,
 ) -> Vec<crate::shell::state::Collaborator> {
     let mut handles: std::collections::BTreeSet<u64> = labels.keys().copied().collect();
-    handles.extend(seen.iter().copied());
+    handles.extend(arrived.iter().copied());
     handles.remove(&local);
     handles
         .into_iter()
@@ -593,9 +615,16 @@ pub fn room_roster(
             let name = labels.get(&handle).cloned().unwrap_or_else(|| id.clone());
             let role = ws.role_of(&name);
             let who = crate::shell::state::Collaborator::new(id, name);
-            match role {
+            let who = match role {
                 Some(role) => who.with_role(crate::shell::state::role_label(role)),
                 None => who,
+            };
+            // Anybody in `handles` who has not arrived got there by
+            // being named, so this is the whole of the invited case.
+            if arrived.contains(&handle) {
+                who
+            } else {
+                who.as_invited()
             }
         })
         .collect()
@@ -1453,11 +1482,13 @@ mod two_sessions {
 
     /// A session's own view of who is in the room it is looking at,
     /// read the way the roster and the top bar read it.
-    fn roster_of(tree: &crate::shell::state::WorkspaceTreeHandle) -> Vec<(String, Option<String>)> {
+    fn roster_of(
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+    ) -> Vec<(String, Option<String>, bool)> {
         tree.read()
             .collaborators
             .iter()
-            .map(|c| (c.name.clone(), c.role_id.clone()))
+            .map(|c| (c.name.clone(), c.role_id.clone(), c.invited))
             .collect()
     }
 
@@ -1525,8 +1556,9 @@ mod two_sessions {
 
         assert_eq!(
             roster_of(&host_handle),
-            vec![("bob".to_string(), None)],
-            "the host's roster must name the person who joined it",
+            vec![("bob".to_string(), None, false)],
+            "the host's roster must name the person who joined it, as \
+             somebody who is here rather than somebody who was asked",
         );
 
         // Level-triggered, so a second pass with nothing new reports no
@@ -1571,7 +1603,7 @@ mod two_sessions {
         let expected = format!("peer@{}", handle_of(&guest_peer));
         assert_eq!(
             roster_of(&host_handle),
-            vec![(expected, None)],
+            vec![(expected, None, false)],
             "an unnamed peer keeps its id as its label",
         );
 
@@ -1607,7 +1639,8 @@ mod two_sessions {
         host.pump(&mut on_host);
         host.refresh_roster(&on_host);
 
-        let listed: Vec<String> = roster_of(&host_handle).into_iter().map(|(n, _)| n).collect();
+        let listed: Vec<String> =
+            roster_of(&host_handle).into_iter().map(|(n, ..)| n).collect();
         assert_eq!(
             listed,
             vec!["bob".to_string()],
@@ -1617,15 +1650,18 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The other direction, and the one presence alone cannot do.
+    /// Somebody the room has named and who has not turned up reads as
+    /// invited — listed, because the room's authority really did record
+    /// them, but never as a person who is here.
     ///
-    /// The guest has never seen the host's pointer here — nobody has
-    /// moved a mouse in this test — and the host is in the room all the
-    /// same. What the guest lists comes out of the room document that
-    /// replicated when it joined: the host's name for itself, and the
-    /// role the room's own capability list gives that name.
+    /// Nothing has crossed a wire in this test: no pointer, no sync
+    /// round. So the only thing this session knows about that peer is
+    /// that the room document names it, which is an invitation and not
+    /// an arrival. Drawing the two the same way would claim somebody
+    /// was present on the strength of a token they may never have
+    /// opened.
     #[test]
-    fn the_guest_reads_the_host_out_of_the_room_it_joined() {
+    fn a_named_peer_who_has_not_arrived_reads_as_invited() {
         let host_peer = peer_id(51);
         let guest_peer = peer_id(52);
         let (mut host_tree, room) = host_naming(&[(&host_peer, OWNER)]);
@@ -1642,13 +1678,95 @@ mod two_sessions {
         let empty = PresenceCtx::default();
         assert!(
             guest.refresh_roster(&empty),
-            "a guest that joined a room has somebody to list in it",
+            "a room whose authority has named somebody has a row to show",
         );
         assert_eq!(
             roster_of(&guest_handle),
-            vec![(OWNER.to_string(), Some("owner".to_string()))],
-            "the guest lists the host by the name and role the room \
-             replicated, without a pointer ever crossing",
+            vec![(OWNER.to_string(), Some("owner".to_string()), true)],
+            "the row carries the name and the role the room replicated, \
+             and says that peer has not arrived",
+        );
+
+        // And the surfaces that claim people are *present* do not count
+        // them. An avatar in the top bar's cluster is that claim, and
+        // the slot it would replace is the offer to invite the first
+        // person — so filling it with somebody just invited would have
+        // the bar answering its own offer.
+        assert_eq!(
+            crate::shell::state::active_workspace_peer_count(&guest_handle.read()),
+            0,
+            "an invitation nobody has redeemed is not a peer in the room",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The beat: an invitation becomes a participant, and the screen
+    /// changes at the moment it does.
+    ///
+    /// Deliberately without a pointer. Joining is not moving a mouse — a
+    /// session whose pointer has never been anywhere publishes nothing,
+    /// so a roster that waited for one would leave the person who just
+    /// joined looking exactly like the person who was merely asked.
+    ///
+    /// What the host observes instead is the guest asking this room's
+    /// document for its changes, which is what taking part in a room
+    /// *is*, and which arrives under the identity the transport
+    /// authenticated rather than one the guest asserted about itself.
+    #[test]
+    fn arriving_turns_an_invitation_into_a_participant() {
+        let guest_peer = peer_id(61);
+        let host_peer = peer_id(62);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
+        looking_at_its_room(&mut host_tree);
+        let host_handle = host_tree.shared();
+
+        let dir = std::env::temp_dir().join(format!("qos-roster-beat-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
+
+        let quiet = PresenceCtx::default();
+        assert!(host.refresh_roster(&quiet));
+        assert_eq!(
+            roster_of(&host_handle),
+            vec![("bob".to_string(), None, true)],
+            "before he redeems anything, ada has invited him and no more",
+        );
+        assert_eq!(
+            crate::shell::state::active_workspace_peer_count(&host_handle.read()),
+            0,
+            "so the top bar still offers to invite the first person",
+        );
+
+        // He redeems it. What reaches the host is a request for this
+        // room's changes under his authenticated peer id — the same
+        // thing `accept_invite` puts on the wire.
+        {
+            let mut replica = host_net.replica.lock().expect("the replica lock");
+            replica.handle_from(
+                &crate::shell::state::PeerOrigin::peer_base58(&guest_peer),
+                &NeighbourMsg::SyncReq {
+                    since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new())
+                        .expect("empty heads serialise"),
+                    room: room.to_string(),
+                },
+            );
+        }
+
+        assert!(
+            host.refresh_roster(&quiet),
+            "the room's people changed, which is what makes the frame repaint",
+        );
+        assert_eq!(
+            roster_of(&host_handle),
+            vec![("bob".to_string(), None, false)],
+            "the same row, now a participant — this is the change a \
+             viewer sees at the moment somebody joins",
+        );
+        assert_eq!(
+            crate::shell::state::active_workspace_peer_count(&host_handle.read()),
+            1,
+            "and the bar shows him instead of offering to invite him",
         );
 
         let _ = std::fs::remove_dir_all(&dir);
