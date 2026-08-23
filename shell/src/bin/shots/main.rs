@@ -423,7 +423,7 @@ Examples:\n\
   shots --scenes desktop,palette --out /tmp/s\n\
   shots --mode offscreen --scenario palette_typing\n\
   shots --mode offscreen --scenes desktop --sweep --out /tmp/sweep\n\
-  shots --mode offscreen --scenario workspace_switch_animated --per-frame 4\n\
+  shots --mode offscreen --scenario overview_transition --per-frame 4\n\
   shots --mode headless  --scenario palette_typing --out target/headless\n\
   shots --mode recording --scenario palette_typing --out /tmp/out.h264\n\
   shots --mode window    --scenario workspace_switch\n\
