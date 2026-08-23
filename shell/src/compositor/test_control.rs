@@ -56,7 +56,6 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use vello::kurbo::Rect;
 
-use crate::shell::search::action_api::ArgValue;
 
 /// Top-level command envelope. Tag is `op`; remaining fields are
 /// per-variant.
@@ -505,47 +504,6 @@ impl ActionRefusal {
             message: message.into(),
         }
     }
-}
-
-/// Translate one JSON argument object into the action vocabulary's
-/// values.
-///
-/// Kept at the transport rather than inside the action API so the
-/// catalogue never learns a wire format. JSON shapes with no parameter
-/// type — null, arrays, objects, non-integer numbers — are refused here
-/// by name rather than coerced: a caller that sent `{"at": 1.5}` asked
-/// for something this surface cannot mean, and rounding it silently
-/// would be inventing intent.
-pub fn arg_values_from_json(
-    args: &serde_json::Map<String, serde_json::Value>,
-) -> Result<Vec<(String, ArgValue)>, ActionRefusal> {
-    let mut out = Vec::with_capacity(args.len());
-    for (name, value) in args {
-        let bound = match value {
-            serde_json::Value::String(s) => ArgValue::Text(s.clone()),
-            serde_json::Value::Bool(b) => ArgValue::Boolean(*b),
-            serde_json::Value::Number(n) => match n.as_i64() {
-                Some(i) => ArgValue::Integer(i),
-                None => {
-                    return Err(ActionRefusal::invalid_arguments(format!(
-                        "argument `{name}` must be a whole number, got {n}"
-                    )));
-                }
-            },
-            other => {
-                return Err(ActionRefusal::invalid_arguments(format!(
-                    "argument `{name}` has no parameter type: {}",
-                    match other {
-                        serde_json::Value::Null => "null",
-                        serde_json::Value::Array(_) => "array",
-                        _ => "object",
-                    }
-                )));
-            }
-        };
-        out.push((name.clone(), bound));
-    }
-    Ok(out)
 }
 
 /// Side-effect actions the transport layer must execute after a
@@ -1804,8 +1762,7 @@ mod tests {
                     )));
                 }
             };
-            let values = arg_values_from_json(args)?;
-            crate::shell::search::action_api::ActionArgs::bind(params, values)
+            crate::shell::search::action_api::ActionArgs::bind_json(params, args)
                 .map_err(|e| ActionRefusal::invalid_arguments(e.to_string()))?;
             Ok(serde_json::json!({
                 "provider": provider,
