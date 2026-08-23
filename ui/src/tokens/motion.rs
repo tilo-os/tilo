@@ -23,17 +23,21 @@ pub struct SpringPresets {
     pub snappy: SpringParams,
     /// Playful overshoot (ζ ≈ 0.45). Reserved for deliberate bounce.
     pub bouncy: SpringParams,
-    /// Mass you can feel (ζ = 1.0, ω = 14 rad/s). For a control that is
-    /// meant to read as a physical object rather than a state change:
-    /// a long, completely wobble-free settle.
+    /// Mass you can feel (ζ = 1.0, ω = 32 rad/s). For a control that is
+    /// meant to read as a physical object rather than a state change.
     ///
     /// Weight and bounce are opposites, not the same dial. Overshoot
     /// reads *light* — a thing that springs past its mark and wobbles
-    /// back is a thing with very little inertia. What reads heavy is a
-    /// settle that takes visible time and never once reverses. So this
-    /// is critically damped (ζ = exactly 1.0, the boundary where
-    /// overshoot disappears) and the *duration* comes from the mass
-    /// instead: `snappy` lands in ~0.36 s, this in ~0.51 s.
+    /// back is a thing with very little inertia. So this is critically
+    /// damped: ζ = exactly 1.0, the boundary where overshoot disappears.
+    ///
+    /// Weight does **not** come from a long settle. That was the first
+    /// tuning here (ω = 14, ~0.5 s) and it did not read as heavy, it
+    /// read as slow — the control had already arrived as far as the eye
+    /// was concerned and was still visibly creeping. Inertia is legible
+    /// while you are *pushing* the thing: the follow-lag under the
+    /// pointer and the detent pull near a stop. Once released it should
+    /// land promptly, so the settle sits at ~0.26 s.
     pub heavy: SpringParams,
     /// Stiff critical follow (ζ = 1.0, ω = 40 rad/s). For a surface that
     /// trails a dragging pointer instead of being welded to it.
@@ -60,7 +64,7 @@ impl Default for SpringPresets {
             subtle: SpringParams { stiffness: 120.0, damping: 22.0, mass: 1.0 },
             snappy: SpringParams { stiffness: 260.0, damping: 28.0, mass: 1.0 },
             bouncy: SpringParams { stiffness: 180.0, damping: 12.0, mass: 1.0 },
-            heavy: SpringParams { stiffness: 392.0, damping: 56.0, mass: 2.0 },
+            heavy: SpringParams { stiffness: 2048.0, damping: 128.0, mass: 2.0 },
             tracking: SpringParams { stiffness: 1600.0, damping: 80.0, mass: 1.0 },
         }
     }
@@ -139,7 +143,12 @@ impl Default for Gesture {
     fn default() -> Self {
         Self {
             overscroll_reach_frac: 1.2,
-            detent_magnet_frac: 0.18,
+            // Strong enough that the wheel visibly dislikes sitting
+            // between two workspaces. At 0.18 an in-between rest was
+            // comfortable, so the control read as continuous rather than
+            // notched; the pull now dominates the last third of a gap and
+            // the crossing is felt as give-then-catch.
+            detent_magnet_frac: 0.45,
             fling_projection_ms: 110,
         }
     }
@@ -216,21 +225,46 @@ mod tests {
     /// wobble is not a matter of taste — it is whether ζ reaches 1.0.
     /// Anything below and the spring crosses its target and comes back,
     /// which is the light, bouncy reading this preset exists to avoid.
+    ///
+    /// The settle bound is the other half, and it is measured by
+    /// stepping the real integrator rather than derived from ω, so a
+    /// change to how `Spring` integrates cannot quietly lengthen it.
+    /// An earlier tuning sat at ~0.5 s and was rejected in review as
+    /// slow rather than heavy: past roughly a third of a second the
+    /// control has visually arrived and is still creeping, which reads
+    /// as the machine lagging. Weight has to come from the drag.
     #[test]
-    fn heavy_is_critically_damped_and_slower_than_snappy() {
+    fn heavy_is_critically_damped_and_settles_promptly() {
         let p = SpringPresets::default();
         let z = zeta(p.heavy);
         assert!((z - 1.0).abs() < 1e-3, "heavy ζ = {z}, must be 1.0");
         assert!(
-            omega(p.heavy) < omega(p.snappy),
-            "heavy must settle more slowly than snappy: ω {} vs {}",
-            omega(p.heavy),
-            omega(p.snappy)
-        );
-        assert!(
             p.heavy.mass > p.snappy.mass,
-            "the extra time must come from mass, not from softening the spring"
+            "heavy must carry more mass than snappy, not just more stiffness"
         );
+
+        // Full-scale step through the production integrator at 120 Hz.
+        let mut s = crate::animation::Spring::new(0.0, p.heavy);
+        s.set_target(1.0);
+        let dt = 1.0 / 120.0;
+        let mut elapsed = 0.0_f32;
+        while !s.is_settled() && elapsed < 2.0 {
+            s.step(dt);
+            elapsed += dt;
+        }
+        assert!(
+            (0.10..=0.30).contains(&elapsed),
+            "heavy must settle within 0.10-0.30 s, took {elapsed:.3} s"
+        );
+
+        // Critical damping is a claim about the path, not just the
+        // endpoint: it must approach from one side and never cross.
+        let mut s = crate::animation::Spring::new(0.0, p.heavy);
+        s.set_target(1.0);
+        for _ in 0..240 {
+            s.step(dt);
+            assert!(s.value() <= 1.0 + 1e-4, "overshot to {}", s.value());
+        }
     }
 
     /// The follow preset trades the other way: also critical, but stiff
