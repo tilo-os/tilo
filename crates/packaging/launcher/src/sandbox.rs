@@ -620,22 +620,21 @@ pub fn build_bwrap_argv_for_entry(
 
     // Service sockets reach the app as inherited descriptors, not as
     // bwrap arguments. The launcher dup2s each connected socket onto
-    // its `child_fd` (and clears CLOEXEC) in `pre_exec`, and a
-    // descriptor left open across `exec` keeps its number through
-    // bwrap and through the `__sandbox-exec` re-exec, so the number
-    // published here is the number the app finds.
+    // its `child_fd` (and clears CLOEXEC) in `pre_exec` — see
+    // `run::place_service_fds` — and a descriptor left open across
+    // `exec` keeps its number through bwrap and through the
+    // `__sandbox-exec` re-exec, so the number published here in
+    // `QOS_SVC_<NAME>_FD` is the number the app finds.
     //
-    // There is deliberately no bwrap flag for this. `--file FD DEST`
-    // is the one that looks right and is not: it *copies FD's contents*
-    // into a regular file at DEST, so pointing it at a connected socket
-    // makes bwrap read that socket until EOF — which never comes. The
-    // launch hangs before it ever execs the app, and the only symptom
-    // is an app that never appears. Nothing here may name a live socket
+    // There is deliberately **no bwrap flag** for this. `--file FD
+    // DEST` is the one that looks right and is not: it *copies FD's
+    // contents* into a regular file at DEST, so pointing it at a
+    // connected socket makes bwrap block on a read for an EOF the
+    // broker never sends. The launch hangs before `exec`, an app that
+    // declares `collab` never starts at all, and the only symptom is
+    // an app that never appears. Nothing here may name a live socket
     // to bwrap.
     for sb in service_binds {
-        // Expose the fd number to the app via env. We use the
-        // child-side fd because the entrypoint reads
-        // `QOS_SVC_<NAME>_FD` and either dup2s or fdopen()s it.
         argv.push("--setenv".to_string());
         argv.push(svc_env_var(&sb.name));
         argv.push(sb.child_fd.to_string());
@@ -1642,7 +1641,7 @@ mod tests {
     }
 
     #[test]
-    fn service_binds_publish_the_child_fd_and_name_no_socket_to_bwrap() {
+    fn service_binds_name_their_child_fd() {
         let m = mk_manifest("off");
         let binds = vec![ServiceBind {
             name: "collab".to_string(),
@@ -1657,18 +1656,61 @@ mod tests {
                 .any(|w| w[0] == "--setenv" && w[1] == "QOS_SVC_COLLAB_FD" && w[2] == "17"),
             "the app must be told which descriptor its service is on: {argv:?}"
         );
-        // The regression this guards. `--file FD DEST` copies the
-        // descriptor's contents into a regular file, so handing it a
-        // connected socket makes bwrap read until an EOF that never
-        // comes: the launch hangs before exec and the app simply never
-        // appears. No bwrap argument may name a service socket.
+    }
+
+    /// bwrap's `--file FD DEST` reads FD to EOF and writes the bytes
+    /// into a regular file. Pointed at a connected socket it blocks on
+    /// a read the broker never answers, so bwrap never reaches `exec`
+    /// and an app declaring `collab` does not start — while an app
+    /// whose broker socket happens to be missing starts fine with
+    /// collaboration off. Neither is visible from the app.
+    ///
+    /// The descriptor reaches the child by inheritance instead
+    /// (`run::place_service_fds`). Nothing in the argv may hand a
+    /// service socket to bwrap.
+    #[test]
+    fn service_sockets_are_never_handed_to_bwrap_as_files() {
+        let m = mk_manifest("off");
+        let binds = vec![
+            ServiceBind {
+                name: "collab".to_string(),
+                host_fd: 7,
+                child_fd: 17,
+            },
+            ServiceBind {
+                name: "fs".to_string(),
+                host_fd: 8,
+                child_fd: 18,
+            },
+        ];
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &binds, None, None, &CapabilityPlan::empty());
+        for copy_flag in ["--file", "--bind-data", "--ro-bind-data"] {
+            for w in argv.windows(2) {
+                assert_ne!(
+                    (w[0].as_str(), w[1].as_str()),
+                    (copy_flag, "7"),
+                    "{copy_flag} on the collab socket fd makes bwrap block \
+                     forever reading it: {argv:?}",
+                );
+                assert_ne!(
+                    (w[0].as_str(), w[1].as_str()),
+                    (copy_flag, "8"),
+                    "{copy_flag} on the fs socket fd makes bwrap block \
+                     forever reading it: {argv:?}",
+                );
+            }
+        }
+        // Nothing emits `--file` at all any more, so the strongest
+        // available statement is the flat one: not on these fds, not on
+        // any fd a later change might route through here.
         assert!(
             !argv.iter().any(|a| a == "--file"),
             "a service socket must never be handed to bwrap as a file: {argv:?}"
         );
         assert!(
             !argv.iter().any(|a| a.ends_with("/qos/services/collab.sock")),
-            "the collab socket must not appear in the bwrap argv at all: {argv:?}"
+            "the service socket has no in-sandbox path any more; the app \
+             gets a descriptor: {argv:?}",
         );
     }
 

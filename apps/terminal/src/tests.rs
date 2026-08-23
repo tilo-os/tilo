@@ -706,6 +706,66 @@ mod tests {
         assert!(after.iter().any(|l| l.contains("LINE060")), "bottom shows freshest: {:?}", after);
     }
 
+    // ---------------------------------------------------------------
+    // Scrollbar honesty — the gutter only claims travel that exists.
+    // `scrollbar_visible` is the predicate `draw_scrollbar` gates on, so
+    // these assert the production decision rather than a stand-in.
+    // ---------------------------------------------------------------
+
+    /// A session that has printed nothing draws no scrollbar, even though
+    /// its buffer is longer than the window showing it.
+    ///
+    /// This is the empty-terminal case on the desktop: a widget allocates a
+    /// full screen of blank rows the moment it exists, so `grid.len()`
+    /// exceeds the drawn viewport before a single byte of output has
+    /// arrived — and the old `grid.len() > visible_rows` test alone drew a
+    /// track and a thumb whose entire travel was blank rows.
+    #[test]
+    fn a_blank_buffer_taller_than_the_window_draws_no_scrollbar() {
+        use vello::kurbo::Rect;
+        let (mut w, _rx) = build_test_widget();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
+        // 20 never-written rows behind a 12-row viewport.
+        w.force_grid(vec![" ".repeat(80); 20]);
+        assert!(
+            !w.scrollbar_visible(12),
+            "20 blank rows behind a 12-row window is nothing to scroll to",
+        );
+    }
+
+    /// Once there is output above the viewport the bar comes back — the
+    /// guard must not have simply disabled the scrollbar.
+    #[test]
+    fn output_past_the_viewport_draws_a_scrollbar() {
+        use vello::kurbo::Rect;
+        let (mut w, _rx) = build_test_widget();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
+        w.force_grid((0..20).map(|i| format!("LINE{i:03}")).collect());
+        assert!(
+            w.scrollbar_visible(12),
+            "20 written rows behind a 12-row window is 8 rows of real travel",
+        );
+    }
+
+    /// Blank rows *below* the last output are not travel either: the screen
+    /// a session holds open under a short command is padding, not history.
+    #[test]
+    fn blank_rows_below_the_last_output_are_not_scrollable() {
+        use vello::kurbo::Rect;
+        let (mut w, _rx) = build_test_widget();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
+        let mut grid = vec![" ".repeat(80); 30];
+        for (i, row) in grid.iter_mut().take(4).enumerate() {
+            *row = format!("LINE{i:03}");
+        }
+        w.force_grid(grid);
+        assert!(
+            !w.scrollbar_visible(12),
+            "4 written rows in a 12-row window fit — the 26 blank rows \
+             behind them are not history",
+        );
+    }
+
     /// Bulk output must stay linear. `print` batches a run of cells into one
     /// diffed text splice + one `attrs` put per line; the old per-cell
     /// `splice_text` + full-`attrs`-`put` was an O(doc) write *per character*, so

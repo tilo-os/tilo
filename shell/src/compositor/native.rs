@@ -3630,10 +3630,17 @@ mod tests {
     /// error instead of the skip an optional service is entitled to —
     /// a test that cannot observe its subject must fail.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn compositor_binds_the_socket_the_launcher_dials() {
         let runtime = tempfile::tempdir().expect("tempdir");
-        // SAFETY: `serial` keeps this off any other test's env.
+        // SAFETY: `serial(process_env)` keeps this off any other
+        // test's env. The group name is load-bearing: serial_test only
+        // excludes tests that name the *same* group, and every other
+        // test in this crate that writes `XDG_RUNTIME_DIR` names
+        // `process_env`. Under the unnamed group this ran alongside
+        // them, read the variable after one of them had pointed it at
+        // an already-dropped tempdir, and failed to bind a socket in a
+        // directory that no longer existed.
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
         // Do not let an inherited value pick the legacy socket's home.
         unsafe { std::env::remove_var("QUICK_COLLAB_SOCK") };
@@ -3684,7 +3691,7 @@ mod tests {
     /// broker nothing can reach any more. Refusing loudly is the
     /// correct outcome, and the refusal has to reach the chrome.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn a_second_session_refuses_to_take_a_live_collab_socket() {
         let runtime = tempfile::tempdir().expect("tempdir");
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
@@ -3879,13 +3886,14 @@ mod tests {
         // press handler hit-tests against it, and it's `Rect::ZERO`
         // until the first draw pass runs.
         let _ = fb.paint();
-        // Find the wheel disc rect by its opt-in `test_id`. We then
-        // approximate the plus slot's position: it's a 28 px disc
-        // centred on the visible footprint, 8 px below the visible
-        // arc's bottom tip (see `sidebar_wheel_disc::draw`). Rather
-        // than re-derive that arithmetic, click slightly below the
-        // wheel's centre — close enough to land inside the plus rect
-        // on the bootstrap layout.
+        // Find the wheel disc rect by its opt-in `test_id`, then search
+        // it for the affordance rather than re-deriving where `draw`
+        // puts it. Sweeping only the footprint's vertical centre-line
+        // was enough while the plus slot sat on that line; it is not a
+        // property of the design, and the sweep silently stopped
+        // crossing the affordance when the slot became the tail row of
+        // the rail column. Scanning the whole footprint asserts the
+        // same thing about a layout the test does not have to know.
         let registry = fb.widget_registry();
         let wheel_rect = registry
             .get("wheel_disc")
@@ -3894,38 +3902,42 @@ mod tests {
 
         let initial_count = fb.chrome().tree().workspaces.len();
 
-        // Walk down the wheel rect's vertical axis in 4 px increments
-        // until a click lands on the plus slot (adds a workspace).
-        // The plus slot is near the bottom of the wheel disc; this
-        // sweep avoids hard-coding the exact y the wheel's `draw`
-        // pass uses internally.
+        // Sweep the footprint from the bottom up in 4 px rows, 8 px
+        // across, clicking until one lands on the affordance. Clicks
+        // that miss are harmless here: a press on the rim starts a drag
+        // that a release with no motion snaps straight back, and a press
+        // on a workspace row switches workspace — neither creates one,
+        // so only the affordance can satisfy the assertion.
         let mut ctx = TestControlCtx::new();
-        let cx = (wheel_rect.x0 + wheel_rect.x1) / 2.0;
         let mut found = false;
-        let mut y = wheel_rect.y0 + 8.0;
-        while y < wheel_rect.y1 {
-            execute_planned_action(&PlannedAction::CursorMoved { x: cx, y }, &mut fb, &mut ctx);
-            execute_planned_action(
-                &PlannedAction::MouseLeftButton { pressed: true },
-                &mut fb,
-                &mut ctx,
-            );
-            execute_planned_action(
-                &PlannedAction::MouseLeftButton { pressed: false },
-                &mut fb,
-                &mut ctx,
-            );
-            if fb.chrome().tree().workspaces.len() > initial_count {
-                found = true;
-                break;
+        let mut y = wheel_rect.y1 - 4.0;
+        'sweep: while y > wheel_rect.y0 {
+            let mut x = wheel_rect.x0 + 4.0;
+            while x < wheel_rect.x1 {
+                execute_planned_action(&PlannedAction::CursorMoved { x, y }, &mut fb, &mut ctx);
+                execute_planned_action(
+                    &PlannedAction::MouseLeftButton { pressed: true },
+                    &mut fb,
+                    &mut ctx,
+                );
+                execute_planned_action(
+                    &PlannedAction::MouseLeftButton { pressed: false },
+                    &mut fb,
+                    &mut ctx,
+                );
+                if fb.chrome().tree().workspaces.len() > initial_count {
+                    found = true;
+                    break 'sweep;
+                }
+                x += 8.0;
             }
-            y += 4.0;
+            y -= 4.0;
         }
         assert!(
             found,
-            "sweep of clicks down the wheel disc's vertical axis \
-             should hit the plus slot and grow the workspace count \
-             from {initial_count}"
+            "sweep of clicks across the wheel disc's footprint should hit the \
+             add-workspace affordance and grow the workspace count from \
+             {initial_count}"
         );
     }
 
@@ -4101,6 +4113,44 @@ mod tests {
         assert!(
             !workspaces.is_empty(),
             "bootstrap workspace tree should not be empty"
+        );
+    }
+
+    /// The state dump has to carry the roster, because that is how a
+    /// harness observes who the shell believes is present.
+    ///
+    /// `Workspace::collaborators` is `#[serde(skip_deserializing)]` —
+    /// presence must not be read back off disk, or a restarted shell
+    /// paints people whose sessions are gone. The write direction is
+    /// deliberately left open: the same derived `Serialize` produces
+    /// this dump, so closing it with a plain `skip` would silently
+    /// remove the roster from the control socket and every observation
+    /// of it would come back empty and look like agreement.
+    #[test]
+    fn state_dump_carries_the_roster_it_is_asked_about() {
+        let fb = FrameBuilder::new((1600, 900));
+        {
+            let chrome = fb.chrome();
+            let mut tree = chrome.tree_mut();
+            let room = tree.active_workspace().expect("active workspace").room;
+            assert!(tree.note_peer_present(room, 0x51, "alice"));
+        }
+        let state = FrameBuilderControlState { fb: &fb, doc: None };
+        let tree = state.workspace_tree_json();
+        let found = tree
+            .get("workspaces")
+            .and_then(|v| v.as_array())
+            .expect("workspaces array")
+            .iter()
+            .filter_map(|w| w.get("collaborators")?.as_array())
+            .flatten()
+            .filter_map(|c| c.get("id")?.as_str())
+            .any(|id| id == "alice");
+        assert!(
+            found,
+            "a peer the shell has admitted must appear in the control \
+             socket's state dump; without it a harness cannot tell an \
+             empty roster from an unreported one. Got: {tree}"
         );
     }
 
