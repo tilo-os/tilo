@@ -27,8 +27,8 @@
 //! see in the offline preview matches the graded export.
 
 use crate::model::{
-    Clip, ClipEffect, ClipId, EffectKind, Filters, MediaId, MediaKind, Project, Track, TrackKind,
-    Transform, Transition,
+    Clip, ClipEffect, ClipId, EffectKind, Filters, MediaId, MediaKind, Project, Track, TextSource,
+    TrackKind, Transform, Transition,
 };
 use crate::param::Param;
 
@@ -490,6 +490,11 @@ pub struct Layer {
     /// honouring its alpha channel unconditionally would make a decoder
     /// that leaves it at zero render nothing at all.
     pub source_alpha: bool,
+    /// For a title, the text to draw. The compositor rasterises it rather
+    /// than asking the frame source for a picture, so a title renders with
+    /// no decoder at all — the same in a hermetic capture as in the live
+    /// editor.
+    pub title: Option<TextSource>,
 }
 
 /// The transition active on `clip` at `playhead`, as (kind, progress in
@@ -514,6 +519,7 @@ pub fn active_transition(clip: &Clip, playhead: f64) -> Option<(Transition, f64)
 /// Every animatable value is read through [`Clip::param_at`] at `at`, so a
 /// keyframed grade, scale or effect intensity is already a plain number by
 /// the time it reaches the GPU.
+#[allow(clippy::too_many_arguments)]
 fn layer_at(
     clip: &Clip,
     at: f64,
@@ -521,6 +527,7 @@ fn layer_at(
     alpha: f64,
     wipe: Option<Wipe>,
     source_alpha: bool,
+    title: Option<TextSource>,
 ) -> Layer {
     Layer {
         clip: clip.id,
@@ -533,6 +540,7 @@ fn layer_at(
         wipe,
         transform: clip.transform_at(at),
         source_alpha,
+        title,
     }
 }
 
@@ -595,6 +603,14 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
             .media(c.media)
             .is_some_and(|m| matches!(m.kind, MediaKind::Text | MediaKind::Image))
     };
+    // A title's text, for the compositor to raster. Only a Text source has
+    // one, so every other clip resolves its picture the usual way.
+    let title_of = |c: &Clip| {
+        project
+            .media(c.media)
+            .filter(|m| m.kind == MediaKind::Text)
+            .and_then(|m| m.text.clone())
+    };
 
     for (i, c) in clips.iter().enumerate() {
         if !c.covers(playhead) || claimed.contains(&c.id) {
@@ -606,8 +622,9 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
             (c.envelope(playhead) * c.param_at(Param::Opacity, playhead)).clamp(0.0, 1.0);
         let t_in = source_time_for(c, playhead);
         let alpha_src = has_alpha(c);
+        let title = title_of(c);
         let mk = |alpha: f64, wipe: Option<Wipe>| {
-            layer_at(c, playhead, t_in, alpha, wipe, alpha_src)
+            layer_at(c, playhead, t_in, alpha, wipe, alpha_src, title.clone())
         };
         let prev = i.checked_sub(1).map(|j| clips[j]);
         let Some((kind, t)) = active_transition(c, playhead) else {
@@ -624,6 +641,7 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
                     alpha,
                     None,
                     has_alpha(a),
+                    title_of(a),
                 )
             })
         };

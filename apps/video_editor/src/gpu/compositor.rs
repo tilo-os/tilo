@@ -67,6 +67,14 @@ pub struct VideoCompositor {
     gpu: Option<Gpu>,
     accum: Option<Accum>,
     uniform: Option<(wgpu::Buffer, u32)>,
+    /// Draws title layers. A title's picture comes from the document, not
+    /// from a decoder, so the compositor makes it itself rather than asking
+    /// the frame source — which is what lets a title render with no media
+    /// pipeline at all.
+    titles: super::title::TitleRaster,
+    /// Uploaded title pictures, keyed by the raster they came from, so a
+    /// held title is uploaded once instead of every frame.
+    title_textures: std::collections::HashMap<usize, SourceTexture>,
 }
 
 impl VideoCompositor {
@@ -282,6 +290,34 @@ impl VideoCompositor {
         out
     }
 
+    /// Raster a title at the frame size and upload it, re-using the upload
+    /// when the same raster comes back.
+    fn title_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        text: &crate::model::TextSource,
+        w: u32,
+        h: u32,
+    ) -> Option<SourceTexture> {
+        let rgba = self.titles.raster(text, w, h)?;
+        // The `Arc`'s address identifies the raster: the cache hands back
+        // the same allocation for the same text, style and size, so a held
+        // title uploads once.
+        let key = std::sync::Arc::as_ptr(&rgba) as usize;
+        if let Some(hit) = self.title_textures.get(&key) {
+            return Some(hit.clone());
+        }
+        // Uploads are cheap to keep but not free; a handful of live titles
+        // is the realistic working set.
+        if self.title_textures.len() > 8 {
+            self.title_textures.clear();
+        }
+        let tex = upload_rgba(device, queue, w, h, &rgba)?;
+        self.title_textures.insert(key, tex.clone());
+        Some(tex)
+    }
+
     /// Run every layer pass. Returns which accumulation index holds the
     /// finished frame.
     fn accumulate(
@@ -307,7 +343,11 @@ impl VideoCompositor {
         sources.begin_frame();
         let resolved: Vec<Option<SourceTexture>> = layers
             .iter()
-            .map(|l| sources.resolve(device, queue, l.media, l.source_time))
+            .map(|l| match &l.title {
+                // A title is drawn, not decoded.
+                Some(t) => self.title_texture(device, queue, t, w, h),
+                None => sources.resolve(device, queue, l.media, l.source_time),
+            })
             .collect();
 
         let gpu = self.gpu.as_ref().expect("gpu built above");
