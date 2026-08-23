@@ -236,19 +236,11 @@ impl Session {
         }
         match self.link.recv(wait)? {
             Some(CollabEvent::CRDTUpdate { data }) => {
-                match self.editor.as_mut() {
-                    Some(ed) => ed.merge_full(&data)?,
-                    None => {
-                        self.editor = Some(Editor::from_snapshot(&data, &self.cfg.name)?);
-                        tracing::info!(bytes = data.len(), "received the document");
-                    }
-                }
-                changed = true;
+                changed = self.absorb_snapshot(&data)?;
             }
             Some(CollabEvent::CRDTIncremental { data }) => {
                 if let Some(ed) = self.editor.as_mut() {
-                    ed.merge_incremental(&data)?;
-                    changed = true;
+                    changed = ed.merge_incremental(&data)?;
                 }
             }
             Some(CollabEvent::RemotePresenceUpdate {
@@ -269,6 +261,61 @@ impl Session {
             return Ok(false);
         }
         self.act()
+    }
+
+    /// Take a peer's whole-document frame, if it is ours to take.
+    ///
+    /// A room is not one document. Every participant answers an arrival
+    /// with its own state, and the broker hands a frame to any
+    /// subscriber whose address it matches — which, for a participant
+    /// that announced no app id, is everyone in the room. So the agent
+    /// is offered the file manager's state alongside the page it was
+    /// invited to, and nothing in the frame says which is which.
+    ///
+    /// Given a `--record` the address settles it and only one arrives.
+    /// Without one, this does what it can from the content: take the
+    /// first thing that is a document at all, and if a later one turns
+    /// out to be a *different* document — established by its refusing to
+    /// merge — prefer whichever of the two is actually asking us for
+    /// something.
+    ///
+    /// Returns whether the agent's replica moved.
+    fn absorb_snapshot(&mut self, data: &[u8]) -> Result<bool> {
+        let Some(ed) = self.editor.as_mut() else {
+            if !crate::apply::looks_like_a_document(data) {
+                tracing::debug!(
+                    bytes = data.len(),
+                    "ignored a peer's state: it is not a document"
+                );
+                return Ok(false);
+            }
+            self.editor = Some(Editor::from_snapshot(data, &self.cfg.name)?);
+            tracing::info!(bytes = data.len(), "received the document");
+            return Ok(true);
+        };
+        if ed.merge_full(data)? {
+            return Ok(true);
+        }
+        // It did not merge, so it is not this document. Worth having only
+        // if it is the one addressed to us and what we hold is not.
+        let ours_asks = ed
+            .snapshot()
+            .map(|s| plan::find_addressed(&plan::blocks(&s), &self.cfg.name).is_some())
+            .unwrap_or(false);
+        if !ours_asks && Editor::is_addressed_to(data, &self.cfg.name) {
+            ed.replace_with(data)?;
+            tracing::info!(
+                bytes = data.len(),
+                "took a different document: this is the one addressed to {}",
+                self.cfg.name
+            );
+            return Ok(true);
+        }
+        tracing::debug!(
+            bytes = data.len(),
+            "ignored another document in this room"
+        );
+        Ok(false)
     }
 
     /// Look for an instruction and carry it out.
