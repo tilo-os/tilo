@@ -6984,14 +6984,16 @@ impl WordProcessorWidget {
         );
         let chip = vello::kurbo::RoundedRect::from_rect(chip_rect, 3.0);
         scene.fill(Fill::NonZero, ctf, peer, None, &chip);
-        // White-on-colour label for contrast against the peer hue, clipped to
-        // the pill so a truncated name cannot spill back over the text.
+        // The label ink is chosen against the peer's own colour rather than
+        // fixed to white. The palette spans a 16:1 luminance range so that
+        // peers can be told apart, and white sits below 2:1 on eleven of its
+        // twenty-four entries — a name nobody can read is not a label.
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, ctf, &chip);
         text_renderer.draw_text(
             scene,
             label,
             size,
-            Color::WHITE,
+            ui::presence::contrast_ink(peer),
             ctf * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
             None,
         );
