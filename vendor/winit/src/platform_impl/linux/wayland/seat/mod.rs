@@ -152,7 +152,16 @@ impl SeatHandler for WinitState {
                 // one alongside the pointer that will carry the drag.
                 if seat_state.data_device.is_none() {
                     if let Some(dnd) = self.dnd.as_ref() {
-                        seat_state.data_device = Some(dnd.get_data_device(queue_handle, &seat));
+                        let device = dnd.get_data_device(queue_handle, &seat);
+                        // The same device is what a drag *this* app starts
+                        // is issued on; publishing it is what lets a widget
+                        // begin one from the application thread.
+                        data_device::register_drag_seat(
+                            dnd.manager.data_device_manager().clone(),
+                            device.inner().clone(),
+                            queue_handle.clone(),
+                        );
+                        seat_state.data_device = Some(device);
                     }
                 }
             },
@@ -200,6 +209,7 @@ impl SeatHandler for WinitState {
             SeatCapability::Pointer => {
                 // `DataDevice`'s own `Drop` releases the protocol object.
                 seat_state.data_device = None;
+                data_device::clear_drag_seat();
 
                 if let Some(relative_pointer) = seat_state.relative_pointer.take() {
                     relative_pointer.destroy();

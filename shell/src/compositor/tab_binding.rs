@@ -75,6 +75,24 @@ pub enum Placement {
     /// Falls back to [`Placement::NewGroup`] when the named group is
     /// gone, exactly as [`Placement::TabIn`] does.
     RightOf(GroupId),
+    /// Into a tab that already exists, replacing whatever it holds.
+    ///
+    /// Every other variant answers "where does this new window go"; this
+    /// one says the tab is already there and the window is what it was
+    /// waiting for. It is what a launch started on behalf of a peer's
+    /// window asks for ([`crate::shell::peer_windows`]): the tab arrived
+    /// in the room document, this machine started its own instance of the
+    /// app the tab names, and the window that comes back belongs *in that
+    /// tab* — not in a second one beside it. Minting a tab there would
+    /// leave the room's window showing a card next to a duplicate of
+    /// itself, which is the shape this whole path exists to remove.
+    ///
+    /// Falls back to [`Placement::NewGroup`] when the tab is gone by the
+    /// time the window arrives — the peer closed it while we were
+    /// starting. A window with nowhere to go is not a window that quietly
+    /// disappears; it is one the compositor keeps buffers alive for and
+    /// nobody can see or close.
+    IntoTab(TabId),
 }
 
 impl Default for Placement {
@@ -136,6 +154,14 @@ pub fn adopt_toplevel_at(
     placement: Placement,
 ) -> TabId {
     let resolved_id = app_id.unwrap_or_else(|| format!("anon-{}", surface_id));
+    // A window that was started *for* an existing tab is bound into it
+    // rather than placed beside it. Done before the tab is minted so the
+    // ordinary path below is untouched by it.
+    if let Placement::IntoTab(target) = placement
+        && bind_into_tab(tree, target, &resolved_id, surface_id)
+    {
+        return target;
+    }
     let new_tab = Tab {
         id: next_id(),
         title: tab_label_for_foreign(&resolved_id),
@@ -145,6 +171,48 @@ pub fn adopt_toplevel_at(
         },
     };
     place_tab(tree, new_tab, placement)
+}
+
+/// Point the existing tab `target` at `surface_id`, and bring it to the
+/// front of the group it is in.
+///
+/// Returns whether the tab was found. A `false` means the tab has gone
+/// since the launch was started, and the caller places the window the
+/// ordinary way instead of dropping it.
+///
+/// The whole tree is searched, not the active workspace: the tab this is
+/// for arrived from a peer, and which workspace of ours their room landed
+/// in is not something the launch knew or should have to.
+fn bind_into_tab(
+    tree: &mut WorkspaceTree,
+    target: TabId,
+    app_id: &str,
+    surface_id: u64,
+) -> bool {
+    for ws in &mut tree.workspaces {
+        for strip in &mut ws.strips {
+            let strip_id = strip.id;
+            for group in &mut strip.window_groups {
+                let Some(tab) = group.tabs.iter_mut().find(|t| t.id == target) else {
+                    continue;
+                };
+                tab.tile = TileContent::Foreign {
+                    app_id: app_id.to_string(),
+                    surface_id,
+                };
+                // The tab is the one showing the window now, so it is the
+                // one in front. Focus is *not* moved to it beyond that:
+                // the tab belongs to a peer's window arriving, and taking
+                // the strip away from whatever this person was doing
+                // because somebody else opened something is precisely the
+                // behaviour the room model rules out.
+                group.active_tab = target;
+                let _ = strip_id;
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Open a **shell-hosted** app — one the compositor draws in-process
@@ -236,7 +304,9 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     // silently landing somewhere arbitrary.
     let tab_target = match placement {
         Placement::TabIn(g) => strip.window_groups.iter().position(|w| w.id == g),
-        Placement::NewGroup | Placement::RightOf(_) => None,
+        // `IntoTab` only reaches here when its tab has gone; it degrades
+        // to a new group, as the variant's own documentation says.
+        Placement::NewGroup | Placement::RightOf(_) | Placement::IntoTab(_) => None,
     };
 
     if let Some(idx) = tab_target {
@@ -392,20 +462,35 @@ pub fn close_tab_for_destroyed_surface(
 
 /// Turn a wayland app-id into a tab-bar friendly label.
 ///
-/// If this session launched the package the client belongs to, the
-/// installed app's name wins — a tab for an app the user opened by name
-/// in the palette should carry that name. Otherwise we fall back to the
-/// trailing app-id component, which is what most apps would want shown
-/// anyway: `org.example.MyApp` → `MyApp`.
-fn tab_label_for_foreign(app_id: &str) -> String {
+/// The app's own name wins wherever one can be found — from this
+/// session's launches, from the installed package's manifest, or from a
+/// host `.desktop` entry. A tab is the app's name badge, and the one
+/// thing it must never show is a machine identifier the user did not
+/// choose and does not recognise.
+///
+/// When nothing names it, the trailing app-id component is humanised
+/// rather than printed raw: `dev.qos.word-processor` → `Word Processor`,
+/// not `word-processor`. This is the same transformation the package
+/// registry applies to a manifest with no declared name, so an app
+/// reaches the same label by either route.
+///
+/// Shared with the cards the compositor paints in a window's own place,
+/// which name the app for the same reason a tab does. One rule, so a
+/// window cannot be called two different things at once.
+pub(crate) fn tab_label_for_foreign(app_id: &str) -> String {
     if let Some(name) = crate::shell::launcher::display_name_for_app_id(app_id) {
         return name;
     }
-    let trimmed = app_id.split('.').next_back().unwrap_or(app_id);
-    if trimmed.len() > 32 {
-        trimmed[..32].to_string()
+    let label = crate::shell::launcher::display_name_for_package_id(app_id);
+    let label = if label.trim().is_empty() {
+        app_id.to_string()
     } else {
-        trimmed.to_string()
+        label
+    };
+    if label.chars().count() > 32 {
+        label.chars().take(32).collect()
+    } else {
+        label
     }
 }
 
@@ -466,6 +551,100 @@ mod tests {
         tree.active_strip.insert(tree.active, strip_id);
         tree.set_active_group(strip_id, group_id);
         (strip_id, group_id)
+    }
+
+    /// A window started for a tab the room already has lands *in* that
+    /// tab. The demo case: a peer opened the word processor, this machine
+    /// started its own instance to fill the tab that arrived, and the
+    /// window that comes back must be that tab's window — not a second
+    /// one next to a card describing the first.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_window_started_for_an_existing_tab_lands_in_it() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        // Stand in for the tab a peer's window arrived as.
+        let target = {
+            let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+            let tab = Tab {
+                id: next_id(),
+                title: "Word Processor".into(),
+                tile: TileContent::PeerWindow {
+                    app_id: "dev.qos.word-processor".into(),
+                    label: "Word Processor".into(),
+                    note: "Opening here…".into(),
+                },
+            };
+            let id = tab.id;
+            group.tabs.push(tab);
+            id
+        };
+        let groups_before = tree.workspaces[0].strips[0].window_groups.len();
+        let tabs_before: usize = tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .map(|g| g.tabs.len())
+            .sum();
+
+        crate::shell::launcher::set_pending_placement(
+            "dev.qos.word-processor",
+            Placement::IntoTab(target),
+        );
+        let landed = adopt_toplevel(&mut tree, 7777, Some("dev.qos.word-processor".into()));
+
+        assert_eq!(landed, target, "the window belongs to the tab it was started for");
+        let tabs_after: usize = tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .map(|g| g.tabs.len())
+            .sum();
+        assert_eq!(
+            tabs_after, tabs_before,
+            "binding into an existing tab must not mint a second one"
+        );
+        assert_eq!(
+            tree.workspaces[0].strips[0].window_groups.len(),
+            groups_before,
+            "nor a second group to put it in"
+        );
+        match &tab_of(&tree, 7777).tile {
+            TileContent::Foreign { app_id, surface_id } => {
+                assert_eq!(app_id, "dev.qos.word-processor");
+                assert_eq!(*surface_id, 7777);
+            }
+            other => panic!("the tab must now host the real surface, got {other:?}"),
+        }
+        assert_eq!(
+            group_of(&tree, 7777).active_tab,
+            target,
+            "the tab showing the window is the one in front of its group"
+        );
+    }
+
+    /// The tab was closed by its owner while the local instance was
+    /// starting. The window still has to go somewhere a person can see and
+    /// close it, so the placement degrades to the ordinary launch rule
+    /// rather than the window being dropped on the floor.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_window_whose_tab_vanished_is_still_placed() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let groups_before = tree.workspaces[0].strips[0].window_groups.len();
+
+        crate::shell::launcher::set_pending_placement(
+            "dev.qos.gone",
+            // An id no tab in the tree carries.
+            Placement::IntoTab(next_id()),
+        );
+        let landed = adopt_toplevel(&mut tree, 7878, Some("dev.qos.gone".into()));
+
+        assert_eq!(
+            tree.workspaces[0].strips[0].window_groups.len(),
+            groups_before + 1,
+            "a window with nowhere booked still opens its own group"
+        );
+        assert_eq!(tab_of(&tree, 7878).id, landed);
     }
 
     /// A window opened while a single window has focus is a new thing
@@ -866,7 +1045,95 @@ mod tests {
             }
             other => panic!("expected Foreign tile, got {:?}", other),
         }
-        assert_eq!(tab.title, "late", "title is the trailing app-id component");
+        // Humanised, not raw. A tab is a name badge; `late` is a
+        // fragment of an identifier and `Late` is a word.
+        assert_eq!(tab.title, "Late", "title is the humanised app-id component");
+    }
+
+    // -----------------------------------------------------------------
+    // A tab carries the app's name.
+    //
+    // The failure these exist to prevent is a tab reading `app` or
+    // `word-processor` — a machine identifier the user never chose,
+    // shown where the app's name belongs.
+    // -----------------------------------------------------------------
+
+    /// With nothing installed and nothing launched, the label is still
+    /// built out of words rather than out of an identifier.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_hyphenated_app_id_becomes_a_name_not_a_slug() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Point the launcher at an empty registry so the lookup misses
+        // and the fallback is what is under test.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        crate::shell::launcher::invalidate_app_cache();
+        crate::shell::launcher::clear_launched_for_test();
+
+        assert_eq!(tab_label_for_foreign("dev.qos.word-processor"), "Word Processor");
+        assert_eq!(tab_label_for_foreign("dev.qos.file-explorer"), "File Explorer");
+        // The documented behaviour for an already-camel-cased id is
+        // unchanged.
+        assert_eq!(tab_label_for_foreign("org.example.MyApp"), "MyApp");
+
+        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        crate::shell::launcher::invalidate_app_cache();
+    }
+
+    /// The package's manifest names the app, and that name is the app's
+    /// name whoever started the window. Previously only apps this
+    /// session had launched itself were resolvable, so a window that
+    /// arrived any other way fell through to the raw app-id.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_tab_takes_the_name_the_package_declares_even_without_a_launch() {
+        let tmp = tempfile::tempdir().unwrap();
+        install_named(tmp.path(), "dev.qos.file-explorer", "Files");
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        crate::shell::launcher::invalidate_app_cache();
+        crate::shell::launcher::clear_launched_for_test();
+
+        // Nothing was launched through this session — exactly the case
+        // that used to produce `file-explorer`.
+        assert_eq!(tab_label_for_foreign("dev.qos.file-explorer"), "Files");
+        // And by the trailing-component convention the app-id may use.
+        assert_eq!(tab_label_for_foreign("file-explorer"), "Files");
+
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let _ = adopt_toplevel(&mut tree, 4242, Some("dev.qos.file-explorer".to_string()));
+        assert_eq!(
+            tab_of(&tree, 4242).title,
+            "Files",
+            "the tab the compositor actually builds carries the real name"
+        );
+
+        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        crate::shell::launcher::invalidate_app_cache();
+    }
+
+    /// Minimal installed package: a manifest declaring a name, and a
+    /// registry entry pointing at it. Same shape `qos-install` writes.
+    fn install_named(dir: &std::path::Path, package_id: &str, name: &str) {
+        let payload = dir.join("payloads").join(package_id);
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        let manifest_path = payload.join("manifest.toml");
+        std::fs::write(
+            &manifest_path,
+            format!(
+                "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
+                 version = \"1.0.0\"\n[entrypoint]\nbin = \"bin/app\"\n\
+                 type = \"gui\"\n"
+            ),
+        )
+        .unwrap();
+        let registry = dir.join("registry.toml");
+        let mut existing = std::fs::read_to_string(&registry).unwrap_or_default();
+        existing.push_str(&format!(
+            "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            payload.display().to_string(),
+            manifest_path.display().to_string()
+        ));
+        std::fs::write(&registry, existing).unwrap();
     }
 
     #[test]

@@ -90,6 +90,7 @@ use crate::compositor::backend::{
     headless,
 };
 use crate::compositor::client_input;
+use crate::compositor::drag_feedback;
 use crate::compositor::foreign;
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
@@ -365,13 +366,59 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                     serde_json::json!({
                         "room": scope,
                         "user": user.0,
+                        // What the pill over this cursor actually
+                        // reads. The id above is the identity and is
+                        // never blank; the name is what the room calls
+                        // that identity, and the two differing is the
+                        // whole point — a harness that could only see
+                        // the id could not tell a peer the room has
+                        // named from one it has not.
+                        "name": presence.display_name(user),
                         "x": x,
                         "y": y,
                     })
                 })
             })
             .collect();
-        serde_json::json!({ "pointers": rows })
+        // Who the collaborators panel is listing, from the function
+        // that paints it.
+        //
+        // A pointer is not a roster. The two answer different
+        // questions — "is somebody moving a mouse in this room" and
+        // "who is in it" — and a harness with only the first cannot
+        // tell a peer the panel is showing from one it is not. A demo
+        // did read `peers()["roster"]`, on every run it ever made, and
+        // got an empty list back because nothing emitted the key: the
+        // one assertion aimed at this surface was passing by never
+        // reaching it.
+        //
+        // Derived from `collaborator_roster_rows` rather than
+        // re-walked here, so what a harness reads and what a person
+        // sees cannot drift apart.
+        let chrome = self.fb.chrome();
+        let roster: Vec<serde_json::Value> =
+            crate::shell::overlay_host::collaborator_roster_rows(&chrome.tree())
+                .into_iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "label": row.label,
+                        "role": row.role,
+                        // Kept separate from the label for the reason
+                        // the panel keeps the tag separate from the
+                        // name: a reader that had to infer which of
+                        // these is a person would sometimes infer
+                        // wrong, and that is the one mistake this
+                        // surface must not invite.
+                        "is_agent": row.is_agent,
+                        // Named but not arrived. The one thing a
+                        // harness watching somebody join needs, and
+                        // the thing a screenshot of a dimmed row
+                        // cannot be asserted on.
+                        "invited": row.invited,
+                    })
+                })
+                .collect();
+        serde_json::json!({ "pointers": rows, "roster": roster })
     }
 
     fn workspace_tree_json(&self) -> serde_json::Value {
@@ -408,12 +455,30 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                             "w": r.width(), "h": r.height(),
                         })
                     });
+                    // What the client actually drew, beside the tab it
+                    // was drawn into. A window that opens and then
+                    // resizes is those two disagreeing for a moment, so
+                    // a harness watching an open needs both to say
+                    // whether it was clean.
+                    let buffer = store.frame_size(tab.surface_id).map(|(w, h)| {
+                        serde_json::json!({ "w": w, "h": h })
+                    });
                     serde_json::json!({
                         "surface_id": tab.surface_id,
                         "app_id": tab.app_id,
                         "frame_seq": store.frame_seq(tab.surface_id),
                         "last_error": store.last_error(tab.surface_id),
                         "rect": placement,
+                        "buffer": buffer,
+                        // Whether the shell is painting this window yet.
+                        "presented": store.is_presented(tab.surface_id),
+                        // And, while it is not, whether the card holding
+                        // the window's place is up. Without this a harness
+                        // cannot tell an empty desktop from one that is
+                        // saying which app is on its way — which is the
+                        // whole difference between a wait somebody can
+                        // read and one they cannot.
+                        "opening": store.is_opening(tab.surface_id),
                     })
                 })
                 .collect();
@@ -688,6 +753,12 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 "invite_token": chrome.peer_sync_invite_token,
                 "connect_input": chrome.peer_sync_connect_input,
                 "status": chrome.peer_sync_status,
+                // The invite composer: what has been typed into "who
+                // are you inviting?", and who the token on screen was
+                // minted for. A script drives the same two facts the
+                // card shows.
+                "invite_name": chrome.peer_sync_invite_name,
+                "invite_for": chrome.peer_sync_invite_for,
             },
             // Whether apps in this session can share edits at all, and
             // why not when they cannot. Exposed because "collaboration
@@ -1003,7 +1074,19 @@ fn execute_planned_action(
             // the compositor on a stray bad path would defeat the
             // point of having a test surface. Phase 5 will route
             // these into structured wire responses.
-            write_snapshot_png(fb, path);
+            // A snapshot has to show what the screen shows, and during a
+            // drag that includes the thing being carried — which the
+            // live present loop draws on top of the painted scene. A
+            // capture taken through this path used to miss it, so a
+            // drag photographed mid-gesture came out as two windows and
+            // no drag.
+            let drag = state.as_ref().and_then(|s| {
+                (s.selection.dnd_active || s.selection.chrome_drag.is_some()).then(|| {
+                    let (cx, cy) = s.client_input.cursor();
+                    (vello::kurbo::Point::new(cx, cy), s.selection.dnd_label.get())
+                })
+            });
+            write_snapshot_png(fb, path, drag);
         }
         PlannedAction::InvokeAction { provider, id, args } => {
             // Re-resolve rather than carrying a handle over from
@@ -1136,7 +1219,11 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
 /// Split out of `execute_planned_action` so unit tests can exercise
 /// the snapshot path against a hand-built `FrameBuilder` without going
 /// through `PlannedAction` dispatch.
-fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
+fn write_snapshot_png(
+    fb: &mut FrameBuilder,
+    path: &std::path::Path,
+    drag: Option<(vello::kurbo::Point, Option<String>)>,
+) {
     use std::io::Write;
     let (w, h) = fb.viewport();
     let (w, h) = (w as u32, h as u32);
@@ -1146,7 +1233,18 @@ fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
         );
         return;
     }
-    let scene = fb.paint();
+    let mut scene = fb.paint();
+    if let Some((cursor, label)) = drag {
+        let theme = fb.theme().clone();
+        drag_feedback::draw(
+            &mut scene,
+            cursor,
+            label.as_deref(),
+            &theme,
+            fb.text_renderer_mut(),
+        );
+    }
+    let scene = scene;
     // The renderer is kept between snapshots and rebuilt only when the
     // viewport changes size.
     //
@@ -1359,6 +1457,23 @@ fn pump_test_control_conn(
             Ok(Some(())) => {
                 let (resp, actions) = match parse_command(&line) {
                     Ok(cmd) => {
+                        // Settle layout before anything reads a rect.
+                        //
+                        // The relayout after an action (below) covers a
+                        // tree the *socket* changed. It does not cover a
+                        // tree a **client** changed: a window mapping,
+                        // closing or resizing rearranges the strip
+                        // without any command being sent, and until the
+                        // next paint every widget still reports the rect
+                        // it had before. A caller that asked where a
+                        // window is between those two moments was told
+                        // where it used to be — off-screen, or the
+                        // position of the only tile there used to be.
+                        //
+                        // So layout is settled per command rather than
+                        // per action. It is idempotent and costs far
+                        // less than the round-trip that asked for it.
+                        frame_builder.relayout();
                         let state = FrameBuilderControlState {
                             fb: frame_builder,
                             doc: Some((&ctx.doc, &ctx.root_obj)),
@@ -2112,6 +2227,8 @@ pub fn run() -> ! {
                             PeerSyncRequest::IssueInvite => {
                                 bridge_net.issue_invite(active, INVITE_EXPIRY_SECONDS)
                             }
+                            PeerSyncRequest::IssueInviteFor(name) => bridge_net
+                                .issue_invite_named(active, INVITE_EXPIRY_SECONDS, &name),
                             PeerSyncRequest::AcceptInvite(token) => bridge_net
                                 .accept_invite(active, &token)
                                 .map(|room| room.to_string()),
@@ -3062,24 +3179,43 @@ pub fn run() -> ! {
         // when an invite is accepted, and the subscription has to follow
         // it there or the session stops hearing the room it just joined.
         let peers_moved = if let Some(relay) = frame_builder.peer_presence() {
-            let (cx, cy) = state.client_input.cursor();
-            relay.set_cursor(cx, cy);
-            relay.set_rooms({
+            // The pointer as the input state actually knows it, which
+            // for a session that has never had one moved through it is
+            // "nowhere" rather than the origin. `cursor()` would answer
+            // the origin here, and this publisher is level-triggered:
+            // it would announce that non-position to the room on every
+            // frame, and every peer would paint a cursor for somebody
+            // who is not there.
+            relay.set_cursor_position(state.client_input.pointer_position());
+            let (rooms, here) = {
                 let chrome = frame_builder.chrome_handle();
                 let chrome = chrome.borrow();
                 let tree = chrome.tree();
-                tree.workspaces
+                let rooms = tree
+                    .workspaces
                     .iter()
                     .map(|w| w.room.to_string())
-                    .collect::<Vec<_>>()
-            });
+                    .collect::<Vec<_>>();
+                // The room the user is looking at, which is where their
+                // pointer is. Distinct from the set above: that is every
+                // room the session listens to.
+                let here = tree
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == tree.active)
+                    .map(|w| w.room.to_string());
+                (rooms, here)
+            };
+            relay.set_rooms(rooms);
             // Say where this session's pointer is, whether or not
             // anything is running in front of it. The app-driven
             // republish only speaks while a local app publishes a
             // pointer, so on a desktop with nothing open it never
             // spoke — and two people in one room watched each other
             // not appear.
-            relay.publish_local_cursor();
+            if let Some(here) = here.as_deref() {
+                relay.publish_local_cursor(here);
+            }
             frame_builder.pump_peer_presence()
         } else {
             false
@@ -3229,7 +3365,25 @@ pub fn run() -> ! {
                     &view,
                 )
             } else {
-                frame_builder.paint()
+                let mut scene = frame_builder.paint();
+                // On top of everything, because a drag is over whatever
+                // it is over. Drawn here rather than by either app: once
+                // the pointer has left the source window neither end can
+                // paint the thing being carried, so without this a drag
+                // across the desktop is invisible.
+                if state.selection.dnd_active || state.selection.chrome_drag.is_some() {
+                    let label = state.selection.dnd_label.get();
+                    let (cx, cy) = state.client_input.cursor();
+                    let theme = frame_builder.theme().clone();
+                    drag_feedback::draw(
+                        &mut scene,
+                        vello::kurbo::Point::new(cx, cy),
+                        label.as_deref(),
+                        &theme,
+                        frame_builder.text_renderer_mut(),
+                    );
+                }
+                scene
             };
             metrics.mark_scene(t_scene_start.elapsed());
             let t_submit_start = Instant::now();

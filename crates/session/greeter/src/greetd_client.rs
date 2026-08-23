@@ -110,19 +110,28 @@ fn map_error(error_type: ErrorType, description: String) -> AuthError {
 /// to `on_prompt`. On success this **never returns** — it
 /// `process::exit(0)`s so greetd takes over the VT. On failure it returns
 /// a mapped [`AuthError`] for the status line.
-pub fn authenticate_and_start<F: FnMut(AuthPrompt)>(
+pub fn authenticate_and_start<F: FnMut(AuthPrompt), G: FnMut()>(
     sock_path: &str,
     username: &str,
     password: &str,
     cmd: &[String],
     env: &[String],
     on_prompt: F,
+    on_accepted: G,
 ) -> Result<(), AuthError> {
     let mut stream = UnixStream::connect(sock_path).map_err(|e| {
         AuthError::Transport(format!("cannot connect to greetd ({sock_path}): {e}"))
     })?;
 
-    run_exchange(&mut stream, username, password, cmd, env, on_prompt)?;
+    run_exchange_with(
+        &mut stream,
+        username,
+        password,
+        cmd,
+        env,
+        on_prompt,
+        on_accepted,
+    )?;
 
     // Session accepted — hand the VT to greetd. The greeter must exit so
     // greetd can reparent the started session.
@@ -140,7 +149,26 @@ pub fn run_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
     password: &str,
     cmd: &[String],
     env: &[String],
+    on_prompt: F,
+) -> Result<(), AuthError> {
+    run_exchange_with(stream, username, password, cmd, env, on_prompt, || {})
+}
+
+/// [`run_exchange`] plus an `on_accepted` hook, fired the moment greetd
+/// reports the credentials good and *before* `StartSession` is issued.
+///
+/// It exists so the UI can resolve its in-flight state into a visible
+/// success frame. Without it the only observable outcomes are "failed" and
+/// "the process vanished", so a successful login looks, for the moment it
+/// takes greetd to hand over the VT, exactly like a greeter that has hung.
+pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
+    stream: &mut S,
+    username: &str,
+    password: &str,
+    cmd: &[String],
+    env: &[String],
     mut on_prompt: F,
+    mut on_accepted: G,
 ) -> Result<(), AuthError> {
     Request::CreateSession {
         username: username.to_string(),
@@ -186,7 +214,11 @@ pub fn run_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
                     .map_err(|e| AuthError::Transport(format!("PostAuthMessageResponse: {e}")))?;
             }
             Response::Success => {
-                // Authentication complete — request the session start.
+                // Authentication complete. Tell the caller before issuing
+                // StartSession, so the UI can show that the attempt
+                // succeeded rather than sitting on a spinner until the
+                // process exits.
+                on_accepted();
                 Request::StartSession {
                     cmd: cmd.to_vec(),
                     env: env.to_vec(),

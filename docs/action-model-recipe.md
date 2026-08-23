@@ -182,3 +182,31 @@ default. Adopters: `ebook` and `calendar` (both on `ActionHost`), `tube`, and
 directly and exports no resources — those are the migration targets, and each
 now wires up by embedding `ui::ActionHost` (see "Wiring existing UI" above)
 rather than copy-pasting a `perform_action` + `DiscardTransport`.
+
+## Where the model does not reach yet: text editing
+
+An app's *content* is not addressable the way the shell's surface is. There is
+no externally reachable "insert this text at the caret" — `ActionHost`
+dispatches in-process — so anything driving an app from outside has to place a
+caret by coordinate and send keystrokes.
+
+That is the intended direction of travel, not a permanent shape: **text editing
+should become paragraph- (sub-resource-) addressed actions**, so that changing a
+document is an invocation against a named part of it rather than a gesture aimed
+at a pixel.
+
+The reason to care is not tidiness. During the demo work every driving failure
+landed in the coordinate path and none in the action path: a click at a
+remembered point landed on the style panel and moved focus off the page, so a
+"passing" proof proved nothing for hours; a caret was aimed at a coordinate that
+stopped being the page once a second window opened beside it; tiles turned out
+to be registered under two names, so an exact-name lookup found nothing while
+the window was plainly on screen. Meanwhile the beat driven by enumerate-and-
+invoke — a model choosing from an app's exported catalogue — worked first time
+and never regressed.
+
+Pointer gestures are a different case and are legitimately coordinate-based: a
+drag *is* a path across the screen, and clicking a file row *is* pointing at it.
+An edit to a paragraph is not.
+
+Not scheduled. Recorded here so whoever picks it up has the reasoning.

@@ -22,6 +22,10 @@ ui = { path = "../../ui" }
 word-processor = { path = "../word-processor" }
 qos-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
+# The decision — which exported action answers an instruction — is a model
+# call. Blocking, because the agent's loop is a plain blocking loop; rustls so
+# no OS TLS stack is needed inside the image.
+reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -107,8 +107,6 @@ enum CtxAction {
 /// Canonical paper tone — a barely-warm off-white. Ink/selection/caret below are
 /// chosen to read on this in every theme.
 const PAPER_DEFAULT: Color = Color::from_rgb8(0xfc, 0xfc, 0xfa);
-/// Soft drop-shadow under the paper sheet.
-const PAPER_SHADOW_DEFAULT: Color = Color::from_rgb8(0x16, 0x18, 0x1c);
 /// Default ink for paper content that has no per-block style colour (table
 /// cells, image-block fallbacks). Dark so it reads on the light paper.
 const PAPER_INK: Color = Color::from_rgb8(0x1c, 0x1c, 0x20);
@@ -163,8 +161,8 @@ struct ChromeColors {
     /// genuinely light, else [`PAPER_DEFAULT`]. Always a light tone so the
     /// dark-authored document ink stays readable.
     paper: Color,
-    /// Drop shadow under the paper sheet.
-    paper_shadow: Color,
+    /// How far the paper sheet is lifted off the desk behind it.
+    paper_elevation: ui::tokens::Shadow,
 }
 
 impl ChromeColors {
@@ -191,7 +189,7 @@ impl ChromeColors {
             on_accent: Color::WHITE,
             scrollbar: c.neutral[4],
             paper,
-            paper_shadow: PAPER_SHADOW_DEFAULT,
+            paper_elevation: theme.tokens.elevation.e3,
         }
     }
 }
@@ -742,6 +740,14 @@ fn block_presence_key(block_id: &str) -> PresenceKey {
 pub(crate) struct RemoteCaretOverlay {
     pub user: UserId,
     pub rect: Rect,
+    /// What to write on the pill: the name the room gave this peer, or
+    /// the peer's own id when the room has not named them.
+    ///
+    /// Resolved here rather than at paint time so it can be asserted on.
+    /// A pill that says who is editing is the visible half of the whole
+    /// collaboration claim, and "the label is right" is not something to
+    /// find out by looking at a screenshot.
+    pub label: String,
 }
 
 /// A resolved remote collaborator selection to paint this frame: one-or-more
@@ -3741,6 +3747,22 @@ impl WordProcessorWidget {
     /// * **Paragraph style** — the named-style editor: a style picker plus
     ///   property rows that mutate the *style* (every block of that style
     ///   updates live). Distinct from the toolbar's direct character formatting.
+    /// Whether the styles panel is actually reserved and drawn this frame.
+    ///
+    /// The panel is a contextual aid to the document, so it yields when the
+    /// window is too narrow for it to stay the minority: below twice its own
+    /// width it would take half the window or more, leaving the document —
+    /// the thing the app exists to show — as the smaller half. A 1280-wide
+    /// display split three ways gives each app ~426px, where a fixed 250px
+    /// panel is 59% of the window.
+    ///
+    /// `styles_panel_open` stays the user's preference and is what the
+    /// toolbar toggle reflects; this is whether the layout can honour it.
+    /// Widening the window brings the panel straight back.
+    fn styles_panel_visible(&self) -> bool {
+        self.styles_panel_open && self.rect.width() > 2.0 * STYLES_PANEL_W
+    }
+
     fn draw_styles_panel(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, panel: Rect) {
         let cc = self.chrome;
         self.panel_rect = panel;
@@ -4493,7 +4515,7 @@ impl Widget for WordProcessorWidget {
         let history_top = (layout_bar_top - history_h).max(full.y0 + tb_h);
         // Reserve the styles panel out of the canvas so the page re-centers in the
         // remaining width (and scrolled content never paints under the panel).
-        let canvas_right = if self.styles_panel_open {
+        let canvas_right = if self.styles_panel_visible() {
             (full.x1 - STYLES_PANEL_W).max(full.x0 + 1.0)
         } else {
             full.x1
@@ -5080,7 +5102,7 @@ impl Widget for WordProcessorWidget {
         for i in 0..num_pages {
             let ptop = page_top + i as f64 * page_pitch - sy;
             let sheet = Rect::new(page_x, ptop, page_x + page_w, ptop + letter_h);
-            chrome::page::draw(scene, ctf, sheet, self.chrome.paper, self.chrome.paper_shadow);
+            chrome::page::draw(scene, ctf, sheet, self.chrome.paper, &self.chrome.paper_elevation);
             let page_no = i + 1;
             // Header band: the top margin, inset by the L/R text margins.
             let head_band = Rect::new(sheet.x0 + m.left, sheet.y0, sheet.x1 - m.right, sheet.y0 + m.top);
@@ -5677,13 +5699,14 @@ impl Widget for WordProcessorWidget {
                 theme,
                 presence,
                 &c.user,
+                &c.label,
                 c.rect.x0,
                 c.rect.y0,
             );
         }
 
         // Contextual styles panel on the right (between toolbar and layout bar).
-        if self.styles_panel_open {
+        if self.styles_panel_visible() {
             let panel = Rect::new(canvas_right, full.y0 + tb_h, full.x1, layout_bar_top);
             self.draw_styles_panel(scene, transform, text_renderer, panel);
         } else {
@@ -6738,7 +6761,12 @@ impl WordProcessorWidget {
                         l.text_x + cx as f64 + CARET_WIDTH,
                         l.y_top + cy as f64 + ch as f64,
                     );
-                    carets.push(RemoteCaretOverlay { user: user.clone(), rect });
+                    let label = presence.display_name(user);
+                    carets.push(RemoteCaretOverlay {
+                        user: user.clone(),
+                        rect,
+                        label,
+                    });
                 }
             }
         }
@@ -6812,10 +6840,10 @@ impl WordProcessorWidget {
         theme: &Theme,
         presence: &PresenceCtx,
         user: &UserId,
+        label: &str,
         caret_x: f64,
         caret_top: f64,
     ) {
-        let label = &user.0;
         let (r, g, b) = presence.color_for(user);
         let peer = Color::from_rgb8(r, g, b);
         let size = 11.0_f32;
@@ -10718,6 +10746,86 @@ mod tests {
         );
     }
 
+    /// Type a mixed-case string through the production `handle_event`
+    /// keyboard path, then read the document back through the production
+    /// `materialize` path.
+    ///
+    /// This guards two *distinct* failures that a rendered frame showed
+    /// and no test caught. The first is the document coming back empty
+    /// after a scripted typing run — nothing the driver sent ever reached
+    /// the CRDT, which made every downstream "the peer sees what was
+    /// typed" claim vacuously true over an empty string. The second is
+    /// the document coming back lowercased: a key source that resolves a
+    /// character to a bare keycode loses the shift, so `Hello World`
+    /// lands as `hello world`. Asserting an exact mixed-case string
+    /// catches both; asserting merely "non-empty" catches only the first.
+    #[test]
+    fn typed_text_lands_in_the_document_with_its_capitals() {
+        let (mut state, mut wp) = bound();
+        assert_eq!(
+            body_text(&wp, &state).concat(),
+            "",
+            "a fresh document starts empty, so the assertion below is about \
+             what typing added and nothing else",
+        );
+
+        const TYPED: &str = "Hello World";
+        for ch in TYPED.chars() {
+            type_char(&mut wp, &mut state, ch);
+        }
+
+        assert_eq!(
+            body_text(&wp, &state).concat(),
+            TYPED,
+            "the document holds exactly the characters that were typed, \
+             capitals included",
+        );
+    }
+
+    /// A document editor shows the document. The contextual styles panel
+    /// is an aid to that, not a co-equal half of the window: at every
+    /// width the shell can hand this app, the canvas left for the
+    /// document must be wider than the panel.
+    ///
+    /// Regression guard for a frame in which the panel — which opens by
+    /// default — took roughly half of a tiled word-processor window, so
+    /// the thing the app exists to show was the smaller half of it.
+    ///
+    /// Measured on the *canvas*, not on `page_rect`: the page sheet is a
+    /// fixed nominal width that stays ~816px however narrow the window
+    /// gets (it is clipped and scrolled, not shrunk), so comparing it
+    /// against the panel would pass at every width and prove nothing.
+    /// `panel_rect` and `rect` are both written by the production draw
+    /// pass, and `panel_rect.x0` *is* the canvas's right edge.
+    #[test]
+    fn the_document_canvas_is_wider_than_the_styles_panel_at_every_tile_width() {
+        // Widths a one-, two- and three-column strip hands an app on
+        // ordinary displays — a 1280-wide screen split three ways is the
+        // narrow end, and is where the panel currently wins.
+        for (w, h) in [(1400_u32, 900_u32), (960, 800), (640, 700), (426, 700)] {
+            let (mut state, mut wp) = bound();
+            pipeline_draw(&mut wp, &mut state, w, h);
+            assert!(
+                wp.styles_panel_open,
+                "precondition: the default-open panel is the one under test",
+            );
+            assert!(
+                !wp.outline_open,
+                "precondition: the left-hand outline pane is closed, so the \
+                 canvas is bounded only by the panel under test",
+            );
+            let panel = wp.panel_rect.width();
+            let canvas = wp.rect.width() - panel;
+            assert!(
+                canvas > panel,
+                "at {w}x{h} the canvas left for the document ({canvas:.0}px) \
+                 must be wider than the styles panel ({panel:.0}px) — an \
+                 editor whose subject is the smaller half of its own window \
+                 is showing the wrong thing",
+            );
+        }
+    }
+
     /// Autosave: typing past the edit threshold (through the production keyboard
     /// path) writes a recovery copy to the widget's recovery dir. A real save then
     /// clears it. Asserts on file existence (the production path), not pixels.
@@ -11274,6 +11382,51 @@ mod tests {
         let (carets, selections) = wp.remote_presence_overlays(&presence);
         assert!(carets.is_empty(), "no remote carets without peers");
         assert!(selections.is_empty(), "no remote selections without peers");
+    }
+
+    /// The pill over a peer's caret says who is editing, not which
+    /// machine is.
+    ///
+    /// A peer reaches this app as its transport identity — the id its
+    /// caret is coloured by — and the name that belongs to that id lives
+    /// in the room, written by whoever invited them. Reading the label
+    /// off the id instead put `peer@5537458103208628978` over a caret in
+    /// somebody's document.
+    #[test]
+    fn a_named_peers_caret_is_labelled_with_their_name() {
+        let (_state, wp) = drawn_focused();
+        let block_id = first_block_id(&wp);
+        let peer = "peer@5537458103208628978";
+
+        let mut presence = PresenceCtx::empty();
+        presence.set_remote_caret(peer.into(), block_presence_key(&block_id), 3);
+        presence.set_display_name(ui::permissions::UserId(peer.into()), "bob");
+
+        let (carets, _) = wp.remote_presence_overlays(&presence);
+        assert_eq!(carets.len(), 1);
+        assert_eq!(carets[0].label, "bob");
+        assert_eq!(
+            carets[0].user.0, peer,
+            "the id stays the identity — it is what the caret is coloured by",
+        );
+    }
+
+    /// And a peer nobody named keeps its id on the pill: not blank, and
+    /// not a person who does not exist. An unlabelled caret is honest;
+    /// an invented name is a claim about who is in the room.
+    #[test]
+    fn an_unnamed_peers_caret_is_labelled_with_its_id() {
+        let (_state, wp) = drawn_focused();
+        let block_id = first_block_id(&wp);
+        let peer = "peer@5537458103208628978";
+
+        let mut presence = PresenceCtx::empty();
+        presence.set_remote_caret(peer.into(), block_presence_key(&block_id), 3);
+
+        let (carets, _) = wp.remote_presence_overlays(&presence);
+        assert_eq!(carets.len(), 1);
+        assert_eq!(carets[0].label, peer);
+        assert!(!carets[0].label.trim().is_empty());
     }
 
     /// A `PresenceCtx` carrying a remote collaborator's caret (under the same
@@ -12331,12 +12484,22 @@ mod history_strip_tests {
 /// under `$XDG_RUNTIME_DIR` and is named `winit-dnd-…`. Only such files are
 /// deleted after an insert — never a file the user chose.
 fn is_dnd_spool_path(path: &std::path::Path) -> bool {
-    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
+    let named_by_the_toolkit = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("winit-dnd-"));
+    if !named_by_the_toolkit {
         return false;
-    };
-    path.starts_with(runtime)
-        && path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("winit-dnd-"))
+    }
+    // The toolkit spools into the first of these it can actually write
+    // to — inside a sandbox `$XDG_RUNTIME_DIR` is set but is not always
+    // writable — so a spool file is one that sits under any of them.
+    // The name check above is what keeps this from ever matching a file
+    // the user chose.
+    ["XDG_RUNTIME_DIR", "XDG_CACHE_HOME", "HOME"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .filter(|v| !v.is_empty())
+        .any(|dir| path.starts_with(dir))
+        || path.starts_with(std::env::temp_dir())
 }
