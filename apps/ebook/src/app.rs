@@ -5297,7 +5297,7 @@ impl BooksApp {
         let style = ui::ReaderHudStyle {
             surface: c.surfaces.raised,
             border: c.border_standard,
-            shadow: Color::from_rgba8(0, 0, 0, 70),
+            elevation: theme.tokens.elevation.e2,
             text: c.text_primary,
             hover: theme.bg_hover,
             pill: c.surfaces.overlay,
