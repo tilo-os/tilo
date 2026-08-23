@@ -459,6 +459,39 @@ pub fn draw_peer_clips(
     }
 }
 
+/// Draw everyone else's caret in one editable field.
+///
+/// `caret_rect` is the field's own byte-offset-to-rectangle mapping — the
+/// very one its focused local caret is drawn from — so a peer's caret is the
+/// local caret's twin rather than a second guess at where a character sits.
+///
+/// This only reaches the screen while the field is open here too, because a
+/// closed field has no geometry to place a caret in. That is the case it
+/// exists for: two people in the same words at the same time, which is when
+/// knowing where the other one is stops being a nicety.
+pub fn draw_peer_field_carets(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    field: &str,
+    subject: Uuid,
+    mut caret_rect: impl FnMut(usize) -> Rect,
+) {
+    for (user, byte) in peer_field_carets(presence, field, subject) {
+        presence.draw_peer_caret_labeled(
+            scene,
+            theme,
+            text_renderer,
+            transform,
+            &user,
+            &presence.display_name(&user),
+            caret_rect(byte),
+        );
+    }
+}
+
 // ==========================================================================
 // The contract, for something that is not this program
 // ==========================================================================
@@ -843,6 +876,48 @@ mod tests {
             SelectionRange { start: 5, end: 5 },
         );
         assert!(peer_clips(&ctx).is_empty());
+    }
+
+    /// A caret in a field has to reach the screen, in the peer's colour, at
+    /// the offset the field itself puts that byte at.
+    #[test]
+    fn a_peers_caret_in_a_field_is_painted_where_the_field_puts_it() {
+        use ui::offscreen::OffscreenRenderer;
+        use vello::peniko::Color;
+
+        let subject = Uuid::new_v4();
+        let mut ctx = PresenceCtx::empty();
+        // "charlie" is the palette's emerald, so a green-dominant pixel is
+        // that peer specifically and not some other ink.
+        let (k, p) = point_frame(Some((FIELD_TITLE_WORDS, subject, 7)), 0.0);
+        ctx.apply_remote_presence("charlie".into(), k, p);
+
+        let mut scene = Scene::new();
+        let mut tr = ui::text_render::TextRenderer::new();
+        let mut asked = Vec::new();
+        draw_peer_field_carets(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &Theme::default(),
+            &ctx,
+            FIELD_TITLE_WORDS,
+            subject,
+            |byte| {
+                asked.push(byte);
+                // Stands in for the field's own mapping: a 2px bar at x=40.
+                Rect::new(40.0, 60.0, 42.0, 80.0)
+            },
+        );
+        assert_eq!(asked, vec![7], "the field is asked for the byte the peer sent");
+
+        let mut r = OffscreenRenderer::new(120, 120);
+        let rgba = r.render(&scene, Color::BLACK);
+        let (cr, cg, cb, _) = OffscreenRenderer::sample(&rgba, 120, 40, 70);
+        assert!(
+            cg > cr && cg > cb && cg > 100,
+            "expected the peer's emerald caret in the field, got ({cr},{cg},{cb})",
+        );
     }
 
     /// Nobody in the room means nothing to draw — the single-user path must

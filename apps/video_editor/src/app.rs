@@ -5494,9 +5494,24 @@ impl Widget for VideoEditorApp {
                 dd.apply_layout_external(rect);
                 dd.draw(scene, transform, tr, theme, presence);
             }
-            if let (Some((_, field)), Some(rect)) = (self.title_edit.as_mut(), l.title_text) {
+            if let (Some((mid, field)), Some(rect)) = (self.title_edit.as_mut(), l.title_text) {
+                let mid = *mid;
                 field.apply_layout_external(rect.inset(-4.0));
                 field.draw(scene, transform, tr, theme, presence);
+                // Anyone else with a caret in these same words. Placed from
+                // the field's own byte-to-rectangle mapping, which the draw
+                // just above populated, so a peer's caret is this field's
+                // caret in another colour rather than a second guess at it.
+                crate::presence::draw_peer_field_carets(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    presence,
+                    crate::presence::FIELD_TITLE_WORDS,
+                    mid,
+                    |byte| field.caret_rect(theme, byte),
+                );
             }
             let row = self
                 .marker_rename
