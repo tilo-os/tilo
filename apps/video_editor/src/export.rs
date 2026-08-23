@@ -831,6 +831,7 @@ mod tests {
             palette: 0,
             path: tone.to_string_lossy().into_owned(),
             hydration: crate::media::Hydration::Local,
+            ..Default::default()
         });
         let tid = Uuid::new_v4();
         p.tracks.push(Track {
@@ -1158,6 +1159,7 @@ mod tests {
             palette: 3,
             path: crate::media::workspace_path("c.mp4"),
             hydration: crate::media::Hydration::Projected,
+            ..Default::default()
         });
         let tid = Uuid::new_v4();
         p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false, solo: false });
@@ -1228,6 +1230,7 @@ mod tests {
             palette: 3,
             path: path.to_string_lossy().into_owned(),
             hydration: crate::media::Hydration::Local,
+            ..Default::default()
         });
         let tid = Uuid::new_v4();
         p.tracks.push(Track {
