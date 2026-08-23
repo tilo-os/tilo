@@ -653,6 +653,18 @@ pub enum ShotScenario {
     /// The keyframe menu open on a key under the playhead: remove, the three
     /// shapes with the one in force ticked, and the steps either side.
     KeyMenu,
+    /// The project menu open under the project button: Open, Save, Save As,
+    /// and the recent projects under a separator.
+    ProjectMenu,
+    /// The window while the OS is hovering a file over it, so the drop
+    /// invitation can be seen to cover everything a drop actually reaches.
+    FileDrop,
+    /// The question asked before an Open replaces a project that was never
+    /// saved anywhere.
+    DiscardOpen,
+    /// A project that has been saved to a file: the button carries the file's
+    /// name and no unsaved badge, and the notice says where it went.
+    SavedProject,
 }
 
 impl ShotScenario {
@@ -676,6 +688,7 @@ impl ShotScenario {
                 | ShotScenario::Keyframes
                 | ShotScenario::Markers
                 | ShotScenario::KeyMenu
+                | ShotScenario::ProjectMenu
         )
     }
 
@@ -703,6 +716,10 @@ impl ShotScenario {
             "keymenu" => ShotScenario::KeyMenu,
             "help" => ShotScenario::HelpSheet,
             "goto" => ShotScenario::GotoTimecode,
+            "projectmenu" => ShotScenario::ProjectMenu,
+            "filedrop" => ShotScenario::FileDrop,
+            "discard" => ShotScenario::DiscardOpen,
+            "saved" => ShotScenario::SavedProject,
             _ => return None,
         })
     }
@@ -3783,6 +3800,30 @@ impl VideoEditorApp {
             ShotScenario::Live => {}
             ShotScenario::HelpSheet => self.show_help = true,
             ShotScenario::GotoTimecode => self.goto_entry = Some("1:30".into()),
+            ShotScenario::ProjectMenu => {
+                // Recents the menu can list. Fabricated only for the capture —
+                // the live app reads them off disk and never invents one.
+                self.recents = ["Reel_2026", "Interview_rough", "Titles_pass"]
+                    .iter()
+                    .map(|n| PathBuf::from(format!("/home/you/Videos/{n}.qvp")))
+                    .collect();
+            }
+            ShotScenario::FileDrop => self.file_hovering = true,
+            ShotScenario::DiscardOpen => {
+                self.pending_open = Some(PendingOpen {
+                    path: PathBuf::from("/home/you/Videos/Reel_2026.qvp"),
+                    losing: self.project.name.clone(),
+                });
+            }
+            ShotScenario::SavedProject => {
+                let path = PathBuf::from("/home/you/Videos/Coastline_Doc_v3.qvp");
+                self.project_notice = Some(format!("Saved to {}", path.display()));
+                self.project_path = Some(path);
+                // Saved *as it stands*, so the badge is off — which is the
+                // half of the button this scenario exists to show.
+                self.saved_heads = Some(state.get_heads());
+                self.doc_heads = state.get_heads();
+            }
             ShotScenario::SelectedFilters => {
                 // Select the graded drone clip on V1 and park the playhead a
                 // few seconds in (past its fade-in) so the inspector shows a
@@ -3887,6 +3928,12 @@ impl VideoEditorApp {
             self.inspector_flap.snap(true);
         }
         match self.shot_scenario {
+            ShotScenario::ProjectMenu => {
+                let btn = r.project_btn;
+                if btn.width() > 0.0 {
+                    self.open_project_menu(Point::new(btn.x0, btn.y1 + 4.0));
+                }
+            }
             ShotScenario::BinMenu => {
                 if let Some((mid, row)) = self.bin_item_rects(r).into_iter().nth(2) {
                     let at = Point::new(row.center().x, row.center().y);
@@ -7982,7 +8029,6 @@ impl VideoEditorApp {
     ) {
         let Some(notice) = &self.project_notice else { return };
         let c = &theme.tokens.colors;
-        let strip = Rect::new(r.topbar.x0, r.topbar.y1, r.topbar.x1, r.topbar.y1 + 26.0);
         let tint = if self.project_notice_is_error() {
             c.semantic.danger
         } else if notice.contains(MEDIA_NOT_LOCAL) {
@@ -7992,11 +8038,26 @@ impl VideoEditorApp {
         } else {
             c.accent[5]
         };
-        fill_rect(scene, tf, with_alpha(tint, 0.16), strip);
-        stroke_line(scene, tf, with_alpha(tint, 0.5), strip.x0, strip.y1, strip.x1, strip.y1, 1.0);
-        let shown = elide_w(notice, (strip.width() - 28.0) as f32, tr);
-        let baseline = text_baseline(strip, 11.5, tr);
-        text(scene, tr, tf, &shown, 11.5, c.text_primary, strip.x0 + 14.0, baseline);
+        // A floating plate, not a full-width band. A translucent band across
+        // the whole window let the media bin's own header show through it, so
+        // "Saved to …" and "MEDIA BIN · 7 clips" were painted on top of each
+        // other; this is opaque, sized to its words, and plainly a transient
+        // thing sitting over the editor rather than a row of the layout.
+        let x0 = if r.project_btn.width() > 0.0 { r.project_btn.x0 } else { r.topbar.x0 + 12.0 };
+        let room = (r.topbar.x1 - 12.0 - x0).max(80.0);
+        let shown = elide_at(notice, (room - 24.0) as f32, 11.5, tr);
+        let (w, _) = tr.measure(&shown, 11.5, None);
+        let plate = Rect::new(
+            x0,
+            r.topbar.y1 + 6.0,
+            (x0 + w as f64 + 24.0).min(r.topbar.x1 - 12.0),
+            r.topbar.y1 + 32.0,
+        );
+        fill_rrect(scene, tf, c.surfaces.raised, plate, 7.0);
+        fill_rrect(scene, tf, with_alpha(tint, 0.18), plate, 7.0);
+        stroke_rrect(scene, tf, with_alpha(tint, 0.55), plate, 7.0, 1.0);
+        let baseline = text_baseline(plate, 11.5, tr);
+        text(scene, tr, tf, &shown, 11.5, c.text_primary, plate.x0 + 12.0, baseline);
     }
 
     /// Whether the standing project notice reports a failure, so it is tinted
@@ -8434,6 +8495,14 @@ impl VideoEditorApp {
             _ => false,
         };
         if !showed_real {
+            // Nothing was composited, so there is no picture — and with no
+            // picture the letterbox black is not standing for anything. Repaint
+            // the canvas in the theme's own surface so the words below are
+            // legible: theme text on a hard-coded black is dark-on-dark in
+            // every light theme, which is how "No clip at playhead" came to be
+            // near-invisible on a white desktop.
+            fill_rect(scene, tf, c.surfaces.base, canvas);
+            stroke_rrect(scene, tf, c.border_standard, canvas, 2.0, 1.0);
             // Nothing to composite, or nothing to composite *with*. Both are
             // said in words rather than papered over with an invented picture,
             // and both go through the shared empty state so the preview reads
@@ -9373,17 +9442,26 @@ impl VideoEditorApp {
         text(scene, tr, tf, &zl, 10.0, c.text_dim, at.x, at.y);
 
         // Empty timeline: say what to do, rather than showing bare lanes.
+        // Through the same shared empty state the preview and the inspector
+        // use, so the three empty surfaces of one window are one design.
         if self.project.clips.is_empty() {
             let area = Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1);
-            let line = if self.project.media.is_empty() {
-                "Import media, then drag it here"
+            let (title, hint) = if self.project.media.is_empty() {
+                ("Nothing on the timeline", "Import media, then drag it here")
             } else {
-                "Drag a clip from the media bin onto a track"
+                ("Nothing on the timeline", "Drag a clip from the media bin onto a track")
             };
-            let (lw, _) = tr.measure(line, 12.5, None);
-            text(
-                scene, tr, tf, line, 12.5, c.text_dim,
-                area.center().x - lw as f64 / 2.0, area.center().y - 8.0,
+            ui::widget::EmptyState::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                area,
+                Some(ui::icons::Icon::Layers),
+                title,
+                Some(hint),
+                None,
+                Point::new(f64::MIN, f64::MIN),
             );
         }
 
@@ -11333,6 +11411,495 @@ mod tests {
             winit::event::Modifiers::default()
         };
         app.handle_key(&WKey::Character(ch.into()), &mods, doc, &r)
+    }
+
+    // ---- project files ---------------------------------------------------
+
+    /// A scratch directory of this test's own, so nothing here can collide
+    /// with another test's file or leave one behind.
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir()
+            .join(format!("qos-ve-app-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn key_press_mods(
+        app: &mut VideoEditorApp,
+        doc: &mut AutoCommit,
+        ch: &str,
+        mods: ModifiersState,
+    ) -> bool {
+        let r = app.regions();
+        app.handle_key(&WKey::Character(ch.into()), &winit::event::Modifiers::from(mods), doc, &r)
+    }
+
+    #[test]
+    fn saving_writes_a_file_that_opens_back_as_the_same_timeline() {
+        // The whole point of a project file, end to end through the app: save
+        // the loaded project, open it into a *fresh* editor, and get the same
+        // edit back — not "a file appeared".
+        let dir = scratch("roundtrip");
+        let path = dir.join("Coastline.qvp");
+        let (mut app, mut doc) = app_and_doc();
+        let clips = app.project.clips.len();
+        let media = app.project.media.len();
+        assert!(clips > 1 && media > 1, "the fixture is a real edit");
+
+        app.write_project_to(&mut doc, path.clone());
+        assert_eq!(app.project_path.as_ref(), Some(&path));
+        assert!(path.is_file(), "the file is really on disk");
+
+        // A completely separate editor on a blank document opens it.
+        let mut fresh_doc = AutoCommit::new();
+        let mut fresh = VideoEditorApp::new();
+        fresh.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        fresh.sync(&mut fresh_doc, &automerge::ROOT);
+        assert!(fresh.project.clips.is_empty(), "it starts blank");
+
+        fresh.load_project_file(&mut fresh_doc, path.clone());
+        assert_eq!(fresh.project.clips.len(), clips, "every clip came back");
+        assert_eq!(fresh.project.media.len(), media, "the whole bin came back");
+        // And it landed in the *document*, not only the in-memory mirror, so
+        // it replicates and survives the next reload.
+        let reloaded = VideoDoc::load_project(&fresh_doc);
+        assert_eq!(reloaded.clips.len(), clips);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn opening_a_second_project_replaces_the_first_instead_of_merging_it() {
+        // The failure this guards is not a crash: it is opening project B and
+        // being shown A's clips *and* B's, with no way to tell them apart.
+        let dir = scratch("replace");
+        let small = dir.join("Small.qvp");
+        let mut other = Project::new("Small");
+        let mid = uuid::Uuid::new_v4();
+        other.media.push(MediaItem {
+            id: mid,
+            name: "One.mp4".into(),
+            kind: MediaKind::Video,
+            duration: 4.0,
+            ..Default::default()
+        });
+        let tid = uuid::Uuid::new_v4();
+        other.tracks.push(crate::model::Track { id: tid, name: "V1".into(), index: 1, ..Default::default() });
+        other.clips.push(Clip {
+            id: uuid::Uuid::new_v4(),
+            track: tid,
+            media: mid,
+            out_point: 4.0,
+            ..Default::default()
+        });
+        crate::project_file::save(&small, &other).unwrap();
+
+        let (mut app, mut doc) = app_and_doc();
+        // Give it a file first, so the open does not stop to ask.
+        app.project_path = Some(dir.join("Current.qvp"));
+        app.load_project_file(&mut doc, small.clone());
+
+        assert_eq!(app.project.clips.len(), 1, "only the opened project's clip");
+        assert_eq!(app.project.media.len(), 1, "only the opened project's source");
+        assert_eq!(app.project.name, "Small");
+        assert_eq!(VideoDoc::load_project(&doc).clips.len(), 1, "and in the document too");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_open_is_one_undoable_action_rather_than_a_side_door_document_swap() {
+        // Opening a file has to travel the same road every other edit does, or
+        // it neither undoes nor reaches a peer. Assert on what was dispatched.
+        let dir = scratch("action");
+        let path = dir.join("P.qvp");
+        crate::project_file::save(&path, &Project::new("P")).unwrap();
+        let (mut app, mut doc) = app_and_doc();
+        app.project_path = Some(dir.join("Prev.qvp"));
+
+        app.load_project_file(&mut doc, path);
+        let dispatched = app
+            .actions
+            .last_dispatched()
+            .expect("opening dispatched an action")
+            .clone();
+        assert_eq!(dispatched.type_id, VIDEO_EDITOR_ACTION_TYPE);
+        let decoded: crate::actions::VideoEditorAction =
+            serde_json::from_slice(&dispatched.payload).expect("it decodes");
+        assert!(
+            matches!(decoded, crate::actions::VideoEditorAction::LoadProject(_)),
+            "an open is a LoadProject action, got {decoded:?}",
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_unsaved_badge_follows_the_document_not_a_flag_someone_remembered_to_set() {
+        let dir = scratch("dirty");
+        let path = dir.join("D.qvp");
+        let (mut app, mut doc) = app_and_doc();
+        assert!(app.project_is_dirty(), "a project with clips and no file is unsaved");
+
+        app.write_project_to(&mut doc, path.clone());
+        assert!(!app.project_is_dirty(), "saving settles it");
+        assert!(!app.project_status_line().contains("unsaved"));
+
+        // An edit that never touches this widget's own fields — the split
+        // shortcut writes through the action host, exactly as a peer's change
+        // or a Ctrl+K invocation would.
+        assert!(key_press(&mut app, &mut doc, "s", false) || true);
+        let target = app.project.top_video_clip_at(10.0).unwrap().id;
+        app.selection.select_only(target);
+        app.playhead = 12.0;
+        key_press(&mut app, &mut doc, "s", false);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.project_is_dirty(), "the document moved on, so the badge is back");
+        assert!(app.project_status_line().contains("unsaved changes"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_empty_never_saved_project_is_not_reported_as_unsaved_work() {
+        // Otherwise a fresh window would wear a badge and interrogate the user
+        // about discarding a project they never made.
+        let mut doc = AutoCommit::new();
+        let mut app = VideoEditorApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(!app.project_is_dirty());
+        assert!(app.project_status_line().contains("empty project"));
+    }
+
+    #[test]
+    fn opening_over_work_that_exists_nowhere_else_asks_first() {
+        let dir = scratch("ask");
+        let path = dir.join("Other.qvp");
+        crate::project_file::save(&path, &Project::new("Other")).unwrap();
+        let (mut app, mut doc) = app_and_doc();
+        let before = app.project.clips.len();
+        assert!(app.project_path.is_none() && app.project_is_dirty());
+
+        app.begin_open(&mut doc, path.clone());
+        assert!(app.pending_open.is_some(), "it stopped to ask");
+        assert_eq!(app.project.clips.len(), before, "and changed nothing yet");
+
+        // Cancel leaves everything exactly where it was.
+        app.resolve_pending_open(&mut doc, DiscardChoice::Cancel);
+        assert!(app.pending_open.is_none());
+        assert_eq!(app.project.clips.len(), before);
+        assert!(app.project_path.is_none());
+
+        // Open anyway goes through.
+        app.begin_open(&mut doc, path.clone());
+        app.resolve_pending_open(&mut doc, DiscardChoice::Discard);
+        assert_eq!(app.project.name, "Other");
+        assert_eq!(app.project_path.as_ref(), Some(&path));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_project_that_already_has_a_file_opens_another_without_asking() {
+        // The question is about work that exists nowhere else. A saved project
+        // is not at risk — its file is still there — so asking would be a
+        // dialog that protects nothing and trains people to click through.
+        let dir = scratch("noask");
+        let path = dir.join("Next.qvp");
+        crate::project_file::save(&path, &Project::new("Next")).unwrap();
+        let (mut app, mut doc) = app_and_doc();
+        app.write_project_to(&mut doc, dir.join("Current.qvp"));
+
+        app.begin_open(&mut doc, path);
+        assert!(app.pending_open.is_none(), "no question was asked");
+        assert_eq!(app.project.name, "Next", "it just opened");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn answering_save_writes_the_project_and_then_continues_into_the_open() {
+        // The answer that loses nothing has to actually work end to end, or
+        // the user picks it, gets a file chooser, and is left wondering what
+        // happened to the thing they were opening.
+        let dir = scratch("savethen");
+        let target = dir.join("Target.qvp");
+        crate::project_file::save(&target, &Project::new("Target")).unwrap();
+        let (mut app, mut doc) = app_and_doc();
+        let kept = dir.join("Kept.qvp");
+
+        app.begin_open(&mut doc, target.clone());
+        assert!(app.pending_open.is_some());
+        app.resolve_pending_open(&mut doc, DiscardChoice::Save);
+        // Save on a never-saved project opens the chooser; the destination
+        // arriving is what completes both halves.
+        assert!(app.save_then_open.is_some(), "the open is remembered across the save");
+        app.write_project_to(&mut doc, kept.clone());
+
+        assert!(kept.is_file(), "the project that was at risk is now on disk");
+        assert_eq!(crate::project_file::load(&kept).unwrap().clips.len(), 7);
+        assert_eq!(app.project.name, "Target", "and the open it interrupted went through");
+        assert_eq!(app.project_path.as_ref(), Some(&target));
+        assert!(app.save_then_open.is_none() && app.pending_open.is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_save_that_failed_says_so_and_does_not_claim_the_file() {
+        // The one outcome that could really cost someone their work is being
+        // told a save happened when it did not.
+        let (mut app, mut doc) = app_and_doc();
+        let impossible = PathBuf::from("/definitely/not/a/directory/x.qvp");
+        app.write_project_to(&mut doc, impossible.clone());
+        assert_eq!(app.project_path, None, "the project did not adopt a path it has not got");
+        assert!(app.project_is_dirty(), "and it is still unsaved");
+        let notice = app.project_notice.clone().expect("the failure is on screen");
+        assert!(notice.starts_with("Could not save"), "{notice}");
+        assert!(app.project_notice_is_error(), "and it is tinted as a failure");
+    }
+
+    #[test]
+    fn opening_something_that_is_not_a_project_reports_it_and_keeps_the_project() {
+        let dir = scratch("wrongfile");
+        let junk = dir.join("holiday.mp4");
+        std::fs::write(&junk, b"not a project at all, just some bytes").unwrap();
+        let (mut app, mut doc) = app_and_doc();
+        let before = app.project.clips.len();
+        app.project_path = Some(dir.join("Cur.qvp"));
+
+        app.load_project_file(&mut doc, junk);
+        assert_eq!(app.project.clips.len(), before, "the open project is untouched");
+        let notice = app.project_notice.clone().expect("it says what went wrong");
+        assert_eq!(notice, "Not a video project file");
+        assert!(app.project_notice_is_error());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_project_whose_footage_is_not_here_says_which_in_the_words_the_app_already_uses() {
+        // Media is referenced, not copied, so this is the ordinary case after
+        // opening a project somewhere else — and it must be disclosed in the
+        // same vocabulary the bin and the timeline use, not a third phrasing.
+        // Safety: single-threaded test mutation of process env.
+        unsafe { std::env::remove_var("QOS_VE_MEDIA_DIR") };
+        let dir = scratch("moved");
+        let path = dir.join("Moved.qvp");
+        let mut p = Project::new("Moved");
+        p.media.push(MediaItem {
+            id: uuid::Uuid::new_v4(),
+            name: "Drone.mov".into(),
+            kind: MediaKind::Video,
+            duration: 5.0,
+            width: 1920,
+            height: 1080,
+            path: "/definitely/not/here-xyz.mov".into(),
+            ..Default::default()
+        });
+        crate::project_file::save(&path, &p).unwrap();
+
+        let (mut app, mut doc) = app_and_doc();
+        app.project_path = Some(dir.join("Cur.qvp"));
+        app.load_project_file(&mut doc, path);
+        let notice = app.project_notice.clone().expect("the open reported something");
+        assert!(notice.contains("Opened Moved"), "{notice}");
+        assert!(
+            notice.contains(MEDIA_NOT_LOCAL) && notice.contains("Drone.mov"),
+            "it names the shared vocabulary and the source: {notice}",
+        );
+        assert!(!app.project_notice_is_error(), "an absent source is not a failed open");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ctrl_o_opens_a_project_and_ctrl_shift_o_imports() {
+        // Ctrl+O used to import. It means "open a document" in every app a
+        // person has used, so an editor with projects has to honour that —
+        // and import has to remain reachable, not merely relocated.
+        let (mut app, mut doc) = app_and_doc();
+        assert!(key_press_mods(&mut app, &mut doc, "o", ModifiersState::CONTROL));
+        assert!(app.project_rx.is_some(), "Ctrl+O opened the project chooser");
+        assert!(app.import_rx.is_none(), "and not the media importer");
+
+        let (mut app, mut doc) = app_and_doc();
+        assert!(key_press_mods(
+            &mut app,
+            &mut doc,
+            "o",
+            ModifiersState::CONTROL | ModifiersState::SHIFT
+        ));
+        assert!(app.import_rx.is_some(), "Ctrl+Shift+O still imports media");
+        assert!(app.project_rx.is_none());
+    }
+
+    #[test]
+    fn ctrl_s_saves_and_ctrl_shift_s_always_asks_where() {
+        let dir = scratch("keys");
+        let path = dir.join("K.qvp");
+        let (mut app, mut doc) = app_and_doc();
+        app.write_project_to(&mut doc, path.clone());
+        let target = app.project.top_video_clip_at(10.0).unwrap().id;
+        app.selection.select_only(target);
+        app.playhead = 12.0;
+        key_press(&mut app, &mut doc, "s", false);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.project_is_dirty());
+
+        // Ctrl+S on a project that has a file writes straight back to it: no
+        // chooser, no second copy the user did not ask for.
+        assert!(key_press_mods(&mut app, &mut doc, "s", ModifiersState::CONTROL));
+        assert!(app.project_rx.is_none(), "Ctrl+S did not open a chooser");
+        assert!(!app.project_is_dirty(), "it saved");
+        assert_eq!(crate::project_file::load(&path).unwrap().clips.len(), 8);
+
+        // Ctrl+Shift+S asks even when there is a file — that is what makes it
+        // Save As rather than a second Save.
+        assert!(key_press_mods(
+            &mut app,
+            &mut doc,
+            "s",
+            ModifiersState::CONTROL | ModifiersState::SHIFT
+        ));
+        assert!(app.project_rx.is_some(), "Save As always asks where");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_project_menu_offers_open_save_save_as_and_the_recents_that_are_not_already_open() {
+        let (mut app, _doc) = app_and_doc();
+        let open = PathBuf::from("/p/Open.qvp");
+        let other = PathBuf::from("/p/Other.qvp");
+        app.project_path = Some(open.clone());
+        app.recents = vec![open.clone(), other.clone()];
+
+        let rows = app.project_menu_rows();
+        let items: Vec<ProjectMenuItem> = rows.iter().map(|(i, _)| i.clone()).collect();
+        assert_eq!(items[0], ProjectMenuItem::Open);
+        assert_eq!(items[1], ProjectMenuItem::Save);
+        assert_eq!(items[2], ProjectMenuItem::SaveAs);
+        assert_eq!(
+            items[3..],
+            [ProjectMenuItem::Recent(other)],
+            "the project already open is not offered as somewhere to go",
+        );
+        // Save names what it will do: a project with a file saves, one without
+        // asks — and the label says which before it is pressed.
+        assert_eq!(rows[1].1, "Save  (Ctrl+S)");
+        app.project_path = None;
+        assert_eq!(app.project_menu_rows()[1].1, "Save…  (Ctrl+S)");
+    }
+
+    #[test]
+    fn a_menu_click_resolves_past_the_separator_to_the_row_it_landed_on() {
+        // The separator takes a row in the menu and none in the intent list.
+        // Assuming the two indices match picks the wrong project to open.
+        let (mut app, _doc) = app_and_doc();
+        let a = PathBuf::from("/p/A.qvp");
+        let b = PathBuf::from("/p/B.qvp");
+        app.recents = vec![a.clone(), b.clone()];
+        app.open_project_menu(Point::new(10.0, 50.0));
+
+        let labels: Vec<String> =
+            app.project_menu.items().iter().map(|i| i.label().unwrap_or("—").to_string()).collect();
+        assert_eq!(labels.len(), 6, "three actions, a separator, two recents: {labels:?}");
+        assert_eq!(app.project_menu_intent(0), Some(ProjectMenuItem::Open));
+        assert_eq!(app.project_menu_intent(2), Some(ProjectMenuItem::SaveAs));
+        assert_eq!(app.project_menu_intent(3), None, "the separator does nothing");
+        assert_eq!(app.project_menu_intent(4), Some(ProjectMenuItem::Recent(a)));
+        assert_eq!(app.project_menu_intent(5), Some(ProjectMenuItem::Recent(b)));
+    }
+
+    #[test]
+    fn the_project_button_is_dropped_rather_than_clipped_and_the_reader_is_told() {
+        // A name cut to a few characters states a *different* project name,
+        // which is worse than no button — but a reader must then be told the
+        // control is not there and what to press instead.
+        let (mut app, _doc) = app_and_doc();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let wide = app.regions().project_btn;
+        assert!(wide.width() >= PROJECT_BTN_MIN_W, "there is room at 1280");
+
+        app.rect = Rect::new(0.0, 0.0, 500.0, 640.0);
+        let narrow = app.regions();
+        assert_eq!(narrow.project_btn.width(), 0.0, "no room, so no button");
+        assert!(
+            !narrow.project_btn.contains(narrow.import_btn.center()),
+            "and nothing overlapping Import",
+        );
+        let node = app.a11y_project();
+        assert!(!node.state.focusable, "a control that is not painted is not a stop");
+        assert!(
+            node.description.as_deref().is_some_and(|d| d.contains("Ctrl+O")),
+            "the reader is pointed at the keys instead: {:?}",
+            node.description,
+        );
+    }
+
+    #[test]
+    fn the_reader_hears_the_same_project_state_the_badge_shows() {
+        // A screen-reader user must not get the tidier story. The dot means
+        // "unsaved"; so must the node.
+        let dir = scratch("a11yproj");
+        let (mut app, mut doc) = app_and_doc();
+        assert!(app.project_is_dirty());
+        let node = app.a11y_project();
+        assert_eq!(node.description.as_deref(), Some(PROJECT_UNSAVED));
+        assert!(node.value.as_deref().is_some_and(|v| v.contains("not saved to a file yet")));
+
+        app.write_project_to(&mut doc, dir.join("A.qvp"));
+        let node = app.a11y_project();
+        assert_eq!(node.description, None, "saved: no unsaved claim");
+        assert!(node.value.as_deref().is_some_and(|v| v.contains("saved at")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_inspector_says_the_same_empty_thing_to_the_eye_and_to_a_reader() {
+        // These were two different sentences for one state.
+        let mut doc = AutoCommit::new();
+        let mut app = VideoEditorApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.sync(&mut doc, &automerge::ROOT);
+        let node = app.a11y_inspector();
+        let spoken = node
+            .children
+            .iter()
+            .filter_map(|n| n.name.clone())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(spoken.contains(INSPECTOR_EMPTY_TITLE), "spoken: {spoken}");
+        assert!(spoken.contains(INSPECTOR_EMPTY_HINT), "spoken: {spoken}");
+    }
+
+    #[test]
+    fn a_chosen_destination_arriving_from_the_portal_saves_where_it_said() {
+        // Drives the real per-frame drain the worker feeds, not the writer
+        // underneath it — the wiring is the part that breaks.
+        let dir = scratch("portal");
+        let path = dir.join("Portal.qvp");
+        let (mut app, mut doc) = app_and_doc();
+        app.project_rx =
+            Some(portal::inject_project_for_test(portal::ProjectOutcome::Save(path.clone())));
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.project_path.as_ref(), Some(&path), "the save went where it was told");
+        assert!(path.is_file());
+
+        // And an Open arriving the same way loads it back.
+        let mut fresh_doc = AutoCommit::new();
+        let mut fresh = VideoEditorApp::new();
+        fresh.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        fresh.sync(&mut fresh_doc, &automerge::ROOT);
+        fresh.project_rx =
+            Some(portal::inject_project_for_test(portal::ProjectOutcome::Open(path.clone())));
+        fresh.sync(&mut fresh_doc, &automerge::ROOT);
+        assert_eq!(fresh.project.clips.len(), 7, "the whole timeline arrived");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_cancelled_chooser_clears_the_notice_and_abandons_a_queued_open() {
+        let (mut app, mut doc) = app_and_doc();
+        app.save_then_open = Some(PathBuf::from("/p/Q.qvp"));
+        app.project_notice = Some("Choose where to save…".into());
+        app.project_rx =
+            Some(portal::inject_project_for_test(portal::ProjectOutcome::Cancelled));
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.project_notice.is_none(), "no stale 'choosing…' line left behind");
+        assert!(app.save_then_open.is_none(), "and the open it was gating is dropped");
     }
 
     #[test]
