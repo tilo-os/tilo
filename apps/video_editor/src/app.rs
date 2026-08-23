@@ -5826,6 +5826,46 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
     ),
 ];
 
+/// Where the shortcut table starts inside its card, below the title and the
+/// "Esc or ? to close" line.
+const HELP_TOP: f64 = 76.0;
+/// One group header, one row, and the gap after a group, in pixels.
+const HELP_HEADER_H: f64 = 20.0;
+const HELP_ROW_H: f64 = 19.0;
+const HELP_GROUP_GAP: f64 = 10.0;
+
+/// How tall each shortcut group draws.
+fn help_group_h(rows: usize) -> f64 {
+    HELP_HEADER_H + rows as f64 * HELP_ROW_H + HELP_GROUP_GAP
+}
+
+/// Which group starts the second column, and how tall the taller column is.
+///
+/// Both derived from the table. A hard-coded split with a hard-coded card
+/// height cuts rows off the bottom the moment a group is added — silently,
+/// because the row loop simply stops drawing — so the sheet claimed to be the
+/// list of shortcuts while omitting two of them.
+fn help_columns(two_col: bool) -> (usize, f64) {
+    let heights: Vec<f64> = SHORTCUTS.iter().map(|(_, rows)| help_group_h(rows.len())).collect();
+    let total: f64 = heights.iter().sum();
+    if !two_col {
+        return (SHORTCUTS.len(), total);
+    }
+    // Fill the first column until taking one more group would put it further
+    // past half than stopping leaves it short.
+    let mut first = 0.0;
+    let mut split = heights.len();
+    for (i, h) in heights.iter().enumerate() {
+        if i > 0 && (first + h - total / 2.0).abs() > (total / 2.0 - first).abs() {
+            split = i;
+            break;
+        }
+        first += h;
+    }
+    let second: f64 = heights[split.min(heights.len())..].iter().sum();
+    (split, first.max(second))
+}
+
 impl VideoEditorApp {
     /// The shortcut sheet as accessible content — every binding readable in
     /// order, so the sheet is as useful to a reader as it is to the eye.
@@ -9710,7 +9750,18 @@ impl VideoEditorApp {
         // of the editor already adapts to.
         let two_col = self.rect.width() >= 780.0;
         let w = if two_col { 700.0 } else { (self.rect.width() - 48.0).max(280.0) };
-        let h = if two_col { 420.0 } else { (self.rect.height() - 48.0).max(320.0) };
+        // Where the second column starts, and how tall the card has to be to
+        // hold the taller of the two. Both are computed from the table rather
+        // than fixed, because a fixed height and a fixed split silently *cut
+        // rows off* the moment a group is added — which is exactly what
+        // happened when the project shortcuts arrived and the last two View
+        // rows stopped being drawn at all.
+        let (split, content_h) = help_columns(two_col);
+        let h = if two_col {
+            (HELP_TOP + content_h + 16.0).min(self.rect.height() - 32.0)
+        } else {
+            (self.rect.height() - 48.0).max(320.0)
+        };
         let card = Rect::from_center_size(self.rect.center(), (w, h));
         fill_rrect(scene, tf, c.surfaces.raised, card, 14.0);
         stroke_rrect(scene, tf, c.border_standard, card, 14.0, 1.0);
@@ -9719,12 +9770,12 @@ impl VideoEditorApp {
 
         let col_w = if two_col { (w - 64.0) / 2.0 } else { w - 48.0 };
         let mut x = card.x0 + 24.0;
-        let mut y = card.y0 + 76.0;
+        let mut y = card.y0 + HELP_TOP;
         let bottom = card.y1 - 16.0;
         for (gi, (group, rows)) in SHORTCUTS.iter().enumerate() {
-            if two_col && gi == 2 {
+            if two_col && gi == split {
                 x = card.x0 + 24.0 + col_w + 16.0;
-                y = card.y0 + 76.0;
+                y = card.y0 + HELP_TOP;
             }
             text_w(scene, tr, tf, group, 11.0, c.text_dim, x, y, TextWeight::Bold);
             y += 20.0;
@@ -11900,6 +11951,68 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         assert!(app.project_notice.is_none(), "no stale 'choosing…' line left behind");
         assert!(app.save_then_open.is_none(), "and the open it was gating is dropped");
+    }
+
+    #[test]
+    fn the_shortcut_sheet_has_room_for_every_shortcut_it_lists() {
+        // The sheet's card was a fixed height with a fixed column split, and
+        // the row loop simply stops drawing when it runs out of card. Adding
+        // the project shortcuts pushed the last two View rows off the bottom —
+        // silently, with no error and no clipped glyph to notice. A sheet that
+        // is missing shortcuts is worse than no sheet, because it is the one
+        // place a user goes to find out what exists.
+        let (split, content_h) = help_columns(true);
+        assert!(split > 0 && split < SHORTCUTS.len(), "both columns carry groups");
+
+        // The card is sized from that, and every row must land above its foot.
+        let card_h = HELP_TOP + content_h + 16.0;
+        for (col, groups) in
+            [(0, &SHORTCUTS[..split]), (1, &SHORTCUTS[split..])]
+        {
+            let mut y = HELP_TOP;
+            for (group, rows) in groups {
+                y += HELP_HEADER_H;
+                for (combo, _) in rows.iter() {
+                    y += HELP_ROW_H;
+                    assert!(
+                        y <= card_h - 16.0,
+                        "column {col}: {group} / {combo} falls off the card \
+                         ({y} past {})",
+                        card_h - 16.0,
+                    );
+                }
+                y += HELP_GROUP_GAP;
+            }
+        }
+
+        // And the sheet a reader hears is the same list, whole — plus the one
+        // extra node the screen has no equivalent element for: the sheet's
+        // "Esc or ? to close" line is an instruction to the eye and a real
+        // Close button to a reader, which is the same affordance, not a
+        // tidier claim.
+        let app = app_with_sample();
+        let node = app.a11y_help_sheet();
+        let rows: usize = SHORTCUTS.iter().map(|(_, r)| r.len()).sum();
+        assert_eq!(
+            node.children.len(),
+            SHORTCUTS.len() + rows + 1,
+            "every group, every row, and the close control",
+        );
+        // Nothing is exported that the sheet does not paint.
+        for (group, group_rows) in SHORTCUTS {
+            assert!(
+                node.children.iter().any(|n| n.name.as_deref() == Some(group)),
+                "the {group} group reaches a reader",
+            );
+            for (combo, what) in group_rows.iter() {
+                assert!(
+                    node.children.iter().any(|n| {
+                        n.name.as_deref() == Some(*what) && n.value.as_deref() == Some(*combo)
+                    }),
+                    "{combo} / {what} reaches a reader",
+                );
+            }
+        }
     }
 
     #[test]
