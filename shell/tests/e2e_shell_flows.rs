@@ -132,6 +132,21 @@ struct Harness {
 
 impl Harness {
     fn new(tree: &WorkspaceTree) -> Self {
+        // Boot adopts every ownerless workspace before the session
+        // paints, so on a real machine a room you made is a room you
+        // own. Without it the harness drives a tree whose rooms have no
+        // recorded access at all, and any surface that reports on access
+        // gets asserted against a state no user has ever been in.
+        // Hold the top-bar clock still: overlays now let the desktop
+        // show through, so the bar is inside frames this file compares
+        // pixel for pixel, and a live clock would fail them once a
+        // minute. Set before the root is built so the first sync reads
+        // the pinned value.
+        // SAFETY: single-threaded test setup, under `TEST_LOCK`.
+        unsafe { std::env::set_var("QOS_CLOCK", "09:41") };
+        let mut owned = tree.clone();
+        owned.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
+        let tree = &owned;
         let (root, chrome) = build_nirios_root_with_chrome(tree);
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -237,7 +252,7 @@ impl Harness {
         });
     }
 
-    fn pump(&mut self, event: WindowEvent) {
+    fn pump(&mut self, event: WindowEvent) -> bool {
         let mut handled = false;
         self.root.handle_event(
             &event,
@@ -250,6 +265,18 @@ impl Harness {
             self.root_node,
             &self.taffy,
         );
+        handled
+    }
+
+    /// Press one key through the real root, over the real layout tree,
+    /// and report whether the shell consumed it.
+    ///
+    /// The lightweight `pump_host` helper cannot answer that question
+    /// for a key the shell *declines*: it hands the host a zeroed taffy
+    /// node on the promise that the hotkey pre-pass returns before any
+    /// child walk, which is exactly the promise a declined key breaks.
+    fn key(&mut self, key: Key) -> bool {
+        self.pump(key_press(key))
     }
 }
 
@@ -1524,22 +1551,28 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
 
 /// Arrows are only the switcher's while the switcher is up. With the
 /// panel closed they belong to whatever is focused on the desktop.
+///
+/// Driven through the real root over a real layout tree, because the
+/// claim is about a key the shell *declines* — which means the event
+/// goes on to the content, and the content has to be really there.
 #[test]
 fn e2e_overview_arrows_are_not_swallowed_while_the_panel_is_closed() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tree = WorkspaceTree::bootstrap_demo();
-    let (mut host, chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
-    assert!(!chrome.borrow().overlays.overview);
+    let mut h = Harness::new(&tree);
+    assert!(!h.chrome.borrow().overlays.overview, "precondition: panel shut");
 
-    let no_mods = Modifiers::default();
-    let handled = pump_host(
-        &mut host,
-        &key_press(Key::Named(NamedKey::ArrowDown)),
-        &no_mods,
-    );
+    let before = h.chrome.borrow().tree().active;
+    h.key(Key::Named(NamedKey::ArrowDown));
+    h.key(Key::Named(NamedKey::Enter));
     assert!(
-        !handled,
-        "with no panel open the arrow must fall through to the desktop"
+        !h.chrome.borrow().overlays.overview,
+        "arrows and Enter must not open the switcher"
+    );
+    assert_eq!(
+        h.chrome.borrow().tree().active,
+        before,
+        "with the panel shut, Enter must not switch rooms"
     );
 }
 
