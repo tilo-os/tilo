@@ -2259,39 +2259,64 @@ impl App {
     /// Dispatch an accessibility action (already mapped to our
     /// [`crate::a11y::Action`]) at the AccessKit node `target`.
     ///
-    /// The `target` is an [`accesskit::NodeId`] derived from a `taffy::NodeId`
-    /// (`taffy_id + 1`, with `0` reserved for the synthetic window root — see
-    /// [`crate::accesskit_bridge`]). We invert that to find the live widget in
-    /// `node_map` and:
-    ///   1. give the widget first refusal via
-    ///      [`Widget::perform_action`](crate::widget::Widget::perform_action);
-    ///   2. if it declines, handle [`Action::Focus`] by moving keyboard focus,
-    ///      and any other verb by synthesising a click through the existing
-    ///      input path (return the click coordinates so the caller can inject a
-    ///      [`UserEvent::Click`]).
+    /// `target` is resolved back through
+    /// [`crate::accesskit_bridge::resolve_node_id`], which distinguishes the
+    /// three id spaces the bridge emits: the synthetic window root, a laid-out
+    /// widget, and a **synthetic node** a widget described without a backing
+    /// widget of its own (a table row, a clip on a timeline track). Whichever it
+    /// is, the owning widget gets first refusal via
+    /// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at),
+    /// which receives the key path naming the element the action was aimed at
+    /// (empty for the widget itself) — so a canvas app can act on the one clip
+    /// the user was on rather than on the whole canvas.
+    ///
+    /// If the widget declines, the generic fallback runs: [`Action::Focus`]
+    /// moves keyboard focus to the owning widget, and any other verb synthesises
+    /// a click at its centre (returned as coordinates so the caller can inject a
+    /// [`UserEvent::Click`]). That fallback is necessarily **widget-granular** —
+    /// it has no way to reach inside a canvas — so a widget with synthetic nodes
+    /// that wants them operable must implement `perform_action_at`.
+    ///
+    /// An id that names no node in the current frame (a reference an AT held
+    /// across a structural change) is dropped: retargeting it at whatever now
+    /// occupies that slot would act on the wrong element.
     ///
     /// Returns `Some((x, y))` window-logical coordinates if the caller should
-    /// synthesise a click there (the generic activation fallback), else `None`
-    /// (the action was fully handled in-place).
+    /// synthesise a click there, else `None` (handled in place, or nothing to do).
     pub fn dispatch_a11y_action(
         &mut self,
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Option<(f64, f64)> {
         use crate::a11y::Action;
-        let raw = target.0;
-        // Reverse the bridge's id scheme: window root (0) has no widget.
-        if raw == 0 {
-            return None;
-        }
-        let taffy_id = NodeId::from(raw - 1);
-        let Some(&w_ptr) = self.node_map.get(&taffy_id) else {
-            return None;
-        };
+        use crate::accesskit_bridge::A11yTarget;
 
-        // 1. Widget gets first refusal.
+        let resolved = crate::accesskit_bridge::resolve_node_id(
+            self.root_widget.as_ref(),
+            &self.node_map,
+            target,
+        )?;
+        let (taffy_id, key_path): (NodeId, Vec<u64>) = match resolved {
+            // The window root has no widget behind it.
+            A11yTarget::Root => return None,
+            A11yTarget::Widget(id) => (id, Vec::new()),
+            A11yTarget::Synthetic { owner, key_path } => (owner, key_path),
+        };
+        let &w_ptr = self.node_map.get(&taffy_id)?;
+
+        // Focusing a synthetic node means two things at once: the keyboard goes
+        // to the owning widget, and the widget puts its own cursor on that
+        // element. Do the first half here unconditionally so a widget only has
+        // to implement the second — otherwise "focus row 4" would either move
+        // the keyboard without moving the cursor, or the reverse, depending on
+        // whether the widget claimed the action.
+        if !key_path.is_empty() && matches!(action, Action::Focus) {
+            self.set_focused_node(Some(taffy_id));
+        }
+
+        // 1. Widget gets first refusal, told which element was targeted.
         let handled = unsafe {
-            (*w_ptr).perform_action(action, &mut self.state.doc, &self.state.root)
+            (*w_ptr).perform_action_at(action, &key_path, &mut self.state.doc, &self.state.root)
         };
         if handled {
             self.needs_sync = true;
@@ -2299,7 +2324,7 @@ impl App {
             return None;
         }
 
-        // 2. Generic fallbacks.
+        // 2. Generic fallbacks — widget-granular, see the doc comment.
         match action {
             Action::Focus => {
                 self.set_focused_node(Some(taffy_id));

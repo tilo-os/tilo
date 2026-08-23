@@ -1203,6 +1203,305 @@ mod tests {
         assert_eq!(node.level(), Some(3));
     }
 
+    // ---- Synthetic nodes: focus, stable ids, action routing --------------
+
+    /// A canvas-style widget: one accessible node whose contents are entirely
+    /// synthetic (no child widgets), the shape the video editor / sheets use.
+    fn canvas(children: Vec<AccessNode>) -> AccessNode {
+        AccessNode::new(Role::Canvas)
+            .with_name("Timeline")
+            .with_state(AccessState::new().focusable(true))
+            .with_children(children)
+    }
+
+    fn clip(name: &str, focused: bool) -> AccessNode {
+        AccessNode::new(Role::ListItem)
+            .with_name(name)
+            .with_state(AccessState::new().focusable(true).focused(focused))
+    }
+
+    /// The taffy id of the single widget in `node_map` whose accessible role
+    /// matches `role`.
+    fn taffy_id_of(
+        node_map: &HashMap<taffy::NodeId, *mut dyn Widget>,
+        role: Role,
+    ) -> taffy::NodeId {
+        node_map
+            .iter()
+            .find(|(_, ptr)| {
+                let w = unsafe { &***ptr };
+                w.accessibility().map(|n| n.role == role).unwrap_or(false)
+            })
+            .map(|(&id, _)| id)
+            .expect("a widget with that role was laid out")
+    }
+
+    fn label_id(update: &TreeUpdate, label: &str) -> AkNodeId {
+        update
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some(label))
+            .map(|(id, _)| *id)
+            .unwrap_or_else(|| panic!("no node labelled {label} in the update"))
+    }
+
+    #[test]
+    fn focus_lands_on_the_marked_synthetic_node_not_its_owning_widget() {
+        // A canvas widget holds keyboard focus and nominates its second clip as
+        // the active descendant. The reader must land on THAT clip — a canvas
+        // whose focus can only ever be the whole canvas is precisely why a
+        // screen-reader user cannot navigate one.
+        let mut root = TestWidget::new(Some(canvas(vec![
+            clip("Intro", false),
+            clip("Interview", true),
+            clip("Outro", false),
+        ])));
+        let (_taffy, node_map, _n) = lay_out(&mut root);
+        let canvas_taffy = taffy_id_of(&node_map, Role::Canvas);
+
+        let update = build_tree_update(&root, &node_map, Some(canvas_taffy), 1.0);
+
+        let canvas_ak = AkNodeId(u64::from(canvas_taffy) + 1);
+        assert_ne!(
+            update.focus, canvas_ak,
+            "focus must not fall back to the whole canvas when a descendant is marked"
+        );
+        assert_ne!(update.focus, ROOT_ID);
+        let (_, focused) = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == update.focus)
+            .expect("the focused id must name a node in this very update");
+        assert_eq!(
+            focused.label(),
+            Some("Interview"),
+            "focus must be the clip the widget marked, not one of its siblings"
+        );
+        assert!(
+            is_synthetic_id(update.focus),
+            "the focused node is synthetic, so its id must live in the synthetic id space"
+        );
+    }
+
+    #[test]
+    fn an_unfocused_widget_cannot_claim_the_readers_cursor() {
+        // Two widgets; the one WITHOUT keyboard focus marks a descendant
+        // focused. Honouring that would let any offscreen widget yank the reader
+        // away from where the keyboard actually is.
+        let idle = TestWidget::new(Some(canvas(vec![clip("Ghost", true)])));
+        let btn = TestWidget::new(Some(
+            AccessNode::new(Role::Button)
+                .with_name("Save")
+                .with_state(AccessState::new().focusable(true)),
+        ));
+        let mut root = TestWidget::new(None)
+            .with_child(Box::new(idle))
+            .with_child(Box::new(btn));
+        let (_taffy, node_map, _n) = lay_out(&mut root);
+        let button_taffy = taffy_id_of(&node_map, Role::Button);
+
+        let update = build_tree_update(&root, &node_map, Some(button_taffy), 1.0);
+
+        assert_eq!(
+            update.focus,
+            AkNodeId(u64::from(button_taffy) + 1),
+            "focus stays on the widget that holds the keyboard"
+        );
+        let (_, focused) = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == update.focus)
+            .unwrap();
+        assert_eq!(focused.label(), Some("Save"));
+    }
+
+    #[test]
+    fn a_synthetic_nodes_id_survives_changes_elsewhere_in_the_tree() {
+        // Two independent widgets with synthetic contents. Adding a clip to the
+        // FIRST must not renumber the second's rows: an AT holding a reference
+        // to "Beta / two" would otherwise silently start pointing elsewhere.
+        let mut first = Box::new(TestWidget::new(Some(canvas(vec![clip("a", false)]))));
+        let first_ptr: *mut TestWidget = &mut *first;
+        let second = Box::new(TestWidget::new(Some(
+            AccessNode::new(Role::Table)
+                .with_name("Beta")
+                .with_children(vec![
+                    AccessNode::new(Role::Row).with_name("one"),
+                    AccessNode::new(Role::Row).with_name("two"),
+                ]),
+        )));
+        let mut root = TestWidget::new(None).with_child(first).with_child(second);
+        let (_taffy, node_map, _n) = lay_out(&mut root);
+
+        let before = build_tree_update(&root, &node_map, None, 1.0);
+        let two_before = label_id(&before, "two");
+
+        // Grow the first widget's synthetic list. Same widgets, same layout,
+        // same taffy ids — only an unrelated neighbour's content changed.
+        unsafe {
+            (*first_ptr).access = Some(canvas(vec![
+                clip("a", false),
+                clip("b", false),
+                clip("c", false),
+            ]));
+        }
+        let after = build_tree_update(&root, &node_map, None, 1.0);
+
+        assert_eq!(
+            label_id(&after, "two"),
+            two_before,
+            "a synthetic id must not depend on how many synthetic nodes precede it in the tree"
+        );
+        assert_ne!(
+            label_id(&after, "one"),
+            two_before,
+            "sibling ids must still be distinct"
+        );
+    }
+
+    #[test]
+    fn an_explicitly_keyed_node_keeps_its_id_when_it_moves() {
+        // Ordinal keying is right for a table row ("row 3" is the identity the
+        // user means), but wrong for a clip that can be dragged along a track.
+        // An explicit key pins the id to the element instead of the slot.
+        let keyed = |name: &str| {
+            AccessNode::new(Role::ListItem)
+                .with_name(name)
+                .with_hashed_key(name)
+        };
+        let mut root = TestWidget::new(Some(canvas(vec![keyed("intro"), keyed("outro")])));
+        let (_taffy, node_map, _n) = lay_out(&mut root);
+
+        let before = build_tree_update(&root, &node_map, None, 1.0);
+        let outro_before = label_id(&before, "outro");
+
+        // Drag "outro" to the front — same elements, new order.
+        root.access = Some(canvas(vec![keyed("outro"), keyed("intro")]));
+        let after = build_tree_update(&root, &node_map, None, 1.0);
+
+        assert_eq!(
+            label_id(&after, "outro"),
+            outro_before,
+            "an explicitly keyed node keeps its id across a reorder"
+        );
+        assert_ne!(
+            label_id(&after, "intro"),
+            outro_before,
+            "and does not inherit its new neighbour's id"
+        );
+    }
+
+    #[test]
+    fn synthetic_ids_never_collide_with_widget_ids() {
+        let mut root = TestWidget::new(Some(canvas(vec![clip("a", false), clip("b", false)])));
+        let (_taffy, node_map, _n) = lay_out(&mut root);
+        let update = build_tree_update(&root, &node_map, None, 1.0);
+
+        // The id spaces partition cleanly: the root and every widget node sit
+        // below the marker bit, every synthetic node above it.
+        assert!(!is_synthetic_id(ROOT_ID));
+        for (id, node) in &update.nodes {
+            let synthetic = node.role() == AkRole::ListItem;
+            assert_eq!(
+                is_synthetic_id(*id),
+                synthetic,
+                "id {id:?} ({:?}) is in the wrong id space",
+                node.role()
+            );
+        }
+        // And no id is emitted twice.
+        let mut ids: Vec<u64> = update.nodes.iter().map(|(id, _)| id.0).collect();
+        ids.sort_unstable();
+        let count = ids.len();
+        ids.dedup();
+        assert_eq!(count, ids.len(), "duplicate node id in the tree update");
+    }
+
+    #[test]
+    fn resolve_node_id_round_trips_an_emitted_synthetic_id_to_owner_and_key_path() {
+        // The action-routing contract: whatever id the bridge put in the tree,
+        // an incoming ActionRequest carrying it must resolve back to the widget
+        // that owns it plus the path naming the exact element.
+        let mut root = TestWidget::new(Some(
+            AccessNode::new(Role::Table)
+                .with_name("People")
+                .with_children(vec![
+                    AccessNode::new(Role::Row).with_name("r0").with_children(vec![
+                        AccessNode::new(Role::Cell).with_name("r0c0"),
+                        AccessNode::new(Role::Cell).with_name("r0c1"),
+                    ]),
+                    AccessNode::new(Role::Row).with_name("r1").with_children(vec![
+                        AccessNode::new(Role::Cell).with_name("r1c0"),
+                        AccessNode::new(Role::Cell).with_name("r1c1"),
+                    ]),
+                ]),
+        ));
+        let (_taffy, node_map, _n) = lay_out(&mut root);
+        let table_taffy = taffy_id_of(&node_map, Role::Table);
+        let update = build_tree_update(&root, &node_map, None, 1.0);
+
+        // A row: one path element, its ordinal.
+        assert_eq!(
+            resolve_node_id(&root, &node_map, label_id(&update, "r1")),
+            Some(A11yTarget::Synthetic {
+                owner: table_taffy,
+                key_path: vec![1],
+            }),
+        );
+        // A cell: row, then column.
+        assert_eq!(
+            resolve_node_id(&root, &node_map, label_id(&update, "r1c0")),
+            Some(A11yTarget::Synthetic {
+                owner: table_taffy,
+                key_path: vec![1, 0],
+            }),
+        );
+        assert_eq!(
+            resolve_node_id(&root, &node_map, label_id(&update, "r0c1")),
+            Some(A11yTarget::Synthetic {
+                owner: table_taffy,
+                key_path: vec![0, 1],
+            }),
+        );
+        // The widget itself and the window root still resolve to themselves.
+        assert_eq!(
+            resolve_node_id(&root, &node_map, label_id(&update, "People")),
+            Some(A11yTarget::Widget(table_taffy)),
+        );
+        assert_eq!(
+            resolve_node_id(&root, &node_map, ROOT_ID),
+            Some(A11yTarget::Root),
+        );
+    }
+
+    #[test]
+    fn resolve_node_id_reports_a_stale_reference_as_gone() {
+        // An AT can hold an id across a structural change. Resolving it to
+        // "whatever now sits there" would operate on the wrong element, so an
+        // unknown id must resolve to nothing at all.
+        let mut root = TestWidget::new(Some(canvas(vec![clip("only", false)])));
+        let (_taffy, node_map, _n) = lay_out(&mut root);
+
+        let bogus_synthetic = AkNodeId(0x1234_5678_9abc_def0 | SYNTHETIC_ID_BIT);
+        assert_eq!(resolve_node_id(&root, &node_map, bogus_synthetic), None);
+
+        let bogus_widget = AkNodeId(u64::from(u32::MAX));
+        assert_eq!(resolve_node_id(&root, &node_map, bogus_widget), None);
+    }
+
+    #[test]
+    fn resolve_node_id_declines_a_synthetic_node_whose_owner_was_never_laid_out() {
+        // Without a taffy id there is no handle to dispatch against, so such a
+        // node must report as unaddressable rather than resolve to a wrong owner.
+        let mut root = TestWidget::new(Some(canvas(vec![clip("orphan", false)])));
+        let empty_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
+
+        let update = build_tree_update(&root, &empty_map, None, 1.0);
+        let orphan = label_id(&update, "orphan");
+        assert!(is_synthetic_id(orphan));
+        assert_eq!(resolve_node_id(&root, &empty_map, orphan), None);
+    }
+
     #[test]
     fn every_update_includes_the_window_root_and_a_tree() {
         let mut root = TestWidget::new(None);
