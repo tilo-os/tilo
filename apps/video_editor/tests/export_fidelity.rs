@@ -1580,3 +1580,361 @@ fn a_keyframed_mask_moves_across_the_encoded_file() {
     );
     tidy(&path);
 }
+
+// ---------------------------------------------------------------------------
+// Tone curves in the encoded file.
+//
+// A curve is a table from input tone to output tone, so proving it reached
+// the file means reading tones back and comparing them with what the table
+// says — not "the picture got brighter", which a brightness slider also does.
+//
+// The fixture is a step wedge of known greys rather than the demo footage:
+// against real footage there is no tone whose value is known in advance, so
+// nothing could distinguish "the curve was applied" from "the encoder shifted
+// the picture a little". It is verified before it is used, for the same reason
+// the green plate is.
+// ---------------------------------------------------------------------------
+
+/// The eight grey levels of the wedge, one vertical band each.
+const WEDGE: [u8; 8] = [16, 48, 80, 112, 144, 176, 208, 240];
+const WEDGE_W: u32 = 320;
+const WEDGE_H: u32 = 180;
+const WEDGE_SECS: f64 = 1.0;
+const WEDGE_FPS: u32 = 30;
+
+/// Encode the step wedge to `path`, band by band, so the file's contents are
+/// decided here rather than by a test-pattern generator.
+fn write_wedge(path: &std::path::Path) {
+    gst::init().expect("gstreamer init");
+    let (enc, parse, mux) = encode_chain(Container::Mp4);
+    let bitrate = enc.spec.bitrate_arg(12_000_000);
+    let element = enc.spec.element;
+    let parse = parse.map(|p| format!("{p} ! ")).unwrap_or_default();
+    let desc = format!(
+        "appsrc name=wedge is-live=false format=time \
+         caps=video/x-raw,format=RGBA,width={WEDGE_W},height={WEDGE_H},framerate={WEDGE_FPS}/1 \
+         ! videoconvert ! {element} {bitrate} ! {parse}{mux} ! filesink location={}",
+        path.display()
+    );
+    let pipeline = gst::parse::launch(&desc)
+        .unwrap_or_else(|e| panic!("build the wedge pipeline ({desc}): {e}"))
+        .downcast::<gst::Pipeline>()
+        .expect("a pipeline");
+    let src = pipeline
+        .by_name("wedge")
+        .expect("appsrc")
+        .downcast::<gst_app::AppSrc>()
+        .expect("an appsrc");
+    src.set_format(gst::Format::Time);
+    pipeline.set_state(gst::State::Playing).expect("start the wedge pipeline");
+
+    let mut rgba = vec![255u8; (WEDGE_W * WEDGE_H * 4) as usize];
+    for y in 0..WEDGE_H {
+        for x in 0..WEDGE_W {
+            let band = (x as usize * WEDGE.len() / WEDGE_W as usize).min(WEDGE.len() - 1);
+            let v = WEDGE[band];
+            let i = ((y * WEDGE_W + x) * 4) as usize;
+            rgba[i..i + 3].copy_from_slice(&[v, v, v]);
+        }
+    }
+    let frames = (WEDGE_SECS * WEDGE_FPS as f64).round() as u64;
+    let ns = 1_000_000_000 / WEDGE_FPS as u64;
+    for i in 0..frames {
+        let mut buffer = gst::Buffer::with_size(rgba.len()).expect("allocate");
+        {
+            let b = buffer.get_mut().expect("fresh buffer is uniquely owned");
+            b.set_pts(gst::ClockTime::from_nseconds(ns * i));
+            b.set_duration(gst::ClockTime::from_nseconds(ns));
+            b.map_writable().expect("map").copy_from_slice(&rgba);
+        }
+        src.push_buffer(buffer)
+            .unwrap_or_else(|e| panic!("push wedge frame {i}: {e:?}"));
+    }
+    src.end_of_stream().expect("end the wedge stream");
+    let bus = pipeline.bus().expect("bus");
+    for msg in bus.iter_timed(gst::ClockTime::from_seconds(60)) {
+        match msg.view() {
+            gst::MessageView::Eos(_) => break,
+            gst::MessageView::Error(e) => {
+                let _ = pipeline.set_state(gst::State::Null);
+                panic!("wedge encode failed: {e:?}");
+            }
+            _ => {}
+        }
+    }
+    let _ = pipeline.set_state(gst::State::Null);
+}
+
+/// Where band `i` sits horizontally, as a fraction of the frame — the middle
+/// of the band, away from the edges an encoder softens.
+fn band_u(i: usize) -> f64 {
+    (i as f64 + 0.5) / WEDGE.len() as f64
+}
+
+/// The step wedge on disk, generated once per test process and **verified**:
+/// if the bands do not come back as a monotonically rising neutral ramp,
+/// every tone assertion below is a statement about nothing.
+fn grey_wedge() -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("qos-ve-wedge-{}.mp4", std::process::id()));
+    if !path.exists() {
+        write_wedge(&path);
+    }
+    let frame = decode_frame(&path, 0.4);
+    let mut last = -1.0_f64;
+    for (i, want) in WEDGE.iter().enumerate() {
+        let q = sample(&frame, band_u(i), 0.5);
+        let got = q[1] as f64;
+        assert!(
+            (got - *want as f64).abs() < 12.0,
+            "band {i} of the generated wedge should read ~{want}, got {q:?}",
+        );
+        assert!(
+            q[0].abs_diff(q[1]) < 12 && q[1].abs_diff(q[2]) < 12,
+            "and be neutral grey, got {q:?}",
+        );
+        assert!(got > last, "the wedge rises: band {i} is {got}, previous {last}");
+        last = got;
+    }
+    path
+}
+
+/// A one-clip project over the wedge, at the wedge's own frame size.
+fn wedge_project(name: &str) -> (Project, uuid::Uuid) {
+    let wedge = grey_wedge();
+    let mut p = Project::new(name);
+    p.width = WEDGE_W;
+    p.height = WEDGE_H;
+    let mid = uuid::Uuid::new_v4();
+    p.media.push(MediaItem {
+        id: mid,
+        name: "wedge".into(),
+        kind: MediaKind::Video,
+        duration: WEDGE_SECS,
+        width: WEDGE_W,
+        height: WEDGE_H,
+        fps: WEDGE_FPS as f64,
+        palette: 3,
+        path: wedge.to_string_lossy().into_owned(),
+        hydration: video_editor::media::Hydration::Local,
+        ..Default::default()
+    });
+    let tid = uuid::Uuid::new_v4();
+    p.tracks.push(Track {
+        id: tid,
+        name: "V1".into(),
+        kind: TrackKind::Video,
+        index: 1,
+        ..Default::default()
+    });
+    let cid = p.add_clip(tid, mid, 0.0).expect("media exists");
+    let c = p.clip_mut(cid).unwrap();
+    c.in_point = 0.1;
+    c.out_point = 0.8;
+    (p, cid)
+}
+
+/// The curve has to reach the encoded file **as a table**: every band of the
+/// wedge lands where `Curve::apply` says it should, and the two ends — which
+/// the curve pins — do not move.
+///
+/// That last part is what tells a curve from a brightness slider. A slider
+/// lifting the midtones lifts the shadows and the highlights with them; the
+/// whole reason to have curves is that this one does not.
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn a_tone_curve_reaches_the_encoded_file_as_a_table() {
+    use video_editor::curve::Curve;
+
+    let pid = std::process::id();
+    let (plain_project, _) = wedge_project(&format!("ve curve plain {pid}"));
+    let plain = export(&plain_project);
+
+    let (mut graded_project, cid) = wedge_project(&format!("ve curve shaped {pid}"));
+    // An S: crush the low midtones, lift the high ones, both ends pinned.
+    let mut curve = Curve::default();
+    curve.master.set_point(0.3, 0.14);
+    curve.master.set_point(0.7, 0.88);
+    graded_project.clip_mut(cid).unwrap().curves = curve.clone();
+    let shaped = export(&graded_project);
+
+    let before = decode_frame(&plain, 0.3);
+    let after = decode_frame(&shaped, 0.3);
+
+    // H.264 at this bitrate holds a flat band to within a few code values;
+    // the curve moves the midtones by 40+, so the margin is comfortable.
+    const TOL: f64 = 16.0;
+    let mut moved = 0;
+    for i in 0..WEDGE.len() {
+        let a = sample(&before, band_u(i), 0.5);
+        let b = sample(&after, band_u(i), 0.5);
+        let input = a[1] as f64 / 255.0;
+        let want = curve.apply(input, input, input).1 * 255.0;
+        println!("band {i}: encoded plain {a:?} -> shaped {b:?}, table says {want:.1}");
+        assert!(
+            (b[1] as f64 - want).abs() < TOL,
+            "band {i}: the encoded tone {} should be the table's {want:.1} for input {}",
+            b[1],
+            a[1],
+        );
+        if (b[1] as f64 - a[1] as f64).abs() > TOL {
+            moved += 1;
+        }
+    }
+    assert!(moved >= 3, "the curve really reshaped the picture, {moved} bands moved");
+
+    // And the shape is a *shape*: the two ends the curve pins barely move
+    // while the midtones move several times as far. A brightness or contrast
+    // slider cannot do that — it moves the whole wedge together — so this is
+    // the assertion that tells a curve from the sliders it sits beside.
+    let shift = |i: usize| {
+        (sample(&after, band_u(i), 0.5)[1] as f64 - sample(&before, band_u(i), 0.5)[1] as f64).abs()
+    };
+    let ends = shift(0).max(shift(WEDGE.len() - 1));
+    let mids = (1..WEDGE.len() - 1).map(shift).fold(0.0_f64, f64::max);
+    println!("ends moved at most {ends:.1}, midtones up to {mids:.1}");
+    assert!(ends < 20.0, "the pinned ends stay near where they were: {ends:.1}");
+    assert!(
+        mids > ends * 3.0,
+        "and the midtones move several times as far: {mids:.1} against {ends:.1}",
+    );
+
+    tidy(&plain);
+    tidy(&shaped);
+}
+
+/// A per-channel curve reaches the file as a colour cast on a neutral wedge —
+/// something the three grade axes cannot produce at all.
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn a_per_channel_curve_reaches_the_encoded_file() {
+    use video_editor::curve::Curve;
+
+    let pid = std::process::id();
+    let (mut project, cid) = wedge_project(&format!("ve curve channel {pid}"));
+    let mut curve = Curve::default();
+    curve.red.set_point(0.5, 0.9);
+    project.clip_mut(cid).unwrap().curves = curve;
+    let path = export(&project);
+
+    let frame = decode_frame(&path, 0.3);
+    // Band 3 is 112/255 ≈ 0.44 in, well inside the lifted region.
+    let q = sample(&frame, band_u(3), 0.5);
+    println!("mid band with red lifted: {q:?}");
+    assert!(
+        q[0] as i32 > q[1] as i32 + 40 && q[0] as i32 > q[2] as i32 + 40,
+        "only red was lifted, so the neutral band comes back red-cast: {q:?}",
+    );
+    // The far ends are pinned on every channel, so the wedge's dark end is
+    // still neutral — the cast is the curve's shape, not a tint.
+    let dark = sample(&frame, band_u(0), 0.5);
+    assert!(
+        dark[0].abs_diff(dark[1]) < 20,
+        "the pinned dark end stays neutral: {dark:?}",
+    );
+
+    tidy(&path);
+}
+
+/// An animated curve amount reaches the file as a grade that ramps: the same
+/// footage is graded differently in different seconds.
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn an_animated_curve_amount_grades_each_encoded_second_differently() {
+    use video_editor::curve::Curve;
+
+    let pid = std::process::id();
+    let (mut project, cid) = wedge_project(&format!("ve curve anim {pid}"));
+    let mut curve = Curve::default();
+    curve.master.set_point(0.5, 0.95);
+    {
+        let c = project.clip_mut(cid).unwrap();
+        c.in_point = 0.0;
+        c.out_point = WEDGE_SECS;
+        c.curves = curve;
+        c.set_key_at(Param::CurveMix, 0.0, 0.0, Interp::Linear);
+        c.set_key_at(Param::CurveMix, WEDGE_SECS, 1.0, Interp::Linear);
+    }
+    let path = export(&project);
+
+    let early = sample(&decode_frame(&path, 0.05), band_u(3), 0.5)[1] as f64;
+    let late = sample(&decode_frame(&path, WEDGE_SECS - 0.1), band_u(3), 0.5)[1] as f64;
+    println!("mid band: {early} early, {late} late");
+    assert!(
+        late > early + 60.0,
+        "the amount ramped on across the encoded file: {early} -> {late}",
+    );
+
+    tidy(&path);
+}
+
+// ---------------------------------------------------------------------------
+// A source the export cannot read.
+// ---------------------------------------------------------------------------
+
+/// A project whose media path is relative — what a hand-built project or a
+/// `.qvp` copied next to its footage looks like — must either find the
+/// footage or refuse. What it must never do is encode the compositor's
+/// stand-in fill and report `Done`: that produced a valid MP4 of a flat
+/// gradient, 14 KB for sixty frames of 1080p, indistinguishable from a
+/// successful render to everything except a decoder.
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn a_relative_media_path_is_resolved_or_refused_never_stood_in_for() {
+    use video_editor::export::{begin_export, output_path};
+
+    let clip = demo_clip();
+    let dir = clip.parent().expect("the clip has a directory").to_path_buf();
+    let file = clip
+        .file_name()
+        .expect("the clip has a name")
+        .to_string_lossy()
+        .into_owned();
+
+    // 1. No anchor, and nothing of that name in the working directory: the
+    //    source cannot be read, so the export refuses by name.
+    video_editor::media::set_project_anchor(None);
+    let pid = std::process::id();
+    let mut lost = project_over(&clip, 0.5, &format!("ve relative lost {pid}"));
+    lost.media[0].path = format!("qos-not-here-{pid}/{file}");
+    let settings = ExportSettings {
+        resolution: Resolution::P720,
+        container: Container::Mp4,
+        frame_rate: FrameRate::F30,
+    };
+    let lost_out = output_path(&settings, &lost);
+    std::fs::remove_file(&lost_out).ok();
+    match begin_export(&lost, &settings) {
+        ExportStatus::Failed { reason } => {
+            println!("refused: {reason}");
+            assert!(reason.contains("demo"), "the refusal names the source: {reason:?}");
+        }
+        other => panic!("an unresolvable source must refuse, got {other:?}"),
+    }
+    assert!(
+        !lost_out.exists(),
+        "and leaves no file behind that looks like a render: {}",
+        lost_out.display(),
+    );
+
+    // 2. Anchored at the directory the project file would live in, the same
+    //    relative path finds the footage — and the file carries it.
+    video_editor::media::set_project_anchor(Some(dir));
+    let mut found = project_over(&clip, 0.5, &format!("ve relative found {pid}"));
+    found.media[0].path = file.clone();
+    let out = export(&found);
+    let exported = decode_frame(&out, 0.2);
+    let source = decode_frame(&clip, 0.2);
+    let detail = horizontal_detail(&exported);
+    let source_detail = horizontal_detail(&source);
+    let diff = mean_abs_diff(&exported, &source);
+    println!("relative-path export: detail {detail:.2} (source {source_detail:.2}), difference {diff:.2}");
+    assert!(
+        detail > source_detail * 0.4,
+        "the encoded frame has the source's structure, not a flat fill \
+         (detail {detail:.2} vs source {source_detail:.2})",
+    );
+    assert!(diff < 30.0, "and is the same picture: mean difference {diff:.2}");
+
+    video_editor::media::set_project_anchor(None);
+    tidy(&out);
+}
