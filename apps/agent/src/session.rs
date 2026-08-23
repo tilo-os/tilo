@@ -468,6 +468,24 @@ impl Session {
         }
         self.handled.insert(ins_id.clone());
 
+        // Put the caret on the line before deciding what it asks for.
+        //
+        // Deciding is a call that takes seconds, and until now nothing in
+        // the room changed while it ran: the agent joined, the line was
+        // written, and then a silence indistinguishable from an agent that
+        // is not working. Its caret arriving on the line it is reading is
+        // what makes that wait legible as work.
+        //
+        // Presence, not an action, and deliberately so — where the agent
+        // is looking is view state. It leaves nothing in the document,
+        // nothing in the history, and nothing to undo.
+        self.link.send(&CollabRequest::Presence {
+            key: block_key(&ins_id),
+            payload: PresencePayload::Caret {
+                pos: blocks[at].text.chars().count(),
+            },
+        })?;
+
         let Decision { instruction, route } = self.chooser.choose(&asked, &blocks);
         tracing::info!(
             block = %ins_id,
@@ -484,6 +502,7 @@ impl Session {
             Instruction::Table => self.make_table(&blocks, at)?,
             Instruction::Caption => self.caption_image(&blocks, at)?,
             Instruction::Heading => self.make_heading(&blocks, at)?,
+            Instruction::RunSheet(draft) => self.write_run_sheet(&blocks, at, &draft)?,
             Instruction::Unknown(what) => {
                 let reply = format!(
                     "{}: I can't \"{what}\" yet. I can: table, caption, heading.",
@@ -538,6 +557,83 @@ impl Session {
         let mut gone: Vec<String> = bullets.iter().map(|&i| blocks[i].id.clone()).collect();
         gone.push(ins_id);
         self.edit(&last_bullet, wp::remove_blocks_action(gone))?;
+        Ok(())
+    }
+
+    /// Write out a table the model drafted, then whatever it wanted to say
+    /// underneath it; the notes it was drawn from and the instruction go
+    /// away.
+    ///
+    /// The division of labour is the whole point of this path. The model
+    /// supplied cell text and one line of prose — nothing else, because
+    /// nothing else fits through [`plan::TableDraft`]. Which blocks the
+    /// table replaces, where it goes, what is removed, and which actions
+    /// carry that out are decided here, from the document, and dispatched
+    /// through the word processor's exported actions exactly as the
+    /// toolbar would. So the model's reading of the notes is visible in
+    /// the result while its reach over the document stays nil.
+    fn write_run_sheet(
+        &mut self,
+        blocks: &[Block],
+        at: usize,
+        draft: &plan::TableDraft,
+    ) -> Result<()> {
+        let ins_id = blocks[at].id.clone();
+        let grid = draft.grid();
+        let cols = draft.headers.len();
+        let before: HashSet<String> = plan::table_ids(blocks).into_iter().collect();
+
+        // Anchored on the instruction, so the table lands where the line
+        // that asked for it was, with or without bullets above it.
+        self.edit(
+            &ins_id,
+            wp::insert_table_action(&ins_id, grid.len(), cols),
+        )?;
+
+        let fresh = plan::blocks(&self.editor.as_ref().expect("editor").snapshot()?);
+        let table_id = plan::table_ids(&fresh)
+            .into_iter()
+            .find(|t| !before.contains(t))
+            .context("the inserted table's cells were not found")?;
+        let cells = plan::cells_of(&fresh, &table_id);
+        let last_cell = cells
+            .last()
+            .map(|c| c.2.clone())
+            .context("the inserted table has no cells")?;
+        for (row, col, cell_id) in cells {
+            let text = grid
+                .get(row as usize)
+                .and_then(|r| r.get(col as usize))
+                .cloned()
+                .unwrap_or_default();
+            if text.trim().is_empty() {
+                continue;
+            }
+            self.edit(
+                &cell_id,
+                wp::splice_text_action(RegionKind::Body, &cell_id, 0, 0, &text),
+            )?;
+        }
+
+        // A table is a flat run of cell blocks, so a paragraph anchored on
+        // the last one lands after the table rather than inside it — and
+        // it lands last, which is also the order it should be read in.
+        if let Some(note) = draft.note_text() {
+            self.edit(&last_cell, wp::insert_paragraph_action(&last_cell, note))?;
+        }
+
+        let mut gone: Vec<String> = plan::bullets_above(blocks, at)
+            .iter()
+            .map(|&i| blocks[i].id.clone())
+            .collect();
+        gone.push(ins_id);
+        self.edit(&last_cell, wp::remove_blocks_action(gone))?;
+        tracing::info!(
+            rows = draft.rows.len(),
+            cols,
+            noted = draft.note_text().is_some(),
+            "wrote a run sheet the model drafted"
+        );
         Ok(())
     }
 
