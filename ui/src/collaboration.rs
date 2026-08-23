@@ -609,6 +609,11 @@ impl CollaborationManager {
         // (unreadable file, malformed JSON) is worth a debug line so
         // a maintainer investigating "why does presence look
         // anonymous?" can find the reason in `RUST_LOG=ui=debug`.
+        // Before anything else: a document's images are stored while the app
+        // is opening it, which is earlier than the first `poll`. Arming here
+        // keeps that window as small as it can be, and `qdoc` holds the few
+        // offers that still land ahead of it.
+        arm_blob_transport();
         let runtime_identity = match runtime_identity::load() {
             Ok(id) => Some(id),
             Err(runtime_portal::NotAvailable::ServiceFdMissing) => {

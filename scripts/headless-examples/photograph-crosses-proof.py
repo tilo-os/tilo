@@ -525,25 +525,32 @@ def main() -> int:
         note(f"room = {room}")
 
         print("\n[3] the picture is on one machine only")
-        # Each session's document lives under its *own* home. Same name,
-        # different file — so "both pages show the photograph" cannot be
-        # satisfied by both apps having read it off one disk.
-        q_doc = os.path.join(quinten.home, "harbour.html")
-        x_doc = os.path.join(xaver.home, "harbour.html")
-        with open(q_doc, "w") as fh:
+        # One path, because an app announces its record as `file:<path>` and
+        # two different paths are two different documents that never bridge.
+        # The *content* at that path differs between the two launches: the
+        # picture is written in for Quinten's app to import, then taken out
+        # again before Xaver's app opens it. An app reads the file once, at
+        # startup, so after that the disk has no further say.
+        doc = os.path.join(root, "harbour.html")
+        with open(doc, "w") as fh:
             fh.write(html_with_image(png))
-        with open(x_doc, "w") as fh:
-            fh.write(html_without_image())
-        check("quinten's file carries the photograph",
-              len(open(q_doc, 'rb').read()) > len(png))
-        check("xaver's file does not",
-              b"data:image/png" not in open(x_doc, "rb").read())
+        win = launch_word_processor(quinten, room, doc)
+        if not check("quinten's word processor painted", win is not None,
+                     f"see {os.path.join(quinten.dir, 'word-processor.log')}"):
+            return 1
 
-        for s, d in ((quinten, q_doc), (xaver, x_doc)):
-            win = launch_word_processor(s, room, d)
-            if not check(f"{s.name}'s word processor painted", win is not None,
-                         f"see {os.path.join(s.dir, 'word-processor.log')}"):
-                return 1
+        with open(doc, "w") as fh:
+            fh.write(html_without_image())
+        check("the file on disk no longer holds the photograph",
+              b"data:image/png" not in open(doc, "rb").read())
+        win = launch_word_processor(xaver, room, doc)
+        if not check("xaver's word processor painted", win is not None,
+                     f"see {os.path.join(xaver.dir, 'word-processor.log')}"):
+            return 1
+        # The disk is the control from here on. Anything of the photograph
+        # that shows up on Xaver's page came through the room, because there
+        # is nowhere else it could have come from.
+        note("both apps opened the same record; only quinten's read a picture")
 
         # Both apps must have announced themselves before anything is
         # expected to cross, or a slow attach reads as a lost transfer.
