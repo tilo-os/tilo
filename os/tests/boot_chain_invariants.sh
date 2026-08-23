@@ -141,5 +141,38 @@ for f in /usr/libexec/qos-disk-encrypt /usr/libexec/qos-secureboot; do
   if [ -x "$OS_ROOT$f" ]; then ok "$f present"; else bad "$f missing or not executable"; fi
 done
 
+# 6. Exactly one unit grows the root filesystem, whatever the layout.
+#    systemd-growfs-root.service runs `systemd-growfs /`. On the composefs
+#    layout `/` is an overlay rather than a block device, so it fails on every
+#    boot with "not backed by block device" while the real btrfs at /sysroot
+#    goes ungrown — a disk larger than the image quietly keeps its extra space.
+#    qos-growfs-sysroot.service grows /sysroot, and a drop-in stands the stock
+#    unit down. The two are gated on opposite senses of one condition so that
+#    exactly one applies; if they ever stop being opposites a layout can end up
+#    with neither, which is the silent version of the same bug.
+growfs_unit="$OS_ROOT/usr/lib/systemd/system/qos-growfs-sysroot.service"
+growfs_dropin="$OS_ROOT/usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.conf"
+if [ ! -f "$growfs_unit" ]; then
+  bad "qos-growfs-sysroot.service missing — nothing grows the root filesystem"
+elif [ ! -f "$growfs_dropin" ]; then
+  bad "nothing stands down systemd-growfs-root.service — it targets the composefs overlay and fails every boot"
+else
+  ours="$(grep -E '^ConditionPathIsMountPoint=' "$growfs_unit" | head -1)"
+  theirs="$(grep -E '^ConditionPathIsMountPoint=' "$growfs_dropin" | head -1)"
+  if [ "$ours" = "ConditionPathIsMountPoint=/sysroot" ] \
+     && [ "$theirs" = "ConditionPathIsMountPoint=!/sysroot" ]; then
+    ok "growfs: /sysroot and / gated on opposite conditions, so one always runs"
+  else
+    bad "growfs conditions are not opposites (${ours:-none} vs ${theirs:-none}) — a layout could grow neither"
+  fi
+fi
+
+if [ -e "$OS_ROOT/etc/systemd/system/multi-user.target.wants/qos-growfs-sysroot.service" ] \
+   || [ -e "$OS_ROOT/usr/lib/systemd/system/multi-user.target.wants/qos-growfs-sysroot.service" ]; then
+  ok "qos-growfs-sysroot.service is enabled"
+else
+  bad "qos-growfs-sysroot.service is not enabled — the filesystem is never grown"
+fi
+
 [ "$fail" -eq 0 ] && printf '\nall boot-chain invariants hold\n'
 exit "$fail"

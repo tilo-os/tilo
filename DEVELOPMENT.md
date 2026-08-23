@@ -210,9 +210,9 @@ knowing about:
 
 - **No `ush` runtime**, so the terminal falls back to `$SHELL` unconfined. That
   works interactively and fails inside an app sandbox.
-- **No first-boot unit.** The image runs `shell --firstboot` from a systemd
-  unit before the session; a host has none, so without help nothing ever
-  creates `~/.config/qos/identity/primary.json` and every session logs *"no qOS
+- **No identity unit.** The image mints the identity from the
+  `qos-identity.service` user unit at login; a host has none, so without help
+  nothing ever creates `~/.config/qos/identity/primary.json` and every session logs *"no qOS
   identity found"*. Both session wrappers therefore pass `--firstboot`
   themselves — it does the setup and falls through into the compositor, and
   provisioning returns early once the record exists. Start the compositor by

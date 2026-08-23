@@ -1,0 +1,26 @@
+[Unit]
+Description=Grow the root filesystem to fill its partition
+Documentation=man:systemd-growfs@.service(8)
+# The stock systemd-growfs-root.service grows `/`. On this image `/` is a
+# composefs overlay, not a block device, so systemd-growfs refuses it with
+# "File system \"/\" not backed by block device" and the unit fails on every
+# boot. The real, block-backed btrfs is mounted at /sysroot, and nothing was
+# growing it — so a disk larger than the image kept its extra space unused.
+#
+# A drop-in skips systemd-growfs-root.service whenever /sysroot is a mount
+# point, so exactly one of the two units runs: this one on the composefs
+# layout, the stock one on a layout where `/` really is the block device.
+# Neither silently no-ops in place of the other.
+ConditionPathIsMountPoint=/sysroot
+After=systemd-repart.service sysroot.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Idempotent: a filesystem already filling its partition is resized to the
+# size it already has, so this is safe to run on every boot.
+ExecStart=/usr/lib/systemd/systemd-growfs /sysroot
+TimeoutSec=infinity
+
+[Install]
+WantedBy=multi-user.target

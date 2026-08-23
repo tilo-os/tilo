@@ -56,7 +56,7 @@ systemd -> graphical.target -> greetd.service
 
 ### Services
 - `greetd.service`: Display manager, starts on graphical.target
-- `shell-firstboot.service`: One-shot, generates identity key, configures Flatpak remotes
+- `qos-identity.service`: Per-user one-shot, mints the signing key in the user's own session
 - PipeWire + WirePlumber: User session services (auto-started)
 
 ### Session Entry
@@ -92,7 +92,7 @@ Updates are atomic — the bootloader swaps the entire rootfs. No partial update
 ```
 /usr/bin/shell                              # Compositor binary
 /usr/share/wayland-sessions/shell.desktop   # Session entry
-/usr/lib/systemd/system/shell-firstboot.service
+/usr/lib/systemd/user/qos-identity.service
 /etc/shell/desktop.toml                     # Default config
 /etc/greetd/config.toml                             # Login manager config
 /var/home/<user>/.config/shell/             # User config overrides

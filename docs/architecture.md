@@ -38,4 +38,4 @@ The OS is built using `Containerfile` and converted to a bootable image via `os/
 2.  **greetd**: Displays the login prompt (tuigreet).
 3.  **quick-fs.service**: Mounts the collaborative filesystem to `/var/workspace`.
 4.  **shell**: Started by `tuigreet` as the Wayland session.
-5.  **shell-firstboot.service**: Handles initial user setup on the first boot.
+5.  **qos-identity.service**: A user unit that mints the session's signing identity at first login, in the user's own home.
