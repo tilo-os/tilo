@@ -563,22 +563,20 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             }
         }
         Action::SampleWheelSettle { prefix, at_ms } => {
-            // Let the workspace crossfade the release just started run
-            // to completion before sampling anything.
+            // Settle the content before sampling anything.
             //
-            // Committing a workspace switches the content underneath,
-            // and that switch is its own animation. Sampling straight
-            // after the release caught it a frame or two in — outgoing
-            // workspace faded out, incoming one not yet faded in — so
-            // the earliest frames of the strip came out nearly black
-            // and showed the crossfade instead of the wheel. Which is
-            // the one failure a sampled-curve strip cannot survive,
-            // since the earliest frames are its whole job.
+            // Committing a workspace swaps the content underneath, and
+            // the strip that comes in has its own per-widget animations
+            // (a tab bar's reveal, a group's spawn fade). Sampling
+            // straight after the release caught those a frame or two in,
+            // and the earliest frames of the strip — which are the whole
+            // job of a sampled-curve capture — showed them rather than
+            // the wheel.
             //
             // Spending frames here is free: every sample re-derives the
             // wheel's curve from the settle's recorded starting state,
             // so whatever the spring does meanwhile is discarded. Only
-            // the crossfade keeps the time, which is the point.
+            // the content keeps the time, which is the point.
             driver.step_frames(24);
             driver.relayout();
             for ms in at_ms.iter() {
@@ -1113,7 +1111,6 @@ pub fn catalogue() -> Vec<Scenario> {
         tab_drag_out_to_new_group(),
         tab_drag_hover_line_indicator(),
         workspace_switch(),
-        workspace_switch_animated(),
         wheel_scroll_workspaces(),
         wheel_drag_feel(),
         wheel_overscroll_at_the_end(),
@@ -2003,27 +2000,6 @@ fn window_open_at_next_seam_rightwards() -> Scenario {
     }
 }
 
-/// Capture every frame of the workspace-slide animation. After
-/// triggering a switch we snapshot N frames in a row with 1 animation
-/// tick between each so the slide ease is visible. `WS_SLIDE_MS = 260`,
-/// so 18 frames at 16 ms each (288 ms) covers the slide + a touch of
-/// post-settle.
-fn workspace_switch_animated() -> Scenario {
-    Scenario {
-        name: "workspace_switch_animated",
-        description: "Per-frame capture of the workspace-slide animation (ws 0 → ws 1).",
-        actions: vec![
-            Action::Snapshot("00-rest"),
-            Action::SwitchWorkspace(1),
-            Action::SnapshotSequence {
-                prefix: "slide",
-                frames: 18,
-                gap_frames: 1,
-            },
-        ],
-    }
-}
-
 /// Open the overview with the keyboard chord, hold on it, then leave
 /// with Escape — capturing every frame of the crossfade in both
 /// directions.
@@ -2276,25 +2252,36 @@ fn tab_drag_hover_line_indicator() -> Scenario {
 
 /// Switch to workspace index 1 (Research in the bootstrap tree),
 /// capture, then back to 0.
+///
+/// The `-immediately` captures take `gap_frames: 0`, so they are the
+/// **first frame rendered after the switch**, with no animation ticks in
+/// between. That is where the shell's old whole-screen slide showed
+/// itself: it started the entire content tree — wallpaper and top bar
+/// included — a full viewport off-axis, so the first frame of every
+/// switch was blank. These captures must be complete desktops, and must
+/// be indistinguishable from the settled ones taken a frame later.
 fn workspace_switch() -> Scenario {
     Scenario {
         name: "workspace_switch",
-        description: "Switch to workspace index 1, then back to 0.",
+        description: "Switch to workspace index 1, then back to 0, capturing \
+             the first frame after each switch as well as the settled one.",
         actions: vec![
             Action::Snapshot("01-ws0"),
             Action::SwitchWorkspace(1),
-            // Wait long enough for the workspace-slide animation
-            // (`WS_SLIDE_MS = 260 ms` in
-            // `quick-shell::shell::overlay_host`) to settle. 20 frames
-            // × 16 ms = 320 ms covers it with margin; anything shorter
-            // snapshots the content widget mid-translate, leaving the
-            // viewport with stale offsets and painting voids where the
-            // slide hasn't yet finished bringing the new workspace
-            // back to the origin.
-            Action::Wait(20),
+            Action::SnapshotSequence {
+                prefix: "02-ws1-immediately",
+                frames: 2,
+                gap_frames: 0,
+            },
+            Action::Wait(1),
             Action::Snapshot("02-ws1"),
             Action::SwitchWorkspace(0),
-            Action::Wait(20),
+            Action::SnapshotSequence {
+                prefix: "03-ws0-immediately",
+                frames: 2,
+                gap_frames: 0,
+            },
+            Action::Wait(1),
             Action::Snapshot("03-ws0-again"),
         ],
     }
@@ -2376,29 +2363,6 @@ mod tests {
     /// edit that shortens them re-introduces the visual artefacts.
     #[test]
     fn scenario_post_animation_waits_outlast_their_animation() {
-        // workspace_switch slides the content widget over WS_SLIDE_MS = 260 ms
-        // (see shell::shell::overlay_host). Waits must cover that.
-        let ws = workspace_switch();
-        let ws_waits: Vec<u32> = ws
-            .actions
-            .iter()
-            .filter_map(|a| match a {
-                Action::Wait(n) => Some(*n),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            !ws_waits.is_empty(),
-            "workspace_switch must contain Wait actions"
-        );
-        // 16 ms per frame × frames must cover 260 ms slide.
-        for n in &ws_waits {
-            assert!(
-                u64::from(*n) * 16 >= 260,
-                "workspace_switch Wait({n}) is shorter than WS_SLIDE_MS=260; snapshot will be mid-slide"
-            );
-        }
-
         // tab_drag releases a drag whose post-drop layout spring runs
         // for LAYOUT_ANIM_MS = 180 ms (see ui::widget::tabs).
         let td = tab_drag();

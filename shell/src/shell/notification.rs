@@ -847,34 +847,42 @@ mod tests {
         assert_eq!(first_title, "n3");
     }
 
+    /// Changing workspace is not news.
+    ///
+    /// Every successful switch used to raise a toast naming the new
+    /// workspace — a smoke test for the notification system that shipped
+    /// as a feature. Moving between workspaces is one of the most
+    /// frequent things anyone does here, the top bar already names the
+    /// current one, and a banner announcing a change the user just made
+    /// themselves is noise on top of the thing they wanted to look at.
+    ///
+    /// The notification system has real producers (incoming D-Bus
+    /// notifications, a failed app launch, a document opened elsewhere,
+    /// a peer joining) and does not need a synthetic one.
     #[test]
-    fn switch_workspace_pushes_a_notification() {
+    fn switch_workspace_does_not_push_a_notification() {
         // Use `bootstrap_demo` so we have ≥2 workspaces and a switch
         // is meaningful. `WorkspaceTree::default()` constructs an empty
         // tree which cannot exercise the down-switch.
         let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
-        // Bootstrap leaves the first workspace active; clear any
-        // notifications synthesised by setup helpers.
         chrome.borrow_mut().notifications.clear();
-        let before = chrome.borrow().notifications().len();
         let switched = chrome.borrow_mut().switch_workspace(1);
         assert!(switched, "expected a workspace switch");
-        let after = chrome.borrow().notifications().len();
-        assert_eq!(
-            after,
-            before + 1,
-            "switch_workspace should push exactly one notification"
-        );
-        let last_title = chrome
-            .borrow()
-            .notifications()
-            .last()
-            .unwrap()
-            .title
-            .clone();
         assert!(
-            last_title.to_lowercase().contains("workspace"),
-            "title should mention the workspace, got: {last_title}"
+            chrome.borrow().notifications().is_empty(),
+            "a workspace switch must not raise a banner, got {:?}",
+            chrome
+                .borrow()
+                .notifications()
+                .iter()
+                .map(|n| n.title.clone())
+                .collect::<Vec<_>>()
+        );
+        // Not merely suppressed from the banner stack — never posted at
+        // all, so it does not silt up the history log either.
+        assert!(
+            chrome.borrow().notification_history().is_empty(),
+            "a workspace switch must not be recorded in history"
         );
     }
 
