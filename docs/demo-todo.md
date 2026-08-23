@@ -50,6 +50,43 @@ distinction is the whole reason this file exists.
 |---|---|
 | 24 | The drag take, driven by hand. Staging is verified in dry-run. Ask only once everything above is clear |
 
+## Architectural findings worth keeping
+
+These came out of building the video and outlive it. None is demo-blocking;
+all are real.
+
+**A document change does not say who made it.** `CollabEvent::CRDTIncremental`
+has no user field, and the capnp broker stamps unsigned frames with an
+explicitly empty `from_user_id`; only `SignedCRDTIncremental` carries an id.
+Meanwhile presence says who somebody is and where their caret sits, but not
+that anything changed. So the two halves of "who edited what" exist in
+different messages and nothing joins them. Closing it needs one of: publishers
+moving to the signed path, a user id threaded through `CRDTIncremental`, or an
+actor-id-to-presence-id mapping that does not exist today. Until then any
+"show me who changed this" feature is an approximation.
+
+**Nothing can redeem an invite without a pointer.** `peer.connect` is declared
+with `params: &[]` — it raises the connect card and stops. The only way to
+finish joining is to click Paste and then Join. For an OS whose claim is that
+an agent never has to look at a screen, that is a hole: the demo had to
+synthesise two clicks into the agent's session, and the position those clicks
+left behind was then republished to the whole room once a second as a phantom
+cursor. A join action that takes the token removes the need for any of it.
+
+**Bytes lived inside the document.** `put_blob` hashed content — and then wrote
+the payload into the CRDT under that hash. A 146 KB image was therefore a
+146 KB change, over the publish ceiling, dropped; and because Automerge holds a
+change whose ancestors are missing, every peer's document froze permanently at
+that point while both ends reported themselves connected. The fix is the shape
+`fs/` already uses: reference plus metadata in the document, bytes in a
+content-addressed store, fetched on demand.
+
+Worth recording alongside it, because it is the reason the same mechanism is
+safe in one place and not the other: **chunking a blob is safe in a way
+chunking a change never was.** A blob is self-verifying against its hash, so a
+lost chunk is detectable, retryable, and degrades one image to a placeholder. A
+lost CRDT change is undetectable and freezes the document forever.
+
 ## Rules learned the hard way
 
 - **A stale binary invalidates a run.** Five verifications died this way, twice with an agent judging its own fix against a build that predated it. The rig now refuses to record against one.
