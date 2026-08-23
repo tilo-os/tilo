@@ -4401,6 +4401,45 @@ impl ShellOverlayHost {
         )
     }
 
+    /// Which result kinds the palette is currently filtered to, as the
+    /// chip labels the user can read off the strip. Empty means no chip
+    /// is lit and every kind is on offer.
+    ///
+    /// A caller driving the palette from outside can otherwise only see
+    /// the rows, and "filtered to apps" and "asked a query only apps
+    /// matched" produce the same list. The filter is the fact that
+    /// decides what a *later* keystroke will show, so it has to be
+    /// readable on its own.
+    pub fn palette_kind_filter(&self) -> Vec<String> {
+        self.active_kind_filter
+            .iter()
+            .map(|k| k.label().to_string())
+            .collect()
+    }
+
+    /// Every strip's horizontal pan, keyed by strip id.
+    ///
+    /// The pan is what "where along the strip am I looking" means, and
+    /// nothing else in the state dump carries it: two frames with the
+    /// same tree and the same chrome can show completely different
+    /// windows. An assertion that the viewport did not move has no
+    /// subject without this.
+    pub fn strip_scroll_offsets(&self) -> Vec<(u64, f64)> {
+        let mut out: Vec<(u64, f64)> = self
+            .group_row_ptrs
+            .iter()
+            .map(|(sid, &ptr)| {
+                // SAFETY: same contract as every other `group_row_ptrs`
+                // accessor — the pointer is captured from a `Box<GroupRow>`
+                // owned through the content tree, and the host outlives it.
+                let row: &GroupRow = unsafe { &*ptr };
+                (sid.0, row.scroll_x())
+            })
+            .collect();
+        out.sort_by_key(|(sid, _)| *sid);
+        out
+    }
+
     /// The rows on offer, with the subtitle each one renders under its
     /// label.
     ///
