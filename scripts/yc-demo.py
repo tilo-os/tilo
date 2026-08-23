@@ -1980,7 +1980,20 @@ def beat_four(ada: Session, bob: Session, agent: Session,
     bob.settle(0.6)
 
     def seen_by(watcher: Session, who: str):
-        rows = (watcher.peers() or {}).get("pointers") or []
+        """Peer `who`'s pointer, as `watcher`'s session holds it.
+
+        Both stores, because a person's pointer has lived in either. It
+        was once filed into `pointers` *and* `remote_cursors`, which is
+        what drew some peers twice; consolidating that left a reader of
+        only one key looking at an empty list while the cursor was on
+        screen, correctly drawn and correctly named. Reading both is the
+        honest question — "does this session hold a pointer for that
+        person" — rather than a question about where it is filed.
+        """
+        peers = watcher.peers() or {}
+        rows = []
+        for key in ("pointers", "remote_cursors"):
+            rows.extend(peers.get(key) or [])
         return [r for r in rows if r.get("user") == who] or None
 
     def at_the_origin(row: dict) -> bool:
