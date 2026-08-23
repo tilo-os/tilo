@@ -105,6 +105,19 @@ pub struct PeerPresence {
     /// cursor in their top-left corner for somebody who is not there.
     /// An agent session never moves a mouse at all, so for it the
     /// origin pill was permanent.
+    ///
+    /// The `Option` alone was not enough, and it is worth saying why.
+    /// This type refused to publish a pointer it did not have from the
+    /// day it was written, and the pill stayed on screen anyway,
+    /// because the frame loop filled it in on every pass from a
+    /// `(f64, f64)` that answers the origin for a pointer that has
+    /// never moved. A gate is only as good as the value handed to it,
+    /// so the value now arrives as
+    /// [`crate::compositor::client_input::ClientInput::pointer_position`]
+    /// — which can say "nowhere" — through
+    /// [`Self::set_cursor_position`]. Anything that goes back to
+    /// passing a bare pair here reopens the bug without touching this
+    /// file.
     cursor: Arc<Mutex<Option<(f64, f64)>>>,
     /// Inbound presence from other hosts, filled by
     /// [`ShellNetwork::tick`].
@@ -319,9 +332,35 @@ impl PeerPresence {
     }
 
     /// Record where this session's pointer is, in scene space.
+    ///
+    /// A caller with a literal point has one by definition, so this is
+    /// the `Some` half of [`Self::set_cursor_position`]. The frame loop
+    /// does not use it: it reads a pointer that may never have been
+    /// anywhere, and only that caller can tell.
     pub fn set_cursor(&self, x: f64, y: f64) {
+        self.set_cursor_position(Some((x, y)));
+    }
+
+    /// Record where this session's pointer is, or that it has never
+    /// been anywhere.
+    ///
+    /// This is what the frame loop calls, and taking an `Option` is the
+    /// point of it. Publishing is level-triggered, so whatever is here
+    /// is announced to the room on every pass; the compositor's input
+    /// state reports the origin for a pointer that has never moved, and
+    /// passing that through as a position put a cursor and a name pill
+    /// on every peer's screen for somebody who is not there. A session
+    /// that never moves a mouse — an agent participating in a document
+    /// — wore one permanently, which says the opposite of what such a
+    /// participant is: a pointer is an instrument for pointing at
+    /// something you are looking at.
+    ///
+    /// Suppressing the pointer suppresses only the pointer. Arrival,
+    /// the roster, and a caret in the document it edits all travel by
+    /// other routes and are untouched by this.
+    pub fn set_cursor_position(&self, at: Option<(f64, f64)>) {
         if let Ok(mut g) = self.cursor.lock() {
-            *g = Some((x, y));
+            *g = at;
         }
     }
 
@@ -1461,6 +1500,98 @@ mod two_sessions {
         // Now it moves, and the very next pass has to speak — a peer
         // already in the room is waiting to see this session arrive.
         guest.set_cursor(640.0, 610.0);
+        assert!(guest.publish_local_cursor(&room.to_string()));
+        over_the_wire(published(&mut guest_cmds), &host_net);
+        assert!(host.pump(&mut on_host));
+        assert_eq!(
+            on_host
+                .pointers
+                .get(&PresenceKey::Workspace {
+                    id: room.to_string()
+                })
+                .map(|p| p[0].1),
+            Some((640.0, 610.0)),
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The frame loop's own call, fed from the input state a session
+    /// that has never been pointed at actually holds.
+    ///
+    /// The test above proves the gate. This one proves the gate is
+    /// *reachable*, and that is the whole difference: `PeerPresence`
+    /// has always refused to publish a pointer it does not have, and a
+    /// name pill sat on peers' screens anyway, because the compositor
+    /// handed it one on every frame. `ClientInput::cursor()` answers
+    /// the origin for a pointer that has never moved, the frame loop
+    /// passed that straight through, and `Some((0.0, 0.0))` is a
+    /// position — so the session announced it, level-triggered, for as
+    /// long as it was running. A session that never moves a mouse at
+    /// all wore that cursor permanently.
+    ///
+    /// A test that sets the cursor by hand cannot see any of that,
+    /// which is why this one takes the position from `ClientInput`
+    /// exactly as `native.rs` does rather than writing `None` itself.
+    #[test]
+    fn the_frame_loop_publishes_nothing_for_a_pointer_that_has_never_moved() {
+        let guest_peer = peer_id(23);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "Claude")]);
+        let guest_tree = guest_joining(&mut host_tree, room);
+
+        let host_handle = host_tree.shared();
+        let guest_handle = guest_tree.shared();
+        let (host_net, _host_cmds) = shell_network_for_test(host_handle.clone(), 0xD0Cu64);
+        let (guest_net, mut guest_cmds) =
+            shell_network_for_test(guest_handle.clone(), handle_of(&guest_peer));
+        let host_net = Arc::new(host_net);
+        let guest_net = Arc::new(guest_net);
+
+        let dir = std::env::temp_dir().join(format!("qos-frameloop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let host_broker = broker(&dir, "h.sock");
+        let guest_broker = broker(&dir, "g.sock");
+        let host = PeerPresence::attach(&host_broker, Arc::clone(&host_net), Vec::new());
+        let guest = PeerPresence::attach(&guest_broker, Arc::clone(&guest_net), Vec::new());
+        host.set_rooms(rooms_of(&host_handle));
+        guest.set_rooms(rooms_of(&guest_handle));
+
+        // The compositor's input state for a session nothing has
+        // pointed at — an agent's, and anyone's for the seconds before
+        // they first touch a mouse.
+        let input = crate::compositor::client_input::ClientInput::default();
+        assert!(
+            input.pointer_position().is_none(),
+            "the fixture has to be a session that has not been pointed at, \
+             or this proves nothing",
+        );
+
+        // Exactly what the frame loop evaluates, every pass.
+        guest.set_cursor_position(input.pointer_position());
+        assert!(
+            !guest.publish_local_cursor(&room.to_string()),
+            "a session with no pointer has nothing to say about where one is",
+        );
+        assert!(
+            guest_cmds.try_recv().is_err(),
+            "and nothing may reach the wire for it",
+        );
+
+        let mut on_host = PresenceCtx::default();
+        assert!(!host.pump(&mut on_host), "so the host has nobody to paint");
+        assert!(
+            on_host
+                .pointers
+                .get(&PresenceKey::Workspace {
+                    id: room.to_string()
+                })
+                .is_none(),
+            "and no pill is drawn for a participant who never pointed at anything",
+        );
+
+        // The rule is about pointers, not about participation: once
+        // this session's pointer has been somewhere, it publishes.
+        guest.set_cursor_position(Some((640.0, 610.0)));
         assert!(guest.publish_local_cursor(&room.to_string()));
         over_the_wire(published(&mut guest_cmds), &host_net);
         assert!(host.pump(&mut on_host));
