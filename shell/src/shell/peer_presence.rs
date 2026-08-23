@@ -172,10 +172,60 @@ pub const CURSOR_KEEPALIVE: Duration = Duration::from_millis(1000);
 ///
 /// Long enough that nobody using their machine ever reaches it — every
 /// keystroke, wheel notch and twitch resets it, so it is only crossed
-/// by a session that has had *nothing* for fifteen seconds — and short
-/// enough that a position left behind at start-up is gone well before
-/// anybody could read a name off it.
+/// by a session that has had *nothing* for fifteen seconds.
+///
+/// Which is also why, on its own, it never fired for the case it was
+/// written for: a whole beat of a one-minute film is nowhere near
+/// fifteen seconds, so a pointer left on a **Join** button was still
+/// inside this horizon when the next beat photographed it. The horizon
+/// was not too long for a person; it was being asked a question it
+/// cannot answer. See [`POINTER_ACTUATED_IDLE`] for the one that can.
 pub const POINTER_IDLE: Duration = Duration::from_secs(15);
+
+/// The same question, asked of a pointer whose last word was a button
+/// press rather than a movement.
+///
+/// Fifteen seconds is the right answer for a pointer somebody *moved*
+/// and left: there is a cursor sitting at that spot on their screen and
+/// it stays there while they read. It is the wrong answer for a
+/// position a press left behind, and the difference is not a margin —
+/// it is a different fact. A press is an actuation, and an actuation
+/// routinely destroys the control it acted on, so the position is
+/// pointing at something that is no longer drawn.
+///
+/// That is the exact shape of the bug this exists for. Joining a room
+/// meant pressing **Join** on an invite card; the card was dismissed on
+/// the press; the position stayed; and because *any* input keeps the
+/// idle clock warm, a name pill sat on every peer's desktop at a
+/// control nobody could see, for the rest of the session.
+///
+/// Deliberately not a shorter [`POINTER_IDLE`]. A single horizon has to
+/// be simultaneously long enough for somebody who moved their mouse and
+/// is reading, and short enough to retire a press from the previous
+/// beat — and in the run this was measured on those two are three
+/// seconds apart, which is not a number, it is a coin toss on a loaded
+/// machine. Splitting them by what the pointer last did puts several
+/// seconds of margin on both sides instead.
+///
+/// Fail-open is preserved where it matters: a hand resting on a mouse
+/// emits motion at the least contact, so a person who clicked and
+/// stayed is back on the long horizon before this could elapse. Only a
+/// press with nothing behind it reaches it.
+///
+/// The value is set by what it has to beat rather than by taste. It is
+/// only half the delay: the sender falls silent after this, and the
+/// receiver then waits [`POINTER_STALE_AFTER`] before taking the cursor
+/// off the screen, so a press disappears about
+/// `POINTER_ACTUATED_IDLE + POINTER_STALE_AFTER` after it lands — a bit
+/// over five seconds. The soonest anything reads the room's cursors
+/// after a join is the following beat, which cannot start in less than
+/// the read-hold the card before it is given. Under that sum and the
+/// pill survives to be photographed, which is the failure this is for.
+///
+/// It is not a floor on a person's cursor. A pointer somebody moved
+/// keeps [`POINTER_IDLE`] regardless, and a press followed by any
+/// motion at all is a moved pointer again.
+pub const POINTER_ACTUATED_IDLE: Duration = Duration::from_millis(1200);
 
 /// How long a peer's pointer survives in the local store without being
 /// restated, before the overlay stops painting it.
@@ -1731,16 +1781,24 @@ mod two_sessions {
         // pressing it does either.
         let joined_at = Instant::now();
         let mut input = crate::compositor::client_input::ClientInput::default();
-        input.note_input_for_test(Some((1178.31, 582.0)), joined_at);
+        input.note_input_for_test(
+            Some((1156.0, 588.0)),
+            joined_at,
+            crate::compositor::client_input::PointerEvidence::Actuated,
+        );
         assert_eq!(
             input.pointer_position(),
-            Some((1178.31, 582.0)),
+            Some((1156.0, 588.0)),
             "the fixture has to be a session that really was pointed at, \
              or it proves nothing about the run that was photographed",
         );
 
         // The frame loop, on the frame the press landed.
-        guest.set_cursor_position(input.live_pointer(joined_at, POINTER_IDLE));
+        guest.set_cursor_position(input.live_pointer(
+            joined_at,
+            POINTER_IDLE,
+            POINTER_ACTUATED_IDLE,
+        ));
         assert!(
             guest.publish_local_cursor_at(&room.to_string(), joined_at),
             "somebody is pressing a button on this session, so it is pointing",
@@ -1752,14 +1810,39 @@ mod two_sessions {
         assert!(host.pump_at(&mut on_host, joined_at));
         assert_eq!(
             on_host.pointers.get(&ws).map(|p| p[0].1),
-            Some((1178.31, 582.0)),
+            Some((1156.0, 588.0)),
             "and the host paints it, which is correct at this instant",
         );
 
         // Nothing touches the session again. The card is dismissed, the
         // room gets on with itself, and the frame loop keeps running.
-        let later = joined_at + POINTER_IDLE + Duration::from_secs(1);
-        guest.set_cursor_position(input.live_pointer(later, POINTER_IDLE));
+        //
+        // The gap is the film's, and that is the whole reason this test
+        // is worth anything. It used to be `POINTER_IDLE + 1s` — derived
+        // from the very constant under test, so it passed for any value
+        // of that constant, including the value that was live when a
+        // shot came back with a pill reading `Claude` in it. A horizon
+        // cannot be checked against itself.
+        //
+        // Twelve seconds is what the run this was written against left
+        // between the beat that joins the room and the beat that reads
+        // its cursors; the film's own beat marks bound it at fourteen
+        // even when every step in between runs long. Both are inside
+        // `POINTER_IDLE`, asserted here so that a future attempt to fix
+        // this by shortening one horizon has to confront what it is
+        // trading away.
+        let gap_the_film_leaves = Duration::from_secs(12);
+        assert!(
+            gap_the_film_leaves < POINTER_IDLE,
+            "the single idle horizon does not elapse inside this film, so \
+             it was never what retires this pointer",
+        );
+        let later = joined_at + gap_the_film_leaves;
+        guest.set_cursor_position(input.live_pointer(
+            later,
+            POINTER_IDLE,
+            POINTER_ACTUATED_IDLE,
+        ));
         assert!(
             !guest.publish_local_cursor_at(&room.to_string(), later),
             "nobody is at this session, so it has nothing to say about \
@@ -1768,6 +1851,26 @@ mod two_sessions {
         assert!(
             guest_cmds.try_recv().is_err(),
             "and nothing may reach the wire for it",
+        );
+
+        // The half that must not go with it. A person who moved their
+        // mouse and is now reading their screen has a cursor genuinely
+        // sitting at that spot, and the same gap must leave it there --
+        // a missing cursor for somebody who is really present is a
+        // worse lie than a stale one is a blemish. Kept on its own
+        // input state so the relay above is not disturbed.
+        let mut moved_and_left = crate::compositor::client_input::ClientInput::default();
+        moved_and_left.note_input_for_test(
+            Some((640.0, 610.0)),
+            joined_at,
+            crate::compositor::client_input::PointerEvidence::Resting,
+        );
+        assert_eq!(
+            moved_and_left.live_pointer(later, POINTER_IDLE, POINTER_ACTUATED_IDLE),
+            Some((640.0, 610.0)),
+            "somebody who moved their pointer and left it keeps their \
+             cursor across exactly the gap that retired the press - which \
+             is what a single shorter horizon could not have done",
         );
 
         // The host stops hearing about it, and stops painting it.
@@ -2166,4 +2269,140 @@ mod two_sessions {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The frame itself, because a fix here has already passed its test
+    /// while a screenshot still had the pill in it.
+    ///
+    /// Renders the desktop through `FrameBuilder::paint` — the same call
+    /// the live compositor and `shots --mode offscreen` make — twice:
+    /// once on the frame a press lands, and once after the room has got
+    /// on with itself. The first must draw more than the second, and the
+    /// person must survive both.
+    ///
+    /// Real elapsed time rather than an injected clock, because the half
+    /// that was never exercised is the receiving side: `pump` reads
+    /// `Instant::now()`, and if the retirement it performs were not
+    /// wired into the paint path, every clock-controlled assertion above
+    /// would still pass with the pill on screen.
+    #[test]
+    fn the_frame_a_peer_is_painted_on_loses_the_pill_and_keeps_the_person() {
+        use crate::compositor::client_input::{ClientInput, PointerEvidence};
+
+        let guest_peer = peer_id(41);
+
+        // The host's own frame, built the way the compositor builds it,
+        // and governed through its own tree rather than one swapped in
+        // underneath it — the chrome hands its handle to the network,
+        // and a tree assigned wholesale afterwards is a different room
+        // from the one the relay is subscribed to.
+        let mut fb = crate::compositor::frame::FrameBuilder::new((1920, 1014));
+        let (room, host_handle, guest_tree) = {
+            let chrome = fb.chrome();
+            let mut tree = chrome.tree_mut();
+            let active = tree.active;
+            tree.adopt_ownerless_workspaces(&OWNER.to_string());
+            let room = tree.room_of(active).expect("the active workspace has a room");
+            assert!(
+                tree.name_peer(room, &OWNER.to_string(), &guest_peer, "Claude"),
+                "the room's administrator may name a peer in it",
+            );
+            let guest_tree = guest_joining(&mut tree, room);
+            (room, chrome.tree_handle(), guest_tree)
+        };
+        let guest_handle = guest_tree.shared();
+
+        let (host_net, _host_cmds) = shell_network_for_test(host_handle.clone(), 0xF8Au64);
+        let (guest_net, mut guest_cmds) =
+            shell_network_for_test(guest_handle.clone(), handle_of(&guest_peer));
+        let host_net = Arc::new(host_net);
+        let guest_net = Arc::new(guest_net);
+
+        let dir = std::env::temp_dir().join(format!("qos-frame-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let host_broker = broker(&dir, "fh.sock");
+        let guest_broker = broker(&dir, "fg.sock");
+        let guest = PeerPresence::attach(&guest_broker, Arc::clone(&guest_net), Vec::new());
+        guest.set_rooms(rooms_of(&guest_handle));
+
+        fb.set_peer_presence(PeerPresence::attach(
+            &host_broker,
+            Arc::clone(&host_net),
+            vec![room.to_string()],
+        ));
+
+        // The press: the pointer travels to Join and the button goes
+        // down. Nothing touches this session again.
+        let joined_at = Instant::now();
+        let mut input = ClientInput::default();
+        input.note_input_for_test(Some((1156.0, 588.0)), joined_at, PointerEvidence::Actuated);
+        guest.set_cursor_position(input.live_pointer(
+            joined_at,
+            POINTER_IDLE,
+            POINTER_ACTUATED_IDLE,
+        ));
+        assert!(
+            guest.publish_local_cursor_at(&room.to_string(), joined_at),
+            "somebody is pressing a button on this session",
+        );
+        over_the_wire(published(&mut guest_cmds), &host_net);
+        fb.pump_peer_presence();
+
+        let ws = PresenceKey::Workspace { id: room.to_string() };
+        assert_eq!(
+            fb.presence().pointers.get(&ws).map(|p| p.len()).unwrap_or(0),
+            1,
+            "the frame has a cursor to draw",
+        );
+        let with_pill = fb.paint().encoding().draw_tags.len();
+
+        // The room gets on with itself. The frame loop keeps running and
+        // keeps asking; the session keeps having nothing to say.
+        let mut published_again = 0usize;
+        let deadline = Instant::now() + POINTER_STALE_AFTER + Duration::from_millis(1500);
+        while Instant::now() < deadline {
+            let now = Instant::now();
+            guest.set_cursor_position(input.live_pointer(
+                now,
+                POINTER_IDLE,
+                POINTER_ACTUATED_IDLE,
+            ));
+            if guest.publish_local_cursor_at(&room.to_string(), now) {
+                published_again += 1;
+                over_the_wire(published(&mut guest_cmds), &host_net);
+            }
+            fb.pump_peer_presence();
+            std::thread::sleep(Duration::from_millis(120));
+        }
+        assert_eq!(
+            published_again, 0,
+            "the keepalive restated a position nobody has touched, which \
+             is the whole defect",
+        );
+
+        assert_eq!(
+            fb.presence().pointers.get(&ws).map(|p| p.len()).unwrap_or(0),
+            0,
+            "and the frame the compositor is about to paint has no cursor \
+             left in it",
+        );
+        let without_pill = fb.paint().encoding().draw_tags.len();
+        assert!(
+            without_pill < with_pill,
+            "the second frame has to be visibly smaller than the first, \
+             or nothing was drawn for the peer in either and this proves \
+             nothing: {with_pill} -> {without_pill}",
+        );
+
+        // The person did not leave, and the frame still says so.
+        assert!(
+            fb.presence()
+                .peers_on(&ws)
+                .iter()
+                .any(|u| u.0 == format!("peer@{}", handle_of(&guest_peer))),
+            "retiring a cursor is not evicting a participant",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }
