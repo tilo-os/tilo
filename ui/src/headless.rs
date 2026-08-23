@@ -1403,3 +1403,217 @@ mod a11y_driver_tests {
         assert!(activated.borrow().is_empty());
     }
 }
+
+/// Undo, driven through the headless harness — the path every scenario and
+/// every screenshot takes. A control that worked only under the live event
+/// loop would be dead in all of them.
+#[cfg(test)]
+mod undo_driver_tests {
+    use super::*;
+    use crate::state::State;
+
+    /// A minimal editor: appends every typed character to `body` and asks for
+    /// a commit boundary straight away.
+    ///
+    /// Deliberately a widget rather than a direct write to the document —
+    /// the edit has to travel the driver's own `send` → `needs_commit` →
+    /// commit path, or a test cannot see how that path attributes the action.
+    struct Typer {
+        rect: vello::kurbo::Rect,
+        pending: bool,
+    }
+
+    impl crate::widget::Widget for Typer {
+        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn crate::widget::Widget>,
+        ) -> NodeId {
+            let node = taffy
+                .new_leaf(Style {
+                    size: Size {
+                        width: Dimension::length(40.0),
+                        height: Dimension::length(20.0),
+                    },
+                    ..Default::default()
+                })
+                .unwrap();
+            node_map.insert(node, self as *mut dyn crate::widget::Widget);
+            node
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let l = taffy.layout(node).unwrap();
+            let x = origin.x + l.location.x as f64;
+            let y = origin.y + l.location.y as f64;
+            self.rect =
+                vello::kurbo::Rect::new(x, y, x + l.size.width as f64, y + l.size.height as f64);
+        }
+
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            doc: &mut automerge::AutoCommit,
+            _path: &automerge::ObjId,
+            handled: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _node: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+            use automerge::{transaction::Transactable, ReadDoc};
+            let WindowEvent::KeyboardInput { event: ke, .. } = event else {
+                return;
+            };
+            if ke.state != ElementState::Pressed {
+                return;
+            }
+            let winit::keyboard::Key::Character(c) = &ke.logical_key else {
+                return;
+            };
+            let obj = match doc.get(&automerge::ROOT, "body") {
+                Ok(Some((_, o))) => o,
+                _ => doc
+                    .put_object(&automerge::ROOT, "body", automerge::ObjType::Text)
+                    .unwrap(),
+            };
+            let len = doc.length(&obj);
+            doc.splice_text(&obj, len, 0, c.as_str()).unwrap();
+            self.pending = true;
+            *handled = true;
+        }
+
+        fn name(&self) -> &str {
+            "Typer"
+        }
+
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            self.rect
+        }
+
+        fn needs_commit(&self) -> bool {
+            self.pending
+        }
+
+        fn on_commit(&mut self) {
+            self.pending = false;
+        }
+    }
+
+    /// A typing surface plus history controls, and a driver over them.
+    fn undo_driver() -> Driver {
+        let row = crate::widget::Row::new()
+            .push(Box::new(Typer {
+                rect: vello::kurbo::Rect::ZERO,
+                pending: false,
+            }))
+            .push(Box::new(crate::widget::UndoButton::undo()))
+            .push(Box::new(crate::widget::UndoButton::redo()));
+        Driver::new(State::new(), Box::new(row), (400, 120))
+    }
+
+    /// One real edit, typed through the driver and committed by the driver —
+    /// so how the driver attributes an action is part of what is under test.
+    fn type_action(d: &mut Driver, text: &str) {
+        d.type_text(text);
+        assert!(
+            d.undo_status().can_undo,
+            "typing through the driver must produce an undoable action"
+        );
+    }
+
+    fn body(d: &mut Driver) -> String {
+        use automerge::ReadDoc;
+        let state = d.state_mut();
+        match state.doc.get(&automerge::ROOT, "body") {
+            Ok(Some((_, obj))) => state.doc.text(&obj).unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
+    /// Clicking the control in a scenario undoes, and reaches the same place
+    /// the harness's Ctrl+Z does. A control that only worked live would be
+    /// dead in every screenshot and every driven test.
+    #[test]
+    fn clicking_undo_and_pressing_ctrl_z_reach_the_same_undo() {
+        let mut via_click = undo_driver();
+        type_action(&mut via_click, "hello");
+        via_click
+            .click_named("undo_button")
+            .expect("the control is addressable once it can act");
+        assert_eq!(
+            body(&mut via_click),
+            "hell",
+            "the click undid the last action — one keystroke, one boundary"
+        );
+
+        let mut via_key = undo_driver();
+        type_action(&mut via_key, "hello");
+        via_key.set_modifiers(&["ctrl".to_string()]);
+        via_key.key("z");
+        assert_eq!(
+            body(&mut via_key),
+            body(&mut via_click),
+            "the shortcut and the control land in the same place"
+        );
+
+        // And redo, through the control.
+        via_click
+            .click_named("redo_button")
+            .expect("redo became available");
+        assert_eq!(body(&mut via_click), "hello");
+    }
+
+    /// The harness must publish the status, or a control renders dead in every
+    /// shot regardless of the history behind it.
+    #[test]
+    fn the_driver_publishes_the_status_to_the_widget_tree() {
+        let mut d = undo_driver();
+
+        // Nothing to undo: the control is disabled, so it is not in the focus
+        // order the harness tabs through.
+        assert!(
+            d.focus_order().is_empty(),
+            "an empty history leaves no focusable history control"
+        );
+
+        type_action(&mut d, "hello");
+        assert_eq!(
+            d.focus_order().len(),
+            1,
+            "the Undo control becomes focusable once there is an action"
+        );
+        let status = d.undo_status();
+        assert!(status.can_undo && !status.can_redo);
+        // Each keystroke is its own commit boundary here, so the newest
+        // action inserted one character.
+        assert_eq!(status.undo_summary.as_deref(), Some("+1 -0 chars"));
+    }
+
+    /// A scenario that clicks a control with nothing to undo must not silently
+    /// change the document.
+    #[test]
+    fn clicking_a_disabled_control_in_a_scenario_does_nothing() {
+        let mut d = undo_driver();
+        type_action(&mut d, "hello");
+        assert!(!d.undo_status().can_redo, "nothing has been undone");
+        // Redo is unavailable: nothing has been undone yet.
+        let _ = d.click_named("redo_button");
+        assert_eq!(body(&mut d), "hello", "the document is untouched");
+    }
+}
