@@ -863,6 +863,9 @@ pub struct VideoEditorApp {
     /// An in-progress timecode entry, or `None`. Typing a timecode and
     /// pressing Enter jumps the playhead there.
     goto_entry: Option<String>,
+    /// Set when the typed timecode could not be read, so the field can say so
+    /// instead of closing and going nowhere.
+    goto_notice: bool,
     thumbnails: crate::thumbnail::ThumbnailCache,
     /// Real audio waveform peaks per source, computed off-thread and cached.
     waveforms: crate::waveform::WaveformCache,
@@ -1004,6 +1007,7 @@ impl VideoEditorApp {
             has_focus: false,
             show_help: false,
             goto_entry: None,
+            goto_notice: false,
             thumbnails: crate::thumbnail::ThumbnailCache::new(),
             waveforms: crate::waveform::WaveformCache::new(),
             warm_waveforms_sync: false,
@@ -4427,6 +4431,12 @@ impl Widget for VideoEditorApp {
         if self.show_export {
             self.draw_export_modal(scene, transform, tr, theme, &r);
         }
+        if self.goto_entry.is_some() {
+            self.draw_goto(scene, transform, tr, theme, &r);
+        }
+        if self.show_help {
+            self.draw_help_sheet(scene, transform, tr, theme, &r);
+        }
         // The bin context menu floats above everything else.
         self.bin_menu.draw(scene, transform, tr, theme, presence);
     }
@@ -5522,6 +5532,151 @@ impl VideoEditorApp {
             .with_children(kids)
     }
 
+    // ---- keyboard navigation ---------------------------------------------
+
+    /// Move to the next / previous pane, clamping each pane's cursor to what it
+    /// currently holds so Tab never lands on a row that has since been deleted.
+    fn focus_pane(&mut self, back: bool) {
+        self.focus.pane = self.focus.pane.step(back);
+        self.clamp_pane_cursor();
+    }
+
+    fn clamp_pane_cursor(&mut self) {
+        let bin = self.a11y_bin_items().len();
+        self.focus.bin = self.focus.bin.min(bin.saturating_sub(1));
+        self.focus.transport = self.focus.transport.min(TRANSPORT_NAMES.len() - 1);
+        let rows = self.a11y_inspector_rows().len();
+        self.focus.inspector = self.focus.inspector.min(rows.saturating_sub(1));
+    }
+
+    /// Arrow navigation inside the focused pane. Returns whether the key was
+    /// consumed — the timeline deliberately consumes only Up/Down, leaving
+    /// Left/Right to nudge the selection and step the playhead as every
+    /// non-linear editor does.
+    fn nav_arrow(&mut self, up: bool, vertical: bool, state: &mut AutoCommit) -> bool {
+        let _ = state;
+        match self.focus.pane {
+            Pane::Bin if vertical => {
+                let n = self.a11y_bin_items().len();
+                if n == 0 {
+                    return false;
+                }
+                self.focus.bin = step_index(self.focus.bin, n, up);
+                self.selected_media = self.a11y_bin_items().get(self.focus.bin).copied();
+                true
+            }
+            Pane::Transport if !vertical => {
+                self.focus.transport = step_index(self.focus.transport, TRANSPORT_NAMES.len(), up);
+                true
+            }
+            Pane::Inspector if vertical => {
+                let n = self.a11y_inspector_rows().len();
+                if n == 0 {
+                    return false;
+                }
+                self.focus.inspector = step_index(self.focus.inspector, n, up);
+                true
+            }
+            // Up/Down walk the clips across tracks; Left/Right stay editing
+            // keys, which is what an editor's arrows mean.
+            Pane::Timeline if vertical => self.step_clip_across_tracks(up),
+            _ => false,
+        }
+    }
+
+    /// Move the selection to the clip on the previous / next track that sits
+    /// nearest the current one in time — the "same place, one track up" move,
+    /// not an arbitrary index walk.
+    fn step_clip_across_tracks(&mut self, up: bool) -> bool {
+        let Some(current) = self.selection.primary().and_then(|id| self.project.clip(id)).cloned()
+        else {
+            // Nothing selected: take the first clip on the first track that has one.
+            if let Some(first) = self.project.clips.first().map(|c| c.id) {
+                self.selection.select_only(first);
+                return true;
+            }
+            return false;
+        };
+        let Some(cur_track) = self.project.tracks.iter().position(|t| t.id == current.track) else {
+            return false;
+        };
+        let n = self.project.tracks.len();
+        // Walk outward until a track with any clip is found, so an empty track
+        // between two full ones is stepped over rather than swallowing the key.
+        for hop in 1..=n {
+            let idx = if up {
+                cur_track.checked_sub(hop)
+            } else {
+                (cur_track + hop < n).then_some(cur_track + hop)
+            };
+            let Some(idx) = idx else { break };
+            let tid = self.project.tracks[idx].id;
+            let clips = self.project.clips_on(tid);
+            if clips.is_empty() {
+                continue;
+            }
+            // Nearest by start time to where we already are.
+            let best = clips
+                .iter()
+                .min_by(|a, b| {
+                    (a.start - current.start)
+                        .abs()
+                        .total_cmp(&(b.start - current.start).abs())
+                })
+                .map(|c| c.id);
+            if let Some(best) = best {
+                self.selection.select_only(best);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Activate whatever the pane cursor is on — the keyboard's Enter, routed
+    /// through the same `perform_action_at` an assistive technology uses, so
+    /// the two can never do different things.
+    fn activate_focused(&mut self, state: &mut AutoCommit) -> bool {
+        use ui::a11y::{hash_key, Action};
+        let pane = self.focus.pane;
+        let rest: Vec<u64> = match pane {
+            Pane::Bin => match self.a11y_bin_items().get(self.focus.bin) {
+                Some(m) => vec![hash_key(m)],
+                None => return false,
+            },
+            Pane::Transport => vec![hash_key(&self.focus.transport)],
+            Pane::Timeline => {
+                let Some(clip) = self.selection.primary().and_then(|id| self.project.clip(id))
+                else {
+                    return false;
+                };
+                vec![hash_key(&clip.track), hash_key(&clip.id)]
+            }
+            Pane::Inspector => match self.a11y_inspector_rows().get(self.focus.inspector) {
+                Some(InspectorRow::Header(sec)) => vec![hash_key(&sec.label())],
+                Some(InspectorRow::Field(f)) => {
+                    // A control's path runs through its section.
+                    let rows = self.a11y_inspector_rows();
+                    let section = rows[..=self.focus.inspector]
+                        .iter()
+                        .rev()
+                        .find_map(|r| match r {
+                            InspectorRow::Header(sec) => Some(*sec),
+                            _ => None,
+                        });
+                    match section {
+                        Some(sec) => vec![hash_key(&sec.label()), hash_key(&f.label())],
+                        None => return false,
+                    }
+                }
+                None => return false,
+            },
+        };
+        let mut path = vec![pane.key()];
+        path.extend(rest);
+        let root = automerge::ROOT;
+        self.perform_action_at(&Action::Activate, &path, state, &root)
+    }
+
     /// The hover label for whatever icon-only control sits under `p`, or
     /// `None` over anything that already carries its own words.
     fn tooltip_at(&self, p: Point) -> Option<&'static str> {
@@ -5755,6 +5910,16 @@ impl VideoEditorApp {
     }
 }
 
+/// Step an index within `0..n`, clamping at both ends rather than wrapping:
+/// arrow navigation that wraps silently teleports a reader from the last row
+/// to the first, which reads as the list having restarted.
+fn step_index(i: usize, n: usize, up: bool) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    if up { i.saturating_sub(1) } else { (i + 1).min(n - 1) }
+}
+
 /// A focus stop in the inspector: a section header, or one control inside an
 /// open section.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -5789,6 +5954,44 @@ impl VideoEditorApp {
             }
             return false;
         }
+        // A timecode being typed owns the keyboard: every key either edits it,
+        // commits it, or abandons it. Nothing else fires meanwhile, so typing
+        // "1:30" cannot also split a clip and add a marker on the way.
+        if let Some(entry) = self.goto_entry.as_mut() {
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    self.goto_entry = None;
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    entry.pop();
+                }
+                Key::Named(NamedKey::Enter) => {
+                    let typed = entry.clone();
+                    match crate::timecode::parse(&typed, self.project.fps) {
+                        Some(t) => {
+                            self.playhead = t.clamp(0.0, self.project.duration().max(t));
+                            self.playing = false;
+                            self.shuttle = 0.0;
+                            self.chase_playhead = true;
+                            self.goto_entry = None;
+                        }
+                        // Keep the field open on a value that cannot be read,
+                        // rather than closing it and silently going nowhere.
+                        None => self.goto_notice = true,
+                    }
+                }
+                Key::Character(c) => {
+                    if entry.len() < 12
+                        && c.chars().all(|ch| ch.is_ascii_digit() || ch == ':')
+                    {
+                        entry.push_str(c);
+                        self.goto_notice = false;
+                    }
+                }
+                _ => {}
+            }
+            return true;
+        }
         match key {
             Key::Named(NamedKey::Space) => {
                 self.toggle_play();
@@ -5796,6 +5999,12 @@ impl VideoEditorApp {
             }
             // Arrows nudge every selected clip a frame (Shift = one second);
             // with nothing selected they step the playhead instead.
+            Key::Named(NamedKey::ArrowLeft) if self.focus.pane == Pane::Transport => {
+                self.nav_arrow(true, false, state)
+            }
+            Key::Named(NamedKey::ArrowRight) if self.focus.pane == Pane::Transport => {
+                self.nav_arrow(false, false, state)
+            }
             Key::Named(NamedKey::ArrowLeft) => {
                 let step = if shift { 1.0 } else { frame_step(self.project.fps) };
                 if !self.selection.is_empty() {
@@ -5937,17 +6146,41 @@ impl VideoEditorApp {
                 self.zoom_by(1.0 / 1.25);
                 true
             }
-            // Tab shows and hides the inspector. On a narrow window that is
-            // the only way back to a panel dismissed by Esc without hunting
-            // for the topbar toggle; on a wide one it reclaims the column.
+            // Tab moves between panes and the arrows move within the focused
+            // one. Tab used to toggle the inspector, but an editor whose only
+            // Tab stop is the whole application is one a keyboard-only user
+            // cannot navigate at all; the inspector toggle moved to Ctrl+I,
+            // which the shortcut sheet states.
             Key::Named(NamedKey::Tab) => {
+                self.focus_pane(shift);
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) => self.nav_arrow(true, true, state),
+            Key::Named(NamedKey::ArrowDown) => self.nav_arrow(false, true, state),
+            Key::Named(NamedKey::Enter) => self.activate_focused(state),
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("i") => {
                 self.toggle_inspector();
+                true
+            }
+            // The shortcut sheet. Fifteen shortcuts existed and none of them
+            // were written down anywhere in the product.
+            Key::Character(c) if c.as_str() == "?" || (shift && c.as_str() == "/") => {
+                self.show_help = !self.show_help;
+                true
+            }
+            // G opens a timecode field: type a time, press Enter, land there.
+            Key::Character(c) if c.eq_ignore_ascii_case("g") && !ctrl => {
+                self.goto_entry = Some(String::new());
                 true
             }
             Key::Named(NamedKey::Escape) => {
                 // Esc dismisses an open overlay bin first, then an open
                 // overlay inspector, then clears the selection — matching the
                 // flap kernel's Esc-to-close.
+                if self.show_help {
+                    self.show_help = false;
+                    return true;
+                }
                 if self.bin_layout() == SplitLayout::Overlay
                     && self.bin_flap.is_open(SplitLayout::Overlay)
                 {
@@ -8455,6 +8688,97 @@ impl VideoEditorApp {
         }
     }
 
+    /// The shortcut sheet.
+    ///
+    /// Fifteen shortcuts existed and none of them were written down anywhere in
+    /// the product, so the only way to learn one was to be told. The sheet is
+    /// also how a reader user learns the editor has shortcuts at all, which is
+    /// why it is an accessibility affordance rather than a convenience.
+    fn draw_help_sheet(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, _r: &Regions) {
+        let c = &theme.tokens.colors;
+        fill_rect(scene, tf, with_alpha(c.surfaces.scrim, MODAL_SCRIM_ALPHA), self.rect);
+        // Two columns on anything wide enough, one on a narrow window, so the
+        // sheet is readable rather than clipped at the phone-ish sizes the rest
+        // of the editor already adapts to.
+        let two_col = self.rect.width() >= 720.0;
+        let w = if two_col { 640.0 } else { (self.rect.width() - 48.0).max(280.0) };
+        let h = if two_col { 420.0 } else { (self.rect.height() - 48.0).max(320.0) };
+        let card = Rect::from_center_size(self.rect.center(), (w, h));
+        fill_rrect(scene, tf, c.surfaces.raised, card, 14.0);
+        stroke_rrect(scene, tf, c.border_standard, card, 14.0, 1.0);
+        text_w(scene, tr, tf, "Keyboard shortcuts", 18.0, c.text_primary, card.x0 + 24.0, card.y0 + 20.0, TextWeight::Bold);
+        text(scene, tr, tf, "Esc or ? to close", 12.0, c.text_dim, card.x0 + 24.0, card.y0 + 44.0);
+
+        let col_w = if two_col { (w - 64.0) / 2.0 } else { w - 48.0 };
+        let mut x = card.x0 + 24.0;
+        let mut y = card.y0 + 76.0;
+        let bottom = card.y1 - 16.0;
+        for (gi, (group, rows)) in SHORTCUTS.iter().enumerate() {
+            if two_col && gi == 2 {
+                x = card.x0 + 24.0 + col_w + 16.0;
+                y = card.y0 + 76.0;
+            }
+            text_w(scene, tr, tf, group, 11.0, c.text_dim, x, y, TextWeight::Bold);
+            y += 20.0;
+            for (combo, what) in rows.iter() {
+                if y > bottom {
+                    break;
+                }
+                text_w(scene, tr, tf, combo, 12.0, c.accent[6], x, y, TextWeight::Bold);
+                text(scene, tr, tf, what, 12.0, c.text_primary, x + 110.0_f64.min(col_w * 0.45), y);
+                y += 19.0;
+            }
+            y += 10.0;
+        }
+    }
+
+    /// The go-to-timecode field: type a time, press Enter, land there.
+    ///
+    /// Typing a timecode is table stakes in an editor and there was no way to
+    /// do it — the playhead could only be dragged or stepped. A value that
+    /// cannot be read keeps the field open and says so, rather than closing and
+    /// silently going nowhere.
+    fn draw_goto(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+        let Some(entry) = self.goto_entry.as_ref() else { return };
+        let c = &theme.tokens.colors;
+        let w = 260.0_f64.min(self.rect.width() - 32.0);
+        let card = Rect::from_center_size(
+            Point::new(self.rect.center().x, r.transport.center().y),
+            (w, 76.0),
+        );
+        fill_rrect(scene, tf, c.surfaces.raised, card, 12.0);
+        stroke_rrect(
+            scene,
+            tf,
+            if self.goto_notice { c.semantic.danger } else { c.accent[6] },
+            card,
+            12.0,
+            1.5,
+        );
+        text(scene, tr, tf, "Go to timecode", 11.0, c.text_dim, card.x0 + 16.0, card.y0 + 12.0);
+        let shown = if entry.is_empty() { "0:00" } else { entry.as_str() };
+        let col = if entry.is_empty() { c.text_dim } else { c.text_primary };
+        text_w(scene, tr, tf, shown, 20.0, col, card.x0 + 16.0, card.y0 + 32.0, TextWeight::Bold);
+        // A caret, so an empty field reads as "type here" rather than as a
+        // placeholder someone forgot to remove.
+        let (tw, _) = tr.measure(shown, 20.0, None);
+        if !entry.is_empty() {
+            fill_rect(
+                scene,
+                tf,
+                c.accent[6],
+                Rect::new(card.x0 + 18.0 + tw as f64, card.y0 + 32.0, card.x0 + 20.0 + tw as f64, card.y0 + 54.0),
+            );
+        }
+        let hint = if self.goto_notice {
+            "Not a timecode — try 1:30"
+        } else {
+            "Enter to jump, Esc to cancel"
+        };
+        let hc = if self.goto_notice { c.semantic.danger } else { c.text_dim };
+        text(scene, tr, tf, hint, 10.0, hc, card.x0 + 16.0, card.y1 - 16.0);
+    }
+
     fn draw_export_modal(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
         let c = &theme.tokens.colors;
         // Backdrop. `surfaces.overlay` is the opaque deep-menu surface — using
@@ -9293,6 +9617,234 @@ mod tests {
             .unwrap();
         let stale = ui::accesskit::NodeId(real.0 ^ 0x9e37_79b9);
         assert!(d.perform_a11y_action(stale, &ui::a11y::Action::Activate).is_err());
+    }
+
+    // ---- Keyboard navigation ---------------------------------------------
+
+    fn nav_key(app: &mut VideoEditorApp, doc: &mut AutoCommit, key: Key, shift: bool) -> bool {
+        let mut st = winit::keyboard::ModifiersState::empty();
+        if shift {
+            st |= winit::keyboard::ModifiersState::SHIFT;
+        }
+        let mods = winit::event::Modifiers::from(st);
+        let r = app.regions();
+        app.handle_key(&key, &mods, doc, &r)
+    }
+
+    fn ch(c: &str) -> Key {
+        Key::Character(c.into())
+    }
+
+    #[test]
+    fn tab_walks_the_panes_and_shift_tab_walks_back() {
+        // The editor used to be a single Tab stop, so a keyboard-only user
+        // could reach nothing inside it.
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let mut app = app_with_sample();
+        assert_eq!(app.focus.pane, Pane::Timeline);
+        let seen: Vec<Pane> = (0..4)
+            .map(|_| {
+                nav_key(&mut app, &mut doc, Key::Named(NamedKey::Tab), false);
+                app.focus.pane
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![Pane::Inspector, Pane::Bin, Pane::Transport, Pane::Timeline],
+            "Tab visits every pane and returns"
+        );
+        // Forward from Timeline is Inspector, so backward is Transport.
+        nav_key(&mut app, &mut doc, Key::Named(NamedKey::Tab), true);
+        assert_eq!(app.focus.pane, Pane::Transport, "Shift+Tab goes back");
+    }
+
+    #[test]
+    fn arrows_move_within_the_focused_pane() {
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let mut app = app_with_sample();
+        app.focus.pane = Pane::Bin;
+        assert_eq!(app.focus.bin, 0);
+        nav_key(&mut app, &mut doc, Key::Named(NamedKey::ArrowDown), false);
+        assert_eq!(app.focus.bin, 1, "Down moves to the next bin row");
+        nav_key(&mut app, &mut doc, Key::Named(NamedKey::ArrowUp), false);
+        assert_eq!(app.focus.bin, 0);
+        // Clamped, not wrapped: wrapping teleports a reader to the far end and
+        // reads as the list having restarted.
+        nav_key(&mut app, &mut doc, Key::Named(NamedKey::ArrowUp), false);
+        assert_eq!(app.focus.bin, 0, "the first row is the first row");
+
+        app.focus.pane = Pane::Transport;
+        nav_key(&mut app, &mut doc, Key::Named(NamedKey::ArrowRight), false);
+        assert_eq!(app.focus.transport, 1, "Left/Right walk the transport");
+    }
+
+    #[test]
+    fn the_timeline_keeps_its_editing_arrows() {
+        // Left/Right nudge the selection in every non-linear editor; taking
+        // them for navigation would break the tool to make it navigable.
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let mut app = app_with_sample();
+        app.focus.pane = Pane::Timeline;
+        let id = app.selected().expect("a clip is selected");
+        let before = app.project.clip(id).unwrap().start;
+        nav_key(&mut app, &mut doc, Key::Named(NamedKey::ArrowRight), false);
+        let after = app.project.clip(id).unwrap().start;
+        assert!(after > before, "Right still nudges the selection on the timeline");
+    }
+
+    #[test]
+    fn up_and_down_walk_clips_across_tracks() {
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let mut app = app_with_sample();
+        app.focus.pane = Pane::Timeline;
+        // Start on the topmost track that actually holds clips, so "down" has
+        // somewhere to go — the assertion must test the walk, not the fixture.
+        let populated: Vec<TrackId> = app
+            .project
+            .tracks
+            .iter()
+            .filter(|t| !app.project.clips_on(t.id).is_empty())
+            .map(|t| t.id)
+            .collect();
+        assert!(populated.len() >= 2, "the sample project spans several tracks");
+        let first = app.project.clips_on(populated[0])[0].id;
+        app.selection.select_only(first);
+
+        nav_key(&mut app, &mut doc, Key::Named(NamedKey::ArrowDown), false);
+        let next_track = app
+            .selected()
+            .and_then(|id| app.project.clip(id))
+            .map(|c| c.track)
+            .unwrap();
+        assert_ne!(next_track, populated[0], "Down moves to a clip on another track");
+
+        nav_key(&mut app, &mut doc, Key::Named(NamedKey::ArrowUp), false);
+        let back = app
+            .selected()
+            .and_then(|id| app.project.clip(id))
+            .map(|c| c.track)
+            .unwrap();
+        assert_eq!(back, populated[0], "and Up comes back");
+    }
+
+    #[test]
+    fn enter_activates_whatever_the_cursor_is_on() {
+        // And does it through the same routed path an assistive technology
+        // uses, so the keyboard and the reader can never do different things.
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let mut app = app_with_sample();
+        app.focus.pane = Pane::Transport;
+        app.focus.transport = 2; // Play / pause
+        assert!(!app.playing);
+        nav_key(&mut app, &mut doc, Key::Named(NamedKey::Enter), false);
+        assert!(app.playing, "Enter on the play button starts playback");
+    }
+
+    #[test]
+    fn the_shortcut_sheet_can_be_opened_and_dismissed() {
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let mut app = app_with_sample();
+        assert!(!app.show_help);
+        nav_key(&mut app, &mut doc, ch("?"), false);
+        assert!(app.show_help, "? opens the sheet");
+        nav_key(&mut app, &mut doc, Key::Named(NamedKey::Escape), false);
+        assert!(!app.show_help, "Esc closes it");
+    }
+
+    #[test]
+    fn the_sheet_lists_every_shortcut_the_editor_answers_to() {
+        // A sheet that quietly omits a binding is worse than none: it reads as
+        // the complete list.
+        let flat: Vec<&str> = SHORTCUTS.iter().flat_map(|(_, rows)| rows.iter().map(|(k, _)| *k)).collect();
+        for expected in [
+            "Space", "J / K / L", "I / O", "S", "M", "T", ", / .", "Z", "+ / -", "B",
+            "Ctrl+I", "Ctrl+D", "Ctrl+A", "Ctrl+Z", "Tab", "G", "?",
+        ] {
+            assert!(
+                flat.iter().any(|k| *k == expected),
+                "the sheet must list {expected}; it lists {flat:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn typing_a_timecode_jumps_the_playhead_there() {
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let mut app = app_with_sample();
+        nav_key(&mut app, &mut doc, ch("g"), false);
+        assert!(app.goto_entry.is_some(), "G opens the field");
+        for c in ["1", ":", "3", "0"] {
+            nav_key(&mut app, &mut doc, ch(c), false);
+        }
+        assert_eq!(app.goto_entry.as_deref(), Some("1:30"));
+        nav_key(&mut app, &mut doc, Key::Named(NamedKey::Enter), false);
+        assert!((app.playhead - 90.0).abs() < 1e-6, "landed at {}", app.playhead);
+        assert!(app.goto_entry.is_none(), "the field closes once it has jumped");
+    }
+
+    #[test]
+    fn an_unreadable_timecode_says_so_instead_of_going_nowhere() {
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let mut app = app_with_sample();
+        let before = app.playhead;
+        nav_key(&mut app, &mut doc, ch("g"), false);
+        nav_key(&mut app, &mut doc, ch(":"), false);
+        nav_key(&mut app, &mut doc, Key::Named(NamedKey::Enter), false);
+        assert!(app.goto_entry.is_some(), "the field stays open");
+        assert!(app.goto_notice, "and says the value could not be read");
+        assert_eq!(app.playhead, before, "the playhead did not move");
+    }
+
+    #[test]
+    fn a_timecode_being_typed_owns_the_keyboard() {
+        // Otherwise typing "1:30" would also split a clip and drop a marker on
+        // the way past.
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let mut app = app_with_sample();
+        let clips = app.project.clips.len();
+        let markers = app.project.markers.len();
+        nav_key(&mut app, &mut doc, ch("g"), false);
+        for c in ["s", "m", "t"] {
+            nav_key(&mut app, &mut doc, ch(c), false);
+        }
+        assert_eq!(app.project.clips.len(), clips, "no clip was split");
+        assert_eq!(app.project.markers.len(), markers, "no marker was dropped");
+        assert_eq!(app.goto_entry.as_deref(), Some(""), "and no letters entered the field");
+    }
+
+    #[test]
+    fn every_icon_only_control_has_a_hover_label() {
+        // An icon with no words is a control only someone who already knows it
+        // can use.
+        let app = app_with_sample();
+        let r = app.regions();
+        for (_, rect) in app.transport_buttons(&r) {
+            assert!(
+                app.tooltip_at(rect.center()).is_some(),
+                "a transport button must name itself on hover"
+            );
+        }
+        for (name, rect) in [
+            ("export", r.export_btn),
+            ("import", r.import_btn),
+            ("split", r.split_btn),
+        ] {
+            assert!(
+                app.tooltip_at(rect.center()).is_some(),
+                "the {name} button must name itself on hover"
+            );
+        }
+        // And nothing claims a label over empty canvas.
+        assert_eq!(app.tooltip_at(r.lanes.center()), None);
     }
 
     #[test]
