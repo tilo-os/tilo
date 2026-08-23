@@ -345,10 +345,10 @@ const HANDOVER_MS: u64 = 180;
 /// A little larger than the toolkit's default so it holds its own under
 /// a title on a full-window card, and small enough that it stays an
 /// indicator rather than becoming the subject of the screen.
-const OPENING_SPINNER_PX: f64 = 28.0;
+const OPENING_SPINNER_PX: f64 = 36.0;
 
 /// Gap between the app's name and the indicator under it.
-const OPENING_SPINNER_GAP: f64 = 22.0;
+const OPENING_SPINNER_GAP: f64 = 24.0;
 
 impl TileHost {
     pub fn new(content: TileContent) -> Self {
