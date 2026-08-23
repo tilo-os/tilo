@@ -1205,3 +1205,378 @@ fn the_exported_audio_sits_where_the_timeline_puts_it() {
          instant is, more than the priming of either accounts for",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Chroma key and shape mask in the encoded file.
+//
+// Both are compositing features, so what has to reach the file is not a
+// colour shift but the *layer underneath* becoming visible where the top one
+// was cut. Every test here stacks two clips of a generated plate — the lower
+// one inverted, so the two sides are unmistakable — and reads the decoded
+// export back.
+//
+// The plate is generated rather than bundled because the demo footage has no
+// green screen in it, and a key asserted against footage that was never keyed
+// proves nothing. It is verified before it is used, for the same reason the
+// audio fixture is: a fixture that turns out to be the wrong colour makes
+// every assertion below a statement about nothing.
+// ---------------------------------------------------------------------------
+
+/// The plate colour, matching the editor's own "Green" key preset.
+const PLATE_RGB: [u8; 3] = [15, 184, 51];
+/// The subject standing on it: a horizontal orange band across the middle
+/// third, nothing like the plate in hue.
+const SUBJECT_RGB: [u8; 3] = [235, 130, 30];
+const PLATE_W: u32 = 320;
+const PLATE_H: u32 = 180;
+const PLATE_SECS: f64 = 1.2;
+const PLATE_FPS: u32 = 30;
+
+/// Rows `[0.4, 0.6)` of the frame carry the subject; the rest is plate.
+fn plate_pixel(v: f64) -> [u8; 3] {
+    if (0.4..0.6).contains(&v) { SUBJECT_RGB } else { PLATE_RGB }
+}
+
+/// Encode the green-screen plate to `path`.
+///
+/// Written frame by frame from [`plate_pixel`], so the file's contents are
+/// decided here and not by whatever a test-pattern generator felt like
+/// producing. The encoder is the one this machine actually resolves to, so
+/// the fixture builds wherever the export itself runs.
+fn write_plate(path: &std::path::Path) {
+    gst::init().expect("gstreamer init");
+    let (enc, parse, mux) = encode_chain(Container::Mp4);
+    let bitrate = enc.spec.bitrate_arg(6_000_000);
+    let element = enc.spec.element;
+    let parse = parse.map(|p| format!("{p} ! ")).unwrap_or_default();
+    let desc = format!(
+        "appsrc name=plate is-live=false format=time \
+         caps=video/x-raw,format=RGBA,width={PLATE_W},height={PLATE_H},framerate={PLATE_FPS}/1 \
+         ! videoconvert ! {element} {bitrate} ! {parse}{mux} ! filesink location={}",
+        path.display()
+    );
+    let pipeline = gst::parse::launch(&desc)
+        .unwrap_or_else(|e| panic!("build the plate pipeline ({desc}): {e}"))
+        .downcast::<gst::Pipeline>()
+        .expect("a pipeline");
+    let src = pipeline
+        .by_name("plate")
+        .expect("appsrc")
+        .downcast::<gst_app::AppSrc>()
+        .expect("an appsrc");
+    src.set_format(gst::Format::Time);
+    pipeline.set_state(gst::State::Playing).expect("start the plate pipeline");
+
+    let mut rgba = vec![255u8; (PLATE_W * PLATE_H * 4) as usize];
+    for y in 0..PLATE_H {
+        let v = (y as f64 + 0.5) / PLATE_H as f64;
+        let c = plate_pixel(v);
+        for x in 0..PLATE_W {
+            let i = ((y * PLATE_W + x) * 4) as usize;
+            rgba[i..i + 3].copy_from_slice(&c);
+        }
+    }
+    let frames = (PLATE_SECS * PLATE_FPS as f64).round() as u64;
+    let ns = 1_000_000_000 / PLATE_FPS as u64;
+    for i in 0..frames {
+        let mut buffer = gst::Buffer::with_size(rgba.len()).expect("allocate");
+        {
+            let b = buffer.get_mut().expect("fresh buffer is uniquely owned");
+            b.set_pts(gst::ClockTime::from_nseconds(ns * i));
+            b.set_duration(gst::ClockTime::from_nseconds(ns));
+            b.map_writable().expect("map").copy_from_slice(&rgba);
+        }
+        src.push_buffer(buffer)
+            .unwrap_or_else(|e| panic!("push plate frame {i}: {e:?}"));
+    }
+    src.end_of_stream().expect("end the plate stream");
+    let bus = pipeline.bus().expect("bus");
+    for msg in bus.iter_timed(gst::ClockTime::from_seconds(60)) {
+        match msg.view() {
+            gst::MessageView::Eos(_) => break,
+            gst::MessageView::Error(e) => {
+                let _ = pipeline.set_state(gst::State::Null);
+                panic!("plate encode failed: {e:?}");
+            }
+            _ => {}
+        }
+    }
+    let _ = pipeline.set_state(gst::State::Null);
+}
+
+/// The plate on disk, generated once per test process and **verified**.
+///
+/// The verification is the point: if the generated file is not actually a
+/// green plate with an orange band on it, every key assertion below becomes
+/// a statement about nothing.
+fn green_plate() -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("qos-ve-plate-{}.mp4", std::process::id()));
+    if !path.exists() {
+        write_plate(&path);
+    }
+    let bytes = std::fs::metadata(&path).expect("the plate exists").len();
+    assert!(bytes > 512, "the plate is a real encoded file, got {bytes} bytes");
+    let frame = decode_frame(&path, 0.4);
+    let at = |u: f64, v: f64| {
+        let x = ((u * GRID_W as f64) as usize).min(GRID_W - 1);
+        let y = ((v * GRID_H as f64) as usize).min(GRID_H - 1);
+        frame[y * GRID_W + x]
+    };
+    // The plate reads as green above and below the band, and as the subject
+    // across it — before the editor has touched it.
+    for v in [0.15, 0.85] {
+        let q = at(0.5, v);
+        assert!(
+            q[1] > 120 && q[1] as i32 > q[0] as i32 + 60 && q[1] as i32 > q[2] as i32 + 60,
+            "the generated plate is green at v={v}, got {q:?} — a fixture that is not a \
+             green screen makes every key assertion below meaningless",
+        );
+    }
+    let band = at(0.5, 0.5);
+    assert!(
+        band[0] > 150 && band[0] as i32 > band[2] as i32 + 60,
+        "and carries the orange subject across its middle, got {band:?}",
+    );
+    path
+}
+
+/// A two-layer project over the generated plate: V1 inverted (so it reads
+/// magenta wherever the plate is green) and V2 the plate itself. Returns the
+/// project and the id of the upper clip.
+fn plate_stack(name: &str) -> (Project, uuid::Uuid) {
+    use video_editor::model::{ClipEffect, EffectKind};
+
+    let plate = green_plate();
+    let mut p = Project::new(name);
+    p.width = PLATE_W;
+    p.height = PLATE_H;
+    let media = |p: &mut Project| {
+        let id = uuid::Uuid::new_v4();
+        p.media.push(MediaItem {
+            id,
+            name: "plate".into(),
+            kind: MediaKind::Video,
+            duration: PLATE_SECS,
+            width: PLATE_W,
+            height: PLATE_H,
+            fps: PLATE_FPS as f64,
+            palette: 3,
+            path: plate.to_string_lossy().into_owned(),
+            hydration: video_editor::media::Hydration::Local,
+            ..Default::default()
+        });
+        id
+    };
+    let under_m = media(&mut p);
+    let over_m = media(&mut p);
+    let track = |p: &mut Project, index: u32| {
+        let id = uuid::Uuid::new_v4();
+        p.tracks.push(Track {
+            id,
+            name: format!("V{index}"),
+            kind: TrackKind::Video,
+            index,
+            ..Default::default()
+        });
+        id
+    };
+    let v1 = track(&mut p, 1);
+    let v2 = track(&mut p, 2);
+    let under = p.add_clip(v1, under_m, 0.0).expect("media exists");
+    let over = p.add_clip(v2, over_m, 0.0).expect("media exists");
+    for id in [under, over] {
+        let c = p.clip_mut(id).expect("clip");
+        c.in_point = 0.1;
+        c.out_point = 1.0;
+    }
+    // Inverting the lower layer is what makes "the layer beneath showed
+    // through" a visible fact rather than an inference: green inverts to
+    // magenta, which no part of the upper layer is.
+    p.clip_mut(under).expect("clip").effects =
+        vec![ClipEffect { kind: EffectKind::Invert, amount: 1.0 }];
+    (p, over)
+}
+
+/// Sample the decoded grid at a fractional position.
+fn sample(px: &[[u8; 3]], u: f64, v: f64) -> [u8; 3] {
+    let x = ((u * GRID_W as f64) as usize).min(GRID_W - 1);
+    let y = ((v * GRID_H as f64) as usize).min(GRID_H - 1);
+    px[y * GRID_W + x]
+}
+
+fn is_greenish(q: [u8; 3]) -> bool {
+    q[1] > 90 && q[1] as i32 > q[0] as i32 + 40 && q[1] as i32 > q[2] as i32 + 40
+}
+/// Inverted green: strong red and blue, weak green.
+fn is_magentaish(q: [u8; 3]) -> bool {
+    q[0] as i32 > q[1] as i32 + 40 && q[2] as i32 > q[1] as i32 + 40
+}
+
+/// The key has to reach the encoded file as *compositing*: where the plate
+/// was, the layer underneath is now visible, and the subject standing on the
+/// plate is still there.
+///
+/// Read against the same stack exported with the key off, so what the
+/// difference proves is the key and not the fixture.
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn a_chroma_key_reaches_the_encoded_file_as_compositing() {
+    use video_editor::model::ChromaKey;
+
+    let pid = std::process::id();
+    let (plain_p, _) = plate_stack(&format!("ve key off {pid}"));
+    let plain = export(&plain_p);
+
+    let (mut keyed_p, over) = plate_stack(&format!("ve key on {pid}"));
+    keyed_p.clip_mut(over).expect("clip").key = ChromaKey {
+        enabled: true,
+        color: [
+            PLATE_RGB[0] as f64 / 255.0,
+            PLATE_RGB[1] as f64 / 255.0,
+            PLATE_RGB[2] as f64 / 255.0,
+        ],
+        tolerance: 0.25,
+        softness: 0.1,
+        spill: 0.0,
+    };
+    let keyed = export(&keyed_p);
+
+    let a = decode_frame(&plain, 0.4);
+    let b = decode_frame(&keyed, 0.4);
+    // Well clear of the band, and off the frame edges where the encoder's
+    // chroma subsampling smears neighbouring regions together.
+    for v in [0.2, 0.82] {
+        let off = sample(&a, 0.5, v);
+        let on = sample(&b, 0.5, v);
+        println!("v={v}: key off {off:?}  key on {on:?}");
+        assert!(
+            is_greenish(off),
+            "unkeyed, the upper layer covers the frame at v={v}: {off:?}",
+        );
+        assert!(
+            is_magentaish(on),
+            "keyed, the ENCODED file shows the layer beneath at v={v}: {on:?}",
+        );
+    }
+    // The subject survives — a key that ate it would pass every check above
+    // and still be useless.
+    let subject = sample(&b, 0.5, 0.5);
+    assert!(
+        subject[0] > 130 && subject[0] as i32 > subject[2] as i32 + 40,
+        "the subject standing on the plate is still in the encoded file: {subject:?}",
+    );
+
+    tidy(&plain);
+    tidy(&keyed);
+}
+
+/// A mask has to reach the encoded file as geometry: inside the shape the
+/// upper layer, outside it the layer beneath.
+///
+/// Read against the same stack exported with no mask, so a frame that simply
+/// failed to composite cannot pass.
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn a_mask_reaches_the_encoded_file_as_geometry() {
+    use video_editor::model::{Mask, MaskShape};
+
+    let pid = std::process::id();
+    let (plain_p, _) = plate_stack(&format!("ve mask off {pid}"));
+    let plain = export(&plain_p);
+
+    let (mut masked_p, over) = plate_stack(&format!("ve mask on {pid}"));
+    masked_p.clip_mut(over).expect("clip").mask = Mask {
+        shape: MaskShape::Ellipse,
+        w: 0.45,
+        h: 0.45,
+        feather: 0.05,
+        ..Mask::default()
+    };
+    let masked = export(&masked_p);
+
+    let a = decode_frame(&plain, 0.4);
+    let b = decode_frame(&masked, 0.4);
+    // Sampled off the middle band so what is being cut is the plate, not the
+    // subject. Inside the disc but above the band; outside it near the edge.
+    // v=0.35 is two thirds of the way out along the disc's vertical radius
+    // — clear of both the feathered rim and the subject band below it.
+    let inside = (0.5, 0.35);
+    let outside = (0.06, 0.12);
+    println!(
+        "unmasked edge {:?}   masked inside {:?}   masked edge {:?}",
+        sample(&a, outside.0, outside.1),
+        sample(&b, inside.0, inside.1),
+        sample(&b, outside.0, outside.1),
+    );
+    assert!(
+        is_greenish(sample(&a, outside.0, outside.1)),
+        "unmasked, the upper layer reaches the frame edge: {:?}",
+        sample(&a, outside.0, outside.1),
+    );
+    assert!(
+        is_greenish(sample(&b, inside.0, inside.1)),
+        "masked, the upper layer is still inside the disc: {:?}",
+        sample(&b, inside.0, inside.1),
+    );
+    assert!(
+        is_magentaish(sample(&b, outside.0, outside.1)),
+        "and the layer beneath shows outside it in the ENCODED file: {:?}",
+        sample(&b, outside.0, outside.1),
+    );
+
+    tidy(&plain);
+    tidy(&masked);
+}
+
+/// A keyframed mask has to be in a different place in each encoded second.
+/// A mask baked once at the head of the export would pass the geometry test
+/// above and still be motionless in the file.
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn a_keyframed_mask_moves_across_the_encoded_file() {
+    use video_editor::model::{Mask, MaskShape};
+
+    let (mut p, over) = plate_stack(&format!("ve mask move {}", std::process::id()));
+    {
+        let c = p.clip_mut(over).expect("clip");
+        c.mask = Mask {
+            shape: MaskShape::Ellipse,
+            w: 0.4,
+            h: 0.9,
+            feather: 0.05,
+            ..Mask::default()
+        };
+        c.set_key_at(Param::MaskX, 0.0, -0.3, Interp::Linear);
+        c.set_key_at(Param::MaskX, 0.85, 0.3, Interp::Linear);
+    }
+    let path = export(&p);
+    let early = decode_frame(&path, 0.05);
+    let late = decode_frame(&path, 0.8);
+    // Left of centre at the head, right of centre by the tail. Sampled above
+    // the subject band, so what moves is the mask and not the picture.
+    let (left, right) = ((0.22, 0.2), (0.78, 0.2));
+    println!(
+        "early L={:?} R={:?}   late L={:?} R={:?}",
+        sample(&early, left.0, left.1),
+        sample(&early, right.0, right.1),
+        sample(&late, left.0, left.1),
+        sample(&late, right.0, right.1),
+    );
+    assert!(
+        is_greenish(sample(&early, left.0, left.1)),
+        "the disc starts on the left of the encoded frame",
+    );
+    assert!(
+        is_magentaish(sample(&early, right.0, right.1)),
+        "and has not reached the right yet",
+    );
+    assert!(
+        is_magentaish(sample(&late, left.0, left.1)),
+        "by the end it has left the left",
+    );
+    assert!(
+        is_greenish(sample(&late, right.0, right.1)),
+        "and arrived on the right",
+    );
+    tidy(&path);
+}
