@@ -240,8 +240,15 @@ impl Action {
                 }
                 // And mint the token, so naming somebody and inviting
                 // them are one gesture rather than two that can be done
-                // in the wrong order.
-                st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::IssueInvite);
+                // in the wrong order. Minted *for* them, so the card
+                // that comes up says whose invite it is holding rather
+                // than making the caller remember.
+                st.push_peer_sync_request(
+                    crate::shell::overlay_host::PeerSyncAction::IssueInviteFor {
+                        name,
+                        copy: false,
+                    },
+                );
                 Ok(())
             },
         },
