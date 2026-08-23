@@ -8,7 +8,7 @@ use crate::schema::*;
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Bound;
@@ -215,8 +215,97 @@ pub fn seeded_id_gen(doc: &AutoCommit, c: &Containers) -> IdGen {
     IdGen::with_counter(actor, next)
 }
 
-/// Write schema scalars + create the container maps under `root`.
+/// The actor that writes every document's schema.
+///
+/// Nobody edits as this actor — it is not a replica. It exists so that the ops
+/// creating the container maps are *the same ops* on every machine: same actor,
+/// same counters, therefore the same `ObjId`s and the same change hash.
+///
+/// # Why the schema cannot be minted per replica
+///
+/// `put_object(root, "blocks", Map)` creates a **new object** and points the key
+/// at it. Two replicas that each run that op have written the same key twice,
+/// concurrently, with no ancestor between them — so after a merge `root.blocks`
+/// holds two candidate objects and automerge keeps exactly one: the op with the
+/// greater `(counter, actor)`. The counters are equal (both replicas ran the
+/// identical sequence), so the tie falls to a comparison of two actor ids. The
+/// losing replica's entire block tree is still in the change graph and is
+/// unreachable from the root, which reads exactly like it was never written.
+///
+/// That is not a hypothetical ordering hazard, it is a coin flip run on every
+/// merge, and the person whose paragraphs lost is not told. Deriving the schema
+/// from one shared genesis removes the conflict rather than resolving it: both
+/// replicas end up holding the *same change*, automerge deduplicates it, and
+/// `root.blocks` has one candidate no matter who imported first, how many
+/// participants there are, or how the actor ids happen to sort.
+const GENESIS_ACTOR: &[u8] = b"qdoc.schema.genesis.v1";
+
+/// The canonical schema change, saved once per process.
+///
+/// Deterministic by construction: a fixed actor replaying a fixed op sequence
+/// over an empty document. Every machine that builds this produces byte-identical
+/// output, which is the whole point — the bytes are only a carrier for a change
+/// hash that has to agree across the room.
+fn genesis() -> &'static [u8] {
+    static GENESIS: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    GENESIS.get_or_init(|| {
+        let mut doc = AutoCommit::new();
+        doc.set_actor(automerge::ActorId::from(GENESIS_ACTOR));
+        write_schema(&mut doc, &ROOT);
+        doc.commit();
+        doc.save()
+    })
+}
+
+/// Give `doc` the canonical schema under `root`, and resolve the containers.
+///
+/// At the document root the schema is *adopted* from the shared [`genesis`]
+/// rather than minted, so two replicas that each open the same file are editing
+/// one document and not two that merge lossily (see [`GENESIS_ACTOR`]).
+///
+/// Idempotent: a document that already carries the schema is returned as it
+/// stands. Calling this twice must not mint a second set of containers — that is
+/// the same conflict, arrived at from one process instead of two.
+///
+/// A **nested** root (the FS layer embeds a document inside a namespace node)
+/// cannot use the genesis: its parent object id is minted by whichever replica
+/// created the node, so there is no path a pre-baked change could name. Those
+/// documents are created once and then synced, rather than created twice and
+/// merged, so the schema is written in place.
 pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
+    if let Ok(existing) = open(doc, root) {
+        return existing;
+    }
+    if root == &ROOT {
+        // `load_incremental` applies the genesis change into this document's
+        // graph. It has no dependencies (it is a root change), so it applies to
+        // any document, and a replica that already holds it is unaffected — the
+        // hash is the same one, and automerge keeps one copy.
+        if doc.load_incremental(genesis()).is_ok() {
+            if let Ok(adopted) = open(doc, root) {
+                return adopted;
+            }
+        }
+        // Adopting the genesis is not supposed to be able to fail. If it somehow
+        // does, minting a private schema here would reintroduce exactly the
+        // silent-loss conflict this exists to prevent, so say so rather than
+        // quietly falling back to it.
+        tracing::error!(
+            "qdoc: could not adopt the shared schema genesis; this document's \
+             containers are private to this replica and merging it with another \
+             replica's copy will drop one side's content"
+        );
+    }
+    write_schema(doc, root)
+}
+
+/// Write schema scalars + create the container maps under `root`, in place.
+///
+/// The op sequence here is the definition of the schema, and [`genesis`] replays
+/// it under a fixed actor to produce the shared change. Adding, removing or
+/// reordering an op changes the genesis hash, which is a schema migration for
+/// every document in the world — not a local edit.
+fn write_schema(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     doc.put(root, KEY_SCHEMA, SCHEMA_ID).unwrap();
     doc.put(root, KEY_SCHEMA_VERSION, SCHEMA_VERSION).unwrap();
     let blocks = doc.put_object(root, KEY_BLOCKS, ObjType::Map).unwrap();
@@ -224,26 +313,70 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     let preserved = doc.put_object(root, KEY_PRESERVED, ObjType::Map).unwrap();
     let meta = doc.put_object(root, KEY_META, ObjType::Map).unwrap();
     let blobs = doc.put_object(root, KEY_BLOBS, ObjType::Map).unwrap();
-    // The notes container is created eagerly (like blocks/styles) so two replicas
-    // that concurrently add a footnote share ONE container object and converge —
-    // a lazily-created map would be a per-replica object, and automerge's
-    // concurrent-object-creation conflict would drop one replica's notes. Documents
-    // authored before the notes map existed still open (it reads as `None` and is
-    // created lazily on first write — see `notes_container`).
     let notes = doc.put_object(root, KEY_NOTES, ObjType::Map).unwrap();
-    // The comments container is created eagerly for the same convergence reason as
-    // `notes`: two replicas concurrently adding a comment must share ONE container
-    // object. Documents authored before it existed still open (`opt_map_at` reads it
-    // as `None`, and `comments_container` creates it lazily on first write).
     let comments = doc.put_object(root, KEY_COMMENTS, ObjType::Map).unwrap();
-    // The changes container is created eagerly for the same convergence reason as
-    // `comments`: two replicas concurrently tracking a change must share ONE container
-    // object. Documents authored before it existed still open (`opt_map_at` reads it as
-    // `None`, and `changes_container` creates it lazily on first write).
     let changes = doc.put_object(root, KEY_CHANGES, ObjType::Map).unwrap();
-    // Header/footer regions are created lazily on first write (a fresh document has
-    // neither), so they stay `None` here.
-    Containers { root: root.clone(), blocks, styles, preserved, meta, blobs: Some(blobs), header: None, footer: None, notes: Some(notes), comments: Some(comments), changes: Some(changes) }
+    // Header and footer are created here with the rest rather than on first
+    // write. A lazily-created container is a per-replica object, so two people
+    // who each add a page header concurrently would create two `root.header`
+    // maps and lose one of them — the same defect the genesis exists to prevent,
+    // reached by a different route. Both codecs decide whether a document *has* a
+    // header from whether the region materializes any blocks, not from whether
+    // the container exists, so an empty one exports nothing.
+    let header = doc.put_object(root, KEY_HEADER, ObjType::Map).unwrap();
+    let footer = doc.put_object(root, KEY_FOOTER, ObjType::Map).unwrap();
+    Containers {
+        root: root.clone(),
+        blocks,
+        styles,
+        preserved,
+        meta,
+        blobs: Some(blobs),
+        header: Some(header),
+        footer: Some(footer),
+        notes: Some(notes),
+        comments: Some(comments),
+        changes: Some(changes),
+    }
+}
+
+/// Container keys that a document is expected to reach exactly one object
+/// through. Used by [`shadowed_containers`].
+const CONTAINER_KEYS: &[&str] = &[
+    KEY_BLOCKS,
+    KEY_STYLES,
+    KEY_PRESERVED,
+    KEY_META,
+    KEY_BLOBS,
+    KEY_HEADER,
+    KEY_FOOTER,
+    KEY_NOTES,
+    KEY_COMMENTS,
+    KEY_CHANGES,
+];
+
+/// Container keys under `root` that resolve to **more than one** object.
+///
+/// A non-empty result means content is present in the change graph that no read
+/// of this document will ever return: automerge picked one of the candidates and
+/// everything under the others is unreachable. It is the signature of two
+/// replicas having minted their own schema — a document written before the
+/// genesis existed, meeting one written after it.
+///
+/// Reads are cheap (one `get_all` per key), and this is the check that keeps the
+/// loss from being silent: a caller that merges foreign documents can refuse, or
+/// tell the person whose paragraph is about to disappear, instead of showing
+/// them a document that quietly lost half of itself.
+pub fn shadowed_containers(doc: &AutoCommit, root: &ObjId) -> Vec<String> {
+    CONTAINER_KEYS
+        .iter()
+        .filter(|key| {
+            doc.get_all(root, **key)
+                .map(|candidates| candidates.len() > 1)
+                .unwrap_or(false)
+        })
+        .map(|key| (*key).to_string())
+        .collect()
 }
 
 /// Resolve existing containers under `root`. The blobs map is optional so
@@ -2269,18 +2402,83 @@ mod region_tests {
     use automerge::{AutoCommit, ROOT};
 
     #[test]
-    fn header_footer_are_backward_compatible_and_lazily_created() {
+    fn header_footer_are_backward_compatible_and_shared() {
         let mut doc = AutoCommit::new();
         let c = init(&mut doc, &ROOT);
-        // A fresh doc has no header/footer maps and reads as empty.
-        assert!(c.header.is_none() && c.footer.is_none(), "regions absent on a fresh doc");
+        // The regions come with the schema rather than being minted on first
+        // write. A lazily-created container is a per-replica object, so two
+        // people who each add a page header would create two `root.header` maps
+        // and a merge would keep one — see `GENESIS_ACTOR`. Present-and-empty is
+        // indistinguishable from absent to every reader, and both codecs decide
+        // a document "has" a header from whether the region materializes blocks.
+        assert!(c.header.is_some() && c.footer.is_some(), "regions come with the schema");
         assert!(region_blocks_in_order(&doc, &c, Region::Header).is_empty());
         assert!(materialize_region(&doc, &c, Region::Footer).is_empty());
-        // A doc saved with no regions must still open.
         let bytes = doc.save();
         let reloaded = AutoCommit::load(&bytes).unwrap();
         let c2 = open(&reloaded, &ROOT).unwrap();
-        assert!(c2.header.is_none() && c2.footer.is_none(), "regions still absent after reload");
+        assert!(region_blocks_in_order(&reloaded, &c2, Region::Header).is_empty());
+        assert!(materialize_region(&reloaded, &c2, Region::Footer).is_empty());
+
+        // A document authored before the regions existed has no such keys at
+        // all. It must still open, read as empty, and take a header afterwards.
+        let mut old = AutoCommit::new();
+        let _ = init(&mut old, &ROOT);
+        old.delete(&ROOT, KEY_HEADER).unwrap();
+        old.delete(&ROOT, KEY_FOOTER).unwrap();
+        old.commit();
+        let old_bytes = old.save();
+        let mut reopened = AutoCommit::load(&old_bytes).unwrap();
+        let oc = open(&reopened, &ROOT).unwrap();
+        assert!(oc.header.is_none() && oc.footer.is_none(), "an older document has no regions");
+        assert!(region_blocks_in_order(&reopened, &oc, Region::Header).is_empty());
+        let mut ids = IdGen::new(reopened.get_actor().to_hex_string());
+        {
+            let mut dm = DocMut { doc: &mut reopened, c: &oc, ids: &mut ids };
+            let b = dm.insert_block_in(Region::Header, None, "paragraph");
+            dm.splice_text_in(Region::Header, &b, 0, 0, "migrated");
+        }
+        let migrated = open(&reopened, &ROOT).unwrap();
+        assert_eq!(
+            materialize_region(&reopened, &migrated, Region::Header)[0].text,
+            "migrated",
+            "an older document still takes a header"
+        );
+    }
+
+    /// The reason the regions are not lazily created: two replicas each adding a
+    /// page header must end up with both headers, not with whichever one won a
+    /// comparison of their actor ids.
+    #[test]
+    fn concurrent_headers_on_two_replicas_both_survive() {
+        for _ in 0..32 {
+            let mut a = AutoCommit::new();
+            let ca = init(&mut a, &ROOT);
+            let mut ids_a = IdGen::new(a.get_actor().to_hex_string());
+            let mut b = AutoCommit::new();
+            let cb = init(&mut b, &ROOT);
+            let mut ids_b = IdGen::new(b.get_actor().to_hex_string());
+            {
+                let mut dm = DocMut { doc: &mut a, c: &ca, ids: &mut ids_a };
+                let x = dm.insert_block_in(Region::Header, None, "paragraph");
+                dm.splice_text_in(Region::Header, &x, 0, 0, "left");
+            }
+            {
+                let mut dm = DocMut { doc: &mut b, c: &cb, ids: &mut ids_b };
+                let y = dm.insert_block_in(Region::Header, None, "paragraph");
+                dm.splice_text_in(Region::Header, &y, 0, 0, "right");
+            }
+            a.merge(&mut b).unwrap();
+            let merged = open(&a, &ROOT).unwrap();
+            let texts: Vec<String> = materialize_region(&a, &merged, Region::Header)
+                .into_iter()
+                .map(|b| b.text)
+                .collect();
+            assert!(
+                texts.iter().any(|t| t == "left") && texts.iter().any(|t| t == "right"),
+                "both replicas' headers survive the merge; got {texts:?}"
+            );
+        }
     }
 
     #[test]
