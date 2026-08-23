@@ -158,16 +158,21 @@ pub enum InvokeError {
     /// The key was good; the arguments were not. Nothing was built, so nothing
     /// could have been applied.
     Arguments(ArgError),
+    /// The address and the arguments were both good, but the action could not
+    /// be carried out — its type is not registered here, or applying it failed.
+    Refused(String),
 }
 
 impl InvokeError {
     /// Stable machine-readable code. A caller fixes "I addressed something that
-    /// isn't there" and "I addressed the right thing wrongly" differently, so
-    /// they must not arrive as the same failure.
+    /// isn't there", "I addressed the right thing wrongly", and "it was right
+    /// but it did not work" differently, so they must not arrive as one
+    /// failure.
     pub fn code(&self) -> &'static str {
         match self {
             InvokeError::UnknownAction { .. } => "unknown_action",
             InvokeError::Arguments(_) => "invalid_arguments",
+            InvokeError::Refused(_) => "action_failed",
         }
     }
 }
@@ -179,6 +184,7 @@ impl std::fmt::Display for InvokeError {
                 write!(f, "no action addressed by `{key}` is currently exported")
             }
             InvokeError::Arguments(e) => write!(f, "{e}"),
+            InvokeError::Refused(why) => write!(f, "{why}"),
         }
     }
 }
