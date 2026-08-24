@@ -95,6 +95,7 @@ fn the_power_glyph_clears_its_own_tile() {
         let glyph = crate::shell::overlay_host::power_tile_glyph(&theme);
         let body = crate::shell::overlay_host::power_tile_body(&theme);
         let ratio = contrast_ratio(glyph, body);
+        println!("power-glyph  {name:<14} {ratio:.2}:1");
         assert!(
             ratio >= NON_TEXT_MIN_CONTRAST,
             "{name}: the Power glyph reads at {ratio:.2}:1 on its own tile, \
@@ -118,6 +119,7 @@ fn the_battery_gauge_clears_the_tray_pill_in_every_state() {
             );
             let body = crate::shell::topbar_chrome::tray_pill_body(&theme, critical);
             let ratio = contrast_ratio(hue, body);
+            println!("battery-{state:<9} {name:<14} {ratio:.2}:1");
             assert!(
                 ratio >= NON_TEXT_MIN_CONTRAST,
                 "{name}: the {state} battery gauge reads at {ratio:.2}:1 on the \
@@ -166,6 +168,7 @@ fn an_empty_window_names_itself_legibly() {
         let tiers = colors.on_card();
         for (tier, ink) in [("headline", tiers.ink), ("detail", tiers.ink_dim)] {
             let ratio = contrast_ratio(ink, card);
+            println!("empty-window-{tier:<8} {name:<14} {ratio:.2}:1");
             assert!(
                 ratio >= 4.5,
                 "{name}: the empty-window {tier} reads at {ratio:.2}:1 on the \
@@ -196,6 +199,8 @@ fn the_bar_pills_have_a_body_on_the_bar() {
         );
         let body = ui::tokens::colors::over(bar, tier.fill, tier.fill.components[3]);
         let moved = (relative_luminance(body) - relative_luminance(bar)).abs();
+        let ratio = contrast_ratio(body, bar);
+        println!("bar-pill     {name:<14} {ratio:.3}:1 (luma moved {moved:.4})");
         assert!(
             moved > 0.0,
             "{name}: an active bar pill composites to the bar's own colour — \
@@ -230,6 +235,10 @@ fn a_faint_surface_tier_is_visible_on_its_own_theme() {
                 let composited = ui::tokens::colors::over(ground, wash, alpha);
                 let moved =
                     (relative_luminance(composited) - relative_luminance(ground)).abs();
+                println!(
+                    "{tier:<17} on {ground_name:<7} {name:<14} {:.3}:1",
+                    contrast_ratio(composited, ground),
+                );
                 assert!(
                     moved > 0.0,
                     "{name}: {tier} over {ground_name} composites to the ground \
