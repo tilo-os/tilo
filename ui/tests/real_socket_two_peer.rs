@@ -131,7 +131,10 @@ fn real_socket_fans_out_incremental_and_presence() {
                 // them like `Hello`.
                 CollabRequest::SignedSyncIncremental { .. }
                 | CollabRequest::FetchScrollback { .. }
-                | CollabRequest::WantBlob { .. } => continue,
+                | CollabRequest::WantBlob { .. }
+                // Addressed to a session with a desktop. This relay is neither.
+                | CollabRequest::OpenApp { .. }
+                | CollabRequest::CarriedContent { .. } => continue,
             };
 
             let bytes = match serde_json::to_vec(&event) {

@@ -202,6 +202,11 @@ pub fn pump(relay: &mut MemoryRelay) {
             CollabRequest::Hello { .. } => {
                 // no fan-out in tests
             }
+            // Both are addressed to the session hosting the connection rather
+            // than to an audience, and this relay hosts nothing: there is no
+            // desktop here to open an application in, and no windows for a
+            // crossing between two of them to be drawn between.
+            CollabRequest::OpenApp { .. } | CollabRequest::CarriedContent { .. } => {}
         }
     }
 }
