@@ -83,6 +83,23 @@ fn type_one(doc: &mut AutoCommit, block: &str, ch: &str) -> Vec<u8> {
     doc.save_after(&before)
 }
 
+/// The capability an inviter issues an agent for the app it was invited to.
+///
+/// The agent holds no role, so this grant is the whole of what it may do: with
+/// none of these it enumerates nothing and performs nothing.
+fn granted(name: &str) -> ui::permissions::PermissionContext {
+    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    PermissionContext::from_capabilities(
+        Actor::agent(name),
+        vec![CapOverride::grant(
+            Subject::agent(name),
+            Scope::App("word-processor".to_string()),
+            Verb::Write,
+        )
+        .with_id("invited")],
+    )
+}
+
 #[test]
 fn a_person_typing_and_the_agent_working_both_land() {
     let dir = tempfile::tempdir().unwrap();
@@ -127,6 +144,8 @@ fn a_person_typing_and_the_agent_working_both_land() {
         model: false,
         model_timeout: Duration::from_secs(1),
         await_document: Duration::ZERO,
+        directory: None,
+        permissions: granted("Scribe"),
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");

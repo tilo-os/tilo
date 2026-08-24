@@ -56,6 +56,49 @@ fn demo_blocks() -> Vec<Block> {
     ]
 }
 
+/// What the room exports, surveyed off the word processor's own tree for the
+/// document this test hands the model. Real addresses, so an answer naming one
+/// passes the same gate a live run's would.
+fn surveyed(blocks: &[qos_agent::plan::Block]) -> Vec<qos_agent::Offer> {
+    let mut doc = automerge::AutoCommit::new();
+    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    {
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
+        let mut after: Option<String> = None;
+        for b in blocks {
+            let id = dm.insert_block(after.as_deref(), &b.kind);
+            dm.splice_text(&id, 0, 0, &b.text);
+            after = Some(id);
+        }
+    }
+    doc.commit();
+    let wp = &qos_agent::surface::CONTRACTS[0];
+    qos_agent::surface::offers(
+        &[(wp, &doc)],
+        &qos_agent::View::default(),
+        &granted("Claude"),
+    )
+}
+
+/// The capability an inviter issues an agent for the app it was invited to.
+fn granted(name: &str) -> ui::permissions::PermissionContext {
+    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    PermissionContext::from_capabilities(
+        Actor::agent(name),
+        vec![CapOverride::grant(
+            Subject::agent(name),
+            Scope::App("word-processor".to_string()),
+            Verb::Write,
+        )
+        .with_id("invited")],
+    )
+}
+
 fn chooser() -> Chooser {
     assert!(
         qos_agent::model::api_key().is_some(),
@@ -72,7 +115,8 @@ fn chooser() -> Chooser {
 #[ignore = "calls the live Anthropic API; needs a key and the network"]
 fn the_model_drafts_a_run_sheet_that_a_split_on_separators_could_not() {
     let blocks = demo_blocks();
-    let d = chooser().choose("make this a run sheet", &blocks);
+    let offers = surveyed(&blocks);
+    let d = chooser().choose("make this a run sheet", &blocks, &offers);
 
     let Route::Model { why } = &d.route else {
         panic!(
@@ -144,7 +188,9 @@ fn the_model_still_refuses_what_the_app_cannot_do() {
     // catalogue answers must come back as a refusal, not as whichever
     // entry is closest. A model that always picks something is not
     // choosing, and the agent would carry out the wrong thing confidently.
-    let d = chooser().choose("email this to the venue and book a taxi", &demo_blocks());
+    let blocks = demo_blocks();
+    let offers = surveyed(&blocks);
+    let d = chooser().choose("email this to the venue and book a taxi", &blocks, &offers);
     assert!(
         matches!(d.instruction, Instruction::Unknown(_)),
         "expected a refusal, got {:?} ({})",
