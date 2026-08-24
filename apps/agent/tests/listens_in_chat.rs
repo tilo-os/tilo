@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 use automerge::AutoCommit;
 use chat::doc::{ChatDoc, NewMessage};
 use chat::mention::Mention;
-use chat::model::{ChannelKind, Presence};
+use chat::model::Presence;
 use qos_agent::{Config, Session};
 use qos_reference::ResourceRef;
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
@@ -214,7 +214,10 @@ fn agent(json: &PathBuf, room: Uuid) -> Session {
         record: None,
         name: AGENT_NAME.into(),
         pace: Duration::from_millis(0),
-        once: true,
+        // Whole beats, not "stop at the first thing done": a request that
+        // borrows its subject only becomes answerable once an earlier one has
+        // landed, and stopping early would make that case untestable.
+        once: false,
         model: false,
         model_timeout: Duration::from_millis(1),
         await_document: Duration::ZERO,
@@ -269,23 +272,16 @@ impl Room {
         });
 
         let mut session = agent(&json, room);
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let mut acted = false;
-        while Instant::now() < deadline && !acted {
-            acted = session.run_until(Instant::now() + Duration::from_millis(200)).expect("run");
+        // The budget is generous because the peer's snapshot has to cross the
+        // broker before there is anything to read at all.
+        for _ in 0..120 {
+            let _ = session
+                .run_until(Instant::now() + Duration::from_millis(60))
+                .expect("the agent's turn");
             drain(&mut chat, &mut chat_doc);
             if let Some((m, d)) = wp.as_mut() {
                 drain(m, d);
             }
-        }
-        // A last sweep: the reply may be in flight when the loop ends.
-        for _ in 0..25 {
-            let _ = session.run_until(Instant::now() + Duration::from_millis(40));
-            drain(&mut chat, &mut chat_doc);
-            if let Some((m, d)) = wp.as_mut() {
-                drain(m, d);
-            }
-            std::thread::sleep(Duration::from_millis(20));
         }
         Self { chat, chat_doc, session }
     }
@@ -433,15 +429,18 @@ fn an_instruction_written_in_the_document_is_still_carried_out() {
     );
 }
 
-/// 5a. Near its last action, an unstated subject is the one it just worked on.
+/// 5a. Near its last action, an unstated subject is the one it just worked on
+///     — and with nothing recent, the same words are refused instead.
+///
+/// The draft has two headings, so "align centre" fits two sections and is
+/// ambiguous on its own. That ambiguity is what gives this teeth: a pass means
+/// the subject was **borrowed from the agent's own last action**, not guessed,
+/// because guessing is precisely what the second half proves it will not do.
 #[test]
 fn a_request_near_the_agents_last_action_borrows_its_subject() {
     let doc = draft();
-    let hs = headings(&doc);
-    let first = format!("word-processor.section:{}", hs[0]);
+    let first = format!("word-processor.section:{}", headings(&doc)[0]);
     let mut chat = conversation();
-    // Two asks. The first names its target outright; the second names none at
-    // all, and is only answerable because the first just happened.
     mention(
         &mut chat,
         "m_first",
@@ -449,23 +448,28 @@ fn a_request_near_the_agents_last_action_borrows_its_subject() {
         now(),
         Some(ResourceRef::whole("word_processor.section", &first, "Run sheet")),
     );
-    mention(&mut chat, "m_again", "@Claude centre it", now(), None);
+    // Names no target at all. Answerable only because the first just landed.
+    mention(&mut chat, "m_again", "@Claude align centre", now(), None);
 
     let room = Room::open("recent", chat, Some(doc));
-    // `once` stops after the first, so run the second ask through a fresh
-    // beat with the first already answered — which is the real sequence.
+    let follow_up = room
+        .reply_to("m_again")
+        .expect("the follow-up was answered at all");
+    assert!(
+        !follow_up.contains("can't") && !follow_up.contains("could mean"),
+        "with the first ask fresh, the follow-up means the section just worked \
+         on rather than either of two. Got: {follow_up:?}"
+    );
     assert_eq!(
         room.acted_on().as_deref(),
         Some(first.as_str()),
-        "the stated subject is acted on first"
+        "and it landed on that resource"
     );
 
-    // Now the follow-up, with the agent's last action fresh.
-    let mut chat2 = conversation();
-    mention(&mut chat2, "m_again", "@Claude centre it", now(), None);
-    let mut probe = Room::open("recent2", chat2, Some(draft()));
-    // Without a recent action there is nothing to borrow, so this must be a
-    // refusal — the far side of the same boundary, proved on the same words.
+    // The far side: the same words, with nothing recent to borrow from.
+    let mut alone = conversation();
+    mention(&mut alone, "m_again", "@Claude align centre", now(), None);
+    let probe = Room::open("recent-far", alone, Some(draft()));
     assert_eq!(
         probe.acted_on(),
         None,
@@ -474,9 +478,8 @@ fn a_request_near_the_agents_last_action_borrows_its_subject() {
     let said = probe.reply_to("m_again").expect("a refusal, not silence");
     assert!(
         said.contains("can't") || said.contains("could mean"),
-        "the refusal has to say something: {said:?}"
+        "and it has to say so: {said:?}"
     );
-    let _ = &mut probe;
 }
 
 /// 5b. The boundary itself, on the pure decision, both sides of it.
