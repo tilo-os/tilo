@@ -207,6 +207,17 @@ pub fn over(ground: Color, wash: Color, alpha: f32) -> Color {
 /// visible. WCAG 2.1 non-text contrast.
 pub const NON_TEXT_MIN_CONTRAST: f64 = 3.0;
 
+/// Minimum contrast a control's *label* must clear against the control's own
+/// fill. WCAG 2.1 AA for body text — the same number as the card floor, named
+/// separately because the ground is different: a button's label is measured
+/// against the accent it is painted on, not against the surface behind it.
+///
+/// A label on a filled control is the one piece of text whose ground is not a
+/// surface the palette authored for text. Accent and semantic fills are picked
+/// to carry meaning at a glance, and a fill bright enough to do that is a fill
+/// white text disappears into.
+pub const ON_FILL_MIN_CONTRAST: f64 = 4.5;
+
 /// How much accent an [`AccentChip`]'s body carries over its ground.
 ///
 /// Low on purpose: the chip is a fact about a row, not a second selection,
@@ -596,6 +607,59 @@ impl Colors {
     /// a hand-picked shade instead.
     pub fn ink_on(&self, ground: Color, tone: Color, min_ratio: f64) -> Color {
         self.step_out_until_legible(tone, ground, min_ratio)
+    }
+
+    /// One `tone`, made legible on *every* ground in `grounds` at once.
+    ///
+    /// [`Self::ink_on`] answers for a single ground. A control asks this
+    /// instead, because a control is not one ground: a button's fill moves
+    /// between rest, hover and press, and resolving the label separately
+    /// against each lets it cross the floor somewhere in the middle of that
+    /// range and flip polarity under the pointer. A label that turns from
+    /// white to near-black on hover reads as a fault however well each
+    /// individual frame measures, so the ink is chosen once, against the
+    /// ground it reads worst on, and then held for the whole set.
+    ///
+    /// Returns `tone` untouched when it already clears everywhere, so a
+    /// palette that authored a legible fill keeps the colour it chose.
+    pub fn ink_on_any(&self, grounds: &[Color], tone: Color, min_ratio: f64) -> Color {
+        use crate::a11y::contrast_ratio;
+        let worst = |c: Color| {
+            grounds
+                .iter()
+                .map(|g| contrast_ratio(c, *g))
+                .fold(f64::INFINITY, f64::min)
+        };
+        if grounds.is_empty() || worst(tone) >= min_ratio {
+            return tone;
+        }
+        // Polarity is decided against the hardest ground rather than
+        // per-ground: the states of one control sit within a shade of each
+        // other, so the ground that defeats the tone is the one that
+        // decides which way there is room to walk.
+        let hardest = grounds
+            .iter()
+            .copied()
+            .min_by(|a, b| {
+                contrast_ratio(tone, *a)
+                    .partial_cmp(&contrast_ratio(tone, *b))
+                    .unwrap_or(core::cmp::Ordering::Equal)
+            })
+            .expect("non-empty");
+        let black = Color::from_rgb8(0, 0, 0);
+        let white = Color::from_rgb8(255, 255, 255);
+        let target = if contrast_ratio(black, hardest) >= contrast_ratio(white, hardest) {
+            black
+        } else {
+            white
+        };
+        for step in 1..=16 {
+            let candidate = mix8(tone, target, step as f32 / 16.0);
+            if worst(candidate) >= min_ratio {
+                return candidate;
+            }
+        }
+        target
     }
 
     /// An [`AccentChip`] resolved for `ground`, with its label clearing

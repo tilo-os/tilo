@@ -8,7 +8,9 @@
 //!   with the first and last segments only; interior segments are flat
 //!   on all sides so the strip reads as a single chunk.
 //! - Selected segment: fill `theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]`,
-//!   text `Color::WHITE`.
+//!   with a label derived to clear [`ON_FILL_MIN_CONTRAST`] against that
+//!   fill — white where the accent is dark enough to carry it, and stepped
+//!   out of white where it is not.
 //! - Unselected segments: fill `theme.tokens.colors.surfaces.raised`,
 //!   text `theme.tokens.colors.text_primary`.
 //! - 1-px vertical separator line in `theme.tokens.colors.border_standard`
@@ -29,7 +31,7 @@ use std::collections::HashMap;
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+use crate::tokens::colors::{ACCENT_PRIMARY_IDX, ON_FILL_MIN_CONTRAST};
 use crate::widget::Widget;
 
 /// One entry in a `ToggleGroup`. Currently text-only; an icon variant
@@ -199,6 +201,20 @@ pub enum SegmentedStyle {
 /// its selected / hovered state. `fill == None` means "paint no background"
 /// (a transparent, unselected pill). Single source of truth for both the
 /// retained draw's palette intent and [`ToggleGroup::paint`].
+/// The label of a selected, accent-filled segment.
+///
+/// The accent is a themeable token, so the colour that reads on it is not a
+/// constant: on a dark accent white is right and comes back untouched, and on
+/// a bright one white sits at a ratio no label should ship at. Both the
+/// retained draw and [`segment_colors`] resolve through here so the strip and
+/// its immediate-mode face cannot disagree.
+pub fn selected_segment_ink(theme: &Theme) -> Color {
+    theme
+        .tokens
+        .colors
+        .ink_on_any(&[theme.accent_primary], Color::WHITE, ON_FILL_MIN_CONTRAST)
+}
+
 pub fn segment_colors(
     theme: &Theme,
     style: SegmentedStyle,
@@ -209,14 +225,14 @@ pub fn segment_colors(
     match style {
         SegmentedStyle::Solid => {
             if selected {
-                (Some(theme.accent_primary), Color::WHITE)
+                (Some(theme.accent_primary), selected_segment_ink(theme))
             } else {
                 (Some(colors.surfaces.raised), colors.text_primary)
             }
         }
         SegmentedStyle::Pill => {
             if selected {
-                (Some(theme.accent_primary), Color::WHITE)
+                (Some(theme.accent_primary), selected_segment_ink(theme))
             } else if hovered {
                 (Some(theme.bg_hover), colors.text_dim)
             } else {
@@ -544,7 +560,7 @@ impl Widget for ToggleGroup {
         for (i, seg_rect) in self.segment_rects.iter().enumerate() {
             let label = &self.segments[i].label;
             let text_color = if i == self.selected {
-                Color::WHITE
+                selected_segment_ink(theme)
             } else {
                 colors.text_primary
             };
