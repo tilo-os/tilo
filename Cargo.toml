@@ -565,6 +565,20 @@ codegen-units = 16
 [profile.demo.package.shell]
 debug-assertions = true
 
+# And `ui`, because `shell` reads across the boundary.
+#
+# A `#[cfg(debug_assertions)]` block is evaluated against the crate it is
+# written in, not the crate it calls into. `shots` guards its tab-reveal step
+# on `debug_assertions` — true here, so the block compiles — and the step calls
+# `ui::widget::WindowGroup::bar_mut_for_tests`, which is gated the same way in
+# `ui`. With the override on `shell` alone the guard was on and the symbol was
+# off, and the profile failed to build the one binary it exists to build.
+#
+# Turning it on for both makes the two cfgs agree, which is what the guard
+# always assumed.
+[profile.demo.package.ui]
+debug-assertions = true
+
 # Vendored winit fork. Upstream winit 0.30.13 only emits
 # `WindowEvent::PinchGesture` on macOS/iOS — its Wayland backend never binds
 # `zwp_pointer_gestures_v1`, so touchpad pinch-to-zoom is dead on Linux. The
