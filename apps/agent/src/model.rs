@@ -11,15 +11,21 @@
 //! * The model is given the document, the instruction, and **what the room
 //!   currently exports** — every operation surveyed off the apps' own
 //!   resource trees ([`crate::surface`]), plus the named document recipes
-//!   ([`plan::RECIPES`]). It answers with **one id and nothing else**. It
-//!   never emits a document mutation, a block id, text to splice, or a
-//!   command.
-//! * Its answer is untrusted input. [`Instruction::from_answer`] checks it
+//!   ([`plan::RECIPES`]). It answers with **ids and nothing else** — one for
+//!   a request that asks for one thing, several in order for a request that
+//!   asks for several. It never emits a document mutation, a block id, text
+//!   to splice, or a command.
+//! * Its answer is untrusted input. [`Plan::from_answer`] checks every id
 //!   against a freshly taken survey before anything is dispatched; an id
 //!   that names nothing the room exports now is refused rather than acted
-//!   on. The offer is a snapshot and the check is not — that gap is exactly
-//!   where a stale address would otherwise be performed against whatever
-//!   currently carries its id.
+//!   on, and one bad id refuses the whole answer. The offer is a snapshot
+//!   and the check is not — that gap is exactly where a stale address would
+//!   otherwise be performed against whatever currently carries its id.
+//! * A sequence reaches nothing a single answer could not. It is the same
+//!   enum, drawn from more than once, and no entry in it may carry an
+//!   argument: where one operation's result feeds the next, the agent binds
+//!   it from what actually happened (see [`crate::surface::Product`]), never
+//!   from anything the model wrote.
 //! * Answering [`plan::NOTHING_FITS`] is a legitimate outcome, not a failure:
 //!   the agent says so in the document instead of stretching an action to fit.
 //! * Nothing here widens the grant. The capability the user issued is what
@@ -35,7 +41,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::plan::{self, Block, Instruction, Refused, TableDraft};
+use crate::plan::{self, Block, Plan, Refused, TableDraft};
 use crate::surface::Offer;
 
 /// The model that makes the choice.
@@ -57,6 +63,15 @@ const MAX_BLOCK_CHARS: usize = 200;
 /// in the turn, and everything the model does answer is still validated
 /// against the whole live survey.
 const MAX_OFFERS: usize = 120;
+
+/// The most operations one instruction may be read as asking for.
+///
+/// A person writes a sentence, and a sentence names two or three things. The
+/// cap is not arithmetic about cost: it is what stops a misread request from
+/// becoming a long run of edits to somebody's document that nobody watched
+/// begin. Every step is still refused individually, and the whole answer is
+/// refused if any one of them does not resolve.
+const MAX_STEPS: usize = 4;
 
 /// Which path reached the decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,7 +140,7 @@ impl Route {
 /// What to do, and how that was arrived at.
 #[derive(Clone, Debug)]
 pub struct Decision {
-    pub instruction: Instruction,
+    pub plan: Plan,
     pub route: Route,
 }
 
@@ -161,7 +176,7 @@ impl Chooser {
     /// slow or broken call costs the agent a worse decision, never the work.
     pub fn choose(&self, rest: &str, blocks: &[Block], offers: &[Offer]) -> Decision {
         let fallback = |f: Fallback| Decision {
-            instruction: Instruction::from_floor(rest, offers),
+            plan: Plan::from_floor(rest, offers),
             route: Route::Keywords(f),
         };
         if !self.enabled {
@@ -171,10 +186,9 @@ impl Chooser {
             return fallback(Fallback::NoKey);
         };
         match self.ask(key, rest, blocks, offers) {
-            Ok(answer) => match Instruction::from_answer(&answer.action, rest, answer.table, offers)
-            {
-                Ok(instruction) => Decision {
-                    instruction,
+            Ok(answer) => match Plan::from_answer(&answer.actions, rest, answer.table, offers) {
+                Ok(plan) => Decision {
+                    plan,
                     route: Route::Model { why: answer.why },
                 },
                 // Structured output pins the answer to the catalogue, so
@@ -246,7 +260,8 @@ enum AskError {
 /// The model's answer, before it has been checked against the catalogue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answer {
-    pub action: String,
+    /// The operations to perform, in order. Usually one.
+    pub actions: Vec<String>,
     pub why: String,
     /// Content the model drafted for entries that call for it. Present or
     /// not, it is untrusted until [`Instruction::from_answer`] has checked
@@ -295,7 +310,21 @@ pub fn request_body(rest: &str, blocks: &[Block], offers: &[Offer]) -> serde_jso
                 "schema": {
                     "type": "object",
                     "properties": {
-                        "action": { "type": "string", "enum": ids },
+                        // A list, because a request can name more than one
+                        // thing. Every entry is drawn from the same enum a
+                        // single answer was, so a sequence reaches nothing a
+                        // single answer could not — it only reaches more than
+                        // one of it, in an order.
+                        "actions": {
+                            "type": "array",
+                            "items": { "type": "string", "enum": ids },
+                            "minItems": 1,
+                            "maxItems": MAX_STEPS,
+                            "description": "The operations to perform, in the order they \
+                                are asked for. One entry for a request that asks for one \
+                                thing — which is most of them. Add an entry only for \
+                                something the request actually asks for as well."
+                        },
                         "why": { "type": "string" },
                         // Required, and nullable rather than optional.
                         //
@@ -354,7 +383,7 @@ pub fn request_body(rest: &str, blocks: &[Block], offers: &[Offer]) -> serde_jso
                             ]
                         }
                     },
-                    "required": ["action", "why", "table"],
+                    "required": ["actions", "why", "table"],
                     "additionalProperties": false
                 }
             }
@@ -368,7 +397,16 @@ You choose which one of the operations the applications in a room are exporting 
 answers an instruction somebody wrote into a shared document, and for some of them \
 you draft the content it will be carried out with.
 
-Answer with exactly one id from the list you are given, or \"none\".
+Answer with ids from the list you are given, in `actions`, or \"none\".
+
+Most requests ask for one thing and get one id. A request that asks for two — \
+\"crop this square and put it under Sound check\" is one sentence naming two \
+operations, often in two different applications — gets both, in the order it \
+asks for them. Put in an entry for everything it asks for and nothing it does \
+not: a step nobody asked for is an edit to somebody's document that nobody \
+wanted, and a step left out means half the request is carried out and reported \
+as though it were all of it. If any part of what was asked for is not in the \
+list, answer \"none\" for the whole thing rather than doing the part that is.
 
 The list has two halves and the first is easy to skim past. **Editorial changes** \
 come first: each is several of the application's operations composed into one \
@@ -383,6 +421,11 @@ Never stretch an entry to cover something it does not do — a wrong action is w
 than no action, because the person asked for something and would get something \
 else. But do not answer \"none\" for something an editorial change plainly covers: \
 that is a refusal to do work that was on the list.
+
+Some operations take an argument that is not words — the image to place, say. \
+You never supply one. It is whatever the step before it produced, and the \
+application fills it in from what actually happened; there is nothing you could \
+write there that would name real content.
 
 You never name a block, a position, a range to delete, or an action. The \
 application works those out from the document itself and carries out your choice \
@@ -487,17 +530,30 @@ pub fn parse_answer(body: &str) -> Result<Answer, String> {
 
     let answer: serde_json::Value =
         serde_json::from_str(text.trim()).map_err(|e| format!("answer was not json: {e}"))?;
-    let action = answer
-        .get("action")
-        .and_then(|a| a.as_str())
-        .ok_or_else(|| "answer had no action".to_string())?;
+    // Only strings, and an empty list is not an answer. Anything that is not a
+    // string is dropped rather than coerced, exactly as a cell is: a number
+    // where an id should be means the answer did not have the shape it was
+    // asked for, and every survivor is still checked against the live survey.
+    let actions: Vec<String> = answer
+        .get("actions")
+        .and_then(|a| a.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if actions.is_empty() {
+        return Err("answer named nothing to do".to_string());
+    }
     let why = answer
         .get("why")
         .and_then(|w| w.as_str())
         .unwrap_or("")
         .to_string();
     Ok(Answer {
-        action: action.to_string(),
+        actions,
         why: first_chars(&why, 200),
         table: answer.get("table").and_then(table_draft),
     })
@@ -624,6 +680,7 @@ fn strip(msg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan::Instruction;
     use std::collections::BTreeMap;
 
     /// One operation, as an app would publish it. Built through the door's
@@ -669,7 +726,7 @@ mod tests {
             &offers,
         );
         let schema = &body["output_config"]["format"]["schema"];
-        let ids: Vec<String> = schema["properties"]["action"]["enum"]
+        let ids: Vec<String> = schema["properties"]["actions"]["items"]["enum"]
             .as_array()
             .expect("an enum of ids")
             .iter()
@@ -699,8 +756,8 @@ mod tests {
     #[test]
     fn an_empty_room_offers_no_addresses() {
         let body = request_body("do something", &[], &[]);
-        let ids: Vec<String> = body["output_config"]["format"]["schema"]["properties"]["action"]
-            ["enum"]
+        let ids: Vec<String> = body["output_config"]["format"]["schema"]["properties"]["actions"]
+            ["items"]["enum"]
             .as_array()
             .expect("an enum")
             .iter()
@@ -746,13 +803,14 @@ mod tests {
         // And a null answer is read as "no content", not as a malformed one.
         let body = serde_json::json!({
             "stop_reason": "end_turn",
-            "content": [{"type": "text", "text": "{\"action\":\"heading\",\"why\":\"a draft\",\"table\":null}"}]
+            "content": [{"type": "text", "text": "{\"actions\":[\"heading\"],\"why\":\"a draft\",\"table\":null}"}]
         })
         .to_string();
         let answer = parse_answer(&body).expect("a null table is a valid answer");
         assert_eq!(answer.table, None);
         assert_eq!(
-            Instruction::from_answer(&answer.action, "x", answer.table, &recipes_available()),
+            Plan::from_answer(&answer.actions, "x", answer.table, &recipes_available())
+                .map(|p| p.steps[0].instruction.clone()),
             Ok(Instruction::Heading)
         );
     }
@@ -766,7 +824,7 @@ mod tests {
             "stop_reason": "end_turn",
             "content": [
                 {"type": "thinking", "thinking": ""},
-                {"type": "text", "text": "{\"action\":\"runsheet\",\"why\":\"schedule\",\"table\":{\"headers\":[\"Time\",\"Item\"],\"rows\":[[\"18:00\",\"Doors\"]],\"note\":\"Sound check is listed after doors.\"}}"}
+                {"type": "text", "text": "{\"actions\":[\"runsheet\"],\"why\":\"schedule\",\"table\":{\"headers\":[\"Time\",\"Item\"],\"rows\":[[\"18:00\",\"Doors\"]],\"note\":\"Sound check is listed after doors.\"}}"}
             ]
         })
         .to_string();
@@ -782,12 +840,13 @@ mod tests {
         // the shape it was asked for, and stringifying would hide that.
         let ragged = serde_json::json!({
             "stop_reason": "end_turn",
-            "content": [{"type": "text", "text": "{\"action\":\"runsheet\",\"why\":\"x\",\"table\":{\"headers\":[\"Time\",\"Item\"],\"rows\":[[\"18:00\",1800]]}}"}]
+            "content": [{"type": "text", "text": "{\"actions\":[\"runsheet\"],\"why\":\"x\",\"table\":{\"headers\":[\"Time\",\"Item\"],\"rows\":[[\"18:00\",1800]]}}"}]
         })
         .to_string();
         let answer = parse_answer(&ragged).expect("parsed");
         assert!(matches!(
-            Instruction::from_answer(&answer.action, "x", answer.table, &recipes_available()),
+            Plan::from_answer(&answer.actions, "x", answer.table, &recipes_available())
+                .map(|p| p.steps[0].instruction.clone()),
             Err(Refused::Unusable(_))
         ));
     }
@@ -796,13 +855,13 @@ mod tests {
     fn an_answer_is_read_out_of_a_messages_response() {
         let body = serde_json::json!({
             "stop_reason": "end_turn",
-            "content": [{"type": "text", "text": "{\"action\":\"table\",\"why\":\"bullets above it\"}"}]
+            "content": [{"type": "text", "text": "{\"actions\":[\"table\"],\"why\":\"bullets above it\"}"}]
         })
         .to_string();
         assert_eq!(
             parse_answer(&body).unwrap(),
             Answer {
-                action: "table".into(),
+                actions: vec!["table".to_string()],
                 why: "bullets above it".into(),
                 table: None,
             }
@@ -888,7 +947,7 @@ mod tests {
         assert!(!c.is_live());
         let offers = recipes_available();
         let d = c.choose("turn the bullets into a table", &[], &offers);
-        assert_eq!(d.instruction, Instruction::Table);
+        assert_eq!(d.plan, Plan::of(Instruction::Table));
         assert_eq!(d.route, Route::Keywords(Fallback::Disabled));
         assert!(!d.route.is_live());
         assert_eq!(d.route.label(), "keywords");
@@ -897,9 +956,9 @@ mod tests {
         // reaching for a recipe whose app is not here.
         let empty = c.choose("turn the bullets into a table", &[], &[]);
         assert!(
-            matches!(empty.instruction, Instruction::Unknown(_)),
+            matches!(empty.plan.steps[0].instruction, Instruction::Unknown(_)),
             "an empty room must not yield a recipe: {:?}",
-            empty.instruction
+            empty.plan
         );
         assert!(!empty.route.is_live());
     }

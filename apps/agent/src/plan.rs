@@ -305,6 +305,17 @@ impl Instruction {
         let Some(offer) = surface::find(offers, id) else {
             return Err(Refused::NotExported(id.to_string()));
         };
+        // An operation that collects content is left without one here on
+        // purpose. Its argument is a content hash, which no instruction
+        // contains and no answer may invent; it is bound at dispatch from
+        // what the step before it produced, or the step is refused. See
+        // [`Step::carries`].
+        if offer.wants_content() {
+            return Ok(Instruction::Perform {
+                id: offer.id(),
+                argument: None,
+            });
+        }
         // An operation that collects text needs text, and there is nowhere
         // to get it from an answer that named only the operation. Refusing
         // is the honest result: performing it with an empty string would
@@ -332,6 +343,301 @@ impl Instruction {
     pub fn parse(text: &str, name: &str, offers: &[Offer]) -> Option<Instruction> {
         Self::addressed(text, name).map(|rest| Self::from_floor(&rest, offers))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sequences: one request, more than one thing to do.
+// ---------------------------------------------------------------------------
+
+/// One thing to do, and where the text it is done with comes from.
+///
+/// A step is exactly what a whole instruction used to be, plus the one fact a
+/// single instruction never needed: whether its argument is something the
+/// request said, or something the step before it made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Step {
+    pub instruction: Instruction,
+    /// Whether this step's argument is the previous step's result.
+    ///
+    /// Set from the *operation's own declaration* ([`Offer::wants_content`]),
+    /// never from anything a model said and never from the words of the
+    /// request. An operation that collects a content hash can only be
+    /// performed with content something produced, so there is exactly one
+    /// place its argument can come from and no choice to be made about it.
+    ///
+    /// The value is not stored here, only the fact that it is carried: what
+    /// step one actually produced is not known until step one has run, and
+    /// filling it in earlier would be recording a guess. See
+    /// [`crate::surface::Product`].
+    pub carries: bool,
+}
+
+impl Step {
+    /// A step that stands on its own.
+    pub fn own(instruction: Instruction) -> Step {
+        Step {
+            instruction,
+            carries: false,
+        }
+    }
+
+    /// The step an already-validated instruction becomes, reading off the
+    /// live surface whether its argument has to be carried.
+    fn bound(instruction: Instruction, offers: &[Offer]) -> Step {
+        let carries = match &instruction {
+            Instruction::Perform { id, .. } => {
+                surface::find(offers, id).is_some_and(Offer::wants_content)
+            }
+            _ => false,
+        };
+        Step {
+            instruction,
+            carries,
+        }
+    }
+
+    /// Whether this step is a refusal rather than something to do.
+    pub fn is_unanswered(&self) -> bool {
+        matches!(self.instruction, Instruction::Unknown(_))
+    }
+}
+
+/// An instruction, resolved: the ordered steps that carry it out.
+///
+/// Most requests are one step and always were. The reason this type exists is
+/// the request that is not — "crop this square and put it under Sound check"
+/// is one sentence, two operations and two applications, and an agent that
+/// answered it with a single [`Instruction`] would carry out half of it and
+/// report success. There is no honest way to say half a sentence back to
+/// somebody, so the shape of an answer has to be able to hold all of it.
+///
+/// What a sequence is **not** is a widening of what may be asked for. Every
+/// step is resolved against the same discovered surface a single instruction
+/// is, and validated again at dispatch; a step whose address stops resolving
+/// stops the sequence. The one thing a sequence adds is that a step's
+/// argument may come from the step before it rather than from the request —
+/// and even that is not a choice anybody makes, but a fact the operation
+/// itself declares.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Plan {
+    pub steps: Vec<Step>,
+}
+
+impl Plan {
+    /// A plan of one step: what every instruction was until now.
+    pub fn of(instruction: Instruction) -> Plan {
+        Plan {
+            steps: vec![Step::own(instruction)],
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.steps.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+
+    /// Whether this asks for more than one thing.
+    pub fn is_sequence(&self) -> bool {
+        self.steps.len() > 1
+    }
+
+    /// The first part of the request that resolved to nothing, if any.
+    ///
+    /// A sequence carrying one of these must not be started. Working through
+    /// the steps until the refusal is reached would leave the earlier ones
+    /// applied to somebody's document with nothing asked for by them — and
+    /// unlike a step that fails *at dispatch*, this is known before anything
+    /// has happened, so there is no reason to find out the hard way.
+    pub fn unanswered(&self) -> Option<&str> {
+        self.steps.iter().find_map(|s| match &s.instruction {
+            Instruction::Unknown(what) => Some(what.as_str()),
+            _ => None,
+        })
+    }
+
+    /// The deterministic floor over a request that may name several things.
+    ///
+    /// A request is read as a sequence only when it is written as one — the
+    /// ordering words in [`CONJUNCTIONS`], outside any quotation — and only
+    /// when reading it that way answers something. A single instruction with
+    /// "and" inside it ("align left and right") resolves no clause on its own,
+    /// and is handed to [`Instruction::from_floor`] whole, exactly as before.
+    ///
+    /// The case worth being exact about is the one in between: a request whose
+    /// clauses *some* of which resolve. That is a sequence, and it is returned
+    /// as one with the unresolved clause left as [`Instruction::Unknown`] —
+    /// never collapsed back into a single instruction. Collapsing is what
+    /// produces the failure this whole type exists to prevent: "crop the
+    /// photograph and place it below Sound check" read whole matches the
+    /// second half, which the agent would then do, and answer as though it had
+    /// done both.
+    pub fn from_floor(rest: &str, offers: &[Offer]) -> Plan {
+        Plan::assembled(rest, |clause| {
+            Step::bound(Instruction::from_floor(clause, offers), offers)
+        })
+    }
+
+    /// The floor with the named compositions left out: only operations the
+    /// room exports.
+    ///
+    /// For a request that arrived carrying its own subject. A composition is
+    /// defined relative to the line that asks for it, and a message in a
+    /// channel is not a line in a document — so a recipe keyword matching
+    /// there is a word in the prose, not a request for the composition. That
+    /// is how "align centre the Run sheet section" came out as a table.
+    ///
+    /// Nothing is widened: the candidates are whatever the caller scoped to
+    /// the subject, and a part that still answers to nothing is a refusal.
+    pub fn from_operations(rest: &str, offers: &[Offer]) -> Plan {
+        Plan::assembled(rest, |clause| {
+            let instruction = match surface::from_verbs(clause, offers) {
+                Ok((offer, argument)) => Instruction::Perform {
+                    id: offer.id(),
+                    argument,
+                },
+                // The floor's own words for why, which name operations the
+                // way a person would rather than by address.
+                Err(why) => Instruction::Unknown(unmatched(clause, &why)),
+            };
+            Step::bound(instruction, offers)
+        })
+    }
+
+    /// Split a request into its parts and resolve each with `step`, or read
+    /// it whole when it turns out not to be several requests after all.
+    fn assembled(rest: &str, step: impl Fn(&str) -> Step) -> Plan {
+        let clauses = clauses(rest);
+        if clauses.len() < 2 {
+            return Plan { steps: vec![step(rest)] };
+        }
+        let steps: Vec<Step> = clauses.iter().map(|c| step(c)).collect();
+        // Nothing in it was a request the room could answer, so the ordering
+        // word was a word in one sentence rather than a join between two.
+        if steps.iter().all(Step::is_unanswered) {
+            return Plan { steps: vec![step(rest)] };
+        }
+        // Every part named the same operation, which is one request said
+        // twice rather than two to carry out. "Centre it and align the
+        // heading" is one alignment; performing it twice is harmless here and
+        // would not be for a turn, a rename or an insert.
+        if steps
+            .windows(2)
+            .all(|w| w[0].instruction == w[1].instruction)
+        {
+            return Plan {
+                steps: vec![steps.into_iter().next().expect("at least two")],
+            };
+        }
+        Plan { steps }
+    }
+
+    /// The full gate over an answered sequence: every id checked against the
+    /// surface as it stands, and the whole answer refused if any is not one
+    /// the room exports.
+    ///
+    /// The list is the only thing that grew. Each id passes exactly the check
+    /// a single answer passes ([`Instruction::from_answer`]), so nothing an
+    /// answer can say reaches dispatch without having been resolved against a
+    /// freshly taken survey — a sequence is not a way in around that.
+    ///
+    /// Where the clause count matches the id count, each step is validated
+    /// against its own clause, so a quoted literal is read where it was
+    /// written rather than anywhere in the sentence.
+    pub fn from_answer(
+        ids: &[String],
+        rest: &str,
+        table: Option<TableDraft>,
+        offers: &[Offer],
+    ) -> Result<Plan, Refused> {
+        if ids.is_empty() {
+            return Err(Refused::Unusable("it named nothing to do".to_string()));
+        }
+        if ids.len() == 1 {
+            return Ok(Plan::of(Instruction::from_answer(
+                &ids[0], rest, table, offers,
+            )?));
+        }
+        // A recipe rewrites the run of blocks around the line that asked for
+        // it, reading the page to decide which. Which blocks those are is a
+        // different question after another step has changed the page, and
+        // answering it twice would be the agent deciding what to rewrite. So
+        // a composition is a whole request or it is not this one.
+        if ids.iter().any(|id| Recipe::from_id(id).is_some()) {
+            return Err(Refused::Unusable(
+                "an editorial change rewrites the text around the line that asks \
+                 for it, so it cannot be one step of several"
+                    .to_string(),
+            ));
+        }
+        let parts = clauses(rest);
+        let mut steps = Vec::new();
+        for (i, id) in ids.iter().enumerate() {
+            let said = parts.get(i).map(String::as_str).unwrap_or(rest);
+            let said = if parts.len() == ids.len() { said } else { rest };
+            let instruction = Instruction::from_answer(id, said, None, offers)?;
+            steps.push(Step::bound(instruction, offers));
+        }
+        Ok(Plan { steps })
+    }
+}
+
+/// The words that join one thing to do to the next.
+///
+/// Ordering words only, and longest first so that `and then` is one join
+/// rather than `and` followed by a clause beginning `then`. Deliberately not
+/// punctuation on its own: a comma separates the parts of a single request far
+/// more often than it separates two.
+pub const CONJUNCTIONS: &[&str] = &[
+    ", and then ",
+    " and then ",
+    ", then ",
+    " then ",
+    ", and ",
+    " and ",
+];
+
+/// Split a request into the things it asks for, in order.
+///
+/// Quoted text is never split, for the same reason [`surface::quoted_literal`]
+/// exists: what is inside the quotation marks is a value somebody supplied,
+/// and `rename it to "sound and vision.md"` asks for one thing.
+pub fn clauses(rest: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    let mut in_straight = false;
+    let mut in_curly = false;
+    let mut i = 0usize;
+    while i < rest.len() {
+        let tail = &rest[i..];
+        let Some(ch) = tail.chars().next() else { break };
+        match ch {
+            '"' => in_straight = !in_straight,
+            '\u{201c}' => in_curly = true,
+            '\u{201d}' => in_curly = false,
+            _ => {}
+        }
+        if !in_straight && !in_curly {
+            // Compared as bytes, not as a substring: the conjunctions are
+            // ASCII, and `tail` may begin with a multi-byte character — a
+            // typographic quotation mark, in the very case this has to get
+            // right — which slicing by a byte length would split.
+            if let Some(sep) = CONJUNCTIONS.iter().find(|s| {
+                tail.len() >= s.len() && tail.as_bytes()[..s.len()].eq_ignore_ascii_case(s.as_bytes())
+            }) {
+                out.push(rest[start..i].trim().to_string());
+                i += sep.len();
+                start = i;
+                continue;
+            }
+        }
+        i += ch.len_utf8();
+    }
+    out.push(rest[start..].trim().to_string());
+    out.retain(|c| !c.is_empty());
+    out
 }
 
 /// Why the floor could not answer, in the words the agent writes into the
@@ -797,6 +1103,246 @@ mod tests {
         }
     }
 
+    /// An offer built from a real descriptor, so what the gate checks here is
+    /// what it checks in a session.
+    fn offer(app: &'static str, resource: &str, action: &str, label: &str, collects: Option<qos_actions::Collects>) -> Offer {
+        Offer {
+            app,
+            descriptor: qos_actions::door::ActionDescriptor {
+                address: qos_actions::door::ActionAddress::new(resource, action),
+                resource_kind: format!("{app}.thing"),
+                resource_label: resource.rsplit(':').next().unwrap_or(resource).to_string(),
+                action_label: label.to_string(),
+                description: None,
+                locus: qos_actions::ExecutionLocus::ClientLocal,
+                input: match collects {
+                    None => qos_actions::InputSpec::None,
+                    Some(c) => qos_actions::InputSpec::Text {
+                        prompt: "p".into(),
+                        placeholder: String::new(),
+                        collects: c,
+                    },
+                },
+            },
+        }
+    }
+
+    /// A photo editor and a word processor, both publishing something.
+    fn two_apps() -> Vec<Offer> {
+        vec![
+            offer(
+                "photos",
+                "photos.image:/tmp/harbour.png",
+                "crop",
+                "Crop",
+                Some(qos_actions::Collects::Words),
+            ),
+            offer(
+                "word-processor",
+                "word-processor.section:b7",
+                "place-image",
+                "Place image below",
+                Some(qos_actions::Collects::Content),
+            ),
+            offer(
+                "word-processor",
+                "word-processor.section:b7",
+                "align-center",
+                "Align centre",
+                None,
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_request_is_split_where_it_joins_two_things_and_nowhere_else() {
+        assert_eq!(clauses("crop it and place image below"), vec!["crop it", "place image below"]);
+        assert_eq!(clauses("crop it, then place it"), vec!["crop it", "place it"]);
+        assert_eq!(clauses("crop it and then place it"), vec!["crop it", "place it"]);
+        // One request that happens to contain the word.
+        assert_eq!(clauses("align left and right"), vec!["align left", "right"]);
+        // A value somebody supplied is never split, whichever quotes the
+        // word processor produced.
+        assert_eq!(
+            clauses(r#"rename it to "sound and vision.md""#),
+            vec![r#"rename it to "sound and vision.md""#]
+        );
+        assert_eq!(
+            clauses("rename it to \u{201c}sound and vision.md\u{201d}"),
+            vec!["rename it to \u{201c}sound and vision.md\u{201d}"]
+        );
+    }
+
+    /// The headline: one sentence, two operations, two applications — and the
+    /// second one's argument is not in the sentence at all.
+    #[test]
+    fn one_instruction_naming_two_apps_becomes_two_steps() {
+        let offers = two_apps();
+        let plan = Plan::from_floor(
+            r#"crop the photograph to "0.25,0.25,0.5,0.5" and place image below b7"#,
+            &offers,
+        );
+        assert_eq!(plan.len(), 2, "{plan:?}");
+        assert_eq!(
+            plan.steps[0].instruction,
+            Instruction::Perform {
+                id: "photos.image:/tmp/harbour.png#crop".into(),
+                argument: Some("0.25,0.25,0.5,0.5".into()),
+            }
+        );
+        assert!(!plan.steps[0].carries, "the first step has nothing to carry from");
+        assert_eq!(
+            plan.steps[1].instruction,
+            Instruction::Perform {
+                id: "word-processor.section:b7#place-image".into(),
+                // Empty, and filled at dispatch from what the crop produced.
+                // A value here would be one the request never contained.
+                argument: None,
+            }
+        );
+        assert!(
+            plan.steps[1].carries,
+            "an operation that collects content takes it from the step before it"
+        );
+    }
+
+    /// The failure this whole type exists to prevent: read whole, that
+    /// sentence matches the *second* operation and nothing would ever have
+    /// cropped anything.
+    #[test]
+    fn reading_the_whole_sentence_would_have_done_only_half_of_it() {
+        let offers = two_apps();
+        let asked = r#"crop the photograph to "0.25,0.25,0.5,0.5" and place image below b7"#;
+        let whole = Instruction::from_floor(asked, &offers);
+        assert_eq!(
+            whole,
+            Instruction::Perform {
+                id: "word-processor.section:b7#place-image".into(),
+                argument: None,
+            },
+            "if this stops being the second half, the test below proves less"
+        );
+        let plan = Plan::from_floor(asked, &offers);
+        assert_ne!(
+            plan.steps.first().map(|s| &s.instruction),
+            Some(&whole),
+            "the sequence must not begin with the half a whole reading picks"
+        );
+    }
+
+    /// A conjunction inside a request that names nothing is a word in one
+    /// sentence, and the sentence is read whole — exactly as it was before
+    /// sequences existed.
+    #[test]
+    fn a_conjunction_that_joins_nothing_leaves_the_request_whole() {
+        let offers = two_apps();
+        let plan = Plan::from_floor("tidy up and finish", &offers);
+        assert_eq!(plan.len(), 1, "{plan:?}");
+        assert_eq!(
+            plan.steps[0].instruction,
+            Instruction::Unknown("tidy up and finish".into()),
+            "the refusal must name the whole request, not half of it"
+        );
+    }
+
+    /// One request said twice is one request. Doing it twice is harmless for
+    /// an alignment and is not for a turn, a rename or an insert.
+    #[test]
+    fn parts_that_name_the_same_operation_are_one_step() {
+        let offers = two_apps();
+        let plan = Plan::from_floor("align centre and centre it", &offers);
+        assert_eq!(plan.len(), 1, "{plan:?}");
+    }
+
+    /// A part the room cannot answer is kept as the refusal it is, rather
+    /// than dropped so the rest can proceed.
+    #[test]
+    fn a_part_that_answers_to_nothing_is_carried_as_a_refusal() {
+        let offers = two_apps();
+        let plan = Plan::from_floor("place image below b7 and juggle three plates", &offers);
+        assert_eq!(plan.len(), 2, "{plan:?}");
+        assert_eq!(
+            plan.unanswered().map(str::to_string),
+            Some("juggle three plates".to_string()),
+            "{plan:?}"
+        );
+    }
+
+    /// Every id in an answered sequence passes the same gate a single answer
+    /// passes, and one that does not resolve refuses the whole answer — a
+    /// list is not a way past the check.
+    #[test]
+    fn an_answered_sequence_is_gated_id_by_id() {
+        let offers = two_apps();
+        let good = vec![
+            "photos.image:/tmp/harbour.png#crop".to_string(),
+            "word-processor.section:b7#place-image".to_string(),
+        ];
+        let plan = Plan::from_answer(&good, r#"crop to "0,0,1,1" and place image"#, None, &offers)
+            .expect("both ids are exported");
+        assert_eq!(plan.len(), 2);
+        assert!(plan.steps[1].carries);
+
+        let bad = vec![
+            "photos.image:/tmp/harbour.png#crop".to_string(),
+            "word-processor.document#delete-everything".to_string(),
+        ];
+        assert_eq!(
+            Plan::from_answer(
+                &bad,
+                r#"crop to "0,0,1,1" and delete everything"#,
+                None,
+                &offers
+            ),
+            Err(Refused::NotExported(
+                "word-processor.document#delete-everything".to_string()
+            )),
+            "one id the room does not export refuses the whole answer"
+        );
+    }
+
+    /// A composition is defined by the line that asks for it, so it is a
+    /// whole request or it is not this one.
+    #[test]
+    fn a_composition_cannot_be_one_step_of_several() {
+        let mut offers = two_apps();
+        offers.push(offer(
+            "word-processor",
+            "word-processor.document",
+            "insert-table",
+            "Insert table",
+            None,
+        ));
+        let answered = vec![
+            "runsheet".to_string(),
+            "word-processor.section:b7#align-center".to_string(),
+        ];
+        assert!(matches!(
+            Plan::from_answer(&answered, "draft it and centre it", None, &offers),
+            Err(Refused::Unusable(_))
+        ));
+    }
+
+    /// An operation that collects a content hash is never refused for having
+    /// quoted none: there is nothing anybody could quote.
+    #[test]
+    fn an_operation_that_collects_content_is_not_asked_for_words() {
+        let offers = two_apps();
+        let answered = Instruction::from_answer(
+            "word-processor.section:b7#place-image",
+            "place image below b7",
+            None,
+            &offers,
+        );
+        assert_eq!(
+            answered,
+            Ok(Instruction::Perform {
+                id: "word-processor.section:b7#place-image".into(),
+                argument: None,
+            })
+        );
+    }
+
     #[test]
     fn a_structural_pass_finds_the_title_and_the_section_labels() {
         let blocks = vec![
@@ -987,6 +1533,22 @@ mod tests {
         // Everything the survey turned up is answerable, by its own id.
         for offer in &offers {
             let answered = Instruction::from_answer(&offer.id(), "asked", None, &offers);
+            if offer.wants_content() {
+                // It collects a content hash, which no instruction contains.
+                // Refusing it for having quoted none would refuse it always;
+                // what it gets instead is nothing here and a binding at
+                // dispatch, so the gate must let it through with no argument.
+                assert_eq!(
+                    answered,
+                    Ok(Instruction::Perform {
+                        id: offer.id(),
+                        argument: None
+                    }),
+                    "{} collects content, not words; it must not be asked to quote any",
+                    offer.id()
+                );
+                continue;
+            }
             if offer.wants_text() {
                 // It collects text and the instruction quoted none. Refused
                 // as unusable rather than performed with a blank.

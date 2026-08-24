@@ -31,6 +31,11 @@ file-explorer = { path = "../file-explorer" }
 # (GStreamer, iroh, openh264, the screen portal) is a chat window's business
 # and nothing a headless participant reading messages needs.
 chat = { path = "../chat", default-features = false }
+# The one app in the room whose subject is not a document at all, and the
+# reason an instruction can name two of them: a photograph edited here is a
+# thing to put somewhere else. Its own decode and its own render, so "the
+# cropped photograph" means what the app means by it.
+photos = { path = "../photos" }
 # The address of the thing a message is about, when it was written by selecting
 # something. What lets "crop this" name a resource instead of a screen.
 qos-reference = { path = "../../crates/collab/reference" }
