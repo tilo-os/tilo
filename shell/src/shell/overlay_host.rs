@@ -4513,6 +4513,34 @@ impl ShellOverlayHost {
         self.open_remark(reference, beside, origin)
     }
 
+    /// Where the focused application's content starts on the desktop.
+    ///
+    /// The offset a rect reported in that application's own coordinates has to
+    /// be moved by. Used for a request that arrived over a socket, where the
+    /// asking window is the one the person was just interacting with — the
+    /// gesture is a right-click, so the window it came from is the focused one
+    /// by construction.
+    ///
+    /// `None` when the focused tab hosts no window at all, in which case
+    /// nothing sensible can be placed and nothing is.
+    pub fn focused_app_origin(&self) -> Option<Point> {
+        let chrome = self.chrome.as_ref()?;
+        let active = chrome.borrow().active_tab_id()?;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            for group in row.groups.iter() {
+                if group.active_tab_id() != active {
+                    continue;
+                }
+                if let Some(host) = group.active_host() {
+                    return Some(host.get_rect().origin());
+                }
+            }
+        }
+        None
+    }
+
     /// Whether the compose surface is up.
     ///
     /// Public for the same reason [`Self::palette_visible`] is: the client
