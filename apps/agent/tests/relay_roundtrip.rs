@@ -11,6 +11,11 @@ use std::time::{Duration, Instant};
 use automerge::AutoCommit;
 use qos_agent::wire::{read_frame, write_frame};
 use qos_agent::{Config, Session};
+// The ceiling a document frame has to fit under to reach the room, from the
+// module that enforces it. Imported rather than copied: a fixture that seeds
+// "too big to cross" has to be measured against the real number, or it stops
+// meaning that the moment the number moves.
+use shell::shell::network::MAX_APP_SNAPSHOT_BYTES;
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use uuid::Uuid;
 
@@ -135,6 +140,20 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
     .unwrap();
     write_frame(&mut peer, &hello).unwrap();
     let mut replica = seed_document();
+    // The history this page had before the agent joined, taken by change
+    // hash. What the agent contributed is then everything that is *not* one
+    // of these — a question about identity rather than about position.
+    //
+    // Position is what this used to ask, and it went stale silently: the
+    // seed was one change when this was written and is two now (the shared
+    // schema genesis, then quinten's page), so "skip the first" quietly
+    // stopped meaning "skip the seed" and started meaning "skip the
+    // genesis", leaving the author in a set that is supposed to hold only
+    // the agent.
+    let seeded: std::collections::HashSet<String> = qdoc::history::versions(&mut replica)
+        .into_iter()
+        .map(|v| v.change_hash)
+        .collect();
     // Let the relay register the peer's Hello before the agent's frames
     // can race it (the relay handles each connection on its own thread).
     std::thread::sleep(Duration::from_millis(100));
@@ -234,12 +253,21 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
         "three 2-column rows, in order"
     );
 
-    // Every change the agent made is attributed to it.
-    let actors: std::collections::HashSet<String> = qdoc::history::versions(&mut replica)
+    // Every change the agent made is attributed to it — and it made some.
+    // Without the second half this passes on a run where the agent wrote
+    // nothing at all, which is the shape of assertion this file has been
+    // caught holding before.
+    let added: Vec<qdoc::history::VersionMeta> = qdoc::history::versions(&mut replica)
         .into_iter()
-        .skip(1) // the seed
-        .map(|v| v.actor_hex)
+        .filter(|v| !seeded.contains(&v.change_hash))
         .collect();
+    assert!(
+        !added.is_empty(),
+        "the agent added no change to the page, so there is no attribution \
+         here to be right or wrong about"
+    );
+    let actors: std::collections::HashSet<String> =
+        added.iter().map(|v| v.actor_hex.clone()).collect();
     assert_eq!(
         actors,
         std::collections::HashSet::from([hex::encode("Scribe")]),
@@ -533,20 +561,60 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
 // A page with a hole in its history
 // ---------------------------------------------------------------------------
 
+/// A passage long enough that the change carrying it cannot be published.
+///
+/// Varied prose rather than one byte repeated: automerge saves text in a
+/// compressed columnar encoding, so a long run of the same character shrinks
+/// to almost nothing and would seed a hole that cannot happen for the
+/// opposite reason. Sized against the ceiling rather than at a round number,
+/// so it stays oversized if the ceiling moves.
+fn a_passage_too_long_to_publish() -> String {
+    let sentences = [
+        "The hall takes two hundred and forty seated, or three hundred standing.",
+        "Doors at six, sound check half an hour before, and the desk wants a list.",
+        "Budget covers the room, the desk and one engineer; catering is separate.",
+        "Parking is on the far side and fills early, so say so on the invitation.",
+        "The upstairs room can take the overflow but has no step-free route to it.",
+    ];
+    let mut out = String::new();
+    let mut i = 0usize;
+    // Half again over the ceiling, at roughly a byte of change per character.
+    while out.len() < MAX_APP_SNAPSHOT_BYTES + MAX_APP_SNAPSHOT_BYTES / 2 {
+        out.push_str(sentences[i % sentences.len()]);
+        out.push(' ');
+        i += 1;
+    }
+    out
+}
+
 /// The page the demo's ninth beat is written on, built change by change,
 /// plus the replica a peer is left holding when exactly one of those
 /// changes never reaches it.
 ///
 /// Returns `(whole, truncated)` — the page as its author has it, and the
-/// bytes a peer that missed the photograph answers a handshake with.
+/// bytes a peer that missed the oversized change answers a handshake with.
 ///
-/// The missed change is a 146 KB image, which is not an arbitrary pick:
-/// `shell::shell::network` refuses to publish an app snapshot over
-/// `MAX_APP_SNAPSHOT_BYTES` (14 KiB), because gossipsub caps an RPC at
-/// 64 KiB and the publish path writes bytes as JSON at up to four
-/// characters each. So a photograph dropped into a shared page is a
-/// change that provably cannot cross a room, while every keystroke after
-/// it names that change as an ancestor and can.
+/// # Why a paste, and not the photograph this was written with
+///
+/// The ceiling is real and still enforced: `publish_app_crdt_snapshot`
+/// refuses anything over [`MAX_APP_SNAPSHOT_BYTES`] rather than truncating
+/// it, because gossipsub caps an RPC at 64 KiB and the publish path writes
+/// bytes as JSON at up to four characters each.
+///
+/// What changed is what can reach that ceiling. This fixture used to drop a
+/// 146 KB image in, because `put_blob` wrote the payload into the document
+/// under its hash and a 146 KB picture was therefore a 146 KB change. That
+/// is fixed — `qdoc::blobstore` holds the bytes and the document holds only
+/// `{hash, mime, len, w, h}` — so the same call now produces a change of
+/// **333 bytes**, and seeding with it would leave a test that names a
+/// condition it no longer creates.
+///
+/// Text still travels inside the change, so a long passage pasted in at once
+/// still does not fit. Measured rather than guessed: a change carrying `n`
+/// characters of prose costs about `n + 620` bytes, so the ceiling sits a
+/// little under 13,700 characters and the passage below clears it by half
+/// again. Assert on the constant rather than on a copy of its value, so a
+/// ceiling that moves takes the fixture with it.
 fn seed_document_with_a_hole() -> (AutoCommit, Vec<u8>) {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("quinten".as_bytes()));
@@ -564,27 +632,28 @@ fn seed_document_with_a_hole() -> (AutoCommit, Vec<u8>) {
     let base = doc.save();
 
     // The change that does not fit down the pipe.
-    let image = {
+    let pasted = {
         let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
-        let img = dm.insert_block(Some(&opening), "image");
-        let hash = dm.put_blob(&vec![0x7Au8; 146 * 1024]);
-        dm.set_attr(&img, "blob", hash.as_str());
-        img
+        let b = dm.insert_block(Some(&opening), "paragraph");
+        dm.splice_text(&b, 0, 0, &a_passage_too_long_to_publish());
+        b
     };
     doc.commit();
-    // Dropped on purpose: this is the frame the cap refuses.
+    // Dropped on purpose: this is the frame the room refuses.
     let refused = doc.save_incremental();
     assert!(
-        refused.len() > 14 * 1024,
-        "the dropped change has to be one the cap would really refuse, or \
-         this seeds a hole that could not happen: {} bytes",
-        refused.len()
+        refused.len() > MAX_APP_SNAPSHOT_BYTES,
+        "the dropped change has to be one the room would really refuse, or \
+         this seeds a hole that could not happen: {} bytes against a {}-byte \
+         ceiling",
+        refused.len(),
+        MAX_APP_SNAPSHOT_BYTES
     );
 
     // Everything typed after it — the list, then the line addressed to the
-    // agent. Each of these names the image change as an ancestor.
+    // agent. Each of these names the oversized change as an ancestor.
     let mut tail: Vec<Vec<u8>> = Vec::new();
-    let mut after = image;
+    let mut after = pasted;
     for line in ["Doors: 18:00", "Sound check: 18:30", "Seating: 240"] {
         {
             let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
@@ -605,7 +674,7 @@ fn seed_document_with_a_hole() -> (AutoCommit, Vec<u8>) {
     tail.push(doc.save_incremental());
 
     // The peer: the opening, every later keystroke, and not the
-    // photograph in between.
+    // oversized change in between.
     let mut lagging = AutoCommit::load(&base).expect("the base loads");
     for delta in &tail {
         lagging
