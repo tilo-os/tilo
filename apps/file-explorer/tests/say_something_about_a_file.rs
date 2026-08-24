@@ -403,3 +403,96 @@ fn the_composed_remark_reaches_an_agent_carrying_the_files_address() {
     );
     assert_eq!(got.text, "@claude make square and put in open document");
 }
+
+/// Under a compositor, the same gesture produces a *request* and no panel.
+///
+/// The panel opens beside this app's context menu, and beside a menu near the
+/// window's edge is outside the window — which a Wayland client cannot paint
+/// into. So when a session is drawing this window's chrome the app stops
+/// drawing the panel and asks for one instead.
+///
+/// Asserted on both halves of what crosses, because a request missing either is
+/// useless: the address says what is being talked about, and the menu rect is
+/// what the compositor places against. Nothing else crosses, and nothing else
+/// should — where that rect lands on a desktop and who may receive the message
+/// are answers this process does not have.
+#[test]
+fn a_delegated_app_asks_for_the_surface_instead_of_drawing_one() {
+    let dir = staged();
+    let (mut h, at) = selected(dir.path(), 2);
+    // What a host does for an app it draws the chrome of.
+    <file_explorer::FileExplorerWidget as ui::widget::Widget>::delegate_remark_surface(&mut h.w);
+
+    right_press(&mut h, at);
+
+    assert!(
+        !h.w.remark_is_open(),
+        "a delegated app drew its own panel as well; one gesture must not \
+         produce two panels, and this one would be the clipped one"
+    );
+    assert!(
+        h.w.context_menu_is_open(),
+        "the ordinary context menu must still open — the compose surface joins \
+         it rather than replacing it, and that is unchanged by who draws it"
+    );
+
+    let request =
+        <file_explorer::FileExplorerWidget as ui::widget::Widget>::take_remark_request(&mut h.w)
+            .expect(
+                "right-clicking a selected file asked for nothing; the gesture \
+                 reached neither a panel nor a request, so it did nothing at all",
+            );
+    assert_eq!(
+        request.reference.resource_id().as_str(),
+        address_of(&dir.path().join("harbour.png")),
+        "the request must carry the address of the file that was picked; the \
+         subject is what the compositor cannot work out for itself"
+    );
+    assert_eq!(
+        request.reference.span, None,
+        "a file is referenced whole; a span would claim a part of it"
+    );
+    assert_eq!(
+        request.beside,
+        h.w.context_menu_rect_for_tests(),
+        "the request must sit beside the menu this gesture opened, reported in \
+         this window's own coordinates — that rect is the only thing the \
+         compositor has to place against"
+    );
+    assert!(
+        <file_explorer::FileExplorerWidget as ui::widget::Widget>::take_remark_request(&mut h.w)
+            .is_none(),
+        "a request must be collectable once; a second one would open a second \
+         panel for a gesture nobody repeated"
+    );
+}
+
+/// A delegated app asks even before the room has said who is in it.
+///
+/// The mirror of `nothing_opens_before_the_room_has_said_who_is_in_it`, and the
+/// reason that rule cannot simply be carried across: an app that draws the
+/// panel needs somewhere to send, so an empty roster means no panel. A
+/// delegated app is never given a roster at all — the compositor fills the
+/// selector from the room it already holds — so gating on one would make the
+/// gesture do nothing forever.
+#[test]
+fn a_delegated_app_needs_no_roster_of_its_own() {
+    let dir = staged();
+    let at = row_center(dir.path(), 2);
+    let mut h = Harness::new(dir.path());
+    // Deliberately no `set_remark_destinations`.
+    <file_explorer::FileExplorerWidget as ui::widget::Widget>::delegate_remark_surface(&mut h.w);
+    h.move_cursor(at);
+    h.press();
+    h.release();
+    h.layout();
+
+    right_press(&mut h, at);
+
+    assert!(
+        <file_explorer::FileExplorerWidget as ui::widget::Widget>::take_remark_request(&mut h.w)
+            .is_some(),
+        "a delegated app was gated on a roster it is never given, so the gesture \
+         could never reach the compositor that has one"
+    );
+}
