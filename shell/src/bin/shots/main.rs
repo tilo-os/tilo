@@ -435,6 +435,25 @@ Examples:\n\
 }
 
 fn main() {
+    // One language on screen, and the same one every time.
+    //
+    // Every other surface that photographs this compositor pins its
+    // locale; `shots` did not, so it rendered in whatever the machine
+    // filming it happened to use. That machine is German, and only some
+    // strings have a German catalogue — so a shot came back with an
+    // English strip of tabs above a German dialog, which is what broken
+    // software looks like. Worse for a harness: nothing in a shot says
+    // which language produced it, so a reviewer measuring a label's
+    // width or a panel's fit was measuring a string the film will never
+    // show.
+    //
+    // `QOS_SHOTS_LANG` overrides it, because shooting the German
+    // catalogue on purpose is how you find out whether a longer word
+    // still fits — the question this pin would otherwise hide.
+    let shots_lang = std::env::var("QOS_SHOTS_LANG")
+        .unwrap_or_else(|_| "en_US.UTF-8".to_string());
+    shell::shell::i18n::set_locale(&shots_lang);
+
     // Startup timing capture. Same env-var contract as `shell` — a
     // process launched with `QOS_STARTUP_METRICS_PATH=/tmp/x.json` gets
     // a JSON dump on exit; without it, every `mark` call is a single
