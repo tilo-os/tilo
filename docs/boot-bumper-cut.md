@@ -21,7 +21,19 @@ Four things, in order, and nothing else:
 3. **The filled login form — and end there.** Credentials in, the primary
    action visible, before anything is submitted.
 
-Roughly **5 seconds** total. It is a bumper, not a chapter.
+Roughly **5 seconds** total, and **3.2 seconds is the ceiling** if the
+whole thing has to come in under 1:40. It is a bumper, not a chapter.
+
+The arithmetic, so the next person does not have to re-derive it: the
+demo cut runs **96.8 seconds** (`scripts/yc-demo.py --record`, measured
+rather than estimated), and the brief caps the finished piece at a
+hundred. That leaves 3.2 seconds, which is enough for the last beat of
+console and the filled form and nothing else — cut the console to about
+a second and hold the form for two.
+
+If the demo gets shorter, this gets its five seconds back. Take them in
+the login form rather than the console: a form somebody can read is
+worth more than another second of a log nobody reads.
 
 **Do not show the desktop at all**, and do not run into the authenticating
 state. Two separate reasons, both found by watching the assembled cut rather
