@@ -372,15 +372,18 @@ impl LocalIdentity {
     /// application here could not recognise itself in a remark another
     /// machine had addressed to it.
     ///
-    /// A session with no network has no room-wide address to give, and
-    /// says so by falling back to the id its own traffic already carries.
-    /// Nothing outside this machine can address it, so there is no second
-    /// string there for this one to disagree with.
-    fn room_address(&self) -> String {
+    /// `None` for a session with no network. There is no room-wide
+    /// address to give: nothing outside this machine can reach it, and
+    /// there are no other participants for its applications to tell it
+    /// apart from. Answering with the id its own traffic carries would
+    /// announce a *different* string from the one any peer would use --
+    /// which is the second source of truth this whole field exists to
+    /// retire, reintroduced at the one place nobody would look.
+    fn room_address(&self) -> Option<String> {
         if self.local_handle == 0 {
-            return crate::shell::state::local_user_id();
+            return None;
         }
-        format!("peer@{}", self.local_handle)
+        Some(format!("peer@{}", self.local_handle))
     }
 
     /// This machine's own participant, as a roster row.
@@ -391,15 +394,18 @@ impl LocalIdentity {
     /// minted -- runs for every participant except this one.
     ///
     /// `None` for a connection that announced no room, because a row
-    /// about nobody's room is addressed to nobody.
+    /// about nobody's room is addressed to nobody -- and `None` for a
+    /// session with no room-wide address at all, see
+    /// [`Self::room_address`].
     pub fn self_row(&self, route: Option<&CrdtRoute>) -> Option<ui::collaboration::Collaborator> {
         let cluster = route.map(|r| r.cluster_id.as_str()).unwrap_or_default();
         if cluster.is_empty() {
             return None;
         }
+        let id = self.room_address()?;
         let label = self.room_label(cluster);
         Some(ui::collaboration::Collaborator {
-            id: self.room_address(),
+            id,
             // The room's name for this machine, or the id its own traffic
             // is already stamped with. Never the handle a connection
             // asked to be called: that names a local process, where this
@@ -3154,6 +3160,123 @@ mod tests {
             "the room's name is announced exactly once, against the id \
              both frames arrived under",
         );
+    }
+
+    /// One participant, one id -- whichever side of the room asks.
+    ///
+    /// A machine mints `peer@<handle>` for every peer it hears from and
+    /// never for itself, because the only place a roster row is minted
+    /// runs on frames arriving from somewhere else. So the id another
+    /// machine addresses this participant by was a string this machine
+    /// never held, and an application here comparing "am I the one
+    /// addressed" compared two names for the same person.
+    ///
+    /// Asserted by standing the two emitters side by side rather than
+    /// against a literal: a literal would keep passing if either of them
+    /// changed shape, which is exactly the drift that separated them.
+    #[test]
+    fn a_participant_is_addressed_the_same_from_either_side_of_the_room() {
+        const HANDLE: u64 = 2_126_281_246_283_428_914;
+        const ROOM: &str = "room-1";
+
+        let room = |_c: &str| {
+            let mut m = PeerLabels::new();
+            m.insert(HANDLE, PeerLabel::agent("Claude"));
+            m
+        };
+
+        // What some *other* machine calls the participant whose frames
+        // carry `HANDLE` -- the id a mention resolved there carries.
+        let table = Arc::new(super::PeerTable::new());
+        let mut labels = HashMap::new();
+        let mut announced = HashMap::new();
+        let from_outside = super::remote_participant_id(
+            ROOM, HANDLE, &room, &table, &mut labels, &mut announced,
+        );
+
+        // And what the machine whose handle that is says about itself.
+        let identity = LocalIdentity::with_lookup(HANDLE, room);
+        let mine = identity
+            .self_row(Some(&CrdtRoute::cluster(ROOM.to_string())))
+            .expect("a connection that announced a room has a local participant");
+
+        assert_eq!(
+            mine.id, from_outside,
+            "the id a machine gives its own applications must be the id \
+             every other machine addresses it by -- two strings for one \
+             participant is how a remark sent to this agent read as sent \
+             to nobody",
+        );
+        assert!(mine.is_self, "the row a machine mints for itself is its own");
+        assert_eq!(
+            mine.name, "Claude",
+            "and it is called what the room calls it, not what the local \
+             process asked to be called",
+        );
+        assert!(
+            mine.is_agent,
+            "the kind comes off the capability that admitted this machine, \
+             exactly as it does for a peer",
+        );
+    }
+
+    /// The local participant is announced to an app, over the wire.
+    ///
+    /// Every link in this chain had its own passing test while the chain
+    /// itself was broken, so this one drives the real socket: a real
+    /// broker, a real `Hello`, and the roster an application actually
+    /// receives. What it pins is that the row arrives at all -- nothing
+    /// used to send it, and no test could see that because every test
+    /// examined a roster somebody had handed it.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn an_app_is_told_which_participant_in_the_room_is_its_own() {
+        const HANDLE: u64 = 7_213_907_255_761_426_039;
+        const ROOM: &str = "room-self";
+
+        let socket_path = temp_sock("self-row");
+        let identity = LocalIdentity::with_lookup(HANDLE, |_c: &str| {
+            let mut m = PeerLabels::new();
+            m.insert(HANDLE, PeerLabel::person("Quinten"));
+            m
+        });
+        let handle = super::spawn_full_with_identity(socket_path.clone(), None, None, identity)
+            .expect("broker should bind");
+
+        let mut app = connect_manager_as(&socket_path, "dev.qos.notes", ROOM);
+        wait_for_peers(&handle, 1, Duration::from_millis(500));
+
+        let heard = poll_until(&mut app, 1, Duration::from_secs(2));
+        let rows: Vec<_> = heard
+            .iter()
+            .filter_map(|e| match e {
+                CollabEvent::Context { collaborators, .. } => Some(collaborators.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+
+        let me = rows.iter().find(|c| c.is_self).unwrap_or_else(|| {
+            panic!(
+                "an app that said Hello was never told which participant is \
+                 its own; it received {rows:?}"
+            )
+        });
+        assert_eq!(
+            me.id,
+            format!("peer@{HANDLE}"),
+            "and it is told the address the room uses, which is the only \
+             one a mention from another machine can carry",
+        );
+        assert_eq!(me.name, "Quinten", "named by the room, as every row is");
+        assert!(
+            !me.is_agent,
+            "a room that admitted no agent here reports a person",
+        );
+
+        drop(app);
+        let _ = std::fs::remove_file(&socket_path);
+        drop(handle);
     }
 
     /// An app that starts after the name was said still learns it.
