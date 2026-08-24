@@ -171,6 +171,7 @@ impl WorkspaceTreeReplica {
             msgs.push(NeighbourMsg::SyncReq {
                 since,
                 room: room.to_string(),
+                invite: None,
             });
         }
         drop(tree);
@@ -212,7 +213,7 @@ impl WorkspaceTreeReplica {
     pub fn handle_from(&mut self, from: &PeerOrigin, msg: &NeighbourMsg) {
         let sender = from;
         match msg {
-            NeighbourMsg::SyncReq { since, room } => {
+            NeighbourMsg::SyncReq { since, room, .. } => {
                 // A request that names no room is the transport's
                 // peer-join kick. It is not a request for everything —
                 // answering it with a document would be the leak this
@@ -634,6 +635,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new()).unwrap(),
                 room: stranger_room.to_string(),
+                invite: None,
             },
         );
         assert!(
@@ -659,6 +661,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since: Vec::new(),
                 room: String::new(),
+                invite: None,
             },
         );
 
@@ -944,6 +947,7 @@ mod tests {
             .push(NeighbourMsg::SyncReq {
                 since: vec![1],
                 room: String::new(),
+                invite: None,
             });
         rep.pending_outgoing
             .lock()
@@ -951,6 +955,7 @@ mod tests {
             .push(NeighbourMsg::SyncReq {
                 since: vec![2],
                 room: String::new(),
+                invite: None,
             });
 
         let drained = rep.drain_outgoing();
@@ -993,7 +998,7 @@ mod tests {
         let queued = rep.drain_outgoing();
         assert_eq!(queued.len(), 1, "one SyncReq per room this machine is in");
         match &queued[0] {
-            NeighbourMsg::SyncReq { since, room: r } => {
+            NeighbourMsg::SyncReq { since, room: r, .. } => {
                 // Empty heads serialises to "[]" (2 bytes), not an empty vec.
                 assert!(
                     !since.is_empty(),
@@ -1168,6 +1173,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since: since.clone(),
                 room: elsewhere.to_string(),
+                invite: None,
             },
         );
         assert!(
@@ -1184,6 +1190,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since: since.clone(),
                 room: room.to_string(),
+                invite: None,
             },
         );
         assert!(
@@ -1198,6 +1205,7 @@ mod tests {
             &NeighbourMsg::SyncReq {
                 since,
                 room: room.to_string(),
+                invite: None,
             },
         );
         assert!(

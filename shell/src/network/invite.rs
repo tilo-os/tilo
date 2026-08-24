@@ -17,6 +17,7 @@
 //!
 //! ```ignore
 //! { "workspace_id": u64,
+//!   "invite_id": "…-…-…" (uuid),
 //!   "room_id": "…-…-…" (uuid),
 //!   "owner_peer_id": "12D3KooW…" (base58),
 //!   "owner_public_key": <base64-url protobuf-encoded PublicKey>,
@@ -45,6 +46,23 @@ use crate::shell::state::{
 /// [`make_invite_token`] / [`validate_invite_token`].
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
 pub struct PeerInviteToken {
+    /// This invitation's own identity, minted fresh for every token.
+    ///
+    /// One host can have several invitations out at once — one per
+    /// person it has asked — and they all name the same room. The room
+    /// is therefore not enough to tell them apart, which is what makes
+    /// this field load-bearing rather than decorative: the name the
+    /// inviter typed is parked against *this* id
+    /// (`crate::shell::network::ShellNetwork::pending_invites`), the
+    /// redeemer quotes it back on the request that redeems it
+    /// ([`crate::network::protocol::NeighbourMsg::SyncReq`]), and that
+    /// is how the second person to arrive is still called what they
+    /// were invited as rather than falling back to `peer@<handle>`.
+    ///
+    /// Signed along with the rest. Unsigned it could be rewritten in
+    /// transit, and a rewritten one is an invitee wearing the name
+    /// that was meant for somebody else.
+    pub invite_id: String,
     /// Gossipsub topic the invite grants access to. The receiver will
     /// issue a `JoinWorkspace { ws: workspace_id }` once the signature
     /// checks out.
@@ -95,8 +113,8 @@ pub struct PeerInviteToken {
 /// Build the canonical signing-payload string from a token's fields.
 ///
 /// Fields are joined with `|` in a fixed order: `workspace_id |
-/// room_id | owner_peer_id | owner_public_key | owner_addr |
-/// expiry_unix_seconds`. Pinned by
+/// invite_id | room_id | owner_peer_id | owner_public_key |
+/// owner_addr | expiry_unix_seconds`. Pinned by
 /// [`tests::canonical_payload_is_stable`] so a future field addition
 /// can't silently break verification on already-issued tokens.
 ///
@@ -107,6 +125,7 @@ pub struct PeerInviteToken {
 /// other check still passed.
 fn canonical_payload(
     workspace_id: u64,
+    invite_id: &str,
     room_id: &str,
     owner_peer_id: &str,
     owner_public_key: &str,
@@ -114,8 +133,8 @@ fn canonical_payload(
     expiry_unix_seconds: u64,
 ) -> String {
     format!(
-        "{workspace_id}|{room_id}|{owner_peer_id}|{owner_public_key}|{owner_addr}|\
-         {expiry_unix_seconds}"
+        "{workspace_id}|{invite_id}|{room_id}|{owner_peer_id}|{owner_public_key}|\
+         {owner_addr}|{expiry_unix_seconds}"
     )
 }
 
@@ -157,6 +176,9 @@ pub fn make_invite_token(
         ));
     }
     let workspace_id = workspace.id.raw();
+    // Fresh per token, never per room: two people invited into one room
+    // are two invitations, and this is the only thing that says so.
+    let invite_id = uuid::Uuid::new_v4().to_string();
     let room_id = workspace.room.to_string();
     let public_key = keypair.public();
     let owner_peer_id = public_key.to_peer_id().to_base58();
@@ -165,6 +187,7 @@ pub fn make_invite_token(
 
     let payload = canonical_payload(
         workspace_id,
+        &invite_id,
         &room_id,
         &owner_peer_id,
         &owner_public_key,
@@ -177,6 +200,7 @@ pub fn make_invite_token(
 
     let token = PeerInviteToken {
         workspace_id,
+        invite_id,
         room_id,
         owner_peer_id,
         owner_public_key,
@@ -242,6 +266,7 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
 
     let payload = canonical_payload(
         token.workspace_id,
+        &token.invite_id,
         &token.room_id,
         &token.owner_peer_id,
         &token.owner_public_key,
@@ -348,6 +373,7 @@ mod tests {
     fn canonical_payload_is_stable() {
         let p = canonical_payload(
             99,
+            "b1a70000-0000-4000-8000-0000000000aa",
             "3f2b1c00-0000-4000-8000-000000000001",
             "PEER",
             "PK",
@@ -356,7 +382,8 @@ mod tests {
         );
         assert_eq!(
             p,
-            "99|3f2b1c00-0000-4000-8000-000000000001|PEER|PK|\
+            "99|b1a70000-0000-4000-8000-0000000000aa|\
+             3f2b1c00-0000-4000-8000-000000000001|PEER|PK|\
              /ip4/127.0.0.1/tcp/1234|1700000000"
         );
     }

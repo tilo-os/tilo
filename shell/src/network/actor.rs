@@ -402,6 +402,7 @@ impl Actor {
                     let msg = NeighbourMsg::SyncReq {
                         since: vec![],
                         room: String::new(),
+                        invite: None,
                     };
                     let bytes = match serde_json::to_vec(&msg) {
                         Ok(b) => b,
@@ -563,6 +564,7 @@ mod tests {
         let payload = NeighbourMsg::SyncReq {
             since: vec![1, 2, 3],
             room: "6b3f9a10-0000-4000-8000-00000000000a".to_string(),
+            invite: None,
         };
         cmd_a
             .send(NetCmd::Publish {
