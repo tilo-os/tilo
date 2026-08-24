@@ -76,6 +76,28 @@ impl Resource {
     }
 }
 
+/// What kind of thing an operation's one text argument names.
+///
+/// Every argument arrives as a string; what differs is where a string that
+/// would mean anything can come from. [`Collects::Words`] is something a
+/// person says outright — a new filename, a line of prose — so an instruction
+/// asking for one has to contain it. [`Collects::Content`] is the address of
+/// bytes, a content hash, which nobody types and nothing can invent: it exists
+/// only because some earlier operation produced the content it names.
+///
+/// Declared on the spec rather than guessed from the prompt, because this is
+/// the one thing that lets a caller with no screen tell "give me a new name"
+/// from "give me the image to place". A caller that guessed would put a hash
+/// where a name goes, and be told nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Collects {
+    /// Free text, in the words of whoever is asking.
+    #[default]
+    Words,
+    /// The content hash of bytes already in this machine's blob store.
+    Content,
+}
+
 /// How an [`ActionSpec`] produces its replayable [`EncodedAction`] when chosen.
 #[derive(Clone)]
 pub enum ActionInput {
@@ -88,6 +110,8 @@ pub enum ActionInput {
     Prompted {
         prompt: String,
         placeholder: String,
+        /// What that argument names. See [`Collects`].
+        collects: Collects,
         build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>,
     },
 }
@@ -146,9 +170,31 @@ impl ActionSpec {
             input: ActionInput::Prompted {
                 prompt: prompt.into(),
                 placeholder: placeholder.into(),
+                collects: Collects::Words,
                 build: Arc::new(build),
             },
         }
+    }
+
+    /// An action whose one argument is the content hash of bytes this machine
+    /// already holds, rather than words somebody types.
+    ///
+    /// A separate constructor rather than a parameter on [`Self::prompted`],
+    /// so every operation that exists keeps saying exactly what it said: an
+    /// argument is words unless the app declares otherwise.
+    pub fn prompted_content(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        prompt: impl Into<String>,
+        placeholder: impl Into<String>,
+        locus: ExecutionLocus,
+        build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        let mut spec = Self::prompted(id, label, prompt, placeholder, locus, build);
+        if let ActionInput::Prompted { collects, .. } = &mut spec.input {
+            *collects = Collects::Content;
+        }
+        spec
     }
 
     pub fn with_description(mut self, description: impl Into<String>) -> Self {

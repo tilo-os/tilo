@@ -56,7 +56,8 @@ pub use executor::{
 };
 pub use registry::ActionRegistry;
 pub use resource::{
-    flatten, ActionInput, ActionSpec, FlatAction, Resource, ResourceId, ResourceProvider, KEY_SEP,
+    flatten, ActionInput, ActionSpec, Collects, FlatAction, Resource, ResourceId, ResourceProvider,
+    KEY_SEP,
 };
 
 #[cfg(test)]
