@@ -7,12 +7,18 @@
 
 /// The current locale's key candidates, most specific first.
 ///
-/// Read from `LC_MESSAGES`, then `LC_ALL`, then `LANG` — the order
-/// `setlocale` itself uses for the messages category. `C` and `POSIX`
-/// mean "no translation", and yield an empty list so the unlocalised
-/// value is taken.
+/// Read from `LC_ALL`, then `LC_MESSAGES`, then `LANG` — the precedence
+/// POSIX gives the messages category. `LC_ALL` is first because it
+/// *overrides* every category when it is set; reading `LC_MESSAGES`
+/// ahead of it inverted that, so a harness that pinned `LC_ALL` to one
+/// language still resolved `Name[xx]=` in whatever `LC_MESSAGES` the
+/// machine happened to carry — an English session with German app
+/// names in the palette, and no way to pin it from outside.
+///
+/// `C` and `POSIX` mean "no translation", and yield an empty list so the
+/// unlocalised value is taken.
 pub fn locale_candidates() -> Vec<String> {
-    for var in ["LC_MESSAGES", "LC_ALL", "LANG"] {
+    for var in ["LC_ALL", "LC_MESSAGES", "LANG"] {
         if let Some(raw) = std::env::var_os(var) {
             let raw = raw.to_string_lossy().to_string();
             let trimmed = raw.trim();
