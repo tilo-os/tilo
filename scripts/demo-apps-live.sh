@@ -21,11 +21,14 @@
 # only the profile did.
 #
 # `demo` rather than `release` because that is what the compositor is
-# built as and what `yc-demo.py` resolves first; for every package
-# built here it IS the release configuration (opt-level 3, fat LTO,
-# one codegen unit, `strip = "symbols"`). `[profile.demo]` inherits
-# `release` and overrides exactly one thing — `debug-assertions` for
-# the `shell` package, which this script does not build.
+# built as and what `yc-demo.py` resolves first. It is the release
+# configuration in everything that reaches the screen — opt-level 3,
+# `strip = "symbols"` — and differs from it in how it links: thin LTO
+# across 16 codegen units rather than fat LTO through one. That is a
+# recording profile, relinked after almost every change, where fat LTO
+# cost over seven minutes of a single core with the rest of the machine
+# idle. It also sets `debug-assertions` for the `shell` package, which
+# this script does not build.
 #
 # This tree is a build artefact under `target/`, so it is not in git and
 # a clean checkout has none of it. Before this script it was assembled

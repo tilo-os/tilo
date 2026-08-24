@@ -540,8 +540,27 @@ lto = false
 # every dependency stays bit-identical to its release build, so this is
 # mostly a re-link rather than a rebuild. `--release` itself is untouched,
 # and the OS image and host RPM still ship the closed gate.
+# The profile the demo is recorded on. It inherits `release` for the reason
+# the film exists -- sluggishness judged off a debug build is not a judgement
+# about the product -- but it does not inherit release's *link* settings.
+#
+# `lto = "fat"` plus `codegen-units = 1` is a shipping trade: minutes of link
+# time bought once, for a binary users keep. Recording is the opposite shape.
+# The compositor is relinked after almost every change, and measured here that
+# link was over seven minutes of a single rustc at ~95% of one core -- serial,
+# so the other fifteen sit idle through it. Paid on every pass of look-at-a-
+# frame, fix, look again, it is the single largest cost in the loop this film
+# is made by.
+#
+# Thin LTO still optimises across crates and `codegen-units = 16` still lets
+# the work parallelise. What is given up is the last few percent of a compositor
+# whose measured frame submit is 12us against a 16ms budget -- three orders of
+# magnitude of headroom, so the difference cannot reach the screen. `release`
+# itself is untouched: what ships still gets the full treatment.
 [profile.demo]
 inherits = "release"
+lto = "thin"
+codegen-units = 16
 
 [profile.demo.package.shell]
 debug-assertions = true
