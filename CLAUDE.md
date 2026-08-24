@@ -38,10 +38,33 @@ normalise them in passing.
 ## Build & Test
 
 **Run plain `cargo`.** `~/.local/bin/cargo` is a shim that routes builds into `my-distrobox`
-and manages sccache, from the main tree and every worktree. **Do not set** `RUSTC_WRAPPER`,
-`SCCACHE_*`, `CARGO_TARGET_DIR` or `CARGO_BUILD_JOBS` — the shim owns them. `jobs = 4` lives
-in `.cargo/config.toml`; do not add a concurrency cap, it throttles the machine even when
-idle. `QCARGO_DEBUG=1` prints the routing decision, `QCARGO_BYPASS=1` skips the shim.
+and manages sccache, from the main tree and every worktree. **Do not set** `RUSTC_WRAPPER`
+or `SCCACHE_*` — the shim owns those, and a build that reaches the wrong sccache server
+cannot see its own namespace's headers. `jobs = 4` lives in `.cargo/config.toml`; do not add
+a concurrency cap, it throttles the machine even when idle. `QCARGO_DEBUG=1` prints the
+routing decision, `QCARGO_BYPASS=1` skips the shim.
+
+**`CARGO_TARGET_DIR` is yours to set, and when several agents build at once you should.**
+The shim does not set it — the rule that said otherwise was wrong about which variable it
+was protecting. The real hazard is *sharing*: two worktrees pointed at one target directory
+collide, because cargo's artifact key omits the package path, and you silently get the other
+one's binary. A directory *per builder* is the opposite of that and is safe.
+
+It is also the difference between building N-wide and queueing. Cargo takes one exclusive
+lock per target directory, so agents sharing one do not build in parallel, they take turns.
+Measured mid-fleet: 7 cargo processes, 2 rustc, 16 idle cores. Give each concurrent builder
+its own directory under `.claude/build/`:
+
+```bash
+export CARGO_TARGET_DIR=/…/quickdesktop/.claude/worktrees/<wt>/.claude/build/<slot>
+```
+
+What keeps that affordable is sccache, and what keeps sccache working is `incremental =
+false` in `[profile.dev]` (see the note in the root `Cargo.toml`). sccache refuses any
+compilation carrying `-C incremental=`, so with incremental on, 79% of this workspace's
+compilations were uncacheable and nothing was shared between directories. With it off they
+are content-addressed: the first builder compiles a crate, the rest get it as a hit. Delete
+a slot when its agent is done — artifacts are per-directory even though compilation is not.
 
 The host has none of the native dev libraries and cannot get them (`/usr` is read-only); the
 container pins the build environment. A missing one shows up as `pkg-config exited with

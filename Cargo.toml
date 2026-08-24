@@ -453,10 +453,29 @@ proptest = "1"
 #
 # Compile time is unaffected or slightly better; this is a size setting.
 #
-# Note `target/debug/incremental` is a further ~45 GB and is pure cache —
-# it can be deleted at any time and costs only one slower rebuild.
+# `target/debug/incremental` is a further 77 GB and is pure cache — it can
+# be deleted at any time and costs only one slower rebuild.
 [profile.dev]
 debug = "line-tables-only"
+
+# Incremental is off because it and sccache cannot both have the local
+# crates, and the split was never as clean as it looked. sccache refuses
+# outright any compilation carrying `-C incremental=`: measured here, that
+# was 13,417 of 16,947 requests, so a 14.55% hit rate reflected almost
+# nothing about what was cacheable. With it off those units become
+# content-addressed and shared, and a second worktree — or a second agent
+# in the same one — gets them as hits rather than recompiling them.
+#
+# That sharing is what makes a target directory per agent affordable, and
+# a directory per agent is the point: cargo takes one exclusive lock per
+# target dir, so N builds against one directory do not run N-wide, they
+# queue. Measured mid-fleet: 7 cargo processes, 2 rustc, 16 idle cores.
+#
+# The cost is that touching one line recompiles that crate whole instead
+# of a fragment of it. For a single person iterating on one crate that is
+# the worse trade; for several builds of a 97-member workspace it is not
+# close.
+incremental = false
 
 # Test binaries are the bulk of the count, so they get the same treatment.
 [profile.test]
