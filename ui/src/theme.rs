@@ -163,6 +163,16 @@ impl Theme {
         self.tokens.colors.on_card()
     }
 
+    /// [`Self::on_card`] for any surface a widget actually paints on — a
+    /// document's paper, a placeholder box that is a tint of it, a panel a
+    /// chart plots inside. Both returned tiers clear WCAG AA against
+    /// `surface`, measured rather than assumed. Thin forwarder to
+    /// [`crate::tokens::Colors::on_surface`], which explains why the surface
+    /// has to be a parameter.
+    pub fn on_surface(&self, surface: Color) -> crate::tokens::colors::OnCard {
+        self.tokens.colors.on_surface(surface)
+    }
+
     /// The hairline that separates a window from the desktop behind it. Thin
     /// forwarder to [`crate::tokens::Colors::window_edge`], which explains why
     /// the edge is derived from the desktop ground rather than taken as a
@@ -764,6 +774,72 @@ mod tests {
     /// "waiting for first frame", and a blank note's zero-state were dark
     /// on dark and simply could not be read. The light presets had the
     /// mirror bug: `neutral[1]` there is near-white, on a white card.
+    /// Both ink tiers clear AA on any surface, not only on the window card.
+    ///
+    /// The card is one ground among several. A document's paper is light in
+    /// every theme by design, and a placeholder box drawn on it is a tint of
+    /// that paper — so ink for it cannot come from darkening the background by
+    /// a fixed fraction, which is what a hand-rolled shade does. That produces
+    /// about the same ratio whatever the palette, which is how the
+    /// high-contrast preset ended up *less* legible than the light one:
+    /// 4.37:1 against 4.52:1, on the sentence telling a reader why their
+    /// picture was not there.
+    ///
+    /// The grounds below are the ones real callers hand in, sampled across the
+    /// light/dark line and including the near-white tints a paper-like surface
+    /// produces.
+    #[test]
+    fn on_surface_ink_clears_aa_on_any_ground_a_caller_paints_on() {
+        use crate::a11y::contrast_ratio;
+        let grounds = [
+            ("paper", Color::from_rgb8(0xfc, 0xfc, 0xfa)),
+            ("paper tint", Color::from_rgb8(0xee, 0xee, 0xec)),
+            ("paper tint, cool", Color::from_rgb8(0xdf, 0xdf, 0xe2)),
+            ("mid grey", Color::from_rgb8(0x80, 0x80, 0x80)),
+            ("near black", Color::from_rgb8(0x0a, 0x0a, 0x0a)),
+            ("black", Color::from_rgb8(0, 0, 0)),
+            ("white", Color::from_rgb8(255, 255, 255)),
+        ];
+        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            for (label, ground) in grounds {
+                let on = t.on_surface(ground);
+                let r = contrast_ratio(on.ink, ground);
+                assert!(r >= 4.5, "{} ink on {label} = {r:.2}:1 (< AA)", t.name);
+                let rd = contrast_ratio(on.ink_dim, ground);
+                assert!(
+                    rd >= 4.5,
+                    "{} dim ink on {label} = {rd:.2}:1 (< AA) — this is the tier a \
+                     caption or a placeholder label uses",
+                    t.name,
+                );
+            }
+        }
+    }
+
+    /// A palette authored for more contrast delivers more of it.
+    ///
+    /// The measured symptom that started this: a placeholder label read at
+    /// 4.37:1 under the high-contrast preset and 4.52:1 under the light one,
+    /// on the same box. Whatever derives an on-surface ink has to be reading
+    /// the palette, and a preset whose whole purpose is legibility cannot come
+    /// out behind the ordinary one.
+    #[test]
+    fn the_high_contrast_preset_is_not_the_least_legible_one() {
+        use crate::a11y::contrast_ratio;
+        // A tint of a document's paper, which is light under every preset.
+        let ground = Color::from_rgb8(0xee, 0xee, 0xec);
+        let dim_ratio = |t: &Theme| contrast_ratio(t.on_surface(ground).ink_dim, ground);
+        let hc = dim_ratio(&Theme::high_contrast());
+        for t in [Theme::light(), Theme::dark()] {
+            let r = dim_ratio(&t);
+            assert!(
+                hc >= r,
+                "high-contrast reads at {hc:.2}:1 where {} reads at {r:.2}:1",
+                t.name,
+            );
+        }
+    }
+
     #[test]
     fn on_card_ink_clears_aa_on_every_preset_card() {
         use crate::a11y::contrast_ratio;

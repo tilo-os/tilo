@@ -448,31 +448,94 @@ impl Colors {
     /// high-contrast preset (black card) and OLED (`#0A0A0A` card) they
     /// painted dark-on-dark and the text disappeared.
     pub fn on_card(&self) -> OnCard {
-        use crate::a11y::contrast_ratio;
-        let card = self.surfaces.window_card;
+        self.on_surface(self.surfaces.window_card)
+    }
 
-        let (ink, ink_dim, ink_tertiary) =
-            if contrast_ratio(self.text_primary, card) >= ON_CARD_MIN_CONTRAST {
-                (self.text_primary, self.text_dim, self.text_tertiary)
+    /// [`Self::on_card`] for any surface a widget actually paints on.
+    ///
+    /// The window card is not the only ground content lands on: a document's
+    /// paper is deliberately light in every theme, a placeholder box is a tint
+    /// of that paper, a chart plots on its own panel. Each of those is a
+    /// different background, and ink that clears AA on the card can sit at
+    /// 4.4:1 on a surface a few percent away from it — which is where a
+    /// hand-derived tone lands when it is computed by darkening the
+    /// *background* by a fixed fraction instead of being measured against it.
+    /// A fixed fraction produces roughly the same ratio whatever the palette,
+    /// so the theme that exists to raise contrast does not.
+    ///
+    /// So the surface is a parameter and the ratio is checked, both tiers of
+    /// it: `ink` **and** `ink_dim` have to clear
+    /// [`ON_CARD_MIN_CONTRAST`] before the chrome's own tiers are handed
+    /// back. `text_primary` clearing says nothing about `text_dim`, and
+    /// `ink_dim` is the tier a caption or a placeholder label uses — the very
+    /// text most likely to be the only explanation on screen.
+    pub fn on_surface(&self, surface: Color) -> OnCard {
+        use crate::a11y::contrast_ratio;
+
+        let chrome_tiers_read = contrast_ratio(self.text_primary, surface) >= ON_CARD_MIN_CONTRAST
+            && contrast_ratio(self.text_dim, surface) >= ON_CARD_MIN_CONTRAST;
+
+        let (ink, ink_dim, ink_tertiary) = if chrome_tiers_read {
+            (self.text_primary, self.text_dim, self.text_tertiary)
+        } else {
+            // One step in from the ramp end, not the end itself: pure
+            // black on white (or pure white on black) is harsher than
+            // the typography the rest of the UI uses.
+            let from_low = contrast_ratio(self.neutral[0], surface)
+                >= contrast_ratio(self.neutral[10], surface);
+            if from_low {
+                (self.neutral[1], self.neutral[4], self.neutral[4])
             } else {
-                // One step in from the ramp end, not the end itself: pure
-                // black on white (or pure white on black) is harsher than
-                // the typography the rest of the UI uses.
-                let from_low = contrast_ratio(self.neutral[0], card)
-                    >= contrast_ratio(self.neutral[10], card);
-                if from_low {
-                    (self.neutral[1], self.neutral[4], self.neutral[4])
-                } else {
-                    (self.neutral[9], self.neutral[6], self.neutral[6])
-                }
-            };
+                (self.neutral[9], self.neutral[6], self.neutral[6])
+            }
+        };
+
+        // The ramp is the palette's own, so its inner steps are not guaranteed
+        // to clear against an arbitrary surface — a mid-grey placeholder under
+        // a palette whose ramp is shallow can leave `neutral[4]` short. Walk
+        // outward to the end that contrasts until the floor is met, rather
+        // than returning a tier that reads on the card this was written for
+        // and nowhere else.
+        let ink = self.step_out_until_legible(ink, surface);
+        let ink_dim = self.step_out_until_legible(ink_dim, surface);
 
         OnCard {
             ink,
             ink_dim,
             ink_tertiary,
-            tint: mix8(card, ink, ON_CARD_TINT_T),
+            tint: mix8(surface, ink, ON_CARD_TINT_T),
         }
+    }
+
+    /// Darken or lighten `ink` toward whichever extreme contrasts with
+    /// `surface` until it clears [`ON_CARD_MIN_CONTRAST`].
+    ///
+    /// Returns `ink` untouched when it already clears, so a palette's authored
+    /// tone is preferred and only adjusted when it would not be readable. The
+    /// walk is bounded and ends at the extreme, which always clears against
+    /// any surface it was chosen for.
+    fn step_out_until_legible(&self, ink: Color, surface: Color) -> Color {
+        use crate::a11y::contrast_ratio;
+        if contrast_ratio(ink, surface) >= ON_CARD_MIN_CONTRAST {
+            return ink;
+        }
+        let black = Color::from_rgb8(0, 0, 0);
+        let white = Color::from_rgb8(255, 255, 255);
+        let target = if contrast_ratio(black, surface) >= contrast_ratio(white, surface) {
+            black
+        } else {
+            white
+        };
+        // Sixteenths: fine enough that the result stays close to the authored
+        // tone, coarse enough to be a handful of comparisons rather than a
+        // search.
+        for step in 1..=16 {
+            let candidate = mix8(ink, target, step as f32 / 16.0);
+            if contrast_ratio(candidate, surface) >= ON_CARD_MIN_CONTRAST {
+                return candidate;
+            }
+        }
+        target
     }
 
     /// A hairline that stays visible on `ground`, whichever side of the
