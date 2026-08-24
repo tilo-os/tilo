@@ -172,6 +172,7 @@ qdoc = { path = "../crates/doc/qdoc" }
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the
 # focused app instance's open resources and dispatch their exported actions.
 qos-actions = { path = "../crates/collab/actions" }
+qos-reference = { path = "../crates/collab/reference" }
 # Direct dep on the Ed25519 implementation `qos-collab-types` uses so
 # the toolkit can name `SigningKey` in `collaboration::SigningIdentity`
 # without reaching into the qos-collab-types private module path. Pinned

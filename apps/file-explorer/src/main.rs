@@ -74,6 +74,26 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             // places the revealed drawer — snapping post-layout would leave
             // the panes at their pre-reveal rects.
             Some("places") => widget.debug_open_places_drawer(),
+            // "Say something about this": a selected file, the ordinary
+            // context menu, and the compose surface beside it carrying that
+            // file's address. The destinations are demo values, seeded here
+            // and only here — the app itself never invents a roster.
+            Some("remark") => {
+                widget.debug_select(&[3]);
+                widget.set_remark_destinations(vec![
+                    ui::widget::DestinationOption::localised(
+                        qos_reference::Destination::channel("c_run", "run-of-show"),
+                    ),
+                    ui::widget::DestinationOption::localised(
+                        qos_reference::Destination::participant("u_xaver", "Xaver", false),
+                    ),
+                    ui::widget::DestinationOption::localised(
+                        qos_reference::Destination::participant("agent_claude", "Claude", true),
+                    ),
+                ]);
+                let doc = ui::automerge::AutoCommit::new();
+                widget.open_remark_for_selection(&doc, ui::vello::kurbo::Point::new(360.0, 250.0));
+            }
             _ => {}
         }
         render_shot_to_png(widget, viewport, scenario.as_deref(), &out)?;
