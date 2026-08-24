@@ -472,7 +472,7 @@ fn immediate_spec(id: &str, label: &str, action: &ChatAction) -> ActionSpec {
 pub fn is_chat_document(doc: &AutoCommit) -> bool {
     ["channels", "messages"]
         .iter()
-        .any(|k| matches!(doc.get(&ROOT, k), Ok(Some((Value::Object(ObjType::Map), _)))))
+        .any(|k| matches!(doc.get(&ROOT, *k), Ok(Some((Value::Object(ObjType::Map), _)))))
 }
 
 /// A channel's palette label: `#name` for text, a speaker glyph for voice.
