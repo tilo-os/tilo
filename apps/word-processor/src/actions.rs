@@ -179,6 +179,24 @@ pub enum WordProcessorAction {
         width: Option<i64>,
         height: Option<i64>,
     },
+    /// Place the image already stored under content hash `blob` directly after
+    /// block `after`.
+    ///
+    /// [`InsertImage`](Self::InsertImage) carries the bytes; this one carries
+    /// only their address. That difference is what makes it exportable at all.
+    /// An operation somebody else can ask for has one text argument, and a
+    /// photograph is not text — but a content hash is, and the bytes it names
+    /// are already here because something in the room produced them. So "put
+    /// the cropped photograph under this heading" becomes a thing the document
+    /// exports rather than a file round-trip through the disk.
+    ///
+    /// Refused, not approximated, when this machine's store has no such
+    /// content: an image block referencing bytes nobody will ever have is a
+    /// permanent hole in the page, and every peer would inherit it.
+    PlaceImage {
+        after: String,
+        blob: String,
+    },
     /// Insert a manual page break at `(block, at)`: split the block like Enter and
     /// mark the new block to start on a fresh page.
     InsertPageBreak {
@@ -448,6 +466,27 @@ impl Action for WordProcessorAction {
                 }
             }
 
+            WordProcessorAction::PlaceImage { after, blob } => {
+                // The bytes decide whether this can happen at all, so they are
+                // asked for before anything is written. `put_blob` would
+                // otherwise be handed nothing and the block would reference a
+                // hash with no descriptor behind it — an image-shaped gap that
+                // replicates to everybody and never fills in.
+                let Some(bytes) = qdoc::blobstore::store().get(blob) else {
+                    return Err(ActionError::Refused(
+                        "the image is not on this machine".to_string(),
+                    ));
+                };
+                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                // Re-put rather than trusting the argument: `put_blob` returns
+                // the hash of the bytes it was given, so a store that answered
+                // with the wrong content cannot get that content into the
+                // document under the name that was asked for.
+                let hash = dm.put_blob(&bytes);
+                let img = dm.insert_block(Some(after), "image");
+                dm.set_attr(&img, "blob", hash.as_str());
+            }
+
             WordProcessorAction::InsertPageBreak { block, at } => {
                 // Split the block at the caret (like Enter): the tail moves into a
                 // fresh paragraph that starts on a new page.
@@ -597,6 +636,14 @@ pub fn insert_table_action(after: &str, rows: usize, cols: usize) -> WordProcess
         after: after.to_string(),
         rows,
         cols,
+    }
+}
+
+/// Place the image stored under content hash `blob` after block `after`.
+pub fn place_image_action(after: &str, blob: &str) -> WordProcessorAction {
+    WordProcessorAction::PlaceImage {
+        after: after.to_string(),
+        blob: blob.to_string(),
     }
 }
 
@@ -804,6 +851,24 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
                 &set_align_action(vec![b.id.clone()], align),
             ));
         }
+        // Put a picture under this heading. The argument is a content hash
+        // rather than a path or a file, and that is what makes it an
+        // *exported* operation rather than a menu item: the caller does not
+        // have to be this process, or have a filesystem in common with it, or
+        // be able to hand over bytes — the content is already addressed, and
+        // whoever produced it is somebody else's business.
+        let anchor = b.id.clone();
+        child = child.with_action(
+            ActionSpec::prompted_content(
+                "place-image",
+                "Place image below",
+                "The image to place, by content hash",
+                "",
+                ExecutionLocus::ClientLocal,
+                move |arg| encode(&place_image_action(&anchor, arg.trim())),
+            )
+            .with_description("Put a picture directly beneath this heading"),
+        );
         root = root.with_child(child);
     }
 
