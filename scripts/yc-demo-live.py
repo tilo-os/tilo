@@ -880,12 +880,34 @@ class Live:
         self.say("cutting to xaver — he has the image")
         yc.cut("xaver")
         try:
+            # Aimed at a pixel, not at a name. A client application's
+            # widgets are not in the compositor's target registry -- that
+            # registry walks the shell's own tree -- so the earlier call
+            # here asked for `file_row:harbour.png` and could never once
+            # have resolved. It had never run, because the compose surface
+            # had never opened far enough for anyone to find out.
+            tile = yc.best_tile(self.x, yc.FILES_APP, yc.VIEWPORT)
+            if tile is None:
+                yc.gap("xaver has no file manager window on screen, so "
+                       "there is no image for him to right-click")
+                return False
+            yc.frame_one_window(self.x, yc.FILES_APP)
+            # Re-read after framing: it moves and resizes the group, so a
+            # rect taken before is the placement of a window that is no
+            # longer there, and every press below is aimed at a pixel.
+            tile = yc.best_tile(self.x, yc.FILES_APP, yc.VIEWPORT) or tile
+            log = yc.LogTail(self.x.log_path)
+            log.catch_up()
             said = yc.say_something_about(
-                self.x, f"file_row:{yc.PHOTO_NAME}",
-                self.args.instruction, self.shots, "his-instruction")
+                self.x, log, tuple(tile["rect"]), yc.PHOTO_NAME,
+                yc.expected_listing(self.x.home), self.args.instruction,
+                self.shots, "his-instruction")
         finally:
-            yc.cut("quinten")
-            self.say("back on your screen — watch the document")
+            # The camera stays on xaver. He asked for it, so he sees it
+            # land -- on a machine where he owns nothing and opened
+            # nothing, which is a stronger claim than watching a result
+            # arrive where it was already going.
+            self.say("staying on xaver — he watches it happen")
         self.instruction_sent = said
         yc.claim("the instruction came from the person holding the thing, "
                  "on another machine", said, True)
