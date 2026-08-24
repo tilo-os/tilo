@@ -384,6 +384,13 @@ def refuse_stale(what: str, artifact: str, roots: tuple[str, ...],
 # --------------------------------------------------------------------
 
 
+# How long to keep watching for a second invitation before admitting the
+# agent on xaver's. Long enough that minting two in one visit to the panel
+# always lands inside it, short enough that a run where only one was minted
+# is not left waiting on a gesture nobody is going to make.
+AGENT_INVITE_GRACE_S = 25.0
+
+
 def decode_invite(token: str) -> dict | None:
     """What a token says it admits its holder to, or None.
 
@@ -433,6 +440,15 @@ class Live:
 
         self.token: str | None = None
         self.token_at = 0.0
+        # A second invitation, made out to the agent. Separate because an
+        # invitation names its holder: `invite_from_the_panel` types a
+        # person's name and that name "is what the room will call whoever
+        # redeems this token". One token therefore carries one name, and a
+        # second participant redeeming it arrives as `peer@<n>` -- which is
+        # exactly what the payoff frame showed, on the agent's own chip,
+        # beside a `xaver` that resolved.
+        self.agent_token: str | None = None
+        self.agent_token_at = 0.0
         self.room: str | None = None
         self.xaver_in = False
         self.agent_session_in = False
@@ -540,7 +556,23 @@ class Live:
         body = decode_invite(minted or "")
         if not body:
             return
-        self.token = (minted or "").strip()
+        found = (minted or "").strip()
+
+        # The second invitation is recognised by being a different token,
+        # not by counting polls: a person mints the two whenever they get
+        # to it, and the card holds the most recent one. Anything already
+        # seen is the same card being looked at twice.
+        if self.token is not None:
+            if found == self.token or found == self.agent_token:
+                return
+            self.agent_token = found
+            self.agent_token_at = time.time()
+            who2 = card.get("invite_for")
+            self.say("a second invitation exists"
+                     + (f", made out to {who2!r}" if who2 else ""))
+            return
+
+        self.token = found
         self.token_at = time.time()
         self.room = str(body["room_id"])
         who = card.get("invite_for")
@@ -569,11 +601,23 @@ class Live:
     def bring_the_agent_session_in(self) -> None:
         """Admit the session the agent speaks through, by address.
 
-        The same token: it is a bearer credential for one room, and a
-        second participant redeeming it is a second participant in the
-        room. The route differs and the difference is the point — an
-        agent has no top bar to click, so it raises the same card by its
-        stable address and redeems with the card's own buttons.
+        Its **own** invitation, not xaver's. A token is a bearer
+        credential for one room, so reusing one does admit a second
+        participant — but an invitation also carries the name the room
+        will call whoever redeems it, and that name is held on the host
+        until they do. Two participants on one token means the second has
+        no name to be given, and arrives as `peer@<n>`. On camera that
+        was the agent's own chip, unresolved, beside a `xaver` that
+        resolved from the invitation he had been sent.
+
+        So the agent is invited the way a person is, which is also what
+        the beat claims: an agent admitted by holding a capability in the
+        same list, marked as an agent so nobody has to infer which is
+        which. A member with no name is a weaker version of that shot.
+
+        The route still differs, and that difference is still the point —
+        an agent has no top bar to click, so it raises the same card by
+        its stable address and redeems with the card's own buttons.
 
         The grants are the other half. An agent is a subject in the
         permission model rather than a peer, so what it may do is a verb
@@ -583,7 +627,18 @@ class Live:
         with yc.off_camera("the agent's session admitted to the room, and "
                            "what it is allowed to do — a question to the "
                            "authority gate, which has no picture"):
-            joined = yc.join_room(self.a, self.token, via="action")
+            if self.agent_token is None:
+                # Live, this is a person who minted one invitation and
+                # not two. The run continues on the shared token rather
+                # than stalling, because a nameless agent is a blemish
+                # and a halted take is a lost afternoon -- but it is said
+                # out loud, because it is the difference between the
+                # frame the beat wants and the frame that shipped.
+                yc.gap("only one invitation was minted, so the agent "
+                       "redeems xaver's; expect its chip to read "
+                       "peer@<n> rather than a name")
+            joined = yc.join_room(
+                self.a, self.agent_token or self.token, via="action")
             yc.claim("the agent's session joined the room", joined, True)
             if joined:
                 yc.claim("and it holds the room the token named",
@@ -771,6 +826,17 @@ class Live:
             return
 
         if self.args.agent and not self.agent_session_in:
+            # Keep looking for the agent's own invitation. The first
+            # token stops the poll above, so without this the second one
+            # is never seen and the agent falls back to xaver's --
+            # arriving nameless, which is the defect this is here to
+            # remove. Bounded, because a person may simply not mint a
+            # second one and the run should continue rather than stall.
+            if (self.agent_token is None
+                    and now < self.token_at + AGENT_INVITE_GRACE_S):
+                self.waiting = "a second invitation, made out to Claude"
+                self.look_for_the_invitation()
+                return
             self.waiting = "Claude's session is being admitted to the room"
             self.status(force=True)
             self.bring_the_agent_session_in()
@@ -879,6 +945,17 @@ def _the_owners_half(q, shots: str, instruction: str,
     yc.show_collaborators(q)
     token = yc.invite_from_the_panel(q, "xaver", shots, "live-invite")
     yc.claim("an invitation was minted from the panel", bool(token), True)
+
+    # Two, because an invitation names its holder and the agent is a
+    # member like any other. Raised again on an empty field -- the
+    # composer used to keep the previous answer, so a second invitation
+    # came out addressed to "XaverXaver".
+    yc.show_collaborators(q)
+    agent_token = yc.invite_from_the_panel(q, "Claude", shots, "live-invite-2")
+    yc.claim("a second invitation was minted, for the agent",
+             bool(agent_token), True)
+    yc.claim("and it is a different invitation from xaver's",
+             bool(agent_token) and agent_token != token, True)
     yc.close_collaborators(q)
     stop.wait(1.0)
 
