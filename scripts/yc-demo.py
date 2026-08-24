@@ -149,7 +149,17 @@ APPLICATIONS = "applications"
 FILES_APP = "dev.qos.file-explorer"
 WORD_PROCESSOR = "dev.qos.word-processor"
 CHAT_APP = "dev.qos.chat"
-IMAGE_EDITOR = "dev.qos.imager"
+#: The image editor.
+#:
+#: `dev.qos.imager` is **not** this. It is the Disk Imager -- a USB and
+#: OS-install wizard, some 5,800 lines of device probing and `.iso`
+#: streaming, whose history has never been anything else. It was named
+#: here because the id reads like an image editor, and the palette search
+#: below asked for "image", which matches "Disk Imager" -- so the beat
+#: opened an install wizard, put it in the strip beside the word
+#: processor, and captioned it as the image editor. It succeeded
+#: silently, which is the worst way for this to be wrong.
+IMAGE_EDITOR = "dev.qos.photos"
 
 #: The applications the workspace carries, left to right along the strip.
 #:
@@ -172,7 +182,10 @@ STRIP_EXTRAS = (IMAGE_EDITOR, CHAT_APP)
 #: catalogue an empty query builds — see `Session.launch`. Only needed
 #: for the apps opened by id here; the rest name themselves.
 STRIP_SEARCH = {
-    IMAGE_EDITOR: "image",
+    # "photos", not "image": "image" also matches the Disk Imager, and a
+    # search that can return the wrong application is a search this film
+    # cannot rely on.
+    IMAGE_EDITOR: "photos",
     CHAT_APP: "chat",
 }
 
