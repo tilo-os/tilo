@@ -675,6 +675,45 @@ impl ChromeState {
         }
     }
 
+    /// Release the user-expanded slot when the group it names is no longer
+    /// anywhere in the tree. Returns whether anything was released.
+    ///
+    /// [`Self::set_maximized_group`] is written by a click on the Expand chip
+    /// and cleared by the click that un-expands it. That pairing assumes the
+    /// group survives long enough to be clicked a second time, and a group
+    /// whose application dies does not: the toplevel is destroyed, the tab
+    /// goes with it, the group goes with the last tab, and the slot is left
+    /// naming a group that does not exist.
+    ///
+    /// Nothing else notices. [`Self::is_fullscreen`] keeps reporting true, so
+    /// the top bar and the sidebar wheel keep suppressing themselves, and the
+    /// restore pill belongs to a group that is not there to be clicked. The
+    /// person is left full-screen on nothing, with every way out hidden —
+    /// which is what "the restore size button doesn't work" and "I couldn't
+    /// get out of that app" were describing.
+    ///
+    /// Reconciling against the tree rather than fixing it up at each place a
+    /// group can vanish is deliberate: a crash, a close, a drag-out and a
+    /// deleted workspace all end the same way, and this way none of them has
+    /// to remember. The scan covers every workspace, not just the visible
+    /// one, so a group expanded on a workspace you have switched away from
+    /// keeps its slot.
+    pub fn release_maximized_group_if_gone(&mut self) -> bool {
+        let Some(group) = self.maximized_group else {
+            return false;
+        };
+        let still_there = self.tree().workspaces.iter().any(|ws| {
+            ws.strips
+                .iter()
+                .any(|strip| strip.window_groups.iter().any(|g| g.id == group))
+        });
+        if still_there {
+            return false;
+        }
+        self.set_maximized_group(None);
+        true
+    }
+
     /// Set (or clear) the transient fullscreen surface and bump the revision so
     /// the top bar / overlay host re-sync their fullscreen presentation on the
     /// next frame. Idempotent — a no-op when the value is unchanged, so it's
@@ -1791,5 +1830,151 @@ mod active_tab_tests {
         let before = st.strip_focus().1;
         assert!(!st.focus_strip_index(count + 5));
         assert_eq!(st.strip_focus().1, before);
+    }
+}
+
+#[cfg(test)]
+mod expanded_group_release_tests {
+    //! An application that dies while expanded must not take the way out
+    //! with it.
+    //!
+    //! Expanding a window parks its group id in the chrome's user-maximize
+    //! slot, and `is_fullscreen()` reads that slot to tell the top bar and
+    //! the sidebar wheel to suppress themselves. The slot used to be cleared
+    //! only by the click that un-expands the group — so when the group went
+    //! away underneath it (its application aborted, the last tab closed),
+    //! the slot stayed set, the top bar and wheel stayed hidden, and the
+    //! restore pill belonged to a group that was not there any more. That is
+    //! the state behind "the restore size button doesn't work" and "I
+    //! couldn't get out of that app".
+    use super::*;
+    use crate::shell::state::{
+        AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
+    };
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+
+    const EXPANDED: GroupId = 8;
+
+    fn group(id: GroupId) -> StateGroup {
+        StateGroup {
+            id,
+            tabs: vec![Tab {
+                id: id * 10,
+                title: "Files".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("Files".into()),
+                    label: "files".into(),
+                },
+            }],
+            active_tab: id * 10,
+            width: StateWidth::Normal,
+            maximized: true,
+        }
+    }
+
+    /// One workspace holding exactly the groups named.
+    fn tree_holding(groups: &[GroupId]) -> WorkspaceTree {
+        let mut ws = Workspace::new(WorkspaceId::new(), "Home");
+        ws.strips = vec![Strip {
+            id: StripId::new(),
+            name: "Solo".into(),
+            window_groups: groups.iter().copied().map(group).collect(),
+        }];
+        let active = ws.id;
+        WorkspaceTree {
+            workspaces: vec![ws],
+            active,
+            ..WorkspaceTree::default()
+        }
+    }
+
+    #[test]
+    fn a_group_that_is_still_there_keeps_the_slot() {
+        let handle = Arc::new(RwLock::new(tree_holding(&[EXPANDED])));
+        let chrome = ChromeState::new_with_handle(handle);
+        let mut st = chrome.borrow_mut();
+        st.set_maximized_group(Some(EXPANDED));
+
+        assert!(!st.release_maximized_group_if_gone(), "nothing to release");
+        assert_eq!(st.maximized_group(), Some(EXPANDED));
+        assert!(st.is_fullscreen());
+    }
+
+    /// The crash case. The group's application died, so the group is gone
+    /// from the tree, and the slot must go with it.
+    #[test]
+    fn a_group_that_died_releases_the_slot_and_the_chrome_comes_back() {
+        let handle = Arc::new(RwLock::new(tree_holding(&[EXPANDED])));
+        let chrome = ChromeState::new_with_handle(handle.clone());
+        {
+            let mut st = chrome.borrow_mut();
+            st.set_maximized_group(Some(EXPANDED));
+            assert!(st.is_fullscreen(), "expanded hides the top bar and the wheel");
+        }
+
+        // The application aborts: its toplevel is destroyed, its tab goes
+        // with it, and the group goes with its last tab.
+        handle.write().workspaces[0].strips[0].window_groups.clear();
+
+        let mut st = chrome.borrow_mut();
+        assert!(
+            st.release_maximized_group_if_gone(),
+            "the slot must be released once its group is gone"
+        );
+        assert_eq!(st.maximized_group(), None);
+        assert!(
+            !st.is_fullscreen(),
+            "the top bar and the sidebar wheel must come back, or there is \
+             no way off this screen"
+        );
+    }
+
+    /// Releasing is idempotent: a second frame finds nothing left to do.
+    #[test]
+    fn releasing_twice_reports_nothing_the_second_time() {
+        let handle = Arc::new(RwLock::new(tree_holding(&[])));
+        let chrome = ChromeState::new_with_handle(handle);
+        let mut st = chrome.borrow_mut();
+        st.set_maximized_group(Some(EXPANDED));
+
+        assert!(st.release_maximized_group_if_gone());
+        assert!(!st.release_maximized_group_if_gone());
+    }
+
+    /// An empty slot is never touched, so the reconcile can run every frame.
+    #[test]
+    fn no_expanded_group_is_left_alone() {
+        let handle = Arc::new(RwLock::new(tree_holding(&[EXPANDED])));
+        let chrome = ChromeState::new_with_handle(handle);
+        let mut st = chrome.borrow_mut();
+        assert!(!st.release_maximized_group_if_gone());
+        assert_eq!(st.maximized_group(), None);
+    }
+
+    /// A group expanded on a workspace you have switched away from is still
+    /// in the tree, so it keeps its slot. Reconciling against the rendered
+    /// rows instead of the tree would have taken it away.
+    #[test]
+    fn a_group_on_another_workspace_keeps_the_slot() {
+        let mut tree = tree_holding(&[]);
+        let mut other = Workspace::new(WorkspaceId::new(), "Second");
+        other.strips = vec![Strip {
+            id: StripId::new(),
+            name: "Solo".into(),
+            window_groups: vec![group(EXPANDED)],
+        }];
+        // `active` stays on the first workspace: the expanded group is on
+        // the one that is not being rendered.
+        tree.workspaces.push(other);
+
+        let handle = Arc::new(RwLock::new(tree));
+        let chrome = ChromeState::new_with_handle(handle);
+        let mut st = chrome.borrow_mut();
+        st.set_maximized_group(Some(EXPANDED));
+
+        assert!(!st.release_maximized_group_if_gone());
+        assert_eq!(st.maximized_group(), Some(EXPANDED));
     }
 }
