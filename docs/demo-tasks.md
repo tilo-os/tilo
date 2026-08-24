@@ -72,17 +72,38 @@ on the real path · `[!]` landed but unverified, or regressed.
   by a succession of other agents' transient compile breakage. Proven by
   frames is better than proven by tests alone, but this wants both.
 
-## Found in a sweep, since cleared
+## Found in a sweep — one cleared, two still live
 
-Seen in frames of a rehearsal against 04:01 binaries; **all three are
-gone on current HEAD**, confirmed by a full run in which every claim
-held. Kept as a record of what a sweep catches that a log does not.
+I recorded these as cleared on the strength of a run reporting "every
+claim held". That was wrong: **the claims do not check these things.**
+Reading the frame afterwards showed two of the three still present. The
+lesson is the one already written below and worth repeating because I
+walked into it anyway -- a green run proves the assertions somebody
+wrote, not the picture.
 
-- Stray bordered boxes between paragraphs, with the opening prose drawn
-  inside one of them.
-- The agent's refusal quoting an empty string: `I can't "" yet`, while
-  the instruction plainly said what it wanted.
-- `peer@131` in the page margin -- the unresolved-name fallback.
+- [x] Stray bordered boxes between paragraphs. Genuinely fixed; the
+      document now renders prose then bullets, in order.
+- [ ] **The agent's refusal quotes an empty string** -- `I can't ""
+      yet. I can: table, caption, heading.` The instruction plainly said
+      "make this a run sheet", so the text exists and does not reach the
+      message. Two separate faults: the empty `what`, and the reply
+      landing on the same block as the instruction rather than its own.
+- [ ] **`peer@143` and `peer@728` in the page margin** -- the
+      unresolved-name fallback, twice, on the page rather than in the
+      roster.
+
+### Why that sweep proved less than it looked like it did
+
+The recording filmed a **six-hour-old agent**. `target/demo/qos-agent`
+was built at 04:04 while five of its sources -- including the new
+`listen.rs` -- were newer. The refusal text in the frame is the *old*
+string listing the *old* four-entry vocabulary, on a branch where the
+catalogue had already been replaced by runtime discovery.
+
+`scripts/demo-apps-live.sh` refreshes the app payloads the registry
+serves. **It does not rebuild the agent.** So a sweep that rebuilds the
+shell and runs that script still films a stale agent. Rebuild
+`-p agent` explicitly as part of every sweep.
 
 ## Found in a sweep, to verify against current HEAD
 
