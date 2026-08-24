@@ -2154,14 +2154,13 @@ fn the_agent_s_hand_off_between_two_applications_is_reported_to_the_session() {
          for this connection",
     );
 
-    // And the bytes came with it, so the object drawn is the photograph
-    // rather than a card standing in for one — and so every other replica of
-    // this document can render the picture it now references at all.
-    assert!(
-        qdoc::blobstore::store().get(&placed).is_some(),
-        "the content that crossed never reached this session, so the document \
-         names a picture nobody here can draw",
-    );
+    // Deliberately *not* asserted here: that the bytes behind the crossing
+    // reached this session. The agent, the broker and both peers are one
+    // process sharing one blob store, so the content is in it because the
+    // agent put it there — a check would pass with the offer removed
+    // entirely, which makes it a check of nothing. What the offer is for, and
+    // where it can honestly be proven, is two stores and two machines; see
+    // `shell/tests/document_content_crosses.rs` for that shape.
 
     // Nothing draws twice. A drain is the compositor taking the record, and a
     // record that survived it would replay the motion on the next frame.
