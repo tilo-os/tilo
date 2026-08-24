@@ -364,7 +364,10 @@ fn a_mention_of_the_agent_in_chat_is_noticed_and_acted_on() {
     );
     assert!(
         room.reply_to("m_ask").is_some(),
-        "and it must say in the channel that it did"
+        "and it must say in the channel that it did. Answers put on the wire: \
+         {}; replies the room can see: {:?}",
+        room.session.answers_sent(),
+        room.replies()
     );
 }
 
