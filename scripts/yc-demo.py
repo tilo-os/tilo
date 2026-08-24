@@ -58,6 +58,7 @@ import hashlib
 import base64
 import json
 import math
+import glob
 import os
 import random
 import re
@@ -505,6 +506,78 @@ def ok(resp: dict) -> dict:
 DEMO_LOCALE = "en_US.UTF-8"
 
 
+def pin_gpu(env: dict) -> dict:
+    """Keep every process this run starts off a sleeping discrete GPU.
+
+    This machine has two: an AMD iGPU that drives the screen, and an
+    NVIDIA dGPU that spends its life in D3Cold under runtime power
+    management. Creating a `wgpu::Instance` -- which vello's
+    `RenderContext` does, once per compositor and once per application --
+    loads every Vulkan ICD installed, `nvidia_icd.x86_64.json` included,
+    and enumerating through that one reaches across PCIe to a device that
+    is powered down.
+
+    Twice, doing that froze the machine hard enough that nothing was
+    written down. Both crashed boots end mid-sentence with no GPU reset,
+    no hung task, no OOM and no panic -- the signature of a wedged bus
+    transaction rather than a driver fault, because a CPU stuck on an
+    unanswered PCIe read never reaches the code that would log it. In the
+    first, `cardwired` recorded the dGPU going D0 at 00:55:21 and back to
+    D3Cold at 00:55:48, and the journal stops. Opening a photograph
+    starts an application, and starting one is a fresh instance, so the
+    gesture that triggered it is the gesture that enumerates.
+
+    The launcher already does this for applications it sandboxes -- a
+    tmpfs over `/dev/dri` and one node bound back, `VK_DRIVER_FILES` set
+    from the compositor's own choice. Compositors are not sandboxed, so
+    nothing was doing it for them, and an application that inherits a
+    clean environment inherits the problem with it.
+
+    Pinned to the ICD of whichever card actually has a display attached,
+    rather than to a name: the point is "the GPU the screen is on", and
+    reading it beats assuming it. Set `QOS_DEMO_GPU=any` to opt out.
+    """
+    if env.get("QOS_DEMO_GPU") == "any":
+        return env
+
+    # Which card is driving something. A connected connector is the
+    # honest test -- a headless card can be the lower-numbered one.
+    driver = None
+    try:
+        for card in sorted(glob.glob("/sys/class/drm/card[0-9]*")):
+            if "-" in os.path.basename(card):
+                continue
+            connected = any(
+                open(st).read().strip() == "connected"
+                for st in glob.glob(f"{card}-*/status")
+                if os.path.exists(st))
+            if not connected:
+                continue
+            link = os.path.realpath(os.path.join(card, "device", "driver"))
+            driver = os.path.basename(link)
+            break
+    except Exception:  # noqa: BLE001
+        driver = None
+
+    icd = {"amdgpu": "radeon_icd", "i915": "intel_icd",
+           "xe": "intel_icd"}.get(driver or "")
+    if not icd:
+        # Nothing certain to pin to. Left alone deliberately: a wrong pin
+        # is a run that cannot render at all, which is worse than the
+        # risk it removes.
+        return env
+
+    path = f"/usr/share/vulkan/icd.d/{icd}.x86_64.json"
+    if os.path.exists(path):
+        # Both spellings: a loader older than 1.3.207 ignores the first.
+        env["VK_DRIVER_FILES"] = path
+        env["VK_ICD_FILENAMES"] = path
+    egl = "/usr/share/glvnd/egl_vendor.d/50_mesa.json"
+    if os.path.exists(egl):
+        env["__EGL_VENDOR_LIBRARY_FILENAMES"] = egl
+    return env
+
+
 def pin_locale(env: dict) -> dict:
     """Pin every variable that can choose a language, and prove it took.
 
@@ -779,6 +852,10 @@ class Session:
         # Last, on the finished environment: everything above may add to
         # it. The matching check sits at the spawn itself.
         pin_locale(env)
+        # Same choke point, same reason: everything this run starts
+        # inherits it, and an application enumerating a sleeping GPU is
+        # what took the machine down twice.
+        pin_gpu(env)
         os.makedirs(os.path.join(self.dir, "store-config"), exist_ok=True)
         os.makedirs(os.path.join(self.dir, "store-cache"), exist_ok=True)
         self._log = open(self.log_path, "w")
