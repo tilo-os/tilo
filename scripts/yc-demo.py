@@ -2537,8 +2537,14 @@ class LogTail:
         r"at=\((-?[\d.]+),\s*(-?[\d.]+),\s*(-?[\d.]+),\s*(-?[\d.]+)\)")
     #: The same app, having sent one. `text` runs to the end of the line
     #: because a sentence has spaces in it.
+    #: `to=` is a human-readable destination and can contain spaces —
+    #: "the room" is the ordinary case — so it is matched lazily up to
+    #: the ` about=` that follows it rather than as one non-space run.
+    #: Written as `(\S+)` first, which stopped at "the", failed to find
+    #: `about=` after it, and reported a remark that had in fact been
+    #: sent as one the app never reported sending.
     SENT = re.compile(
-        r"remark sent\s+to=(\S+)\s+about=(\S+)\s+text=(.*)$", re.M)
+        r"remark sent\s+to=(.+?)\s+about=(\S+)\s+text=(.*)$", re.M)
     #: The host, having put it on the wire. A different process's account of
     #: the same event, which is what makes it worth reading separately: the
     #: app saying it composed a message and the toolkit saying it sent one are
