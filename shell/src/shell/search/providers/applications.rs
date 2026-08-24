@@ -689,14 +689,14 @@ fn remote_launch_subtitle(
 /// a collision between the two lists is precisely the case a user could
 /// not otherwise resolve.
 fn disambiguate_colliding_titles(rows: &mut [SearchResult]) {
-    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for r in rows.iter() {
-        *seen.entry(r.title.as_str()).or_insert(0) += 1;
+        *seen.entry(r.title.clone()).or_insert(0) += 1;
     }
     let colliding: std::collections::HashSet<String> = seen
         .into_iter()
         .filter(|(_, n)| *n > 1)
-        .map(|(t, _)| t.to_string())
+        .map(|(t, _)| t)
         .collect();
     if colliding.is_empty() {
         return;

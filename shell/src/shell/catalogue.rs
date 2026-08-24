@@ -423,10 +423,10 @@ fn schedule_refresh() {
 #[must_use = "the superseded notice is still on screen until it is dismissed"]
 pub fn note_pending_notice(package_id: &str, notification_id: u64) -> Option<u64> {
     let mut pending = PENDING_NOTICES.lock().expect("PENDING_NOTICES poisoned");
-    let superseded = pending
-        .iter()
-        .position(|(id, _)| id == package_id)
-        .map(|idx| pending.remove(idx).1);
+    // Two statements: chaining `.position(..).map(|i| pending.remove(i))`
+    // holds the iterator's borrow of `pending` across the mutation.
+    let existing = pending.iter().position(|(id, _)| id == package_id);
+    let superseded = existing.map(|idx| pending.remove(idx).1);
     pending.push((package_id.to_string(), notification_id));
     superseded
 }
