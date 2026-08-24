@@ -21,6 +21,20 @@
 //! here guesses from timing, and nothing here pairs two apps merely because
 //! both changed.
 //!
+//! # The half a session cannot watch
+//!
+//! That evidence exists only where an application on this machine put the
+//! content into a document. A participant with no windows never offers
+//! anything: it asks one application's own code what its document denotes and
+//! hands the answer to a second application's action, both inside itself, and
+//! what arrives here is two document deltas that look unrelated. The ledger
+//! has nothing to say about the hash, [`note_flight`] declines, and the work
+//! that most needs showing is the work that shows nothing.
+//!
+//! So the pairing can also be *reported*, by the one component that saw both
+//! halves — see [`note_reported_flight`], which sets out what a report is and
+//! is not trusted to say. Who performed it is never part of the report.
+//!
 //! # Why this is a queue and not a function call
 //!
 //! Noting a flight must not cost the action anything — the film this exists
@@ -271,6 +285,68 @@ pub fn note_flight(actor: &str, hash: &str, to_app: &str) -> bool {
     true
 }
 
+/// Record a crossing a participant *reported*, rather than one this machine
+/// watched happen.
+///
+/// [`note_flight`] proves the source locally: the bytes crossed out of an
+/// app's sandbox through the collaboration socket, on a route naming the app
+/// that sent them, so `(offering app, addressed app)` is a fact the session
+/// already held. That evidence exists only for content some app on this
+/// machine put in a document.
+///
+/// It does not exist for a participant with no windows. Nothing it does
+/// produces an offer: it asks one application's own code what its document
+/// denotes, gets a value, and hands that value to a second application's
+/// action. Both halves happen inside it, and what reaches this machine is two
+/// unrelated-looking document deltas. `source_app_for` answers `None`, and
+/// [`note_flight`] correctly declines — there is no local evidence, and
+/// inventing some would be the guess this module exists to avoid.
+///
+/// So the source is taken from the report. That is not the same as guessing:
+/// the reporter is the only component that observed both halves, and it is
+/// stating what it did rather than inferring what happened. What it is *not*
+/// trusted with is who it is — `actor` is the session's own answer for the
+/// connection the report arrived on, resolved exactly as the reporter's caret
+/// is named, so a crossing is coloured as the participant already visible
+/// working and cannot be attributed to somebody else.
+///
+/// A false report is bounded to a picture: [`promote`] drops a crossing
+/// whose either end has no window here, so it can only ever name two
+/// applications already on this screen, and it moves nothing but pixels for
+/// [`ui::presence::FLIGHT_DURATION`]. A participant able to send this can
+/// already write to both documents.
+///
+/// Deliberately does not consult the offer ledger, even as a fallback. A
+/// participant that offers the bytes it is carrying — which it should, or the
+/// document it just published references content nobody else holds — is
+/// recorded in that ledger as *itself*, and an application with no window is
+/// one [`promote`] cannot locate. Preferring the ledger would therefore turn
+/// every reported crossing into a dropped one.
+pub fn note_reported_flight(actor: &str, hash: &str, from_app: &str, to_app: &str) -> bool {
+    if actor.is_empty() || hash.is_empty() || from_app.is_empty() || to_app.is_empty() {
+        return false;
+    }
+    // Same reading as the watched case: content placed into the application
+    // that produced it has not crossed an application boundary, and drawing a
+    // crossing for it would claim something that did not happen.
+    if from_app == to_app {
+        return false;
+    }
+    let Ok(mut l) = ledger().lock() else {
+        return false;
+    };
+    l.pending.push_back(PendingFlight {
+        actor: actor.to_string(),
+        hash: hash.to_string(),
+        from_app: from_app.to_string(),
+        to_app: to_app.to_string(),
+    });
+    while l.pending.len() > PENDING_CAP {
+        l.pending.pop_front();
+    }
+    true
+}
+
 /// Take everything recorded since the last drain. The compositor's side.
 pub fn take_pending() -> Vec<PendingFlight> {
     let Ok(mut l) = ledger().lock() else {
@@ -359,6 +435,69 @@ mod tests {
             note_offer(&format!("h{i}"), "dev.qos.photos");
         }
         assert!(source_app_for("oldest").is_none(), "must be evicted");
+    }
+
+    #[test]
+    #[serial]
+    fn a_reported_crossing_needs_no_local_offer() {
+        reset();
+        // Nothing on this machine offered these bytes, and nothing could
+        // have: the participant that carried them has no windows and no
+        // sandbox to push content out of. The watched path is right to
+        // refuse it, and the reported path is what the crossing depends on.
+        assert!(!note_flight("claude", "abc123", "dev.qos.word-processor"));
+        assert!(note_reported_flight(
+            "claude",
+            "abc123",
+            "dev.qos.photos",
+            "dev.qos.word-processor",
+        ));
+        let pending = take_pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].from_app, "dev.qos.photos");
+        assert_eq!(pending[0].to_app, "dev.qos.word-processor");
+        assert_eq!(pending[0].actor, "claude");
+    }
+
+    #[test]
+    #[serial]
+    fn a_report_does_not_lose_to_the_reporter_s_own_offer() {
+        reset();
+        // A participant carrying content should offer the bytes, or the
+        // document it just published names content nobody else holds. That
+        // offer records *it* as the producing app — and it has no window, so
+        // a crossing leaving from it could never be drawn. The reported
+        // source has to win, or offering the bytes would silently cancel the
+        // picture.
+        note_offer("abc123", "qos-agent");
+        assert!(note_reported_flight(
+            "claude",
+            "abc123",
+            "dev.qos.photos",
+            "dev.qos.word-processor",
+        ));
+        let pending = take_pending();
+        assert_eq!(
+            pending[0].from_app, "dev.qos.photos",
+            "the ledger's record of who handed the bytes over must not \
+             displace the report of which application produced them",
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_reported_crossing_that_stayed_in_one_app_is_not_one() {
+        reset();
+        assert!(
+            !note_reported_flight(
+                "claude",
+                "abc123",
+                "dev.qos.word-processor",
+                "dev.qos.word-processor",
+            ),
+            "nothing crossed an application boundary here",
+        );
+        assert!(take_pending().is_empty());
     }
 
     #[test]

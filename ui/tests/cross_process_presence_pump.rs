@@ -103,7 +103,10 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
                 // like `Hello`.
                 CollabRequest::SignedSyncIncremental { .. }
                 | CollabRequest::FetchScrollback { .. }
-                | CollabRequest::WantBlob { .. } => continue,
+                | CollabRequest::WantBlob { .. }
+                // Addressed to a session with a desktop. This pump is neither.
+                | CollabRequest::OpenApp { .. }
+                | CollabRequest::CarriedContent { .. } => continue,
             };
             let Ok(bytes) = serde_json::to_vec(&event) else {
                 continue;
