@@ -17,8 +17,18 @@ on the real path · `[!]` landed but unverified, or regressed.
       replaced by runtime discovery of what the room's apps publish;
       the answer is validated against the live surface *at dispatch*.
 - [~] **Agent notices what is near it** — `@mention` in chat, its name
-      in text, the app of its last action. Proximity decides where it
-      looks, never what it may do.
+      in text, the app of its last action. Proximity decides the
+      *subject* of a request that states none; it never decides whether
+      to act. `Carried` beats `Recent` beats refuse, and recency is
+      measured **message-to-action**, not against the wall clock, so a
+      loaded machine cannot change the reading.
+      **Measured 5 of 8 green.** The three red all pass their
+      `acted_on()` assertion — the agent does the right thing to the
+      right resource — and fail on the reply. Diagnosed to transport,
+      not apply, by counting answers *put on the wire* against replies
+      the room can see: `1` against `[]`. Fix committed, **unverified**:
+      its run was blocked in turn by three other agents' in-flight
+      breakage in shared crates.
 - [~] **Chat across peers** — messages replicate and are attributed;
       `@mention` is structured, not styled text. Mention list landed
       (`0f87b4afe`); replication unverified.
