@@ -19431,6 +19431,12 @@ mod roster_rows {
         let mut tree = WorkspaceTree::default();
         let ws_id = tree.append_empty_workspace("Design review");
         let room = tree.room_of(ws_id).expect("a fresh workspace mints a room");
+        // The room being looked at. `collaborator_roster_rows` reads the
+        // *active* workspace for the agents it has admitted, so a tree
+        // left pointing at the default one would ask a room with no
+        // grant in it and never reach the half of the function that
+        // lists agents.
+        tree.active = ws_id;
         tree.adopt_ownerless_workspaces(&"quinten".to_string());
 
         // The person. A human being, named by the room's authority, who
@@ -19494,7 +19500,15 @@ mod roster_rows {
         assert_eq!(
             agents[0].label, "Scribe",
             "the marked row is the member the capability list admitted as \
-             an agent",
+             an agent, under the name the room gave its session — not the \
+             bare principal, which is the row the grant contributes when \
+             the agent has no session of its own",
+        );
+        assert_eq!(
+            agents[0].role.as_deref(),
+            Some("editor"),
+            "an agent's authority is the verb on the grant that admitted \
+             it, and its row is where a person reads what to revoke",
         );
 
         let claude = rows
