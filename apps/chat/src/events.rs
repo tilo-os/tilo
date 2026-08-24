@@ -1378,7 +1378,7 @@ mod tests {
         // demo defaults the app boots with, `ensure_selection` must re-home
         // the active workspace/channel and drop the stale demo thread.
         let mut doc = AutoCommit::new();
-        ChatDoc::seed_starter(&mut doc, model::ME, "You", "Y");
+        ChatDoc::seed_starter(&mut doc, model::ME);
         let mut app = ChatApp::new_ephemeral(); // bare view state → demo ids
         app.reload(&doc);
         if app.ensure_selection() {
@@ -2464,7 +2464,7 @@ mod tests {
         // Alice seeds a starter workspace; Bob adopts her document (as a
         // late-joining peer does) and announces himself.
         let mut doc_a = AutoCommit::new();
-        ChatDoc::seed_starter(&mut doc_a, "u_alice", "Alice", "AL");
+        ChatDoc::seed_starter(&mut doc_a, "u_alice");
         let snapshot = doc_a.save(); // resets alice's incremental cursor
         let mut doc_b = AutoCommit::load(&snapshot).unwrap();
         ChatDoc::ensure_user(&mut doc_b, "u_bob", "Bob", "BO", 1, Presence::Online);
@@ -2476,6 +2476,13 @@ mod tests {
         b.reload(&doc_b);
         assert_eq!(a.me.id, "u_alice");
         assert_eq!(b.me.id, "u_bob");
+        // The room says who these ids are. Nothing else does: a peer records
+        // that it is present, and the name arrives on the context stream.
+        let mut room = ui::presence::PresenceCtx::empty();
+        room.set_display_name(ui::permissions::UserId("u_alice".into()), "Alice");
+        room.set_display_name(ui::permissions::UserId("u_bob".into()), "Bob");
+        a.adopt_room(&room);
+        b.adopt_room(&room);
 
         // Structure converges: a channel Alice creates shows up for Bob.
         let chan = ChatDoc::create_channel(&mut doc_a, "ws_home", "cat_home_text", "planning", ChannelKind::Text);
@@ -2534,7 +2541,7 @@ mod tests {
         // (begin_edit → insert_text → commit_edit → ChatDoc::edit_message), then
         // shuttles the incremental delta a peer would receive from the broker.
         let mut doc_a = AutoCommit::new();
-        ChatDoc::seed_starter(&mut doc_a, "u_alice", "Alice", "AL");
+        ChatDoc::seed_starter(&mut doc_a, "u_alice");
         let snapshot = doc_a.save();
         let mut doc_b = AutoCommit::load(&snapshot).unwrap();
         ChatDoc::ensure_user(&mut doc_b, "u_bob", "Bob", "BO", 1, Presence::Online);
@@ -2648,7 +2655,7 @@ mod tests {
     fn joining_a_call_publishes_a_ticket_and_two_peers_exchange_them() {
         use crate::model::{CallSession, Presence};
         let mut doc_a = AutoCommit::new();
-        ChatDoc::seed_starter(&mut doc_a, "u_alice", "Alice", "AL");
+        ChatDoc::seed_starter(&mut doc_a, "u_alice");
         let snapshot = doc_a.save();
         let mut doc_b = AutoCommit::load(&snapshot).unwrap();
         ChatDoc::ensure_user(&mut doc_b, "u_bob", "Bob", "BO", 1, Presence::Online);

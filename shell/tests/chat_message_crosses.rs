@@ -41,7 +41,7 @@ use chat::ChatApp;
 use ui::presence::PresenceCtx;
 use ui::permissions::UserId;
 use ui::widget::Widget;
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::event::{ElementState, Modifiers};
 use winit::keyboard::{Key, NamedKey};
 
 use shell::shell::collab_broker::spawn_full;
@@ -204,24 +204,9 @@ fn type_text(app: &mut ChatApp, doc: &mut automerge::AutoCommit, s: &str) {
 }
 
 fn send_key(app: &mut ChatApp, doc: &mut automerge::AutoCommit, key: Key) {
-    let event = WindowEvent::KeyboardInput {
-        device_id: None,
-        event: KeyEvent {
-            physical_key: winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            ),
-            logical_key: key.clone(),
-            text: match &key {
-                Key::Character(c) => Some(c.clone()),
-                _ => None,
-            },
-            location: winit::keyboard::KeyLocation::Standard,
-            state: ElementState::Pressed,
-            repeat: false,
-            platform_specific: Default::default(),
-        },
-        is_synthetic: false,
-    };
+    // The event winit itself would have delivered, built by the toolkit's own
+    // headless harness rather than by a fourth hand-rolled copy of it.
+    let event = ui::headless::key_event(key, ElementState::Pressed);
     let mut handled = false;
     let mut focus_target = None;
     let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
@@ -331,7 +316,16 @@ fn a_message_typed_on_one_machine_reaches_the_other_attributed_to_its_author() {
     send_key(&mut a, &mut doc_a, Key::Named(NamedKey::Enter));
 
     let from = cross(&cmds, &reports, "A", &mut doc_a, &mut doc_b);
-    assert!(!from.is_empty(), "the broker stamped no author on the delta");
+    // The transport carries no author for an unsigned frame — the broker
+    // stamps an empty attribution on this path, which is why a message's
+    // author is a field in the document and not something read off the wire.
+    // Pinned so the next reader does not go looking for it there.
+    assert!(
+        from.is_empty(),
+        "an unsigned delta arrived attributed to {from:?}; if the transport has \
+         started naming senders, message attribution can stop relying solely on \
+         the document — but nothing may quietly depend on both"
+    );
     sync(&mut b, &mut doc_b);
 
     // Bob sees it, said by Alice.

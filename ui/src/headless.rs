@@ -676,7 +676,10 @@ fn collect_targets(
 /// and then overwriting every field we care about is the workaround the
 /// compositor's own driver already uses (`shell/src/bin/shots/driver.rs`);
 /// the zeroed platform payload is inert on the read paths widgets take.
-fn key_event(key: Key, state: ElementState) -> WindowEvent {
+///
+/// Exported because every harness that drives a widget by keyboard needs it,
+/// and each one that rolled its own was another copy of the same `unsafe`.
+pub fn key_event(key: Key, state: ElementState) -> WindowEvent {
     // SAFETY: `KeyEvent`'s only unwritten field is the platform payload,
     // which on Linux is a plain `Option`-shaped struct for which an
     // all-zero bit pattern is a valid value, and which nothing downstream
