@@ -58,11 +58,16 @@ description of where it sat on his screen — so the agent works on the
 thing he pointed at, and the sentence still means the same thing in a
 session opened tomorrow.
 
-## 5 — Cut back to quinten: and you watch it happen
+## 5 — Still on xaver's screen: and he watches it happen
 
 Claude opens the image editor, does the work, and the picture makes a
 visible crossing into the word processor — a smooth hand-off, not two
 windows independently changing.
+
+On **xaver's** screen, not the owner's. He asked for it, so he sees it
+land, on a machine where he owns nothing and opened nothing. That is a
+stronger claim than watching it arrive where it was already going, and it
+costs a cut rather than adding one.
 
 The video is finished after this. Nothing more is needed.
 
@@ -95,12 +100,12 @@ its arrival is a chip in the roster. There is no shot of its "view"
 because there is nothing to shoot — and that absence is the demonstration.
 The run asserts zero frames come from its session, and fails if any do.
 
-**Cut sparingly, and only where the cut proves something.** Beat 4 is on
-xaver's screen because the argument is that the instruction comes from
-somebody who owns none of this; beat 5 is on the owner's because the
-argument is that the result arrives where he is. An earlier version
-switched at nearly every step, and a viewer spends each of those
-re-orienting rather than watching.
+**Cut sparingly, and only where the cut proves something.** Beats 4 and 5
+are both on xaver's screen: he instructs, and he watches it happen. One
+cut, held. An earlier version switched at nearly every step, and a viewer
+spends each of those re-orienting rather than watching; a later one cut
+back for beat 5, which asked the viewer to change seats in the middle of
+the payoff.
 
 **The boot bumper ends where the desktop arrives**, not after it. The film
 opens on an empty desktop, so holding one first shows the same picture on
