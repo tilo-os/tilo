@@ -1039,30 +1039,35 @@ def _the_owners_half(q, shots: str, instruction: str,
     #
     # Chat, Files, the word processor: the order they would be reached for,
     # conversation first because that is where the work is agreed.
-    chat = q.launch(yc.CHAT_APP, search="chat", via="palette")
+    # The first search is the one a viewer has to read — the box
+    # appearing, being looked at, being typed into. The rest are the same
+    # gesture by somebody who now knows where it is, which is both faster
+    # and truer; four full-length searches in a row spends a minute of a
+    # hundred-second film on opening things.
+    chat = q.launch(yc.CHAT_APP, search="chat", via="palette", look=1.0)
     yc.claim("chat opened", chat is not None, True)
-    stop.wait(0.6)
+    stop.wait(0.4)
 
-    files = q.launch(yc.FILES_APP, search="files", via="palette")
+    files = q.launch(yc.FILES_APP, search="files", via="palette", look=0.45)
     yc.claim("Files opened", files is not None, True)
-    stop.wait(0.6)
+    stop.wait(0.4)
 
     # Its own group, or the placement rule tabs it in behind what is
     # already there and the strip has one window where the scene wants two.
     q.place_next_window(yc.WORD_PROCESSOR)
-    wp = q.launch(yc.WORD_PROCESSOR, search="word", via="palette")
+    wp = q.launch(yc.WORD_PROCESSOR, search="word", via="palette", look=0.45)
     yc.claim("the word processor opened", wp is not None, True)
     if wp is None:
         return
     stop.wait(0.6)
 
-    # The photograph's application, so the picture somebody judges later is
-    # already here rather than arriving in the middle of the scene about it.
-    photos = q.launch(yc.IMAGE_EDITOR,
-                      search=yc.STRIP_SEARCH.get(yc.IMAGE_EDITOR, "photos"),
-                      via="palette")
-    yc.claim("the image editor opened", photos is not None, True)
-    stop.wait(0.6)
+    # The image editor is deliberately *not* in this run. Three
+    # applications is the set somebody opens to start work; a fourth
+    # opened before anybody has said why is a fourth identical search,
+    # and the opening was already a third of the film. It arrives with
+    # the scene that needs it -- somebody opening a photograph in order
+    # to look at it, which is a reason a viewer can see.
+    photos = None
 
     # Framing is a nicety and is not what any of this is proving, so a
     # helper that throws costs a tidy strip rather than the take.
@@ -1110,6 +1115,12 @@ def _the_owners_half(q, shots: str, instruction: str,
     # file manager and a document and a photograph sit on one bar. That is
     # the one gesture in the film a viewer cannot mistake for a browser.
     extras: dict[str, dict] = {}
+    if photos is None:
+        photos = q.launch(yc.IMAGE_EDITOR,
+                          search=yc.STRIP_SEARCH.get(yc.IMAGE_EDITOR,
+                                                     "photos"),
+                          via="palette", look=0.45)
+        yc.claim("the image editor opened", photos is not None, True)
     if photos is not None:
         extras[yc.IMAGE_EDITOR] = photos
     if chat is not None:

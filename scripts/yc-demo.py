@@ -1151,7 +1151,8 @@ class Session:
 
     def launch(self, app_id: str, timeout: float = LAUNCH_TIMEOUT_S,
                search: str | None = None,
-               via: str | None = None) -> dict | None:
+               via: str | None = None,
+               look: float = 1.0) -> dict | None:
         """Start an app by its id and wait for it to present a frame.
 
         The surfaces that already existed are excluded, because every app
@@ -1211,7 +1212,14 @@ class Session:
             # and then types; a run that fires both in the same instant
             # shows a box and its answer arriving together, which is not
             # a search happening.
-            self.settle(1.0)
+            #
+            # `look` is how long that beat is, because it is not the same
+            # every time. The first search of a session is the one a
+            # viewer has to read: the box appears, it is looked at, it is
+            # typed into. By the fourth, a person knows where it is and
+            # types on the way — and four full-length searches in a row
+            # is a minute of a demo spent opening things.
+            self.settle(look)
             # And typed, not pasted. `type_text` puts the whole query in
             # at once — the palette's rows resolve in a single frame and
             # the viewer never sees a query being formed. This is the
