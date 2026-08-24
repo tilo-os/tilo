@@ -29,13 +29,28 @@
 # So this is the pre-flight: nothing that renders should start while
 # somebody else's orphans still hold the device.
 #
-#   scripts/demo-guard.sh          # report and reap
-#   scripts/demo-guard.sh --check  # report only, non-zero if anything found
+#   scripts/demo-guard.sh          # report only; non-zero if anything found
+#   scripts/demo-guard.sh --reap   # stop scopes and kill strays (destructive)
+#
+# Reporting is the default, and destruction has to be asked for. The
+# earlier default was the other way round and it kept killing sessions
+# somebody was using: the owner's, twice, and at least one other agent's
+# run mid-take. Several people share this machine, the name match below
+# hits *every* compositor on it rather than only stale ones, and a script
+# whose bare invocation reads like a question should not answer it with a
+# SIGTERM. `scripts/demo.sh` passes `--reap` deliberately, before it
+# starts a run of its own.
 
 set -uo pipefail
 
-CHECK_ONLY=0
-[ "${1:-}" = "--check" ] && CHECK_ONLY=1
+# `--check` is still accepted so existing callers keep working; it is now
+# what happens anyway.
+CHECK_ONLY=1
+case "${1:-}" in
+  --reap) CHECK_ONLY=0 ;;
+  --check|"") CHECK_ONLY=1 ;;
+  *) echo "demo-guard: unknown argument ${1}" >&2; exit 2 ;;
+esac
 
 # Scopes first, and they are the real answer.
 #
@@ -60,7 +75,7 @@ if [ "${#SCOPES[@]}" -gt 0 ]; then
   echo "demo-guard: ${#SCOPES[@]} demo scope(s) still registered:"
   printf '  %s\n' "${SCOPES[@]}"
   if [ "$CHECK_ONLY" -eq 1 ]; then
-    echo "demo-guard: --check given, nothing stopped"
+    echo "demo-guard: reporting only — pass --reap to stop these"
     exit 1
   fi
   systemctl --user stop "${SCOPES[@]}" 2>/dev/null
@@ -89,7 +104,7 @@ echo "demo-guard: ${#FOUND[@]} qOS render process(es) already hold the GPU:"
 printf '  %s\n' "${FOUND[@]}"
 
 if [ "$CHECK_ONLY" -eq 1 ]; then
-  echo "demo-guard: --check given, nothing reaped"
+  echo "demo-guard: reporting only — pass --reap to kill these"
   exit 1
 fi
 

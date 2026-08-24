@@ -58,7 +58,7 @@ done
 say() { printf '\033[1m[demo]\033[0m %s\n' "$*"; }
 
 # 1. Nothing of ours may already hold the GPU.
-bash scripts/demo-guard.sh || exit 1
+bash scripts/demo-guard.sh --reap || exit 1
 
 # 2. Rebuild only what changed. cargo decides that; both commands are
 #    no-ops when nothing has. The payload script re-packs the apps, which
