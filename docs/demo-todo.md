@@ -234,27 +234,82 @@ and no way to see that it is one.
 Worth fixing with the same shape as the layout fix: gather by the
 `table` id the cells share, wherever they sit.
 
-## The agent merges every app's deltas into its live replica
+## The agent took every app's deltas as its own — fixed
 
-`Editor::merge_incremental` (`apps/agent/src/apply.rs`) applies a foreign
-delta straight into the live document, catching the error but not the
-damage. The agent joins with an empty app id **by design**, so the
-broker hands it every application's frames — meaning a delta belonging
-to another document is routinely tried against this one.
+`Editor::merge_incremental` (`apps/agent/src/apply.rs`) applied a foreign
+delta straight into the live document and reported success whenever
+`load_incremental` did not error. The agent joins with an empty app id
+**by design**, so the broker hands it every application's frames and a
+delta belonging to another document was tried against this one as a
+matter of course.
 
-The identical shape was just found and fixed in a test harness, where
-merging every frame in the room spoiled the replica for the next delta
-that did belong. That one is fixed by trying a delta on a copy and
-keeping it only if it took.
+Automerge does not reject a change whose ancestors are missing — it
+*queues* it and returns `Ok` — so the error was answering a different
+question, and three things went wrong at once. It reported an edit that
+had not happened, so the agent surveyed and decided on somebody else's
+keystroke. Because this replica is asked first and its answer stops the
+search, the delta never reached the replica it did belong to, which then
+went stale while the agent believed it current. And the parked dependency
+can never be met, so `missing_ancestors` — read straight off
+`get_missing_deps`, and the thing that makes the agent announce its page
+is not whole — stayed non-zero for the rest of the run after one foreign
+frame.
 
-Deliberately not fixed here, and the reason is worth keeping: the same
-guard in the agent means a per-frame document clone in a hot path. That
-is a real cost, traded against a fault nobody has yet observed in
-production. It wants its owner's judgement rather than an inference.
+Fixed by checking the delta's ancestors against this replica before
+anything touches it, on a throwaway load of the delta rather than a copy
+of the document — which is also what answers the cost objection that kept
+this open: the delta is one edit, the document is a whole page, so no
+per-frame document clone is needed. Noticing a genuine hole is
+unaffected, because that arrives in a peer's whole-document answer rather
+than in a delta; both tests that cover it still pass.
 
-Related, same file: `Editor::apply` (~line 240) still carries the
-`pending_ops()` guard that was removed from `apply_foreign` as unsound.
-`AutoCommit` commits when a read interleaves writes, so the guard can
-report nothing to do and skip the save. It is masked on this path only
-because the word processor's writer happens not to read after its last
-write — an accident of call order, not a property.
+Left standing, and narrower than it looked: a delta carrying a change
+with *no* dependencies would still merge cleanly, because automerge
+documents have no identity and merging any two is always legal. It is not
+reachable through the room as built — a peer's deltas name its own
+earlier changes — and separating that case from a genuine hole needs
+document identity that does not exist today.
+
+Related, same file: the `pending_ops()` guard in `Editor::apply` is not
+the same guard that was removed from `apply_foreign` and cannot lose an
+edit — what to send is decided on the heads. What it costs is the wall
+clock, and that is real: `AutoCommit` closes an open transaction to
+answer `get_heads`, `save_incremental`, `fork`, `merge` or
+`diff_incremental`, and the change it writes on the way out carries no
+advisory time. Measured — the same edit is stamped through an action that
+only writes and unstamped through one that reads first, landing in the
+history as `time_ms: 0`, which `VersionMeta` defines as "time unknown".
+`commit_stamped` cannot date a change automerge has already made, so
+there is no fix at that line; it is now reported when it happens instead
+of passing in silence.
+
+## The agent decides on whichever app answered first
+
+`a_discovered_operation_reaches_the_file_explorer_too`
+(`apps/agent/tests/room_surface.rs`) fails about one run in five, and the
+cause is in the agent rather than the test.
+
+A room answers a late join one document at a time, and the agent acts on
+the first arrival that carries a line addressed to it. When the word
+processor's page wins that race, the agent surveys a room it has only
+half of — `surveyed the room … operations=9 apps=1` — the instruction
+names an operation belonging to the file explorer, whose state has not
+arrived, nothing matches, and the run ends having written `I can't
+"rename plan.md to \"launch.md\"" here` into the page. When the explorer's
+state wins instead, the same run reads `apps=2`, finds
+`files.entry:…#rename` and performs it. Nothing else differs; adding
+enough logging to slow the first frame down flips it green.
+
+The principle is already written down one function away. `act_in_chat`
+refuses to consume a summons whose subject names an app it is not holding
+— "would be a claim about timing dressed up as a claim about the
+request" — and leaves it for the next turn. The document path has no
+equivalent: an instruction nothing currently answers is refused
+immediately and permanently, and with `once` that is the whole run.
+
+Extending that patience to the document path is the fix, and it is a
+decision about when the agent is allowed to say no rather than a
+mechanical one, which is why it is recorded here rather than taken. It
+has to keep the refusal — an instruction that genuinely names nothing
+must still be answered in the page rather than silently outlived — so
+what changes is when it is written, not whether.
