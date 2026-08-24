@@ -231,10 +231,15 @@ impl Peer {
     }
 }
 
-/// What a room calls the peers in it, keyed by the handle presence
-/// frames identify their sender by. Same shape as
-/// [`crate::shell::peer_presence::PeerLabels`].
-pub type PeerLabels = std::collections::BTreeMap<u64, String>;
+/// What a room says about the peers in it — what each is called and
+/// what it was admitted as — keyed by the handle presence frames
+/// identify their sender by.
+///
+/// The same type as [`crate::shell::peer_presence::PeerLabels`] rather
+/// than a second one of the same shape: this side and the presence fold
+/// read one lookup, and two aliases that merely agree today are two
+/// that can stop agreeing.
+pub use crate::shell::peer_presence::{PeerLabel, PeerLabels};
 
 /// How long a room's answer is reused before it is asked again.
 /// Reading it takes the replica's lock and parses every peer id the
@@ -334,7 +339,12 @@ impl LocalIdentity {
         {
             return answer.clone();
         }
-        let answer = (self.labels)(cluster_id).get(&self.local_handle).cloned();
+        // The name only. This resolves what to *call* the local
+        // participant; what the room admitted this machine as is not a
+        // question a display name answers, and no caller here asks it.
+        let answer = (self.labels)(cluster_id)
+            .get(&self.local_handle)
+            .map(|l| l.name.clone());
         if let Ok(mut cache) = self.cache.lock() {
             cache.insert(cluster_id.to_string(), (now, answer.clone()));
         }
@@ -2141,12 +2151,14 @@ fn spawn_inner(
             std::thread::Builder::new()
                 .name("qos-collab-broker-drain".into())
                 .spawn(move || {
-                    // The name already announced for each peer, per
-                    // cluster. Presence arrives at pointer rate, and the
-                    // roster it implies changes almost never, so the
-                    // announcement is made when the answer changes and
-                    // not on every frame.
-                    let mut announced: std::collections::HashMap<(String, u64), (String, u64)> =
+                    // What was already announced for each peer, per
+                    // cluster — the name and the kind, so a member the
+                    // room re-admits as an agent is news even though it
+                    // is still called the same thing. Presence arrives
+                    // at pointer rate, and the roster it implies changes
+                    // almost never, so the announcement is made when the
+                    // answer changes and not on every frame.
+                    let mut announced: std::collections::HashMap<(String, u64), (PeerLabel, u64)> =
                         std::collections::HashMap::new();
                     // And what the room said, the last time it was
                     // asked. Reading it means taking the replica's lock
@@ -2663,7 +2675,7 @@ fn remote_participant_id(
     labels_of: &dyn Fn(&str) -> PeerLabels,
     table: &PeerTable,
     labels: &mut HashMap<String, (Instant, PeerLabels)>,
-    announced: &mut HashMap<(String, u64), (String, u64)>,
+    announced: &mut HashMap<(String, u64), (PeerLabel, u64)>,
 ) -> String {
     // Attributed to the publishing host, not to a local peer slot:
     // this is what the receiving app colours the caret by, so two
@@ -2676,18 +2688,15 @@ fn remote_participant_id(
     if !fresh {
         labels.insert(cluster_id.to_string(), (now, labels_of(cluster_id)));
     }
-    // What this peer is called, according to the room -- which is to
-    // say, according to whoever invited them. A peer that has not been
-    // named has no entry, and is left labelled with the id above
-    // rather than given a name nobody chose.
+    // What this peer is called and what it was admitted as, according
+    // to the room -- which is to say, according to whoever invited them.
+    // A peer that has not been named has no entry, and is left labelled
+    // with the id above rather than given a name nobody chose.
     let slot = (cluster_id.to_string(), peer);
-    let known = labels
-        .get(cluster_id)
-        .and_then(|(_, m)| m.get(&peer))
-        .map(String::as_str);
+    let known = labels.get(cluster_id).and_then(|(_, m)| m.get(&peer));
     let prior = announced.get(&slot);
     let generation = table.connections_seen();
-    let say = roster_announcement(prior.map(|(n, _)| n.as_str()), known, &user_id)
+    let say = roster_announcement(prior.map(|(l, _)| l), known, &user_id)
         // A name is said when the answer changes, which is right for a
         // roster that changes almost never and wrong for an app that
         // connected after it was said: the audience for that
@@ -2700,25 +2709,26 @@ fn remote_participant_id(
         // itself a reason to say it again.
         .or_else(|| {
             let unheard = prior.is_some_and(|(_, at)| *at != generation);
-            unheard.then(|| known.unwrap_or(&user_id).to_string())
+            unheard.then(|| known.cloned().unwrap_or_else(|| PeerLabel::person(&user_id)))
         });
-    if let Some(name) = say {
-        announced.insert(slot, (name.clone(), generation));
+    if let Some(label) = say {
+        announced.insert(slot, (label.clone(), generation));
         let roster = CollabEvent::Context {
             collaborators: vec![ui::collaboration::Collaborator {
                 id: user_id.clone(),
-                name,
+                name: label.name,
                 // The palette colour the id already resolves to.
                 color: [0.0, 0.0, 0.0],
-                // Not known on this path. The label map above records what
-                // a peer is *called* -- set by whoever invited them -- and
-                // not what they are, so this announcement cannot mark an
-                // agent. The capnp context stream carries `isAgent` from
-                // the room proper; a peer announced only through here is
-                // therefore shown as a person. Wrong for an agent, but a
-                // smaller wrong than guessing from the id, and the fix is
-                // to record kind beside name rather than to infer it.
-                is_agent: false,
+                // The room's own answer, carried rather than guessed.
+                // The label map records what a peer was admitted *as*
+                // beside what it is called, both written by the room's
+                // authority, so this announcement says which it is
+                // instead of reporting every member as a person and
+                // leaving the reader to match on a display name.
+                //
+                // A peer the room has said nothing about is announced as
+                // a person, which is what an unnamed peer already was.
+                is_agent: label.is_agent,
             }],
             permissions: Vec::new(),
         };
@@ -2729,13 +2739,30 @@ fn remote_participant_id(
     user_id
 }
 
-fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Option<String> {
-    let now = known.unwrap_or(id);
+/// What, if anything, to say about a peer this round.
+///
+/// `said` is the last thing announced for this slot and `known` what the
+/// room says now; `id` is the handle a peer nobody has named is already
+/// shown as, and so the announcement that would tell an app nothing.
+///
+/// The comparison is over the whole label, not over the name alone. An
+/// agent admitted after its name had been announced changes what the
+/// room says about it without changing what it is called, and a check
+/// that only read names would leave that member marked a person for the
+/// rest of the session — the same silence this function exists to break
+/// when a name changes.
+fn roster_announcement(
+    said: Option<&PeerLabel>,
+    known: Option<&PeerLabel>,
+    id: &str,
+) -> Option<PeerLabel> {
+    let unnamed = PeerLabel::person(id);
+    let now = known.unwrap_or(&unnamed);
     match said {
         Some(before) if before == now => None,
-        Some(_) => Some(now.to_string()),
-        None if now == id => None,
-        None => Some(now.to_string()),
+        Some(_) => Some(now.clone()),
+        None if *now == unnamed => None,
+        None => Some(now.clone()),
     }
 }
 
@@ -2745,17 +2772,23 @@ mod tests {
     /// name is worth attaching to it and why it is not one.
     const PEER: &str = "peer@5537458103208628978";
 
+    use super::PeerLabel;
+
     /// The demo beat: a peer the room has named is announced under that
     /// name, once.
     #[test]
     fn a_named_peer_is_announced_and_then_left_alone() {
+        let xaver = PeerLabel::person("Xaver");
         assert_eq!(
-            super::roster_announcement(None, Some("Xaver"), PEER),
-            Some("Xaver".to_string()),
+            super::roster_announcement(None, Some(&xaver), PEER),
+            Some(PeerLabel::person("Xaver")),
         );
         // Presence arrives at pointer rate. Saying it again every frame
         // would be a roster update per pointer move.
-        assert_eq!(super::roster_announcement(Some("Xaver"), Some("Xaver"), PEER), None);
+        assert_eq!(
+            super::roster_announcement(Some(&xaver), Some(&xaver), PEER),
+            None
+        );
     }
 
     /// A peer nobody has named produces no announcement at all. The id
@@ -2771,12 +2804,43 @@ mod tests {
     /// of the session.
     #[test]
     fn a_revoked_name_reverts_the_peer_to_its_id() {
+        let xaver = PeerLabel::person("Xaver");
+        let bare = PeerLabel::person(PEER);
         assert_eq!(
-            super::roster_announcement(Some("Xaver"), None, PEER),
-            Some(PEER.to_string()),
+            super::roster_announcement(Some(&xaver), None, PEER),
+            Some(PeerLabel::person(PEER)),
         );
         // …and once said, not repeated.
-        assert_eq!(super::roster_announcement(Some(PEER), None, PEER), None);
+        assert_eq!(super::roster_announcement(Some(&bare), None, PEER), None);
+    }
+
+    /// An agent is announced as an agent, and a member that becomes one
+    /// without being renamed is announced again.
+    ///
+    /// The second half is the one worth stating: a grant admitting an
+    /// agent can land after that member's name has already been said,
+    /// and an announcement keyed on the name alone would never mention
+    /// it — leaving every app in the room holding "person" for the rest
+    /// of the session, which is the reading this mark exists to prevent.
+    #[test]
+    fn a_change_of_kind_is_announced_even_when_the_name_holds() {
+        let as_person = PeerLabel::person("Claude");
+        let as_agent = PeerLabel::agent("Claude");
+        assert_eq!(
+            super::roster_announcement(None, Some(&as_agent), PEER),
+            Some(PeerLabel::agent("Claude")),
+            "an agent the room has named is announced as one",
+        );
+        assert_eq!(
+            super::roster_announcement(Some(&as_person), Some(&as_agent), PEER),
+            Some(PeerLabel::agent("Claude")),
+            "the same name admitted as an agent is news",
+        );
+        assert_eq!(
+            super::roster_announcement(Some(&as_agent), Some(&as_agent), PEER),
+            None,
+            "and once said, not repeated",
+        );
     }
 
     /// A remote peer is one participant on the receiving screen, and
@@ -2808,7 +2872,7 @@ mod tests {
         const HANDLE: u64 = 721_275_257_761_426_039;
         let room = |_c: &str| {
             let mut m = PeerLabels::new();
-            m.insert(HANDLE, "Xaver".to_string());
+            m.insert(HANDLE, PeerLabel::person("Xaver"));
             m
         };
         let mut labels = HashMap::new();
@@ -2876,7 +2940,7 @@ mod tests {
         const HANDLE: u64 = 4_242_424_242;
         let room = |_c: &str| {
             let mut m = PeerLabels::new();
-            m.insert(HANDLE, "Xaver".to_string());
+            m.insert(HANDLE, PeerLabel::person("Xaver"));
             m
         };
         let mut labels = HashMap::new();
@@ -3028,8 +3092,12 @@ mod tests {
     #[test]
     fn a_renamed_peer_is_announced_again() {
         assert_eq!(
-            super::roster_announcement(Some("Xaver"), Some("Xaver Peeters"), PEER),
-            Some("Xaver Peeters".to_string()),
+            super::roster_announcement(
+                Some(&PeerLabel::person("Xaver")),
+                Some(&PeerLabel::person("Xaver Peeters")),
+                PEER,
+            ),
+            Some(PeerLabel::person("Xaver Peeters")),
         );
     }
 

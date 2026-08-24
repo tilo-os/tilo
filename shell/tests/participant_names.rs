@@ -163,7 +163,10 @@ fn test_cluster() -> uuid::Uuid {
 fn room_that_names_us() -> Arc<LocalIdentity> {
     LocalIdentity::with_lookup(LOCAL_HANDLE, |_cluster| {
         let mut m = PeerLabels::new();
-        m.insert(LOCAL_HANDLE, LOCAL_NAME.to_string());
+        m.insert(
+            LOCAL_HANDLE,
+            shell::shell::peer_presence::PeerLabel::person(LOCAL_NAME),
+        );
         m
     })
 }
