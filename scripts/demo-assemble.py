@@ -66,6 +66,21 @@ def probe(path: pathlib.Path) -> dict:
     }
 
 
+def _has_audio(path) -> bool:
+    """Whether `path` carries an audio stream at all.
+
+    The bumper does not; a narrated take does. Asked per segment rather
+    than assumed, because which is which changes with how the piece was
+    shot.
+    """
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a",
+         "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    return bool(r.stdout.strip())
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -116,12 +131,43 @@ def main() -> int:
             vf = (f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,"
                   f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:black,"
                   f"setsar=1,fps={FPS}")
-            r = subprocess.run(
-                ["ffmpeg", "-v", "error", "-i", str(c), "-vf", vf,
-                 "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                 "-pix_fmt", "yuv420p", "-an", str(part), "-y"],
-                capture_output=True, text=True,
-            )
+            # Audio is carried, and segments without any are given
+            # silence.
+            #
+            # This dropped every audio track with `-an`, which was true
+            # to what it was for: the film had no sound, and the bumper
+            # still has none. It stopped being true when takes started
+            # carrying live narration -- assembling one then discarded
+            # the voice, and the only way to find out was to play the
+            # finished file.
+            #
+            # Silence rather than nothing, because `concat -c copy`
+            # needs every part to have the same streams in the same
+            # order. One silent part among voiced ones is what makes
+            # the join possible at all; the alternative is a bumper
+            # that cannot be prepended to a narrated take.
+            silent = not _has_audio(c)
+            cmd = ["ffmpeg", "-v", "error", "-i", str(c)]
+            if silent:
+                cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+            cmd += ["-vf", vf,
+                    "-map", "0:v", "-map", ("1:a" if silent else "0:a"),
+                    "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                    "-pix_fmt", "yuv420p",
+                    # One audio format for every part, for the same
+                    # reason as `setsar=1` above: a stream copy joins
+                    # mismatched parameters without complaint and then
+                    # plays wrong.
+                    "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
+                    "-ac", "2"]
+            if silent:
+                # anullsrc never ends, so this trims it to the picture.
+                # Not used on a segment that brought its own audio: there
+                # it could trim the *picture* to a short track, which is
+                # the failure this file exists to avoid elsewhere.
+                cmd += ["-shortest"]
+            cmd += [str(part), "-y"]
+            r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode != 0:
                 print(f"could not normalise {c}:\n{r.stderr.strip()}", file=sys.stderr)
                 return 1
