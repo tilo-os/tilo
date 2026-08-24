@@ -238,6 +238,14 @@ enum Direction { Up, Down, Left, Right }
 pub struct App {
     state: State,
     root_widget: Box<dyn Widget>,
+    /// Everyone the room has named, as remark destinations.
+    ///
+    /// Kept here rather than rebuilt per event because the roster arrives
+    /// a peer at a time: the broker announces a name when it changes, and
+    /// again for any app that connected after it was last said. Ordered by
+    /// id so the list a person sees does not reshuffle when somebody is
+    /// re-announced.
+    remark_roster: std::collections::BTreeMap<String, (String, bool)>,
     text_renderer: TextRenderer,
     taffy: TaffyTree<()>,
     root_node: Option<NodeId>,
@@ -519,6 +527,7 @@ pub struct App {
 impl App {
     pub fn new(state: State, root_widget: Box<dyn Widget>) -> Self {
         let mut app = Self {
+            remark_roster: std::collections::BTreeMap::new(),
             state,
             root_widget,
             text_renderer: TextRenderer::new(),
@@ -1699,19 +1708,38 @@ impl App {
                     // roster, so this is the hand-off -- and until it existed
                     // the compose surface had no destinations in a running
                     // desktop, only in screenshots.
-                    let destinations: Vec<_> = collaborators
-                        .iter()
-                        .map(|c| {
-                            crate::widget::remark_compose::DestinationOption::localised(
-                                qos_reference::Destination::participant(
-                                    c.id.clone(),
-                                    c.name.clone(),
-                                    c.is_agent,
-                                ),
-                            )
-                        })
-                        .collect();
-                    if !destinations.is_empty() {
+                    //
+                    // Accumulated, not replaced. The broker announces one
+                    // peer per event -- `collaborators: vec![one]` -- and it
+                    // re-announces whenever an app connects that has not
+                    // heard the name yet. Taking each event as the whole
+                    // roster would leave the list holding only whoever was
+                    // named last, so a room of three offered one
+                    // destination, and which one depended on announcement
+                    // order. Keyed by id, so a re-announcement relabels
+                    // rather than duplicating.
+                    let mut changed = false;
+                    for c in &collaborators {
+                        let entry = (c.name.clone(), c.is_agent);
+                        if self.remark_roster.get(&c.id) != Some(&entry) {
+                            self.remark_roster.insert(c.id.clone(), entry);
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        let destinations: Vec<_> = self
+                            .remark_roster
+                            .iter()
+                            .map(|(id, (name, is_agent))| {
+                                crate::widget::remark_compose::DestinationOption::localised(
+                                    qos_reference::Destination::participant(
+                                        id.clone(),
+                                        name.clone(),
+                                        *is_agent,
+                                    ),
+                                )
+                            })
+                            .collect();
                         self.root_widget.set_remark_destinations(destinations);
                     }
                     for c in collaborators {
