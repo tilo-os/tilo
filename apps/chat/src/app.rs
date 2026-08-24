@@ -1325,6 +1325,28 @@ impl ChatApp {
         id.to_string()
     }
 
+    /// What to put in front of a person in this session's own chrome.
+    ///
+    /// [`display_name`](Self::display_name) with one extra step for the local
+    /// peer. Names belong to the room, so before any room has spoken there is
+    /// genuinely no name — and `display_name` then falls back to the raw id,
+    /// which is an internal token, not something to show anybody. On a first
+    /// run that put `u_me` (or nothing at all) in the identity bar.
+    ///
+    /// "You" is second-person chrome: it is rendered only on this machine,
+    /// never written to the shared document and never sent to a peer, so it
+    /// cannot become two peers disagreeing about what to call a third. It is
+    /// deliberately *not* folded into `display_name`, which also answers for
+    /// message attribution and for the roster row that appends its own
+    /// "(you)".
+    pub(crate) fn chrome_name(&self, id: &str) -> String {
+        let name = self.display_name(id);
+        if id == self.me.id && name == id {
+            return "You".to_string();
+        }
+        name
+    }
+
     /// The avatar monogram for `id`, derived from whatever the room calls them
     /// so the letter never disagrees with the name beside it.
     pub fn initials_for(&self, id: &str) -> String {

@@ -342,8 +342,14 @@ impl ChatApp {
         let bar = Rect::new(side.x0, side.y1 - 56.0, side.x1, side.y1);
         fill_rect(scene, tf, bar, c.neutral[0]);
         if let Some(me) = self.user(&self.me.id) {
-            draw_avatar(scene, tf, tr, theme, Point::new(bar.x0 + 28.0, bar.center().y), 16.0, &me.initials, me.color_idx, Some(me.status));
-            label(scene, tr, tf, &me.name, 13.0, c.text_primary, bar.x0 + 50.0, bar.center().y - 14.0);
+            // The room's answer, not the copy the document happens to hold. A
+            // peer does not write its own name there, so the document's copy is
+            // empty on a real first run and this bar drew a blank monogram
+            // beside a blank name.
+            let name = self.chrome_name(&self.me.id);
+            let initials = ui::widget::Avatar::initials_for_name(&name);
+            draw_avatar(scene, tf, tr, theme, Point::new(bar.x0 + 28.0, bar.center().y), 16.0, &initials, me.color_idx, Some(me.status));
+            label(scene, tr, tf, &name, 13.0, c.text_primary, bar.x0 + 50.0, bar.center().y - 14.0);
             let sub = if self.call.active { "In voice" } else { "Available" };
             label(scene, tr, tf, sub, 11.0, c.text_dim, bar.x0 + 50.0, bar.center().y + 2.0);
         }
@@ -454,8 +460,8 @@ impl ChatApp {
                         if m.talking && !m.muted {
                             stroke_circle(scene, tf, cc, r + 2.5, c.semantic.success, 2.0);
                         }
-                        draw_avatar(scene, tf, tr, theme, cc, r, &u.initials, u.color_idx, None);
-                        let nm = truncate_to(tr, &u.name, 12.0, mrow.width() - 60.0);
+                        draw_avatar(scene, tf, tr, theme, cc, r, &self.initials_for(&u.id), u.color_idx, None);
+                        let nm = truncate_to(tr, &self.chrome_name(&u.id), 12.0, mrow.width() - 60.0);
                         let ncol = if m.talking && !m.muted { c.text_primary } else { c.text_dim };
                         label(scene, tr, tf, &nm, 12.0, ncol, mrow.x0 + 2.0 * r + 8.0, mrow.center().y - 7.0);
                         // mic / audio-only state glyphs on the right.
@@ -785,7 +791,7 @@ impl ChatApp {
             let u = self.user(&m.author).cloned();
             let (initials, cidx, status) = u
                 .as_ref()
-                .map(|u| (u.initials.clone(), u.color_idx, Some(u.status)))
+                .map(|u| (self.initials_for(&u.id), u.color_idx, Some(u.status)))
                 .unwrap_or(("?".into(), 0, None));
             draw_avatar(
                 scene, tf, tr, theme,
@@ -968,7 +974,7 @@ impl ChatApp {
         for pid in parts.iter().take(3) {
             if let Some(u) = self.user(pid) {
                 fill_circle(scene, tf, Point::new(ax + 11.0, bar.center().y), 13.0, c.surfaces.raised);
-                draw_avatar(scene, tf, tr, theme, Point::new(ax + 11.0, bar.center().y), 11.0, &u.initials, u.color_idx, None);
+                draw_avatar(scene, tf, tr, theme, Point::new(ax + 11.0, bar.center().y), 11.0, &self.initials_for(&u.id), u.color_idx, None);
             }
             ax += 17.0;
         }
@@ -1349,7 +1355,7 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         let mut yy = y;
         if let Some(u) = self.user(&m.author) {
-            draw_avatar(scene, tf, tr, theme, Point::new(avx + 16.0, yy + 14.0), 14.0, &u.initials, u.color_idx, Some(u.status));
+            draw_avatar(scene, tf, tr, theme, Point::new(avx + 16.0, yy + 14.0), 14.0, &self.initials_for(&u.id), u.color_idx, Some(u.status));
         }
         let (nw, _) = text(scene, tr, tf, &self.user_name(&m.author), 13.5, palette_color(theme, self.user(&m.author).map(|u| u.color_idx).unwrap_or(0)), tx, yy, TextWeight::Semibold, None);
         label(scene, tr, tf, &model::clock(m.ts), 11.0, c.text_dim, tx + nw as f64 + 8.0, yy + 2.0);
