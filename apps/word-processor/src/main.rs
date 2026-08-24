@@ -5,6 +5,7 @@
 //! Usage:
 //!   word-processor [FILE]              run interactively (FILE optional)
 //!   word-processor --shots OUT [FILE]  render one headless frame to OUT.png
+//!   word-processor --shots OUT --size WxH [FILE]
 //!   word-processor --shots OUT --history [FILE]
 //!                                      ...with the version-history strip open
 //!
@@ -50,11 +51,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut shots: Option<String> = None;
     let mut file: Option<PathBuf> = None;
     let mut history = false;
+    // Viewport for `--shots`. A shot is only worth as much as the window it is
+    // taken in, and the narrow tiled windows where the page has to be fitted to
+    // the canvas are exactly the ones the default does not cover.
+    let mut size = (1000_u32, 700_u32);
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--shots" => {
                 shots = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--size" => {
+                if let Some((w, h)) = args.get(i + 1).and_then(|s| s.split_once(['x', 'X'])) {
+                    match (w.trim().parse(), h.trim().parse()) {
+                        (Ok(w), Ok(h)) => size = (w, h),
+                        _ => return Err(format!("--size wants WIDTHxHEIGHT, got {:?}", args[i + 1]).into()),
+                    }
+                } else {
+                    return Err("--size wants WIDTHxHEIGHT, e.g. --size 800x1014".into());
+                }
                 i += 2;
             }
             "--history" => {
@@ -78,7 +94,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         seed_revisions(&mut state, &mut wp);
         // Pin the floating status readout visible so the shot captures it.
         wp.arm_status_bubble_for_shots();
-        render_shot(state, Box::new(wp), (1000, 700), Path::new(out))?;
+        render_shot(state, Box::new(wp), size, Path::new(out))?;
         return Ok(());
     }
 
@@ -88,7 +104,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(out) = shots.as_deref() {
         let (state, mut wp) = build_concrete(file.as_deref())?;
         wp.arm_status_bubble_for_shots();
-        render_shot(state, Box::new(wp), (1000, 700), Path::new(out))?;
+        render_shot(state, Box::new(wp), size, Path::new(out))?;
         return Ok(());
     }
 

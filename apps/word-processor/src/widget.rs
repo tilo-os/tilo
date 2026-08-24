@@ -211,6 +211,9 @@ fn with_alpha(base: Color, alpha: u8) -> Color {
 
 const PAGE_TOP: f64 = 28.0;
 const MAX_PAGE_W: f64 = 820.0;
+/// Breathing space (screen px) kept between each edge of the page and the edge of
+/// the canvas when the page has to be scaled down to fit the canvas's width.
+const PAGE_SIDE_GUTTER: f64 = 12.0;
 /// Pixels per inch — the page is a fixed `MAX_PAGE_W` px wide ≙ 8.5in (US-Letter),
 /// so one inch is this many px. Drives the ruler's tick spacing + labels.
 const PX_PER_INCH: f64 = MAX_PAGE_W / 8.5;
@@ -399,10 +402,10 @@ enum StatusAction {
 const ZOOM_MIN: f64 = 0.5;
 const ZOOM_MAX: f64 = 3.0;
 const ZOOM_STEP: f64 = 0.1;
-/// Width of the toolbar's right-aligned zoom stepper cluster `[−] [100%] [+]`
+/// Width of the toolbar's right-aligned zoom stepper cluster `[−] [Fit 67%] [+]`
 /// (= `bw + gap + val_w + gap + bw` in `draw_zoom_control`). Reserved on the
 /// toolbar's last row, right of the colour swatches, so buttons never pack under it.
-const ZOOM_CLUSTER_W: f64 = 88.0;
+const ZOOM_CLUSTER_W: f64 = 102.0;
 /// Gap between the zoom stepper cluster and the colour-swatch strips on the
 /// toolbar's last row.
 const ZOOM_SWATCH_GAP: f64 = 16.0;
@@ -2576,24 +2579,84 @@ impl WordProcessorWidget {
     }
 
     fn zoom_by(&mut self, delta: f64) -> bool {
-        // Round to the nearest step so the displayed percentage stays tidy.
-        let raw = self.zoom + delta;
+        // Step from the scale that is on screen rather than from the stored
+        // preference. In a window too narrow for a page the two differ, and
+        // stepping from the preference would leave the first press of the stepper
+        // doing nothing at all. Round to the nearest step so the displayed
+        // percentage stays tidy.
+        let raw = self.page_scale() + delta;
         let snapped = (raw / ZOOM_STEP).round() * ZOOM_STEP;
         self.set_zoom(snapped)
+    }
+
+    /// The canvas's horizontal extent: the window minus whichever side panes are
+    /// showing. Shared by `draw`, which lays the page out inside it, and
+    /// [`Self::fit_width_scale`], which sizes the page to it — so the width the
+    /// page is fitted to is by construction the width it is drawn into.
+    fn canvas_x_range(&self) -> (f64, f64) {
+        let full = self.rect;
+        let right = if self.styles_panel_visible() {
+            (full.x1 - STYLES_PANEL_W).max(full.x0 + 1.0)
+        } else {
+            full.x1
+        };
+        let left = if self.outline_open {
+            (full.x0 + OUTLINE_PANEL_W).min(right - 1.0)
+        } else {
+            full.x0
+        };
+        (left, right)
+    }
+
+    /// The scale at which a whole page width fits the canvas, leaving
+    /// `PAGE_SIDE_GUTTER` on each side. Comfortably above 1.0 whenever the canvas
+    /// is wider than a sheet of paper.
+    fn fit_width_scale(&self) -> f64 {
+        let (l, r) = self.canvas_x_range();
+        let avail = r - l - 2.0 * PAGE_SIDE_GUTTER;
+        if avail <= 0.0 {
+            // Nothing laid out yet. Impose no limit rather than folding the page
+            // into a degenerate transform.
+            return ZOOM_MAX;
+        }
+        avail / MAX_PAGE_W
+    }
+
+    /// The scale the page — and everything drawn through the content transform:
+    /// text, tables, images, carets, and the ruler that measures them — is
+    /// actually rendered at.
+    ///
+    /// This is the user's zoom, capped so a page can never come out wider than
+    /// the canvas it is clipped to. Uncapped, a window narrower than 8.5in of
+    /// paper drops the right-hand end of every line, every table and every image
+    /// on the floor, with no horizontal scrollbar to reveal that anything went
+    /// missing. Capped, a narrow window shows the whole page, smaller. The stored
+    /// preference is left untouched, so widening the window brings back whatever
+    /// zoom the user chose.
+    fn page_scale(&self) -> f64 {
+        self.zoom.min(self.fit_width_scale())
+    }
+
+    /// Whether [`Self::page_scale`] is being held down by the window's width
+    /// rather than by the user's own choice — the state the zoom readout labels,
+    /// so the ceiling reads as a limit rather than as a broken button.
+    fn fit_width_limited(&self) -> bool {
+        self.fit_width_scale() < self.zoom - 1e-9
     }
 
     /// The content (page) transform for this frame: a scale about the cached
     /// top-center anchor. Everything inside the page clip draws through this so
     /// the toolbar / find-bar / status bar stay unscaled.
     fn content_transform(&self, base: Affine) -> Affine {
-        base * Affine::scale_about(self.zoom, self.zoom_anchor)
+        base * Affine::scale_about(self.page_scale(), self.zoom_anchor)
     }
 
     /// Map a screen-space pointer into the unscaled content coordinate space the
     /// `Laid` rects live in (the inverse of `content_transform`'s scale-about).
     fn pointer_to_content(&self, p: Point) -> Point {
         let a = self.zoom_anchor;
-        Point::new(a.x + (p.x - a.x) / self.zoom, a.y + (p.y - a.y) / self.zoom)
+        let s = self.page_scale();
+        Point::new(a.x + (p.x - a.x) / s, a.y + (p.y - a.y) / s)
     }
 
     /// Recompute all matches for the current query, honouring the case-sensitive,
@@ -3347,14 +3410,15 @@ impl WordProcessorWidget {
     }
 
     /// Map an unscaled content x (the page coordinate space) to screen x using the
-    /// cached zoom + anchor — the same scale-about the page content draws through.
+    /// cached page scale + anchor — the same scale-about the page content draws
+    /// through.
     fn content_x_to_screen(&self, cx: f64) -> f64 {
-        self.zoom_anchor.x + (cx - self.zoom_anchor.x) * self.zoom
+        self.zoom_anchor.x + (cx - self.zoom_anchor.x) * self.page_scale()
     }
 
     /// Inverse of [`Self::content_x_to_screen`].
     fn screen_x_to_content(&self, sx: f64) -> f64 {
-        self.zoom_anchor.x + (sx - self.zoom_anchor.x) / self.zoom
+        self.zoom_anchor.x + (sx - self.zoom_anchor.x) / self.page_scale()
     }
 
     /// The screen-space x of every ruler marker for the current margins + caret
@@ -4612,21 +4676,12 @@ impl Widget for WordProcessorWidget {
         // so the page shrinks rather than the history painting over the text.
         let history_h = self.history.band_height();
         let history_top = (layout_bar_top - history_h).max(full.y0 + tb_h);
-        // Reserve the styles panel out of the canvas so the page re-centers in the
-        // remaining width (and scrolled content never paints under the panel).
-        let canvas_right = if self.styles_panel_visible() {
-            (full.x1 - STYLES_PANEL_W).max(full.x0 + 1.0)
-        } else {
-            full.x1
-        };
-        // Reserve the outline / navigation pane out of the canvas LEFT (mirrors the
-        // styles panel on the right) so the page re-centers and scrolled content
-        // never paints under the pane.
-        let canvas_left = if self.outline_open {
-            (full.x0 + OUTLINE_PANEL_W).min(canvas_right - 1.0)
-        } else {
-            full.x0
-        };
+        // Reserve the styles panel out of the canvas on the right and the outline /
+        // navigation pane on the left, so the page re-centers in what is left and
+        // scrolled content never paints under either pane. This is the same
+        // measurement the page's fit-to-width scale is taken from, so the page is
+        // always fitted to exactly the width it is drawn into.
+        let (canvas_left, canvas_right) = self.canvas_x_range();
         // Reserve the crash-recovery banner (when an offer is staged) directly
         // under the toolbar — above the Find bar and the canvas.
         let recovery_h = if self.recovery.is_some() { RECOVERY_BANNER_H } else { 0.0 };
@@ -4661,11 +4716,20 @@ impl Widget for WordProcessorWidget {
         let ctf = self.content_transform(transform);
 
         // Per-side page geometry — every margin is independently customizable.
-        // The page is a FIXED size (it does not resize with the window); the
-        // window just shows more or less of it and centers it.
+        // The page is a FIXED size in content space (8.5in of paper, whatever the
+        // window is doing), and `page_scale` decides how large that comes out on
+        // screen: at its own zoom where there is room, shrunk to fit where there
+        // is not. Line breaking and pagination are therefore unaffected by the
+        // window — only the magnification is.
         let m = self.margins;
         let page_w = MAX_PAGE_W;
-        let page_x = canvas.x0 + ((canvas.width() - page_w) / 2.0).max(0.0);
+        // Centred on the zoom anchor (the canvas's horizontal midpoint), so the
+        // page stays centred at any scale. When the canvas is narrower than a page
+        // this puts `page_x` left of the canvas in *content* space — which is
+        // correct, because `page_scale` shrinks it back inside the canvas about
+        // that same midpoint. Clamping it to the canvas here instead would pin the
+        // page's left edge and throw the fitted page off-centre to the right.
+        let page_x = canvas.x0 + (canvas.width() - page_w) / 2.0;
         let page_top = canvas.y0 + PAGE_TOP;
         let content_x = page_x + m.left;
         let content_w = (page_w - m.left - m.right).max(80.0) as f32;
@@ -5176,10 +5240,11 @@ impl Widget for WordProcessorWidget {
         // Scrolling: clamp the offset to the overflow, then shift the laid-out
         // content (+ pages) into screen space so hit-testing needs no offset.
         // `scroll_y` is an offset in unscaled content space; on screen the content
-        // is magnified by `zoom`, so the visible window covers `canvas.height() /
-        // zoom` of content — divide by zoom so the overflow (and thus max scroll)
-        // grows when zoomed in and shrinks when zoomed out.
-        self.max_scroll = (extent + 2.0 * PAGE_TOP - canvas.height() / self.zoom).max(0.0);
+        // is magnified by `page_scale`, so the visible window covers
+        // `canvas.height() / page_scale` of content — divide by it so the overflow
+        // (and thus max scroll) grows when zoomed in and shrinks when zoomed out,
+        // including when it is the window width doing the shrinking.
+        self.max_scroll = (extent + 2.0 * PAGE_TOP - canvas.height() / self.page_scale()).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll);
         let sy = self.scroll_y;
         if sy != 0.0 {
@@ -8097,22 +8162,31 @@ impl WordProcessorWidget {
         let bw = 18.0;
         let bh = 18.0;
         let y0 = cy - bh / 2.0;
-        let pct = format!("{}%", (self.zoom * 100.0).round() as i32);
-        // Layout: [−] [ 100% ] [+]  — right-aligned in the row (its width is
+        // The percentage on screen is the scale on screen. When the window is too
+        // narrow for a page, `page_scale` is below the stored zoom and the readout
+        // says so — otherwise the page would visibly shrink while the chip still
+        // claimed 100%, and `+` would look broken rather than spent.
+        let limited = self.fit_width_limited();
+        let pct = if limited {
+            format!("{} {}%", t("zoom-fit"), (self.page_scale() * 100.0).round() as i32)
+        } else {
+            format!("{}%", (self.page_scale() * 100.0).round() as i32)
+        };
+        // Layout: [−] [ Fit 67% ] [+]  — right-aligned in the row (its width is
         // `ZOOM_CLUSTER_W`), matching the swatch strip's edge margin.
-        let val_w = 44.0;
+        let val_w = 58.0;
         let total = bw + 4.0 + val_w + 4.0 + bw;
         let mut x = row.x1 - 14.0 - total;
 
-        let btn = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, label: &str| -> Rect {
+        let btn = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, label: &str, ink: Color| -> Rect {
             let r = Rect::new(x, y0, x + bw, y0 + bh);
             scene.fill(Fill::NonZero, transform, cc.chip, None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
             let tx = r.x0 + (bw - label.chars().count() as f64 * 6.5).max(2.0) / 2.0;
-            tr.draw_text(scene, label, 13.0, cc.text, transform * Affine::translate((tx, cy - 8.0)), None);
+            tr.draw_text(scene, label, 13.0, ink, transform * Affine::translate((tx, cy - 8.0)), None);
             r
         };
 
-        let minus = btn(scene, tr, x, "−");
+        let minus = btn(scene, tr, x, "−", cc.text);
         self.status_buttons.push((StatusAction::ZoomOut, minus));
         x += bw + 4.0;
 
@@ -8123,7 +8197,9 @@ impl WordProcessorWidget {
         self.status_buttons.push((StatusAction::ZoomReset, vr));
         x += val_w + 4.0;
 
-        let plus = btn(scene, tr, x, "+");
+        // At the fit ceiling `+` has nowhere to go — magnifying further could only
+        // push the page past the edge it is clipped at.
+        let plus = btn(scene, tr, x, "+", if limited { cc.text_dim } else { cc.text });
         self.status_buttons.push((StatusAction::ZoomIn, plus));
     }
 
@@ -9901,7 +9977,11 @@ mod tests {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "zoom me");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        // Wide enough to hold a whole page at 200%: below that the page is fitted
+        // to the canvas instead, which is a different mechanism from the one under
+        // test here.
+        pipeline_draw(&mut wp, &mut state, 2000, 700);
+        assert!(wp.fit_width_scale() >= 2.0, "precondition: room for the page at 200%");
 
         // At 100% the content transform is the identity scale (no magnification).
         let base = Affine::IDENTITY;
@@ -9932,7 +10012,9 @@ mod tests {
         wp.model_mut().insert_str(&mut state.doc, "first paragraph");
         wp.model_mut().enter(&mut state.doc);
         wp.model_mut().insert_str(&mut state.doc, "second paragraph");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        // Wide enough for a whole page at the 175% this exercises.
+        pipeline_draw(&mut wp, &mut state, 1800, 700);
+        assert!(wp.fit_width_scale() >= 1.75, "precondition: room for the page at 175%");
 
         // A content-space point inside the second block (its `Laid` rect lives in
         // unscaled content coordinates regardless of zoom).
@@ -9950,7 +10032,7 @@ mod tests {
         // the production inverse (`pointer_to_content`) must recover the click,
         // so `handle_event`'s caret hit-test lands on the same block + offset.
         assert!(wp.set_zoom(1.75));
-        pipeline_draw(&mut wp, &mut state, 1000, 700); // recompute `zoom_anchor`
+        pipeline_draw(&mut wp, &mut state, 1800, 700); // recompute `zoom_anchor`
         let screen_pt = wp.content_transform(Affine::IDENTITY) * content_pt;
         let recovered = wp.pointer_to_content(screen_pt);
         assert!((recovered.x - content_pt.x).abs() < 1e-6 && (recovered.y - content_pt.y).abs() < 1e-6, "inverse recovers the content point");
@@ -9985,10 +10067,13 @@ mod tests {
         let mut state = ui::State::new();
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        // Room for a whole page at the zooms the stepper walks through, so the
+        // stepper — not the window width — is what decides the scale.
+        pipeline_draw(&mut wp, &mut state, 1400, 700);
+        assert!(wp.fit_width_scale() >= 1.0 + ZOOM_STEP, "precondition: room for one step in");
 
         // Every zoom button sits inside the toolbar band, not a bottom strip.
-        let tb_h = wp.toolbar_height(1000.0);
+        let tb_h = wp.toolbar_height(1400.0);
         assert_eq!(wp.status_buttons.len(), 3, "the −/%/+ stepper registered three targets");
         for (_, r) in &wp.status_buttons {
             assert!(r.y1 <= tb_h + 1.0, "zoom button is in the toolbar (rect={r:?}, toolbar_h={tb_h})");
@@ -10010,14 +10095,14 @@ mod tests {
         assert!((wp.zoom - (1.0 + ZOOM_STEP)).abs() < 1e-6, "clicking + zooms in one step: {}", wp.zoom);
 
         // Click − : back to 100%.
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        pipeline_draw(&mut wp, &mut state, 1400, 700);
         let p = center(&wp, StatusAction::ZoomOut);
         left_click(&mut wp, &mut state, p);
         assert!((wp.zoom - 1.0).abs() < 1e-6, "clicking − zooms out one step: {}", wp.zoom);
 
         // Click the percentage chip: reset to 100% from any zoom.
         wp.set_zoom(1.6);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        pipeline_draw(&mut wp, &mut state, 1400, 700);
         let p = center(&wp, StatusAction::ZoomReset);
         left_click(&mut wp, &mut state, p);
         assert!((wp.zoom - 1.0).abs() < 1e-9, "clicking the % chip resets to 100%: {}", wp.zoom);
@@ -10032,12 +10117,231 @@ mod tests {
             wp.model_mut().insert_str(&mut state.doc, &format!("Paragraph {i} with several words to fill the line."));
             wp.model_mut().enter(&mut state.doc);
         }
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        // Room for a whole page at 200%, so zoom rather than the window width is
+        // what sets the scale the scroll range is derived from.
+        pipeline_draw(&mut wp, &mut state, 2000, 700);
+        assert!(wp.fit_width_scale() >= 2.0, "precondition: room for the page at 200%");
         let scroll_1x = wp.max_scroll;
         assert!(scroll_1x > 0.0, "the document already overflows at 100%");
         wp.set_zoom(2.0);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        pipeline_draw(&mut wp, &mut state, 2000, 700);
         assert!(wp.max_scroll > scroll_1x, "zooming in enlarges the content, so there is more to scroll");
+    }
+
+    // ---- Fit to width -------------------------------------------------------
+
+    /// A window narrower than a sheet of paper still has to show the whole
+    /// sheet.
+    ///
+    /// The page is a fixed 8.5in wide and the document is clipped to the
+    /// canvas, so when the canvas is the narrower of the two, the right-hand
+    /// end of every line — and of every table, and of every image — is simply
+    /// never drawn. There is no horizontal scrollbar, and nothing else on
+    /// screen says a word about it, which makes this silent loss rather than a
+    /// visible limit. Scaling the page down to the width that is actually
+    /// there is what turns "unlikely" into "impossible".
+    ///
+    /// Measured through the production content→screen mapping — the same
+    /// `content_x_to_screen` the page sheet and the ruler are positioned with —
+    /// against the production canvas extent (`panel_rect.x0` *is* the canvas's
+    /// right edge). Neither is recomputed here.
+    #[test]
+    fn a_narrow_window_scales_the_page_to_fit_rather_than_clipping_it() {
+        // A tiled word-processor window with the styles panel legitimately open:
+        // 800px leaves ~550px of canvas for 820px of paper.
+        for (w, h) in [(800_u32, 700_u32), (700, 700), (560, 700)] {
+            let (mut state, mut wp) = bound();
+            wp.set_focus(true);
+            for line in [
+                "The prose says doors at seven but the bullet gives 18:00, and the two cannot both be right.",
+                "A second paragraph, long enough to run the full width of the text column and reach its right margin.",
+            ] {
+                wp.model_mut().insert_str(&mut state.doc, line);
+                wp.model_mut().enter(&mut state.doc);
+            }
+            // A table and an image too: they are drawn through the same content
+            // transform as the prose, and in the frame this guards they were cut
+            // off at the same x as it.
+            wp.apply_tool(&mut state.doc, ToolAction::InsertTable);
+            let img = temp_png("fitwidth");
+            assert!(wp.insert_image_from_path(&mut state.doc, &img), "the image inserted");
+            let _ = std::fs::remove_file(&img);
+            pipeline_draw(&mut wp, &mut state, w, h);
+            assert!(wp.laid.iter().any(|l| l.kind == "image"), "precondition: an image is on the page");
+            assert!(wp.laid.iter().any(|l| l.cell_box.is_some()), "precondition: a table is on the page");
+
+            assert!(
+                wp.styles_panel_visible(),
+                "precondition: at {w}px the panel's own auto-collapse rule keeps it open",
+            );
+            assert!(!wp.outline_open, "precondition: nothing bounds the canvas on the left");
+            let canvas_left = wp.rect.x0;
+            let canvas_right = wp.panel_rect.x0;
+            assert!(
+                canvas_right - canvas_left < MAX_PAGE_W,
+                "precondition: at {w}px the canvas ({:.0}px) is narrower than a page ({MAX_PAGE_W:.0}px)",
+                canvas_right - canvas_left,
+            );
+
+            // The sheet, mapped the way the sheet is drawn.
+            let sheet_left = wp.content_x_to_screen(wp.page_rect.x0);
+            let sheet_right = wp.content_x_to_screen(wp.page_rect.x1);
+            assert!(
+                sheet_left >= canvas_left - 0.5 && sheet_right <= canvas_right + 0.5,
+                "at {w}x{h} the page spans {sheet_left:.0}..{sheet_right:.0} on screen but the \
+                 canvas it is clipped to covers only {canvas_left:.0}..{canvas_right:.0} — \
+                 everything past that right edge is cut away with nothing on screen to say it \
+                 is missing",
+            );
+
+            // And everything on it — shaped text, image boxes, and the table
+            // cells, whose own box is what the grid is drawn from — has to land
+            // inside that same visible band.
+            let rightmost = wp
+                .laid
+                .iter()
+                .map(|l| (l.text_x + l.width).max(l.cell_box.map_or(f64::NEG_INFINITY, |b| b.x1)))
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!(rightmost.is_finite(), "precondition: the document laid something out");
+            let rightmost_sx = wp.content_x_to_screen(rightmost);
+            assert!(
+                rightmost_sx <= canvas_right + 0.5,
+                "at {w}x{h} content runs out to {rightmost_sx:.0}px, past the canvas's right \
+                 edge at {canvas_right:.0}px — that much of every line, of the table and of \
+                 the image is lost",
+            );
+
+            // The caret agrees with the page about where a line ends. Clicking the
+            // visible right-hand end of the longest line seats the caret in that
+            // line — which it cannot do if the end of the line is under the panel
+            // or off the edge of the canvas.
+            let longest = wp
+                .laid
+                .iter()
+                .filter(|l| !l.text.is_empty() && l.cell_box.is_none())
+                .max_by(|a, b| a.width.partial_cmp(&b.width).unwrap())
+                .expect("a text line")
+                .clone();
+            let end_sx = wp.content_transform(Affine::IDENTITY)
+                * Point::new(longest.text_x + longest.width - 2.0, longest.y_top + longest.height / 2.0);
+            assert!(
+                end_sx.x <= canvas_right,
+                "at {w}x{h} the end of the longest line sits at {:.0}px, outside the canvas — \
+                 there is nowhere on screen to click it",
+                end_sx.x,
+            );
+            left_click(&mut wp, &mut state, end_sx);
+            assert_eq!(
+                wp.inner.caret.block, longest.id,
+                "at {w}x{h} clicking the visible end of a line puts the caret in that line",
+            );
+            assert!(
+                wp.inner.caret.offset > 0,
+                "at {w}x{h} the caret landed at the end of the line, not back at its start",
+            );
+        }
+    }
+
+    /// A comfortable window is left exactly as it was.
+    ///
+    /// Fitting a narrow window's page to its width must not become a zoom that
+    /// follows the window around: wherever there is room for the page at the
+    /// zoom that is set, that is precisely the scale it renders at.
+    #[test]
+    fn a_comfortable_window_renders_at_exactly_the_zoom_it_is_set_to() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "a window with room to spare");
+        pipeline_draw(&mut wp, &mut state, 1500, 900);
+
+        let canvas = wp.panel_rect.x0 - wp.rect.x0;
+        assert!(
+            canvas > MAX_PAGE_W,
+            "precondition: the canvas ({canvas:.0}px) has room for a whole page",
+        );
+        assert!(
+            (wp.content_transform(Affine::IDENTITY).as_coeffs()[0] - 1.0).abs() < 1e-9,
+            "a default-zoom page in a roomy window draws at 100%, unscaled: {:?}",
+            wp.content_transform(Affine::IDENTITY).as_coeffs(),
+        );
+        assert!(
+            (wp.content_x_to_screen(wp.page_rect.x1) - wp.content_x_to_screen(wp.page_rect.x0) - MAX_PAGE_W).abs() < 1e-9,
+            "and the sheet is drawn at its full nominal width",
+        );
+
+        // An explicit zoom the window has room for is honoured to the digit.
+        assert!(wp.set_zoom(1.3));
+        pipeline_draw(&mut wp, &mut state, 1500, 900);
+        assert!(
+            (wp.content_transform(Affine::IDENTITY).as_coeffs()[0] - 1.3).abs() < 1e-9,
+            "an explicit 130% with room to spare renders at 130%: {:?}",
+            wp.content_transform(Affine::IDENTITY).as_coeffs(),
+        );
+    }
+
+    /// The ruler measures the page, so it is drawn at the page's scale.
+    ///
+    /// A ruler that stayed at 100% while the page fitted itself to a narrow
+    /// window would put every tick and every margin marker somewhere the page
+    /// is not — a worse fault than the clipping the fit exists to prevent. The
+    /// two are computed by different code (`ruler_markers` +
+    /// `content_x_to_screen` for the band, `content_transform` for the sheet),
+    /// so this is a real agreement check between them and not a restatement of
+    /// one of them.
+    #[test]
+    fn the_ruler_and_the_page_are_drawn_at_one_scale() {
+        for (w, h) in [(760_u32, 700_u32), (1500, 900)] {
+            let (mut state, mut wp) = bound();
+            wp.model_mut().insert_str(&mut state.doc, "measured against the ruler above it");
+            pipeline_draw(&mut wp, &mut state, w, h);
+            assert!(wp.ruler_on, "precondition: the ruler band is showing");
+
+            let page_x = wp.page_rect.x0;
+            let page_w = wp.page_rect.width();
+            let ctf = wp.content_transform(Affine::IDENTITY);
+            let markers = wp.ruler_markers(page_x, page_w);
+            let mx = |want: RulerMarker| {
+                markers.iter().find(|(k, _)| *k == want).map(|(_, x)| *x).expect("marker present")
+            };
+
+            // The margin markers are the page's own text edges — so they land
+            // where the page's text column actually lands on screen.
+            let text_left = (ctf * Point::new(page_x + wp.margins.left, 0.0)).x;
+            let text_right = (ctf * Point::new(page_x + page_w - wp.margins.right, 0.0)).x;
+            assert!(
+                (mx(RulerMarker::MarginLeft) - text_left).abs() < 1e-6,
+                "at {w}x{h} the left-margin marker sits at {:.2} but the page's left text edge \
+                 is drawn at {text_left:.2}",
+                mx(RulerMarker::MarginLeft),
+            );
+            assert!(
+                (mx(RulerMarker::MarginRight) - text_right).abs() < 1e-6,
+                "at {w}x{h} the right-margin marker sits at {:.2} but the page's right text edge \
+                 is drawn at {text_right:.2}",
+                mx(RulerMarker::MarginRight),
+            );
+
+            // The page the ruler measures is the page that is drawn: same origin,
+            // same width, whatever scale the window forced.
+            let ruler_left = wp.content_x_to_screen(page_x);
+            let ruler_right = wp.content_x_to_screen(page_x + page_w);
+            assert!(
+                (ruler_left - (ctf * Point::new(page_x, 0.0)).x).abs() < 1e-6
+                    && (ruler_right - (ctf * Point::new(page_x + page_w, 0.0)).x).abs() < 1e-6,
+                "at {w}x{h} the ruler's page edges ({ruler_left:.2}..{ruler_right:.2}) have \
+                 drifted from the sheet's ({:.2}..{:.2})",
+                (ctf * Point::new(page_x, 0.0)).x,
+                (ctf * Point::new(page_x + page_w, 0.0)).x,
+            );
+
+            // And what the ruler measures fits in the band it is drawn in, at any
+            // width — the ruler cannot promise a page the canvas will not show.
+            let canvas_right = if wp.styles_panel_visible() { wp.panel_rect.x0 } else { wp.rect.x1 };
+            assert!(
+                ruler_right <= canvas_right + 0.5,
+                "at {w}x{h} the ruler runs the page out to {ruler_right:.0}px, past the canvas \
+                 edge at {canvas_right:.0}px",
+            );
+        }
     }
 
     // ---- Find toggles -------------------------------------------------------
@@ -11283,7 +11587,10 @@ mod tests {
         let block = wp.model().caret().block.clone();
         wp.model_mut().set_block_indent(&mut state.doc, &block, 40.0);
         wp.model_mut().set_block_first_line_indent(&mut state.doc, &block, 18.0);
-        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        // Room for a whole page at the 200% the second half zooms to; below that
+        // the page is fitted to the canvas and the markers follow that instead.
+        pipeline_draw(&mut wp, &mut state, 2000, 760);
+        assert!(wp.fit_width_scale() >= 2.0, "precondition: room for the page at 200%");
 
         let page_x = wp.page_rect.x0;
         let page_w = wp.page_rect.width();
@@ -11302,7 +11609,7 @@ mod tests {
 
         // Zooming in moves the markers further from the anchor by the zoom factor.
         wp.set_zoom(2.0);
-        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        pipeline_draw(&mut wp, &mut state, 2000, 760);
         let anchor = wp.zoom_anchor.x;
         let zoomed = wp.ruler_markers(wp.page_rect.x0, wp.page_rect.width());
         let zx = |m: RulerMarker| zoomed.iter().find(|(k, _)| *k == m).map(|(_, x)| *x).unwrap();
@@ -11991,6 +12298,12 @@ mod tests {
                         .and_then(|(_, spans)| spans.first())
                         .map(|(r, _)| *r)
                         .expect("the marker resolved to a band");
+                    // Overlay rects are unscaled content space; the pixels were
+                    // rasterised through the page's content transform (this
+                    // window has both side panes open, so the page is fitted to
+                    // what is left). Map the band the same way or the probe reads
+                    // whatever the page was covering before it was fitted.
+                    let band = wp.content_transform(Affine::IDENTITY).transform_rect_bbox(band);
 
                     let c = band_contrast(&rgba, 1100, band);
                     println!("{name:5} {hue:8} {when:11} {c:5.2}:1");
@@ -12429,7 +12742,11 @@ mod tests {
             .find(|l| l.kind == "paragraph" && l.y_top > wp.rect.y0 + 200.0)
             .expect("a body paragraph to drop onto")
             .clone();
-        let drop_pt = Point::new(target.text_x + 20.0, target.y_top + target.height / 2.0);
+        // `Laid` rects are unscaled content space; a real pointer arrives in
+        // screen space, so map the drop through the same content transform the
+        // page is drawn with.
+        let drop_pt = wp.content_transform(Affine::IDENTITY)
+            * Point::new(target.text_x + 20.0, target.y_top + target.height / 2.0);
 
         let taffy: TaffyTree<()> = TaffyTree::new();
         let node = NodeId::new(0);
