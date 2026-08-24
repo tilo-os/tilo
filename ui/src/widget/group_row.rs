@@ -47,6 +47,32 @@ const SNAP_ANIM_MS: u64 = 200;
 /// two events.
 const MAKE_SPACE_ANIM_MS: u64 = 420;
 
+/// How near the edge of the strip's viewport a drag has to bring the
+/// pointer before the strip starts travelling toward what is past it.
+///
+/// A window is roughly 880 px wide on a laptop screen, so a band this
+/// size is comfortably inside the window nearest the edge: you can aim
+/// at it and stop there without triggering the scroll, and you have to
+/// mean it to cross into the band.
+const DRAG_EDGE_BAND_PX: f64 = 72.0;
+/// Fastest the strip travels while a drag holds the pointer at (or
+/// past) the viewport edge.
+///
+/// Rate, not displacement: a drag-to-edge is a request to *keep going*
+/// until the destination shows up, and how far the pointer is past the
+/// edge says nothing about how far away that is. Cursor-following — pan
+/// by the pointer's own travel — makes a gesture with a bounded input
+/// range steer an unbounded strip, so the world lurches under a hand
+/// that only moved an inch.
+///
+/// At this rate a window's width goes by in about three quarters of a
+/// second: quick enough to reach the neighbour you can already half
+/// see, slow enough to stop on it.
+const DRAG_EDGE_MAX_PX_PER_S: f64 = 1200.0;
+/// Longest step a single edge-scroll tick may take, so a frame the
+/// machine dropped does not teleport the strip. Two frames at 60 Hz.
+const DRAG_EDGE_MAX_STEP_S: f64 = 1.0 / 30.0;
+
 /// Touchpad travel that equals one wheel detent for the discrete jump
 /// gestures (strip group jump, shell workspace switch) — one jump per
 /// this many pixels of accumulated scroll. Also the scale for hi-res
@@ -163,6 +189,48 @@ pub struct CrossStripDetach {
     pub release_point: Point,
 }
 
+/// What a drag that ended inside this row did to it, for the shell to
+/// write into the persisted [`WorkspaceTree`].
+///
+/// The row resolves a same-strip drop entirely on its own — it can see
+/// every group involved — and until this existed that is where the move
+/// stopped. But the widgets are a projection of the tree, rebuilt from it
+/// whenever the chrome's revision moves, so a move the tree was never
+/// told about is undone by the next thing that happens: the window
+/// visibly returns to the group it came from. The gesture is only half
+/// done at the point the row has finished with it.
+///
+/// Published by [`GroupRow::take_pending_tab_move`], drained once per
+/// frame, take-pattern like every other one-shot here so a later tick
+/// cannot double-apply it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabMove {
+    /// The window joined an existing group — dropped on its tab bar, or
+    /// in the middle band of its tile. Two applications in one window.
+    ///
+    /// `dest_idx` is the slot it landed in, not just the group: the row
+    /// inserts where the indicator promised, and a tree that appended
+    /// instead would disagree about the order until the next rebuild
+    /// silently reshuffled the bar.
+    Merge {
+        tab_id: u64,
+        dest_group: u64,
+        dest_idx: usize,
+    },
+    /// The window came out into a group of its own — dropped in a gap
+    /// between groups, or on the outer edge band of a neighbour's tile.
+    ///
+    /// `new_group` is the id the row already minted and is already
+    /// drawing under. The tree has to adopt that exact id rather than
+    /// invent its own, or the two disagree about which groups exist and
+    /// the next resync deletes the one on screen.
+    Split {
+        tab_id: u64,
+        new_group: u64,
+        gap_idx: usize,
+    },
+}
+
 pub struct GroupRow {
     pub groups: Vec<WindowGroup>,
     /// Inter-group resize handles — one per gap, so for N groups we
@@ -253,6 +321,14 @@ pub struct GroupRow {
     /// row or hasn't fired yet. The take-pattern accessor leaves the slot
     /// empty so a subsequent harvester call doesn't double-deliver.
     pending_cross_strip_detach: Option<CrossStripDetach>,
+    /// What this frame's drag did to the row, for the shell to mirror
+    /// into the persisted tree. See [`TabMove`]. At most one per frame:
+    /// the gesture pipeline models one pointer, so one drag can end.
+    pending_tab_move: Option<TabMove>,
+    /// When the in-flight drag's edge-scroll last advanced, so the next
+    /// tick can travel by elapsed time rather than by frame count.
+    /// `None` whenever no drag is holding the pointer in an edge band.
+    edge_scroll_at: Option<Instant>,
     /// `true` whenever `scroll_x` has changed since the last `draw`.
     /// The parent Column / Stack caches its subtree scene and only
     /// rebuilds when a child reports `needs_redraw() == true`. Without
@@ -399,6 +475,8 @@ impl GroupRow {
             last_wheel_at: None,
             snap_anim: None,
             pending_cross_strip_detach: None,
+            pending_tab_move: None,
+            edge_scroll_at: None,
             scroll_dirty: false,
             leading_inset: 0.0,
             laid_spans: Vec::new(),
@@ -1192,6 +1270,100 @@ impl GroupRow {
         }
     }
 
+    /// Is some drag holding a window right now — one tab, or a whole
+    /// group? Either one is a gesture aimed at a destination, and either
+    /// one can be aimed at a destination that is off screen.
+    fn drag_holds_a_window(&self) -> bool {
+        self.group_drag_active() || self.groups.iter().any(|g| g.drag_in_flight())
+    }
+
+    /// How fast the strip should be travelling right now, in px/s, and
+    /// which way. `0.0` means stay put.
+    ///
+    /// Zero unless a drag is in flight: the strip does not follow an
+    /// idle pointer around, and outside a drag the wheel is deliberately
+    /// inert (see the note in `handle_event`).
+    ///
+    /// Inside the band the rate ramps from nothing at its inner edge to
+    /// full at the viewport edge, so the strip starts creeping and
+    /// accelerates as you press outward — the difference between
+    /// nudging a neighbour into view and travelling to one several
+    /// windows away is how far out you hold, not how fast you flick.
+    /// Past the edge it holds at full rate: the pointer has run out of
+    /// screen and there is nothing further to say with it.
+    pub(crate) fn drag_edge_scroll_rate(&self) -> f64 {
+        if !self.drag_holds_a_window() {
+            return 0.0;
+        }
+        // The screen's edges, not the strip's content origin. The
+        // leading inset is the wheel disc's slot, and the disc pans with
+        // the strip — so a band measured from it would sit 220 px inland
+        // once the strip has travelled at all, turning a wide stretch of
+        // ordinary window space into a scroll-left trigger. What the
+        // hand is pushing against is the edge of the display.
+        let (x0, x1) = (self.rect.x0, self.rect.x1);
+        if x1 - x0 <= DRAG_EDGE_BAND_PX * 2.0 {
+            // A viewport barely wider than two bands has no middle to
+            // rest in; every position would scroll, in one direction or
+            // the other, and the drag could never be aimed.
+            return 0.0;
+        }
+        let x = self.last_cursor.x;
+        let depth = if x >= x1 - DRAG_EDGE_BAND_PX {
+            (x - (x1 - DRAG_EDGE_BAND_PX)) / DRAG_EDGE_BAND_PX
+        } else if x <= x0 + DRAG_EDGE_BAND_PX {
+            -(((x0 + DRAG_EDGE_BAND_PX) - x) / DRAG_EDGE_BAND_PX)
+        } else {
+            0.0
+        };
+        depth.clamp(-1.0, 1.0) * DRAG_EDGE_MAX_PX_PER_S
+    }
+
+    /// Advance the drag's edge-scroll by however long it has been since
+    /// the last tick. Called once per layout pass, beside the snap tick.
+    ///
+    /// The pointer does not have to move for this to run — that is the
+    /// whole point of an edge-scroll. A hand holding a window against
+    /// the edge of the screen emits no events at all, so the travel has
+    /// to come from the clock, and `needs_animation_frame` is what keeps
+    /// the frames coming while it does.
+    pub(crate) fn tick_drag_edge_scroll_at(&mut self, now: Instant) {
+        let rate = self.drag_edge_scroll_rate();
+        if rate == 0.0 {
+            self.edge_scroll_at = None;
+            return;
+        }
+        let Some(last) = self.edge_scroll_at.replace(now) else {
+            // First tick of this scroll: it has been running for no
+            // time, so it has travelled no distance. Starting from a
+            // stale timestamp would jump the strip by however long the
+            // drag had been resting elsewhere.
+            return;
+        };
+        let dt = now
+            .saturating_duration_since(last)
+            .as_secs_f64()
+            .min(DRAG_EDGE_MAX_STEP_S);
+        if dt <= 0.0 {
+            return;
+        }
+        let viewport = self.rect.width().max(1.0);
+        // The same widened bound the wheel handler and the clamp in
+        // `apply_layout` use, so an edge-scroll can reach the empty
+        // canvas past the last window and no further.
+        let upper = self.max_scroll_x().max(viewport * 3.0);
+        let before = self.scroll_x;
+        self.scroll_x = (self.scroll_x + rate * dt).clamp(0.0, upper);
+        if (self.scroll_x - before).abs() > f64::EPSILON {
+            self.scroll_dirty = true;
+            // A snap easing somewhere else would fight the hand for the
+            // strip and win a frame at a time. The hand is the more
+            // recent instruction.
+            self.snap_anim = None;
+            self.last_wheel_at = None;
+        }
+    }
+
     /// Test helper: directly seed `scroll_x` so tests can probe the
     /// snap behaviour without driving a full wheel-event sequence.
     
@@ -1403,6 +1575,15 @@ impl GroupRow {
         new_group.start_spawn_animation();
         let clamped = gap_idx.min(self.groups.len());
         self.groups.insert(clamped, new_group);
+        // Publish the id this row just minted, not a request for one.
+        // The tree has to adopt it: two sides inventing separate ids for
+        // the same window mean the next resync sees a group on screen
+        // the tree does not list, and deletes it.
+        self.pending_tab_move = Some(TabMove::Split {
+            tab_id,
+            new_group: new_id,
+            gap_idx: clamped,
+        });
         // Flag a structural mutation so the App's tick handler rebuilds
         // the taffy tree. Without this, `apply_layout` would iterate the
         // stale `node_ids` (one per pre-split group) and skip the newly
@@ -1436,6 +1617,16 @@ impl GroupRow {
     /// [`WindowGroup::take_pending_maximize_change`].
     pub fn take_pending_cross_strip_detach(&mut self) -> Option<CrossStripDetach> {
         self.pending_cross_strip_detach.take()
+    }
+
+    /// Drain what this frame's drag did to the row, so the shell can
+    /// write it into the persisted [`WorkspaceTree`]. See [`TabMove`]
+    /// for why a same-strip drop needs a tree-side half at all.
+    ///
+    /// Take-pattern, like every other one-shot on this row: leaves
+    /// `None` so a second harvest tick cannot apply the move twice.
+    pub fn take_pending_tab_move(&mut self) -> Option<TabMove> {
+        self.pending_tab_move.take()
     }
 
     /// Drain the pending whole-group reorder one-shot published when a
@@ -1984,7 +2175,7 @@ impl Widget for GroupRow {
             let geometry_moved = spans != self.laid_spans;
             self.laid_spans = spans;
             let steady = self.snap_anim.is_none()
-                && !self.group_drag_active()
+                && !self.drag_holds_a_window()
                 && !self.handles.iter().any(|h| h.is_dragging());
             if geometry_moved && steady {
                 if let Some(target) = self.strip_frame_target(&self.laid_spans) {
@@ -1999,6 +2190,12 @@ impl Widget for GroupRow {
         // threshold. Done AFTER the clamp so a structural mutation
         // that snapped scroll_x to max doesn't get re-eased.
         self.tick_snap_at(Instant::now());
+        // A drag holding the pointer at the edge travels the strip
+        // toward whatever is past it. After the snap tick so the two
+        // cannot both write `scroll_x` in one pass with the snap
+        // landing last — while a hand is on a window it is the hand
+        // that says where the strip is.
+        self.tick_drag_edge_scroll_at(Instant::now());
         // Children's origin: the strip's canvas starts at canvas-x=0
         // (wheel disc occupies canvas-x [0, leading_inset]) and the
         // viewport shows canvas-x [scroll_x, scroll_x + viewport_w].
@@ -2581,9 +2778,19 @@ impl Widget for GroupRow {
                 // rects: left of the first pill's midpoint → 0, between
                 // pills → that pill's index, past the last pill → append.
                 let drop_idx = self.groups[tgt_idx].drop_index_for(release_point);
+                let dest_group = self.groups[tgt_idx].id;
                 let detached = self.groups[src_idx].detach_tab(tab_id);
                 if let Some((desc, host)) = detached {
                     self.groups[tgt_idx].insert_detached_tab(drop_idx, desc, host);
+                    // The row is done; the tree has not been told. See
+                    // `TabMove` — without this the shell rebuilds the row
+                    // from a tree that still holds the old arrangement and
+                    // the window returns to where it was dragged from.
+                    self.pending_tab_move = Some(TabMove::Merge {
+                        tab_id,
+                        dest_group,
+                        dest_idx: drop_idx,
+                    });
                     *handled = true;
                 }
                 continue;
@@ -2647,9 +2854,19 @@ impl Widget for GroupRow {
                 } else {
                     self.groups[tgt_idx].tabs().len()
                 };
+                let dest_group = self.groups[tgt_idx].id;
                 let detached = self.groups[src_idx].detach_tab(tab_id);
                 if let Some((desc, host)) = detached {
                     self.groups[tgt_idx].insert_detached_tab(drop_idx, desc, host);
+                    // The row is done; the tree has not been told. See
+                    // `TabMove` — without this the shell rebuilds the row
+                    // from a tree that still holds the old arrangement and
+                    // the window returns to where it was dragged from.
+                    self.pending_tab_move = Some(TabMove::Merge {
+                        tab_id,
+                        dest_group,
+                        dest_idx: drop_idx,
+                    });
                     *handled = true;
                 }
                 continue;
@@ -2855,8 +3072,12 @@ impl Widget for GroupRow {
         // Same for the make-space slide the groups an insertion pushed
         // along are playing: without a pumped redraw the strip would
         // freeze with them still sitting on the new group.
+        // And the drag edge-scroll: a hand holding a window against the
+        // edge of the screen sends no events, so without a pumped
+        // redraw the strip would travel one frame and stop.
         self.snap_in_flight()
             || self.shift_in_flight()
+            || self.drag_edge_scroll_rate() != 0.0
             || self.groups.iter().any(|g| g.needs_animation_frame())
     }
 
@@ -3676,6 +3897,171 @@ mod tests {
         row.handle_event(
             &event, 1.0, &modifiers, &mut doc, &doc_root,
             &mut handled, &mut focus, root, taffy,
+        );
+    }
+
+    /// A strip wide enough to have somewhere off-screen to go, with a
+    /// drag in flight on the first group's second tab.
+    fn dragging_row() -> (GroupRow, TaffyTree<()>, NodeId) {
+        let (mut row, taffy, root) =
+            make_row_with_groups_on_display(&[&[1, 2], &[3], &[4], &[5]], 900.0, 900.0);
+        start_drag(&mut row, 0, 2);
+        (row, taffy, root)
+    }
+
+    #[test]
+    fn a_drag_held_at_the_edge_travels_the_strip_toward_what_is_past_it() {
+        let (mut row, taffy, root) = dragging_row();
+        assert!(
+            row.max_scroll_x() > 0.0,
+            "the fixture has to overflow or there is nothing to travel to",
+        );
+        let rect = row.get_rect();
+        // Hold the pointer hard against the right edge.
+        fire_cursor_moved(&mut row, &taffy, root, Point::new(rect.x1 - 2.0, rect.y0 + 10.0));
+
+        let t0 = Instant::now();
+        row.tick_drag_edge_scroll_at(t0);
+        assert_eq!(
+            row.scroll_x(),
+            0.0,
+            "the first tick has no elapsed time behind it, so no distance",
+        );
+        row.tick_drag_edge_scroll_at(t0 + Duration::from_millis(16));
+        let after_one = row.scroll_x();
+        assert!(
+            after_one > 0.0,
+            "a frame of holding at the edge travels the strip; scroll_x={after_one}",
+        );
+        row.tick_drag_edge_scroll_at(t0 + Duration::from_millis(32));
+        assert!(
+            row.scroll_x() > after_one,
+            "and it keeps going while the pointer stays there",
+        );
+    }
+
+    #[test]
+    fn the_strip_travels_at_a_rate_the_pointer_cannot_outrun() {
+        // The bug this rules out is a pan driven by the pointer's own
+        // travel: a hand moving an inch would then throw the strip
+        // across several windows, which is what "the viewport scrolls
+        // with the mouse cursor" describes.
+        let (mut row, taffy, root) = dragging_row();
+        let rect = row.get_rect();
+        // Far past the edge — as far outside the viewport as inside it.
+        fire_cursor_moved(
+            &mut row,
+            &taffy,
+            root,
+            Point::new(rect.x1 + rect.width(), rect.y0 + 10.0),
+        );
+        let t0 = Instant::now();
+        row.tick_drag_edge_scroll_at(t0);
+        row.tick_drag_edge_scroll_at(t0 + Duration::from_millis(100));
+        let travelled = row.scroll_x();
+        let ceiling = DRAG_EDGE_MAX_PX_PER_S * 0.1;
+        assert!(
+            travelled <= ceiling + 0.5,
+            "a tenth of a second may not travel further than the rate allows: \
+             {travelled} > {ceiling}",
+        );
+        assert!(travelled > 0.0, "but it does travel");
+    }
+
+    #[test]
+    fn a_dropped_frame_does_not_teleport_the_strip() {
+        // The clock is the input, so a stalled frame hands the next tick
+        // an arbitrarily large `dt`. Travelling all of it at once would
+        // put the strip somewhere nobody watched it go.
+        let (mut row, taffy, root) = dragging_row();
+        let rect = row.get_rect();
+        fire_cursor_moved(&mut row, &taffy, root, Point::new(rect.x1 - 2.0, rect.y0 + 10.0));
+        let t0 = Instant::now();
+        row.tick_drag_edge_scroll_at(t0);
+        row.tick_drag_edge_scroll_at(t0 + Duration::from_secs(5));
+        let ceiling = DRAG_EDGE_MAX_PX_PER_S * DRAG_EDGE_MAX_STEP_S;
+        assert!(
+            row.scroll_x() <= ceiling + 0.5,
+            "a five-second stall may still only travel one step: {} > {ceiling}",
+            row.scroll_x(),
+        );
+    }
+
+    #[test]
+    fn the_strip_stands_still_under_a_pointer_that_is_not_dragging() {
+        // The strip is not a game camera. Nothing about where a pointer
+        // happens to be resting moves the view.
+        let (mut row, taffy, root) =
+            make_row_with_groups_on_display(&[&[1, 2], &[3], &[4], &[5]], 900.0, 900.0);
+        let rect = row.get_rect();
+        fire_cursor_moved(&mut row, &taffy, root, Point::new(rect.x1 - 2.0, rect.y0 + 10.0));
+        let t0 = Instant::now();
+        row.tick_drag_edge_scroll_at(t0);
+        row.tick_drag_edge_scroll_at(t0 + Duration::from_millis(500));
+        assert_eq!(row.scroll_x(), 0.0, "no drag, no travel");
+        assert!(
+            !row.needs_animation_frame(),
+            "and nothing is asking for frames to travel in",
+        );
+    }
+
+    #[test]
+    fn a_drag_in_the_middle_of_the_screen_leaves_the_strip_alone() {
+        // Only the edges mean "keep going". A drag being aimed at a
+        // window that is already on screen must not move that window.
+        let (mut row, taffy, root) = dragging_row();
+        let rect = row.get_rect();
+        fire_cursor_moved(
+            &mut row,
+            &taffy,
+            root,
+            Point::new(rect.center().x, rect.y0 + 10.0),
+        );
+        let t0 = Instant::now();
+        row.tick_drag_edge_scroll_at(t0);
+        row.tick_drag_edge_scroll_at(t0 + Duration::from_millis(500));
+        assert_eq!(row.scroll_x(), 0.0, "the middle of the strip is a resting place");
+    }
+
+    #[test]
+    fn the_strip_travels_both_ways() {
+        let (mut row, taffy, root) = dragging_row();
+        let rect = row.get_rect();
+        row.set_scroll_x_for_test(600.0);
+        fire_cursor_moved(
+            &mut row,
+            &taffy,
+            root,
+            Point::new(rect.x0 + rect.width() * 0.02, rect.y0 + 10.0),
+        );
+        assert!(
+            row.drag_edge_scroll_rate() < 0.0,
+            "a drag held against the left edge travels back the way it came",
+        );
+        let t0 = Instant::now();
+        row.tick_drag_edge_scroll_at(t0);
+        row.tick_drag_edge_scroll_at(t0 + Duration::from_millis(16));
+        assert!(row.scroll_x() < 600.0, "and the strip actually moves that way");
+    }
+
+    #[test]
+    fn letting_go_stops_the_strip() {
+        let (mut row, taffy, root) = dragging_row();
+        let rect = row.get_rect();
+        fire_cursor_moved(&mut row, &taffy, root, Point::new(rect.x1 - 2.0, rect.y0 + 10.0));
+        let t0 = Instant::now();
+        row.tick_drag_edge_scroll_at(t0);
+        row.tick_drag_edge_scroll_at(t0 + Duration::from_millis(16));
+        let travelled = row.scroll_x();
+        assert!(travelled > 0.0);
+        // Release, without moving the pointer: the hand is off the
+        // window but still in the band.
+        row.groups[0].bar_mut().pending_drag = None;
+        row.tick_drag_edge_scroll_at(t0 + Duration::from_millis(500));
+        assert_eq!(
+            row.scroll_x(),
+            travelled,
+            "with nothing being dragged the strip stops where it was",
         );
     }
 
