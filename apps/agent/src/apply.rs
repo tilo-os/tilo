@@ -31,9 +31,64 @@ use crate::surface::{AppContract, View};
 pub struct Editor {
     pub doc: AutoCommit,
     actor: ActorId,
+    /// What the room calls whoever is acting through this replica.
+    ///
+    /// Stamped onto the text every edit adds, as the durable `author` mark, so
+    /// a reader an hour later can still tell which paragraphs came from here.
+    /// The actor id is the same string hashed, but an actor is an opaque
+    /// replica handle: it is not a name, and nothing reading a document is
+    /// entitled to turn one back into the other.
+    author: String,
     /// Which app authored this document — the contract that builds its
     /// resource tree and registers its decoders.
     contract: &'static AppContract,
+}
+
+/// Every block's text, keyed by block id, flattened across table cells and any
+/// other nesting the snapshot reports.
+///
+/// The before-half of authorship: what an action *added* is the difference
+/// between this and the same reading afterwards, which works for every action
+/// rather than only the ones whose arguments happen to name a range.
+fn block_texts(doc: &AutoCommit) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(c) = qdoc::model::open(doc, &automerge::ROOT) else {
+        return out;
+    };
+    let snap = qdoc::model::materialize(doc, &c);
+    fn walk(blocks: &[qdoc::BlockView], out: &mut std::collections::BTreeMap<String, String>) {
+        for b in blocks {
+            out.insert(b.id.clone(), b.text.clone());
+            walk(&b.children, out);
+        }
+    }
+    walk(&snap.blocks, &mut out);
+    out
+}
+
+/// The character range `after` added relative to `before`, as `[start, end)`.
+///
+/// Measured as "the middle that differs": the common prefix and common suffix
+/// are whatever both readings share, so text inserted into the middle of an
+/// existing paragraph is attributed to whoever inserted it without
+/// re-attributing the sentence it landed inside. `None` when nothing grew,
+/// which covers a pure deletion and a no-op alike — neither authors any text.
+fn added_range(before: &str, after: &str) -> Option<(usize, usize)> {
+    let b: Vec<char> = before.chars().collect();
+    let a: Vec<char> = after.chars().collect();
+    if a.len() <= b.len() {
+        return None;
+    }
+    let mut head = 0;
+    while head < b.len() && b[head] == a[head] {
+        head += 1;
+    }
+    let mut tail = 0;
+    while tail < b.len() - head && b[b.len() - 1 - tail] == a[a.len() - 1 - tail] {
+        tail += 1;
+    }
+    let end = a.len() - tail;
+    (end > head).then_some((head, end))
 }
 
 /// Which app authored a peer's snapshot, or `None` when no app the agent
@@ -79,6 +134,7 @@ impl Editor {
         Self {
             doc,
             actor,
+            author: actor_handle.to_string(),
             contract,
         }
     }
@@ -119,6 +175,7 @@ impl Editor {
         let mut this = Self {
             doc,
             actor,
+            author: actor_handle.to_string(),
             contract,
         };
         this.drain();
@@ -232,15 +289,49 @@ impl Editor {
     /// the app does. Returns the incremental bytes to broadcast, or `None`
     /// when the action changed nothing (an unknown block id is a silent
     /// no-op in the app too).
-    pub fn apply(&mut self, action: &WordProcessorAction) -> Result<Option<Vec<u8>>> {
+    ///
+    /// **Whether to broadcast is decided on the heads, not on `pending_ops`.**
+    /// `AutoCommit` commits whatever is open the moment a read interleaves the
+    /// writes, so an action that reads after writing — asking a list its
+    /// length, checking what it just put — has already committed by the time
+    /// it returns and leaves nothing pending. A guard on `pending_ops` reads
+    /// that as "this changed nothing" and returns before `save_incremental`
+    /// ever runs: the operation is performed on the local replica, no error is
+    /// raised, and the change is never sent. The agent then believes it
+    /// answered and no other machine ever saw it.
+    ///
+    /// It fails only on the success path, which is what makes it hard to
+    /// notice: a refusal writes one splice with no interleaved read and
+    /// travels fine. `pending_ops` answers a question about an open
+    /// transaction; the question here is whether the document moved, so that
+    /// is the one asked.
+    ///
+    /// Generic over the action rather than fixed to
+    /// [`WordProcessorAction`] so this guard can be exercised with an action
+    /// of the shape that breaks it. Every caller still passes the word
+    /// processor's own.
+    pub fn apply<A>(&mut self, action: &A) -> Result<Option<Vec<u8>>>
+    where
+        A: qos_actions::Action + std::fmt::Debug + ?Sized,
+    {
         self.doc.set_actor(self.actor.clone());
+        // A clean commit boundary and the baseline to compare against:
+        // `get_heads` closes any open transaction, so what follows belongs to
+        // this action alone.
+        let before = self.doc.get_heads();
+        let text_before = block_texts(&self.doc);
         action
             .apply(&mut self.doc)
             .map_err(|e| anyhow::anyhow!("apply {action:?}: {e:?}"))?;
-        if self.doc.pending_ops() == 0 {
+        self.stamp_authorship(&text_before);
+        // Stamp only what is still open. An action whose own read closed the
+        // transaction has already committed and has nothing left to stamp.
+        if self.doc.pending_ops() > 0 {
+            qdoc::history::commit_stamped(&mut self.doc);
+        }
+        if self.doc.get_heads() == before {
             return Ok(None);
         }
-        qdoc::history::commit_stamped(&mut self.doc);
         let delta = self.doc.save_incremental();
         Ok((!delta.is_empty()).then_some(delta))
     }
@@ -294,7 +385,11 @@ impl Editor {
     ///
     /// Returns the incremental bytes to broadcast, or `None` when the
     /// operation changed nothing (a no-op is ordinary — a rename proposal
-    /// that already reads that way writes nothing).
+    /// that already reads that way writes nothing). Whether it changed
+    /// anything is read off what is left unsaved, never off `pending_ops`:
+    /// an app's own writer reads as it goes, and by then `AutoCommit` has
+    /// committed the very change that would not be sent. See
+    /// [`Self::apply`].
     pub fn invoke(
         &mut self,
         view: &View,
@@ -305,6 +400,7 @@ impl Editor {
         let resources = self.resources(view);
         let mut transport = LocalTransport::new();
         self.doc.set_actor(self.actor.clone());
+        let text_before = block_texts(&self.doc);
         door::invoke(
             &mut self.doc,
             &resources,
@@ -314,8 +410,54 @@ impl Editor {
             registry,
             &mut transport,
         )?;
+        // The same stamp the direct path applies. An operation invoked through
+        // the door is still this agent writing into somebody's document, and
+        // authorship that depended on which entrance was used would be a fact
+        // about the plumbing rather than about who wrote the sentence.
+        self.stamp_authorship(&text_before);
         let delta = self.doc.save_incremental();
         Ok((!delta.is_empty()).then_some(delta))
+    }
+
+    /// Mark whatever text this replica just added with the durable `author`
+    /// mark, so the document itself records who wrote it.
+    ///
+    /// Read back by [`qdoc::author_runs`] and drawn by the word processor. It
+    /// is a mark rather than a field on the block because authorship follows
+    /// the characters: splitting a paragraph, merging two, or typing into the
+    /// middle of somebody else's sentence all leave each run attributed to
+    /// whoever actually wrote it.
+    ///
+    /// Only text that *grew* is stamped. A deletion authors nothing, and an
+    /// action that rewrote a block's attributes without touching its text has
+    /// not made anybody the author of the sentence it left alone.
+    fn stamp_authorship(&mut self, before: &std::collections::BTreeMap<String, String>) {
+        if self.author.is_empty() {
+            return;
+        }
+        let after = block_texts(&self.doc);
+        let mut spans: Vec<(String, usize, usize)> = Vec::new();
+        for (id, text) in &after {
+            let was = before.get(id).map(String::as_str).unwrap_or("");
+            if let Some((start, end)) = added_range(was, text) {
+                spans.push((id.clone(), start, end));
+            }
+        }
+        if spans.is_empty() {
+            return;
+        }
+        let Ok(c) = qdoc::model::open(&self.doc, &automerge::ROOT) else {
+            return;
+        };
+        let mut ids = qdoc::IdGen::new(self.doc.get_actor().to_hex_string());
+        let mut dm = qdoc::DocMut {
+            doc: &mut self.doc,
+            c: &c,
+            ids: &mut ids,
+        };
+        for (id, start, end) in spans {
+            dm.add_mark(&id, start, end, qdoc::schema::MARK_AUTHOR, self.author.as_str());
+        }
     }
 
     /// How many ancestor changes this replica is waiting for.
@@ -348,5 +490,123 @@ impl Editor {
         let c = qdoc::model::open(&self.doc, &automerge::ROOT)
             .map_err(|e| anyhow::anyhow!("the document has no qdoc schema: {e:?}"))?;
         Ok(qdoc::model::materialize(&self.doc, &c))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::{ReadDoc, ROOT, ScalarValue};
+    use qos_actions::{Action, ActionError, Doc, ExecutionLocus};
+
+    /// An action that reads its own write before it returns.
+    ///
+    /// The shape every real writer eventually has — asking a list its length
+    /// between two inserts, checking what was just put — and the one
+    /// `AutoCommit` commits underneath, leaving nothing pending.
+    #[derive(Debug)]
+    struct ReadsAfterWriting;
+
+    impl Action for ReadsAfterWriting {
+        fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+            use automerge::transaction::Transactable;
+            doc.put(&ROOT, "note", ScalarValue::Str("written".into()))?;
+            // The read that closes the transaction.
+            let _ = doc.get(&ROOT, "note")?;
+            Ok(())
+        }
+        fn locus(&self) -> ExecutionLocus {
+            ExecutionLocus::ClientLocal
+        }
+    }
+
+    /// An action that genuinely does nothing — an unknown block id, in the
+    /// app. It must stay silent.
+    #[derive(Debug)]
+    struct Nothing;
+
+    impl Action for Nothing {
+        fn apply(&self, _doc: &mut Doc) -> Result<(), ActionError> {
+            Ok(())
+        }
+        fn locus(&self) -> ExecutionLocus {
+            ExecutionLocus::ClientLocal
+        }
+    }
+
+    /// A change whose action read after writing is still broadcast.
+    ///
+    /// The condition is asserted, not assumed: the probe is run against a
+    /// bare document first to show that it really does leave nothing
+    /// pending. Without that line this test would pass against any guard at
+    /// all, including the one it exists to catch.
+    #[test]
+    fn a_change_is_sent_even_when_the_action_read_after_writing() {
+        let mut probe = AutoCommit::new();
+        ReadsAfterWriting.apply(&mut probe).expect("the probe applies");
+        assert_eq!(
+            probe.pending_ops(),
+            0,
+            "the probe must leave nothing pending, or this test is not \
+             exercising the condition it is about"
+        );
+
+        let mut ed = Editor::empty("Scribe");
+        let delta = ed
+            .apply(&ReadsAfterWriting)
+            .expect("apply")
+            .expect("the document changed, so there is a change to send");
+
+        // What matters is the other machine: a peer that only ever sees the
+        // delta has to land on the same document.
+        let mut peer = AutoCommit::new();
+        peer.load_incremental(&delta).expect("the delta applies");
+        assert_eq!(
+            peer.get(&ROOT, "note")
+                .unwrap()
+                .and_then(|(v, _)| v.to_str().map(str::to_string)),
+            Some("written".to_string()),
+            "the peer never received the change the agent made"
+        );
+    }
+
+    /// And the silence is still honest: an action that changes nothing
+    /// broadcasts nothing, rather than an empty change every peer has to
+    /// merge.
+    #[test]
+    fn an_action_that_changes_nothing_sends_nothing() {
+        let mut ed = Editor::empty("Scribe");
+        assert_eq!(ed.apply(&Nothing).expect("apply"), None);
+    }
+
+    /// The ordinary path is unchanged: an action that leaves its ops pending
+    /// is committed, stamped, and sent.
+    #[test]
+    fn an_ordinary_write_is_still_committed_and_sent() {
+        #[derive(Debug)]
+        struct JustWrites;
+        impl Action for JustWrites {
+            fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+                use automerge::transaction::Transactable;
+                doc.put(&ROOT, "note", ScalarValue::Str("typed".into()))?;
+                Ok(())
+            }
+            fn locus(&self) -> ExecutionLocus {
+                ExecutionLocus::ClientLocal
+            }
+        }
+        let mut ed = Editor::empty("Scribe");
+        let delta = ed
+            .apply(&JustWrites)
+            .expect("apply")
+            .expect("a plain write is a change to send");
+        let mut peer = AutoCommit::new();
+        peer.load_incremental(&delta).expect("the delta applies");
+        assert_eq!(
+            peer.get(&ROOT, "note")
+                .unwrap()
+                .and_then(|(v, _)| v.to_str().map(str::to_string)),
+            Some("typed".to_string())
+        );
     }
 }
