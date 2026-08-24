@@ -316,6 +316,61 @@ mod tests {
         haystack.windows(needle.len()).any(|w| w == needle.as_bytes())
     }
 
+    /// A run sheet, built by dispatching the word processor's own
+    /// `InsertTable` and `SpliceText` actions — the path the agent takes
+    /// — and saved as a late joiner would be handed it.
+    const RUN_SHEET: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/data/word-processor-run-sheet.automerge"
+    ));
+
+    /// Text in a table cell is text, and is found.
+    ///
+    /// The agent's run sheet puts its facts in cells rather than in
+    /// paragraphs, so a walk that stopped at body text would report an
+    /// empty page for the one document this whole tool exists to read.
+    /// It does not stop there — cells are ordinary blocks — and this
+    /// says so out loud, because "the phrase is only in a table" was the
+    /// first guess when the harness reported the run sheet missing and
+    /// it would have sent the fix into the wrong file.
+    #[test]
+    fn text_written_into_a_table_cell_is_found() {
+        let found = strings(RUN_SHEET);
+        let hit = found
+            .iter()
+            .find(|(_, t)| t == "Sound check")
+            .expect("a cell's text must be found");
+        assert!(
+            hit.0.ends_with(".text"),
+            "the path must name the cell's text object, got {:?}",
+            hit.0,
+        );
+        // The whole grid, not one lucky cell: headers and both rows.
+        for cell in ["Time", "Item", "18:00", "Doors", "18:30"] {
+            assert!(
+                found.iter().any(|(_, t)| t == cell),
+                "the cell {cell:?} is in the table and must be found",
+            );
+        }
+        // ...and it is genuinely unfindable without decoding, which is
+        // why the harness may never fall back to searching the bytes.
+        assert!(
+            !contains_bytes(RUN_SHEET, "Sound check"),
+            "the phrase must be absent from the saved bytes — that absence \
+             is what a byte search would report as an empty page",
+        );
+    }
+
+    /// The control for the test above.
+    #[test]
+    fn the_run_sheet_does_not_report_cells_it_never_held() {
+        let found = strings(RUN_SHEET);
+        assert!(
+            !found.iter().any(|(_, t)| t.contains("Encore")),
+            "a table must not claim a row that was never written into it",
+        );
+    }
+
     #[test]
     fn nesting_is_walked_to_the_bottom() {
         let mut doc = AutoCommit::new();
