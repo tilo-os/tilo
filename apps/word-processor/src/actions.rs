@@ -784,6 +784,33 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
     };
     let snap = qdoc::model::materialize(doc, &c);
 
+    // Put a picture into the document itself, at the end of the body.
+    //
+    // The section-level `place-image` below anchors under a heading, and for
+    // a long time it was the only one — which made a document with no heading
+    // in it a document nothing could place a picture into. That is not an
+    // edge case: a document that has just been opened has no heading, and by
+    // the rule that applications start empty it is the *usual* state of one.
+    // A caller with a photograph and an open document then found the app
+    // exporting no way to put the first into the second, and the only remedy
+    // was to write a heading first, which is content nobody asked for.
+    //
+    // So the body is an anchor in its own right. `after` names the last block
+    // there is, and an empty body has none — which `insert_block` already
+    // reads as "append", the same answer as "at the end" in both cases.
+    let end_of_body = snap.blocks.last().map(|b| b.id.clone()).unwrap_or_default();
+    root = root.with_action(
+        ActionSpec::prompted_content(
+            "place-image",
+            "Place image",
+            "The image to place, by content hash",
+            "",
+            ExecutionLocus::ClientLocal,
+            move |arg| encode(&place_image_action(&end_of_body, arg.trim())),
+        )
+        .with_description("Put a picture at the end of the document"),
+    );
+
     // Images → a resource each, with a delete action.
     for b in snap.blocks.iter().filter(|b| b.kind == "image") {
         let child = Resource::new(

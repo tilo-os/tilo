@@ -256,13 +256,24 @@ fn word_processor_resources(view: &View, doc: &AutoCommit) -> Vec<Resource> {
             .first()
             .map(|b| b.id.clone())
     });
-    let Some(anchor) = anchor else {
-        return Vec::new();
-    };
-    let targets = if view.target_blocks.is_empty() {
-        vec![anchor.clone()]
-    } else {
+    // A document with nothing in it is still a document, and it used to be
+    // surveyed as though it were not there at all: no blocks meant no anchor,
+    // no anchor meant an empty tree, and an empty tree meant a room holding an
+    // open word processor reported nothing that could be done to it. Since
+    // applications start empty, that is the state a document is in exactly
+    // when somebody first wants to put something into it.
+    //
+    // The empty anchor is not an invented id — it names no block, and every
+    // operation anchored on it appends to the end of the body, which is the
+    // only place there is. Block-level formatting targets nothing, because
+    // there is nothing to format yet.
+    let anchor = anchor.unwrap_or_default();
+    let targets = if !view.target_blocks.is_empty() {
         view.target_blocks.clone()
+    } else if anchor.is_empty() {
+        Vec::new()
+    } else {
+        vec![anchor.clone()]
     };
     word_processor::actions::provide_resources(
         &word_processor::actions::WpResourceCtx {
