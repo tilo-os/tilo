@@ -114,11 +114,16 @@ pub fn toggle_face_colors(
     } else {
         theme.tokens.colors.neutral[3]
     };
-    let knob = if interact.hovered {
-        theme.text_primary
-    } else {
-        theme.text_dim
-    };
+    // The knob is the whole of what a switch says. Both tones are chosen for
+    // the neutral off-track, and on the accent on-track they collapse into it
+    // — 1.16:1 on the dark palette, which is a switch with no knob at all. So
+    // each tone is resolved against the track it will actually sit on.
+    let knob_tone = if interact.hovered { theme.text_primary } else { theme.text_dim };
+    let knob = theme.tokens.colors.ink_on_any(
+        &[track],
+        knob_tone,
+        crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+    );
     let (border, border_w) = if interact.focused {
         (theme.border_focus, 2.0)
     } else {
