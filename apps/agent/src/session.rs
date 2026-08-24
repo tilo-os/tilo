@@ -970,36 +970,32 @@ impl Session {
             // Matched on the name it was admitted under *and* on being marked
             // an agent, so a person who happens to share the name is never
             // mistaken for it. The id is the room's; the agent only supplies
-            // a name, exactly as a peer does.
+            // a name, exactly as a peer does. The mark is the room's too — it
+            // comes off the capability that admitted the member.
             Some(CollabEvent::Context { collaborators, .. }) => {
-                // Matched on the name it was admitted under, preferring a row
-                // the room has marked as an agent.
+                // Matched on the name it was admitted under **and** on the
+                // room having admitted that member as an agent. Both, because
+                // either alone identifies the wrong participant: the room may
+                // hold several agents, and it may hold a person called what
+                // this one is called.
                 //
-                // Preferring, not requiring, because on this socket the mark
-                // is not carried: the broker's JSON roster announcement sets
-                // `is_agent: false` unconditionally and says so in a comment —
-                // the label map it announces from records what a peer is
-                // *called*, not what it is. So a `false` here means "this
-                // transport does not carry kind", which is a different fact
-                // from "this is a person", and reading it as the second would
-                // make the agent unable to recognise itself at all.
+                // Requiring the mark, not preferring it. Both transports carry
+                // kind now — the capnp context stream always did, and the
+                // broker's roster announcement reads it off the room's
+                // capability list rather than sending a flat `false` — so a
+                // `false` here is the room saying "a person", not a transport
+                // declining to answer. Falling back to an unmarked row was
+                // what made a person admitted under this agent's own display
+                // name into this agent, which is the inference the mark exists
+                // to retire.
                 //
-                // The residual risk is a person admitted under the agent's own
-                // display name, who would then be taken for it. That is not
-                // fixable from this side: the fix is the broker recording kind
-                // beside name in `roster_announcement`, which its own comment
-                // already names as the thing to do. Until then this prefers a
-                // marked row when the room does supply one, so it is exact
-                // wherever the mark exists and merely usable where it does not.
-                let named: Vec<_> = collaborators
+                // No match leaves `me_from_room` unset, and `me_in_chat` says
+                // so honestly: an agent the room has not admitted as one has
+                // no business claiming a mention.
+                let me = collaborators
                     .into_iter()
-                    .filter(|c| c.name.eq_ignore_ascii_case(&self.cfg.name))
-                    .collect();
-                let me = named
-                    .iter()
-                    .find(|c| c.is_agent)
-                    .or_else(|| named.first());
-                if let Some(c) = me {
+                    .find(|c| c.is_agent && c.name.eq_ignore_ascii_case(&self.cfg.name));
+                if let Some(c) = &me {
                     if self.me_from_room.as_deref() != Some(c.id.as_str()) {
                         tracing::info!(
                             me = %c.id, name = %c.name, marked = c.is_agent,
