@@ -34,3 +34,6 @@ png.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Lets a test look inside a drawn scene and count the image draws, so
+# "the photograph reached the scene" is an assertion rather than a hope.
+vello_encoding.workspace = true

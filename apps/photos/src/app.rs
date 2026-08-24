@@ -595,6 +595,21 @@ impl Widget for PhotosApp {
             None,
             &self.toolbar_rect,
         );
+        // …and is separated from the canvas by a real rule, not only by that
+        // fill. Under the high-contrast palette `surfaces.raised` and
+        // `surfaces.base` are both pure black by design — that theme
+        // deliberately carries structure in borders rather than in fills — so
+        // a toolbar defined only by its plate has no edge at all there. The
+        // same rule above the status line, for the same reason.
+        for edge in [self.toolbar_rect.y1, self.status_rect.y0] {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.border_standard,
+                None,
+                &Rect::new(self.rect.x0, edge - 1.0, self.rect.x1, edge),
+            );
+        }
 
         for (_, button) in &mut self.buttons {
             button.draw(scene, transform, text_renderer, theme, presence);
