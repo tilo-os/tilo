@@ -1075,8 +1075,11 @@ impl ChatApp {
     pub(crate) fn user(&self, id: &str) -> Option<&User> {
         self.users.iter().find(|u| u.id == id)
     }
+    /// What to call `id` on screen. One resolver, so a name beside a message,
+    /// a name in the roster and a name in the `@` picker cannot disagree — see
+    /// [`Self::display_name`] for why the room, not the peer, answers.
     pub(crate) fn user_name(&self, id: &str) -> String {
-        self.user(id).map(|u| u.name.clone()).unwrap_or_else(|| id.to_string())
+        self.display_name(id)
     }
     pub(crate) fn channel(&self, id: &str) -> Option<&Channel> {
         self.channels.iter().find(|c| c.id == id)
@@ -1706,7 +1709,7 @@ impl Widget for ChatApp {
             // live run with no data dir still gets the honest empty starter
             // rather than the demo.
             if !ChatDoc::is_seeded(doc) {
-                ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
+                ChatDoc::seed_starter(doc, &self.me.id);
             }
             // Announce this peer into the shared roster so every other
             // participant sees its real name/colour — whether we seeded the
@@ -1720,7 +1723,7 @@ impl Widget for ChatApp {
             ChatDoc::ensure_member(doc, &self.me.id, false, model::Presence::Online);
         } else if self.shot_starter {
             // `--shots` capture of the honest first-run empty workspace.
-            ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
+            ChatDoc::seed_starter(doc, &self.me.id);
         } else {
             // Ephemeral `--shots`/test instance: the rich demo workspace.
             ChatDoc::seed_if_empty(doc);

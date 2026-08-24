@@ -182,13 +182,16 @@ impl ChatDoc {
     ///
     /// The rich demo workspace ([`Self::seed_if_empty`]) is reserved for the
     /// ephemeral `--shots`/test path — it never lands on a real user's disk.
-    pub fn seed_starter(doc: &mut AutoCommit, me_id: &str, me_name: &str, me_initials: &str) {
+    pub fn seed_starter(doc: &mut AutoCommit, me_id: &str) {
         if Self::is_seeded(doc) {
             return;
         }
         let _ = doc.put(&ROOT, "seeded", true);
 
-        Self::put_user(doc, me_id, me_name, me_initials, 0, Presence::Online);
+        // Membership, not a name. Scaffolding a workspace is still a peer
+        // writing about itself, and the name is the room's to give — see
+        // [`Self::ensure_member`].
+        Self::ensure_member(doc, me_id, false, Presence::Online);
         Self::put_workspace(doc, "ws_home", "My Workspace", "MW", 0, 0);
         Self::put_category(doc, "cat_home_text", "ws_home", "Channels", 0, false);
         Self::put_category(doc, "cat_home_voice", "ws_home", "Voice", 1, false);
@@ -1529,12 +1532,18 @@ mod tests {
     fn seed_starter_is_minimal_real_and_has_no_demo_content() {
         // The live first-run seed: just the local person + an empty workspace.
         let mut doc = AutoCommit::new();
-        ChatDoc::seed_starter(&mut doc, model::ME, "Ada Lovelace", "AL");
+        ChatDoc::seed_starter(&mut doc, model::ME);
 
         let users = ChatDoc::list_users(&doc);
         assert_eq!(users.len(), 1, "only the local user — no fabricated people");
         assert_eq!(users[0].id, model::ME);
-        assert_eq!(users[0].name, "Ada Lovelace");
+        assert!(
+            users[0].name.is_empty(),
+            "scaffolding a workspace must not let a peer name itself — the room \
+             names people, and a self-declared name is one two peers can disagree \
+             about with no way to settle it"
+        );
+        assert!(!users[0].is_agent, "a person, unless the room says otherwise");
 
         let ws = ChatDoc::list_workspaces(&doc);
         assert_eq!(ws.len(), 1);
@@ -1551,7 +1560,7 @@ mod tests {
         );
 
         // Idempotent: adopting or re-seeding never duplicates.
-        ChatDoc::seed_starter(&mut doc, model::ME, "X", "X");
+        ChatDoc::seed_starter(&mut doc, model::ME);
         assert_eq!(ChatDoc::list_users(&doc).len(), 1);
         assert_eq!(ChatDoc::list_workspaces(&doc).len(), 1);
     }
@@ -1858,7 +1867,7 @@ mod tests {
         // their concurrent joins add distinct user keys to the *same* map and a
         // merge keeps BOTH — no silently-dropped participant.
         let mut a = AutoCommit::new();
-        ChatDoc::seed_starter(&mut a, "u_alice", "Alice", "AL");
+        ChatDoc::seed_starter(&mut a, "u_alice");
         let mut b = AutoCommit::load(&a.save()).unwrap();
         // Concurrent, un-synced joins.
         ChatDoc::voice_join(&mut a, "c_lounge", "u_alice");
