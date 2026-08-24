@@ -50,6 +50,21 @@ use vello::Scene;
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 
+/// Locale pinning for headless frames. See [`render_shot`].
+mod i18n_pin {
+    pub fn pin_shot_language() {
+        let lang = std::env::var("QOS_SHOTS_LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string());
+        word_processor::i18n::set_locale(&lang);
+        // The toolkit keeps its own catalogues, and its widgets bring their own
+        // strings — the compose surface's placeholder and its destination lines
+        // are the toolkit's, not this app's. Pinning only one of the two is how
+        // a frame ends up with a German editor around an English panel.
+        // Initialised here, before any widget asks for a string, because
+        // registering a catalogue later must not discard what an app set up.
+        ui::i18n::I18nManager::init(&word_processor::i18n::current_locale());
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
 
@@ -95,6 +110,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    // A shot pins its language, the way every other surface photographing this
+    // system does. Left to the machine's own locale it renders in whatever that
+    // happens to be, and only some strings have a catalogue there — so a frame
+    // comes back half translated, and a reviewer measuring whether a label fits
+    // its control is measuring a string the film will never show.
+    // `QOS_SHOTS_LANG` overrides it, because shooting a longer catalogue on
+    // purpose is how you find out whether the longer word still fits.
+    //
+    // Before anything a shot builds, not inside the render: a destination label
+    // is resolved when the roster is handed over, so pinning at draw time
+    // photographs strings that were already frozen in the wrong language.
+    if shots.is_some() {
+        i18n_pin::pin_shot_language();
+    }
+
     if let (Some(out), true) = (shots.as_deref(), history) {
         // The strip renders the document's own change graph, so a shot of it is
         // only worth anything over a document that has one. Give the document a
@@ -116,20 +146,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         // ordinary right-click menu, and the compose surface beside it carrying
         // that paragraph's address. The destinations are demo values, seeded
         // here and only here — the editor itself never invents a roster.
-        let demo = (scenario.as_deref() == Some("remark")).then(seed_remark_demo);
+        let is_remark = matches!(scenario.as_deref(), Some("remark") | Some("remark-agent"));
+        let demo = is_remark.then(seed_remark_demo);
         let (state, mut wp) = build_concrete(demo.as_deref().or(file.as_deref()))?;
-        if scenario.as_deref() == Some("remark") {
-            wp.set_remark_destinations(vec![
-                ui::widget::DestinationOption::localised(qos_reference::Destination::channel(
-                    "c_run", "run-of-show",
-                )),
-                ui::widget::DestinationOption::localised(qos_reference::Destination::participant(
-                    "u_xaver", "Xaver", false,
-                )),
-                ui::widget::DestinationOption::localised(qos_reference::Destination::participant(
-                    "agent_claude", "Claude", true,
-                )),
-            ]);
+        if is_remark {
+            let channel = qos_reference::Destination::channel("c_run", "run-of-show");
+            let person = qos_reference::Destination::participant("u_xaver", "Xaver", false);
+            let agent = qos_reference::Destination::participant("agent_claude", "Claude", true);
+            // The surface opens on whatever the host put first, so `remark-agent`
+            // simply hands over a roster led by the agent — which is also the
+            // longest label a destination can have, and therefore the frame
+            // worth photographing.
+            let order = if scenario.as_deref() == Some("remark-agent") {
+                [agent, channel, person]
+            } else {
+                [channel, person, agent]
+            };
+            wp.set_remark_destinations(
+                order.into_iter().map(ui::widget::DestinationOption::localised).collect(),
+            );
         } else {
             wp.arm_status_bubble_for_shots();
         }
@@ -363,7 +398,7 @@ fn render_shot(mut state: State, mut widget: WordProcessorWidget, viewport: (u32
     widget.sync(&mut state.doc, &state.root);
     // After `sync`, which binds the model to the document: a selection made
     // before it would move a caret through a document the model cannot see yet.
-    if scenario == Some("remark") {
+    if matches!(scenario, Some("remark") | Some("remark-agent")) {
         select_demo_phrase(&mut state, &mut widget);
     }
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
@@ -395,7 +430,7 @@ fn render_shot(mut state: State, mut widget: WordProcessorWidget, viewport: (u32
     // geometry a click resolves a caret against is produced by drawing. Take a
     // warm-up frame, the way a real session's first frame precedes its first
     // click, then perform the gesture and photograph the result.
-    if scenario == Some("remark") {
+    if matches!(scenario, Some("remark") | Some("remark-agent")) {
         let mut warm = Scene::new();
         widget.draw_with_presence(&mut warm, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
         let at = widget.debug_selection_point();

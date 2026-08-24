@@ -63,9 +63,17 @@ use crate::widget::dropdown::Dropdown;
 use crate::widget::text_input::TextInput;
 use crate::widget::Widget;
 
-/// Panel width. Wide enough for a destination and a sentence, narrow enough to
-/// sit beside a context menu without covering the document it is about.
-const PANEL_W: f64 = 340.0;
+/// Panel width.
+///
+/// Set by the widest thing the panel must be able to *say*, not by taste: the
+/// toolkit's own agent destination reads "<name> — private; its reply lands in
+/// the room", and a selector that can never show its own longest value leaves
+/// the reason its privacy is unremarkable unreadable everywhere. That is the
+/// source catalogue; a translation that runs longer elides rather than being
+/// cut off, so the width is a floor for the worst case rather than a promise
+/// about every language. Still narrow enough to sit beside a context menu
+/// without covering the document.
+const PANEL_W: f64 = 392.0;
 const PAD: f64 = 12.0;
 const GAP: f64 = 8.0;
 /// Gap between the context menu and the panel placed beside it.
@@ -567,13 +575,8 @@ impl Widget for RemarkCompose {
             let cx = self.rect.x0 + PAD;
             let cy = self.rect.y0 + PAD;
             let avail = (self.rect.width() - PAD * 2.0).max(0.0);
-            let natural = Chip::natural_width_at(
-                &r.label,
-                CHIP_H,
-                ChipLead::Glyph(crate::icons::Icon::ChevronRight),
-                theme,
-                text_renderer,
-            );
+            let natural =
+                Chip::natural_width_at(&r.label, CHIP_H, ChipLead::None, theme, text_renderer);
             let w = natural.min(avail);
             // Resolved against the panel's own surface rather than tinted
             // from the accent token. `accent × 0.18` is one colour over a
@@ -591,7 +594,14 @@ impl Widget for RemarkCompose {
                 transform,
                 Rect::new(cx, cy, cx + w, cy + CHIP_H),
                 &r.label,
-                ChipLead::Glyph(crate::icons::Icon::ChevronRight),
+                // No lead glyph. A chevron reads as "activate me and I will
+                // take you there", and nothing resolves a `ResourceRef` back to
+                // a focused app with the block revealed — the address rides
+                // with the message instead. An affordance that promises a
+                // journey nothing makes is worse than a plain label, and the
+                // label already does the chip's job: proving the message
+                // carries the object rather than a description of it.
+                ChipLead::None,
                 ChipStyle::measured(measured),
                 theme,
                 text_renderer,
@@ -1006,6 +1016,35 @@ mod contrast {
                     "{name}: {what} on the compose panel is {r:.2}:1, below the 4.5 body floor"
                 );
             }
+        }
+    }
+
+    /// The reference chip's label clears the floor against **the pill it sits
+    /// in**, not against the panel behind it.
+    ///
+    /// The chip is the panel's only statement of *what* is being talked about.
+    /// Lettered in the accent its own wash was made from, it measured 3.78:1 on
+    /// a light panel — the least readable mark on a surface whose whole job is
+    /// to name a thing. Asserted through the same derivation `draw` uses, at
+    /// the small-text floor, so the headroom anti-aliasing spends is there.
+    #[test]
+    fn the_reference_chip_label_clears_the_floor_against_its_own_pill() {
+        for (name, t) in themes() {
+            let c = &t.tokens.colors;
+            let chip = c.accent_chip_on(
+                c.surfaces.overlay,
+                crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+            );
+            let r = ratio(chip.ink, chip.fill);
+            assert!(
+                r >= 4.5,
+                "{name}: the reference chip's label is {r:.2}:1 against the pill \
+                 it sits in, below the 4.5 body floor"
+            );
+            assert!(
+                ratio(chip.border, c.surfaces.overlay) >= 3.0,
+                "{name}: the chip's edge does not separate it from the panel"
+            );
         }
     }
 

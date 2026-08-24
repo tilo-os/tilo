@@ -426,15 +426,22 @@ impl Widget for Dropdown {
         };
         if !label.is_empty() {
             scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
-            let (_, th) = text_renderer.measure(label, FONT, None);
+            // Elided, not clipped. A value longer than the control used to be
+            // cut mid-glyph at the chevron, which reads as a rendering fault
+            // rather than as a value that carries on — and a destination like
+            // "Claude — private; its reply lands in the room" is exactly the
+            // kind of value that says the important half last.
+            let avail = (self.rect.width() - PAD_X - CHEVRON_W).max(0.0) as f32;
+            let shown = text_renderer.elide_to_width(label, FONT, avail);
+            let (_, th) = text_renderer.measure(&shown, FONT, None);
             let ty = self.rect.y0 + (self.rect.height() - th as f64) / 2.0;
             text_renderer.draw_text(
                 scene,
-                label,
+                &shown,
                 FONT,
                 color,
                 transform * Affine::translate((self.rect.x0 + PAD_X, ty)),
-                Some((self.rect.width() - PAD_X - CHEVRON_W) as f32),
+                Some(avail),
             );
             scene.pop_layer();
         }
@@ -994,6 +1001,46 @@ mod tests {
              — commit_value is rewriting the whole value",
             long[0].len()
         );
+    }
+
+    /// A dropdown with no value path keeps its choice locally and leaves the
+    /// document alone.
+    ///
+    /// It used to write the chosen value under an empty-string key, so a
+    /// scratch control — one whose value is presentation, like the destination
+    /// selector on the compose surface — synced that choice to every peer,
+    /// pushed it onto the undo stack, and left the key in the schema for good.
+    #[test]
+    fn a_dropdown_with_no_value_path_writes_nothing_into_the_document() {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut dd = Dropdown::new(
+            vec!["# general".into(), "Ada — private".into()],
+            "",
+        );
+        let before: Vec<String> = doc.keys(&root).collect();
+
+        dd.commit_value("Ada — private", &mut doc, &root);
+
+        assert_eq!(dd.selected(), "Ada — private", "the choice is still shown");
+        assert_eq!(
+            doc.keys(&root).collect::<Vec<String>>(),
+            before,
+            "a scratch dropdown must not add a key to the document"
+        );
+        // And a later sync does not wipe the shown choice by reading a key
+        // that was never written.
+        dd.sync(&mut doc, &root);
+        assert_eq!(dd.selected(), "Ada — private");
+    }
+
+    /// The starting value is shown as the control's *value*, in value ink —
+    /// not as a placeholder, which is drawn dim and means "nothing chosen".
+    #[test]
+    fn a_seeded_value_is_the_selection_and_not_a_placeholder() {
+        let dd = Dropdown::new(vec!["# general".into(), "# run-of-show".into()], "")
+            .with_selected("# run-of-show");
+        assert_eq!(dd.selected(), "# run-of-show");
     }
 
     #[test]
