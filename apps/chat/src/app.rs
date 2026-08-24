@@ -2122,19 +2122,13 @@ impl Widget for ChatApp {
             type_id: type_id.to_string(),
             payload: payload.to_vec(),
         };
-        // `decode` reports *why* it failed — an unknown type id and a
-        // payload that would not parse are different faults, and the
-        // second one is the interesting one. Written as an `Option`
-        // match once, which compiled against an older signature and
-        // threw the reason away.
         let action = match registry.decode(&encoded) {
-            Ok(action) => action,
+            Ok(a) => a,
             Err(e) => {
                 tracing::warn!(
-                    %type_id,
-                    error = ?e,
-                    "chat: an action under chat's own type id did not decode; \
-                     the message it carried is lost"
+                    %type_id, error = ?e,
+                    "chat: an action under chat's own type id did not decode; the \
+                     message it carried is lost"
                 );
                 return false;
             }

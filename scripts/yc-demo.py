@@ -77,6 +77,13 @@ sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "headless-examples"))
 from reaper import die_with_parent, track   # noqa: E402
 
+# Says how a compositor ended — a clean exit, a signal, or a crash that
+# left a core — so a run reports which of those happened instead of
+# leaving it to be inferred from a timestamp. Beside this file, so it is
+# on the path already.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import session_exit   # noqa: E402
+
 # Set from `--keep`. Off means the kernel reaps a compositor with this
 # script, however this script dies.
 KEEP_SESSIONS = False
@@ -5679,6 +5686,13 @@ def main() -> int:
         import traceback
         traceback.print_exc()
     finally:
+        # How each compositor ended, read before teardown touches it:
+        # afterwards every status is this script's own SIGTERM. A lost
+        # control socket raises the same exception whether a session was
+        # closed on purpose or crashed, and reporting the two identically
+        # is how an application crash was once read as a compositor crash.
+        session_ends = [(sn.name, session_exit.how_it_ended(sn.proc))
+                        for sn in sessions]
         # Before teardown either way — the capture threads talk to the
         # sessions, and `--keep` is about the sessions, not the camera.
         if RECORDER:
@@ -5740,6 +5754,8 @@ def main() -> int:
 
     print("\n" + "=" * 70)
     print(f"elapsed: {time.time() - started:.1f}s")
+    for name, how in session_ends:
+        print(f"  {name}'s compositor {how}")
     if GAPS:
         print(f"{len(GAPS)} thing(s) this run could not verify:")
         for g in GAPS:

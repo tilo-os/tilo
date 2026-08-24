@@ -179,6 +179,27 @@ impl RemarkHost {
         self.compose.close();
     }
 
+    /// Close the panel if nothing has been typed into it. Returns whether it
+    /// closed.
+    ///
+    /// For the chrome the panel opened beside. The two go up on one gesture,
+    /// so an *empty* panel is still part of that gesture and leaves when the
+    /// gesture is dismissed — a panel left standing over a menu that has gone
+    /// is an overlay attached to nothing.
+    ///
+    /// The moment somebody has typed into it that stops being true. It is no
+    /// longer chrome; it is their unsent sentence, and a click aimed at
+    /// something else must not throw it away. So a written panel stays, and
+    /// stays deliberately: the person can send it or dismiss it themselves,
+    /// and neither outcome is one the machine chose for them.
+    pub fn close_if_unwritten(&mut self) -> bool {
+        if !self.compose.is_open() || !self.compose.text().trim().is_empty() {
+            return false;
+        }
+        self.compose.close();
+        true
+    }
+
     /// The panel's rect, as laid out. Zero-area while it is closed.
     pub fn rect(&self) -> Rect {
         self.compose.get_rect()
@@ -341,7 +362,15 @@ impl RemarkHost {
                 if *press == ElementState::Pressed
                     && !neighbour.is_some_and(|n| n.contains(pointer))
                 {
-                    self.compose.close();
+                    // Click-away dismisses an empty panel, and only an empty
+                    // one. The rule across every way this surface can go is
+                    // the same: it closes on an act aimed *at* it — Escape, or
+                    // Send — or because there was nothing in it to lose. A
+                    // click somewhere else is not aimed at somebody's unsent
+                    // sentence, and a composer that throws one away because
+                    // the pointer went elsewhere is the defect, not the
+                    // tidiness.
+                    self.close_if_unwritten();
                 }
                 false
             }

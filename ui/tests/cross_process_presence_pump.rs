@@ -98,12 +98,18 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
                 CollabRequest::OfferBlob { hash, bytes } => {
                     CollabEvent::BlobArrived { hash, bytes }
                 }
-                // Signed-op sync, scrollback fetch and content requests
-                // aren't part of this presence-pump scenario — swallow them
-                // like `Hello`.
+                // Signed-op sync, scrollback fetch, content requests and
+                // published actions are not part of this presence-pump
+                // scenario — swallow them like `Hello`. Opening an
+                // application is addressed to a session rather than to an
+                // audience, and this relay hosts no desktop to address.
                 CollabRequest::SignedSyncIncremental { .. }
                 | CollabRequest::FetchScrollback { .. }
-                | CollabRequest::WantBlob { .. } => continue,
+                | CollabRequest::WantBlob { .. }
+                // Room traffic this harness does not route. Not
+                // wrong of it -- unlike the two below, which are
+                // addressed to a session it does not host.
+                | CollabRequest::SendAction { .. } => continue,
                 // Addressed to the session hosting a connection rather than to
                 // the room. This harness is a forwarding loop that hosts
                 // nothing, so it can neither answer nor honestly refuse, and
