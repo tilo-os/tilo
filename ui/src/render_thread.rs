@@ -141,6 +141,19 @@ pub enum FrameOutcome {
     /// Window is occluded or compositor refused the frame; main
     /// should redraw (winit will throttle if still occluded).
     Skipped,
+    /// The surface can no longer be drawn on, and no retry will change
+    /// that: the window or the compositor hosting it is gone. The worker
+    /// stops after emitting this; main treats it as "close the window".
+    ///
+    /// This is the ordinary end of a session, not a fault. When the
+    /// compositor exits, the Wayland connection drops (`Io error: Broken
+    /// pipe`) and the surface behind it is destroyed, but a frame the
+    /// worker already accepted is still in flight. Every wgpu call that
+    /// touches the surface from then on fails, and wgpu's default error
+    /// handler for an uncaptured validation error is `panic!` — which
+    /// under `panic = "abort"` ended the process with SIGABRT and left a
+    /// dead window holding the screen.
+    SurfaceGone,
 }
 
 /// Handle to the render worker thread. Held by `AppHandler` for the
@@ -228,7 +241,15 @@ pub fn spawn_render_thread(
                 // every wgpu call on the same thread that owns the
                 // surface.
                 if surface.config.width != width || surface.config.height != height {
-                    render_cx.resize_surface(&mut surface, width, height);
+                    if let Err(err) = resize_surface_checked(&render_cx, &mut surface, width, height)
+                    {
+                        // The surface went away underneath us. Report it
+                        // and stop; re-attempting the same reconfigure on
+                        // a destroyed surface fails identically forever.
+                        tracing::info!(%err, "drawing surface is gone; stopping the render thread");
+                        let _ = outcome_tx.send(FrameOutcome::SurfaceGone);
+                        break;
+                    }
                 }
 
                 let outcome = render_one_frame(
@@ -259,6 +280,9 @@ pub fn spawn_render_thread(
                 // never holds more than one buffer.
                 let _ = pool_tx.send(scene);
                 let _ = outcome_tx.send(outcome);
+                if outcome == FrameOutcome::SurfaceGone {
+                    break;
+                }
             }
             // Worker exits — `surface`, `render_cx`, and
             // `renderer` drop here, IN ORDER: surface first
@@ -278,6 +302,62 @@ pub fn spawn_render_thread(
         scene_pool,
         frame_complete,
         join: Some(join),
+    }
+}
+
+/// Reconfigure the surface, reporting a validation failure instead of
+/// letting it reach wgpu's default handler.
+///
+/// `Surface::configure` has no `Result`. It routes failures into the
+/// device's error sink, and an error that finds no matching scope on the
+/// **calling thread** goes to `default_error_handler`, which panics. So
+/// the scope has to be pushed here, on the worker, around the call — that
+/// is also what keeps the catch narrow: it captures validation errors from
+/// this one operation on this one thread, and every other wgpu misuse in
+/// the process still panics as loudly as before.
+///
+/// The failure this exists for reads, unhelpfully:
+///
+/// ```text
+/// In Surface::configure
+///   Surface does not support the adapter's queue family
+/// ```
+///
+/// which is not what it sounds like. wgpu-core reports `UnsupportedQueueFamily`
+/// whenever `surface.get_capabilities(adapter)` returns `Err`, and the Vulkan
+/// backend returns that for any of: the adapter cannot present, the surface is
+/// not supported on it, or — the case here — querying it failed with
+/// `ERROR_SURFACE_LOST_KHR` because the surface no longer exists. The message
+/// names only the first of those.
+fn configure_surface_checked(
+    render_cx: &RenderContext,
+    surface: &RenderSurface<'static>,
+) -> Result<(), String> {
+    let scope = render_cx.devices[surface.dev_id]
+        .device
+        .push_error_scope(vello::wgpu::ErrorFilter::Validation);
+    render_cx.configure_surface(surface);
+    match pollster::block_on(scope.pop()) {
+        Some(err) => Err(err.to_string()),
+        None => Ok(()),
+    }
+}
+
+/// [`configure_surface_checked`] for the resize path, which reconfigures
+/// after swapping the intermediate targets.
+fn resize_surface_checked(
+    render_cx: &RenderContext,
+    surface: &mut RenderSurface<'static>,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let scope = render_cx.devices[surface.dev_id]
+        .device
+        .push_error_scope(vello::wgpu::ErrorFilter::Validation);
+    render_cx.resize_surface(surface, width, height);
+    match pollster::block_on(scope.pop()) {
+        Some(err) => Err(err.to_string()),
+        None => Ok(()),
     }
 }
 
@@ -344,21 +424,26 @@ fn render_one_frame(
         | vello::wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
             // Surface drifted (resize, scale change). Reconfigure
             // and ask main to redraw.
-            render_cx.configure_surface(surface);
+            if let Err(err) = configure_surface_checked(render_cx, surface) {
+                tracing::info!(%err, "drawing surface is gone; abandoning the frame");
+                return FrameOutcome::SurfaceGone;
+            }
             return FrameOutcome::Reconfigured;
         }
         vello::wgpu::CurrentSurfaceTexture::Occluded
         | vello::wgpu::CurrentSurfaceTexture::Timeout => {
             return FrameOutcome::Skipped;
         }
-        vello::wgpu::CurrentSurfaceTexture::Lost => {
-            // Surface-level failure (driver reset, etc.). The
-            // pre-refactor code panicked here; preserve that
-            // behaviour so the symptom is identical.
-            panic!("wgpu surface lost — backend-level failure");
-        }
-        vello::wgpu::CurrentSurfaceTexture::Validation => {
-            panic!("wgpu surface validation error");
+        vello::wgpu::CurrentSurfaceTexture::Lost
+        | vello::wgpu::CurrentSurfaceTexture::Validation => {
+            // The swapchain is unusable. This is reached by the same
+            // shutdown race as the reconfigure above — the compositor
+            // exits, the surface behind the window is destroyed, and the
+            // frame already in flight has nowhere to go. Panicking here
+            // aborted the process for an ordinary end of session, so the
+            // worker reports it and stops instead.
+            tracing::info!("drawing surface is no longer usable; stopping the render thread");
+            return FrameOutcome::SurfaceGone;
         }
     };
 
