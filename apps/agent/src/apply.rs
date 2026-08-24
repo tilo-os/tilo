@@ -23,8 +23,7 @@ use anyhow::{Context, Result};
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit};
 use qos_actions::door::{self, ActionAddress, DoorError};
-use qos_actions::{Action, ActionRegistry, LocalTransport, Resource};
-use word_processor::actions::WordProcessorAction;
+use qos_actions::{ActionRegistry, LocalTransport, Resource};
 
 use crate::surface::{AppContract, View};
 
@@ -291,17 +290,18 @@ impl Editor {
     /// no-op in the app too).
     ///
     /// **Whether to broadcast is decided on the heads, not on `pending_ops`.**
-    /// `AutoCommit` commits whatever is open the moment a read interleaves the
-    /// writes, so an action that reads after writing — asking a list its
-    /// length, checking what it just put — has already committed by the time
-    /// it returns and leaves nothing pending. A guard on `pending_ops` reads
-    /// that as "this changed nothing" and returns before `save_incremental`
-    /// ever runs: the operation is performed on the local replica, no error is
-    /// raised, and the change is never sent. The agent then believes it
-    /// answered and no other machine ever saw it.
+    /// `AutoCommit` closes an open transaction to answer a good many of its
+    /// own methods — `get_heads`, `save_incremental`, `fork`, `merge`,
+    /// `diff_incremental` — so an action that reaches for any of them between
+    /// its writes has already committed by the time it returns, and leaves
+    /// nothing pending. A guard on `pending_ops` reads that as "this changed
+    /// nothing" and returns before `save_incremental` ever runs: the operation
+    /// is performed on the local replica, no error is raised, and the change
+    /// is never sent. The agent then believes it answered and no other machine
+    /// ever saw it.
     ///
     /// It fails only on the success path, which is what makes it hard to
-    /// notice: a refusal writes one splice with no interleaved read and
+    /// notice: a refusal writes one splice with nothing interleaved and
     /// travels fine. `pending_ops` answers a question about an open
     /// transaction; the question here is whether the document moved, so that
     /// is the one asked.
@@ -499,11 +499,14 @@ mod tests {
     use automerge::{ReadDoc, ROOT, ScalarValue};
     use qos_actions::{Action, ActionError, Doc, ExecutionLocus};
 
-    /// An action that reads its own write before it returns.
+    /// An action that asks the document a question between its writes.
     ///
-    /// The shape every real writer eventually has — asking a list its length
-    /// between two inserts, checking what was just put — and the one
-    /// `AutoCommit` commits underneath, leaving nothing pending.
+    /// `AutoCommit` closes an open transaction to answer `get_heads` — as it
+    /// does for `save_incremental`, `fork`, `merge` and `diff_incremental` —
+    /// so everything written above is already a committed change here, and
+    /// nothing is left pending when the action returns. That is the condition
+    /// a `pending_ops` guard gets wrong, and any writer that checks where it
+    /// is mid-action produces it.
     #[derive(Debug)]
     struct ReadsAfterWriting;
 
@@ -511,11 +514,8 @@ mod tests {
         fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
             use automerge::transaction::Transactable;
             doc.put(&ROOT, "note", ScalarValue::Str("written".into()))?;
-            // The read that closes the transaction. `length` is the one a
-            // real writer reaches for — chat asks a list its length between
-            // two inserts — and it is the one `AutoCommit` answers by
-            // committing what is open.
-            let _ = doc.length(&ROOT);
+            // The question that closes the transaction.
+            let _ = doc.get_heads();
             Ok(())
         }
         fn locus(&self) -> ExecutionLocus {
