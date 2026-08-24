@@ -360,10 +360,36 @@ impl Editor {
             .apply(&mut self.doc)
             .map_err(|e| anyhow::anyhow!("apply {action:?}: {e:?}"))?;
         self.stamp_authorship(&text_before);
-        // Stamp only what is still open. An action whose own read closed the
-        // transaction has already committed and has nothing left to stamp.
+        // Stamp what is still open — and say so when there is nothing left to
+        // stamp because the action already committed itself.
+        //
+        // This guard does not decide whether the change is sent. That is
+        // decided on the heads below, which is the question actually being
+        // asked, so `pending_ops` being wrong here cannot lose an edit. What
+        // it costs is the wall clock: `AutoCommit` closes an open transaction
+        // to answer `get_heads`, `save_incremental`, `fork`, `merge` or
+        // `diff_incremental`, the change it writes on the way out carries no
+        // time, and `commit_stamped` cannot go back and date a change
+        // automerge has already made. An action that asks the document a
+        // question between its writes therefore lands in the history
+        // undated, and `VersionMeta::time_ms` of `0` means "time unknown" —
+        // a version the history strip has no way to place.
+        //
+        // There is no fix at this line. Keeping the clock means the writer
+        // not closing its own transaction, which is the app's call and not
+        // this one's. So it is said out loud rather than passing in silence:
+        // nothing about the document afterwards records that this is what
+        // happened, and an undated version otherwise reads as a rendering
+        // fault somewhere else entirely.
         if self.doc.pending_ops() > 0 {
             qdoc::history::commit_stamped(&mut self.doc);
+        } else if self.doc.get_heads() != before {
+            tracing::warn!(
+                action = ?action,
+                "this action closed its own transaction before the commit \
+                 could be stamped, so its change carries no wall clock and \
+                 the history cannot date it"
+            );
         }
         if self.doc.get_heads() == before {
             return Ok(None);
@@ -640,6 +666,50 @@ mod tests {
             "refusing a foreign delta must leave nothing queued behind it — \
              a parked dependency that can never be met makes the agent \
              report for the rest of its run that the page it holds is short"
+        );
+    }
+
+    /// An edit the agent makes carries the time it was made.
+    ///
+    /// `AutoCommit::commit` leaves a change's advisory time at `0`, so a
+    /// version has a wall clock only because [`Editor::apply`] routes the
+    /// commit through `commit_stamped`. Nothing asserted that it still does,
+    /// and a history strip that has lost every date reads from the outside
+    /// like a fault in whatever draws it rather than in whatever wrote it.
+    ///
+    /// The exception is documented at the guard and is not fixable there: an
+    /// action that asks the document a question between its writes has
+    /// already committed by the time `apply` regains control, and that change
+    /// cannot be dated afterwards. `apply` says so when it happens.
+    #[test]
+    fn an_edit_the_agent_makes_carries_the_time_it_was_made() {
+        #[derive(Debug)]
+        struct JustWrites;
+        impl Action for JustWrites {
+            fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+                doc.put(&ROOT, "note", ScalarValue::Str("typed".into()))?;
+                Ok(())
+            }
+            fn locus(&self) -> ExecutionLocus {
+                ExecutionLocus::ClientLocal
+            }
+        }
+
+        let mut ed = Editor::empty("Scribe");
+        ed.apply(&JustWrites)
+            .expect("apply")
+            .expect("a plain write is a change to send");
+
+        let versions = qdoc::history::versions(&mut ed.doc);
+        assert!(
+            !versions.is_empty(),
+            "the edit produced no version to date, so this asserts nothing"
+        );
+        assert!(
+            versions.iter().all(|v| v.time_ms > 0),
+            "every change the agent writes must carry the time it was made; \
+             a zero reads as \\\"time unknown\\\" and cannot be placed on a \
+             timeline: {versions:?}"
         );
     }
 
