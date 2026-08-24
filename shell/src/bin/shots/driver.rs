@@ -795,7 +795,23 @@ impl ShellDriver {
                     // panel a user sees.
                     st.peer_sync_enabled = true;
                     st.overlays.collaborators = true;
+                    // The top bar caches its roster and re-reads it when
+                    // the chrome revision moves. Without this the bar in
+                    // shot still shows the tree as it was before this
+                    // scene put anybody in the room, while the panel
+                    // below reads it live — two answers to one question
+                    // in one frame.
+                    st.bump();
                 });
+                // Chrome that caches a roster re-reads it on the next
+                // per-frame update, and a single-frame capture has no
+                // next frame — the settle pass relayouts and paints but
+                // does not tick the reconciler. Without this the top
+                // bar in shot still shows the room as it was before
+                // this scene put anybody in it, while the panel below
+                // reads the tree live: two answers to one question in
+                // one frame.
+                self.fb.host_mut().update(&mut self.state, &self.root_obj);
             }
             "room-activity" => {
                 // Drive the room through the *production* mirrors first, so

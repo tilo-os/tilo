@@ -271,6 +271,10 @@ pub struct TopBarChrome {
     down_btn_rect: Rect,
     ws_pill_rect: Rect,
     tray_pill_rect: Rect,
+    /// Whether each drawn chip belongs to an agent, indexed alongside
+    /// `collaborator_initials`. What makes the stack say the same thing
+    /// about a participant as the roster panel does.
+    collaborator_is_agent: Vec<bool>,
     /// Bounding rect of the avatar stack (initials + overflow chip). Click
     /// toggles `overlays.collaborators` so the shell can show the peer
     /// dropdown — matches the concept's avatar-stack-as-trigger affordance.
@@ -327,6 +331,7 @@ impl TopBarChrome {
             down_btn_rect: Rect::ZERO,
             ws_pill_rect: Rect::ZERO,
             tray_pill_rect: Rect::ZERO,
+            collaborator_is_agent: Vec::new(),
             avatar_stack_rect: Rect::ZERO,
             center_widget: CenterWidget::Clock,
             center_rect: Rect::ZERO,
@@ -454,37 +459,37 @@ impl TopBarChrome {
         // the local user. Collaborators whose name has no starting char
         // are dropped, and at most 3 are drawn — the rest flows into
         // `collaborator_overflow`.
-        let roster: &[crate::shell::state::Collaborator] =
-            crate::shell::state::active_room_roster(tree);
+        // The same rows the collaborators panel lists, from the same
+        // call. The stack used to walk `active_room_roster` itself,
+        // which is a strictly smaller list: it holds peers, and an
+        // agent holds its membership by capability rather than by
+        // presence, so no agent could ever appear here. The bar is the
+        // surface a viewer sees without opening anything, and it was
+        // the one that could not show every member of the room.
+        let roster = crate::shell::overlay_host::collaborator_roster_rows(tree);
         // Somebody who has been invited and has not arrived is not in
         // the avatar cluster. An avatar there is a claim that a specific
         // person is in this workspace, and the empty-roster slot exists
         // precisely to say "there is nobody here yet, invite someone" —
         // so filling it with the person you just invited would answer
         // its own offer and hide the moment they actually turn up.
-        let present = |c: &&crate::shell::state::Collaborator| c.id != "me" && !c.invited;
+        let present =
+            |c: &&crate::shell::overlay_host::RosterRow| c.id != "me" && !c.invited;
         self.collaborator_initials.clear();
         self.collaborator_colors.clear();
+        self.collaborator_is_agent.clear();
         // Peer count flows through the shared helper so the top-bar
         // overflow chip and the wheel-disc active-card dot count always
         // agree (audit B-10).
         let peer_count = crate::shell::state::active_workspace_peer_count(tree);
-        // One colour per person, settled over the whole room, so a peer's
-        // avatar here is the colour their cursor is drawn in on the
-        // desktop. Colouring the avatar by the raw per-id hash instead
-        // gave the two surfaces different answers whenever the room had
-        // to break a tie.
-        let colors = crate::shell::state::roster_colors(roster);
+        // Colour and monogram both come off the row, which settled them
+        // over the whole room — so a peer's avatar here is the colour
+        // their cursor is drawn in on the desktop, and matches the chip
+        // the panel shows for the same person.
         for c in roster.iter().filter(present).take(3) {
-            let Some(ch) = c.name.chars().next() else {
-                continue;
-            };
-            self.collaborator_initials.push(ch.to_ascii_uppercase());
-            let (r, g, b) = colors
-                .get(&c.id)
-                .copied()
-                .unwrap_or_else(|| user_color(&c.id));
-            self.collaborator_colors.push(Color::from_rgb8(r, g, b));
+            self.collaborator_initials.push(c.initial);
+            self.collaborator_colors.push(c.color);
+            self.collaborator_is_agent.push(c.is_agent);
         }
         self.collaborator_overflow = peer_count.saturating_sub(3);
     }
@@ -508,6 +513,12 @@ impl TopBarChrome {
     /// Initials painted as avatars (up to 3). Exposed for integration tests.
     pub fn collaborator_initials(&self) -> &[char] {
         &self.collaborator_initials
+    }
+
+    /// Which of those chips belong to an agent rather than a person,
+    /// same index as [`Self::collaborator_initials`].
+    pub fn collaborator_is_agent(&self) -> &[bool] {
+        &self.collaborator_is_agent
     }
 
     /// Whether a workspace precedes the active one. The up-chevron is
@@ -1619,7 +1630,12 @@ impl Widget for TopBarChrome {
                 .get(i)
                 .copied()
                 .unwrap_or(colors.accent[5]);
-            ui::widget::Avatar::draw_ringed_at(
+            let paint = if self.collaborator_is_agent.get(i).copied().unwrap_or(false) {
+                ui::widget::Avatar::draw_agent_ringed_at
+            } else {
+                ui::widget::Avatar::draw_ringed_at
+            };
+            paint(
                 scene,
                 transform,
                 rect,
@@ -1990,6 +2006,78 @@ mod tests {
         };
         tree.active = tree.workspaces[0].id;
         TopBarChrome::from_tree(&tree)
+    }
+
+    /// A room with an owner, a peer and an admitted agent in it.
+    fn room_with_a_person_and_an_agent() -> WorkspaceTree {
+        use crate::shell::state::{CapOverride, Collaborator, Subject, Verb};
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        tree.collaborators.push(Collaborator::new("xaver", "Xaver"));
+        let ws = tree.active_workspace_mut().expect("fixture has a room");
+        ws.set_owner("quinten");
+        let room = ws.id.raw().to_string();
+        ws.grant_as(
+            &"quinten".to_string(),
+            CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
+        )
+        .expect("the owner may admit an agent");
+        tree
+    }
+
+    /// The bar shows every member of the room, agents included.
+    ///
+    /// The stack walked the collaborator list directly, which holds
+    /// peers and nothing else — an agent holds its membership by
+    /// capability, not by presence, so it could never reach this
+    /// surface at all. The bar is what a viewer sees without opening
+    /// anything, so "who is in this room" was answered differently
+    /// there than in the panel one click away.
+    #[test]
+    fn the_avatar_stack_shows_an_agent_that_is_in_the_room() {
+        let chrome = TopBarChrome::from_tree(&room_with_a_person_and_an_agent());
+        assert_eq!(
+            chrome.collaborator_initials(),
+            &['X', 'S'],
+            "the person and the agent both belong in the stack",
+        );
+    }
+
+    /// And says which is which, from the same flag the panel reads.
+    #[test]
+    fn the_avatar_stack_marks_the_agent_and_only_the_agent() {
+        let chrome = TopBarChrome::from_tree(&room_with_a_person_and_an_agent());
+        assert_eq!(
+            chrome.collaborator_is_agent(),
+            &[false, true],
+            "one participant must not read as a person here and an agent \
+             in the panel below",
+        );
+        assert_eq!(
+            chrome.collaborator_is_agent().len(),
+            chrome.collaborator_initials().len(),
+            "every drawn chip needs its own answer, or the stack pairs a \
+             mark with the wrong member",
+        );
+    }
+
+    /// The local user still stays out of the cluster: it shows the
+    /// *other* people in the room.
+    #[test]
+    fn the_avatar_stack_still_leaves_the_local_user_out() {
+        use crate::shell::state::Collaborator;
+        let mut tree = room_with_a_person_and_an_agent();
+        tree.collaborators.insert(0, Collaborator::new("me", "Me"));
+        let chrome = TopBarChrome::from_tree(&tree);
+        assert_eq!(
+            chrome.collaborator_initials(),
+            &['X', 'S'],
+            "the stack shows who else is here, not who is looking at it",
+        );
     }
 
     /// Gap #8: the active center-band dot must be strictly larger than an

@@ -43,6 +43,19 @@ const AGENT_CHIP_RADIUS_RATIO: f64 = 0.32;
 /// of the chip's side.
 const AGENT_CHIP_GLYPH_INSET_RATIO: f64 = 0.17;
 
+/// Smallest chip the agent glyph is drawn in.
+///
+/// Lucide `bot` is six strokes; inside a chip it is drawn at about 0.66
+/// of the side, so a 15 px chip asks for a 10 px glyph with a stroke
+/// under 1.4 px — at which point the eyes merge into the head and the
+/// antenna disappears, and what is left is a smudge that says nothing.
+/// Measured on rendered frames rather than guessed: at 22 px the head,
+/// eyes, antenna and both stubs are all separately visible; at 15 px
+/// they are not. Chips below this keep the monogram and let the square
+/// silhouette carry the distinction, which is the property that does
+/// survive at cluster size.
+const AGENT_GLYPH_MIN_PX: f64 = 18.0;
+
 /// Circular profile chip — see module docs.
 pub struct Avatar {
     image: Option<peniko::ImageData>,
@@ -238,8 +251,10 @@ impl Avatar {
         scene: &mut Scene,
         transform: Affine,
         rect: Rect,
+        initials: &str,
         color: Color,
-        _theme: &Theme,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
     ) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -250,20 +265,88 @@ impl Avatar {
         // corners still read at 22 px.
         let chip = vello::kurbo::RoundedRect::from_rect(rect, size * AGENT_CHIP_RADIUS_RATIO);
         scene.fill(Fill::NonZero, transform, color, None, &chip);
-        // Inset so the glyph clears the corners; lucide art is drawn to
-        // the edge of its own viewBox.
-        let glyph = rect.inset(-size * AGENT_CHIP_GLYPH_INSET_RATIO);
-        crate::icons::draw_icon(
+        if size >= AGENT_GLYPH_MIN_PX {
+            // Inset so the glyph clears the corners; lucide art is
+            // drawn to the edge of its own viewBox.
+            let glyph = rect.inset(-size * AGENT_CHIP_GLYPH_INSET_RATIO);
+            crate::icons::draw_icon(
+                scene,
+                transform,
+                glyph,
+                crate::icons::Icon::Bot,
+                Self::initial_ink(color),
+                // Heavier than the lucide default: the glyph is being
+                // drawn at roughly half the size icons are usually
+                // asked for, and a 1.5 px stroke there is a grey smear
+                // rather than a bot.
+                (size / 11.0).max(1.5),
+            );
+            return;
+        }
+        // Below the threshold the glyph stops being a bot and becomes a
+        // grey blot, so the chip falls back to the monogram its
+        // neighbours carry and lets the silhouette do the work. That is
+        // not a downgrade of the signal: the square corner is the part
+        // of this chip that survives being small and overlapped, which
+        // is exactly the condition a stacked cluster is in.
+        Self::draw_monogram_in(scene, transform, rect, initials, color, theme, text_renderer);
+    }
+
+    /// The monogram half of [`Avatar::draw_at`], without its circle, so
+    /// a chip of another shape can reuse it rather than re-deriving the
+    /// size ratio, the weight and the ink.
+    fn draw_monogram_in(
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        initials: &str,
+        color: Color,
+        _theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        let initials: String = initials.to_uppercase().chars().take(2).collect();
+        if initials.is_empty() {
+            return;
+        }
+        let centre = rect.center();
+        let text_size = (rect.width().min(rect.height()) as f32) * 0.4;
+        let (tw, th) =
+            text_renderer.measure_weighted(&initials, text_size, None, TextWeight::Semibold);
+        text_renderer.draw_text_weighted(
             scene,
-            transform,
-            glyph,
-            crate::icons::Icon::Bot,
+            &initials,
+            text_size,
             Self::initial_ink(color),
-            // Heavier than the lucide default: the glyph is being drawn
-            // at roughly half the size icons are usually asked for, and
-            // a 1.5 px stroke there is a grey smear rather than a bot.
-            (size / 11.0).max(1.5),
+            transform * Affine::translate((centre.x - tw as f64 / 2.0, centre.y - th as f64 / 2.0)),
+            None,
+            TextWeight::Semibold,
         );
+    }
+
+    /// [`Avatar::draw_agent_at`] behind the same separator ring
+    /// [`Avatar::draw_ringed_at`] paints, for an agent inside an
+    /// overlapping cluster.
+    ///
+    /// The ring is a disc, not a rounded square: it is the gap to the
+    /// neighbour, and a square gap around a square chip reads as a
+    /// second border rather than as separation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_agent_ringed_at(
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        initials: &str,
+        color: Color,
+        ring_color: Color,
+        ring_width: f64,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        Self::draw_ring(scene, transform, rect, ring_color, ring_width);
+        Self::draw_agent_at(scene, transform, rect, initials, color, theme, text_renderer);
     }
 
     /// Immediate-mode avatar with a separator ring — [`Avatar::draw_at`]
