@@ -261,8 +261,10 @@ fn the_composed_remark_reaches_an_agent_carrying_the_files_address() {
     press_key(&mut h, Key::Named(NamedKey::Enter), None);
 
     let remark = h.w.take_remark().expect("the gesture produced a remark");
-    // The host's own step: a typed name becomes a participant id.
-    let remark = remark.with_mentions(qos_reference::resolve_mentions(&remark.text, &room()));
+    // The host's own step: a typed name becomes a participant id. Resolved
+    // before the move, because `with_mentions` consumes the remark.
+    let mentions = qos_reference::resolve_mentions(&remark.text, &room());
+    let remark = remark.with_mentions(mentions);
     assert_eq!(
         remark.delivery(),
         Delivery::DirectedInChannel {
