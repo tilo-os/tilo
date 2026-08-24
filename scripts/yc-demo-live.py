@@ -1069,7 +1069,7 @@ def main() -> int:
                     help="compositor binary (default target/demo/shell, then "
                          "target/debug/shell). Must honour QOS_TEST_CONTROL, "
                          "which --release does not")
-    ap.add_argument("--out", default=os.path.join(REPO, "target",
+    ap.add_argument("--out", default=os.path.join(yc.TARGET,
                                                   "yc-demo-live"),
                     help="run directory for state, logs and frames")
     ap.add_argument("--video", default=None,
@@ -1159,7 +1159,7 @@ def main() -> int:
     shell_bin = args.shell
     if shell_bin is None:
         for profile in ("demo", "debug"):
-            candidate = os.path.join(REPO, "target", profile, "shell")
+            candidate = os.path.join(yc.TARGET, profile, "shell")
             if os.path.exists(candidate):
                 shell_bin = candidate
                 break
@@ -1228,7 +1228,7 @@ def main() -> int:
 
     def tool(name: str) -> str | None:
         for profile in ("demo", "debug"):
-            path = os.path.join(REPO, "target", profile, name)
+            path = os.path.join(yc.TARGET, profile, name)
             if os.path.exists(path):
                 return path
         return None
@@ -1426,7 +1426,7 @@ def main() -> int:
                       f"bytes into the run directory — a rebuild cannot "
                       f"change what this take serves")
             registry_ctx = yc.Registry(
-                os.path.join(REPO, "target", "debug", "examples",
+                os.path.join(yc.TARGET, "debug", "examples",
                              "serve-test-registry"),
                 served,
                 os.path.join(quinten.dir, "store-config"),
