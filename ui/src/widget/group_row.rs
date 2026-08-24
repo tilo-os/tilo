@@ -163,6 +163,48 @@ pub struct CrossStripDetach {
     pub release_point: Point,
 }
 
+/// What a drag that ended inside this row did to it, for the shell to
+/// write into the persisted [`WorkspaceTree`].
+///
+/// The row resolves a same-strip drop entirely on its own — it can see
+/// every group involved — and until this existed that is where the move
+/// stopped. But the widgets are a projection of the tree, rebuilt from it
+/// whenever the chrome's revision moves, so a move the tree was never
+/// told about is undone by the next thing that happens: the window
+/// visibly returns to the group it came from. The gesture is only half
+/// done at the point the row has finished with it.
+///
+/// Published by [`GroupRow::take_pending_tab_move`], drained once per
+/// frame, take-pattern like every other one-shot here so a later tick
+/// cannot double-apply it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabMove {
+    /// The window joined an existing group — dropped on its tab bar, or
+    /// in the middle band of its tile. Two applications in one window.
+    ///
+    /// `dest_idx` is the slot it landed in, not just the group: the row
+    /// inserts where the indicator promised, and a tree that appended
+    /// instead would disagree about the order until the next rebuild
+    /// silently reshuffled the bar.
+    Merge {
+        tab_id: u64,
+        dest_group: u64,
+        dest_idx: usize,
+    },
+    /// The window came out into a group of its own — dropped in a gap
+    /// between groups, or on the outer edge band of a neighbour's tile.
+    ///
+    /// `new_group` is the id the row already minted and is already
+    /// drawing under. The tree has to adopt that exact id rather than
+    /// invent its own, or the two disagree about which groups exist and
+    /// the next resync deletes the one on screen.
+    Split {
+        tab_id: u64,
+        new_group: u64,
+        gap_idx: usize,
+    },
+}
+
 pub struct GroupRow {
     pub groups: Vec<WindowGroup>,
     /// Inter-group resize handles — one per gap, so for N groups we
@@ -253,6 +295,10 @@ pub struct GroupRow {
     /// row or hasn't fired yet. The take-pattern accessor leaves the slot
     /// empty so a subsequent harvester call doesn't double-deliver.
     pending_cross_strip_detach: Option<CrossStripDetach>,
+    /// What this frame's drag did to the row, for the shell to mirror
+    /// into the persisted tree. See [`TabMove`]. At most one per frame:
+    /// the gesture pipeline models one pointer, so one drag can end.
+    pending_tab_move: Option<TabMove>,
     /// `true` whenever `scroll_x` has changed since the last `draw`.
     /// The parent Column / Stack caches its subtree scene and only
     /// rebuilds when a child reports `needs_redraw() == true`. Without
@@ -399,6 +445,7 @@ impl GroupRow {
             last_wheel_at: None,
             snap_anim: None,
             pending_cross_strip_detach: None,
+            pending_tab_move: None,
             scroll_dirty: false,
             leading_inset: 0.0,
             laid_spans: Vec::new(),
@@ -1403,6 +1450,15 @@ impl GroupRow {
         new_group.start_spawn_animation();
         let clamped = gap_idx.min(self.groups.len());
         self.groups.insert(clamped, new_group);
+        // Publish the id this row just minted, not a request for one.
+        // The tree has to adopt it: two sides inventing separate ids for
+        // the same window mean the next resync sees a group on screen
+        // the tree does not list, and deletes it.
+        self.pending_tab_move = Some(TabMove::Split {
+            tab_id,
+            new_group: new_id,
+            gap_idx: clamped,
+        });
         // Flag a structural mutation so the App's tick handler rebuilds
         // the taffy tree. Without this, `apply_layout` would iterate the
         // stale `node_ids` (one per pre-split group) and skip the newly
@@ -1436,6 +1492,16 @@ impl GroupRow {
     /// [`WindowGroup::take_pending_maximize_change`].
     pub fn take_pending_cross_strip_detach(&mut self) -> Option<CrossStripDetach> {
         self.pending_cross_strip_detach.take()
+    }
+
+    /// Drain what this frame's drag did to the row, so the shell can
+    /// write it into the persisted [`WorkspaceTree`]. See [`TabMove`]
+    /// for why a same-strip drop needs a tree-side half at all.
+    ///
+    /// Take-pattern, like every other one-shot on this row: leaves
+    /// `None` so a second harvest tick cannot apply the move twice.
+    pub fn take_pending_tab_move(&mut self) -> Option<TabMove> {
+        self.pending_tab_move.take()
     }
 
     /// Drain the pending whole-group reorder one-shot published when a
@@ -2581,9 +2647,19 @@ impl Widget for GroupRow {
                 // rects: left of the first pill's midpoint → 0, between
                 // pills → that pill's index, past the last pill → append.
                 let drop_idx = self.groups[tgt_idx].drop_index_for(release_point);
+                let dest_group = self.groups[tgt_idx].id;
                 let detached = self.groups[src_idx].detach_tab(tab_id);
                 if let Some((desc, host)) = detached {
                     self.groups[tgt_idx].insert_detached_tab(drop_idx, desc, host);
+                    // The row is done; the tree has not been told. See
+                    // `TabMove` — without this the shell rebuilds the row
+                    // from a tree that still holds the old arrangement and
+                    // the window returns to where it was dragged from.
+                    self.pending_tab_move = Some(TabMove::Merge {
+                        tab_id,
+                        dest_group,
+                        dest_idx: drop_idx,
+                    });
                     *handled = true;
                 }
                 continue;
@@ -2647,9 +2723,19 @@ impl Widget for GroupRow {
                 } else {
                     self.groups[tgt_idx].tabs().len()
                 };
+                let dest_group = self.groups[tgt_idx].id;
                 let detached = self.groups[src_idx].detach_tab(tab_id);
                 if let Some((desc, host)) = detached {
                     self.groups[tgt_idx].insert_detached_tab(drop_idx, desc, host);
+                    // The row is done; the tree has not been told. See
+                    // `TabMove` — without this the shell rebuilds the row
+                    // from a tree that still holds the old arrangement and
+                    // the window returns to where it was dragged from.
+                    self.pending_tab_move = Some(TabMove::Merge {
+                        tab_id,
+                        dest_group,
+                        dest_idx: drop_idx,
+                    });
                     *handled = true;
                 }
                 continue;
