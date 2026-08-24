@@ -256,6 +256,20 @@ LIVE_APPS = os.path.join(TARGET, "qos-apps-live")
 AGENT_SUBJECT = "agent:claude"
 AGENT_SCOPE = f"app:{WORD_PROCESSOR}"
 
+#: Every app the agent is given leave to work in, as separate grants.
+#:
+#: Two, because the film asks for two: it is handed a photograph and told
+#: to square it and put it in the open document, which is an operation in
+#: the image editor and an operation in the word processor. Leave to work
+#: in an app is also leave to open it, so `photos` covers both opening the
+#: editor and cropping in it.
+#:
+#: Separate grants rather than one broad one, because that is the claim.
+#: A grant names an application, not the workspace, so an agent handed a
+#: photograph to crop cannot thereby start anything it likes -- and the
+#: two entries here are exactly the two windows it touches on camera.
+AGENT_SCOPES = [f"app:{WORD_PROCESSOR}", f"app:{IMAGE_EDITOR}"]
+
 # How fast a person types, on camera.
 #
 # Not a speed setting — before this, runs of unshifted characters went
