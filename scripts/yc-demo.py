@@ -2549,7 +2549,13 @@ class LogTail:
     #: the same event, which is what makes it worth reading separately: the
     #: app saying it composed a message and the toolkit saying it sent one are
     #: two claims, and only the second one means it left.
-    ON_THE_WIRE = re.compile(r"sending a remark into the room\s+message=(\S+)")
+    #: The message id follows the sentence directly — `into the room
+    #: m_450b76…` — rather than under a `message=` field, which is what
+    #: this looked for and never found. The claim it backs is the one
+    #: that separates composed from delivered, so a pattern that cannot
+    #: match reports every successful send as a remark the toolkit held
+    #: on to.
+    ON_THE_WIRE = re.compile(r"sending a remark into the room\s+(m_\w+)")
     #: The compositor, having been told that a participant carried content
     #: from one application into another — the crossing beat 5 is *for*.
     #:
