@@ -6805,7 +6805,14 @@ def main() -> int:
         # Composed after teardown: encoding three tracks is CPU-hungry,
         # and the sessions have nothing left to say by now.
         try:
-            out_video = os.path.join(record_dir, "qos-demo.mp4")
+            # Outside `target/`, for the reason `FILMS_DIR` in
+            # `yc-demo-live.py` gives: a take is the one artefact here that
+            # cannot be regenerated, and `target/` is the directory whose
+            # contract is that everything in it can.
+            films = os.path.join(REPO, "films")
+            os.makedirs(films, exist_ok=True)
+            out_video = os.path.join(
+                films, f"qos-demo-{time.strftime('%Y%m%d-%H%M%S')}.mp4")
             print(f"\ncomposing {out_video}")
             video = RECORDER.compose(out_video, args.record_fps, size)
         except Exception as exc:  # noqa: BLE001
