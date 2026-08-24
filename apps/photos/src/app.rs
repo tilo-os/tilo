@@ -54,11 +54,16 @@ const PAD: f32 = 12.0;
 const BTN_H: f32 = 34.0;
 
 /// Per-character label width used to size a button in `build_layout`, which
-/// gets a [`Theme`] but no [`TextRenderer`]. The same 7.0 the shared
-/// [`ui::widget::Toolbar`] uses, so a Photos toolbar reads at the density of
-/// every other strip in the system. `toolbar_labels_fit_their_buttons` in
-/// `tests/end_to_end.rs` measures the real glyphs against it.
-const APPROX_CHAR_W: f32 = 7.0;
+/// gets a [`Theme`] but no [`TextRenderer`] to shape text with.
+///
+/// An **upper bound**, not an average. The shared [`ui::widget::Toolbar`]
+/// estimates 7.0 for the same job, which is too tight for this one: at 14 px
+/// Medium, "Open" shapes to 36.5 px — 9.13 a character — so a 7.0 budget left
+/// the label 8.5 px wider than the button drawn around it, and `Button::paint`
+/// centres the cluster, so it spilled out of both ends onto its neighbours.
+/// `toolbar_labels_fit_inside_the_buttons_they_are_sized_for` in
+/// `tests/end_to_end.rs` shapes the real glyphs and holds this bound.
+pub const APPROX_CHAR_W: f32 = 10.0;
 
 /// Glyph box, and the gap to a label beside it. `Button::paint` derives the
 /// icon from the button height as `(h - 14).clamp(12, 22)`, which at
@@ -322,6 +327,21 @@ impl PhotosApp {
     /// The status line's rect.
     pub fn status_rect(&self) -> Rect {
         self.status_rect
+    }
+
+    /// Every toolbar control as `(accessible name, rect)`, in strip order.
+    ///
+    /// Exposed so a test can assert that each control is actually within the
+    /// window. `canvas_rect` staying inside the frame says nothing about the
+    /// strip above it, which is how a fixed-width toolbar came to push Save
+    /// off the right-hand edge of any window narrower than 912 px while every
+    /// geometry assertion still passed.
+    pub fn toolbar_item_rects(&self) -> Vec<(String, Rect)> {
+        self.buttons
+            .iter()
+            .enumerate()
+            .map(|(i, (_, b))| (tr(TOOLBAR[i].1), b.get_rect()))
+            .collect()
     }
 
     /// The status line as it currently reads.
