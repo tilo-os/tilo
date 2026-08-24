@@ -808,6 +808,72 @@ fn typing_bands_for_block(
     out
 }
 
+/// The authored runs of one laid-out block, as `(author, [rect])` in page
+/// content space.
+///
+/// The durable half of authorship, and the counterpart to
+/// [`typing_bands_for_block`]: that one fades, this one is still true an hour
+/// later because it is read off the document rather than off the wire. One
+/// geometry source for the draw pass and for
+/// [`WordProcessorWidget::authored_runs`], so the test cannot drift from the
+/// rects that reach the screen.
+///
+/// A block nobody attributed yields nothing, which is what leaves prose that
+/// was simply typed looking exactly as it always did.
+/// `label`, shortened with a trailing ellipsis until it fits `room` px.
+///
+/// Returned unchanged when it already fits, so the ordinary case — a name that
+/// fits its pill — is byte-identical to what was drawn before.
+fn ellipsise_to(text_renderer: &mut TextRenderer, label: &str, size: f32, room: f64) -> String {
+    if room <= 0.0 {
+        return String::new();
+    }
+    if text_renderer.measure(label, size, None).0 as f64 <= room {
+        return label.to_string();
+    }
+    let chars: Vec<char> = label.chars().collect();
+    let mut keep = chars.len();
+    while keep > 0 {
+        keep -= 1;
+        let candidate: String = chars[..keep].iter().collect::<String>() + "…";
+        if text_renderer.measure(&candidate, size, None).0 as f64 <= room {
+            return candidate;
+        }
+    }
+    String::new()
+}
+
+fn authorship_bands_for_block(
+    l: &Laid,
+    layout: &RichTextLayout,
+    block: &BlockView,
+) -> Vec<(String, Vec<Rect>)> {
+    let mut out: Vec<(String, Vec<Rect>)> = Vec::new();
+    for (start, end, author) in qdoc::author_runs(&block.marks) {
+        let b0 = char_to_byte(&block.text, start);
+        let b1 = char_to_byte(&block.text, end);
+        if b1 <= b0 {
+            continue;
+        }
+        let rects: Vec<Rect> = layout
+            .selection_rects(b0, b1)
+            .into_iter()
+            .map(|(rx0, ry0, rx1, ry1)| {
+                Rect::new(
+                    l.text_x + rx0 as f64,
+                    l.layout_y + ry0 as f64,
+                    l.text_x + rx1 as f64,
+                    l.layout_y + ry1 as f64,
+                )
+            })
+            .collect();
+        if !rects.is_empty() {
+            out.push((author, rects));
+        }
+    }
+    out
+}
+
 /// A resolved remote collaborator caret to paint this frame: the on-screen
 /// caret rectangle (in *content* space, ready to be mapped through the page
 /// content transform), the peer's id (for colour + the name label), and the
@@ -1749,6 +1815,12 @@ pub struct WordProcessorWidget {
     awaiting_image_content: bool,
     /// The toolbar button the pointer is currently over (for hover feedback).
     hover_tool: Option<Rect>,
+    /// The authored runs the last frame actually painted, as
+    /// `(participant, name, [rect])` in page content space.
+    ///
+    /// Written by `draw`, so a test reading it is reading what reached the
+    /// screen rather than a second calculation that agrees with it today.
+    authored_runs: Vec<(UserId, String, Vec<Rect>)>,
     blocks: Vec<BlockView>,
     /// Page-header block sequence (drawn in every page's top-margin band). A
     /// `page-number` field marker is substituted with the page number per page.
@@ -2007,6 +2079,7 @@ impl WordProcessorWidget {
             rect: Rect::ZERO,
             focused: true,
             dirty: true,
+            authored_runs: Vec::new(),
             needs_commit: false,
             actions: ui::ActionHost::new(),
             pointer: Point::ZERO,
@@ -5448,6 +5521,13 @@ impl Widget for WordProcessorWidget {
         // `changes` container keys on). Only populated when markup is shown.
         let mut change_markers: Vec<(String, f64, f64)> = Vec::new();
 
+        // Authored runs met in pass 2, as `(participant, name, [rect])`.
+        // Collected rather than labelled in place because the name chip sits in
+        // the page margin, outside the per-block clip a split paragraph pushes
+        // — labelling inside the loop would clip the label to the band it
+        // describes.
+        let mut authored_here: Vec<(UserId, String, Vec<Rect>)> = Vec::new();
+
         // Pass 2: draw cell borders, bullets, selection, text, caret. Everything
         // here renders through `ctf` (the zoom transform) so page content scales
         // while the surrounding chrome stays at 100%.
@@ -5645,6 +5725,23 @@ impl Widget for WordProcessorWidget {
                     })
                     .collect();
                 presence.draw_peer_typing(scene, theme, &user, &mapped);
+            }
+
+            // Who wrote this, still true after everybody has gone home. The
+            // fading band above says somebody is typing here now; this one is
+            // read off the document's own `author` marks, so it survives the
+            // session that produced it. Same band, same place in the paint
+            // order — under the glyphs, for the same contrast reason — and the
+            // writer's own colour, so a person's live caret and their finished
+            // paragraphs are one colour rather than two.
+            if let Some(b) = self.blocks.iter().find(|b| b.id == l.id) {
+                for (author, rects) in authorship_bands_for_block(l, layout, b) {
+                    let who = presence
+                        .user_named(&author)
+                        .unwrap_or_else(|| UserId(author.clone()));
+                    presence.draw_peer_authorship_at(scene, theme, ctf, &who, &rects);
+                    authored_here.push((who, author, rects));
+                }
             }
 
             if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
@@ -6043,6 +6140,46 @@ impl Widget for WordProcessorWidget {
                 (page_x, page_x + page_w),
             );
         }
+
+        // And the name against each authored run, in the same margin and on the
+        // same pill the caret uses. The band alone says *somebody else* wrote
+        // this; the name is what makes it attribution rather than decoration,
+        // and it is the half a reader needs when the writer is no longer here
+        // to have a caret at all.
+        //
+        // One chip per run, at its first line: a name repeated down every line
+        // of a paragraph would be shouting where the tint already carries the
+        // extent.
+        let mut labelled: Vec<(UserId, f64)> = Vec::new();
+        for (who, name, rects) in &authored_here {
+            let Some(first) = rects.first() else { continue };
+            // Runs of one participant that land on the same line share a chip —
+            // a sentence automerge split into fragments is still one person's
+            // sentence.
+            if labelled
+                .iter()
+                .any(|(u, y)| u == who && (*y - first.y0).abs() < 1.0)
+            {
+                continue;
+            }
+            labelled.push((who.clone(), first.y0));
+            self.draw_margin_name_chip(
+                scene,
+                ctf,
+                text_renderer,
+                theme,
+                presence,
+                who,
+                name,
+                *first,
+                (page_x + m.left, page_x + page_w - m.right),
+                (page_x, page_x + page_w),
+            );
+        }
+        self.authored_runs = authored_here
+            .into_iter()
+            .map(|(who, name, rects)| (who, name, rects))
+            .collect();
 
         // Contextual styles panel on the right (between toolbar and layout bar).
         if self.styles_panel_visible() {
@@ -7160,6 +7297,30 @@ impl WordProcessorWidget {
     /// later — is not drawn here and cannot be: it needs a per-run author
     /// recorded in the document, which this document model does not carry.
     /// See the note on [`ui::presence::PresenceCtx::draw_peer_authorship`].
+    /// The on-screen band one block occupies, in page content space, as the
+    /// last layout pass placed it. `None` for a block that is not on screen.
+    ///
+    /// The same `laid` entry the draw pass paints from, so a test comparing an
+    /// attributed run against the paragraph beside it is comparing two
+    /// readings of one layout.
+    pub fn block_band_for_test(&self, block: &str) -> Option<Rect> {
+        self.laid
+            .iter()
+            .filter(|l| l.id == block)
+            .map(|l| Rect::new(l.text_x, l.y_top, l.text_x + l.width, l.y_top + l.height))
+            .reduce(|a, b| a.union(b))
+    }
+
+    /// The authored runs the last [`Widget::draw`] painted, as
+    /// `(participant, name, [rect])` in page content space.
+    ///
+    /// Read back from the draw pass itself, so a test asserting that the
+    /// agent's paragraph is marked and the person's is not is asserting about
+    /// the bands that reached the screen.
+    pub fn authored_runs(&self) -> &[(UserId, String, Vec<Rect>)] {
+        &self.authored_runs
+    }
+
     pub(crate) fn remote_typing_overlays(
         &self,
         presence: &PresenceCtx,
@@ -7188,19 +7349,45 @@ impl WordProcessorWidget {
         column: (f64, f64),
         page: (f64, f64),
     ) {
+        self.draw_margin_name_chip(
+            scene, ctf, text_renderer, theme, presence, user, label, caret, column, page,
+        );
+    }
+
+    /// A participant's name, on a pill in their colour, in the page margin
+    /// beside `anchor`.
+    ///
+    /// One chip for two callers — the caret that says where somebody is now,
+    /// and the durable mark that says who wrote a run — because they are the
+    /// same statement about the same person and should not be two different
+    /// shapes on one page.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_margin_name_chip(
+        &self,
+        scene: &mut Scene,
+        ctf: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        user: &UserId,
+        label: &str,
+        anchor: Rect,
+        column: (f64, f64),
+        page: (f64, f64),
+    ) {
         let (r, g, b) = presence.color_for(user);
         let peer = Color::from_rgb8(r, g, b);
         let size = 11.0_f32;
         let pad_x = 5.0_f64;
         let pad_y = 2.0_f64;
+        let chip_h = size as f64 + pad_y * 2.0;
         let (tw, _th) = text_renderer.measure(label, size, None);
-        let chip_rect = caret_label_rect(
-            tw as f64 + pad_x * 2.0,
-            size as f64 + pad_y * 2.0,
-            caret,
-            column,
-            page,
-        );
+        let chip_rect = caret_label_rect(tw as f64 + pad_x * 2.0, chip_h, anchor, column, page);
+        // The margin can be narrower than the name. Shortening the *text* to
+        // what the pill holds keeps the padding even on both sides; letting the
+        // pill shrink under the text instead is what put a label hard against
+        // its own right edge, mid-glyph, with nothing to say it had been cut.
+        let label = ellipsise_to(text_renderer, label, size, chip_rect.width() - pad_x * 2.0);
         let chip = vello::kurbo::RoundedRect::from_rect(chip_rect, 3.0);
         scene.fill(Fill::NonZero, ctf, peer, None, &chip);
         // The label ink is chosen against the peer's own colour rather than
@@ -7210,7 +7397,7 @@ impl WordProcessorWidget {
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, ctf, &chip);
         text_renderer.draw_text(
             scene,
-            label,
+            &label,
             size,
             ui::presence::contrast_ink(peer),
             ctf * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
@@ -14005,7 +14192,11 @@ mod opens_ready_to_type {
             let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &containers, ids: &mut ids };
             qdoc::MarkdownCodec
                 .import(
-                    b"Doors at seven, room seats 240.\n\nThe room is on the second floor.\n",
+                    b"Doors at seven, room seats 240.\n\n\
+                      The room is on the second floor, at the end of the corridor.\n\n\
+                      Chairs are stacked against the back wall.\n\n\
+                      Someone has to carry the projector up.\n\n\
+                      Coffee arrives at half past six.\n",
                     &mut dm,
                 )
                 .expect("the markdown imports");
@@ -14197,7 +14388,9 @@ mod opens_ready_to_type {
             let (mut state, mut wp) = opened_with_content();
             let with_caret = render(&mut wp, &mut state, &theme);
             let expected = caret_rect_of_first_block(&wp);
-            let band = Rect::new(0.0, expected.y0 - 20.0, W as f64, expected.y1 + 20.0);
+            // Just the first line's own rows: the next paragraph's caret must
+            // not be able to stand in for this one.
+            let band = Rect::new(0.0, expected.y0 - 4.0, W as f64, expected.y1 + 4.0);
 
             wp.set_focus(false);
             let without_caret = render(&mut wp, &mut state, &theme);
