@@ -615,6 +615,28 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    /// One operation, as an app would publish it. Built through the door's
+    /// own survey of a real `Resource`, so the descriptor is the shape the
+    /// agent really sees rather than a hand-filled struct.
+    fn offer(resource: &str, action: &str, label: &str) -> Offer {
+        use qos_actions::{ActionSpec, Resource};
+        let tree = vec![Resource::new(resource, "test.kind", "Thing").with_action(
+            ActionSpec::immediate(
+                action,
+                label,
+                word_processor::actions::WORD_PROCESSOR_ACTION_TYPE,
+                &word_processor::actions::remove_blocks_action(vec!["b".into()]),
+            )
+            .expect("encode"),
+        )];
+        Offer {
+            app: "word-processor",
+            descriptor: qos_actions::door::survey(&tree)
+                .pop()
+                .expect("one descriptor"),
+        }
+    }
+
     fn block(kind: &str, text: &str) -> Block {
         Block {
             id: "b".into(),
@@ -625,29 +647,59 @@ mod tests {
     }
 
     #[test]
-    fn the_offer_is_exactly_what_the_app_exports() {
-        let body = request_body("turn the bullets into a table", &[block("list_item", "a - 1")]);
+    fn the_offer_is_exactly_what_the_room_exports() {
+        let offers = vec![
+            offer("word-processor.document", "insert-table", "Insert table"),
+            offer("files.entry:/w/plan.md", "rename", "Rename"),
+        ];
+        let body = request_body(
+            "turn the bullets into a table",
+            &[block("list_item", "a - 1")],
+            &offers,
+        );
         let schema = &body["output_config"]["format"]["schema"];
-        let ids: Vec<&str> = schema["properties"]["action"]["enum"]
+        let ids: Vec<String> = schema["properties"]["action"]["enum"]
             .as_array()
             .expect("an enum of ids")
             .iter()
-            .map(|v| v.as_str().expect("a string id"))
+            .map(|v| v.as_str().expect("a string id").to_string())
             .collect();
-        // Every catalogue id, plus the refusal, and nothing else: the model
-        // is not given room to name an action the app does not export.
-        let mut expected: Vec<&str> = plan::CATALOGUE.iter().map(|c| c.id).collect();
-        expected.push(plan::NOTHING_FITS);
+        // The recipes, then every address the survey turned up, then the
+        // refusal — and nothing else. The model is not given room to name an
+        // operation the room is not exporting.
+        let mut expected: Vec<String> = plan::RECIPES.iter().map(|r| r.id.to_string()).collect();
+        expected.extend(offers.iter().map(|o| o.id()));
+        expected.push(plan::NOTHING_FITS.to_string());
         assert_eq!(ids, expected);
         assert_eq!(schema["additionalProperties"], serde_json::json!(false));
         assert_eq!(body["model"], serde_json::json!(MODEL));
 
         // The document and the instruction both reach the model, and so do
-        // the exported action names behind each entry.
+        // the addresses and the apps' own words for them.
         let turn = body["messages"][0]["content"].as_str().expect("a user turn");
         assert!(turn.contains("turn the bullets into a table"), "{turn}");
         assert!(turn.contains("list_item: a - 1"), "{turn}");
-        assert!(turn.contains("InsertTable"), "{turn}");
+        assert!(turn.contains("files.entry:/w/plan.md#rename"), "{turn}");
+        assert!(turn.contains("Rename"), "{turn}");
+    }
+
+    /// A room with nothing open offers nothing, and says so rather than
+    /// presenting an empty list as a choice.
+    #[test]
+    fn an_empty_room_offers_no_addresses() {
+        let body = request_body("do something", &[], &[]);
+        let ids: Vec<String> = body["output_config"]["format"]["schema"]["properties"]["action"]
+            ["enum"]
+            .as_array()
+            .expect("an enum")
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        let mut expected: Vec<String> = plan::RECIPES.iter().map(|r| r.id.to_string()).collect();
+        expected.push(plan::NOTHING_FITS.to_string());
+        assert_eq!(ids, expected);
+        let turn = body["messages"][0]["content"].as_str().expect("a user turn");
+        assert!(turn.contains("(nothing)"), "{turn}");
     }
 
     #[test]
@@ -660,7 +712,7 @@ mod tests {
         // the log and produced exactly what the model was there to
         // improve on. Requiring the field is what forces the choice
         // between content and `null` to be made rather than skipped.
-        let body = request_body("make this a run sheet", &[]);
+        let body = request_body("make this a run sheet", &[], &recipes_available());
         let schema = &body["output_config"]["format"]["schema"];
         let required: Vec<&str> = schema["required"]
             .as_array()
@@ -689,7 +741,7 @@ mod tests {
         let answer = parse_answer(&body).expect("a null table is a valid answer");
         assert_eq!(answer.table, None);
         assert_eq!(
-            Instruction::from_answer(&answer.action, "x", answer.table),
+            Instruction::from_answer(&answer.action, "x", answer.table, &recipes_available()),
             Ok(Instruction::Heading)
         );
     }
@@ -724,7 +776,7 @@ mod tests {
         .to_string();
         let answer = parse_answer(&ragged).expect("parsed");
         assert!(matches!(
-            Instruction::from_answer(&answer.action, "x", answer.table),
+            Instruction::from_answer(&answer.action, "x", answer.table, &recipes_available()),
             Err(Refused::Unusable(_))
         ));
     }
@@ -767,13 +819,32 @@ mod tests {
         assert!(parse_answer(&no_action).is_err());
     }
 
+    /// A survey with a word-processor document in it, so the named recipes
+    /// are reachable and the addresses are real ones.
+    fn recipes_available() -> Vec<Offer> {
+        vec![offer(
+            "word-processor.document",
+            "insert-table",
+            "Insert table",
+        )]
+    }
+
     #[test]
-    fn an_action_the_app_does_not_export_is_refused_not_dispatched() {
-        // Whatever a model answers, only a catalogue id becomes an
-        // instruction. Everything else is `None` and the caller falls back.
+    fn an_answer_the_room_does_not_export_is_refused_not_dispatched() {
+        // Whatever a model answers, only a recipe id or an address the
+        // survey carries becomes an instruction. Everything else is `None`
+        // and the caller falls back.
+        let offers = recipes_available();
         assert_eq!(
-            Instruction::from_id("table", "make a table"),
+            Instruction::from_id("table", "make a table", &offers),
             Some(Instruction::Table)
+        );
+        assert_eq!(
+            Instruction::from_id("word-processor.document#insert-table", "x", &offers),
+            Some(Instruction::Perform {
+                id: "word-processor.document#insert-table".into(),
+                argument: None,
+            })
         );
         for hostile in [
             "ReplaceBody",
@@ -782,9 +853,12 @@ mod tests {
             "table; drop",
             "TABLE",
             "",
+            // Right shape, wrong room: an address nothing here carries.
+            "word-processor.document#burn-it-down",
+            "files.entry:/etc/shadow#rename",
         ] {
             assert_eq!(
-                Instruction::from_id(hostile, "whatever"),
+                Instruction::from_id(hostile, "whatever", &offers),
                 None,
                 "{hostile:?} must not become an instruction"
             );
@@ -792,20 +866,31 @@ mod tests {
         // Refusing is a real answer, and lands on the path that says so in
         // the document.
         assert_eq!(
-            Instruction::from_id(plan::NOTHING_FITS, "juggle"),
+            Instruction::from_id(plan::NOTHING_FITS, "juggle", &offers),
             Some(Instruction::Unknown("juggle".into()))
         );
     }
 
     #[test]
-    fn switched_off_decides_by_keyword_and_says_so() {
+    fn switched_off_decides_on_the_floor_and_says_so() {
         let c = Chooser::new(false, Duration::from_secs(1));
         assert!(!c.is_live());
-        let d = c.choose("turn the bullets into a table", &[]);
+        let offers = recipes_available();
+        let d = c.choose("turn the bullets into a table", &[], &offers);
         assert_eq!(d.instruction, Instruction::Table);
         assert_eq!(d.route, Route::Keywords(Fallback::Disabled));
         assert!(!d.route.is_live());
         assert_eq!(d.route.label(), "keywords");
+
+        // And with nothing open, the floor reports that rather than
+        // reaching for a recipe whose app is not here.
+        let empty = c.choose("turn the bullets into a table", &[], &[]);
+        assert!(
+            matches!(empty.instruction, Instruction::Unknown(_)),
+            "an empty room must not yield a recipe: {:?}",
+            empty.instruction
+        );
+        assert!(!empty.route.is_live());
     }
 
     #[test]

@@ -179,6 +179,18 @@ pub struct Session {
     last_action: Option<LastAction>,
 }
 
+/// Whether this instruction is one of the document compositions — the ones
+/// defined relative to the line that asked for them.
+fn is_recipe(i: &Instruction) -> bool {
+    matches!(
+        i,
+        Instruction::Table
+            | Instruction::Caption
+            | Instruction::Heading
+            | Instruction::RunSheet(_)
+    )
+}
+
 /// The agent's clock, in the epoch seconds a chat message is timestamped in.
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -314,6 +326,15 @@ impl Session {
             .map(|e| (e.contract(), &e.doc))
             .chain(self.peers.values().map(|e| (e.contract(), &e.doc)))
             .collect()
+    }
+
+    /// Which apps' state the agent is currently holding, by namespace.
+    ///
+    /// Exposed because "the agent did nothing" has several causes that look
+    /// identical from outside, and "it is not holding that app yet" is one of
+    /// them. A caller that can see this can tell waiting from refusing.
+    pub fn apps(&self) -> Vec<&'static str> {
+        self.held().iter().map(|(c, _)| c.namespace).collect()
     }
 
     /// Whether the agent is holding the state of the app `namespace` names.
@@ -784,7 +805,29 @@ impl Session {
             self.reply(&to, &reply)?;
             return Ok(true);
         }
-        let Decision { instruction, route } = self.chooser.choose(&summons.asked, &[], &scoped);
+        let Decision { mut instruction, route } =
+            self.chooser.choose(&summons.asked, &[], &scoped);
+        // A recipe rewrites the run of blocks around the line that asked for
+        // it, so it only means anything when the request *is* a line in the
+        // document. A request that carried its own subject has already said
+        // what it is about, and a recipe is not a reading of it — most often
+        // it is a word in the prose colliding with a recipe's keyword, which
+        // is how "align centre the Run sheet section" came out as a table.
+        //
+        // So when the subject is known, decide again from that subject's own
+        // operations. Nothing is widened: the candidates are the same scoped
+        // set, and an answer that still does not fit is refused below.
+        if summons.subject.resource().is_some() && is_recipe(&instruction) {
+            tracing::debug!(
+                asked = %summons.asked,
+                "a recipe cannot answer a request that named its own subject; \
+                 deciding again from that subject's operations"
+            );
+            instruction = match surface::from_verbs(&summons.asked, &scoped) {
+                Ok((offer, argument)) => Instruction::Perform { id: offer.id(), argument },
+                Err(why) => Instruction::Unknown(format!("{} ({why:?})", summons.asked)),
+            };
+        }
         tracing::info!(
             message = %summons.message,
             decided_by = route.label(),
