@@ -295,7 +295,11 @@ pub struct LocalIdentity {
     /// id, which is the failure this type exists to end.
     local_handle: u64,
     /// The last answer per cluster, with the instant it was given.
-    cache: Mutex<HashMap<String, (Instant, Option<String>)>>,
+    ///
+    /// The whole label, not the name: the same lookup answers what to call
+    /// the local participant and what the room admitted it as, and caching
+    /// only half of it would send the other half back to the replica.
+    cache: Mutex<HashMap<String, (Instant, Option<PeerLabel>)>>,
 }
 
 impl LocalIdentity {
@@ -327,8 +331,13 @@ impl LocalIdentity {
         })
     }
 
-    /// The room's name for this machine's peer in `cluster_id`.
-    fn room_name(&self, cluster_id: &str) -> Option<String> {
+    /// What the room says about this machine's peer in `cluster_id`.
+    ///
+    /// The whole label rather than the name: [`Self::room_name`] wanted
+    /// only what to call the local participant, but the roster row this
+    /// machine announces about itself also has to say what the room
+    /// admitted it as, and asking twice would read the replica twice.
+    fn room_label(&self, cluster_id: &str) -> Option<PeerLabel> {
         if cluster_id.is_empty() {
             return None;
         }
@@ -339,16 +348,81 @@ impl LocalIdentity {
         {
             return answer.clone();
         }
-        // The name only. This resolves what to *call* the local
-        // participant; what the room admitted this machine as is not a
-        // question a display name answers, and no caller here asks it.
-        let answer = (self.labels)(cluster_id)
-            .get(&self.local_handle)
-            .map(|l| l.name.clone());
+        let answer = (self.labels)(cluster_id).get(&self.local_handle).cloned();
         if let Ok(mut cache) = self.cache.lock() {
             cache.insert(cluster_id.to_string(), (now, answer.clone()));
         }
         answer
+    }
+
+    /// The room's name for this machine's peer in `cluster_id`.
+    fn room_name(&self, cluster_id: &str) -> Option<String> {
+        self.room_label(cluster_id).map(|l| l.name)
+    }
+
+    /// The address the *room* knows this machine's participant by.
+    ///
+    /// Not [`Self::resolve`]'s answer, and the difference is the point.
+    /// `resolve` stamps traffic leaving a local app, so it answers with a
+    /// name; every other machine in the room addresses this participant
+    /// as `peer@<liveness handle>`, because that is what
+    /// [`remote_participant_id`] mints from the handle stamped on the
+    /// frames this machine publishes. One participant, two strings, and
+    /// which one you got depended on which side you stood on -- so an
+    /// application here could not recognise itself in a remark another
+    /// machine had addressed to it.
+    ///
+    /// `None` for a session with no network. There is no room-wide
+    /// address to give: nothing outside this machine can reach it, and
+    /// there are no other participants for its applications to tell it
+    /// apart from. Answering with the id its own traffic carries would
+    /// announce a *different* string from the one any peer would use --
+    /// which is the second source of truth this whole field exists to
+    /// retire, reintroduced at the one place nobody would look.
+    fn room_address(&self) -> Option<String> {
+        if self.local_handle == 0 {
+            return None;
+        }
+        Some(format!("peer@{}", self.local_handle))
+    }
+
+    /// This machine's own participant, as a roster row.
+    ///
+    /// The one row no announcement could ever carry: a machine publishes
+    /// presence *to* the room and never receives its own back, so
+    /// [`remote_participant_id`] -- the only other place a roster row is
+    /// minted -- runs for every participant except this one.
+    ///
+    /// `None` for a connection that announced no room, because a row
+    /// about nobody's room is addressed to nobody -- and `None` for a
+    /// session with no room-wide address at all, see
+    /// [`Self::room_address`].
+    pub fn self_row(&self, route: Option<&CrdtRoute>) -> Option<ui::collaboration::Collaborator> {
+        let cluster = route.map(|r| r.cluster_id.as_str()).unwrap_or_default();
+        if cluster.is_empty() {
+            return None;
+        }
+        let id = self.room_address()?;
+        let label = self.room_label(cluster);
+        Some(ui::collaboration::Collaborator {
+            id,
+            // The room's name for this machine, or the id its own traffic
+            // is already stamped with. Never the handle a connection
+            // asked to be called: that names a local process, where this
+            // row names a participant in somebody's room.
+            name: label
+                .as_ref()
+                .map(|l| l.name.clone())
+                .unwrap_or_else(crate::shell::state::local_user_id),
+            // The palette colour the id already resolves to, as on every
+            // other announcement here.
+            color: [0.0, 0.0, 0.0],
+            // Off the capability that admitted this machine, exactly as a
+            // remote row reads it. A room that has admitted no agent here
+            // says so, and this row is a person.
+            is_agent: label.as_ref().is_some_and(|l| l.is_agent),
+            is_self: true,
+        })
     }
 
     /// The identity to stamp on traffic from a local connection that
@@ -1435,6 +1509,13 @@ fn reader_loop(
     channels: Arc<Mutex<BrokerChannels>>,
     pending_scrollback: Arc<Mutex<HashMap<ArtifactId, Vec<CrdtRoute>>>>,
 ) {
+    // What has already been said to this connection about this machine's
+    // own participant. Per connection rather than per room, because the
+    // audience for a roster announcement is an application, and one that
+    // connected after the answer was last given has not heard it -- the
+    // same reason `remote_participant_id` re-announces a peer for a
+    // connection that arrived after its name was said.
+    let mut said_self: Option<(String, String, bool)> = None;
     while let Some(frame) = read_frame(&mut stream) {
         let Ok(req) = serde_json::from_slice::<CollabRequest>(&frame) else {
             tracing::debug!(
@@ -1600,6 +1681,36 @@ fn reader_loop(
         // any point after that. `LocalIdentity` caches the room lookup
         // so this stays cheap at pointer rate.
         let src_user_id = identity.resolve(src_route.as_ref(), peer.announced_handle().as_deref());
+        // And who this machine's own participant is, told to the app that
+        // is asking.
+        //
+        // Every other row in a roster here describes somebody else: the
+        // only other place one is minted is `remote_participant_id`,
+        // which runs on frames arriving *from* other machines and so runs
+        // for every participant except this one. An application was
+        // therefore handed the room's list of who is in it with no way to
+        // find itself in that list -- and the id it needed is not one it
+        // could derive, because it is the address remote machines use and
+        // this machine never announced it.
+        //
+        // Said when the answer changes rather than on every frame. It
+        // changes at most twice: once at `Hello`, and again if the room
+        // names this machine after that. Resolved off the same cached
+        // room lookup `resolve` above already took, so this costs the
+        // comparison and nothing else.
+        if let Some(row) = identity.self_row(src_route.as_ref()) {
+            let now = (row.id.clone(), row.name.clone(), row.is_agent);
+            if said_self.as_ref() != Some(&now) {
+                said_self = Some(now);
+                table.send_to_peer(
+                    peer.id,
+                    &CollabEvent::Context {
+                        collaborators: vec![row],
+                        permissions: Vec::new(),
+                    },
+                );
+            }
+        }
         // Opening an application never reaches `translate`, because it has no
         // audience to be translated for. It is addressed to *this session*:
         // relaying it would put a window on every peer's desktop because
@@ -2867,6 +2978,11 @@ fn remote_participant_id(
                 // A peer the room has said nothing about is announced as
                 // a person, which is what an unnamed peer already was.
                 is_agent: label.is_agent,
+                // Never this machine. This function runs on a frame that
+                // arrived *from* another one, which is why the local
+                // participant needs a row of its own -- see
+                // `LocalIdentity::self_row`.
+                is_self: false,
             }],
             permissions: Vec::new(),
         };
@@ -3044,6 +3160,123 @@ mod tests {
             "the room's name is announced exactly once, against the id \
              both frames arrived under",
         );
+    }
+
+    /// One participant, one id -- whichever side of the room asks.
+    ///
+    /// A machine mints `peer@<handle>` for every peer it hears from and
+    /// never for itself, because the only place a roster row is minted
+    /// runs on frames arriving from somewhere else. So the id another
+    /// machine addresses this participant by was a string this machine
+    /// never held, and an application here comparing "am I the one
+    /// addressed" compared two names for the same person.
+    ///
+    /// Asserted by standing the two emitters side by side rather than
+    /// against a literal: a literal would keep passing if either of them
+    /// changed shape, which is exactly the drift that separated them.
+    #[test]
+    fn a_participant_is_addressed_the_same_from_either_side_of_the_room() {
+        const HANDLE: u64 = 2_126_281_246_283_428_914;
+        const ROOM: &str = "room-1";
+
+        let room = |_c: &str| {
+            let mut m = PeerLabels::new();
+            m.insert(HANDLE, PeerLabel::agent("Claude"));
+            m
+        };
+
+        // What some *other* machine calls the participant whose frames
+        // carry `HANDLE` -- the id a mention resolved there carries.
+        let table = Arc::new(super::PeerTable::new());
+        let mut labels = HashMap::new();
+        let mut announced = HashMap::new();
+        let from_outside = super::remote_participant_id(
+            ROOM, HANDLE, &room, &table, &mut labels, &mut announced,
+        );
+
+        // And what the machine whose handle that is says about itself.
+        let identity = LocalIdentity::with_lookup(HANDLE, room);
+        let mine = identity
+            .self_row(Some(&CrdtRoute::cluster(ROOM.to_string())))
+            .expect("a connection that announced a room has a local participant");
+
+        assert_eq!(
+            mine.id, from_outside,
+            "the id a machine gives its own applications must be the id \
+             every other machine addresses it by -- two strings for one \
+             participant is how a remark sent to this agent read as sent \
+             to nobody",
+        );
+        assert!(mine.is_self, "the row a machine mints for itself is its own");
+        assert_eq!(
+            mine.name, "Claude",
+            "and it is called what the room calls it, not what the local \
+             process asked to be called",
+        );
+        assert!(
+            mine.is_agent,
+            "the kind comes off the capability that admitted this machine, \
+             exactly as it does for a peer",
+        );
+    }
+
+    /// The local participant is announced to an app, over the wire.
+    ///
+    /// Every link in this chain had its own passing test while the chain
+    /// itself was broken, so this one drives the real socket: a real
+    /// broker, a real `Hello`, and the roster an application actually
+    /// receives. What it pins is that the row arrives at all -- nothing
+    /// used to send it, and no test could see that because every test
+    /// examined a roster somebody had handed it.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn an_app_is_told_which_participant_in_the_room_is_its_own() {
+        const HANDLE: u64 = 7_213_907_255_761_426_039;
+        const ROOM: &str = "room-self";
+
+        let socket_path = temp_sock("self-row");
+        let identity = LocalIdentity::with_lookup(HANDLE, |_c: &str| {
+            let mut m = PeerLabels::new();
+            m.insert(HANDLE, PeerLabel::person("Quinten"));
+            m
+        });
+        let handle = super::spawn_full_with_identity(socket_path.clone(), None, None, identity)
+            .expect("broker should bind");
+
+        let mut app = connect_manager_as(&socket_path, "dev.qos.notes", ROOM);
+        wait_for_peers(&handle, 1, Duration::from_millis(500));
+
+        let heard = poll_until(&mut app, 1, Duration::from_secs(2));
+        let rows: Vec<_> = heard
+            .iter()
+            .filter_map(|e| match e {
+                CollabEvent::Context { collaborators, .. } => Some(collaborators.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+
+        let me = rows.iter().find(|c| c.is_self).unwrap_or_else(|| {
+            panic!(
+                "an app that said Hello was never told which participant is \
+                 its own; it received {rows:?}"
+            )
+        });
+        assert_eq!(
+            me.id,
+            format!("peer@{HANDLE}"),
+            "and it is told the address the room uses, which is the only \
+             one a mention from another machine can carry",
+        );
+        assert_eq!(me.name, "Quinten", "named by the room, as every row is");
+        assert!(
+            !me.is_agent,
+            "a room that admitted no agent here reports a person",
+        );
+
+        drop(app);
+        let _ = std::fs::remove_file(&socket_path);
+        drop(handle);
     }
 
     /// An app that starts after the name was said still learns it.

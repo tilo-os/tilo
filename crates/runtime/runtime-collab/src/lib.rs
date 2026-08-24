@@ -730,6 +730,13 @@ pub struct Collaborator {
     /// recorded when it admitted them. Carried so no consumer has to read
     /// the id and guess.
     pub is_agent: bool,
+    /// Whether this row is this machine's own participant.
+    ///
+    /// `user_id` is the address other machines use for a participant, and
+    /// a machine never announces its own participant to its own
+    /// applications -- so without this an application had no way to find
+    /// itself in the room's own list of who is in it.
+    pub is_self: bool,
 }
 
 /// Roster + local permissions snapshot delivered on
@@ -772,6 +779,7 @@ impl ContextStream {
                 display_name,
                 color: c.get_color(),
                 is_agent: c.get_is_agent(),
+                is_self: c.get_is_self(),
             });
         }
         let perms_reader = ctx.get_permissions()?;

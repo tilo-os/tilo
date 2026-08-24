@@ -110,6 +110,40 @@ fn broker() -> (tempfile::TempDir, PathBuf, PathBuf, shell::shell::collab_broker
     (dir, json, capnp, handle)
 }
 
+/// The same broker, standing for a machine the room has an address for.
+///
+/// [`broker`] has no network, so it has no room-wide address and announces
+/// no participant of its own -- which is right for the tests above: they
+/// are about the chat document's own membership, where the agent is
+/// `agent_claude` because the room wrote that down.
+///
+/// A machine in a real room is not like that. Its peers address it as
+/// `peer@<handle>`, minted from the handle it stamps on everything it
+/// publishes, and a mention resolved on another machine carries that id and
+/// no other. This is the broker that can say so.
+fn broker_for_machine(
+    handle: u64,
+    label: shell::shell::collab_broker::PeerLabel,
+) -> (tempfile::TempDir, PathBuf, PathBuf, shell::shell::collab_broker::BrokerHandle) {
+    use shell::shell::collab_broker::{LocalIdentity, PeerLabels};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let json = dir.path().join("collab-json.sock");
+    let capnp = dir.path().join("collab.sock");
+    let identity = LocalIdentity::with_lookup(handle, move |_cluster: &str| {
+        let mut m = PeerLabels::new();
+        m.insert(handle, label.clone());
+        m
+    });
+    let broker = shell::shell::collab_broker::spawn_full_with_identity(
+        json.clone(),
+        Some(capnp.clone()),
+        None,
+        identity,
+    )
+    .expect("the broker binds both sockets");
+    (dir, json, capnp, broker)
+}
+
 /// A room's conversation: one workspace, one channel, and the agent enrolled
 /// as an agent so an `@mention` of it can resolve to a participant id.
 fn conversation() -> AutoCommit {
@@ -291,7 +325,16 @@ impl Room {
     /// `conversation` is the channel as the chat app holds it; `document` is
     /// the page the word processor holds, when the test needs one.
     fn open(conversation: AutoCommit, document: Option<AutoCommit>) -> Self {
-        let (dir, json, capnp, handle) = broker();
+        Self::open_on(conversation, document, broker())
+    }
+
+    /// The same, on a named broker -- see [`broker_for_machine`].
+    fn open_on(
+        conversation: AutoCommit,
+        document: Option<AutoCommit>,
+        parts: (tempfile::TempDir, PathBuf, PathBuf, shell::shell::collab_broker::BrokerHandle),
+    ) -> Self {
+        let (dir, json, capnp, handle) = parts;
         let room = Uuid::new_v4();
 
         let mut chat = capnp_peer(&capnp, &room, "dev.qos.chat");
@@ -331,6 +374,19 @@ impl Room {
     /// The reply answering `msg`, if the agent wrote one.
     fn reply_to(&self, msg: &str) -> Option<String> {
         self.replies().into_iter().find(|(p, _)| p == msg).map(|(_, t)| t)
+    }
+
+    /// The reply answering `msg` from a given author.
+    ///
+    /// [`Self::replies`] reads the agent back as `agent_claude`, which is
+    /// who it is in the chat document. A machine the room has an address
+    /// for gives it a different one -- and it writes under whichever the
+    /// room told it, which is the point.
+    fn reply_to_from(&self, author: &str, msg: &str) -> Option<String> {
+        ChatDoc::list_messages(&self.chat_doc, CHANNEL)
+            .into_iter()
+            .find(|m| m.author == author && m.parent.as_deref() == Some(msg))
+            .map(|m| m.text)
     }
 
     /// The resource id that reached dispatch, if an operation was performed.
@@ -385,6 +441,110 @@ fn a_mention_of_the_agent_in_chat_is_noticed_and_acted_on() {
          {}; replies the room can see: {:?}",
         room.session.answers_sent(),
         room.replies()
+    );
+}
+
+/// A mention resolved on somebody else's machine reaches this agent.
+///
+/// The failure this covers had every link passing its own test. The gesture
+/// opened a compose surface, the remark reached the room, the agent joined
+/// and held the document -- and then sat there, because the remark was
+/// addressed to `peer@<handle>` and the agent had never been told that this
+/// was a name for itself. Nothing on its machine could tell it: the id is
+/// minted by whoever *receives* a frame, and a machine does not receive its
+/// own.
+///
+/// Three things are arranged so that only the new path can answer, because
+/// each of them on its own is answerable by the old one.
+///
+/// The chat document does not enrol this agent, so the fallback that reads
+/// the room's own membership has nothing to find. The room names this
+/// machine's peer `Quinten` and as a person -- which is what a room says
+/// about a machine nobody wrote an agent grant against -- so the fallback
+/// that matches a roster row by name and mark cannot find it either. And
+/// the person the conversation *does* hold is called **Claude**, the name
+/// this agent runs under, so a reader that reaches for the name at all gets
+/// a human being. That is the collision
+/// `a_person_called_claude_is_not_the_agent_the_room_admitted` pins on the
+/// roster, asserted here on the participant that acts on it.
+///
+/// What is left is the row's own mark, which is the only thing in the room
+/// that says which participant this process is.
+#[test]
+fn a_mention_addressed_to_this_machine_reaches_the_agent_that_is_it() {
+    // The handle the room knows this machine's peer by, and so the id every
+    // other machine in it resolves a mention of this agent to.
+    const HANDLE: u64 = 2_126_281_246_283_428_914;
+    let me = format!("peer@{HANDLE}");
+
+    let doc = draft();
+    let section = format!("word-processor.section:{}", headings(&doc)[0]);
+
+    // A conversation this agent is not a member of, holding a person who
+    // happens to be called what it is called.
+    let mut chat = AutoCommit::new();
+    chat.set_actor(automerge::ActorId::from("chat-app".as_bytes()));
+    ChatDoc::seed_starter(&mut chat, ADA);
+    ChatDoc::ensure_member(&mut chat, ADA, true, Presence::Online);
+    ChatDoc::ensure_user(&mut chat, ADA, "Ada", "A", 0, Presence::Online);
+    ChatDoc::ensure_member(&mut chat, "u_claude", true, Presence::Online);
+    ChatDoc::ensure_user(&mut chat, "u_claude", AGENT_NAME, "C", 1, Presence::Online);
+    chat.commit();
+
+    // The remark, addressed the way the compose surface on another machine
+    // addresses one: to the participant id that machine's roster holds.
+    let text = format!("@{AGENT_NAME} align centre the Run sheet section");
+    let at = text.find('@').expect("the fixture mentions somebody");
+    let len = text[at..].find(' ').unwrap_or(text.len() - at);
+    ChatDoc::push_message_with_id(
+        &mut chat,
+        CHANNEL,
+        "m_remark",
+        NewMessage {
+            author: ADA.into(),
+            ts: now(),
+            text: text.clone(),
+            mentions: vec![Mention { user: me.clone(), start: at, len, is_agent: true }],
+            reference: Some(ResourceRef::whole(
+                "word_processor.section",
+                &section,
+                "Run sheet",
+            )),
+            ..Default::default()
+        },
+    );
+    chat.commit();
+
+    let room = Room::open_on(
+        chat,
+        Some(doc),
+        broker_for_machine(
+            HANDLE,
+            shell::shell::collab_broker::PeerLabel::person("Quinten"),
+        ),
+    );
+
+    assert_eq!(
+        room.acted_on().as_deref(),
+        Some(section.as_str()),
+        "a remark addressed to this machine's participant must reach the \
+         agent running on it and be carried out. Holding: {:?}; every reply \
+         in the room: {:?}",
+        room.session.apps(),
+        ChatDoc::list_messages(&room.chat_doc, CHANNEL)
+            .into_iter()
+            .map(|m| (m.author, m.text))
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        room.reply_to_from(&me, "m_remark").is_some(),
+        "and it must answer under the id it was addressed by. Answers put \
+         on the wire: {}",
+        room.session.answers_sent(),
+    );
+    assert!(
+        room.reply_to_from("u_claude", "m_remark").is_none(),
+        "and never as the person who merely shares its name",
     );
 }
 

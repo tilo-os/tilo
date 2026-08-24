@@ -375,6 +375,19 @@ struct Collaborator {
   # guess from the id, which is the inference marking exists to avoid.
   # Additive, so a peer that predates it decodes as a person.
   isAgent     @3 :Bool;
+  # Whether this row is the receiving machine's own participant.
+  #
+  # A roster is the room's list of its members, so "which of these is
+  # me" is a fact about that list and belongs in it. Stated separately
+  # it would be a second source of truth that can disagree with the
+  # first -- and an application cannot derive it: the id here is the
+  # address *other* machines use for a participant, which a machine
+  # never announces about itself, so the only local identity available
+  # was a different string for the same person.
+  #
+  # Additive, so a peer that predates it decodes as somebody else --
+  # which is what every row was before this field existed.
+  isSelf      @4 :Bool;
 }
 
 # A page of previously-validated signed ops returned by

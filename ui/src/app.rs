@@ -1916,8 +1916,14 @@ impl App {
                     // destination, and which one depended on announcement
                     // order. Keyed by id, so a re-announcement relabels
                     // rather than duplicating.
+                    //
+                    // Except this machine's own participant. The roster
+                    // carries it so an app can find *itself* in the room's
+                    // list of who is in it; the list of people a remark
+                    // can be sent to is a different question, and the
+                    // person writing one is not a destination for it.
                     let mut changed = false;
-                    for c in &collaborators {
+                    for c in collaborators.iter().filter(|c| !c.is_self) {
                         let entry = (c.name.clone(), c.is_agent);
                         if self.remark_roster.get(&c.id) != Some(&entry) {
                             self.remark_roster.insert(c.id.clone(), entry);
@@ -1927,7 +1933,16 @@ impl App {
                     if changed {
                         self.publish_remark_destinations();
                     }
-                    for c in collaborators {
+                    // Presence is what this app knows about *other*
+                    // participants -- their carets, their pointers, the
+                    // names drawn beside them. The row a machine now sends
+                    // about its own participant is not that, and letting it
+                    // in would put the local user in every list built from
+                    // this store, including chat's `@` picker. It is
+                    // deliberately new information going to exactly one
+                    // reader: an app asking which participant it is, off
+                    // the event itself.
+                    for c in collaborators.into_iter().filter(|c| !c.is_self) {
                         // The roster says who is here and what they are
                         // called. It does **not** say where their
                         // pointer is, so it does not make one: a
