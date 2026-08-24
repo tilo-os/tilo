@@ -191,6 +191,53 @@ pub const ON_CARD_SMALL_TEXT_CONTRAST: f64 = 7.0;
 /// How far a [`OnCard::tint`] surface is pulled from the card toward its ink.
 const ON_CARD_TINT_T: f32 = 0.07;
 
+/// The opaque colour an opaque `wash` painted at `alpha` over `ground`
+/// leaves behind — source-over, resolved so it can be measured.
+///
+/// Contrast is a property of what reaches the screen, and a translucent
+/// fill does not reach it alone. A caller that needs to know whether its
+/// text will read on a washed row has to composite first; doing it here
+/// means the two places that need the answer agree on it.
+pub fn over(ground: Color, wash: Color, alpha: f32) -> Color {
+    mix8(ground, wash, alpha)
+}
+
+/// Minimum contrast a shape that is not text — a pill's edge, a control's
+/// boundary — must clear against what it is drawn on before it counts as
+/// visible. WCAG 2.1 non-text contrast.
+pub const NON_TEXT_MIN_CONTRAST: f64 = 3.0;
+
+/// How much accent an [`AccentChip`]'s body carries over its ground.
+///
+/// Low on purpose: the chip is a fact about a row, not a second selection,
+/// and a saturated pill would out-shout the row highlight it sits inside.
+/// The legibility of the label is bought by deriving the ink against the
+/// composite this produces, not by making the body louder.
+const ACCENT_CHIP_WASH: f32 = 0.18;
+
+/// An accent-tinted chip — a small pill stating a fact about the row it
+/// sits on — resolved against the ground it will actually be painted on.
+///
+/// Every field is an opaque colour rather than a token plus an alpha,
+/// because a wash is not a colour until it has a ground: the same
+/// `accent × 0.18` is one thing over a panel and another over a selected
+/// row, and only the composite can be measured. Measuring the token
+/// instead is how a chip ends up as accent ink on an accent wash on an
+/// accent selection — three steps of one hue, none of them separated from
+/// the next.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AccentChip {
+    /// Opaque body of the pill: the accent wash already composited over
+    /// the row's ground.
+    pub fill: Color,
+    /// The pill's edge. Clears [`NON_TEXT_MIN_CONTRAST`] against the
+    /// **ground**, so the shape stays findable where the wash inside it is
+    /// within a shade of the ground's own colour.
+    pub border: Color,
+    /// Label ink. Clears the caller's floor against [`Self::fill`].
+    pub ink: Color,
+}
+
 #[derive(Clone, Debug)]
 pub struct SemanticColors { pub success: Color, pub warning: Color, pub danger: Color, pub info: Color }
 
@@ -533,6 +580,49 @@ impl Colors {
             ink_dim,
             ink_tertiary,
             tint: mix8(surface, ink, ON_CARD_TINT_T),
+        }
+    }
+
+    /// An authored `tone` made legible on `ground`: returned untouched when
+    /// it already clears `min_ratio` there, and otherwise the smallest step
+    /// from it toward the contrasting extreme that does.
+    ///
+    /// [`Self::on_surface_at`] answers "what ink do the *chrome's tiers*
+    /// become here". This answers the narrower question a widget asks when
+    /// it has already chosen a tone for a reason — an accent, a dim
+    /// secondary — and needs that tone to survive a ground the palette did
+    /// not have in mind. Same walk, so a caller that needs one colour does
+    /// not have to take a tier set it will discard, and does not reach for
+    /// a hand-picked shade instead.
+    pub fn ink_on(&self, ground: Color, tone: Color, min_ratio: f64) -> Color {
+        self.step_out_until_legible(tone, ground, min_ratio)
+    }
+
+    /// An [`AccentChip`] resolved for `ground`, with its label clearing
+    /// `min_ratio` against the pill's own body.
+    ///
+    /// The order matters and is the whole point. The body is composited
+    /// **first**, so the ink is measured against the colour the screen will
+    /// hold rather than against the accent token the wash was made from —
+    /// the mistake that leaves a chip at 2.4:1 while every value in it came
+    /// from the theme. The ink then walks out of the accent only as far as
+    /// the floor demands, so the pill keeps its hue while its label stops
+    /// sharing it. The edge is measured against the *ground* instead of the
+    /// body, because an edge's job is to separate the pill from the row,
+    /// and over a selected row the body alone barely does.
+    ///
+    /// `min_ratio` belongs to the caller for the reason
+    /// [`Self::on_surface_at`]'s does: a chip drawn at the bottom of the
+    /// type scale needs the headroom anti-aliasing will spend (see
+    /// [`ON_CARD_SMALL_TEXT_CONTRAST`]), and the derivation cannot know the
+    /// size it is being drawn at.
+    pub fn accent_chip_on(&self, ground: Color, min_ratio: f64) -> AccentChip {
+        let accent = self.accent[ACCENT_PRIMARY_IDX];
+        let fill = mix8(ground, accent, ACCENT_CHIP_WASH);
+        AccentChip {
+            fill,
+            border: self.ink_on(ground, accent, NON_TEXT_MIN_CONTRAST),
+            ink: self.ink_on(fill, accent, min_ratio),
         }
     }
 
