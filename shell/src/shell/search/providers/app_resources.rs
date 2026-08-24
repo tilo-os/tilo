@@ -52,6 +52,7 @@ use std::rc::Rc;
 
 use qos_actions::door::{self, ActionAddress, ActionDescriptor, InputSpec};
 use qos_actions::{ActionRegistry as ActionTypeRegistry, LocalTransport, Resource};
+use ui::record::{RecordId, RecordStore};
 
 use crate::shell::search::action_api::{ActionError, ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
@@ -124,6 +125,14 @@ pub struct AppSurface {
     /// action commits under, so the edit is attributed in history exactly
     /// like one they typed.
     pub caller: String,
+    /// Where the app's document actually lives.
+    ///
+    /// A hosted tab is redirected onto its own record, so the document
+    /// the shell passes down a frame is *not* the one the app reads —
+    /// enumerating or acting against that one would describe and edit an
+    /// empty document belonging to nobody. `None` for an app with no
+    /// record, whose document is the one the pass carries.
+    pub document: Option<(RecordStore, RecordId)>,
 }
 
 /// Shared handle to the focused app's surface.
@@ -137,10 +146,16 @@ impl AppSurfaces {
 
     /// Replace the published surface. Called by the host once per
     /// enumeration, from the live widget tree.
-    pub fn publish(&self, caller: impl Into<String>, resources: Vec<Resource>) {
+    pub fn publish(
+        &self,
+        caller: impl Into<String>,
+        resources: Vec<Resource>,
+        document: Option<(RecordStore, RecordId)>,
+    ) {
         let mut inner = self.0.borrow_mut();
         inner.caller = caller.into();
         inner.resources = resources;
+        inner.document = document;
     }
 
     /// Describe every operation the focused app currently exports.
@@ -148,10 +163,30 @@ impl AppSurfaces {
         door::survey(&self.0.borrow().resources)
     }
 
-    /// Run `f` against the live tree and the caller's actor bytes.
-    fn with<R>(&self, f: impl FnOnce(&[Resource], &str) -> R) -> R {
+    /// Perform `f` against the app's own document.
+    ///
+    /// `fallback` is the document the pass carried, used only when the app
+    /// has no record of its own. Every borrow the store hands out is
+    /// closed before this returns, so an action cannot keep the loan.
+    fn on_app_document<R>(
+        &self,
+        fallback: &mut automerge::AutoCommit,
+        f: impl FnOnce(&mut automerge::AutoCommit, &[Resource], &str) -> R,
+    ) -> R {
         let inner = self.0.borrow();
-        f(&inner.resources, &inner.caller)
+        match &inner.document {
+            Some((store, id)) => {
+                match store.with(id, |doc| f(doc, &inner.resources, &inner.caller)) {
+                    Some(r) => r,
+                    // The record went away between publish and invoke. Fall
+                    // back rather than silently acting on the wrong
+                    // document: the action then finds nothing to act on and
+                    // says so, which is the honest answer.
+                    None => f(fallback, &inner.resources, &inner.caller),
+                }
+            }
+            None => f(fallback, &inner.resources, &inner.caller),
+        }
     }
 }
 
@@ -250,7 +285,7 @@ impl SearchProvider for AppResourcesProvider {
                 params,
                 on_open: Rc::new(move |doc, _root, _chrome, args| {
                     let argument = args.text("text");
-                    surfaces.with(|resources, caller| {
+                    surfaces.on_app_document(doc, |doc, resources, caller| {
                         let mut transport = LocalTransport::new();
                         door::invoke(
                             doc,
@@ -349,9 +384,9 @@ mod tests {
     #[test]
     fn querying_the_provider_leaves_the_document_alone() {
         let surfaces = AppSurfaces::new();
-        surfaces.publish("reviewer", tree());
+        surfaces.publish("reviewer", tree(), None);
         let provider = AppResourcesProvider::new(surfaces.clone(), types());
-        let doc = automerge::AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         let before = doc.get_heads();
         let chrome = {
             use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
