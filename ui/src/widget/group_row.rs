@@ -39,6 +39,16 @@ const SNAP_IDLE_MS: u64 = 200;
 /// secondary motions — long enough to read as eased, short enough to
 /// stay out of the user's way if they want to wheel again.
 const SNAP_ANIM_MS: u64 = 200;
+/// How little of a window can be on screen before it stops being a
+/// window and becomes a sliver.
+///
+/// A window group is never laid out narrower than 300 px, so a window
+/// showing less than this is showing under half of the narrowest thing
+/// the strip can hold: too little to read, too much to ignore, and
+/// indistinguishable from a window that is broken rather than scrolled
+/// past. The strip picks a rest that shows none of them.
+const SLIVER_PX: f64 = 160.0;
+
 /// How near an in-flight pan's destination a fresh request has to be
 /// before it counts as the same destination and the journey is left
 /// running. A window's own edges land on whole pixels, so anything
@@ -1029,7 +1039,7 @@ impl GroupRow {
         if hi < lo {
             return sx;
         }
-        let mut best = sx;
+        let mut best: Option<f64> = None;
         let mut best_d = f64::MAX;
         // Every window's leading edge, plus the two ends of the strip —
         // which are rests for the same reason, the strip's own edge
@@ -1039,13 +1049,33 @@ impl GroupRow {
             if c < lo - 0.5 || c > hi + 0.5 {
                 continue;
             }
+            if self.shows_a_sliver_at(c) {
+                continue;
+            }
             let d = (c - sx).abs();
             if d < best_d {
                 best_d = d;
-                best = c;
+                best = Some(c);
             }
         }
-        best
+        // Nothing legal in the band: put the focused window's own leading
+        // edge against the viewport's. Whatever else the strip is showing,
+        // the window that was asked for starts where the screen starts.
+        best.unwrap_or(hi)
+    }
+
+    /// Whether resting at `sx` would show some window as a sliver — on
+    /// screen, but too little of it to be read or acted on.
+    ///
+    /// A window narrower than the threshold in the first place is not a
+    /// sliver when it is shown whole; the fault is a window cut down to
+    /// a strip of itself, not a small window.
+    fn shows_a_sliver_at(&self, sx: f64) -> bool {
+        let row_w = self.rect.width().max(1.0);
+        self.laid_spans.iter().any(|&(_, x0, x1)| {
+            let shown = x1.min(sx + row_w) - x0.max(sx);
+            shown > 0.5 && shown < SLIVER_PX && x1 - x0 > SLIVER_PX
+        })
     }
 
     /// Whether the strip is resting cut on both sides at once: one group
@@ -5327,67 +5357,87 @@ mod tests {
         );
     }
 
+    /// The narrowest window the viewer can see any of, at `sx`.
+    ///
+    /// Computed here rather than asked of the row, so the assertion is
+    /// about what is on screen and not about the rule that put it there.
+    fn narrowest_on_screen(row: &GroupRow, sx: f64) -> Option<(u64, f64)> {
+        let row_w = row.rect.width().max(1.0);
+        row.laid_spans
+            .iter()
+            .filter_map(|&(id, x0, x1)| {
+                let shown = x1.min(sx + row_w) - x0.max(sx);
+                (shown > 0.5).then_some((id, shown))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
+    /// Three windows of unlike widths — a narrow chat, a middling file
+    /// manager, a word processor taking nearly the whole display — which
+    /// is the arrangement that was filmed.
+    fn filmed_three_window_strip() -> GroupRow {
+        let mut row = strip_at(3, 1600.0, 0.0, 500);
+        for (g, permille) in row.groups.iter_mut().zip([250u16, 312, 969]) {
+            g.set_width(WindowWidth::Fraction(permille));
+        }
+        relayout_strip(&mut row, 1600.0);
+        relayout_strip(&mut row, 1600.0);
+        row
+    }
+
     /// Focusing a window may not leave its neighbour as a sliver.
     ///
     /// Filmed on a real desktop: three applications open, and the chat
     /// window clipped to a strip of itself against the left edge of the
     /// screen — enough to show a channel name and the corner of a
     /// message box, not enough to read, and no way to tell from looking
-    /// whether chat was scrolled past or broken. The offset that put it
-    /// there is the one that just clears the *focused* window's trailing
-    /// edge, which says nothing about where the window before it lands.
+    /// whether chat was scrolled past or broken.
     ///
-    /// A window on screen is either worth looking at or is not on screen.
-    /// The strip rests on a window's leading edge, so whatever is cut is
-    /// cut at the trailing edge, where being cut means "there is more
-    /// this way".
+    /// The offset that produced it is the one that just clears the
+    /// *focused* window's trailing edge, which says nothing about where
+    /// the window before it lands. This pins both halves: that the old
+    /// offset really did sever a window down to nothing, and that the
+    /// strip does not come to rest there.
     #[test]
     fn focusing_a_window_never_leaves_its_neighbour_a_sliver_at_the_leading_edge() {
-        // Three windows at two-thirds of the display each: the strip
-        // overflows, so something has to be off screen.
-        let mut row = strip_at(3, 1600.0, 291.0, 667);
+        let mut row = filmed_three_window_strip();
         row.set_scroll_x_for_test(0.0);
         settle_pan(&mut row);
 
-        let last = row.groups.last().expect("three groups").id;
-        assert!(
-            row.scroll_group_into_view_animated(last, Instant::now()),
-            "test setup: the third window starts off the right edge",
-        );
-        settle_pan(&mut row);
-
         let row_w = row.rect.width().max(1.0);
-        let sx = row.scroll_x();
-        // How much of each window the viewer can actually see.
-        let slivers: Vec<(u64, f64)> = row
-            .laid_spans
-            .iter()
-            .filter_map(|&(id, x0, x1)| {
-                let shown = x1.min(sx + row_w) - x0.max(sx);
-                (shown > 0.5).then_some((id, shown))
-            })
-            .filter(|&(_, shown)| shown < 120.0)
-            .collect();
+        let &(last, _, last_x1) = row.laid_spans.last().expect("three windows");
+
+        // The premise: revealing the last window's trailing edge — all
+        // the old rule asked for — cuts its neighbour to a splinter.
+        let bare_reveal = last_x1 - row_w;
+        let (victim, shown) = narrowest_on_screen(&row, bare_reveal)
+            .expect("something is on screen at the bare reveal offset");
         assert!(
-            slivers.is_empty(),
-            "a window is on screen as a sliver: {slivers:?} — spans {:?} \
-             resting at scroll_x {sx:.0} across a {row_w:.0} px row",
+            shown < 60.0,
+            "test setup: the bare reveal offset {bare_reveal:.0} has to be \
+             the one that severs a window, but the narrowest window on \
+             screen there is {victim} at {shown:.0} px — spans {:?}",
             row.laid_spans,
         );
 
-        // And the reason it cannot be: the strip came to rest on a
-        // window's leading edge (or on one of the strip's own ends).
-        let rests = row
-            .group_left_edges
-            .iter()
-            .copied()
-            .chain([0.0, row.max_scroll_x()])
-            .any(|e| (e - sx).abs() < 0.5);
+        // And the strip does not rest there.
         assert!(
-            rests,
-            "the strip must rest flush with a window's leading edge — \
-             scroll_x {sx:.1} is none of {:?}",
-            row.group_left_edges,
+            row.scroll_group_into_view_animated(last, Instant::now()),
+            "test setup: the last window starts off the right edge",
+        );
+        settle_pan(&mut row);
+        let sx = row.scroll_x();
+        assert!(
+            (sx - bare_reveal).abs() > 0.5,
+            "the strip came to rest on the offset that severs a window",
+        );
+        let (id, shown) =
+            narrowest_on_screen(&row, sx).expect("something is on screen after the pan");
+        assert!(
+            shown >= SLIVER_PX,
+            "window {id} is on screen as a {shown:.0} px sliver — spans \
+             {:?} resting at scroll_x {sx:.0} across a {row_w:.0} px row",
+            row.laid_spans,
         );
     }
 

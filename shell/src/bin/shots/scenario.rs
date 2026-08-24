@@ -814,29 +814,49 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             }
         }
         Action::SamplePan { prefix, at_ms } => {
-            // Lay out once so the pass that decides the strip has
-            // somewhere to be has run and set it going, then freeze
-            // before a render's worth of wall time can land it.
-            driver.relayout();
-            let strips: Vec<_> = {
-                let st = driver.chrome();
-                let tree = st.tree();
-                tree.active_workspace()
-                    .map(|ws| ws.strips.iter().map(|s| s.id).collect())
-                    .unwrap_or_default()
-            };
-            for ms in at_ms.iter() {
-                let mut any = false;
+            // Catch the pan while it is still in flight, which takes a
+            // couple of frames to become true: the frame a window is
+            // spliced in is the one whose layout pass notices the strip
+            // is pointed at the wrong place, and the shell's focus
+            // reconciler aims at the new window on the frame after that
+            // — the first with a laid-out rect to aim at. Freezing takes
+            // the pan out of the clock's reach, so as soon as one is
+            // running it does not matter how slow the capture is.
+            let mut held = false;
+            let mut strips: Vec<_> = Vec::new();
+            for _ in 0..4 {
+                driver.step_frames(1);
+                driver.relayout();
+                strips = {
+                    let st = driver.chrome();
+                    let tree = st.tree();
+                    tree.active_workspace()
+                        .map(|ws| ws.strips.iter().map(|s| s.id).collect())
+                        .unwrap_or_default()
+                };
                 for sid in &strips {
                     if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
-                        any |= row.hold_pan_at(std::time::Duration::from_millis(*ms));
+                        held |= row.hold_pan_at(std::time::Duration::ZERO);
                     }
                 }
-                if !any {
-                    // Said out loud rather than captured quietly: a
-                    // resting strip photographed as a frame of motion is
-                    // exactly the false pass this action exists to stop.
-                    eprintln!("scenario: no strip pan in flight to sample at {ms} ms");
+                if held {
+                    break;
+                }
+            }
+            if !held {
+                // Said out loud rather than captured quietly: a resting
+                // strip photographed as a frame of motion is exactly the
+                // false pass this action exists to stop.
+                eprintln!(
+                    "scenario: no strip pan in flight for '{prefix}' — the frames \
+                     below are of a strip standing still, not of one moving"
+                );
+            }
+            for ms in at_ms.iter() {
+                for sid in &strips {
+                    if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
+                        row.hold_pan_at(std::time::Duration::from_millis(*ms));
+                    }
                 }
                 driver.relayout();
                 let name: &'static str =
