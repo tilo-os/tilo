@@ -27,9 +27,12 @@ pub const OSD_FADE: Duration = Duration::from_millis(280);
 /// What the slab is reporting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OsdKind {
-    /// Audio output level. `muted` swaps the glyph and empties the bar,
-    /// because a muted sink at 60% is silent and a bar at 60% would say
-    /// otherwise.
+    /// Audio output level. `muted` swaps the glyph and dims the bar, but
+    /// does not move it: a muted sink at 60% is still set to 60%, and
+    /// emptying the bar made the slab claim a level of zero that the very
+    /// next unmute contradicted. Silence is carried by the crossed-out
+    /// glyph and the caption; the bar carries the level, which is true
+    /// either way.
     Volume { muted: bool },
     /// Display backlight level.
     Brightness,
@@ -177,7 +180,22 @@ mod tests {
         assert_eq!(o.caption(), "Muted");
         assert!(
             o.has_level(),
-            "the bar is still drawn — empty — so the slab does not change shape on mute"
+            "the bar is still drawn, so the slab does not change shape on mute"
+        );
+    }
+
+    /// Muting does not move the level, so the bar has something true to
+    /// draw. It used to be painted empty while `level` stayed at the real
+    /// value, which is how the slab could read 0% and then jump straight
+    /// back to 65% the moment the sink was unmuted.
+    #[test]
+    fn muting_does_not_discard_the_level_it_will_return_to() {
+        let muted = Osd::volume(0.65, true);
+        assert_eq!(muted.level, 0.65);
+        assert_eq!(
+            muted.level,
+            Osd::volume(0.65, false).level,
+            "the level a muted sink reports is the level it is set to",
         );
     }
 

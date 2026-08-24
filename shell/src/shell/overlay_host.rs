@@ -1701,24 +1701,25 @@ impl ShellOverlayHost {
                 None,
                 &RoundedRect::from_rect(bar, bar_h / 2.0),
             );
-            // A muted sink draws an empty track: the level it will return
-            // to is still true, but reporting it as a filled bar would
-            // contradict the crossed-out glyph directly above it.
-            let filled = if matches!(
+            // A muted sink is not a silent one, and it used to be drawn as
+            // one: the bar emptied to zero, and the next press of unmute put
+            // it straight back to 65% — a number the slab had just finished
+            // denying. So the level is always the level. What mute changes is
+            // the colour: the accent means sound is coming out, and a muted
+            // sink paints the same length in the dim ink instead, under a
+            // crossed-out glyph and the word "Muted".
+            let muted = matches!(
                 osd.kind,
                 crate::shell::osd::OsdKind::Volume { muted: true }
-            ) {
-                0.0
-            } else {
-                osd.level.clamp(0.0, 1.0) as f64
-            };
+            );
+            let filled = osd.level.clamp(0.0, 1.0) as f64;
             if filled > 0.0 {
                 let w = (bar.width() * filled).max(bar_h);
                 let fill_rect = Rect::new(bar.x0, bar.y0, bar.x0 + w, bar.y1);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    colors.accent[5],
+                    if muted { colors.text_dim } else { colors.accent[5] },
                     None,
                     &RoundedRect::from_rect(fill_rect, bar_h / 2.0),
                 );
@@ -12056,16 +12057,29 @@ impl ShellOverlayHost {
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
 
-            // Trailing chevron — placeholder caret for now.
+            // The drill-in affordance. This stood in for a chevron with a
+            // filled dot, which is why every tile carried the same grey mark
+            // in the same corner whatever it was showing: on the accent tile,
+            // on the off tile and on the power row alike, a dot says nothing
+            // about state and nothing about where it leads. Clicking here
+            // pushes the Wi-Fi / Bluetooth pane — see
+            // [`Self::quick_settings_toggle_chevron_rect`] — so it points the
+            // way it goes.
             let chev_cx = card.x1 - 16.0;
             let chev_cy = card.y0 + 22.0;
-            let chev = vello::kurbo::Circle::new(Point::new(chev_cx, chev_cy), 3.0);
-            scene.fill(
-                Fill::NonZero,
+            let chev_px = 16.0_f64;
+            ui::icons::draw_icon(
+                scene,
                 transform,
+                Rect::new(
+                    chev_cx - chev_px / 2.0,
+                    chev_cy - chev_px / 2.0,
+                    chev_cx + chev_px / 2.0,
+                    chev_cy + chev_px / 2.0,
+                ),
+                ui::icons::Icon::ChevronRight,
                 colors.text_primary.with_alpha_factor(0.60),
-                None,
-                &chev,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
 
             // Label + sub-line, anchored bottom-left of the card.
@@ -12117,10 +12131,15 @@ impl ShellOverlayHost {
         // `QuickSettingsState`, which the click handler mutates on the
         // chip and the rising-edge refresh pulls from
         // `powerprofilesctl get`.
+        //
+        // Same shape as the tiles above it: the thing named on the strong
+        // line, the state it is in on the dim one. This row had the two the
+        // other way round, so a column that otherwise reads "Wi-Fi / Not
+        // connected" had one entry reading "Balanced / Power Profile".
         let profile_label = qs.power_profile.label();
         text_renderer.draw_text_weighted(
             scene,
-            profile_label,
+            "Power Profile",
             tokens.typography.scale.sm,
             colors.text_primary,
             transform * Affine::translate((pp.x0 + 44.0, pp.y0 + 8.0)),
@@ -12129,17 +12148,30 @@ impl ShellOverlayHost {
         );
         text_renderer.draw_text(
             scene,
-            "Power Profile",
+            profile_label,
             tokens.typography.scale.xs,
             colors.text_dim,
             transform * Affine::translate((pp.x0 + 44.0, pp.y0 + 26.0)),
             None,
         );
-        // Trailing cycle chevron placeholder.
+        // Clicking the row advances to the next profile, so the affordance
+        // points the way the value moves instead of sitting there as a dot.
         let chev_cx = pp.x1 - 16.0;
         let chev_cy = (pp.y0 + pp.y1) / 2.0;
-        let chev = vello::kurbo::Circle::new(Point::new(chev_cx, chev_cy), 3.0);
-        scene.fill(Fill::NonZero, transform, colors.text_dim, None, &chev);
+        let chev_px = 16.0_f64;
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            Rect::new(
+                chev_cx - chev_px / 2.0,
+                chev_cy - chev_px / 2.0,
+                chev_cx + chev_px / 2.0,
+                chev_cy + chev_px / 2.0,
+            ),
+            ui::icons::Icon::ChevronRight,
+            colors.text_dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
     }
 
     /// Draw the QuickSettings drill-in header — back-chevron on the left
