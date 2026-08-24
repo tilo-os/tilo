@@ -29,59 +29,64 @@ const BODY_SIZE: f32 = 15.0;
 /// message does not jump when somebody is mentioned in it.
 const BODY_LINE_MULT: f32 = 1.25 / 1.4;
 
-/// How the two mention grounds are mixed out of the participant's own colour.
-/// A mention *of you* gets the stronger band — it is the one you need to find
-/// when you come back to a channel — and everybody else's is a quiet tint.
-const MENTION_BAND_MIX_SELF: f64 = 0.72;
-const MENTION_BAND_MIX_OTHER: f64 = 0.86;
-
-/// How much further from the surface your own mention must sit than anybody
-/// else's, in contrast ratio. Enforced rather than assumed: the two mixes above
-/// order correctly on their own, but the floor below can lift the quiet band
-/// past the loud one on a ground where the quiet one had to be rescued, and
-/// then a mention of you reads as the *less* prominent of the two.
-const MENTION_SELF_MARGIN: f64 = 0.5;
+/// How much of the participant's colour a mention *of you* keeps when it is
+/// tinted toward the surface. A filled band, so it can be found by scanning.
+const MENTION_SELF_BAND_MIX: f64 = 0.78;
 
 /// Contrast floors for the mention run, measured rather than eyeballed:
-/// AA body text on its own band, and the non-text floor for the band itself
+/// AA body text wherever it lands, and the non-text floor for the filled band
 /// against the surface it sits on (a band nobody can see is not a highlight).
 pub(crate) const MENTION_TEXT_CONTRAST: f64 = 4.5;
 pub(crate) const MENTION_BAND_CONTRAST: f64 = 3.0;
 
-/// The band and ink a mention of `user` is painted in, on `ground`.
+/// How a mention of `user` is painted on `ground`: an optional filled band, and
+/// the ink for the run.
 ///
-/// The colour is the participant's own, in the shared presence vocabulary — the
-/// same one their caret pill and cursor use — so "who is this about" is answered
-/// the same way everywhere. It is then adjusted until it clears the floors
-/// above on the ground it actually lands on, because a colour picked to tell
-/// people apart is not a colour picked to be read.
+/// The two cases are deliberately different in *kind*, not merely in strength.
+/// A mention of somebody else is their name in their own colour — the same
+/// colour their caret pill and cursor use, so "who is this about" is answered
+/// the same way everywhere. A mention of **you** is the one you have to be able
+/// to find by scanning a channel you have been away from, so it is filled:
+/// their colour becomes the ground and the text sits on it.
+///
+/// Tint strength alone could not carry that difference. On a dark surface a
+/// quiet tint of a colour is nearly the surface, so the floor below has to
+/// rescue it — and a rescued quiet band lands about where a loud one does,
+/// leaving a mention of you looking like every other. Filled-versus-not
+/// survives every ground.
+///
+/// Both halves are then corrected against what they actually land on, because
+/// a colour picked to tell people apart is not a colour picked to be read.
 pub(crate) fn mention_colors(
     app: &ChatApp,
     user: &str,
     is_self: bool,
     theme: &Theme,
     ground: Color,
-) -> (Color, Color) {
+) -> (Option<Color>, Color) {
     let (r, g, b) = app.participant_color(user);
     let own = Color::from_rgb8(r, g, b);
-    // The quiet band first, floored — everybody else's mention.
-    let quiet = band_at_least(
-        mix(own, ground, MENTION_BAND_MIX_OTHER),
+    if !is_self {
+        // Their colour, made legible on the surface the message is on.
+        let ink = legible_on(own, ground, MENTION_TEXT_CONTRAST, theme.tokens.colors.text_primary);
+        return (None, ink);
+    }
+    let band = band_at_least(
+        mix(own, ground, MENTION_SELF_BAND_MIX),
         own,
         ground,
         MENTION_BAND_CONTRAST,
     );
-    let band = if is_self {
-        // Yours has to be findable *and* visibly louder than theirs, whatever
-        // the quiet one ended up at on this ground.
-        let target =
-            (ui::a11y::contrast_ratio(quiet, ground) + MENTION_SELF_MARGIN).max(MENTION_BAND_CONTRAST);
-        band_at_least(mix(own, ground, MENTION_BAND_MIX_SELF), own, ground, target)
-    } else {
-        quiet
-    };
-    let ink = legible_on(own, band, MENTION_TEXT_CONTRAST, theme.tokens.colors.text_primary);
-    (band, ink)
+    // Ink for a filled band starts from body ink and is pushed away from the
+    // band — text in the band's own hue on the band is the one combination
+    // that cannot be rescued.
+    let ink = legible_on(
+        theme.tokens.colors.text_primary,
+        band,
+        MENTION_TEXT_CONTRAST,
+        theme.tokens.colors.text_primary,
+    );
+    (Some(band), ink)
 }
 
 /// Split a message body into styled runs: prose in body ink, each resolved
@@ -119,7 +124,7 @@ pub(crate) fn body_spans(
             RichSpan::new(&text[s..e])
                 .bold(true)
                 .color(Some([ink.r(), ink.g(), ink.b()]))
-                .background(Some([band.r(), band.g(), band.b()])),
+                .background(band.map(|c| [c.r(), c.g(), c.b()])),
         );
         cursor = e;
     }
@@ -737,6 +742,9 @@ impl ChatApp {
         let edited_h = if m.edited && !editing { 18.0 } else { 0.0 };
         let thread_h = if model::reply_count(&self.messages, &m.id) > 0 { 46.0 } else { 0.0 };
         let edit_ctrl_h = if editing { 30.0 } else { 0.0 };
+        // The chip stays up while the body is being edited: what a message is
+        // about does not change because its wording is being reworked.
+        let ref_h = if m.reference.is_some() { REF_CHIP_H } else { 0.0 };
         RowM {
             idx_id: m.id.clone(),
             show_header,
@@ -744,6 +752,7 @@ impl ChatApp {
             att_h,
             react_h,
             edited_h,
+            ref_h,
             thread_h,
             editing,
             edit_ctrl_h,
@@ -787,6 +796,14 @@ impl ChatApp {
             let (nw, _) = text(scene, tr, tf, &name, 14.5, palette_color(theme, cidx), text_x, *y, TextWeight::Semibold, None);
             label(scene, tr, tf, &model::clock(m.ts), 11.5, c.text_dim, text_x + nw as f64 + 10.0, *y + 3.0);
             *y += 22.0;
+        }
+
+        // What the message is about, above what was said about it: the chip is
+        // the context the sentence is read in, and a reader who meets the words
+        // first has already had to guess what "this" meant.
+        if let Some(r) = &m.reference {
+            self.draw_reference_chip(scene, tf, tr, theme, r, text_x, *y, text_w);
+            *y += rm.ref_h;
         }
 
         if rm.editing {
@@ -971,6 +988,45 @@ impl ChatApp {
         ChatApp::push_hit(hits, bar, Hit::OpenThread(m.id.clone()));
     }
 
+    /// The chip on a message written *about* something — a quiet accent pill
+    /// naming what the author had selected when they said it.
+    ///
+    /// Deliberately not styled like the attachment card. An attachment is a
+    /// thing carried *with* the message; a reference points at something that
+    /// already lives somewhere else, and a card would claim the content is
+    /// here. A pill reads as a pointer.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_reference_chip(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &qos_reference::ResourceRef,
+        x: f64,
+        y: f64,
+        max_w: f32,
+    ) {
+        let c = &theme.tokens.colors;
+        let body = reference_chip_label(r);
+        // A reference to part of a resource says so. A remark about three lines
+        // of a document is not a remark about the document, and a chip that
+        // spelled both the same way would lose the only distinction the author
+        // took the trouble to make.
+        let prefix = if r.is_partial() { "in " } else { "" };
+        // The pill's own padding, so the text is truncated to what will fit
+        // inside it rather than to the column width.
+        let pad = 10.0;
+        let avail = (max_w as f64 - pad * 2.0 - 4.0).max(0.0);
+        let s = format!("{prefix}{body}");
+        let s = truncate_to(tr, &s, 11.5, avail);
+        let (tw, _) = tr.measure(&s, 11.5, None);
+        let pill = Rect::new(x, y, x + tw as f64 + pad * 2.0, y + 20.0);
+        fill_round(scene, tf, pill, 10.0, c.accent[5].with_alpha_factor(0.16));
+        stroke_round(scene, tf, pill, 10.0, c.accent[5].with_alpha_factor(0.55), 1.0);
+        label(scene, tr, tf, &s, 11.5, c.accent[7], pill.x0 + pad, pill.center().y - 8.0);
+    }
+
     pub(crate) fn draw_attachment(
         &self,
         scene: &mut Scene,
@@ -1117,7 +1173,6 @@ impl ChatApp {
         self.composer_main.apply_layout_external(inner);
         self.composer_main.set_focus(focused);
         self.composer_main.draw(scene, tf, tr, theme, presence);
-        self.mention_anchor = Some(Point::new(inner.x0, rect.y0));
     }
 
     /// Draw the `@` picker above the composer, anchored so it grows upward out
@@ -1138,7 +1193,12 @@ impl ChatApp {
         if !self.mention_menu.is_open() || self.mention_rows.is_empty() {
             return;
         }
-        let Some(anchor) = self.mention_anchor else { return };
+        // Anchored off the composer's own geometry rather than off something
+        // remembered from the previous frame, so the very first frame a picker
+        // is open on places it correctly — which is the only kind of frame a
+        // headless capture ever gets.
+        let composer = self.composer_rect(tr);
+        let anchor = Point::new(composer.x0 + 16.0, composer.y0);
         // Height first, so the list can be placed above its anchor.
         self.mention_menu.move_to([anchor.x as f32, anchor.y as f32]);
         let h = self.mention_menu.rect().height();
@@ -1497,6 +1557,9 @@ struct RowM {
     att_h: f64,
     react_h: f64,
     edited_h: f64,
+    /// Height of the "written about ..." chip, or zero for an ordinary
+    /// message that points at nothing.
+    ref_h: f64,
     thread_h: f64,
     /// This row is the message currently being edited inline — its body is
     /// replaced by the editor box (extra padding) plus a controls row.
@@ -1514,9 +1577,20 @@ impl RowM {
         } else {
             0.0
         };
-        top_gap + header + body + self.edited_h + self.att_h + self.react_h + self.thread_h + 4.0
+        top_gap
+            + header
+            + self.ref_h
+            + body
+            + self.edited_h
+            + self.att_h
+            + self.react_h
+            + self.thread_h
+            + 4.0
     }
 }
+
+/// Height reserved for the reference chip, pill plus the gap under it.
+const REF_CHIP_H: f64 = 26.0;
 
 /// Vertical padding added around the inline editor's text (top + bottom).
 const EDIT_BOX_PAD: f64 = 16.0;
@@ -1579,11 +1653,32 @@ fn file_chip_meta(name: &str, size: u64) -> String {
     }
 }
 
+/// The wording on the chip of a message written *about* something.
+///
+/// Shows [`ResourceRef::label`](qos_reference::ResourceRef::label) — the
+/// publishing app's own human phrase for what was selected — and never the
+/// address. `kind` and `id` are machine vocabulary (`word_processor.block`,
+/// `files.entry:/var/workspace/...`), so putting either in front of a person
+/// is the same leak [`file_chip_meta`] exists to prevent, with a second cost
+/// on top: a chip that displays the address invites a reader to *resolve* on
+/// it, which is exactly the degradation `qos-reference` is built to stop.
+///
+/// A reference whose label is empty still gets a chip. The message really is
+/// about something, and drawing nothing would be a quieter lie than a vague
+/// word — so it gets a neutral noun rather than an id.
+fn reference_chip_label(r: &qos_reference::ResourceRef) -> String {
+    let label = r.label.trim();
+    if label.is_empty() {
+        return "a selection".to_string();
+    }
+    label.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        body_spans, file_chip_meta, human_size, mention_colors, MENTION_BAND_CONTRAST,
-        MENTION_TEXT_CONTRAST,
+        body_spans, file_chip_meta, human_size, mention_colors, reference_chip_label,
+        MENTION_BAND_CONTRAST, MENTION_TEXT_CONTRAST,
     };
     use crate::app::ChatApp;
     use ui::theme::Theme;
@@ -1608,6 +1703,59 @@ mod tests {
         );
         // It still tells the user the real, useful facts: type + size.
         assert_eq!(meta, "MD · 18.5 KB", "chip meta should be type + size only");
+    }
+
+    /// The chip shows the author's app's own wording and never the address.
+    ///
+    /// Same rule as `file_chip_meta`, for the same reason plus one more: a chip
+    /// that printed the id would teach a reader to resolve on the label, which
+    /// is the degradation `qos-reference` exists to prevent.
+    #[test]
+    fn a_reference_chip_shows_the_label_and_never_the_address() {
+        let r = qos_reference::ResourceRef::ranged(
+            "word_processor.block",
+            "word-processor.block:blk_7",
+            "¶3 of Run sheet",
+            qos_reference::Span::chars(12, 41),
+        );
+        let chip = reference_chip_label(&r);
+        assert_eq!(chip, "¶3 of Run sheet");
+        assert!(!chip.contains("blk_7"), "the chip leaked the resource id: {chip:?}");
+        assert!(
+            !chip.contains("word_processor.block"),
+            "the chip leaked the internal kind tag: {chip:?}"
+        );
+
+        // A file reference must not leak the FUSE mount path either.
+        let f = qos_reference::ResourceRef::whole(
+            "files.entry",
+            "files.entry:/var/workspace/photos/harbour.png",
+            "harbour.png",
+        );
+        let chip = reference_chip_label(&f);
+        assert_eq!(chip, "harbour.png");
+        assert!(!chip.contains('/'), "the chip leaked a path separator: {chip:?}");
+        assert!(
+            !chip.to_lowercase().contains("workspace"),
+            "the chip leaked the mount path: {chip:?}"
+        );
+    }
+
+    /// An address with no human wording still gets a chip — the message really
+    /// is about something — but a neutral noun, never the id.
+    #[test]
+    fn a_reference_without_a_label_says_so_without_naming_the_address() {
+        let r = qos_reference::ResourceRef::whole(
+            "files.entry",
+            "files.entry:/var/workspace/photos/harbour.png",
+            "   ",
+        );
+        let chip = reference_chip_label(&r);
+        assert!(!chip.trim().is_empty(), "a reference drew no chip at all");
+        assert!(
+            !chip.contains("harbour") && !chip.contains('/'),
+            "an unlabelled reference fell back to its address: {chip:?}"
+        );
     }
 
     #[test]
@@ -1641,27 +1789,31 @@ mod tests {
             for id in &ids {
                 for is_self in [false, true] {
                     let (band, ink) = mention_colors(&app, id, is_self, &theme, ground);
-                    let text = contrast_ratio(ink, band);
+                    // Whatever the run lands on, the text on it must clear AA.
+                    let behind = band.unwrap_or(ground);
+                    let text = contrast_ratio(ink, behind);
                     assert!(
                         text >= MENTION_TEXT_CONTRAST,
-                        "{} / {id} / self={is_self}: mention text on its band is {text:.2}:1",
-                        theme.name
-                    );
-                    let band_r = contrast_ratio(band, ground);
-                    assert!(
-                        band_r >= MENTION_BAND_CONTRAST,
-                        "{} / {id} / self={is_self}: mention band on the surface is {band_r:.2}:1",
+                        "{} / {id} / self={is_self}: mention text is {text:.2}:1 on what it sits on",
                         theme.name
                     );
                     worst_text = worst_text.min(text);
-                    worst_band = worst_band.min(band_r);
+                    if let Some(band) = band {
+                        let band_r = contrast_ratio(band, ground);
+                        assert!(
+                            band_r >= MENTION_BAND_CONTRAST,
+                            "{} / {id}: the filled band is {band_r:.2}:1 on the surface",
+                            theme.name
+                        );
+                        worst_band = worst_band.min(band_r);
+                    }
                 }
             }
             // The measured floor, printed so the figures behind the claim are
             // on the record rather than asserted and forgotten.
             println!(
-                "mention contrast — {}: worst text-on-band {worst_text:.2}:1 (floor {MENTION_TEXT_CONTRAST}), \
-                 worst band-on-surface {worst_band:.2}:1 (floor {MENTION_BAND_CONTRAST})",
+                "mention contrast — {}: worst text {worst_text:.2}:1 (floor {MENTION_TEXT_CONTRAST}), \
+                 worst filled band on surface {worst_band:.2}:1 (floor {MENTION_BAND_CONTRAST})",
                 theme.name
             );
         }
@@ -1674,19 +1826,22 @@ mod tests {
         let app = ChatApp::new_ephemeral();
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             let ground = theme.tokens.colors.surfaces.base;
-            let (mine, _) = mention_colors(&app, "u_me", true, &theme, ground);
-            let (theirs, _) = mention_colors(&app, "u_me", false, &theme, ground);
-            assert_ne!(
-                (mine.r(), mine.g(), mine.b()),
-                (theirs.r(), theirs.g(), theirs.b()),
-                "{}: a mention of you looks identical to a mention of someone else",
-                theme.name
-            );
-            assert!(
-                ui::a11y::contrast_ratio(mine, ground) > ui::a11y::contrast_ratio(theirs, ground),
-                "{}: your own mention should be the one that stands out",
-                theme.name
-            );
+            for id in ["u_me", "u_participant_3", "u_participant_11"] {
+                let (mine, _) = mention_colors(&app, id, true, &theme, ground);
+                let (theirs, _) = mention_colors(&app, id, false, &theme, ground);
+                // Different in kind, not in degree: yours is filled, theirs is
+                // not. A difference of tint alone does not survive every ground.
+                assert!(
+                    mine.is_some(),
+                    "{}: a mention of you must be findable by scanning",
+                    theme.name
+                );
+                assert!(
+                    theirs.is_none(),
+                    "{}: a mention of somebody else must not read as one of yours",
+                    theme.name
+                );
+            }
         }
     }
 
@@ -1722,9 +1877,13 @@ mod tests {
         let joined: String = spans.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(joined, text, "the runs must be the body, exactly");
         assert_eq!(
-            spans.iter().filter(|s| s.background.is_some()).count(),
+            spans.iter().filter(|s| s.color.is_some()).count(),
             2,
-            "each mention gets its own band"
+            "each mention is styled as one"
+        );
+        assert!(
+            spans.iter().all(|s| s.background.is_none()),
+            "neither mention is of the local peer, so neither is filled"
         );
 
         // An offset left over from an edit that did not re-resolve points at
@@ -1734,7 +1893,7 @@ mod tests {
         let joined: String = spans.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(joined, text, "a stale offset must not eat the body");
         assert_eq!(
-            spans.iter().filter(|s| s.background.is_some()).count(),
+            spans.iter().filter(|s| s.color.is_some()).count(),
             1,
             "the stale reference is dropped, the sound one kept"
         );
