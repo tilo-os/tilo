@@ -785,39 +785,152 @@ mod tests {
         assert_eq!(structure(&blocks, 0), Structure::default());
     }
 
+    /// A real page, and a real survey of it.
+    ///
+    /// Built by asking the word processor for the tree it publishes rather
+    /// than by writing addresses down here, so every gate assertion below is
+    /// against what the app actually exports. A withdrawn operation moves
+    /// this fixture and the assertions together.
+    fn surveyed() -> Vec<Offer> {
+        let mut doc = automerge::AutoCommit::new();
+        let c = qdoc::model::init(&mut doc, &automerge::ROOT);
+        let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+        {
+            let mut dm = qdoc::DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
+            let h = dm.insert_block(None, "heading");
+            dm.set_attr(&h, "level", 1i64);
+            dm.splice_text(&h, 0, 0, "Notes");
+        }
+        doc.commit();
+        let wp = &surface::CONTRACTS[0];
+        assert_eq!(wp.namespace, "word-processor");
+        surface::offers(
+            &[(wp, &doc)],
+            &surface::View::default(),
+            &permitting("word-processor"),
+        )
+    }
+
+    /// The capability an inviter issues for one app.
+    fn permitting(app: &str) -> ui::permissions::PermissionContext {
+        use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+        PermissionContext::from_capabilities(
+            Actor::agent("Scribe"),
+            vec![CapOverride::grant(
+                Subject::agent("Scribe"),
+                Scope::App(app.to_string()),
+                Verb::Write,
+            )
+            .with_id("test")],
+        )
+    }
+
     #[test]
-    fn the_catalogue_only_offers_actions_the_app_exports() {
-        // The names the model is shown are not a list kept by hand here:
-        // each one must be what the word processor's own encoder calls the
-        // action its own builder produced. Rename or withdraw an action and
-        // this fails rather than the demo offering something imaginary.
+    fn every_recipe_only_dispatches_actions_the_app_exports() {
+        // A recipe is a composition, so its parts are named here — but they
+        // are not taken on trust: each one must be what the word processor's
+        // own encoder calls the action its own builder produced. Rename or
+        // withdraw an action and this fails rather than the agent offering
+        // something imaginary.
         let exported = exported_actions();
         assert!(!exported.is_empty(), "the app exports nothing");
-        for cap in CATALOGUE {
-            let built: BTreeSet<String> = dispatched(cap.id)
+        for recipe in RECIPES {
+            let built: BTreeSet<String> = dispatched(recipe.id)
                 .iter()
                 .filter_map(exported_name)
                 .collect();
             assert!(
                 !built.is_empty(),
                 "{} dispatches nothing the app can encode",
-                cap.id
+                recipe.id
             );
             let advertised: BTreeSet<String> =
-                cap.actions.iter().map(|a| a.to_string()).collect();
+                recipe.actions.iter().map(|a| a.to_string()).collect();
             assert_eq!(
                 advertised, built,
                 "{} advertises {:?} but dispatches {:?}",
-                cap.id, advertised, built
+                recipe.id, advertised, built
             );
             for name in &advertised {
                 assert!(
                     exported.contains(name),
                     "{} offers {name}, which the app does not export",
-                    cap.id
+                    recipe.id
                 );
             }
         }
+    }
+
+    /// The gate answers an address the room really exports, and refuses one
+    /// it does not — including an address that was valid against some other
+    /// survey. Discovery is only worth anything if the check is against the
+    /// surface as it stands.
+    #[test]
+    fn an_answer_is_checked_against_the_survey_and_not_against_a_list() {
+        let offers = surveyed();
+        assert!(!offers.is_empty(), "the survey found nothing to check against");
+
+        // Everything the survey turned up is answerable, by its own id.
+        for offer in &offers {
+            let answered = Instruction::from_answer(&offer.id(), "asked", None, &offers);
+            if offer.wants_text() {
+                // It collects text and the instruction quoted none. Refused
+                // as unusable rather than performed with a blank.
+                assert!(
+                    matches!(answered, Err(Refused::Unusable(_))),
+                    "{} collects text; without any it must be unusable, got {answered:?}",
+                    offer.id()
+                );
+                continue;
+            }
+            assert_eq!(
+                answered,
+                Ok(Instruction::Perform {
+                    id: offer.id(),
+                    argument: None
+                }),
+                "{} is offered but the gate would not dispatch it",
+                offer.id()
+            );
+        }
+
+        // An address of the right shape that nothing in this room carries.
+        let stale = "word-processor.section:gone-block#align-left";
+        assert_eq!(
+            Instruction::from_answer(stale, "asked", None, &offers),
+            Err(Refused::NotExported(stale.to_string())),
+            "an address the survey does not carry must not be dispatched"
+        );
+        // And an answer that is not an address at all.
+        assert_eq!(
+            Instruction::from_id("wander off", "x", &offers),
+            None
+        );
+        assert_eq!(Instruction::from_id("InsertTable", "x", &offers), None);
+        assert_eq!(
+            Instruction::from_id(NOTHING_FITS, "juggle", &offers),
+            Some(Instruction::Unknown("juggle".into()))
+        );
+    }
+
+    /// A recipe is only offered while the app it edits is in the room.
+    #[test]
+    fn a_recipe_is_refused_when_its_app_is_not_here() {
+        let offers = surveyed();
+        assert_eq!(
+            Instruction::from_answer("table", "asked", None, &offers),
+            Ok(Instruction::Table)
+        );
+        // Same answer, empty room: there is no document for it to act on, so
+        // it is not exported rather than attempted against nothing.
+        assert_eq!(
+            Instruction::from_answer("table", "asked", None, &[]),
+            Err(Refused::NotExported("table".into()))
+        );
     }
 
     /// A well-formed drafted table, for entries that call for content.
@@ -830,33 +943,34 @@ mod tests {
     }
 
     #[test]
-    fn every_catalogue_id_maps_to_an_instruction_and_nothing_else_does() {
-        // Every offered id must be actionable — either on its own, or once
-        // it is given the content that entry asks for. What none of them
-        // may be is `NotExported`, which would mean the catalogue offers
-        // the model something this gate would then refuse.
-        for cap in CATALOGUE {
-            match Instruction::from_answer(cap.id, "asked", None) {
+    fn every_recipe_id_maps_to_an_instruction_and_nothing_else_does() {
+        // Every recipe offered must be actionable — on its own, or once it
+        // is given the content it asks for. What none of them may be is
+        // `NotExported`, which would mean the agent offers something this
+        // gate would then refuse.
+        let offers = surveyed();
+        for recipe in RECIPES {
+            match Instruction::from_answer(recipe.id, "asked", None, &offers) {
                 Ok(_) => {}
                 Err(Refused::Unusable(_)) => {
                     // It wants content. With content it must work.
                     assert!(
-                        Instruction::from_answer(cap.id, "asked", Some(sample_draft())).is_ok(),
+                        Instruction::from_answer(
+                            recipe.id,
+                            "asked",
+                            Some(sample_draft()),
+                            &offers
+                        )
+                        .is_ok(),
                         "{} is offered but is unusable even with a well-formed table",
-                        cap.id
+                        recipe.id
                     );
                 }
                 Err(Refused::NotExported(_)) => {
-                    panic!("{} is offered to the model but maps to no instruction", cap.id)
+                    panic!("{} is offered but maps to no instruction", recipe.id)
                 }
             }
         }
-        assert_eq!(
-            Instruction::from_id(NOTHING_FITS, "juggle"),
-            Some(Instruction::Unknown("juggle".into()))
-        );
-        assert_eq!(Instruction::from_id("InsertTable", "x"), None);
-        assert_eq!(Instruction::from_id("wander off", "x"), None);
     }
 
     #[test]
@@ -864,9 +978,10 @@ mod tests {
         // The good case: exactly as wide as its header, and it becomes an
         // instruction carrying the content.
         let ok = sample_draft();
+        let offers = surveyed();
         assert_eq!(ok.check(), Ok(()));
         assert_eq!(
-            Instruction::from_answer("runsheet", "asked", Some(ok.clone())),
+            Instruction::from_answer("runsheet", "asked", Some(ok.clone()), &offers),
             Ok(Instruction::RunSheet(ok.clone()))
         );
         // The header is the first row, so what gets written is the header
@@ -886,7 +1001,7 @@ mod tests {
             // treated as an id the app does not export — the two send a
             // reader to different places.
             assert!(matches!(
-                Instruction::from_answer("runsheet", "asked", Some(d)),
+                Instruction::from_answer("runsheet", "asked", Some(d), &surveyed()),
                 Err(Refused::Unusable(_))
             ));
         };
@@ -937,7 +1052,7 @@ mod tests {
         // Naming the entry without drafting anything is unusable too: it
         // must not quietly fall through to the deterministic table.
         assert!(matches!(
-            Instruction::from_answer("runsheet", "asked", None),
+            Instruction::from_answer("runsheet", "asked", None, &offers),
             Err(Refused::Unusable(_))
         ));
     }
@@ -994,39 +1109,88 @@ mod tests {
 
     #[test]
     fn a_run_sheet_is_understood_without_a_model() {
-        // The keyword vocabulary is what answers when no model is
-        // reachable, and asking for a run sheet in those words used to
-        // land in `Unknown` — so the agent's reply to the only
-        // instruction it is ever given was that it did not understand
-        // it. Spelt both ways, because people write it both ways.
+        // The recipes keep their keywords, because they are the one part
+        // of the vocabulary that is still a closed set. Asking for a run
+        // sheet in those words used to land in `Unknown` — so the agent's
+        // reply to the only instruction it was ever given was that it did
+        // not understand it. Spelt both ways, because people write it both
+        // ways.
+        let offers = surveyed();
         assert_eq!(
-            Instruction::parse("Scribe: make this a run sheet", "Scribe"),
+            Instruction::parse("Scribe: make this a run sheet", "Scribe", &offers),
             Some(Instruction::Table)
         );
         assert_eq!(
-            Instruction::parse("Scribe: build a runsheet from these", "Scribe"),
+            Instruction::parse("Scribe: build a runsheet from these", "Scribe", &offers),
             Some(Instruction::Table)
         );
-        // And the floor still has one: an instruction it genuinely has
-        // no answer for is still reported as such rather than quietly
-        // turned into the nearest thing it can do.
-        assert_eq!(
-            Instruction::parse("Scribe: book the venue", "Scribe"),
-            Some(Instruction::Unknown("book the venue".into()))
+        // And the floor still has one: an instruction nothing in the room
+        // answers is reported as such rather than quietly turned into the
+        // nearest thing it could do.
+        assert!(matches!(
+            Instruction::parse("Scribe: book the venue", "Scribe", &offers),
+            Some(Instruction::Unknown(_))
+        ));
+    }
+
+    /// The floor with an open surface: an instruction whose words land on
+    /// exactly one exported operation resolves to that address, and one that
+    /// lands on several is refused with them named.
+    #[test]
+    fn the_floor_needs_a_clear_winner_and_says_so_when_there_is_none() {
+        let offers = surveyed();
+        let one = Instruction::from_floor("centre the Notes", &offers);
+        let Instruction::Perform { id, argument } = &one else {
+            panic!("a single clear match must resolve to an address, got {one:?}");
+        };
+        assert_eq!(*argument, None);
+        assert!(
+            surface::find(&offers, id).is_some_and(|o| o
+                .descriptor
+                .action_label
+                .to_lowercase()
+                .contains("centre")),
+            "the floor chose {id}"
         );
+
+        // "align" is the word four of the document's operations carry.
+        let many = Instruction::from_floor("align it", &offers);
+        let Instruction::Unknown(why) = &many else {
+            panic!("an ambiguous instruction must not resolve, got {many:?}");
+        };
+        assert!(
+            why.contains("say which"),
+            "ambiguity must be reported as ambiguity: {why}"
+        );
+
+        // Nothing in the room carries any of these words.
+        assert!(matches!(
+            Instruction::from_floor("juggle three plates", &offers),
+            Instruction::Unknown(_)
+        ));
     }
 
     #[test]
     fn instructions_are_addressed_by_name_case_insensitively() {
-        assert_eq!(Instruction::parse("scribe: turn the bullets into a table", "Scribe"), Some(Instruction::Table));
-        assert_eq!(Instruction::parse("Scribe: caption the image please", "Scribe"), Some(Instruction::Caption));
-        assert_eq!(Instruction::parse("SCRIBE: give this a title", "Scribe"), Some(Instruction::Heading));
+        let offers = surveyed();
         assert_eq!(
-            Instruction::parse("Scribe: juggle", "Scribe"),
-            Some(Instruction::Unknown("juggle".into()))
+            Instruction::parse("scribe: turn the bullets into a table", "Scribe", &offers),
+            Some(Instruction::Table)
         );
-        assert_eq!(Instruction::parse("Dear Scribe: table", "Scribe"), None);
-        assert_eq!(Instruction::parse("Scribe: table", "Ada"), None);
+        assert_eq!(
+            Instruction::parse("Scribe: caption the image please", "Scribe", &offers),
+            Some(Instruction::Caption)
+        );
+        assert_eq!(
+            Instruction::parse("SCRIBE: give this a title", "Scribe", &offers),
+            Some(Instruction::Heading)
+        );
+        assert!(matches!(
+            Instruction::parse("Scribe: juggle", "Scribe", &offers),
+            Some(Instruction::Unknown(_))
+        ));
+        assert_eq!(Instruction::parse("Dear Scribe: table", "Scribe", &offers), None);
+        assert_eq!(Instruction::parse("Scribe: table", "Ada", &offers), None);
     }
 
     #[test]
@@ -1039,7 +1203,7 @@ mod tests {
             para("ins", "Scribe: table"),
             bullet("later", "not this one"),
         ];
-        let (at, ins) = find_instruction(&blocks, "Scribe").unwrap();
+        let (at, ins) = find_instruction(&blocks, "Scribe", &surveyed()).unwrap();
         assert_eq!((at, ins), (4, Instruction::Table));
         assert_eq!(bullets_above(&blocks, at), vec![1, 2]);
         assert!(bullets_above(&blocks, 0).is_empty());

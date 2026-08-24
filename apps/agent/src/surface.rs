@@ -439,31 +439,41 @@ fn keywords(rest: &str) -> Vec<String> {
 /// nowhere honest to get them from except somewhere the instruction said them
 /// outright. Anything less than a quoted literal would be the agent inventing
 /// content and calling it the user's.
+///
+/// Straight and typographic double quotes only. An apostrophe is a letter in
+/// English prose far more often than it is a quotation mark, and reading
+/// "don't rename it" as a quoted `t rename it` is exactly the kind of
+/// confident nonsense this vocabulary exists to avoid.
 pub fn quoted_literal(rest: &str) -> Option<String> {
     let mut found: Vec<String> = Vec::new();
-    for quote in ['"', '\'', '\u{201c}'] {
-        let close = if quote == '\u{201c}' { '\u{201d}' } else { quote };
-        let mut chars = rest.char_indices().peekable();
-        while let Some((i, c)) = chars.next() {
-            if c != quote {
-                continue;
-            }
-            let rest_of = &rest[i + c.len_utf8()..];
-            if let Some(end) = rest_of.find(close) {
-                let lit = rest_of[..end].trim();
-                if !lit.is_empty() {
-                    found.push(lit.to_string());
-                }
-                // Skip past the closing quote.
-                while let Some(&(j, _)) = chars.peek() {
-                    if j >= i + c.len_utf8() + end {
-                        break;
-                    }
-                    chars.next();
-                }
+
+    // Straight quotes: splitting alternates outside/inside, so every odd
+    // segment is quoted. An unterminated quote leaves a final odd segment,
+    // which is why the count has to be even to have closed.
+    let parts: Vec<&str> = rest.split('"').collect();
+    if parts.len() % 2 == 1 {
+        for inside in parts.iter().skip(1).step_by(2) {
+            let lit = inside.trim();
+            if !lit.is_empty() {
+                found.push(lit.to_string());
             }
         }
     }
+
+    // Typographic quotes, which open and close with different characters.
+    let mut haystack = rest;
+    while let Some(open) = haystack.find('\u{201c}') {
+        let after = &haystack[open + '\u{201c}'.len_utf8()..];
+        let Some(close) = after.find('\u{201d}') else {
+            break;
+        };
+        let lit = after[..close].trim();
+        if !lit.is_empty() {
+            found.push(lit.to_string());
+        }
+        haystack = &after[close + '\u{201d}'.len_utf8()..];
+    }
+
     match found.len() {
         1 => found.pop(),
         // Two literals is an instruction naming a thing *and* a value, which
@@ -573,8 +583,20 @@ mod tests {
 
     #[test]
     fn one_quoted_literal_is_an_argument_and_two_are_not() {
-        assert_eq!(quoted_literal(r#"rename it to "launch.md""#), Some("launch.md".into()));
+        assert_eq!(
+            quoted_literal(r#"rename it to "launch.md""#),
+            Some("launch.md".into())
+        );
         assert_eq!(quoted_literal(r#"rename "a.md" to "b.md""#), None);
         assert_eq!(quoted_literal("rename it to launch.md"), None);
+        // Typographic quotes are what a word processor actually produces.
+        assert_eq!(
+            quoted_literal("rename it to \u{201c}launch.md\u{201d}"),
+            Some("launch.md".into())
+        );
+        // An apostrophe is a letter, not a quotation mark.
+        assert_eq!(quoted_literal("don't rename anything"), None);
+        // An unterminated quote has quoted nothing.
+        assert_eq!(quoted_literal(r#"rename it to "launch.md"#), None);
     }
 }
