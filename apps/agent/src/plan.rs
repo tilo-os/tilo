@@ -415,13 +415,38 @@ pub const RECIPES: &[Recipe] = &[
         actions: &["SetParagraphStyle", "RemoveBlocks"],
         needs_table: false,
     },
+    // The ordering rule is stated here rather than enforced in code, and
+    // that is a decision rather than an omission. Nothing on this side
+    // knows which column is the one to order by: the columns are the
+    // model's own choice, every cell is free text, and the same recipe
+    // drafts tables that are not schedules at all. A sort here could
+    // therefore only guess — and guessing wrong would rearrange facts
+    // behind the author's back, which is the one thing the last sentence
+    // of this summary forbids.
+    //
+    // What went wrong was narrower: the rule used to say "the order they
+    // actually belong in", which on a document that disagrees with
+    // itself is not a defined order. Given notes reading `Doors: 18:00`
+    // and `Sound check: 18:30` under prose saying doors open at seven,
+    // the model ordered by the sequence it believed real -- sound check,
+    // then doors -- while correctly leaving the recorded times alone. The
+    // result was a Time column reading 18:30 above 18:00: defensible
+    // reasoning, and a run sheet that reads backwards to everyone who
+    // did not reconstruct it. So the rule now points at the table's own
+    // column, and hands the contradiction to `note`, where it was
+    // already going.
     Recipe {
         id: "runsheet",
         summary: "Draft the notes above the instruction into a table yourself, and \
                   supply it in `table`. Choose the columns — as few as the facts \
-                  need, and none that would sit mostly empty. Put the rows in the \
-                  order they actually belong in rather than the order they were \
-                  written. Fold in anything stated only in the prose around them. \
+                  need, and none that would sit mostly empty. Order the rows by \
+                  what the table itself will say: read down the column you are \
+                  ordering by, and it has to run in order. Where the document \
+                  contradicts itself so that no such order exists, keep the order \
+                  the notes were written in and put the disagreement in `note` — \
+                  a table whose own column runs backwards reads as a mistake \
+                  whatever the reasoning behind it was. \
+                  Fold in anything stated only in the prose around them. \
                   Leave out anything that is not that kind of fact entirely: drop \
                   the row, rather than keeping it with a blank or a placeholder \
                   in the column it does not have. Then check the result against \
