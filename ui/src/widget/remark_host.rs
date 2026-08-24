@@ -59,6 +59,15 @@ pub struct RemarkHost {
     /// A finished remark waiting to be collected by
     /// [`Widget::take_remark`](crate::widget::Widget::take_remark).
     outbox: Option<Remark>,
+    /// Whether the remark in the outbox has been announced to the app yet.
+    ///
+    /// Separate from the outbox because two different parties want it and only
+    /// one of them may consume it: the app wants to say where the message went
+    /// (a toast, a log line), and the host wants to put it on the wire. An app
+    /// that took it to render its own confirmation would leave the host nothing
+    /// to send — a message that looks delivered and was never delivered, which
+    /// is the worst failure this surface has.
+    fresh: bool,
 }
 
 impl RemarkHost {
@@ -156,6 +165,19 @@ impl RemarkHost {
     /// The text typed so far.
     pub fn text(&self) -> &str {
         self.compose.text()
+    }
+
+    /// Look at the remark just composed, once, without taking it.
+    ///
+    /// For the app's own feedback. Answers on the first call after a send and
+    /// `None` thereafter, so a confirmation is shown once however many times
+    /// the app is asked to handle an event before the host's next drain.
+    pub fn just_sent(&mut self) -> Option<&Remark> {
+        if std::mem::take(&mut self.fresh) {
+            self.outbox.as_ref()
+        } else {
+            None
+        }
     }
 
     /// Collect a finished remark, once.
@@ -317,6 +339,7 @@ impl RemarkHost {
         );
         if let Some(remark) = self.compose.take_sent() {
             self.outbox = Some(remark);
+            self.fresh = true;
         }
     }
 }
