@@ -1696,12 +1696,152 @@ impl App {
     /// dispatch in one place means a future protocol addition
     /// (e.g. a new payload variant) doesn't have to be added to
     /// two near-identical match arms.
+    /// Offer the app every place a remark it composes could go.
+    ///
+    /// The room first, then each participant. The order is the meaning: the
+    /// surface opens on the first option, so the default is the one everybody
+    /// can read, and privacy is something a person chooses rather than
+    /// something they land in.
+    ///
+    /// The room is not in the roster — the roster is people and agents — so it
+    /// is put here, and it is the only option a remark can currently be
+    /// *encoded* to. A participant destination is private, and chat's
+    /// `SendMessage` has no private delivery, so
+    /// [`Remark::to_chat_action`](qos_reference::Remark::to_chat_action)
+    /// refuses one rather than widening it to the channel. Offering the room
+    /// is what turns the selector from a list of dead ends into a control with
+    /// a working default; the private lines stay, and stay refused, until
+    /// something exists to carry them.
+    fn publish_remark_destinations(&mut self) {
+        use crate::widget::remark_compose::DestinationOption;
+
+        let mut destinations = vec![crate::widget::remark_compose::room_destination()];
+        destinations.extend(self.remark_roster.iter().map(|(id, (name, is_agent))| {
+            DestinationOption::localised(qos_reference::Destination::participant(
+                id.clone(),
+                name.clone(),
+                *is_agent,
+            ))
+        }));
+        self.root_widget.set_remark_destinations(destinations);
+    }
+
+    /// The room as this process knows it, for resolving an `@name`.
+    fn remark_room(&self) -> Vec<qos_reference::RoomMember> {
+        self.remark_roster
+            .iter()
+            .map(|(id, (name, is_agent))| {
+                qos_reference::RoomMember::new(id.clone(), name.clone(), *is_agent)
+            })
+            .collect()
+    }
+
+    /// Collect anything the app has composed and put it in the room.
+    ///
+    /// The outbound half of the remark path, and the counterpart to the
+    /// roster hand-off in [`Self::pump_collab_presence`]. The room tells the
+    /// app where a remark may go; this takes the written one back, addresses
+    /// it, and sends it.
+    ///
+    /// Three things happen here that could not happen in the widget, and that
+    /// is the whole reason this is the host's job:
+    ///
+    /// * **Mentions are resolved.** The compose surface leaves them empty
+    ///   because resolving `@claude` needs the roster. This has it.
+    /// * **The message is minted.** An id, an author and a timestamp, chosen
+    ///   once here so the change replays byte-identically on every peer.
+    /// * **It is encoded and sent.** As chat's own `SendMessage`, under chat's
+    ///   own type id, so it lands in the same document and the same history as
+    ///   anything typed in the chat window — a remark is not a second kind of
+    ///   message.
+    ///
+    /// Returns `true` if a remark was sent, so the caller can redraw.
+    ///
+    /// A refusal is reported, never swallowed. Until this existed
+    /// `Undeliverable` had no consumer anywhere in the tree, which is how a
+    /// destination that could not be encoded went unnoticed for as long as it
+    /// did.
+    pub fn pump_remarks(&mut self) -> bool {
+        let Some(remark) = self.root_widget.take_remark() else {
+            return false;
+        };
+        // Resolved before the move: `with_mentions` consumes the remark, so the
+        // borrow of its text has to be finished first.
+        let mentions = qos_reference::resolve_mentions(&remark.text, &self.remark_room());
+        let remark = remark.with_mentions(mentions);
+        let id = format!("m_{}", uuid::Uuid::new_v4().simple());
+        let author = self.local_author.0.clone();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
+
+        match remark.to_chat_action(id.as_str(), author.as_str(), ts) {
+            Ok(action) => {
+                let delivery = remark.delivery();
+                tracing::info!(
+                    target: "ui::remark",
+                    message = %id,
+                    about = %remark.reference.resource_id().as_str(),
+                    to = ?delivery,
+                    addressed = ?delivery.addressed(),
+                    "sending a remark into the room"
+                );
+                self.collab_manager
+                    .send(crate::collaboration::CollabRequest::SendAction {
+                        type_id: action.type_id,
+                        payload: action.payload,
+                    });
+                true
+            }
+            Err(why) => {
+                // Loud, and with the reason. Somebody wrote a sentence, pressed
+                // send, and watched the panel close; the one thing that must
+                // not happen is for that to look identical to a message that
+                // was delivered.
+                tracing::error!(
+                    target: "ui::remark",
+                    about = %remark.reference.resource_id().as_str(),
+                    error = %why,
+                    "a remark was written and could not be sent"
+                );
+                false
+            }
+        }
+    }
+
     pub fn pump_collab_presence(&mut self) -> bool {
         let events = self.collab_manager.poll();
         let mut any = false;
         for event in events {
             any = true;
             match event {
+                CollabEvent::ActionArrived {
+                    type_id,
+                    payload,
+                    from_user_id,
+                } => {
+                    // Offered to the root widget, which decides. Every app in
+                    // the room is handed every action, and the one whose
+                    // registry knows the type is the one that applies it — so
+                    // the app that owns a document stays the only writer of
+                    // it, which is exactly the property that made it safe to
+                    // let another app ask in the first place.
+                    let applied = self.root_widget.apply_room_action(
+                        &mut self.state.doc,
+                        &type_id,
+                        &payload,
+                    );
+                    if applied {
+                        tracing::info!(
+                            target: "ui::remark",
+                            %type_id, from = %from_user_id,
+                            "applied an action published into the room"
+                        );
+                        self.needs_sync = true;
+                        self.structure_dirty = true;
+                    }
+                }
                 CollabEvent::Context { collaborators, .. } => {
                     // The roster is also the list of places a remark can go.
                     // The host knows who is here; an app must never invent a
@@ -1727,20 +1867,7 @@ impl App {
                         }
                     }
                     if changed {
-                        let destinations: Vec<_> = self
-                            .remark_roster
-                            .iter()
-                            .map(|(id, (name, is_agent))| {
-                                crate::widget::remark_compose::DestinationOption::localised(
-                                    qos_reference::Destination::participant(
-                                        id.clone(),
-                                        name.clone(),
-                                        *is_agent,
-                                    ),
-                                )
-                            })
-                            .collect();
-                        self.root_widget.set_remark_destinations(destinations);
+                        self.publish_remark_destinations();
                     }
                     for c in collaborators {
                         // The roster says who is here and what they are
@@ -4721,6 +4848,16 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // during the last event (the button-driven twin of the Ctrl+K palette).
         // Record one undo boundary bracketing it, so Ctrl+Z reverts it — the same
         // `record_committed_action` path the palette dispatch takes.
+        // A remark composed during the last event: address it against the room's
+        // roster and put it on the wire. Level-triggered here, beside the other
+        // per-frame drains, rather than at the send affordance — the widget that
+        // owns the affordance is the one that cannot resolve a name or reach the
+        // transport, which is why it hands the message over instead of sending
+        // it.
+        if app.pump_remarks() {
+            window.request_redraw();
+        }
+
         if let Some(before) = app.root_widget.take_committed_action() {
             if app.state.doc.get_heads() != before {
                 app.state.record_committed_action(before, None, None);

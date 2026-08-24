@@ -120,6 +120,42 @@ interface ChannelHandle {
   # `wantBlob`, and content a peer offered the room while a document
   # here referenced it.
   subscribeBlobs @10 () -> (stream :BlobStream);
+
+  # Publish a typed action into the room, for whichever app owns the
+  # document it belongs to.
+  #
+  # Every other verb here carries Automerge bytes, which an app can
+  # only produce for a document it holds. This one carries an action:
+  # a `typeId` naming the app that owns the document and an opaque
+  # payload its registry decodes. That is what lets an app address
+  # another app's document without holding a replica of it, knowing
+  # its schema, or being permitted to write it.
+  #
+  # The broker fans this out at cluster scope — every connection in
+  # the room receives it — and each receiver applies it only if its
+  # own registry knows `typeId`. An action belonging to another app
+  # decodes to nothing and is dropped.
+  #
+  # The room receiving it is the property, not a compromise: this
+  # carries instructions that change shared documents, and narrowing
+  # delivery would put them somewhere the people sharing them cannot
+  # read.
+  sendAction @11 (typeId :Text, payload :Data) -> ();
+
+  # Subscribe to actions other apps in this room published. Client-pull
+  # like every stream here.
+  subscribeActions @12 () -> (stream :ActionStream);
+}
+
+interface ActionStream {
+  # Pull the next action published into this room.
+  #
+  # `fromUserId` is the broker's attribution for the sender, in the
+  # same shape `Stream.read` uses. It is who *sent* the frame, which
+  # is not necessarily who the action says authored it — a receiver
+  # that cares about the difference must check, because the two are
+  # different claims and only the first one the broker stands behind.
+  read @0 () -> (typeId :Text, payload :Data, fromUserId :Text);
 }
 
 interface Stream {

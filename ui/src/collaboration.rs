@@ -197,6 +197,44 @@ pub enum CollabRequest {
         /// blake3 hex of the content wanted.
         hash: String,
     },
+    /// "Put this action in the room, for whichever app it belongs to."
+    ///
+    /// The outbound half of the remark path, and the only frame here that
+    /// carries a *typed action* rather than document bytes. That difference is
+    /// the point: an app can address another app's document without holding a
+    /// replica of it, or knowing its schema, or being allowed to write it. It
+    /// hands over an action; the app that owns the document decodes it through
+    /// its own registry and applies it, or does not recognise it and ignores
+    /// it.
+    ///
+    /// Why an app needs this at all: a remark composed in the file manager is
+    /// a chat message, deliberately — same document, same channel, same
+    /// history as anything typed in the chat window, so an instruction to an
+    /// agent is on the record rather than in a side channel. But the file
+    /// manager cannot write chat's document. Its collaboration connection is
+    /// scoped to its own app, its own room and its own record, and everything
+    /// on the wire above this is Automerge bytes it has no way to produce for
+    /// a schema it does not have.
+    ///
+    /// **Fanned out to the room, and addressed by type.** The broker widens
+    /// the sender's route to cluster scope, so every connection in the room
+    /// sees it, and each one applies it only if its registry knows `type_id`.
+    /// That is deliberately the same discipline the action model already runs
+    /// on: an action names the app that owns it, and an app can only apply
+    /// what it can decode.
+    ///
+    /// The room seeing it is a property, not a compromise. The alternative —
+    /// narrowing delivery to one app — would put an instruction that changes a
+    /// shared document somewhere the people sharing it cannot read.
+    SendAction {
+        /// The registry type id the action was encoded under, e.g.
+        /// `chat.action`. Names the app that owns the document, which is what
+        /// makes room-wide fan-out safe.
+        type_id: String,
+        /// The encoded action, exactly as
+        /// [`EncodedAction`](qos_actions::EncodedAction) carries it.
+        payload: Vec<u8>,
+    },
     /// "Open this application here."
     ///
     /// The one frame on this socket that is not about a document, and it is
@@ -312,6 +350,24 @@ pub enum CollabEvent {
     /// downstream attribution code can use a single id shape.
     SignedCRDTIncremental {
         envelope: Box<SignedOp>,
+        from_user_id: String,
+    },
+    /// An action another app in this room published — see
+    /// [`CollabRequest::SendAction`].
+    ///
+    /// Delivered to every connection in the room. A receiver decodes it
+    /// through its own [`ActionRegistry`](qos_actions::ActionRegistry) and
+    /// applies it if the registry knows `type_id`; an action belonging to a
+    /// different app decodes to nothing and is dropped, which is what makes a
+    /// room-wide fan-out of typed actions safe.
+    ///
+    /// `from_user_id` is the broker's attribution for the sender, in the same
+    /// id shape every other event here uses. It is who *sent* the frame, which
+    /// is not necessarily who the action says authored it — a receiver that
+    /// cares about the difference must check.
+    ActionArrived {
+        type_id: String,
+        payload: Vec<u8>,
         from_user_id: String,
     },
     /// Phase 6: response to a [`CollabRequest::FetchScrollback`].
@@ -1679,6 +1735,31 @@ async fn drive_shovel(
                     });
                 }
 
+                // subscribeActions(): typed actions other apps in this room
+                // published. Opened at join for the same reason the content
+                // stream is — an app that only subscribed once it wanted
+                // something would miss everything said before it looked.
+                if let Ok(acts) = ch.subscribe_actions().await {
+                    let itx = inbound_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        loop {
+                            let Ok(evt) = acts.read().await else {
+                                break;
+                            };
+                            if itx
+                                .send(CollabEvent::ActionArrived {
+                                    type_id: evt.type_id,
+                                    payload: evt.payload,
+                                    from_user_id: evt.from_user_id,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    });
+                }
+
                 // subscribeContext(): forward roster / permission snapshots.
                 if let Ok(ctx_stream) = ch.subscribe_context().await {
                     let itx = inbound_tx.clone();
@@ -1861,6 +1942,29 @@ async fn drive_shovel(
                     );
                 }
             }
+            // A typed action for whichever app in the room owns the document
+            // it belongs to. The one send verb here that is not this app's own
+            // document bytes.
+            CollabRequest::SendAction { type_id, payload } => {
+                let Some(ch) = channel.as_ref() else {
+                    tracing::warn!(
+                        %type_id, bytes = payload.len(),
+                        "collab: an action was composed before this app joined a \
+                         channel; nobody in the room will receive it",
+                    );
+                    continue;
+                };
+                if let Err(e) = ch.send_action(&type_id, &payload).await {
+                    // Loud. This frame carries an instruction somebody wrote
+                    // and watched disappear, and a send that fails silently is
+                    // indistinguishable from one that worked.
+                    tracing::error!(
+                        %type_id, bytes = payload.len(), error = ?e,
+                        "collab: putting an action in the room failed; whoever \
+                         wrote it will see no sign that it did not arrive",
+                    );
+                }
+            }
             // Not carried on this transport, and not silently: an app that
             // asked for one has a caller waiting on a window that is never
             // going to appear. The schema `runtime-collab` speaks is about
@@ -1978,6 +2082,13 @@ async fn drive_relay(
                             hash = %hash,
                             "collab: this relay session cannot fetch document content; \
                              the image using it stays a placeholder",
+                        );
+                    }
+                    CollabRequest::SendAction { type_id, payload } => {
+                        tracing::warn!(
+                            %type_id, bytes = payload.len(),
+                            "collab: this relay session carries documents and \
+                             presence, not actions; nothing was put in the room",
                         );
                     }
                     CollabRequest::OpenApp { app_id } => {
@@ -2342,6 +2453,17 @@ pub mod broker {
                 // Nothing here holds a store to answer from; the offer above
                 // is what moves content on this transport.
                 CollabRequest::WantBlob { .. } => continue,
+                // Fanned to the other peers verbatim, which is what a room
+                // does with one: an action published is an action arriving for
+                // everybody else, and each of them decides whether its own
+                // registry knows the type.
+                CollabRequest::SendAction { type_id, payload } => {
+                    CollabEvent::ActionArrived {
+                        type_id,
+                        payload,
+                        from_user_id: String::new(),
+                    }
+                }
                 // The in-process relay is a loopback between two documents.
                 // It hosts nothing, so there is nothing here to open — and
                 // fabricating a refusal would teach a caller that this relay

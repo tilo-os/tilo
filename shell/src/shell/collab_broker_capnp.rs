@@ -74,7 +74,8 @@ use collab_types::{
     ArtifactId, OpClass, RedactedMarker, SignedOp, ValidationError, validate_inbound_op,
 };
 use runtime_collab::raw::{
-    OpKind, blob_stream, channel_handle, collab_service, context_stream, cursor_stream,
+    OpKind, action_stream, blob_stream, channel_handle, collab_service, context_stream,
+    cursor_stream,
     presence_event, presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
 };
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
@@ -138,6 +139,14 @@ struct BlobEnvelope {
     bytes: Vec<u8>,
 }
 
+/// Envelope pushed onto an [`ActionStreamServer`]'s queue.
+#[derive(Clone, Debug)]
+struct ActionEnvelope {
+    type_id: String,
+    payload: Vec<u8>,
+    from_user_id: String,
+}
+
 /// Envelope pushed onto a [`ContextStreamServer`]'s queue.
 #[derive(Clone, Debug)]
 struct ContextEnvelope {
@@ -167,6 +176,10 @@ struct ContextSub {
 struct BlobSub {
     peer_id: u64,
     tx: mpsc::UnboundedSender<BlobEnvelope>,
+}
+struct ActionSub {
+    peer_id: u64,
+    tx: mpsc::UnboundedSender<ActionEnvelope>,
 }
 
 /// Per-channel subscriber registry.
@@ -198,6 +211,12 @@ struct ChannelSubscribers {
     /// the reference that names it, and an app that never asks for it
     /// is still a legitimate reader of the document.
     blob: Vec<BlobSub>,
+    /// Apps waiting on typed actions published into this room. Separate
+    /// from `op` for the reason the whole verb exists: an action is not
+    /// this app's document changing, it is another app asking this one to
+    /// change its own — so it is delivered to whoever is listening for
+    /// requests, not to whoever is tracking a change graph.
+    action: Vec<ActionSub>,
 }
 
 /// Shared capnp broker state. Attached to a [`PeerTable`] so the
@@ -506,6 +525,48 @@ impl CapnpBrokerState {
                 // want late-arriving history repeat their
                 // `fetchScrollbackFor` call.
             }
+            CollabEvent::ActionArrived {
+                type_id,
+                payload,
+                from_user_id,
+            } => {
+                // Every app listening in this room, not only the one the
+                // action names. The type id is what narrows it, and it
+                // narrows it at the receiver: an app applies what its own
+                // registry can decode and drops the rest. Narrowing here
+                // instead would mean the broker deciding which app owns a
+                // type, which is a second answer to a question the registry
+                // already answers.
+                let env = ActionEnvelope {
+                    type_id: type_id.clone(),
+                    payload: payload.clone(),
+                    from_user_id: from_user_id.clone(),
+                };
+                let mut delivered = 0usize;
+                for subs in channels {
+                    subs.action.retain(|sub| {
+                        if sub.peer_id == except {
+                            return true;
+                        }
+                        let ok = sub.tx.send(env.clone()).is_ok();
+                        if ok {
+                            delivered += 1;
+                        }
+                        ok
+                    });
+                }
+                if delivered == 0 {
+                    // Loud, because this frame carries an instruction
+                    // somebody wrote. A room where nothing is listening for
+                    // actions swallows it, and the person who sent it sees a
+                    // panel close either way.
+                    tracing::warn!(
+                        %type_id, bytes = payload.len(),
+                        "capnp: an action was published into a room where no app is \
+                         listening for one; whoever wrote it will see no sign of that",
+                    );
+                }
+            }
             CollabEvent::BlobArrived { hash, bytes } => {
                 // Content down to the apps waiting on it. Addressed by the
                 // channel like everything else here, so an app that never
@@ -682,6 +743,21 @@ impl CapnpBrokerState {
                 .or_insert_with(ChannelSubscribers::default)
                 .blob
                 .push(BlobSub { peer_id, tx });
+        }
+        rx
+    }
+
+    fn subscribe_actions(
+        &self,
+        channel_id: &str,
+        peer_id: u64,
+    ) -> mpsc::UnboundedReceiver<ActionEnvelope> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        if let Ok(mut m) = self.channels.lock() {
+            m.entry(channel_id.to_owned())
+                .or_insert_with(ChannelSubscribers::default)
+                .action
+                .push(ActionSub { peer_id, tx });
         }
         rx
     }
@@ -975,6 +1051,66 @@ impl channel_handle::Server for CapnpChannelHandle {
             rx: Rc::new(RefCell::new(rx)),
         };
         let client: blob_stream::Client = capnp_rpc::new_client(server);
+        results.get().set_stream(client);
+        Promise::ok(())
+    }
+
+    fn send_action(
+        self: Rc<Self>,
+        params: channel_handle::SendActionParams,
+        _results: channel_handle::SendActionResults,
+    ) -> Promise<(), capnp::Error> {
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        // Cluster scope, not this app's route. The whole point of the verb
+        // is to reach an app that is *not* this one, so narrowing to the
+        // sender's own `(app, record)` would deliver it to nobody but the
+        // sender's own other windows. The room is the audience — which is
+        // also the honest audience for an instruction that changes a
+        // document the room shares.
+        let route = self.route().to_cluster_scope();
+        Promise::from_future(async move {
+            let p = params.get()?;
+            let type_id = p.get_type_id()?.to_str()?.to_owned();
+            let payload = p.get_payload()?.to_vec();
+            // **This machine only, deliberately.** Content and incrementals go
+            // out to the room as well, because they *are* the shared state and
+            // every replica needs them. An action is not shared state — it is a
+            // request that one app change a document it owns. The app that owns
+            // it applies it here, and the document change that results crosses
+            // to every other machine on the path that already carries document
+            // changes.
+            //
+            // Publishing the action itself as well would mean every machine's
+            // copy of that app applying the same request independently, each
+            // minting its own change: one instruction, one edit per machine,
+            // and a document that disagrees with itself. The single applier is
+            // the whole reason the action names an owner.
+            if let Some(t) = state.peer_table.upgrade() {
+                t.fanout_to_route(
+                    &CollabEvent::ActionArrived {
+                        type_id,
+                        payload,
+                        from_user_id: String::new(),
+                    },
+                    peer_id,
+                    &route,
+                );
+            }
+            Ok(())
+        })
+    }
+
+    fn subscribe_actions(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeActionsParams,
+        mut results: channel_handle::SubscribeActionsResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.state.subscribe_actions(&self.channel_id, self.peer_id);
+        let server = ActionStreamServer {
+            rx: Rc::new(RefCell::new(rx)),
+        };
+        let client: action_stream::Client = capnp_rpc::new_client(server);
         results.get().set_stream(client);
         Promise::ok(())
     }
@@ -1594,6 +1730,37 @@ impl blob_stream::Server for BlobStreamServer {
             let mut b = results.get();
             b.set_hash(&env.hash);
             b.set_bytes(&env.bytes);
+            Ok(())
+        })
+    }
+}
+
+/// Server half of an [`action_stream`] capability: one queue of actions
+/// published into this room, drained one `read` at a time.
+struct ActionStreamServer {
+    rx: Rc<RefCell<mpsc::UnboundedReceiver<ActionEnvelope>>>,
+}
+
+impl action_stream::Server for ActionStreamServer {
+    fn read(
+        self: Rc<Self>,
+        _params: action_stream::ReadParams,
+        mut results: action_stream::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.rx.clone();
+        Promise::from_future(async move {
+            let env = match rx.borrow_mut().recv().await {
+                Some(e) => e,
+                None => {
+                    return Err(capnp::Error::disconnected(
+                        "action stream fanout closed".into(),
+                    ));
+                }
+            };
+            let mut b = results.get();
+            b.set_type_id(&env.type_id);
+            b.set_payload(&env.payload);
+            b.set_from_user_id(&env.from_user_id);
             Ok(())
         })
     }

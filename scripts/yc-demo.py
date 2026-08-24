@@ -2491,6 +2491,21 @@ class LogTail:
     FINISHED = "drag finished"
     #: A `ui` app reporting the size of a change to its own document.
     DELTA = re.compile(r"broadcast doc delta (\d+)B")
+    #: The file manager, having opened the compose surface. Names what the
+    #: panel is about — the *address*, not the file's name — and the rect it
+    #: was laid out at, in the client's own coordinates.
+    COMPOSE = re.compile(
+        r"remark compose opened\s+about=(\S+)\s+"
+        r"at=\((-?[\d.]+),\s*(-?[\d.]+),\s*(-?[\d.]+),\s*(-?[\d.]+)\)")
+    #: The same app, having sent one. `text` runs to the end of the line
+    #: because a sentence has spaces in it.
+    SENT = re.compile(
+        r"remark sent\s+to=(\S+)\s+about=(\S+)\s+text=(.*)$", re.M)
+    #: The host, having put it on the wire. A different process's account of
+    #: the same event, which is what makes it worth reading separately: the
+    #: app saying it composed a message and the toolkit saying it sent one are
+    #: two claims, and only the second one means it left.
+    ON_THE_WIRE = re.compile(r"sending a remark into the room\s+message=(\S+)")
 
     #: `tracing_subscriber::fmt::init()` colours its output whether or
     #: not the sink is a terminal, and the session's log is a file. So a
@@ -2535,6 +2550,20 @@ class LogTail:
 
     def biggest_delta(self, fresh: str) -> int:
         return max((int(m) for m in self.DELTA.findall(fresh)), default=0)
+
+    def compose_opened(self, text: str) -> tuple[str, tuple] | None:
+        """The address and client-space rect of the last compose surface the
+        file manager opened, or None if it opened none."""
+        hits = self.COMPOSE.findall(text)
+        if not hits:
+            return None
+        about, x, y, w, h = hits[-1]
+        return about, (float(x), float(y), float(w), float(h))
+
+    def remark_sent(self, text: str) -> tuple[str, str, str] | None:
+        """Destination, address and body of the last remark sent."""
+        hits = self.SENT.findall(text)
+        return hits[-1] if hits else None
 
 
     def await_line(self, needle: str, timeout: float) -> bool:
@@ -3322,62 +3351,123 @@ def close_collaborators(s: Session) -> None:
         s.settle(0.4)
 
 
-def say_something_about(session: Session, target: str, text: str,
+def say_something_about(session: Session, log: "LogTail", tile: tuple,
+                       file_name: str, listing: list[str], text: str,
                        shots: str | None = None,
                        tag: str | None = None) -> bool:
-    """Right-click a thing and say something to the room about it.
+    """Right-click a file and say something to the room about it.
 
     The gesture this desktop hangs its argument on: pick an object,
     right-click, and a compose surface opens beside the ordinary context
     menu carrying that object's **address**. What crosses is not a
-    description of what was on somebody's screen -- it is the resource
+    description of what was on somebody's screen — it is the resource
     itself, so an agent never has to guess what "this" was, and the same
     sentence still means the same thing in a session opened tomorrow.
 
+    Everything here is aimed at a pixel, and nothing here is remembered.
+    A file row and a compose panel both belong to a *client*, and a
+    client's widgets are not in the compositor's registry — there is no
+    name to click and no rect to read, which is what an earlier version
+    of this helper assumed when it opened with
+    `named_rect("file_row:harbour.png")` and could therefore never once
+    have run. So it uses the technique the drag beat already proved:
+
+    - the row is found by `press_the_photo_row`, which sweeps a band and
+      checks every press against the app's own account of what it hit;
+    - that press also *measures* the offset between screen and client
+      coordinates, from the position the app reports back;
+    - the panel's rect comes from the app saying where it laid it out,
+      converted with that measured offset rather than guessed at.
+
     Driven rather than simulated. The pointer travels, the right button
-    goes down and up, the panel is found by the name it publishes, the
-    text is typed at a person's pace and Send is pressed. Every step is
-    a control somebody could have clicked, so one that is not drawn, not
-    hit-testable or not wired fails here instead of being routed around.
+    goes down and up, the text is typed at a person's pace and Enter
+    sends it. Every step is something somebody could have done, so a
+    control that is not drawn, not hit-testable or not wired fails here
+    instead of being routed around.
 
     Returns False rather than raising. A rig that cannot perform the
     gesture should say so and let the run reach the end: a take that dies
     at its own best moment tells you less than one that finishes and
     names what was missing.
     """
-    row = session.named_rect(target)
-    if not row:
-        gap(f"{session.name}: nothing on screen is called {target!r}, so "
-            f"there was nothing to right-click. On offer: "
-            f"{sorted(session.target_names())[:8]}")
-        return False
-    x, y, w, h = row[0], row[1], row[2], row[3]
+    log.read()
 
-    # Selected with an ordinary click first. A context menu over an
-    # unselected row is a menu about whatever the app decides, and the
-    # whole point is that the subject is the thing the person picked.
-    session.click_at(x + w * 0.5, y + h * 0.5)
+    # Find the row, and with it the mapping between the two coordinate
+    # spaces. `press_the_photo_row` returns with the button still down —
+    # it exists for the drag beat — so let go, which makes it a click and
+    # leaves the row selected.
+    step(f"{session.name} picks out {file_name}")
+    held = press_the_photo_row(session, log, tile, file_name, listing)
+    session.pointer_button(False)
     session.settle(0.35)
-    session.right_click_at(x + w * 0.5, y + h * 0.5)
-    session.settle(0.6)
-
-    # `remark_compose` is the one name the widget publishes. The two that
-    # read like children -- `remark_compose_field`, `remark_compose_send` --
-    # are fluent catalogue keys for the placeholder and the button label,
-    # not test ids. This helper was written against them once.
-    panel = session.named_rect("remark_compose")
-    if not panel:
-        gap(f"{session.name}: right-clicking {target!r} opened no compose "
-            f"surface, so there was nowhere to say anything")
+    if held is None:
+        gap(f"{session.name}: no press landed on {file_name}. Its rows belong "
+            f"to a client, so there is no name to click and the press has to "
+            f"be aimed at a pixel; none of the band this swept was one of "
+            f"its rows.")
         return False
+
+    hit = log.armed(log.text)
+    if hit is None:
+        gap(f"{session.name}: the press landed but the file manager never "
+            f"said what it hit, so there is no way to convert its "
+            f"coordinates into screen ones.")
+        return False
+    x, y = held
+    off_x, off_y = x - hit[1], y - hit[2]
+    note(f"screen = client + ({off_x:.0f}, {off_y:.0f})")
+
+    # The right-click, on the row now known to be under the pointer.
+    step(f"{session.name} right-clicks it")
+    session.right_click_at(x, y)
+    session.settle(0.8)
+
+    # Where the panel is, asked of whoever drew it.
+    #
+    # These two branches are the two homes this surface has had, and the
+    # order says which one is right. When the compositor draws it — which is
+    # what it must do, because a client cannot paint beside a window it is
+    # not inside — the panel is an ordinary named target and the harness
+    # reads its rect the way it reads any other piece of chrome. Until then
+    # it is a client's widget, invisible to the registry, and the only
+    # account of where it went is the app's own.
+    #
+    # Written as a fallback rather than replaced outright so the beat keeps
+    # running across the move, and so a run says which side of it it is on.
+    about = None
+    panel = session.named_rect("remark_compose")
+    if panel:
+        note("the compose surface is drawn by the shell, above the windows")
+        sx, sy, pw, ph = panel
+        opened = log.compose_opened(log.read() + log.text)
+        about = opened[0] if opened else None
+    else:
+        opened = log.compose_opened(log.read() + log.text)
+        if opened is None:
+            gap(f"{session.name}: right-clicking {file_name} opened no compose "
+                f"surface, so there was nowhere to say anything. Either "
+                f"nothing was selected, or the room has told this app nowhere "
+                f"to send.")
+            return False
+        about, (px, py, pw, ph) = opened
+        sx, sy = px + off_x, py + off_y
+        gap(f"{session.name}: the compose surface is being drawn by the "
+            f"application, so it is clipped at that window's edge and cannot "
+            f"appear beside a neighbouring one. It belongs to the shell.")
+    if not about:
+        gap(f"{session.name}: the compose surface opened about nothing — a "
+            f"panel with no address behind it says nothing an agent could "
+            f"act on.")
+        return False
+    note(f"the compose surface is about {about}")
     if shots:
         session.snapshot(os.path.join(shots, f"{tag or 'remark'}-open.png"))
 
-    # The field is the upper band of the panel; the destination selector and
-    # the button sit below it. Clicking high inside the panel lands in the
+    # The field is the upper band of the panel; the destination selector
+    # and the button sit below it. Clicking high inside it lands in the
     # text rather than on a control.
-    session.click_at(panel[0] + panel[2] * 0.5, panel[1] + panel[3] * 0.28)
-    session.settle(0.2)
+    session.click_at(sx + pw * 0.5, sy + ph * 0.28)
+    session.settle(0.25)
     session.type_prose(text)
     session.settle(0.4)
     if shots:
@@ -3387,7 +3477,33 @@ def say_something_about(session: Session, target: str, text: str,
     # widget drains both into one place, so they cannot mean different
     # things. It is also what a person does after typing a line.
     session.key("Return")
-    claim(f"{session.name} said something about {target!r}", True, True)
+    session.settle(0.8)
+
+    sent = log.remark_sent(log.read() + log.text)
+    claim(f"{session.name} said something about {file_name}",
+          sent is not None, True)
+    if sent is None:
+        gap(f"{session.name}: the sentence was typed and the app never "
+            f"reported sending it. The panel closing is not evidence — that "
+            f"looks the same whether it sent or gave up.")
+        return False
+    to, sent_about, sent_text = sent
+    # The claim this beat exists to make, asserted on the *address*: what
+    # left the app is the thing he pointed at, not the words he used for
+    # it. A body that carried the id instead would pass a weaker check.
+    claim("what he sent carries the file's address, not a description of it",
+          sent_about == about, True)
+    claim("the address is not smuggled through the sentence",
+          about not in sent_text, True)
+    note(f"sent to {to}: {sent_text!r} about {sent_about}")
+
+    on_wire = LogTail.ON_THE_WIRE.findall(log.text)
+    claim("and the host put it in the room rather than holding it",
+          bool(on_wire), True)
+    if not on_wire:
+        gap(f"{session.name}: the app composed a remark and the toolkit "
+            f"never reported sending one. Composed is not delivered.")
+        return False
     return True
 
 
