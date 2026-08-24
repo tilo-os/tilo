@@ -170,6 +170,21 @@ pub enum Action {
         /// Milliseconds into the curve.
         at_ms: &'static [u64],
     },
+    /// Sample the strip's own travel at fixed points along its curve and
+    /// capture each as `prefix-<ms>`.
+    ///
+    /// The viewport pan is the shortest motion the shell plays and the
+    /// most expensive one to photograph: a capture costs more wall time
+    /// than the whole curve lasts, so every still of a "moving" strip is
+    /// really a still of a stopped one, and whether the view travelled
+    /// or cut cannot be seen in the output at all. This holds the pan at
+    /// a chosen point and renders the production `draw` there — the same
+    /// escape [`Action::SampleMakeSpace`] gives the make-space slide.
+    SamplePan {
+        prefix: &'static str,
+        /// Milliseconds into the curve.
+        at_ms: &'static [u64],
+    },
     /// Sample a tab pill's reveal curve at fixed points and capture each
     /// as `prefix-<ms>`.
     ///
@@ -798,6 +813,37 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 sink.capture(driver, name);
             }
         }
+        Action::SamplePan { prefix, at_ms } => {
+            // Lay out once so the pass that decides the strip has
+            // somewhere to be has run and set it going, then freeze
+            // before a render's worth of wall time can land it.
+            driver.relayout();
+            let strips: Vec<_> = {
+                let st = driver.chrome();
+                let tree = st.tree();
+                tree.active_workspace()
+                    .map(|ws| ws.strips.iter().map(|s| s.id).collect())
+                    .unwrap_or_default()
+            };
+            for ms in at_ms.iter() {
+                let mut any = false;
+                for sid in &strips {
+                    if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
+                        any |= row.hold_pan_at(std::time::Duration::from_millis(*ms));
+                    }
+                }
+                if !any {
+                    // Said out loud rather than captured quietly: a
+                    // resting strip photographed as a frame of motion is
+                    // exactly the false pass this action exists to stop.
+                    eprintln!("scenario: no strip pan in flight to sample at {ms} ms");
+                }
+                driver.relayout();
+                let name: &'static str =
+                    Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
+                sink.capture(driver, name);
+            }
+        }
         Action::SetWindowWidths(permille) => {
             let permille = *permille;
             driver.with_chrome(|st: &mut ChromeState| {
@@ -1148,6 +1194,29 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
             out.push(']');
         }
         out.push(']');
+    }
+    out.push(']');
+    out.push(',');
+    // Where along each strip the viewport is sitting, and how far it
+    // could travel. Two frames with an identical tree can be showing
+    // completely different windows, so a capture that carries the tree
+    // and not the pan cannot answer "what am I looking at" — and a
+    // scenario about how the view moves has no subject without it.
+    // `max_scroll_x` rides along because a strip whose windows all fit
+    // is pinned at zero, and there "the view did not move" is true of
+    // every possible change and proves nothing.
+    out.push('"');
+    out.push_str("strip_scroll");
+    out.push('"');
+    out.push(':');
+    out.push('[');
+    for (i, (strip, scroll_x, max_scroll_x)) in host.strip_scroll_offsets().iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"strip\":{strip},\"scroll_x\":{scroll_x:.2},\"max_scroll_x\":{max_scroll_x:.2}}}"
+        ));
     }
     out.push(']');
     out.push('}');
@@ -1514,6 +1583,7 @@ fn catalogue_rest() -> Vec<Scenario> {
         window_open_at_visible_seam(),
         window_open_at_next_seam_rightwards(),
         strip_scroll_across_apps(),
+        strip_pan_curve(),
         narrow_groups_side_by_side(),
         tab_pill_reveal(),
         tab_pill_reveal_narrow(),
@@ -1761,6 +1831,68 @@ const PAN_SETTLE_FRAMES: u32 = 16;
 /// usable width. Half a screen each puts two windows in view with a
 /// third clipped at the edge.
 const HALF_WIDTH_PERMILLE: u16 = 500;
+
+/// Points along the viewport's 200 ms travel worth photographing.
+/// Endpoints plus enough of the middle to tell a journey from a cut:
+/// a strip that moved in one frame shows the destination at every one
+/// of these, a strip that travelled shows a different place at each.
+const PAN_SAMPLES: &[u64] = &[0, 40, 80, 120, 160, 200];
+
+/// The strip travelling, photographed while it is still moving.
+///
+/// Everything else in the catalogue captures the viewport at rest,
+/// which is the one state that cannot answer the question the strip
+/// raises: a viewer who looks away and back sees different windows and
+/// has to work out whether the desktop moved or was replaced. A capture
+/// taken after the motion finished looks identical either way.
+///
+/// So this stops the clock partway. Three windows are opened along the
+/// strip until it overflows the display, the fourth arrival sets the
+/// viewport travelling, and the pan is held at six points on its curve.
+/// Read in order the frames are a dolly across one desktop; if any two
+/// adjacent ones are the same picture, the strip cut instead of moving.
+fn strip_pan_curve() -> Scenario {
+    Scenario {
+        name: "strip_pan_curve",
+        description: "The strip's viewport travel, held at six points along its curve, so a \
+                      pan can be told apart from a cut.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+            Action::Wait(2),
+            Action::OpenHostedWindow {
+                app: "Files",
+                title: "Files",
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+            Action::SelectGroup(Some(1)),
+            Action::Wait(4),
+            Action::OpenHostedWindow {
+                app: "Terminal",
+                title: "Terminal",
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+            Action::SelectGroup(Some(2)),
+            Action::Wait(PAN_SETTLE_FRAMES),
+            Action::Relayout,
+            Action::Snapshot("00-before-the-fourth-window"),
+            // The fourth window arrives. Held immediately, before a
+            // render's worth of wall time can land the strip.
+            Action::OpenHostedWindow {
+                app: "Editor",
+                title: "Editor",
+            },
+            Action::SamplePan {
+                prefix: "01-arrival",
+                at_ms: PAN_SAMPLES,
+            },
+        ],
+    }
+}
 
 /// Four shell-hosted apps side by side along the strip, then the strip
 /// panned across them.

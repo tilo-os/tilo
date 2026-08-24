@@ -4708,6 +4708,35 @@ impl ShellOverlayHost {
             .downcast_mut::<SidebarWheelDisc>()
     }
 
+    /// Every strip's horizontal pan, and how far it could travel.
+    ///
+    /// The pan is what "where along the strip am I looking" means, and
+    /// nothing else a harness can read carries it: two frames with the
+    /// same tree and the same chrome can be showing completely different
+    /// windows. An assertion that the viewport did or did not move has
+    /// no subject without it.
+    ///
+    /// Reported with the bound it is a pan against, because on a strip
+    /// whose content fits the display the pan is pinned at zero — and
+    /// then "the viewport did not move" is true of every possible change
+    /// and proves nothing. A caller has to be able to see whether it
+    /// could have moved at all.
+    pub fn strip_scroll_offsets(&self) -> Vec<(u64, f64, f64)> {
+        let mut out: Vec<(u64, f64, f64)> = self
+            .group_row_ptrs
+            .iter()
+            .map(|(sid, &ptr)| {
+                // SAFETY: same contract as every other `group_row_ptrs`
+                // accessor — the pointer is captured from a `Box<GroupRow>`
+                // owned through the content tree, and the host outlives it.
+                let row: &GroupRow = unsafe { &*ptr };
+                (sid.0, row.scroll_x(), row.max_scroll_x())
+            })
+            .collect();
+        out.sort_by_key(|(sid, _, _)| *sid);
+        out
+    }
+
     pub fn group_row_mut_for_tests(&mut self, strip_id: StripId) -> Option<&mut GroupRow> {
         let &ptr = self.group_row_ptrs.get(&strip_id)?;
         // SAFETY: see field doc on `group_row_ptrs`.
