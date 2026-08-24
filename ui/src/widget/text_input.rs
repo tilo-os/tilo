@@ -3438,6 +3438,48 @@ mod tests {
         assert_eq!(ti.value(), "QAda", "Ctrl+V pastes at the caret");
     }
 
+    /// A field's placeholder has to be readable on the field it sits in
+    /// — including a focused one, whose fill is a different token from
+    /// the resting fill.
+    ///
+    /// The pairing is easy to get wrong precisely because it is two
+    /// tokens that are never chosen together: `text_dim` is picked
+    /// against the resting surface and `bg_active` is picked against
+    /// `text_primary`, and nothing measures the diagonal. A hint nobody
+    /// can read is the same defect as a hint that is not painted, and it
+    /// is worse on a field that opens focused, because that is the only
+    /// state its hint is ever seen in.
+    #[test]
+    fn a_placeholder_is_readable_on_the_field_it_sits_in() {
+        use crate::a11y::contrast_ratio;
+        // WCAG 2.1 AA for body text. A placeholder is prose the user is
+        // meant to read, not decoration.
+        const AA_BODY: f64 = 4.5;
+        for (name, theme) in [
+            ("light", Theme::light()),
+            ("dark", Theme::dark()),
+            ("high-contrast", Theme::high_contrast()),
+        ] {
+            let resting = theme.tokens.colors.surfaces.raised;
+            let focused = theme.bg_active;
+            for (state, bg) in [("resting", resting), ("focused", focused)] {
+                let r = contrast_ratio(theme.text_dim, bg);
+                assert!(
+                    r >= AA_BODY,
+                    "{name}/{state}: placeholder contrast is {r:.2}:1, under \
+                     {AA_BODY}:1 — the hint is on screen and unreadable",
+                );
+            }
+            // And the caret, which is a non-text indicator: 3:1 against
+            // the field it has to be visible in.
+            let caret = contrast_ratio(theme.accent_primary, focused);
+            assert!(
+                caret >= 3.0,
+                "{name}: caret contrast is {caret:.2}:1 on a focused field",
+            );
+        }
+    }
+
     /// The placeholder draw path emits a glyph run when (and only when) it
     /// should be visible — proves the dim hint actually paints.
     #[test]
