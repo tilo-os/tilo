@@ -2008,7 +2008,46 @@ class Recorder:
              "-i", self.narrate, "-ac", "1", "-ar", "48000", wav],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        self._narration_wav = wav
+
+        # Proof it is running, before anybody starts talking.
+        #
+        # ffmpeg exits immediately when the source will not open -- a
+        # headset that has gone to sleep, a `default` pointing at a
+        # device that is no longer there. Announcing the recording
+        # without checking meant a whole take narrated into a process
+        # that had already died, found out at the end when there was
+        # nothing to mux. A take is expensive; this costs a third of a
+        # second.
+        time.sleep(0.35)
+        rc = self._audio.poll()
+        if rc is not None:
+            why = (self._audio.stderr.read() or b"").decode(
+                "utf-8", "replace").strip()
+            self._audio = None
+            raise RuntimeError(
+                f"the microphone did not open, so nothing would be "
+                f"recorded: ffmpeg exited {rc} before capturing anything.\n"
+                f"  source asked for:  {self.narrate!r}\n"
+                f"  ffmpeg said:       {why or '(nothing)'}\n"
+                f"  sources available: {self._pulse_sources()}\n"
+                f"Pass --narrate <source> to pick one, or wake the headset "
+                f"and run again.")
         print(f"  narration              recording from {self.narrate!r}")
+
+    @staticmethod
+    def _pulse_sources() -> str:
+        """What this machine would actually accept, for the error above."""
+        try:
+            out = subprocess.run(["pactl", "list", "short", "sources"],
+                                 capture_output=True, text=True,
+                                 timeout=5).stdout
+        except Exception:  # noqa: BLE001
+            return "(pactl unavailable)"
+        names = [parts[1] for parts in
+                 (ln.split("\t") for ln in out.splitlines())
+                 if len(parts) > 1]
+        return ", ".join(names) or "(none)"
 
     def _stop_narration(self) -> None:
         if not getattr(self, "_audio", None):
@@ -2019,9 +2058,31 @@ class Recorder:
         try:
             self._audio.terminate()
             self._audio.wait(timeout=10)
-        except Exception:
+        except Exception:  # noqa: BLE001
             self._audio.kill()
+        # Drained rather than left sitting in the pipe, so a complaint
+        # from ffmpeg is read by somebody.
+        try:
+            said = (self._audio.stderr.read() or b"").decode(
+                "utf-8", "replace").strip()
+        except Exception:  # noqa: BLE001
+            said = ""
         self._audio = None
+
+        # And say what was captured. A wav that exists but holds nothing
+        # is the same outcome as no wav at all, and the video should not
+        # be the thing that reports it.
+        wav = getattr(self, "_narration_wav", None)
+        size = os.path.getsize(wav) if wav and os.path.exists(wav) else 0
+        # 48kHz mono 16-bit is ~96KB/s, so under a second of audio is a
+        # failure wearing a file's clothes.
+        if size < 96_000:
+            FAILURES.append(
+                f"the narration recorded {size} bytes -- under a second of "
+                f"audio. The film has no voice on it."
+                + (f" ffmpeg said: {said}" if said else ""))
+        else:
+            print(f"  narration              ~{size / 96_000:.0f}s captured")
 
     # -- what actually happened --------------------------------------
 
