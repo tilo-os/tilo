@@ -57,6 +57,7 @@ import contextlib
 import hashlib
 import base64
 import json
+import math
 import os
 import random
 import re
@@ -455,6 +456,13 @@ class Session:
         # agent's whole claim is that it never uses one, and a counter is
         # a mechanical proof of that where a promise is not.
         self.input_ops = 0
+        # Where this session's pointer is, as far as this script knows.
+        # `None` means it has never been moved, which is a real state: a
+        # session nobody has pointed at has no pointer on its screen.
+        # Mirrored here rather than asked for over the wire because the
+        # approach below plans a path and a round-trip per step would be
+        # most of what the path costs.
+        self._pointer: tuple[float, float] | None = None
 
     @property
     def collab_sock(self) -> str:
@@ -785,16 +793,118 @@ class Session:
     # -- synthetic input, continued (all counted) --------------------
 
     def click_at(self, x: float, y: float) -> None:
-        self.input_ops += 1
-        ok(call(self.sock, {"op": "click_at", "x": x, "y": y}))
+        """Click at (x, y) the way a person does: arrive, then press.
+
+        The pointer travels there first and the button goes down where
+        it lands. Not a nicety — a click delivered with no pointer
+        movement in front of it opens a panel and lights up a button
+        with nothing on screen having caused it, and a recording of the
+        session then reads as the machine operating itself rather than
+        as somebody using it.
+
+        The compositor plans the same approach inside its own `click_at`
+        (`test_control::plan_click`), so a harness that sends the op raw
+        still lands its pointer on the target. What it cannot do is
+        *pace* it: every action of one command runs between two frames,
+        so the whole trip happens inside a single painted frame and
+        nothing photographs it. That is why the path is walked from
+        here, one command per step, with the camera free to sample
+        between them.
+        """
+        self._approach(x, y)
+        self._press_and_release()
 
     def click_named(self, name: str) -> dict:
-        self.input_ops += 1
-        return call(self.sock, {"op": "click_named", "name": name})
+        """Click the centre of a named widget, having travelled to it.
+
+        Resolves the rect first so the approach has somewhere to go. A
+        name that does not resolve is handed to the compositor's own
+        `click_named`, which is the authority on that refusal and
+        answers with the `unknown_target` every caller already checks
+        for — and moves no pointer, so a failed lookup never leaves the
+        cursor somewhere nobody aimed it.
+        """
+        rect = self.named_rect(name)
+        if rect is None:
+            self.input_ops += 1
+            return call(self.sock, {"op": "click_named", "name": name})
+        cx, cy = rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0
+        self._approach(cx, cy)
+        self._press_and_release()
+        return {"ok": {"frame": 0}}
+
+    #: Roughly how fast the pointer crosses the screen, in pixels per
+    #: second. A hand throwing a mouse across a 1920px desktop takes
+    #: about a second and a half; this is a little brisker than that,
+    #: because a film has to keep moving and an approach nobody notices
+    #: is one that has done its job.
+    POINTER_SPEED_PX_S = 2200.0
+    #: Shortest and longest an approach may take, whatever the distance.
+    POINTER_TRAVEL_MIN_S = 0.16
+    POINTER_TRAVEL_MAX_S = 0.55
+    #: Wall-clock a step of the path is given. Near the camera's own
+    #: frame time, so consecutive steps land in consecutive frames
+    #: rather than several to a frame.
+    POINTER_STEP_S = 0.055
+    #: How long the pointer rests on a control before the button goes
+    #: down, and how long the button stays down. Both are what a finger
+    #: does, and both have to outlast one captured frame or the press is
+    #: a state the film never sees.
+    POINTER_SETTLE_S = 0.10
+    POINTER_PRESS_S = 0.13
+
+    def _approach(self, x: float, y: float) -> None:
+        """Walk the pointer to (x, y) and let it settle there.
+
+        Eased at both ends — a hand does not start or stop at speed —
+        and paced in wall-clock so the trip is several frames long
+        rather than one. Without a camera there is nobody for it to be
+        visible to, so the pacing is skipped and the pointer is simply
+        put where the click needs it.
+        """
+        here = self._pointer
+        if here is None or RECORDER is None or RECORDER.camera_is_down():
+            self.pointer_move(x, y)
+            if RECORDER is not None and not RECORDER.camera_is_down():
+                self.settle(self.POINTER_SETTLE_S)
+            return
+        x0, y0 = here
+        dx, dy = x - x0, y - y0
+        distance = math.hypot(dx, dy)
+        if distance < 2.0:
+            self.pointer_move(x, y)
+            return
+        seconds = min(self.POINTER_TRAVEL_MAX_S,
+                      max(self.POINTER_TRAVEL_MIN_S,
+                          distance / self.POINTER_SPEED_PX_S))
+        steps = max(3, min(12, round(seconds / self.POINTER_STEP_S)))
+        for i in range(1, steps + 1):
+            t = i / steps
+            eased = t * t * (3.0 - 2.0 * t)
+            self.pointer_move(x0 + dx * eased, y0 + dy * eased)
+            time.sleep(seconds / steps)
+        # Arrived, and visibly stopped, before anything is pressed.
+        self.settle(self.POINTER_SETTLE_S)
+
+    def _press_and_release(self) -> None:
+        """Press and release where the pointer is standing.
+
+        Two commands rather than one so the button spends real time
+        down: the compositor draws a pressed pointer differently, and a
+        press that begins and ends inside one command is a state no
+        frame can contain. The events reaching the shell are the same
+        ones `click_at` plans — motion, press, release, through
+        `route_input` — spread over wall-clock instead of a frame.
+        """
+        self.pointer_button(True)
+        if RECORDER is not None and not RECORDER.camera_is_down():
+            self.settle(self.POINTER_PRESS_S)
+        self.pointer_button(False)
 
     def pointer_move(self, x: float, y: float) -> None:
         self.input_ops += 1
         ok(call(self.sock, {"op": "pointer_move", "x": x, "y": y}))
+        self._pointer = (x, y)
 
     def pointer_button(self, pressed: bool) -> None:
         """Press or release the left button where the pointer already is.
@@ -885,30 +995,67 @@ class Session:
                 self.key("Escape")
                 return None
             self.key("Enter")
-        deadline = time.time() + timeout
+        began = time.time()
+        deadline = began + timeout
+        first_frame: float | None = None
+        found: dict | None = None
+        widened: set = set()
         while time.time() < deadline:
             for f in self.foreign_frames():
-                if f.get("surface_id") not in before and f.get("frame_seq", 0) > 0:
-                    # The strip's share, re-applied the instant the group
-                    # exists.
-                    #
-                    # `set_group_widths` walks the groups that are there
-                    # when it is called — so settling it once before
-                    # filming, on an empty desktop, set nothing at all,
-                    # and every group opened afterwards took the default
-                    # three-quarters. Two of those overflow the strip,
-                    # which is what put a word processor 514px past the
-                    # right edge in a shot that was supposed to hold two
-                    # windows.
-                    #
-                    # Here rather than in the beats: the group has just
-                    # been created and its window is still behind the
-                    # opening card, so the width lands before anything
-                    # is on screen to see it change. A beat that
-                    # remembers to do this is a beat that will forget.
+                if f.get("surface_id") in before:
+                    continue
+                # The strip's share, re-applied the instant the group
+                # exists — which is here, before the client has been
+                # configured into its final tab and long before it has
+                # answered with a buffer.
+                #
+                # `set_group_widths` walks the groups that are there when
+                # it is called — so settling it once before filming, on
+                # an empty desktop, set nothing at all, and every group
+                # opened afterwards took the default three-quarters. Two
+                # of those overflow the strip, which is what put a word
+                # processor 514px past the right edge in a shot that was
+                # supposed to hold two windows.
+                #
+                # Applied on sight of the group rather than on its first
+                # frame, and that ordering is the point: a width change
+                # after the client has committed a buffer for the old
+                # tab invalidates it, and the window then holds its
+                # opening card for a second round trip that nobody asked
+                # for. Idempotent, so re-applying it while waiting costs
+                # a message and settles the question of which buffer the
+                # client is working towards.
+                if f.get("surface_id") not in widened:
+                    widened.add(f.get("surface_id"))
                     self.set_group_width(FILM_GROUP_SHARE)
-                    return f
-            time.sleep(0.75)
+                if f.get("frame_seq", 0) > 0 and first_frame is None:
+                    first_frame = time.time()
+                    found = f
+                # `presented` is the compositor's own answer to "is this
+                # window on screen", and it is a different question from
+                # "has the client drawn anything": the first buffer a
+                # client commits is the size it picked before it was
+                # configured, and until one arrives that answers the tab
+                # the strip holds the window's place with a card. A
+                # launch that returned on the first frame reported an app
+                # as open while the person was still looking at a
+                # spinner, which is the gap this closes.
+                if f.get("presented"):
+                    shown = time.time()
+                    if first_frame is None:
+                        first_frame = shown
+                        found = f
+                    note(f"{self.name}: {app_id} drew its first frame "
+                         f"{first_frame - began:.1f}s after it was asked "
+                         f"for, and was on screen at "
+                         f"{shown - began:.1f}s")
+                    return found
+            time.sleep(0.12)
+        if found is not None:
+            note(f"{self.name}: {app_id} drew a frame "
+                 f"{first_frame - began:.1f}s in but never filled its tab; "
+                 f"reporting it as opened anyway")
+            return found
         return None
 
     # -- the action API (semantic; no input, no pixels) --------------
@@ -3614,6 +3761,18 @@ SESSIONS: list[Session] = []
 VIEWPORT: tuple[int, int] = (0, 0)
 
 
+#: How long the film sits on the empty desktop before anything is opened
+#: on it.
+#:
+#: The shot is deliberate: the strip, the wheel and the bar have to read
+#: as themselves once, before a window covers half of them. It is also
+#: the only part of the opening this script controls — what follows is
+#: an application starting, which takes what it takes — so it is held on
+#: purpose and kept short, rather than arrived at by accident out of
+#: whatever bookkeeping happened to run before the launch.
+EMPTY_DESKTOP_HOLD_S = 0.8
+
+
 def beat_one(quinten: Session, shots: str) -> tuple[dict, dict | None]:
     banner("1.  an empty desktop, and Files opened on it")
     # The host's screen. A first boot really is empty here — one
@@ -3621,18 +3780,17 @@ def beat_one(quinten: Session, shots: str) -> tuple[dict, dict | None]:
     # rather than asserted about a backdrop.
     cut("quinten")
 
-    ids = {s.name: peer_id_of(s) for s in SESSIONS}
-    for s in SESSIONS:
-        note(f"{s.name:8} pid {s.proc.pid:<8} user {s.user:<8} peer {ids[s.name]}")
-    claim("three separate processes", len({s.proc.pid for s in SESSIONS}), 3)
-    claim("three separate libp2p identities", len(set(ids.values())), 3)
-
+    # Only what has to be true *before* the launch, because everything
+    # asked here is a round trip into a compositor the camera is already
+    # most of the way through, and the answer is seconds of empty desktop
+    # in front of the first window. The rest of this run's bookkeeping —
+    # three processes, three identities, who owns the room — is as true
+    # after the launch as before it, and is printed there instead.
     host_ws = quinten.active_workspace()
-    note(f"quinten's room {host_ws['room']}  named {host_ws['name']!r}")
-    claim("quinten owns his room", host_ws["owner"], quinten.user)
     claim("his desktop starts with no windows on it",
           len(quinten.tabs_here()), 0)
     quinten.snapshot(os.path.join(shots, "01-empty-desktop.png"))
+    read_hold(EMPTY_DESKTOP_HOLD_S)
 
     step("he opens Files")
     # By its own id through the applications provider — the registry that
@@ -3646,6 +3804,25 @@ def beat_one(quinten: Session, shots: str) -> tuple[dict, dict | None]:
     tabs = quinten.tabs_here()
     claim("and it is the only window on his desktop", len(tabs), 1)
     quinten.snapshot(os.path.join(shots, "02-files.png"))
+
+    # What this run is made of, said once — and off camera, because none
+    # of it has a picture. Three process ids and three libp2p identities
+    # are read out of three sessions, and every one of those reads is a
+    # round trip into a compositor the camera is already most of the way
+    # through: filmed, they are a window sitting still while a script
+    # does bookkeeping, which is exactly the dead air at the front of
+    # this film that nothing on screen accounted for.
+    with off_camera("the run's own bookkeeping - three processes, three "
+                    "identities, who owns the room - which is a transcript "
+                    "fact and not a shot"):
+        ids = {s.name: peer_id_of(s) for s in SESSIONS}
+        for s in SESSIONS:
+            note(f"{s.name:8} pid {s.proc.pid:<8} user {s.user:<8} peer "
+                 f"{ids[s.name]}")
+        claim("three separate processes", len({s.proc.pid for s in SESSIONS}), 3)
+        claim("three separate libp2p identities", len(set(ids.values())), 3)
+        note(f"quinten's room {host_ws['room']}  named {host_ws['name']!r}")
+        claim("quinten owns his room", host_ws["owner"], quinten.user)
     # The surface travels with it: beat 8 drags a file *out of this
     # window*, and by then a second client is on screen announcing the
     # same wayland app-id. The surface the launch saw paint is the only
