@@ -323,6 +323,21 @@ pub struct App {
     /// disables outbound pointer broadcast — useful for headless tests
     /// and the `quick-ui` examples, which have no meaningful scope.
     presence_broadcast_scope: Option<PresenceKey>,
+    /// The coordinate space this process's own pointer is measured in.
+    ///
+    /// `None` means the ordinary case: a window inside a desktop, whose
+    /// winit coordinates are its own content's
+    /// ([`PresenceKey::local_surface_pointer`]). The shell sets it to
+    /// [`PointerSpace::Desktop`] for the one surface where that is not
+    /// true — its own chrome, whose window *is* the desktop, so its
+    /// coordinates are the ones every other surface's position has to be
+    /// resolved against.
+    ///
+    /// Set rather than guessed: no app can work out which of the two it
+    /// is, and a process that guesses wrong publishes a position in a
+    /// space it is not in — which is unfalsifiable from the outside,
+    /// because a pointer in the wrong place looks like a pointer.
+    pointer_space: Option<crate::presence::PointerSpace>,
     /// The peer we're currently "following", if any — set by clicking a
     /// peer's presence indicator (their off-screen mist, in particular).
     /// [`App::followed_peer_target`] resolves this to their live pointer so
@@ -550,6 +565,7 @@ impl App {
             },
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
+            pointer_space: None,
             followed_peer: None,
             last_pointer_broadcast: None,
             last_focus_presence: None,
@@ -1341,6 +1357,22 @@ impl App {
     /// resolving the active workspace so remote peers see the cursor
     /// attributed to the right scope. Passing `None` disables outbound
     /// pointer broadcast.
+    /// Declare the coordinate space this process's pointer is
+    /// measured in. See [`Self::pointer_space`] — the shell calls
+    /// this for its own chrome, whose window is the desktop.
+    pub fn set_pointer_space(&mut self, space: crate::presence::PointerSpace) {
+        self.pointer_space = Some(space);
+    }
+
+    /// The key this process publishes its own pointer under: whatever
+    /// space it was told it is in, or its own surface's content.
+    fn local_pointer_key(&self) -> PresenceKey {
+        match self.pointer_space.clone() {
+            Some(space) => PresenceKey::Pointer { space },
+            None => PresenceKey::local_surface_pointer(),
+        }
+    }
+
     pub fn set_presence_broadcast_scope(&mut self, key: Option<PresenceKey>) {
         self.presence_broadcast_scope = key.clone();
         // Reset the throttle so a new scope's first pointer move fires
@@ -3968,8 +4000,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                                 Duration::from_millis(POINTER_BROADCAST_MIN_GAP_MS),
                             ) {
                                 app.last_pointer_broadcast = Some(now);
+                                let where_it_is = app.local_pointer_key();
                                 app.broadcast_presence(
-                                    PresenceKey::local_surface_pointer(),
+                                    where_it_is,
                                     PresencePayload::Pointer {
                                         x: position.x as f32,
                                         y: position.y as f32,
@@ -3978,10 +4011,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             }
                         }
                         WindowEvent::CursorLeft { .. } => {
-                            app.broadcast_presence(
-                                PresenceKey::local_surface_pointer(),
-                                PresencePayload::Left,
-                            );
+                            let where_it_was = app.local_pointer_key();
+                            app.broadcast_presence(where_it_was, PresencePayload::Left);
                             app.last_pointer_broadcast = None;
                         }
                         _ => {}

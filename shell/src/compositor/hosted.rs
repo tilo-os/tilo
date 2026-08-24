@@ -291,7 +291,11 @@ pub fn run_with_full_options(opts: HostedOptions) {
         .find(|w| w.id == tree_snapshot.active)
         .map(|w| w.room.to_string());
     if let Some(room) = active_room {
-        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: room }));
+        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: room.clone() }));
+        // This App's window is the desktop, so its pointer is already
+        // in desktop coordinates — the one surface for which that is
+        // true, and the reason the space is told rather than assumed.
+        app.set_pointer_space(ui::presence::PointerSpace::Desktop { room });
     } else {
         tracing::warn!(
             "presence: the active workspace has no room; this session's cursor \

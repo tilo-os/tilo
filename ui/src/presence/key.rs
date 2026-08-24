@@ -336,6 +336,63 @@ mod view_key_tests {
         unsafe { std::env::remove_var("QOS_WORKSPACE_ID") };
     }
 
+    /// The space is what a pointer key is *for*, and it has to
+    /// survive the encoding the wire uses — the whole failure was a
+    /// space that existed at one end and not the other.
+    #[test]
+    fn a_pointer_key_carries_its_space_across_the_wire_encoding() {
+        for key in [
+            PresenceKey::desktop_pointer("room-7"),
+            PresenceKey::surface_pointer("dev.qos.word-processor"),
+        ] {
+            let bytes = postcard::to_stdvec(&key).expect("a pointer key encodes");
+            let back: PresenceKey =
+                postcard::from_bytes(&bytes).expect("and decodes to the same key");
+            assert_eq!(back, key, "the space must survive the round trip");
+            assert!(
+                back.pointer_space().is_some(),
+                "a pointer key with no readable space is the bug this variant exists to stop",
+            );
+        }
+    }
+
+    /// Two surfaces are two spaces. A file manager cannot answer for a
+    /// position measured in a word processor, and this is where that
+    /// is decided — before anything has been drawn, from the key
+    /// alone.
+    #[test]
+    fn two_surfaces_are_two_spaces() {
+        let wp = PresenceKey::surface_pointer("dev.qos.word-processor");
+        let fm = PresenceKey::surface_pointer("dev.qos.files");
+        assert_ne!(wp.pointer_space(), fm.pointer_space());
+        assert!(!wp.scopes_a_desktop_pointer());
+        assert!(!fm.scopes_a_desktop_pointer());
+    }
+
+    /// The desktop is the space that spans windows, and the two older
+    /// spellings of it still mean it: a session's room-scoped
+    /// republish, and the tag the keyless capnp cursor path was
+    /// re-keyed to. Reading them here rather than at each call site is
+    /// what stopped the three routes disagreeing.
+    #[test]
+    fn every_spelling_of_the_desktop_reads_as_the_desktop() {
+        assert!(PresenceKey::desktop_pointer("r").scopes_a_desktop_pointer());
+        assert!(PresenceKey::Workspace { id: "r".into() }.scopes_a_desktop_pointer());
+        assert!(PresenceKey::pointer_default().scopes_a_desktop_pointer());
+        // A position inside a document is not a position on a screen.
+        assert!(
+            !PresenceKey::Widget {
+                path: vec![PathSegment::Index(0)]
+            }
+            .scopes_a_desktop_pointer()
+        );
+        assert_eq!(
+            PresenceKey::Tab { id: "t".into() }.pointer_space(),
+            None,
+            "a tab is an object, not a coordinate space",
+        );
+    }
+
     #[test]
     fn as_view_is_none_for_other_key_variants() {
         assert!(PresenceKey::Tab { id: "t".into() }.as_view().is_none());
