@@ -150,6 +150,26 @@ impl DestinationOption {
     }
 }
 
+/// The room's own line in the destination selector.
+///
+/// Its own message rather than the channel message with a name plugged into
+/// it. An app composing a remark cannot read chat's channel list — it is in
+/// chat's document, in another process — so it does not know what the room's
+/// conversation is *called*, and a selector that made a name up would be
+/// naming a channel that might not be the one the message lands in.
+///
+/// What it can say truthfully is where the message goes: to the room, where
+/// everybody in it can read it. That is also the fact this control exists to
+/// state, so saying it plainly costs nothing.
+pub fn room_destination() -> DestinationOption {
+    ensure_strings();
+    let label = crate::i18n::I18nManager::lookup("remark_destination_room", None);
+    DestinationOption::new(
+        Destination::channel(qos_reference::ROOM_CONVERSATION, label.clone()),
+        label,
+    )
+}
+
 /// The compose field's placeholder, localised.
 pub fn placeholder_text() -> String {
     ensure_strings();
