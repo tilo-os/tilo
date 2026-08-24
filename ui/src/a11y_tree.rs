@@ -54,7 +54,7 @@ use vello::kurbo::Rect;
 
 use crate::a11y::{AccessNode, AccessState, Action, Role};
 use crate::widget::Widget;
-use qos_actions::{ActionInput, ActionSpec, EncodedAction, Resource};
+use qos_actions::{ActionInput, ActionSpec, Collects, EncodedAction, Resource};
 
 /// Stable identity of a semantic node, preserved across [`refresh`](SemanticTree::refresh)
 /// as long as the backing widget or resource recurs.
@@ -112,6 +112,13 @@ pub enum SemanticActionKind {
         prompt: String,
         /// Placeholder text for the argument field.
         placeholder: String,
+        /// What that argument names — words somebody says, or the address of
+        /// content that already exists. Carried rather than dropped because
+        /// this tree's whole audience is callers with no screen, and that is
+        /// the distinction [`Collects`] exists to make for them: offered a
+        /// text field for a [`Collects::Content`] argument, a client can only
+        /// type something that was never going to resolve.
+        collects: Collects,
     },
 }
 
@@ -575,12 +582,13 @@ impl Build<'_> {
     fn resource_action(&mut self, node_id: &SemanticId, spec: &ActionSpec) -> SemanticAction {
         let kind = match &spec.input {
             ActionInput::Immediate(enc) => SemanticActionKind::App(enc.clone()),
-            ActionInput::Prompted { prompt, placeholder, build } => {
+            ActionInput::Prompted { prompt, placeholder, collects, build } => {
                 self.prompted
                     .insert((node_id.clone(), spec.id.clone()), build.clone());
                 SemanticActionKind::AppPrompted {
                     prompt: prompt.clone(),
                     placeholder: placeholder.clone(),
+                    collects: *collects,
                 }
             }
         };
