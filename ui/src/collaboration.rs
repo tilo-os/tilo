@@ -1542,6 +1542,33 @@ async fn drive_shovel(
                     });
                 }
 
+                // subscribeBlobs(): content arriving for this channel —
+                // answers to a `wantBlob`, and content a peer offered the
+                // room while a document here referenced it. Opened at
+                // join rather than on the first miss, because content can
+                // land before the app that wants it has asked: an image
+                // that was in the document when it opened is exactly that
+                // case, and it is the one that matters most.
+                if let Ok(bs) = ch.subscribe_blobs().await {
+                    let itx = inbound_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        loop {
+                            let Ok(evt) = bs.read().await else {
+                                break;
+                            };
+                            if itx
+                                .send(CollabEvent::BlobArrived {
+                                    hash: evt.hash,
+                                    bytes: evt.bytes,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    });
+                }
+
                 // subscribeContext(): forward roster / permission snapshots.
                 if let Ok(ctx_stream) = ch.subscribe_context().await {
                     let itx = inbound_tx.clone();
@@ -1684,22 +1711,37 @@ async fn drive_shovel(
                     }
                 }
             }
-            // The capnp channel surface has no content verb. Reporting is
-            // the whole obligation here: an image whose bytes cannot cross
-            // must not look, from the log, like an image nobody added.
+            // Document content. The reference travelled as an op; these
+            // two carry the bytes behind it, which is the only way they
+            // leave this sandbox — an app's blob store is inside its
+            // private `HOME`, so the shell cannot go and read it.
             CollabRequest::OfferBlob { hash, bytes } => {
-                tracing::warn!(
-                    hash = %hash, bytes = bytes.len(),
-                    "collab: this transport cannot carry document content; peers will \
-                     show a placeholder for the image using it",
-                );
+                let Some(ch) = channel.as_ref() else {
+                    tracing::warn!(
+                        hash = %hash, bytes = bytes.len(),
+                        "collab: content stored before this app joined a channel; peers \
+                         will show a placeholder for the image using it until it is \
+                         asked for",
+                    );
+                    continue;
+                };
+                if let Err(e) = ch.offer_blob(&hash, &bytes).await {
+                    tracing::warn!(
+                        hash = %hash, bytes = bytes.len(), error = ?e,
+                        "collab: handing content to the shell failed; peers will show a \
+                         placeholder for the image using it",
+                    );
+                }
             }
             CollabRequest::WantBlob { hash } => {
-                tracing::warn!(
-                    hash = %hash,
-                    "collab: this transport cannot fetch document content; the image \
-                     using it stays a placeholder",
-                );
+                let Some(ch) = channel.as_ref() else { continue };
+                if let Err(e) = ch.want_blob(&hash).await {
+                    tracing::warn!(
+                        hash = %hash, error = ?e,
+                        "collab: asking for content this document references failed; the \
+                         image using it stays a placeholder",
+                    );
+                }
             }
         }
     }
@@ -2182,8 +2224,9 @@ mod tests {
 
     use runtime_collab::PresencePayload as SdkPayload;
     use runtime_collab::raw::{
-        channel_context, channel_handle, collab_service, context_stream, presence_event,
-        presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
+        blob_stream, channel_context, channel_handle, collab_service, context_stream,
+        presence_event, presence_handle, presence_payload, presence_stream, scrollback_batch,
+        stream,
     };
 
     // --- shared capture / seed state -------------------------------------
@@ -2200,6 +2243,8 @@ mod tests {
         arrived: Vec<Vec<u8>>,
         left: Vec<Vec<u8>>,
         scrollback_requests: Vec<(u64, u32)>,
+        offered_blobs: Vec<(String, Vec<u8>)>,
+        wanted_blobs: Vec<String>,
     }
 
     /// Shared between the test-thread's tokio LocalSet and the caller.
@@ -2405,6 +2450,30 @@ mod tests {
         }
     }
 
+    // --- fake blob stream -------------------------------------------------
+
+    struct FakeBlobStream {
+        backlog: Rc<RefCell<Vec<(String, Vec<u8>)>>>,
+    }
+
+    impl blob_stream::Server for FakeBlobStream {
+        fn read(
+            self: Rc<Self>,
+            _params: blob_stream::ReadParams,
+            mut results: blob_stream::ReadResults,
+        ) -> Promise<(), capnp::Error> {
+            let mut backlog = self.backlog.borrow_mut();
+            if backlog.is_empty() {
+                return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
+            }
+            let (hash, bytes) = backlog.remove(0);
+            let mut r = results.get();
+            r.set_hash(&hash);
+            r.set_bytes(&bytes);
+            Promise::ok(())
+        }
+    }
+
     // --- fake context stream ---------------------------------------------
 
     struct FakeContextStream {
@@ -2452,6 +2521,7 @@ mod tests {
         presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
         context_backlog: Rc<RefCell<Vec<SeedContext>>>,
         scrollback_response: Rc<RefCell<Option<SeedScrollback>>>,
+        blob_backlog: Rc<RefCell<Vec<(String, Vec<u8>)>>>,
     }
 
     impl channel_handle::Server for FakeChannel {
@@ -2490,6 +2560,49 @@ mod tests {
                 presence_backlog: self.presence_backlog.clone(),
             });
             results.get().set_handle(client);
+            Promise::ok(())
+        }
+
+        fn offer_blob(
+            self: Rc<Self>,
+            params: channel_handle::OfferBlobParams,
+            _results: channel_handle::OfferBlobResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(r) = params.get() else { return Promise::ok(()) };
+            let hash = r
+                .get_hash()
+                .ok()
+                .and_then(|t| t.to_str().ok().map(|s| s.to_owned()))
+                .unwrap_or_default();
+            let bytes = r.get_bytes().map(|b| b.to_vec()).unwrap_or_default();
+            self.captures.lock().unwrap().offered_blobs.push((hash, bytes));
+            Promise::ok(())
+        }
+
+        fn want_blob(
+            self: Rc<Self>,
+            params: channel_handle::WantBlobParams,
+            _results: channel_handle::WantBlobResults,
+        ) -> Promise<(), capnp::Error> {
+            let hash = params
+                .get()
+                .ok()
+                .and_then(|r| r.get_hash().ok())
+                .and_then(|t| t.to_str().ok().map(|s| s.to_owned()))
+                .unwrap_or_default();
+            self.captures.lock().unwrap().wanted_blobs.push(hash);
+            Promise::ok(())
+        }
+
+        fn subscribe_blobs(
+            self: Rc<Self>,
+            _params: channel_handle::SubscribeBlobsParams,
+            mut results: channel_handle::SubscribeBlobsResults,
+        ) -> Promise<(), capnp::Error> {
+            let client: blob_stream::Client = capnp_rpc::new_client(FakeBlobStream {
+                backlog: self.blob_backlog.clone(),
+            });
+            results.get().set_stream(client);
             Promise::ok(())
         }
 
@@ -2576,6 +2689,7 @@ mod tests {
         presence_backlog: Vec<SeedPresence>,
         context_backlog: Vec<SeedContext>,
         scrollback_response: Option<SeedScrollback>,
+        blob_backlog: Vec<(String, Vec<u8>)>,
     }
 
     impl collab_service::Server for FakeBroker {
@@ -2605,6 +2719,7 @@ mod tests {
                 presence_backlog: Rc::new(RefCell::new(self.presence_backlog.clone())),
                 context_backlog: Rc::new(RefCell::new(self.context_backlog.clone())),
                 scrollback_response: Rc::new(RefCell::new(self.scrollback_response.clone())),
+                blob_backlog: Rc::new(RefCell::new(self.blob_backlog.clone())),
             };
             let client: channel_handle::Client = capnp_rpc::new_client(chan);
             results.get().set_handle(client);
@@ -2751,6 +2866,7 @@ mod tests {
             presence_backlog: vec![],
             context_backlog: vec![],
             scrollback_response: None,
+            blob_backlog: vec![],
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
 
@@ -2826,6 +2942,7 @@ mod tests {
             presence_backlog: vec![],
             context_backlog: vec![],
             scrollback_response: None,
+            blob_backlog: vec![],
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let cluster = Uuid::new_v4();
@@ -2853,6 +2970,111 @@ mod tests {
         assert_eq!(joined[0].1.len(), 32, "Ed25519 pubkey is 32 bytes");
     }
 
+    /// Content an app stores reaches its shell, and content the shell sends
+    /// down reaches the app's store.
+    ///
+    /// This is the door a photograph in a shared document has to go through,
+    /// and the one it did not: on the transport a real session uses, the two
+    /// content requests were dropped here with a log line — which nothing in
+    /// an app is subscribed to — so the bytes stayed in the process that made
+    /// them. Every other machine in the room held the reference, could not
+    /// obtain the content behind it, and drew a placeholder that never
+    /// resolved. The machine the image was added on did too: its own shell
+    /// was never handed the bytes either.
+    #[test]
+    fn document_content_crosses_the_app_to_shell_door_in_both_directions() {
+        let bytes = vec![0xA5u8; 4096];
+        let hash = qdoc::blobstore::hash_bytes(&bytes);
+
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+            // Content the shell has for this app, delivered on the
+            // subscription the manager opens at join.
+            blob_backlog: vec![(hash.clone(), bytes.clone())],
+        };
+        let (fd, captures, _th) = stand_up_fake_broker(broker);
+        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::new_v4());
+        assert!(
+            wait_until(
+                || !captures.lock().unwrap().joined.is_empty(),
+                Duration::from_secs(2),
+            ),
+            "join_channel must be observed before content can go anywhere",
+        );
+
+        // Every poll's events are kept, because `poll` is the only drain:
+        // an event dropped by a poll made while waiting for something else
+        // is gone, and the app would never have seen it either.
+        let mut seen: Vec<CollabEvent> = Vec::new();
+        let mut pump = |mgr: &mut CollaborationManager, seen: &mut Vec<CollabEvent>| {
+            seen.extend(mgr.poll());
+        };
+
+        // Outbound. `put` is what an app calls, through `qdoc`'s `put_blob`;
+        // the transport this manager installed turns it into a request and
+        // `poll` drains it. No call site in any app mentions either.
+        let stored = qdoc::blobstore::put(&bytes);
+        assert_eq!(stored, hash, "content is addressed by its own hash");
+
+        // A read that misses asks, over the same door.
+        let absent = qdoc::blobstore::hash_bytes(b"content this process does not have");
+        assert!(qdoc::blobstore::get(&absent).is_none());
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            pump(&mut mgr, &mut seen);
+            let c = captures.lock().unwrap();
+            let out_done = !c.offered_blobs.is_empty() && c.wanted_blobs.iter().any(|h| h == &absent);
+            drop(c);
+            let in_done = seen
+                .iter()
+                .any(|e| matches!(e, CollabEvent::BlobArrived { hash: h, .. } if h == &hash));
+            if (out_done && in_done) || Instant::now() > deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let c = captures.lock().unwrap();
+        assert!(
+            !c.offered_blobs.is_empty(),
+            "content an app stored never reached its shell, so no peer can ever be sent it",
+        );
+        assert_eq!(
+            c.offered_blobs[0],
+            (hash.clone(), bytes.clone()),
+            "the shell was handed something other than the content that was stored",
+        );
+        assert!(
+            c.wanted_blobs.iter().any(|h| h == &absent),
+            "a document referencing content this app lacks never asked for it",
+        );
+        drop(c);
+
+        // Inbound. The subscription opened at join carries the seeded content
+        // down, and `poll` puts it in this process's store before the caller
+        // sees the event — so the next frame a widget draws finds the picture
+        // where it looks for it.
+        let arrived = seen.iter().find_map(|e| match e {
+            CollabEvent::BlobArrived { hash: h, bytes: b } if h == &hash => Some(b.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            arrived.as_deref(),
+            Some(bytes.as_slice()),
+            "content the shell sent down never reached the app, so its image stays a placeholder",
+        );
+        assert_eq!(
+            qdoc::blobstore::store().get(&hash).as_deref(),
+            Some(bytes.as_slice()),
+            "arrived content was not put where a widget reads it",
+        );
+    }
+
     #[test]
     fn hello_joins_channel_and_send_forwards_signed_op() {
         let broker = FakeBroker {
@@ -2861,6 +3083,7 @@ mod tests {
             presence_backlog: vec![],
             context_backlog: vec![],
             scrollback_response: None,
+            blob_backlog: vec![],
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let cluster = Uuid::new_v4();
@@ -2917,6 +3140,7 @@ mod tests {
             presence_backlog: vec![],
             context_backlog: vec![],
             scrollback_response: None,
+            blob_backlog: vec![],
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
@@ -2952,6 +3176,7 @@ mod tests {
             presence_backlog: vec![],
             context_backlog: vec![],
             scrollback_response: None,
+            blob_backlog: vec![],
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
@@ -3029,6 +3254,7 @@ mod tests {
             presence_backlog: vec![],
             context_backlog: vec![],
             scrollback_response: None,
+            blob_backlog: vec![],
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
@@ -3063,6 +3289,7 @@ mod tests {
                 permissions: vec!["edit".to_owned(), "share".to_owned()],
             }],
             scrollback_response: None,
+            blob_backlog: vec![],
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
@@ -3126,6 +3353,7 @@ mod tests {
             presence_backlog,
             context_backlog: vec![],
             scrollback_response: None,
+            blob_backlog: vec![],
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
@@ -3188,6 +3416,7 @@ mod tests {
             presence_backlog: vec![],
             context_backlog: vec![],
             scrollback_response: Some(seed),
+            blob_backlog: vec![],
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());

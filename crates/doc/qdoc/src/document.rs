@@ -152,6 +152,23 @@ impl Document {
         crate::model::blob(&self.doc, &self.c, hash)
     }
 
+    /// Where the content behind a reference has got to: here, on its way, or
+    /// not coming.
+    ///
+    /// [`Self::blob`] answers "can I draw this now"; this answers "and if not,
+    /// why not". A renderer needs both — without the second it draws the same
+    /// grey box for a transfer in flight and for one that failed, and a reader
+    /// has no way to tell a slow link from a lost picture.
+    pub fn blob_state(&self, hash: &str) -> crate::blobstore::BlobState {
+        // Through `blob` rather than the store directly, so a document that
+        // still carries content in the legacy inline form reports `Resolved`
+        // for it instead of claiming it is missing.
+        if crate::model::blob(&self.doc, &self.c, hash).is_some() {
+            return crate::blobstore::BlobState::Resolved;
+        }
+        crate::blobstore::state(hash)
+    }
+
     /// Set a document property (`title`/`author`/`subject`/`keywords`/`created`/
     /// `modified`/`generator`). Round-trips through `.odt`/`.docx`.
     pub fn set_doc_prop(&mut self, name: &str, value: &str) {

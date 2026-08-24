@@ -121,10 +121,17 @@ fn real_socket_fans_out_incremental_and_presence() {
                         payload,
                     }
                 }
-                // Signed-op sync + scrollback fetch aren't part of this
-                // two-peer plaintext scenario — swallow them like `Hello`.
+                // Content offered by one peer reaches the other as content
+                // that arrived, which is what the real broker does with it.
+                CollabRequest::OfferBlob { hash, bytes } => {
+                    CollabEvent::BlobArrived { hash, bytes }
+                }
+                // Signed-op sync, scrollback fetch and content requests
+                // aren't part of this two-peer plaintext scenario — swallow
+                // them like `Hello`.
                 CollabRequest::SignedSyncIncremental { .. }
-                | CollabRequest::FetchScrollback { .. } => continue,
+                | CollabRequest::FetchScrollback { .. }
+                | CollabRequest::WantBlob { .. } => continue,
             };
 
             let bytes = match serde_json::to_vec(&event) {

@@ -89,6 +89,37 @@ interface ChannelHandle {
   # forced.
   fetchScrollbackFor @7 (artifactId :Data, beforeSeq :UInt64, max :UInt32)
       -> (batch :ScrollbackBatch);
+
+  # Hand the broker content this app has just stored.
+  #
+  # A document holds a *reference* to its binaries and never the bytes:
+  # inlining a photograph made one Automerge change larger than the peer
+  # transport would carry, and a dropped change freezes every replica
+  # downstream of it. So the reference travels as an op and the content
+  # travels here.
+  #
+  # This method is the only way bytes leave an app. Apps are sandboxed
+  # with a private HOME and XDG_CACHE_HOME, deliberately, so there is no
+  # directory an app and its shell can both read and there must not be
+  # one. Without a content verb on this interface the shell held the
+  # reference its own app had just published and none of the content
+  # behind it, and every machine in the room — including the one the
+  # image was added on — drew a placeholder that never resolved.
+  offerBlob @8 (hash :Text, bytes :Data) -> ();
+
+  # Ask for content a document here references and this app lacks.
+  #
+  # The broker answers from this machine's store when it already holds
+  # the content, and otherwise asks the room. Either way the answer
+  # arrives on `subscribeBlobs`, never as this call's return: content
+  # may take several round trips over a slow link, and an app blocking
+  # a frame on it would stall its own compositor.
+  wantBlob @9 (hash :Text) -> ();
+
+  # Subscribe to content arriving for this channel — answers to
+  # `wantBlob`, and content a peer offered the room while a document
+  # here referenced it.
+  subscribeBlobs @10 () -> (stream :BlobStream);
 }
 
 interface Stream {
@@ -183,6 +214,19 @@ interface ContextStream {
   # Pull the next channel-context snapshot. Promise resolves when
   # the broker's roster / permission view changes.
   read @0 () -> (ctx :ChannelContext);
+}
+
+interface BlobStream {
+  # Pull the next piece of arrived content. Promise resolves when the
+  # broker has content for this channel.
+  #
+  # `hash` is the blake3 hex the content is addressed by in every store
+  # on every machine. A reader MUST verify the bytes against it before
+  # storing them: the key *is* the content, so bytes that hash to
+  # something else are not the content that was asked for, and taking
+  # them on trust would let one peer poison every replica that later
+  # reads that hash.
+  read @0 () -> (hash :Text, bytes :Data);
 }
 
 # Presence update as delivered on `PresenceStream`. `userId` is the

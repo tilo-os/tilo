@@ -44,6 +44,7 @@ pub use collab_capnp::collab_service::Client as CollabServiceClient;
 pub use collab_capnp::context_stream::Client as ContextStreamClient;
 pub use collab_capnp::cursor_stream::Client as CursorStreamClient;
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
+pub use collab_capnp::blob_stream::Client as BlobStreamClient;
 pub use collab_capnp::stream::Client as StreamClient;
 
 /// Try to dial the qOS collab broker via the launcher-supplied
@@ -165,6 +166,47 @@ impl ChannelHandle {
         let reply = req.send().promise.await?;
         let stream = reply.get()?.get_stream()?;
         Ok(ContextStream { inner: Rc::new(stream) })
+    }
+
+    /// Hand the broker content this app has just stored.
+    ///
+    /// A document holds a reference to its binaries and never the
+    /// bytes, so this is the only way the content behind a reference
+    /// leaves the process that produced it. An app's blob store lives
+    /// inside its sandbox — every app gets a private `HOME` and
+    /// `XDG_CACHE_HOME` — so the shell cannot go and read it, and
+    /// there must not be a directory where it could.
+    pub async fn offer_blob(&self, hash: &str, bytes: &[u8]) -> Result<(), NotAvailable> {
+        let mut req = self.inner.offer_blob_request();
+        {
+            let mut b = req.get();
+            b.set_hash(hash);
+            b.set_bytes(bytes);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Ask for content a document here references and this app lacks.
+    ///
+    /// Returns as soon as the broker has the request, not when the
+    /// content lands: the answer arrives on [`Self::subscribe_blobs`].
+    /// A caller that blocked on the bytes would be blocking a frame on
+    /// a transfer that may take several round trips.
+    pub async fn want_blob(&self, hash: &str) -> Result<(), NotAvailable> {
+        let mut req = self.inner.want_blob_request();
+        req.get().set_hash(hash);
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Open a server-pulled stream of arrived content — answers to
+    /// [`Self::want_blob`], and content a peer offered the room.
+    pub async fn subscribe_blobs(&self) -> Result<BlobStream, NotAvailable> {
+        let req = self.inner.subscribe_blobs_request();
+        let reply = req.send().promise.await?;
+        let stream = reply.get()?.get_stream()?;
+        Ok(BlobStream { inner: Rc::new(stream) })
     }
 
     /// Fetch a page of previously-validated signed ops with
@@ -298,6 +340,43 @@ impl OpStream {
             from_user_id,
             kind,
         })
+    }
+}
+
+/// One piece of content off a [`BlobStream`].
+#[derive(Debug, Clone)]
+pub struct BlobEvent {
+    /// blake3 hex the content is addressed by, in every store on every
+    /// machine.
+    pub hash: String,
+    /// The content itself.
+    pub bytes: Vec<u8>,
+}
+
+/// Client-pulled stream of arrived document content. Each `.read()` is
+/// a single RPC, like every other stream in this schema.
+#[derive(Clone)]
+pub struct BlobStream {
+    inner: Rc<BlobStreamClient>,
+}
+
+impl BlobStream {
+    /// Pull the next piece of arrived content.
+    ///
+    /// The caller MUST verify the bytes against `hash` before storing
+    /// them. The key is the content's identity, so bytes that hash to
+    /// something else are not the content that was asked for.
+    pub async fn read(&self) -> Result<BlobEvent, NotAvailable> {
+        let req = self.inner.read_request();
+        let reply = req.send().promise.await?;
+        let r = reply.get()?;
+        let hash = r
+            .get_hash()?
+            .to_str()
+            .map_err(|e| capnp::Error::failed(format!("invalid utf8 blob hash: {e}")))?
+            .to_owned();
+        let bytes = r.get_bytes()?.to_vec();
+        Ok(BlobEvent { hash, bytes })
     }
 }
 

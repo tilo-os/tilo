@@ -93,10 +93,17 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
                         payload,
                     }
                 }
-                // Signed-op sync + scrollback fetch aren't part of this
-                // presence-pump scenario — swallow them like `Hello`.
+                // Content offered by one peer reaches the other as content
+                // that arrived, which is what the real broker does with it.
+                CollabRequest::OfferBlob { hash, bytes } => {
+                    CollabEvent::BlobArrived { hash, bytes }
+                }
+                // Signed-op sync, scrollback fetch and content requests
+                // aren't part of this presence-pump scenario — swallow them
+                // like `Hello`.
                 CollabRequest::SignedSyncIncremental { .. }
-                | CollabRequest::FetchScrollback { .. } => continue,
+                | CollabRequest::FetchScrollback { .. }
+                | CollabRequest::WantBlob { .. } => continue,
             };
             let Ok(bytes) = serde_json::to_vec(&event) else {
                 continue;

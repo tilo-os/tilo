@@ -177,6 +177,28 @@ pub fn pump(relay: &mut MemoryRelay) {
                     });
                 }
             }
+            CollabRequest::OfferBlob { hash, bytes } => {
+                // Content one peer stored reaches the others as content that
+                // arrived — the same translation the real broker makes, so a
+                // document's picture crosses this relay the way it crosses a
+                // room.
+                for id in &peer_ids {
+                    if id == &from {
+                        continue;
+                    }
+                    inboxes
+                        .get_mut(id)
+                        .unwrap()
+                        .push_back(CollabEvent::BlobArrived {
+                            hash: hash.clone(),
+                            bytes: bytes.clone(),
+                        });
+                }
+            }
+            CollabRequest::WantBlob { .. } => {
+                // Answered by whoever holds the content offering it; this
+                // relay has no store of its own to answer from.
+            }
             CollabRequest::Hello { .. } => {
                 // no fan-out in tests
             }

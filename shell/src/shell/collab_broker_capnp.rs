@@ -66,8 +66,8 @@ use collab_types::{
     ArtifactId, OpClass, RedactedMarker, SignedOp, ValidationError, validate_inbound_op,
 };
 use runtime_collab::raw::{
-    OpKind, channel_handle, collab_service, context_stream, cursor_stream, presence_event,
-    presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
+    OpKind, blob_stream, channel_handle, collab_service, context_stream, cursor_stream,
+    presence_event, presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
 };
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::presence::PresenceKey;
@@ -110,6 +110,14 @@ struct CursorEnvelope {
     y: f32,
 }
 
+/// Envelope pushed onto a [`BlobStreamServer`]'s queue: one piece of
+/// document content, addressed by the hash it is stored under.
+#[derive(Clone, Debug)]
+struct BlobEnvelope {
+    hash: String,
+    bytes: Vec<u8>,
+}
+
 /// Envelope pushed onto a [`ContextStreamServer`]'s queue.
 #[derive(Clone, Debug)]
 struct ContextEnvelope {
@@ -136,6 +144,10 @@ struct ContextSub {
     peer_id: u64,
     tx: mpsc::UnboundedSender<ContextEnvelope>,
 }
+struct BlobSub {
+    peer_id: u64,
+    tx: mpsc::UnboundedSender<BlobEnvelope>,
+}
 
 /// Per-channel subscriber registry.
 ///
@@ -160,6 +172,12 @@ struct ChannelSubscribers {
     presence: Vec<PresenceSub>,
     cursor: Vec<CursorSub>,
     context: Vec<ContextSub>,
+    /// Apps waiting on document content for this channel. Separate from
+    /// `op` because content is not an op: it is addressed by its own
+    /// hash rather than by the change graph, it can arrive long after
+    /// the reference that names it, and an app that never asks for it
+    /// is still a legitimate reader of the document.
+    blob: Vec<BlobSub>,
 }
 
 /// Shared capnp broker state. Attached to a [`PeerTable`] so the
@@ -467,14 +485,35 @@ impl CapnpBrokerState {
                 // `fetchScrollbackFor` call.
             }
             CollabEvent::BlobArrived { hash, bytes } => {
-                // The capnp schema has no content stream. An app on this
-                // transport keeps its placeholder, and that has to be said:
-                // a picture that cannot be delivered must not look, from the
-                // log, like a picture nobody sent.
-                tracing::warn!(
-                    hash = %hash, bytes = bytes.len(),
-                    "capnp fanout: this transport cannot carry document content; apps on \
-                     it will show a placeholder for the image using it",
+                // Content down to the apps waiting on it. Addressed by the
+                // channel like everything else here, so an app that never
+                // opened a blob subscription is simply not delivered to
+                // rather than being sent a photograph it has no use for.
+                let env = BlobEnvelope {
+                    hash: hash.clone(),
+                    bytes: bytes.clone(),
+                };
+                let mut delivered = 0usize;
+                for subs in channels {
+                    subs.blob.retain(|sub| {
+                        if sub.peer_id == except {
+                            return true;
+                        }
+                        let ok = sub.tx.send(env.clone()).is_ok();
+                        if ok {
+                            delivered += 1;
+                        }
+                        ok
+                    });
+                }
+                // Nobody listening is a normal early state — content can
+                // land before the app that wants it has opened its
+                // subscription, and the app re-asks on its next failed
+                // read. Worth a line at debug so "the bytes reached this
+                // machine and stopped here" is answerable.
+                tracing::debug!(
+                    hash = %hash, bytes = bytes.len(), delivered,
+                    "capnp fanout: handed arrived content to the apps subscribed for it",
                 );
             }
         }
@@ -534,6 +573,62 @@ impl CapnpBrokerState {
                 .or_insert_with(ChannelSubscribers::default)
                 .cursor
                 .push(CursorSub { peer_id, tx });
+        }
+        rx
+    }
+
+    /// Hand content to one subscriber — the app that asked for it.
+    ///
+    /// Targeted rather than fanned out because this answers a specific
+    /// `wantBlob`. Sending it to the whole channel would push a
+    /// photograph at apps that never referenced it, and on a room with
+    /// several documents open that is most of them.
+    fn deliver_blob_to(&self, channel_id: &str, peer_id: u64, hash: &str, bytes: &[u8]) {
+        let Ok(mut m) = self.channels.lock() else {
+            return;
+        };
+        let Some(subs) = m.get_mut(channel_id) else {
+            tracing::debug!(
+                hash = %hash,
+                "capnp want_blob: this machine holds the content but the asking app has no \
+                 open subscription for it; it will be delivered when the app opens one and \
+                 asks again",
+            );
+            return;
+        };
+        let env = BlobEnvelope {
+            hash: hash.to_string(),
+            bytes: bytes.to_vec(),
+        };
+        let mut delivered = false;
+        subs.blob.retain(|sub| {
+            if sub.peer_id != peer_id {
+                return true;
+            }
+            let ok = sub.tx.send(env.clone()).is_ok();
+            delivered |= ok;
+            ok
+        });
+        if !delivered {
+            tracing::debug!(
+                hash = %hash,
+                "capnp want_blob: answered from this machine's store, but the asking app \
+                 has no open content subscription to answer on",
+            );
+        }
+    }
+
+    fn subscribe_blobs(
+        &self,
+        channel_id: &str,
+        peer_id: u64,
+    ) -> mpsc::UnboundedReceiver<BlobEnvelope> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        if let Ok(mut m) = self.channels.lock() {
+            m.entry(channel_id.to_owned())
+                .or_insert_with(ChannelSubscribers::default)
+                .blob
+                .push(BlobSub { peer_id, tx });
         }
         rx
     }
@@ -740,6 +835,95 @@ impl channel_handle::Server for CapnpChannelHandle {
             }
             Ok(())
         })
+    }
+
+    fn offer_blob(
+        self: Rc<Self>,
+        params: channel_handle::OfferBlobParams,
+        _results: channel_handle::OfferBlobResults,
+    ) -> Promise<(), capnp::Error> {
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        // Cluster scope, not record scope: content is addressed by its
+        // own hash, and two apps in a room may reference the same
+        // picture from two different documents. The room is the
+        // audience; a different room is not. Same rule the JSON
+        // broker's `OfferBlob` arm applies.
+        let route = self.route().to_cluster_scope();
+        Promise::from_future(async move {
+            let p = params.get()?;
+            let hash = p.get_hash()?.to_str()?.to_owned();
+            let bytes = p.get_bytes()?.to_vec();
+            // Out to the room first, then to this host's own apps —
+            // the same order, and for the same reason, as an
+            // incremental: the publish is what another machine sees,
+            // the fan-out is what a second app here sees, and neither
+            // implies the other.
+            //
+            // A refusal is reported rather than dropped. Content that
+            // does not cross has no symptom on the far side except a
+            // placeholder that never resolves, so silence here is the
+            // one thing that must not happen.
+            if !state
+                .publisher()
+                .offer_blob(&route, Transport::Capnp, &hash, &bytes)
+            {
+                tracing::warn!(
+                    hash = %hash, bytes = bytes.len(),
+                    "capnp offer_blob: this machine could not take content an app stored; \
+                     a document referencing it will show a placeholder on every other machine",
+                );
+            }
+            if let Some(t) = state.peer_table.upgrade() {
+                t.fanout_to_route(&CollabEvent::BlobArrived { hash, bytes }, peer_id, &route);
+            }
+            Ok(())
+        })
+    }
+
+    fn want_blob(
+        self: Rc<Self>,
+        params: channel_handle::WantBlobParams,
+        _results: channel_handle::WantBlobResults,
+    ) -> Promise<(), capnp::Error> {
+        let state = self.state.clone();
+        let channel_id = self.channel_id.clone();
+        let peer_id = self.peer_id;
+        let route = self.route().to_cluster_scope();
+        Promise::from_future(async move {
+            let hash = params.get()?.get_hash()?.to_str()?.to_owned();
+            // Answer from this machine's store when the content is
+            // already here: a peer may have offered it before the app
+            // that needs it existed, and a round trip through the room
+            // for something on local disk is a picture that appears a
+            // second late for no reason.
+            if let Some(bytes) = state.publisher().blob(&hash) {
+                state.deliver_blob_to(&channel_id, peer_id, &hash, &bytes);
+                return Ok(());
+            }
+            if !state.publisher().want_blob(&route, Transport::Capnp, &hash) {
+                tracing::warn!(
+                    hash = %hash,
+                    "capnp want_blob: this machine cannot ask the room for content an app \
+                     is waiting on; the image using it stays a placeholder",
+                );
+            }
+            Ok(())
+        })
+    }
+
+    fn subscribe_blobs(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeBlobsParams,
+        mut results: channel_handle::SubscribeBlobsResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.state.subscribe_blobs(&self.channel_id, self.peer_id);
+        let server = BlobStreamServer {
+            rx: Rc::new(RefCell::new(rx)),
+        };
+        let client: blob_stream::Client = capnp_rpc::new_client(server);
+        results.get().set_stream(client);
+        Promise::ok(())
     }
 
     fn subscribe_context(
@@ -1283,6 +1467,36 @@ impl cursor_stream::Server for CursorStreamServer {
             r.set_user_id(&env.user_id);
             r.set_x(env.x);
             r.set_y(env.y);
+            Ok(())
+        })
+    }
+}
+
+/// Server half of a [`blob_stream`] capability: one queue of arrived
+/// content, drained one `read` at a time.
+struct BlobStreamServer {
+    rx: Rc<RefCell<mpsc::UnboundedReceiver<BlobEnvelope>>>,
+}
+
+impl blob_stream::Server for BlobStreamServer {
+    fn read(
+        self: Rc<Self>,
+        _params: blob_stream::ReadParams,
+        mut results: blob_stream::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.rx.clone();
+        Promise::from_future(async move {
+            let env = match rx.borrow_mut().recv().await {
+                Some(e) => e,
+                None => {
+                    return Err(capnp::Error::disconnected(
+                        "blob stream fanout closed".into(),
+                    ));
+                }
+            };
+            let mut b = results.get();
+            b.set_hash(&env.hash);
+            b.set_bytes(&env.bytes);
             Ok(())
         })
     }
