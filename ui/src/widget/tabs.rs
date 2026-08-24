@@ -131,6 +131,37 @@ pub(crate) fn close_affordance_visible(look: &PillAppearance, is_pinned: bool) -
     !is_pinned && look.fill.a() > 0
 }
 
+/// The disc a pill's `×` sits on, or `None` for a bare glyph.
+///
+/// One treatment across every pill state, and it means one thing: the
+/// pointer is on the `×` and a click will close this tab. That is the
+/// whole rule, and it is why this takes `is_active` and `is_hover` at all
+/// — not to branch on them, but so the two states are decided in one
+/// place and cannot drift apart again.
+///
+/// They had drifted. An active pill drew a plain `×`; a merely hovered
+/// pill drew its `×` on a white disc, so a strip with one tab active and
+/// another under the cursor showed two different close buttons at the same
+/// moment, and the disc read as a property of the pill rather than as an
+/// answer about the pointer. Whichever of the two a viewer took for the
+/// norm, the other looked like a different control.
+///
+/// Resolved toward the bare glyph, because that is the reading that leaves
+/// the disc a job: appearing exactly when the cursor arrives on the
+/// `×`, in the destructive red, it says "this one, now" — where a
+/// disc already sitting under every visible `×` says nothing, and spends
+/// a filled shape per pill saying it.
+pub(crate) fn close_chip_disc(
+    theme: &Theme,
+    _is_active: bool,
+    _is_hover: bool,
+    close_hover: bool,
+) -> Option<vello::peniko::Color> {
+    // red-500/80 — `semantic.danger` is rgb(239, 68, 68); at 0.8 alpha
+    // this matches Tailwind's `bg-red-500/80` (≈ 204/255).
+    close_hover.then(|| theme.tokens.colors.semantic.danger.with_alpha_factor(0.8))
+}
+
 /// One pill's trailing-reserve animation: where its reveal started,
 /// where it is heading, and when it set off. Interpolated every
 /// `apply_layout`, so the pill's hit rects and its paint are the same
@@ -210,11 +241,6 @@ pub struct TabBar {
     /// when the pill is hovered, mirroring the concept's hover-reveal
     /// action row.
     max_rects: Vec<Rect>,
-    /// Hover-only "search in app" hit regions, aligned 1:1 with `tabs`.
-    /// Sits left of the maximize icon and mirrors the third concept
-    /// action button: clicking it publishes `pending_search` for the
-    /// shell to open the command palette scoped to that tab.
-    search_rects: Vec<Rect>,
     /// Hit region for the trailing "+" chip that opens a new tab in this
     /// group. Recomputed every `apply_layout` from the x-cursor left
     /// behind by the pill walk, so it always sits immediately after the
@@ -242,7 +268,7 @@ pub struct TabBar {
     visible_titles: Vec<Option<String>>,
     /// Tab id + screen position of a right-click awaiting a menu, drained
     /// once by [`Self::take_context_menu`]. Same one-shot publish/drain
-    /// shape as `pending_close` / `pending_max` / `pending_search`: the
+    /// shape as `pending_close` / `pending_max`: the
     /// bar records the intent, the shell decides what to raise.
     pending_context_menu: Option<(u64, Point)>,
     hover_idx: Option<usize>,
@@ -251,7 +277,6 @@ pub struct TabBar {
     /// separate from `hover_close_idx` so their hover visuals don't bleed
     /// into each other.
     hover_max_idx: Option<usize>,
-    hover_search_idx: Option<usize>,
     /// Whether the pointer is over [`Self::new_tab_rect`]. Drives the
     /// chip's hover wash and glyph brightening, same contract as the
     /// per-pill hover indices.
@@ -277,10 +302,6 @@ pub struct TabBar {
     /// state so the shell can paint concept-style floating controls over
     /// a full-bleed tile.
     pub pending_max: Option<u64>,
-    /// Populated when the user clicks the hover-only search icon on a
-    /// tab. The shell drains this and opens the command palette scoped
-    /// to that tab (concept's "Search in App" per-tab action).
-    pub pending_search: Option<u64>,
     /// Populated when the user clicks the trailing "+" chip. The outer
     /// `WindowGroup` drains it and republishes it with its own id so the
     /// shell knows which group asked for the new tab.
@@ -409,7 +430,6 @@ impl TabBar {
             tab_rects: Vec::new(),
             close_rects: Vec::new(),
             max_rects: Vec::new(),
-            search_rects: Vec::new(),
             new_tab_rect: Rect::ZERO,
             title_advance: HashMap::new(),
             visible_titles: Vec::new(),
@@ -417,7 +437,6 @@ impl TabBar {
             hover_idx: None,
             hover_close_idx: None,
             hover_max_idx: None,
-            hover_search_idx: None,
             hover_new_tab: false,
             pinned_ids: HashSet::new(),
             press_origin: None,
@@ -427,7 +446,6 @@ impl TabBar {
             pending_reorder: None,
             pending_close: None,
             pending_max: None,
-            pending_search: None,
             pending_new_tab: None,
             pending_detach: None,
             drop_zone_target: None,
@@ -656,24 +674,12 @@ impl TabBar {
             let alpha = chip_alpha(CLOSE_INSET + CLOSE_W);
             let close_r = self.close_rects[i] + vello::kurbo::Vec2::new(dx, dy);
             let close_hover = !suppress_hover && Some(i) == self.hover_close_idx;
-            let (close_chip_color, close_chip_visible) = if close_hover {
-                // red-500/80 — `semantic.danger` is rgb(239, 68, 68); at 0.8
-                // alpha this matches Tailwind's `bg-red-500/80` (≈ 204/255).
-                (
-                    theme.tokens.colors.semantic.danger.with_alpha_factor(0.8),
-                    true,
-                )
-            } else if is_hover {
-                (vello::peniko::Color::from_rgba8(255, 255, 255, 28), true)
-            } else {
-                (vello::peniko::Color::from_rgba8(0, 0, 0, 0), false)
-            };
-            if close_chip_visible {
+            if let Some(disc) = close_chip_disc(theme, is_active, is_hover, close_hover) {
                 let chip = RoundedRect::from_rect(close_r, close_r.height() / 2.0);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    close_chip_color.with_alpha_factor(alpha),
+                    disc.with_alpha_factor(alpha),
                     None,
                     &chip,
                 );
@@ -697,12 +703,12 @@ impl TabBar {
             );
         }
 
-        // Reveal-gated action cluster (maximize + search). Each chip is
-        // painted exactly when `apply_layout` found room to place it, so
-        // the two slide out of the pill's right edge as it opens and
-        // back under it as it closes — never drawn in width the pill
-        // was not holding. Suppressed on the drag-ghost so the ghost
-        // stays visually simple, and on pinned tabs (icon-only).
+        // Reveal-gated maximize chip. Painted exactly when `apply_layout`
+        // found room to place it, so it slides out of the pill's right
+        // edge as the pill opens and back under it as it closes — never
+        // drawn in width the pill was not holding. Suppressed on the
+        // drag-ghost so the ghost stays visually simple, and on pinned
+        // tabs (icon-only).
         if !suppress_hover && !is_pinned {
             let chip_tint = vello::peniko::Color::from_rgba8(255, 255, 255, 64);
             let icon_idle = text_dim;
@@ -733,30 +739,6 @@ impl TabBar {
                 );
             }
 
-            if self.search_rects[i].area() > 0.0 {
-                let alpha = chip_alpha(CHIP_CLUSTER_W);
-                let search_r = self.search_rects[i] + vello::kurbo::Vec2::new(dx, dy);
-                let search_hover = Some(i) == self.hover_search_idx;
-                if search_hover {
-                    let chip = RoundedRect::from_rect(search_r, search_r.height() / 2.0);
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        chip_tint.with_alpha_factor(alpha),
-                        None,
-                        &chip,
-                    );
-                }
-                let icon_color = if search_hover { icon_active } else { icon_idle };
-                icons::draw_icon(
-                    scene,
-                    transform,
-                    search_r,
-                    icons::Icon::Search,
-                    icon_color.with_alpha_factor(alpha),
-                    1.5,
-                );
-            }
         }
     }
 
@@ -1320,7 +1302,6 @@ impl TabBar {
     /// menu should be anchored. One-shot, like every other `take_*`.
     pub fn take_context_menu(&mut self) -> Option<(u64, Point)> { self.pending_context_menu.take() }
     pub fn take_max(&mut self) -> Option<u64> { self.pending_max.take() }
-    pub fn take_search(&mut self) -> Option<u64> { self.pending_search.take() }
     /// One-shot drain of a "+" click. `Some(())` means the user asked for
     /// a new tab in this bar's group since the last drain.
     pub fn take_new_tab(&mut self) -> Option<()> { self.pending_new_tab.take() }
@@ -1342,11 +1323,6 @@ impl TabBar {
     /// floating controls, covered by its own accessor there.
     #[cfg(test)]
     pub fn max_glyph_icon_for_tests() -> icons::Icon { icons::Icon::Maximize2 }
-    /// Test-only accessor for the per-tab search action glyph. Pins
-    /// the hover-reveal magnifier to lucide's [`icons::Icon::Search`]
-    /// so a revert to the hand-drawn circle+line flips the suite red.
-    #[cfg(test)]
-    pub fn search_glyph_icon_for_tests() -> icons::Icon { icons::Icon::Search }
     /// Drain a cross-group detach request if any. See [`Self::pending_detach`].
     pub fn take_detach(&mut self) -> Option<(u64, Point)> { self.pending_detach.take() }
     /// Expose the bar's own rect so a parent widget (e.g. `GroupRow`) can
@@ -1368,10 +1344,6 @@ impl TabBar {
     #[cfg(any(test, debug_assertions))]
     pub fn max_rects(&self) -> &[Rect] { &self.max_rects }
 
-    /// Per-tab search-chip hit rects, same gating + purpose as
-    /// [`Self::max_rects`].
-    #[cfg(any(test, debug_assertions))]
-    pub fn search_rects(&self) -> &[Rect] { &self.search_rects }
     /// Compute an insertion index for a drop at `release_point`. Returns
     /// an index in `[0, tab_rects.len()]` — `0` means "before the first
     /// pill", `len` means "after the last pill". Vertical position is
@@ -1538,15 +1510,12 @@ impl TabBar {
         if !self.close_affordance_visible_for_tests(idx, theme) {
             return None;
         }
-        let close_hover = Some(idx) == self.hover_close_idx;
-        let is_hover = Some(idx) == self.hover_idx;
-        if close_hover {
-            Some(theme.tokens.colors.semantic.danger.with_alpha_factor(0.8))
-        } else if is_hover {
-            Some(vello::peniko::Color::from_rgba8(255, 255, 255, 28))
-        } else {
-            None
-        }
+        close_chip_disc(
+            theme,
+            self.tabs[idx].id == self.active_id,
+            Some(idx) == self.hover_idx,
+            Some(idx) == self.hover_close_idx,
+        )
     }
 
     /// Test hook: returns the glyph color `draw_pill_inner` would use
@@ -1593,17 +1562,20 @@ const PILL_PAD_X: f64 = 12.0;
 /// Close-chip width, and its inset from the pill's right edge.
 const CLOSE_W: f64 = 18.0;
 const CLOSE_INSET: f64 = 3.0;
-/// Width of each hover-reveal action chip (maximize, search) and the gap
-/// between chips in the cluster.
+/// Width of the hover-reveal maximize chip, and the gap between it and
+/// the close chip.
 ///
-/// Narrower than the close chip on purpose. Every unpinned pill pays for
-/// this cluster whether or not it is painted (see [`CHIP_CLUSTER_W`]), so
-/// each pixel here is a pixel of blank space between two tab titles —
-/// and close is the chip that has to stay a comfortable pointer target,
-/// while maximize and search are secondary and also reachable from the
-/// tab's context menu.
-const ACTION_W: f64 = 14.0;
-const ACTION_GAP: f64 = 4.0;
+/// Sized to match [`CLOSE_W`] rather than sitting under it. The cluster
+/// used to be three chips — close, maximize, search — and the two
+/// secondary ones were shaved to 14 px with a 4 px gap to keep the whole
+/// run affordable, which left three targets inside one small pill with
+/// their edges very nearly touching: fussy at the size a pill is actually
+/// seen, and under a comfortable pointer target for two of the three.
+/// Dropping the search chip (see [`CHIP_CLUSTER_W`]) bought back more
+/// width than restoring these costs, so both surviving chips are now the
+/// same square, with a gap wide enough to read as a gap.
+const ACTION_W: f64 = 18.0;
+const ACTION_GAP: f64 = 6.0;
 /// Leading app-glyph width and its gap to the title.
 const ICON_W: f64 = 14.0;
 const ICON_GAP: f64 = 6.0;
@@ -1628,17 +1600,29 @@ const PILL_SQUEEZE_FLOOR_PX: f64 = 54.0;
 /// cluster wants. Taking it out of the title anyway is the failure the
 /// old always-on reserve produced at demo widths — every pill rendering
 /// a bare ellipsis, which names nothing. So the title keeps this much
-/// and the reveal takes what is left, dropping search first, then
-/// maximize, then close.
+/// and the reveal takes what is left, dropping maximize first, then
+/// close.
 const MIN_TITLE_PX: f64 = 40.0;
 
 /// Span from a pill's right edge to the left edge of the leftmost chip
-/// in the revealed cluster: close, then maximize, then search.
+/// in the revealed cluster: close, then maximize.
+///
+/// There was a third chip here, a magnifier that opened the search
+/// palette scoped to the active app. It is gone, and not only because
+/// three controls crowded the pill. Search in this system is a service
+/// the shell owns, reached with `Ctrl+K`; the compositor owns window
+/// chrome, and neither an app nor a tab gets to mount its own search
+/// affordance in the frame. The chip was also literally a second door
+/// onto the same room — it called the shell's palette with the same
+/// `ActiveApp` scope `Ctrl+K` seeds — and a worse one: a chip press
+/// deliberately does not select its tab, so clicking the magnifier on a
+/// pill that was not already active opened a search scoped to a
+/// *different* tab than the one whose chip was clicked.
 ///
 /// Only a pill that is *currently revealing* the cluster holds this
 /// width. See [`Reveal`] for the three widths a pill can hold and why
 /// growing into them is safe under the pointer.
-const CHIP_CLUSTER_W: f64 = CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W + ACTION_GAP + ACTION_W;
+const CHIP_CLUSTER_W: f64 = CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W;
 
 /// Breathing room between the end of a title and whatever chip sits at
 /// the pill's right end, so a full-width title never touches a glyph.
@@ -1695,7 +1679,7 @@ pub(crate) enum Reveal {
     None,
     /// Showing the close chip only — an active pill at rest.
     Close,
-    /// Showing close, maximize and search — a hovered pill.
+    /// Showing close and maximize — a hovered pill.
     Full,
 }
 
@@ -1832,7 +1816,6 @@ impl Widget for TabBar {
         self.tab_rects.clear();
         self.close_rects.clear();
         self.max_rects.clear();
-        self.search_rects.clear();
         // Pre-size to len so the visual-order pass can write into
         // `tab_rects[data_idx]` directly — the data index (position in
         // `self.tabs`) stays the canonical key for every cache that pairs
@@ -1841,7 +1824,6 @@ impl Widget for TabBar {
         self.tab_rects.resize(self.tabs.len(), Rect::ZERO);
         self.close_rects.resize(self.tabs.len(), Rect::ZERO);
         self.max_rects.resize(self.tabs.len(), Rect::ZERO);
-        self.search_rects.resize(self.tabs.len(), Rect::ZERO);
         self.reveal_px.clear();
         self.reveal_px.resize(self.tabs.len(), Reveal::None.reserve());
         // Advance every pill's reveal curve. This is the only place the
@@ -1859,7 +1841,6 @@ impl Widget for TabBar {
         let gap = PILL_GAP;
         let close_w = CLOSE_W;
         let max_w = ACTION_W;
-        let search_w = ACTION_W;
         let close_inset = CLOSE_INSET;
         let pill_y0 = self.rect.y0 + TAB_PILL_INSET_Y;
         let pill_y1 = self.rect.y1 - TAB_PILL_INSET_Y;
@@ -1938,7 +1919,7 @@ impl Widget for TabBar {
             let w = widths[slot];
             let x1 = (x + w).min(right_limit);
             let r = Rect::new(x, pill_y0, x1.max(x), pill_y1);
-            // Pinned pills suppress the close / max / search action
+            // Pinned pills suppress the close / maximize action
             // rects entirely — the press handler skips them, and `draw`
             // checks `is_pinned` before painting the close chip + glyph.
             // `Rect::ZERO` is the no-rect convention used elsewhere
@@ -1950,7 +1931,7 @@ impl Widget for TabBar {
             // has kept [`MIN_TITLE_PX`]. A chip is placed only once
             // that zone reaches it, so the cluster slides out from the
             // pill's right edge as it opens — close first, then
-            // maximize, then search — and a pill too narrow to host one
+            // maximize — and a pill too narrow to host one
             // neither paints it nor makes it clickable.
             let effective = if is_pinned {
                 0.0
@@ -1967,32 +1948,25 @@ impl Widget for TabBar {
             let chip_y1 = r.y1 - 4.0;
             let close_x0 = r.x1 - close_w - close_inset;
             let max_x0 = close_x0 - max_w - ACTION_GAP;
-            let search_x0 = max_x0 - search_w - ACTION_GAP;
-            let (close, max_rect, search_rect) = if is_pinned {
-                (Rect::ZERO, Rect::ZERO, Rect::ZERO)
+            let (close, max_rect) = if is_pinned {
+                (Rect::ZERO, Rect::ZERO)
             } else {
                 let close = if effective >= CLOSE_INSET + CLOSE_W {
                     Rect::new(close_x0, chip_y0, close_x0 + close_w, chip_y1)
                 } else {
                     Rect::ZERO
                 };
-                let max_rect = if effective >= CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W {
+                let max_rect = if effective >= CHIP_CLUSTER_W {
                     Rect::new(max_x0, chip_y0, max_x0 + max_w, chip_y1)
                 } else {
                     Rect::ZERO
                 };
-                let search_rect = if effective >= CHIP_CLUSTER_W {
-                    Rect::new(search_x0, chip_y0, search_x0 + search_w, chip_y1)
-                } else {
-                    Rect::ZERO
-                };
-                (close, max_rect, search_rect)
+                (close, max_rect)
             };
             self.reveal_px[i] = effective;
             self.tab_rects[i] = r;
             self.close_rects[i] = close;
             self.max_rects[i] = max_rect;
-            self.search_rects[i] = search_rect;
             x = r.x1 + gap;
         }
         // Trailing "+" chip. `x` is the strip's write head, so the chip
@@ -2166,12 +2140,27 @@ impl Widget for TabBar {
             let radius = r.height() / 2.0;
             let shape = RoundedRect::from_rect(r, radius);
             let colors = &theme.tokens.colors;
-            // Idle reads as a dotted-outline "slot" rather than a filled
+            // Idle reads as a quiet outlined slot rather than a filled
             // button: it has to sit next to real tabs without competing
             // with the active pill for attention. Hover fills it with the
             // same lift a hovered tab takes, and both hairlines are
             // derived against the ground the way a pill's are, so the row
             // keeps one hover language in every theme.
+            //
+            // The outline is **solid**. It was dashed, and a dash means
+            // something specific in this codebase already: `Chip` uses it
+            // for its `ghost` variant, and the roster draws a dashed ring
+            // for the avatar slot that has nobody in it. Both say the
+            // same thing — *this is a placeholder, not a thing*. The "+"
+            // is a live button that opens a new tab on the first click,
+            // so it was borrowing the one border that denies it.
+            //
+            // A drop target would have been the other reading that earns
+            // dashes, and it is not that either: the whole chip is
+            // skipped while `pending_drag` is set (see the guard above)
+            // precisely so a tab in flight can never be aimed at it. So
+            // there is no state, at rest or mid-drag, that the dashes
+            // described.
             if self.hover_new_tab {
                 // The same glass a hovered pill is made of. It stands in
                 // the row with them, so an opaque body here would read as
@@ -2187,7 +2176,7 @@ impl Widget for TabBar {
                 );
             } else {
                 scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
+                    &vello::kurbo::Stroke::new(1.0),
                     transform,
                     Colors::hairline_on(colors.surfaces.base, PILL_BORDER_ALPHA),
                     None,
@@ -2433,11 +2422,6 @@ impl Widget for TabBar {
                     .iter()
                     .position(|r| r.contains(p))
                     .filter(|&i| !is_pinned_at(i));
-                self.hover_search_idx = self
-                    .search_rects
-                    .iter()
-                    .position(|r| r.contains(p))
-                    .filter(|&i| !is_pinned_at(i));
                 // Only count a tab as "hovered for highlight" if we're inside
                 // the pill AND not inside its close chip — keeps the close
                 // button's own hover state dominant.
@@ -2535,11 +2519,6 @@ impl Widget for TabBar {
                     .iter()
                     .position(|r| r.contains(cursor_pos))
                     .filter(|&i| !is_pinned_at(i));
-                let search_idx = self
-                    .search_rects
-                    .iter()
-                    .position(|r| r.contains(cursor_pos))
-                    .filter(|&i| !is_pinned_at(i));
 
                 // The "+" chip sits in the bar's trailing space, which is
                 // also the whole-group drag-grab zone, so it has to win
@@ -2571,21 +2550,6 @@ impl Widget for TabBar {
                 if let Some(mi) = max_idx {
                     if let Some(t) = self.tabs.get(mi) {
                         self.pending_max = Some(t.id);
-                        *handled = true;
-                        return;
-                    }
-                }
-                // Search icon — same deal; shell drains `pending_search`.
-                if let Some(si) = search_idx {
-                    if let Some(t) = self.tabs.get(si) {
-                        // Deliberately does NOT activate the tab — chip hits
-                        // never bleed into selection (same contract as the
-                        // close / maximize chips), pinned by
-                        // `press_on_inactive_tab_search_icon_fires_on_first_click`.
-                        // The shell scopes the opened palette to the active
-                        // app, which is the pill the user is looking at in the
-                        // normal case.
-                        self.pending_search = Some(t.id);
                         *handled = true;
                         return;
                     }
@@ -3054,7 +3018,6 @@ mod tests {
             "pinned tab max_rect must be Rect::ZERO too — hover-reveal \
              cluster is suppressed alongside the close glyph",
         );
-        assert_eq!(b.search_rects[pinned_idx], Rect::ZERO);
 
         // Sanity: an unpinned neighbour still has a non-zero close rect.
         let unpinned_idx = b.tabs().iter().position(|t| t.id == 1).unwrap();
@@ -3088,7 +3051,6 @@ mod tests {
             Rect::new(232.0, 10.0, 250.0, 30.0),
         ];
         b.max_rects = vec![Rect::ZERO; 3];
-        b.search_rects = vec![Rect::ZERO; 3];
         b.pin(2);
 
         // Aim the cursor at tab 2's close-rect centre.
@@ -3263,18 +3225,6 @@ mod tests {
         // Second drain is empty — ensures WindowGroup doesn't double-toggle
         // `maximized` on redundant polls within the same frame.
         assert_eq!(b.take_max(), None);
-    }
-
-    #[test]
-    fn take_search_drains_pending_request_exactly_once() {
-        // Matches the `take_max` contract — a pending search request is
-        // drained exactly once so the shell doesn't re-open the command
-        // palette on every frame after a single click.
-        let mut b = bar();
-        assert_eq!(b.take_search(), None);
-        b.pending_search = Some(3);
-        assert_eq!(b.take_search(), Some(3));
-        assert_eq!(b.take_search(), None);
     }
 
     #[test]
@@ -3763,11 +3713,6 @@ mod tests {
             Rect::new(126.0, 10.0, 142.0, 30.0),
             Rect::new(212.0, 10.0, 228.0, 30.0),
         ];
-        b.search_rects = vec![
-            Rect::new(20.0, 10.0, 36.0, 30.0),
-            Rect::new(106.0, 10.0, 122.0, 30.0),
-            Rect::new(192.0, 10.0, 208.0, 30.0),
-        ];
         // Active tab is A (id 1). B (id 2) is inactive.
         assert_eq!(b.active_id(), 1);
 
@@ -3776,7 +3721,6 @@ mod tests {
         // the click position hasn't been covered by a prior CursorMoved.
         b.last_cursor = Point::new(134.0, 20.0);
         b.hover_max_idx = None;
-        b.hover_search_idx = None;
         b.hover_close_idx = None;
         b.hover_idx = Some(1);
 
@@ -3820,77 +3764,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn press_on_inactive_tab_search_icon_fires_on_first_click() {
-        // Twin of the maximize test for the search icon. Same staleness
-        // hazard, same expected fix: fresh hit-test on press.
-        let mut b = bar();
-        b.rect = Rect::new(0.0, 0.0, 252.0, 40.0);
-        b.tab_rects = vec![
-            Rect::new(0.0, 6.0, 80.0, 34.0),
-            Rect::new(86.0, 6.0, 166.0, 34.0),
-            Rect::new(172.0, 6.0, 252.0, 34.0),
-        ];
-        b.close_rects = vec![
-            Rect::new(60.0, 10.0, 78.0, 30.0),
-            Rect::new(146.0, 10.0, 164.0, 30.0),
-            Rect::new(232.0, 10.0, 250.0, 30.0),
-        ];
-        b.max_rects = vec![
-            Rect::new(40.0, 10.0, 56.0, 30.0),
-            Rect::new(126.0, 10.0, 142.0, 30.0),
-            Rect::new(212.0, 10.0, 228.0, 30.0),
-        ];
-        b.search_rects = vec![
-            Rect::new(20.0, 10.0, 36.0, 30.0),
-            Rect::new(106.0, 10.0, 122.0, 30.0),
-            Rect::new(192.0, 10.0, 208.0, 30.0),
-        ];
-        assert_eq!(b.active_id(), 1);
-
-        // Cursor over C's search rect (inactive tab, id 3). All hover
-        // caches empty to prove the press path does a fresh hit-test.
-        b.last_cursor = Point::new(200.0, 20.0);
-        b.hover_max_idx = None;
-        b.hover_search_idx = None;
-        b.hover_close_idx = None;
-        b.hover_idx = Some(2);
-
-        let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut state = automerge::AutoCommit::new();
-        let root_id = automerge::ROOT;
-        b.handle_event(
-            &press,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &root_id,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
-        );
-
-        assert_eq!(
-            b.take_search(),
-            Some(3),
-            "search click on inactive tab must fire on first press",
-        );
-        assert!(handled, "press on the search icon is handled");
-        assert_eq!(
-            b.active_id(),
-            1,
-            "search icon hit must not bleed into tab activation",
-        );
-    }
 
     /// Guards visual gap #2 from `docs/nirios/visual-gaps.md`: the active
     /// pill fill must be meaningfully stronger than an inactive pill's
@@ -4054,11 +3927,6 @@ mod tests {
                 Rect::new(120.0, 10.0, 136.0, 30.0),
                 Rect::new(200.0, 10.0, 216.0, 30.0),
             ];
-            b.search_rects = vec![
-                Rect::new(20.0, 10.0, 36.0, 30.0),
-                Rect::new(100.0, 10.0, 116.0, 30.0),
-                Rect::new(180.0, 10.0, 196.0, 30.0),
-            ];
             // `set_active` guards membership; assigning the field
             // directly bypasses that so we can stage the "all inactive"
             // baseline by pointing at id 0 (none of the tabs match).
@@ -4106,11 +3974,6 @@ mod tests {
         assert_eq!(TabBar::max_glyph_icon_for_tests(), icons::Icon::Maximize2);
     }
 
-    #[test]
-    fn tab_search_glyph_draws_via_icons_module() {
-        assert_eq!(TabBar::search_glyph_icon_for_tests(), icons::Icon::Search);
-    }
-
     /// Press on a pill, drag past the threshold, and verify the ghost
     /// rect positions itself at `last_cursor - drag_offset` with the
     /// source pill's dimensions. Pinned because the ghost is the
@@ -4138,11 +4001,6 @@ mod tests {
             Rect::new(40.0, 10.0, 56.0, 30.0),
             Rect::new(120.0, 10.0, 136.0, 30.0),
             Rect::new(200.0, 10.0, 216.0, 30.0),
-        ];
-        b.search_rects = vec![
-            Rect::new(20.0, 10.0, 36.0, 30.0),
-            Rect::new(100.0, 10.0, 116.0, 30.0),
-            Rect::new(180.0, 10.0, 196.0, 30.0),
         ];
 
         let mut tree = TaffyTree::<()>::new();
@@ -4276,11 +4134,6 @@ mod tests {
             Rect::new(40.0, 10.0, 56.0, 30.0),
             Rect::new(120.0, 10.0, 136.0, 30.0),
             Rect::new(200.0, 10.0, 216.0, 30.0),
-        ];
-        b.search_rects = vec![
-            Rect::new(20.0, 10.0, 36.0, 30.0),
-            Rect::new(100.0, 10.0, 116.0, 30.0),
-            Rect::new(180.0, 10.0, 196.0, 30.0),
         ];
 
         let mut tree = TaffyTree::<()>::new();
@@ -4440,11 +4293,6 @@ mod tests {
             Rect::new(40.0, 10.0, 56.0, 30.0),
             Rect::new(126.0, 10.0, 142.0, 30.0),
             Rect::new(212.0, 10.0, 228.0, 30.0),
-        ];
-        b.search_rects = vec![
-            Rect::new(20.0, 10.0, 36.0, 30.0),
-            Rect::new(106.0, 10.0, 122.0, 30.0),
-            Rect::new(192.0, 10.0, 208.0, 30.0),
         ];
         b
     }
@@ -4670,16 +4518,12 @@ mod tests {
             "close-hover must paint the theme danger token at 80% alpha",
         );
 
-        // Without close-hover (tab hovered only) we should fall back
-        // to the subtle white tint — the "you can close me" hint.
+        // Without close-hover (tab hovered only) there is no disc: the
+        // × is bare until the pointer is actually on it.
         b.hover_close_idx = None;
-        let color = b
-            .close_chip_color_for_tests(0, &theme)
-            .expect("tab hover must still produce a subtle chip fill");
-        assert_eq!(
-            (color.r(), color.g(), color.b(), color.a()),
-            (255, 255, 255, 28),
-            "tab-only hover must stay as the subtle white tint",
+        assert!(
+            b.close_chip_color_for_tests(0, &theme).is_none(),
+            "a pill hovered anywhere but its × must draw a bare glyph",
         );
 
         // Neither hovered → no chip fill at all.
@@ -4690,6 +4534,131 @@ mod tests {
         );
     }
 
+    /// One close button, not two.
+    ///
+    /// The strip is on camera with one tab active and another under the
+    /// cursor at the same moment, so any difference between how those
+    /// two draw their × is a difference a viewer sees side by side. It
+    /// had one: the active pill drew a plain ×, the hovered pill drew
+    /// its × on a filled disc, and whichever a viewer took for the norm,
+    /// the other read as a different control.
+    ///
+    /// So the resting treatment is asserted to be *the same* across
+    /// every state in which a pill paints a × at all, in every theme —
+    /// and asserted through [`close_chip_disc`], the function `draw`
+    /// itself calls, which still takes `is_active` and `is_hover`
+    /// precisely so that reintroducing a branch on either one has to go
+    /// through here and fails this.
+    #[test]
+    fn one_close_treatment_serves_every_pill_state() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let name = theme.name.clone();
+            let resting: Vec<Option<vello::peniko::Color>> = [
+                (true, false),
+                (true, true),
+                (false, true),
+                (false, false),
+            ]
+            .iter()
+            .map(|&(is_active, is_hover)| {
+                close_chip_disc(&theme, is_active, is_hover, false)
+            })
+            .collect();
+            assert!(
+                resting.windows(2).all(|w| {
+                    w[0].map(|c| c.to_rgba8().to_u32()) == w[1].map(|c| c.to_rgba8().to_u32())
+                }),
+                "{name}: pill states disagree about the resting close chip: {resting:?} —                  an active tab and a hovered tab would show two different × buttons                  in the same strip",
+            );
+
+            // And the one treatment they agree on is the bare glyph, so
+            // the disc keeps its job: it appears when, and only when, the
+            // pointer is on the × itself.
+            assert!(
+                resting[0].is_none(),
+                "{name}: a resting × should be bare, not sitting on a disc",
+            );
+            for &(is_active, is_hover) in
+                &[(true, false), (true, true), (false, true), (false, false)]
+            {
+                assert!(
+                    close_chip_disc(&theme, is_active, is_hover, true).is_some(),
+                    "{name}: pointing at the × must raise its disc                      (active={is_active}, hover={is_hover})",
+                );
+            }
+        }
+    }
+
+    /// The same invariant, counted off the scene the strip really
+    /// encodes.
+    ///
+    /// `one_close_treatment_serves_every_pill_state` pins the decision
+    /// where it is made, which stops the two states drifting inside
+    /// [`close_chip_disc`]. This closes the other route: a branch put
+    /// back at the paint site, bypassing the function entirely.
+    ///
+    /// Asked as a difference rather than as a total, because an active
+    /// pill and a hovered pill legitimately draw different numbers of
+    /// things — the hovered one has revealed its maximize chip. What
+    /// they must agree on is the *cost of the disc*: moving the pointer
+    /// onto the × must add exactly one fill, and the same one fill, in
+    /// both states. It used to add one to the active pill and nothing to
+    /// the hovered pill, which already had a disc sitting there.
+    #[test]
+    fn arriving_on_the_close_mark_costs_the_same_fill_in_every_pill_state() {
+        for base in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let name = base.name.clone();
+            let theme = base.with_reduce_motion(true);
+            let mut tr = TextRenderer::new();
+
+            // One two-pill strip; index 0 is the active tab, index 1 the
+            // inactive neighbour the hover case aims at.
+            let ops = |hover_pill_idx: Option<usize>, on_close: bool, tr: &mut TextRenderer| {
+                let mut b = TabBar::new(
+                    "g1",
+                    vec![
+                        TabDescriptor::new(1, "Terminal"),
+                        TabDescriptor::new(2, "Document"),
+                    ],
+                    1,
+                );
+                lay_out_at_width_with(&mut b, 600.0, &theme);
+                if let Some(idx) = hover_pill_idx {
+                    b.hover_idx = Some(idx);
+                    // A pill only holds its cluster once the reveal has
+                    // run, so lay out again with the pointer on it.
+                    lay_out_at_width_with(&mut b, 600.0, &theme);
+                }
+                let target = hover_pill_idx.unwrap_or(0);
+                b.hover_close_idx = on_close.then_some(target);
+                b.hover_max_idx = None;
+                let mut scene = Scene::new();
+                b.draw(&mut scene, Affine::IDENTITY, tr, &theme, &PresenceCtx::default());
+                scene.encoding().draw_tags.len()
+            };
+
+            // The active pill, pointer arriving on its ×.
+            let active_bare = ops(None, false, &mut tr);
+            let active_on_x = ops(None, true, &mut tr);
+            // The hovered inactive pill, same arrival.
+            let hovered_bare = ops(Some(1), false, &mut tr);
+            let hovered_on_x = ops(Some(1), true, &mut tr);
+
+            let active_cost = active_on_x as i64 - active_bare as i64;
+            let hovered_cost = hovered_on_x as i64 - hovered_bare as i64;
+            assert_eq!(
+                active_cost, 1,
+                "{name}: pointing at the active pill's × changed the scene by \
+                 {active_cost} paint ops, not the single disc fill",
+            );
+            assert_eq!(
+                active_cost, hovered_cost,
+                "{name}: the × costs {active_cost} paint op(s) on the active pill \
+                 and {hovered_cost} on a hovered one — the two pills are drawing \
+                 different close buttons in the same strip",
+            );
+        }
+    }
     /// Concept parity: the close glyph promotes to full white on
     /// close-hover (`hover:text-white` in WindowFrame.tsx). Previous
     /// implementation rendered `text_primary`, which under dark themes
@@ -4828,7 +4797,6 @@ mod tests {
         b.tab_rects.clear();
         b.close_rects.clear();
         b.max_rects.clear();
-        b.search_rects.clear();
         b.hover_idx = Some(7);
         // `last_cursor` must be set so the press handler's hit-tests
         // run — the value itself doesn't matter because the rect vecs
@@ -5259,7 +5227,6 @@ mod tests {
         );
         assert!(b.close_rects[1].area() > 0.0, "close chip must be placed once revealed");
         assert!(b.max_rects[1].area() > 0.0, "maximize chip must be placed once revealed");
-        assert!(b.search_rects[1].area() > 0.0, "search chip must be placed once revealed");
     }
 
     /// The objection to growing on hover: a pill that grows shoves its
@@ -5349,8 +5316,8 @@ mod tests {
     }
 
     /// A pill offers exactly the targets it is painting, at every tier:
-    /// nothing when idle, close alone when it is the active tab, all
-    /// three when the pointer is on it. Width, hit region and paint are
+    /// nothing when idle, close alone when it is the active tab, both
+    /// chips when the pointer is on it. Width, hit region and paint are
     /// all read off one value, so they cannot drift apart.
     #[test]
     fn chip_hit_targets_exist_exactly_when_the_pill_is_showing_them() {
@@ -5362,19 +5329,16 @@ mod tests {
         // Active pill (index 0, id 1): close only.
         assert!(b.close_rects[0].area() > 0.0, "the active tab shows its close chip");
         assert_eq!(b.max_rects[0], Rect::ZERO, "an unhovered active tab shows no maximize chip");
-        assert_eq!(b.search_rects[0], Rect::ZERO, "an unhovered active tab shows no search chip");
 
         // Idle inactive pill: nothing.
         assert_eq!(b.close_rects[1], Rect::ZERO);
         assert_eq!(b.max_rects[1], Rect::ZERO);
-        assert_eq!(b.search_rects[1], Rect::ZERO);
 
-        // Hovered: all three, and each inside its own pill.
+        // Hovered: both, and each inside its own pill.
         hover_pill(&mut b, 1, width, &theme);
         for (name, r) in [
             ("close", b.close_rects[1]),
             ("maximize", b.max_rects[1]),
-            ("search", b.search_rects[1]),
         ] {
             assert!(r.area() > 0.0, "{name} chip missing on the hovered pill");
             let pill = b.tab_rects()[1];
