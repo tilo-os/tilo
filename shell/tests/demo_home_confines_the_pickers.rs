@@ -33,12 +33,28 @@ fn a_pinned_home_confines_the_file_chooser_and_the_palette() {
     std::fs::create_dir_all(home.join("Documents")).expect("stage Documents");
     std::fs::write(home.join("Documents").join("Launch plan.md"), b"x").expect("stage a document");
 
+    // Only `QOS_USER_HOME`, and `HOME` deliberately left pointing at the
+    // real account.
+    //
+    // The harness pins both, but a test that pinned both could not fail:
+    // `dirs::home_dir()` and `std::env::var("HOME")` would answer with
+    // the staged directory too, so the code this is guarding — which read
+    // exactly those and ignored the override — would have passed it. With
+    // only the override set, the two answers differ, and any surface that
+    // consults the process's own home instead reports the real one and
+    // trips an assertion below.
+    //
     // SAFETY: this binary holds exactly one test, so no other thread is
     // reading the environment while it is written. See the module note.
     unsafe {
         std::env::set_var("QOS_USER_HOME", &home);
-        std::env::set_var("HOME", &home);
     }
+    assert_ne!(
+        dirs::home_dir().as_deref(),
+        Some(home.as_path()),
+        "the fixture is void: HOME already resolves to the staged tree, so \
+         reading it instead of the override would pass unnoticed"
+    );
 
     // The file chooser. `roots` is the set the picker widget refuses to
     // navigate outside of, so it is the reach itself rather than a
