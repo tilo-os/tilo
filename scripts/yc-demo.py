@@ -1090,8 +1090,28 @@ class Session:
             w, h = 1280, 800
         self.pointer_move(w * 0.42, h * 0.72)
 
-    def pointer_button(self, pressed: bool) -> None:
-        """Press or release the left button where the pointer already is.
+    def right_click_at(self, x: float, y: float) -> None:
+        """Open a context menu the way a person does.
+
+        The pointer walks there through `_approach` — eased at both ends,
+        paced in wall-clock — before anything is pressed. A menu that
+        opens under a pointer nobody saw travelling is a menu that
+        appeared by itself, and this gesture is one a viewer has to be
+        able to follow: it is where an instruction gets its subject.
+
+        The right button reached the harness late. `PointerButton` was
+        the left one and nothing else, all the way down to a hardcoded
+        `MouseButton::Left` at delivery — so the one gesture this desktop
+        hangs a good deal on, select a thing and say something about it,
+        was the one gesture a rig could not drive.
+        """
+        self._approach(x, y)
+        self.pointer_button(True, button="right")
+        self.settle(self.POINTER_PRESS_S)
+        self.pointer_button(False, button="right")
+
+    def pointer_button(self, pressed: bool, button: str = "left") -> None:
+        """Press or release a pointer button where the pointer already is.
 
         `click_at` and `drag` both bundle press and release together,
         which cannot express a drag-and-drop across two clients: the
@@ -1103,7 +1123,12 @@ class Session:
         These two decompose it (`test_control.rs:198`).
         """
         self.input_ops += 1
-        ok(call(self.sock, {"op": "pointer_button", "pressed": pressed}))
+        payload: dict = {"op": "pointer_button", "pressed": pressed}
+        # Omitted for the left button so the wire stays byte-identical to
+        # every recording made before the right one existed.
+        if button != "left":
+            payload["button"] = button
+        ok(call(self.sock, payload))
 
     def place_next_window(self, app_id: str) -> dict:
         """Note that the next window announcing `app_id` opens in its own
