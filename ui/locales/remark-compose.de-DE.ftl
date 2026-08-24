@@ -9,5 +9,6 @@ remark_compose_placeholder = etwas dazu sagen
 remark_compose_send = Senden
 
 remark_destination_channel = # { $name }
+remark_destination_room = der Raum
 remark_destination_private = { $name } — privat
 remark_destination_agent = { $name } — privat; die Antwort erscheint im Raum
