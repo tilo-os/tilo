@@ -3739,6 +3739,24 @@ impl ShellOverlayHost {
         ))
     }
 
+    /// The vertical middle of `group`'s tab bar, for a crossing whose two
+    /// applications share one window.
+    ///
+    /// Two applications tabbed into one frame is a shape this compositor has
+    /// and most do not, and it makes both ends of a crossing resolve to the
+    /// same group — which would leave the object pulsing in place, saying
+    /// nothing. The tab bar is where the destination actually is when it is
+    /// not the tab on top, and it is the same place a person's drag would
+    /// aim, so the object rises out of the content and settles into the bar.
+    fn group_bar_y(&self, strip: StripId, group: GroupId) -> Option<f64> {
+        let &ptr = self.group_row_ptrs.get(&strip)?;
+        // SAFETY: see field doc on `group_row_ptrs`.
+        let row: &GroupRow = unsafe { &*ptr };
+        let g = row.groups.iter().find(|g| g.id == group)?;
+        let bar = g.bar_rect();
+        (bar.height() > 0.0).then(|| bar.center().y)
+    }
+
     /// Turn what the door recorded into crossings, and pan to where each one
     /// is going.
     ///
@@ -3796,12 +3814,19 @@ impl ShellOverlayHost {
                 let Some(t) = f.flight.progress(now) else {
                     continue;
                 };
-                let (Some(from), Some(to)) = (
+                let (Some(from), Some(mut to)) = (
                     self.group_anchor(f.from.0, f.from.1),
                     self.group_anchor(f.to.0, f.to.1),
                 ) else {
                     continue;
                 };
+                // Both applications in one window: aim at the tab bar rather
+                // than at a point the object is already sitting on.
+                if f.from == f.to {
+                    if let Some(y) = self.group_bar_y(f.to.0, f.to.1) {
+                        to.y = y;
+                    }
+                }
                 ui::presence::draw_action_flight(
                     scene,
                     transform,

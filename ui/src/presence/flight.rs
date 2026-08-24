@@ -88,7 +88,7 @@ pub const FLIGHT_DURATION: Duration = Duration::from_millis(720);
 ///
 /// Big enough to recognise a photograph from across a room — this is filmed —
 /// and small enough that it never hides the window it is arriving into.
-pub const FLIGHT_LONG_EDGE: f64 = 132.0;
+pub const FLIGHT_LONG_EDGE: f64 = 150.0;
 
 /// How far the arc bows away from the straight line between the two ends, as
 /// a fraction of the distance travelled, and the most it may ever bow.

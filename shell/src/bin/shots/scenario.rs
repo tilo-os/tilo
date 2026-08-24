@@ -1286,6 +1286,14 @@ pub fn catalogue() -> Vec<Scenario> {
             Action::SetWindowWidths(440),
             Action::Wait(6),
             Action::Relayout,
+            // Frame the application the object leaves from. A crossing
+            // whose source is off the edge starts with a photograph
+            // arriving out of nothing, which says less than it looks like
+            // it does — the demo's own note about dragging between
+            // neighbours is the same observation.
+            Action::SelectGroup(Some(0)),
+            Action::Wait(10),
+            Action::Relayout,
             Action::Snapshot("action-flight-before"),
             Action::SeedActionFlight {
                 from_app: "dev.qos.photos",
@@ -1294,6 +1302,39 @@ pub fn catalogue() -> Vec<Scenario> {
             Action::SampleActionFlight {
                 prefix: "action-flight",
                 at_ms: &[0, 90, 180, 270, 360, 450, 540, 630],
+            },
+        ],
+    });
+    // The same crossing with the destination off the edge of the screen,
+    // which is the case the strip makes possible and most desktops cannot
+    // have. One window fills the display, so the application the object is
+    // going to is not on it when the action lands. The desktop has to travel
+    // to where the thing is going, and the two captures either side of the
+    // seed are what show that it did — and that it did so *because* of the
+    // crossing, rather than jiggling for no reason a viewer can see.
+    out.push(Scenario {
+        name: "action-flight-offscreen",
+        description: "a crossing whose destination is off the edge, so the \
+                      strip travels to it as the object does",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::OpenWindow { app_id: "dev.qos.photos", surface_id: 9201 },
+            Action::OpenWindow { app_id: "dev.qos.word-processor", surface_id: 9202 },
+            Action::SetWindowWidths(1000),
+            Action::Wait(6),
+            Action::Relayout,
+            Action::SelectGroup(Some(0)),
+            Action::Wait(8),
+            Action::Relayout,
+            Action::Snapshot("offscreen-before"),
+            Action::SeedActionFlight {
+                from_app: "dev.qos.photos",
+                to_app: "word-processor",
+            },
+            Action::Snapshot("offscreen-revealed"),
+            Action::SampleActionFlight {
+                prefix: "offscreen",
+                at_ms: &[0, 180, 360, 540, 660],
             },
         ],
     });
