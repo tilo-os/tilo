@@ -1106,9 +1106,24 @@ fn draw_filter_chip(
     text_size: f32,
     fill: vello::peniko::Color,
     text_color: vello::peniko::Color,
+    edge: Option<vello::peniko::Color>,
 ) {
     let shape = RoundedRect::from_rect(rect, rect.height() / 2.0);
     scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+    // An unselected chip's body is a deliberately faint tier — quiet enough
+    // that on its own it does not say a pill is there, which is how the whole
+    // filter strip came to read as a row of bare words. The shape is carried
+    // by an edge that clears the non-text floor against the band instead, so
+    // the body can stay as quiet as it was meant to be.
+    if let Some(edge) = edge {
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            edge,
+            None,
+            &shape,
+        );
+    }
     let (lw, lh) = text_renderer.measure(label, text_size, None);
     text_renderer.draw_text(
         scene,
@@ -3554,35 +3569,7 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Per-tick wire-up for the magnifier chip in a tab's window decoration:
-    /// drains each group's [`UiWindowGroup::take_pending_search_open`] one-shot
-    /// and opens the search bar scoped to the active app — the same entry point
-    /// Ctrl+K uses. The group can't do this itself because the palette lives
-    /// here on the host.
-    fn harvest_pending_search_open(&mut self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
-        let mut requested = false;
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
-            for g in row.groups.iter_mut() {
-                if g.take_pending_search_open().is_some() {
-                    requested = true;
-                }
-            }
-        }
-        if !requested {
-            return;
-        }
-        // Mirror the widget-side active tab into the tree first so the scope
-        // resolves to the app whose chip was clicked, not a stale pointer.
-        self.harvest_active_tab_writeback();
-        self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::ActiveApp);
-    }
-
-    /// Sibling of [`Self::harvest_pending_search_open`] for the tab
+    /// Per-tick wire-up for the tab
     /// strip's "+" chip: drains each group's
     /// [`UiWindowGroup::take_pending_new_tab`] and opens the palette
     /// aimed at that group.
@@ -4433,13 +4420,6 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_tab_reorder_harvest_for_tests(&mut self) {
         self.harvest_pending_tab_reorder();
-    }
-
-    /// Test-only one-shot harvest: lets integration tests invoke the per-frame
-    /// decoration-search-chip handling from outside `update`.
-    #[cfg(any(test, debug_assertions))]
-    pub fn tick_pending_search_open_for_tests(&mut self) {
-        self.harvest_pending_search_open();
     }
 
     /// Test-only one-shot harvest for the tab strip's "+" chip.
@@ -6381,9 +6361,6 @@ impl Widget for ShellOverlayHost {
         // tab order survives a restart and replicates to peers. Same one-shot
         // take-pattern as the group reorder above.
         self.harvest_pending_tab_reorder();
-        // Open the search bar scoped to the app whose decoration magnifier the
-        // user just clicked.
-        self.harvest_pending_search_open();
         // Open the palette aimed at the group whose "+" chip was clicked,
         // and retire that aim once the palette is gone. The refresh has
         // to happen here rather than inside the harvest: a picker that
@@ -11694,6 +11671,13 @@ impl ShellOverlayHost {
         // 2.4:1 on screen. Ask for the headroom that spends.
         let active_text = colors.on_accent(ui::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST);
         let idle_text = colors.text_dim;
+        // What makes an unselected chip a *chip*. Measured against the band
+        // it is drawn on, not against the token it comes from.
+        let idle_edge = colors.ink_on(
+            ui::chrome::shell::panel_ground(theme),
+            colors.border_standard,
+            ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+        );
         let control_h = Self::FILTER_CONTROL_HEIGHT_PX;
 
         // --- Scope switch (right-anchored) -----------------------------
@@ -11798,6 +11782,7 @@ impl ShellOverlayHost {
                 chip_text_size,
                 if is_active { active_fill } else { idle_fill },
                 if is_active { active_text } else { idle_text },
+                if is_active { None } else { Some(idle_edge) },
             );
             match i {
                 0 => self.search_all_chip_rect = rect,
