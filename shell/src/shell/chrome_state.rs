@@ -21,7 +21,8 @@ use ui::record::RecordStore;
 
 use crate::notifications::{CloseReason, NotificationBridge};
 use crate::shell::notification::{
-    MAX_HISTORY, MAX_NOTIFICATIONS, Notification, NotificationIconKind, NotificationSeverity,
+    MAX_HISTORY, MAX_NOTIFICATIONS, Notification, NotificationIconKind, NotificationProgress,
+    NotificationSeverity,
 };
 use crate::shell::quick_settings::{BtDevice, PowerProfile, QsLevel, WifiNetwork};
 use crate::shell::state::{
@@ -1156,6 +1157,31 @@ impl ChromeState {
 
     pub fn notifications(&self) -> &[Notification] {
         &self.notifications
+    }
+
+    /// Rewrite a live notification's body and progress in place.
+    ///
+    /// A toast standing in for work still going on is not a statement
+    /// made once — it has to keep saying something newly true, or a
+    /// slow step and a wedged one look identical. Returns whether
+    /// anything actually changed, so a caller can leave the frame clean
+    /// when the reported state has not moved.
+    pub fn update_notification_progress(
+        &mut self,
+        id: u64,
+        body: String,
+        progress: Option<NotificationProgress>,
+    ) -> bool {
+        let Some(n) = self.notifications.iter_mut().find(|n| n.id == id) else {
+            return false;
+        };
+        if n.body == body && n.progress == progress {
+            return false;
+        }
+        n.body = body;
+        n.progress = progress;
+        self.bump();
+        true
     }
 
     /// Push a new info-level notification with the given title and

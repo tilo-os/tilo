@@ -37,6 +37,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::widget::progress_bar::ProgressPaint;
 use crate::widget::{Button, ButtonFace, Widget};
 
 /// Default time-to-live for a freshly pushed toast.
@@ -229,6 +230,11 @@ const CARD_ACCENT_BAR_W: f64 = 4.0;
 const CARD_PAD_X: f64 = 14.0;
 const CARD_PAD_Y: f64 = 8.0;
 const CARD_CLOSE_SIZE: f64 = 22.0;
+/// Height of the progress track a reporting card carries along its
+/// bottom edge. Thinner than the standalone `ProgressBar`: here it is a
+/// state indication under a line of text, not the subject of the
+/// surface it sits on.
+const CARD_PROGRESS_H: f64 = 4.0;
 
 /// Immediate-mode content for one notification / toast card, painted by
 /// [`paint_card`]. Built fluently:
@@ -255,6 +261,15 @@ pub struct ToastCard<'a> {
     /// Draw an "actionable" chevron at the trailing edge (the card carries
     /// activatable actions).
     pub actionable: bool,
+    /// When set, the card is the standing indication of work still going
+    /// on, and gets a progress track along its bottom edge.
+    ///
+    /// A card that reports something in flight has to keep moving, or a
+    /// slow step and a wedged one look the same. `Indeterminate` sweeps;
+    /// a `Fraction` fills. Painted with [`progress_bar::paint_track`],
+    /// so this is the same bar the standalone widget draws rather than a
+    /// toast-shaped imitation of it.
+    pub progress: Option<ProgressPaint>,
 }
 
 impl<'a> ToastCard<'a> {
@@ -268,6 +283,7 @@ impl<'a> ToastCard<'a> {
             closable: false,
             close_hovered: false,
             actionable: false,
+            progress: None,
         }
     }
     pub fn body(mut self, body: &'a str) -> Self {
@@ -292,6 +308,11 @@ impl<'a> ToastCard<'a> {
     }
     pub fn actionable(mut self, v: bool) -> Self {
         self.actionable = v;
+        self
+    }
+    /// Report work still in flight along the card's bottom edge.
+    pub fn progress(mut self, p: ProgressPaint) -> Self {
+        self.progress = Some(p);
         self
     }
 }
@@ -424,7 +445,16 @@ pub fn paint_card(
     let title_h = title_size as f64 + if has_body { 4.0 } else { 0.0 };
     let body_h = if has_body { body_size as f64 } else { 0.0 };
     let block_h = cap_h + title_h + body_h;
-    let mut ty = rect.y0 + ((rect.height() - block_h) / 2.0).max(CARD_PAD_Y);
+    // The progress track takes its strip out of the card before the
+    // text is centred, so a reporting card's body sits above the bar
+    // instead of through it.
+    let text_area_h = rect.height()
+        - if card.progress.is_some() {
+            CARD_PROGRESS_H + CARD_PAD_Y
+        } else {
+            0.0
+        };
+    let mut ty = rect.y0 + ((text_area_h - block_h) / 2.0).max(CARD_PAD_Y);
 
     let dim = theme.tokens.colors.text_dim.with_alpha(a);
     let primary = theme.tokens.colors.text_primary.with_alpha(a);
@@ -460,6 +490,20 @@ pub fn paint_card(
             transform * Affine::translate((text_x, ty)),
             Some(width_avail),
         );
+    }
+
+    // Progress track along the bottom edge, inset to the card's radius
+    // so its rounded ends sit inside the card's own corners. It goes
+    // last so nothing can paint over it: it is the part of the card
+    // that has to keep visibly changing.
+    if let Some(paint) = card.progress {
+        let track = Rect::new(
+            rect.x0 + CARD_PAD_X,
+            rect.y1 - CARD_PAD_Y - CARD_PROGRESS_H,
+            rect.x1 - CARD_PAD_X,
+            rect.y1 - CARD_PAD_Y,
+        );
+        crate::widget::progress_bar::paint_track(scene, transform, theme, track, paint, a);
     }
 
     // Actionable chevron at the trailing-bottom edge, keyed to severity.
@@ -639,6 +683,96 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         s.handle_event(&ev, 1.0, &Default::default(), &mut doc, &root, &mut handled, &mut focus, node, &tree);
+    }
+
+    fn card_scene(card: &ToastCard<'_>) -> Scene {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        paint_card(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            Rect::new(0.0, 0.0, 360.0, 64.0),
+            card,
+        );
+        scene
+    }
+
+    fn color_fills(scene: &Scene) -> usize {
+        use vello_encoding::DrawTag;
+        scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count()
+    }
+
+    /// A card reporting work in flight paints a track, and a filled one
+    /// paints more than an empty one — so the bar is a real report of
+    /// how far along the work is, not a fixed decoration.
+    #[test]
+    fn a_reporting_card_paints_a_progress_track_that_reflects_its_value() {
+        let base = ToastCard::new("Opening Sheets", ToastKind::Info).body("Contacting qOS main…");
+        let quiet = color_fills(&card_scene(&base));
+
+        let sweeping = color_fills(&card_scene(
+            &ToastCard::new("Opening Sheets", ToastKind::Info)
+                .body("Contacting qOS main…")
+                .progress(ProgressPaint::Indeterminate { phase: 0.5 }),
+        ));
+        assert!(
+            sweeping > quiet,
+            "a card with work in flight has to paint something extra: \
+             {quiet} vs {sweeping}"
+        );
+
+        let empty = color_fills(&card_scene(
+            &ToastCard::new("Opening Sheets", ToastKind::Info)
+                .body("Downloading — 0 B")
+                .progress(ProgressPaint::Fraction(0.0)),
+        ));
+        let filled = color_fills(&card_scene(
+            &ToastCard::new("Opening Sheets", ToastKind::Info)
+                .body("Downloading — 2.0 MB of 4.0 MB")
+                .progress(ProgressPaint::Fraction(0.5)),
+        ));
+        assert!(
+            filled > empty,
+            "a half-done fetch has to look different from an unstarted \
+             one: {empty} vs {filled}"
+        );
+    }
+
+    /// The bar takes its strip out of the card rather than sharing it
+    /// with the body line, so a reporting card is legible rather than
+    /// struck through.
+    #[test]
+    fn a_progress_track_does_not_sit_on_top_of_the_body_text() {
+        let with_bar = ToastCard::new("Opening Sheets", ToastKind::Info)
+            .body("Downloading — 2.0 MB of 4.0 MB")
+            .caption("Applications")
+            .progress(ProgressPaint::Fraction(0.5));
+        let without = ToastCard::new("Opening Sheets", ToastKind::Info)
+            .body("Downloading — 2.0 MB of 4.0 MB")
+            .caption("Applications");
+        assert_ne!(
+            card_scene(&with_bar).encoding().draw_data,
+            card_scene(&without).encoding().draw_data,
+            "the bar must change the card, including where its text sits"
+        );
+
+        // The track's own strip: bottom-inset by the card padding, four
+        // pixels tall, and clear of the text block above it.
+        let rect = Rect::new(0.0, 0.0, 360.0, 64.0);
+        let track_top = rect.y1 - CARD_PAD_Y - CARD_PROGRESS_H;
+        let text_area_bottom = rect.y1 - (CARD_PROGRESS_H + CARD_PAD_Y);
+        assert!(
+            text_area_bottom <= track_top,
+            "the text has to end before the track begins"
+        );
     }
 
     #[test]

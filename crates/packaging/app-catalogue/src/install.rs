@@ -14,6 +14,8 @@
 //! the last place to relax a signature check, and a caller that wants
 //! that has to run `qos-install` themselves and mean it.
 
+use std::io::{Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -112,29 +114,95 @@ pub fn install_argv(staged_qpkg: &Path) -> Vec<String> {
     ]
 }
 
-/// HTTP-download `url` to `dest`. Blocking.
+/// How much has to arrive before another progress report is made.
+///
+/// A report per read syscall would be thousands of lines for a few
+/// megabytes, all of them describing a bar that moved by less than a
+/// pixel. 64 KiB is around a percent of a small `.qpkg` — fine enough
+/// that the bar never visibly jumps, coarse enough that the reporting
+/// is not the expensive part of the download.
+const PROGRESS_STEP_BYTES: u64 = 64 * 1024;
+
+/// Size of one read from the response body.
+const READ_CHUNK_BYTES: usize = 64 * 1024;
+
+/// What a caller learns while a package is being fetched.
+///
+/// `total` is the server's `Content-Length` when it declared one. A
+/// registry that does not is not an error — the caller shows an
+/// indeterminate indication instead of a determinate one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DownloadProgress {
+    pub received: u64,
+    pub total: Option<u64>,
+}
+
+/// HTTP-download `url` to `dest`, reporting as the bytes arrive.
+/// Blocking.
+///
+/// `on_progress` fires once when the response headers land — so a
+/// caller learns the size, and that the connection is up, before the
+/// first chunk — then at most once per [`PROGRESS_STEP_BYTES`], and
+/// once more when the last byte is written. The body is streamed
+/// rather than buffered whole, which is what makes those reports
+/// possible at all, and keeps a large package off the heap.
 ///
 /// The bytes are not trusted here — see the module header.
-pub fn download(url: &str, dest: &Path) -> Result<u64, String> {
+pub fn download_reporting(
+    url: &str,
+    dest: &Path,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<u64, String> {
     let client = reqwest::blocking::Client::builder()
         .user_agent("qos-catalogue/0.1")
         .timeout(download_timeout())
         .build()
         .map_err(|e| format!("http client: {e}"))?;
-    let bytes = client
+    let mut response = client
         .get(url)
         .send()
         .and_then(|r| r.error_for_status())
-        .and_then(|r| r.bytes())
         .map_err(|e| format!("{e}"))?;
-    if bytes.is_empty() {
-        return Err("the server returned an empty file".to_string());
-    }
+    let total = response.content_length();
+    on_progress(DownloadProgress { received: 0, total });
+
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
     }
-    std::fs::write(dest, &bytes).map_err(|e| format!("write {}: {e}", dest.display()))?;
-    Ok(bytes.len() as u64)
+    let file = std::fs::File::create(dest).map_err(|e| format!("write {}: {e}", dest.display()))?;
+    let mut writer = std::io::BufWriter::new(file);
+    let mut buf = vec![0u8; READ_CHUNK_BYTES];
+    let mut received: u64 = 0;
+    let mut reported: u64 = 0;
+    loop {
+        let n = response.read(&mut buf).map_err(|e| format!("{e}"))?;
+        if n == 0 {
+            break;
+        }
+        writer
+            .write_all(&buf[..n])
+            .map_err(|e| format!("write {}: {e}", dest.display()))?;
+        received += n as u64;
+        if received - reported >= PROGRESS_STEP_BYTES {
+            reported = received;
+            on_progress(DownloadProgress { received, total });
+        }
+    }
+    writer
+        .flush()
+        .map_err(|e| format!("write {}: {e}", dest.display()))?;
+    drop(writer);
+
+    if received == 0 {
+        return Err("the server returned an empty file".to_string());
+    }
+    on_progress(DownloadProgress { received, total });
+    Ok(received)
+}
+
+/// [`download_reporting`] for callers with nothing to report to.
+pub fn download(url: &str, dest: &Path) -> Result<u64, String> {
+    download_reporting(url, dest, &mut |_| {})
 }
 
 /// Download and install `app`, blocking until `qos-install` exits.
@@ -143,6 +211,18 @@ pub fn download(url: &str, dest: &Path) -> Result<u64, String> {
 /// live in the installed payload tree, and on failure a half-written
 /// download is not something to keep.
 pub fn install_app(app: &CatalogueApp) -> Result<(), InstallError> {
+    install_app_reporting(app, &mut |_| {})
+}
+
+/// [`install_app`], reporting the download's progress as it happens.
+///
+/// The reporting stops at the download: `qos-install` verifies and
+/// extracts as one opaque step, and inventing a fraction for it would
+/// be a bar that lies. A caller says what is happening instead.
+pub fn install_app_reporting(
+    app: &CatalogueApp,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
     let staging = staging_dir().ok_or(InstallError::NoStagingDir)?;
     // The package id comes from a signed registry entry, but it still
     // becomes a filename here — refuse anything that could escape the
@@ -154,7 +234,7 @@ pub fn install_app(app: &CatalogueApp) -> Result<(), InstallError> {
         .collect();
     let dest = staging.join(format!("{safe_id}-{}.qpkg", app.version.replace('/', "_")));
 
-    let downloaded = download(&app.download_url, &dest);
+    let downloaded = download_reporting(&app.download_url, &dest, on_progress);
     if let Err(detail) = downloaded {
         let _ = std::fs::remove_file(&dest);
         return Err(InstallError::Download { detail });
@@ -186,6 +266,14 @@ pub fn install_app(app: &CatalogueApp) -> Result<(), InstallError> {
 
 /// Resolve `package_id` against the live catalogue, then install it.
 pub fn install(package_id: &str) -> Result<CatalogueApp, InstallError> {
+    install_reporting(package_id, &mut |_| {})
+}
+
+/// [`install`], reporting the download's progress as it happens.
+pub fn install_reporting(
+    package_id: &str,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<CatalogueApp, InstallError> {
     let listing = crate::available();
     let app = listing
         .apps
@@ -194,7 +282,7 @@ pub fn install(package_id: &str) -> Result<CatalogueApp, InstallError> {
         .ok_or_else(|| InstallError::NotOffered {
             package_id: package_id.to_string(),
         })?;
-    install_app(&app)?;
+    install_app_reporting(&app, on_progress)?;
     Ok(app)
 }
 

@@ -12,35 +12,45 @@
 //!
 //! What this provider offers is installed apps **plus** whatever the
 //! machine's configured registries describe and it does not have (see
-//! [`crate::shell::catalogue`]). Both become the same row: the same
-//! `Open <App>` wording, the same subtitle shape, the same activation,
-//! in the same group.
+//! [`crate::shell::catalogue`]). Both live in one group, under one
+//! header, ranked against each other — a second provider would mean a
+//! second section headed "here is the other kind of app", and the
+//! sections would compete rather than rank.
 //!
-//! That sameness is the design, not an oversight, and it is why this
-//! lives in the existing provider rather than a second one. A second
-//! provider would be a second group, with its own header — a visible
-//! "here is the other kind of app" section, which is exactly the
-//! distinction there is no reason to draw. From where the user is
-//! standing nothing different is happening: they asked to open an app,
-//! and an app opens. Fetching it first is a step on the way, in the
-//! same sense that reading a manifest off disk is a step on the way
-//! for an app that is already here.
+//! But the two rows are not the same row, because the two acts are not
+//! the same act. Opening an app that is here takes a moment and
+//! changes nothing about the machine. Opening one that is not means
+//! going out to a registry, pulling a package down, checking who
+//! signed it, and unpacking it — seconds of waiting, over the network,
+//! after which this machine has software it did not have before. A row
+//! that reads identically to a local one asks the user to consent to
+//! all of that without telling them any of it is going to happen.
 //!
-//! One consequence has to be honoured rather than designed around: an
-//! app that has to be fetched takes seconds, not milliseconds. Silence
-//! across those seconds is indistinguishable from an activation that
-//! did nothing, so an open that needs a fetch — and only that one —
-//! raises a standing indication that it is loading, retired when the
-//! app's window appears (or replaced by the reason it could not).
-//! Nothing the user reads names the fetch: they asked to open an app,
-//! not to acquire one, and how the bytes got here is the OS's business.
+//! So a row for an app that is not here says two more things than one
+//! for an app that is, and no more: its verb is **Fetch and open**
+//! rather than Open, and it carries the registry it would come from in
+//! [`SearchResult::fetch_source`], which the palette renders as a small
+//! trailing chip. Everything else — the group, the glyph, the
+//! subtitle's shape, the ranking scale, the activation path — is
+//! identical, so the distinction is one the eye can find and not one
+//! that reorganises the list.
+//!
+//! Neither string says *install*. Nobody asked to install anything;
+//! they asked to open an app, and fetching it is how that gets done.
+//!
+//! The wait is then accounted for rather than designed around. An open
+//! that needs a fetch — and only that one — raises a standing
+//! indication that reports where the fetch has got to (see
+//! [`catalogue::FetchPhase`]), retired when the app's window appears,
+//! or replaced by the reason it could not.
 
 use std::rc::Rc;
 
 use crate::shell::catalogue::{self, CatalogueApp};
 use crate::shell::chrome_state::{Chrome, OpenTarget};
+use crate::shell::i18n;
 use crate::shell::launcher::{self, InstalledApp};
-use crate::shell::notification::{Notification, NotificationSeverity};
+use crate::shell::notification::{Notification, NotificationProgress, NotificationSeverity};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 use crate::shell::search::action_api::{ActionArgs, ActionError};
 
@@ -124,12 +134,21 @@ impl ApplicationsProvider {
                 Some(cat) => format!("{cat} · {}", app.package_id),
                 None => format!("{} · {}", app.package_id, app.version),
             };
-            let subtitle = format!("{} · {detail}", open_target.result_hint());
+            let subtitle = i18n::t_args(
+                "palette-app-subtitle",
+                &[
+                    i18n::arg("hint", open_target.result_hint()),
+                    i18n::arg("detail", detail.as_str()),
+                ],
+            );
             out.push(SearchResult::nullary_fallible(
                 kind.clone(),
                 self.id(),
                 app.package_id.clone(),
-                format!("Open {}", app.display_name),
+                i18n::t_args(
+                    "palette-open-app",
+                    &[i18n::arg("app", app.display_name.as_str())],
+                ),
                 Some(subtitle),
                 score,
                 move |_doc, _root, chrome: &Chrome| {
@@ -149,12 +168,16 @@ impl ApplicationsProvider {
     /// Score not-yet-installed apps against `needle` and build their
     /// rows.
     ///
-    /// Deliberately a near-mirror of [`Self::results_for`]: the title
-    /// wording, the subtitle shape and the score bands are the same
-    /// function of the same fields, because the row a user sees must
-    /// not be able to tell them apart. `installed` is the ids already
-    /// present, so an app cannot be offered twice in the window
-    /// between an install finishing and the catalogue being refetched.
+    /// Structurally a mirror of [`Self::results_for`] — same group,
+    /// same glyph, same score bands, same subtitle shape — differing in
+    /// exactly the two places where the truth differs: the verb says
+    /// the row will fetch, and [`SearchResult::fetch_source`] names the
+    /// registry it would fetch from. See the module header for why that
+    /// is two things and not zero or five.
+    ///
+    /// `installed` is the ids already present, so an app cannot be
+    /// offered twice in the window between an install finishing and the
+    /// catalogue being refetched.
     pub(crate) fn catalogue_results_for(
         &self,
         needle: &str,
@@ -181,19 +204,35 @@ impl ApplicationsProvider {
             };
             let package_id = app.package_id.clone();
             let display_name = app.display_name.clone();
-            // Identical to the installed subtitle, field for field.
+            let registry = app.registry.clone();
+            // The same fields an installed row shows, plus where it
+            // would come from. The registry goes at the *end* because
+            // the palette elides a subtitle from the middle: the part
+            // that says this is not a local app is the part that has to
+            // survive a narrow window.
             let detail = match app.category.as_deref() {
                 Some(cat) => format!("{cat} · {}", app.package_id),
                 None => format!("{} · {}", app.package_id, app.version),
             };
-            let subtitle = format!("{} · {detail}", open_target.result_hint());
+            let subtitle = i18n::t_args(
+                "palette-app-subtitle-remote",
+                &[
+                    i18n::arg("hint", open_target.result_hint()),
+                    i18n::arg("detail", detail.as_str()),
+                    i18n::arg("registry", app.registry.as_str()),
+                ],
+            );
             out.push(SearchResult {
                 kind: ResourceKind::Application,
                 provider_id: self.id().to_string(),
                 id: app.package_id.clone(),
-                title: format!("Open {}", app.display_name),
+                title: i18n::t_args(
+                    "palette-fetch-and-open-app",
+                    &[i18n::arg("app", app.display_name.as_str())],
+                ),
                 subtitle: Some(subtitle),
                 score: score - NOT_INSTALLED_TIEBREAK,
+                fetch_source: Some(app.registry.clone()),
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
                     // Everything decided on the frame thread is decided
                     // *now*, while the user's selection and the layout
@@ -224,7 +263,10 @@ impl ApplicationsProvider {
                         let mut st = chrome.borrow_mut();
                         st.push_notification_full(
                             Notification::new(
-                                format!("Couldn't open {display_name}"),
+                                i18n::t_args(
+                                    "notice-open-failed",
+                                    &[i18n::arg("app", display_name.as_str())],
+                                ),
                                 launcher::LaunchError::NoWorkspace.user_message(),
                             )
                             .with_severity(NotificationSeverity::Error)
@@ -241,20 +283,30 @@ impl ApplicationsProvider {
                     // Raised *before* the work starts, so the
                     // acknowledgement is on screen on the same frame as
                     // the keystroke rather than whenever the first byte
-                    // lands. It says the app is loading and nothing
-                    // about how, because the user asked to open an app
-                    // and not to acquire one. It is retired by the
-                    // app's window appearing, not by a timer, so the
-                    // indication covers the whole wait and ends on
-                    // something the user can see.
+                    // lands. Its body is rewritten each frame from the
+                    // fetch's own reported phase, so it says what is
+                    // actually happening — contacting the registry,
+                    // this much of that much downloaded, unpacking —
+                    // rather than a fixed word that could equally mean
+                    // "wedged". It is retired by the app's window
+                    // appearing, not by a timer, so the indication
+                    // covers the whole wait and ends on something the
+                    // user can see.
                     let notice = {
                         let mut st = chrome.borrow_mut();
                         let id = st.push_notification_full(
                             Notification::new(
-                                format!("Opening {display_name}"),
-                                "Loading…".to_string(),
+                                i18n::t_args(
+                                    "notice-opening-app",
+                                    &[i18n::arg("app", display_name.as_str())],
+                                ),
+                                i18n::t_args(
+                                    "notice-fetch-connecting",
+                                    &[i18n::arg("registry", registry.as_str())],
+                                ),
                             )
                             .with_app_name("Applications")
+                            .with_progress(NotificationProgress::Indeterminate)
                             .with_dismiss_after(std::time::Duration::from_secs(120)),
                         );
                         st.bump();
@@ -504,9 +556,12 @@ pub(crate) fn launch_installed_app(
                 st.dismiss_notification(id);
             }
             st.push_notification_full(
-                Notification::new(format!("Couldn't open {display_name}"), message.clone())
-                    .with_severity(NotificationSeverity::Error)
-                    .with_app_name("Applications"),
+                Notification::new(
+                    i18n::t_args("notice-open-failed", &[i18n::arg("app", display_name)]),
+                    message.clone(),
+                )
+                .with_severity(NotificationSeverity::Error)
+                .with_app_name("Applications"),
             );
             st.bump();
         }
@@ -634,6 +689,17 @@ mod tests {
         ChromeState::new_with_handle(handle)
     }
 
+    /// Pin the locale for a test that asserts on exact wording.
+    ///
+    /// These rows are translated now, so the strings depend on the
+    /// developer's `LANG` unless the test says otherwise — which is how
+    /// a German desktop turned the whole suite red. Paired with
+    /// `#[serial_test::serial(locale)]` because the active locale is
+    /// process-global.
+    fn english() {
+        i18n::set_locale("en-US");
+    }
+
     fn app(package_id: &str, display_name: &str) -> InstalledApp {
         app_in(package_id, display_name, None)
     }
@@ -664,7 +730,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(locale)]
     fn matching_app_offers_an_open_row() {
+        english();
         let p = ApplicationsProvider::new();
         let out = p.results_for("hel", vec![app("dev.qos.hello", "Hello")], OpenTarget::Beside);
         assert_eq!(out.len(), 1);
@@ -679,7 +747,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(locale)]
     fn declared_category_is_matchable_and_replaces_the_version_subtitle() {
+        english();
         let p = ApplicationsProvider::new();
         let out = p.results_for("office", vec![
                 app_in("dev.qos.sheets", "Sheets", Some("Office")),
@@ -791,7 +861,9 @@ mod tests {
     /// successful one, so a script — or an agent — is told the app
     /// opened and goes on to wait for a window that will never arrive.
     #[test]
+    #[serial_test::serial(locale)]
     fn a_failed_launch_notifies_the_user_and_refuses_the_caller() {
+        english();
         use crate::shell::search::action_api::ActionError;
 
         let p = ApplicationsProvider::new();
@@ -840,15 +912,24 @@ mod tests {
     // -----------------------------------------------------------------
     // Apps that are not installed here yet.
     //
-    // The load-bearing property across these is *sameness*: a row for
-    // an app the machine has to fetch must be indistinguishable from a
-    // row for one it already has. A test that only checked "a row
-    // exists" would pass while the row said "Install" in a separate
-    // section, so these assert on the exact strings.
+    // Two properties are load-bearing here and they pull against each
+    // other. A row for an app the machine has to fetch must be
+    // *findable* — activating it goes to the network and leaves this
+    // machine with software it did not have, and a row that reads
+    // identically to a local one asks for that without saying so. And
+    // it must stay *structurally identical* — same group, same glyph,
+    // same subtitle shape, same ranking — or the palette grows a "here
+    // is the other kind of app" section that competes with its own
+    // results instead of ranking against them.
+    //
+    // So these assert on the exact strings in both directions: what
+    // must differ, and what must not.
     // -----------------------------------------------------------------
 
     #[test]
-    fn an_uninstalled_app_offers_an_ordinary_open_row() {
+    #[serial_test::serial(locale)]
+    fn an_uninstalled_app_offers_a_row_that_says_it_will_fetch() {
+        english();
         let p = ApplicationsProvider::new();
         let out = p.catalogue_results_for(
             "she",
@@ -858,8 +939,8 @@ mod tests {
         );
         assert_eq!(out.len(), 1, "the offered app must match: {out:?}");
         assert_eq!(
-            out[0].title, "Open Sheets",
-            "an app the machine has to fetch is still just opened"
+            out[0].title, "Fetch and open Sheets",
+            "the verb has to say what activating the row actually does"
         );
         assert_eq!(out[0].id, "dev.qos.sheets");
         assert_eq!(out[0].kind, ResourceKind::Application);
@@ -870,10 +951,43 @@ mod tests {
         );
     }
 
-    /// The row must not be readable as "not installed". Nothing in the
-    /// user-visible strings may hint at installing.
+    /// The distinguishing fact travels on the row, so the palette (and
+    /// anything else reading rows) does not have to work out for itself
+    /// whether an app is here.
     #[test]
-    fn nothing_in_an_uninstalled_row_says_install() {
+    fn only_an_uninstalled_row_carries_a_fetch_source() {
+        let p = ApplicationsProvider::new();
+        let installed = p.results_for(
+            "sheets",
+            vec![app_in("dev.qos.sheets", "Sheets", Some("Office"))],
+            OpenTarget::Beside,
+        );
+        assert_eq!(
+            installed[0].fetch_source, None,
+            "an app that is here is not fetched from anywhere"
+        );
+
+        let available = p.catalogue_results_for(
+            "sheets",
+            vec![offered("dev.qos.sheets", "Sheets", Some("Office"))],
+            &[],
+            OpenTarget::Beside,
+        );
+        assert_eq!(
+            available[0].fetch_source.as_deref(),
+            Some("qOS main"),
+            "the row names the registry it would come from, not merely \
+             that it would come from one"
+        );
+    }
+
+    /// The wording is honest about the network and silent about
+    /// installing: the user asked to open an app, not to acquire one,
+    /// and "install" is a word nobody typed.
+    #[test]
+    #[serial_test::serial(locale)]
+    fn an_uninstalled_row_never_says_install() {
+        english();
         let p = ApplicationsProvider::new();
         let out = p.catalogue_results_for(
             "",
@@ -884,20 +998,27 @@ mod tests {
         let row = &out[0];
         let visible = format!("{} {}", row.title, row.subtitle.clone().unwrap_or_default());
         let lowered = visible.to_lowercase();
-        for word in ["install", "download", "fetch", "available", "get "] {
+        for word in ["install", "download", "purchase", "buy "] {
             assert!(
                 !lowered.contains(word),
                 "{word:?} must not appear in a row the user reads as opening \
                  an app: {visible:?}"
             );
         }
+        assert!(
+            lowered.contains("fetch"),
+            "and it must say the one true thing that distinguishes it: \
+             {visible:?}"
+        );
     }
 
-    /// Byte-for-byte the same subtitle an installed app with the same
-    /// metadata would produce. This is the assertion that would fail
-    /// first if someone added a badge or a source marker.
+    /// Same shape as an installed row, plus the provenance. Everything
+    /// the two rows share has to keep being shared, or the difference
+    /// stops being one difference and becomes a different list.
     #[test]
-    fn an_uninstalled_row_has_the_same_subtitle_as_an_installed_one() {
+    #[serial_test::serial(locale)]
+    fn an_uninstalled_subtitle_is_the_installed_one_plus_its_registry() {
+        english();
         let p = ApplicationsProvider::new();
         let installed = p.results_for(
             "",
@@ -910,26 +1031,68 @@ mod tests {
             &[],
             OpenTarget::Beside,
         );
-        assert_eq!(installed[0].title, available[0].title);
+        let mine = installed[0].subtitle.clone().expect("installed subtitle");
+        let theirs = available[0].subtitle.clone().expect("available subtitle");
+        assert_eq!(mine, "Opens beside · Office · dev.qos.sheets");
         assert_eq!(
-            installed[0].subtitle, available[0].subtitle,
-            "the two rows have to be indistinguishable"
+            theirs, "Opens beside · Office · dev.qos.sheets · from qOS main",
+            "the fields an installed row shows, then where this one comes from"
+        );
+        assert!(
+            theirs.starts_with(&mine),
+            "the shared part has to stay shared, or the two rows stop \
+             reading as the same kind of thing: {mine:?} vs {theirs:?}"
+        );
+        // The registry goes last because the palette elides a subtitle
+        // from its middle: the part that says this is not local is the
+        // part that has to survive a narrow window.
+        assert!(
+            theirs.ends_with("from qOS main"),
+            "provenance must be at the tail, where elision keeps it: {theirs:?}"
         );
 
-        // And with no category declared, where the subtitle falls back
-        // to id + version.
-        let installed = p.results_for(
-            "",
-            vec![app("dev.qos.plain", "Plain")],
-            OpenTarget::Beside,
-        );
+        // And with no category declared, where the detail falls back to
+        // id + version.
+        let installed = p.results_for("", vec![app("dev.qos.plain", "Plain")], OpenTarget::Beside);
         let available = p.catalogue_results_for(
             "",
             vec![offered("dev.qos.plain", "Plain", None)],
             &[],
             OpenTarget::Beside,
         );
-        assert_eq!(installed[0].subtitle, available[0].subtitle);
+        let mine = installed[0].subtitle.clone().expect("installed subtitle");
+        let theirs = available[0].subtitle.clone().expect("available subtitle");
+        assert!(theirs.starts_with(&mine), "{mine:?} vs {theirs:?}");
+        assert!(theirs.ends_with("from qOS main"));
+    }
+
+    /// Structure is what must not move: a difference the eye can find
+    /// is the goal, a reorganised list is not.
+    #[test]
+    fn an_uninstalled_row_keeps_the_group_glyph_and_ranking_of_an_installed_one() {
+        let p = ApplicationsProvider::new();
+        let installed = p.results_for(
+            "sheets",
+            vec![app_in("dev.qos.sheets", "Sheets", Some("Office"))],
+            OpenTarget::Beside,
+        );
+        let available = p.catalogue_results_for(
+            "sheets",
+            vec![offered("dev.qos.sheets", "Sheets", Some("Office"))],
+            &[],
+            OpenTarget::Beside,
+        );
+        assert_eq!(
+            installed[0].kind, available[0].kind,
+            "same kind means same group header and same glyph"
+        );
+        assert_eq!(installed[0].provider_id, available[0].provider_id);
+        assert_eq!(
+            installed[0].score - available[0].score,
+            NOT_INSTALLED_TIEBREAK,
+            "the two are ranked on one scale a single point apart, not on \
+             two scales that cannot be compared"
+        );
     }
 
     /// The ranking rule, stated as the two cases that matter.
@@ -1013,7 +1176,9 @@ mod tests {
     /// words an installed app's launch uses — not fail silently while
     /// the palette closes. Drives the real `on_open` closure.
     #[test]
+    #[serial_test::serial(locale)]
     fn activating_with_no_workspace_reports_it_the_same_way() {
+        english();
         let p = ApplicationsProvider::new();
         let c = chrome_rc();
         let mut doc = AutoCommit::new();
@@ -1047,7 +1212,9 @@ mod tests {
     /// starts. The wait is measured in seconds; silence across it is
     /// indistinguishable from a keystroke that did nothing.
     #[test]
+    #[serial_test::serial(locale)]
     fn activating_an_app_that_has_to_load_says_so_immediately() {
+        english();
         let p = ApplicationsProvider::new();
         let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::bootstrap_demo()));
         let c = ChromeState::new_with_handle(handle);
@@ -1074,32 +1241,119 @@ mod tests {
             "the indication has to outlast the wait it is covering, not \
              flash and leave the user watching nothing"
         );
-
-        // And it must not name the mechanism. The user asked to open an
-        // app; they did not ask to acquire one, and what had to happen
-        // first is the OS's business.
+        // Something has to be *moving*, or a slow fetch and a wedged
+        // one look the same. Nothing is known about the size yet, so
+        // the honest indication is indeterminate.
+        assert_eq!(
+            n.progress,
+            Some(NotificationProgress::Indeterminate),
+            "an open in flight has to carry a live progress indication"
+        );
+        // And it says where the bytes are coming from, because that is
+        // the true and useful thing about this particular wait.
+        assert_eq!(
+            n.body, "Contacting qOS main…",
+            "the body names the registry the app is being fetched from"
+        );
+        // It still never says install: nobody asked to install
+        // anything.
         let visible = format!("{} {}", n.title, n.body).to_lowercase();
-        for word in ["install", "download", "fetch", "registry"] {
-            assert!(
-                !visible.contains(word),
-                "{word:?} must not appear in what the user reads while \
-                 waiting for an app to open: {:?} / {:?}",
-                n.title,
-                n.body
-            );
-        }
         assert!(
-            n.body.to_lowercase().contains("load"),
-            "the one thing to say is that it is loading: {:?}",
+            !visible.contains("install"),
+            "{:?} / {:?} must not read as an install",
+            n.title,
             n.body
         );
+
+        // The same open is readable by a caller that cannot see the
+        // screen. An agent driving the palette over the control socket
+        // has the same right to know the state of the thing it asked
+        // for. (Where that state then goes — bytes, then unpacking,
+        // then a launch or a legible failure — is proved end to end
+        // against a real subprocess in `catalogue`.)
+        assert!(
+            catalogue::fetch_phase("dev.qos.sheets").is_some(),
+            "an activated open must report a phase, not merely paint one"
+        );
+        catalogue::clear_fetch_phase("dev.qos.sheets");
+    }
+
+    /// The notice is not a sentence written once at the keystroke: it
+    /// is rewritten from the fetch's own reports, so it keeps saying
+    /// something newly true across the seconds it is up.
+    #[test]
+    #[serial_test::serial(locale)]
+    fn the_notice_follows_the_fetch_through_its_phases() {
+        use crate::shell::catalogue::FetchPhase;
+        use crate::shell::overlay_host::progress_body;
+        english();
+
+        assert_eq!(
+            progress_body(&FetchPhase::Connecting),
+            None,
+            "the opening sentence already names the registry; re-deriving \
+             it without the name would say less"
+        );
+        assert_eq!(
+            progress_body(&FetchPhase::Downloading {
+                received: 512 * 1024,
+                total: Some(4 * 1024 * 1024),
+            })
+            .as_deref(),
+            Some("Downloading — 512 KB of 4.0 MB"),
+            "a sized download says how much of how much — the number that \
+             distinguishes a slow network from a stalled one"
+        );
+        assert_eq!(
+            progress_body(&FetchPhase::Downloading {
+                received: 512 * 1024,
+                total: None,
+            })
+            .as_deref(),
+            Some("Downloading — 512 KB"),
+            "an unsized one says what has arrived rather than inventing a \
+             total"
+        );
+        assert_eq!(
+            progress_body(&FetchPhase::Unpacking).as_deref(),
+            Some("Checking and unpacking…")
+        );
+        assert_eq!(
+            progress_body(&FetchPhase::Starting).as_deref(),
+            Some("Starting…")
+        );
+        // A failure reads as its own reason, not as a generic stop.
+        assert_eq!(
+            progress_body(&FetchPhase::Failed {
+                detail: "the download failed: connection refused".to_string(),
+            })
+            .as_deref(),
+            Some("the download failed: connection refused")
+        );
+
+        for phase in [
+            FetchPhase::Downloading {
+                received: 1,
+                total: Some(2),
+            },
+            FetchPhase::Unpacking,
+            FetchPhase::Starting,
+        ] {
+            let body = progress_body(&phase).expect("a phase the user waits through says something");
+            assert!(
+                !body.to_lowercase().contains("install"),
+                "{phase:?} must not read as an install: {body:?}"
+            );
+        }
     }
 
     /// An app that is already here opens without a loading state — it
     /// does not need one, and a state that flashes for a hundred
     /// milliseconds is noise rather than feedback.
     #[test]
+    #[serial_test::serial(locale)]
     fn an_app_that_is_already_here_does_not_raise_a_loading_state() {
+        english();
         let p = ApplicationsProvider::new();
         let out = p.results_for(
             "she",

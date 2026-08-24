@@ -547,6 +547,93 @@ impl ShellDriver {
                     .host_mut()
                     .refresh_search_results_for_shots(&mut self.state, &root);
             }
+            // Both kinds of app row in one list: one the machine has,
+            // one it would have to fetch. The whole point of the scene
+            // is the comparison — a marker only means anything next to
+            // an unmarked row.
+            "palette_offer_not_installed" => {
+                use shell::shell::catalogue::{self, CatalogueApp};
+                // Names that share a prefix with an app this machine
+                // does have, so the two land side by side under one
+                // header and the difference between them is the only
+                // thing that has moved.
+                catalogue::seed_for_test(vec![
+                    CatalogueApp {
+                        package_id: "dev.qos.notebook".to_string(),
+                        display_name: "Notebook".to_string(),
+                        description: "long-form writing".to_string(),
+                        category: Some("Office".to_string()),
+                        version: "1.4.0".to_string(),
+                        registry: "qOS main".to_string(),
+                        trust: "verified".to_string(),
+                    },
+                    CatalogueApp {
+                        package_id: "dev.qos.notation".to_string(),
+                        display_name: "Notation".to_string(),
+                        description: "engrave scores".to_string(),
+                        category: Some("Music".to_string()),
+                        version: "1.1.0".to_string(),
+                        registry: "qOS main".to_string(),
+                        trust: "verified".to_string(),
+                    },
+                ]);
+                self.fb.host_mut().set_palette_visible(true);
+                self.fb.host_mut().force_palette_settled();
+                self.fb.host_mut().set_palette_focus(true);
+                self.fb
+                    .host_mut()
+                    .set_kind_filter_for_shots(vec![
+                        shell::shell::search::ResourceKind::Application,
+                    ]);
+                self.fb.host_mut().set_palette_query("no");
+                let root = self.root_obj.clone();
+                self.fb
+                    .host_mut()
+                    .refresh_search_results_for_shots(&mut self.state, &root);
+            }
+            // The seconds after Enter on such a row: the palette is
+            // gone and the notice is the only thing accounting for the
+            // wait, so it has to say where the fetch has got to and
+            // keep visibly moving.
+            "open_progress" => {
+                use shell::shell::notification::{Notification, NotificationProgress};
+                let settled_at = Instant::now() - Duration::from_secs(1);
+                self.with_chrome(|st| {
+                    st.push_notification_full(
+                        Notification::new("Opening Word Processor", "Downloading — 2.1 MB of 4.8 MB")
+                            .with_app_name("Applications")
+                            .with_progress(NotificationProgress::Fraction(0.44))
+                            .with_dismiss_after(Duration::from_secs(120))
+                            .with_created_at(settled_at),
+                    );
+                    st.push_notification_full(
+                        Notification::new("Opening Slides", "Contacting qOS main…")
+                            .with_app_name("Applications")
+                            .with_progress(NotificationProgress::Indeterminate)
+                            .with_dismiss_after(Duration::from_secs(120))
+                            .with_created_at(settled_at),
+                    );
+                });
+            }
+            // A fetch that did not happen. The end of an open is always
+            // legible — the reason replaces the indication rather than
+            // the indication simply vanishing.
+            "open_failed" => {
+                use shell::shell::notification::{Notification, NotificationSeverity};
+                let settled_at = Instant::now() - Duration::from_secs(1);
+                self.with_chrome(|st| {
+                    st.push_notification_full(
+                        Notification::new(
+                            "Couldn't open Word Processor",
+                            "the download failed: connection refused",
+                        )
+                        .with_severity(NotificationSeverity::Error)
+                        .with_app_name("Applications")
+                        .with_dismiss_after(Duration::from_secs(120))
+                        .with_created_at(settled_at),
+                    );
+                });
+            }
             // The query that exposed the palette's ranking: an installed
             // app's name that also appears in dozens of source paths.
             // Enter activates the top row, so the app has to be it.
@@ -1038,6 +1125,9 @@ impl ShellDriver {
         "palette_app_query",
         "palette_records",
         "palette_no_results",
+        "palette_offer_not_installed",
+        "open_progress",
+        "open_failed",
         "quick-settings",
         "qs-wifi-drillin",
         "qs-bt-drillin",
