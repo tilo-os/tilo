@@ -166,16 +166,21 @@ class Session:
     def peer_sync(self) -> dict:
         return self.chrome()["peer_sync"]
 
-    def room(self):
+    def active_workspace(self) -> dict:
         tree = self.state()["workspace_tree"]
         active = tree.get("active")
         for ws in tree.get("workspaces", []):
             if ws.get("id") == active:
-                return ws.get("room")
-        return None
+                return ws
+        return {}
+
+    def room(self):
+        return self.active_workspace().get("room")
 
     def roster(self) -> list:
-        return self.state()["workspace_tree"].get("collaborators", []) or []
+        """Who the room's people panel is listing, off the active
+        workspace — the same list the panel paints."""
+        return self.active_workspace().get("collaborators") or []
 
     def named_rect(self, name: str):
         for target in self.call({"op": "list_targets"}).get("targets", []):
