@@ -30,7 +30,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{TextInput, VideoPlayer};
+use ui::widget::{ContextMenu as UiContextMenu, TextInput, VideoPlayer};
 
 use crate::actions::{self, ChatAction};
 use crate::call::{CallState, OverlayDrag, SoundEngine};
@@ -290,6 +290,23 @@ pub struct ChatApp {
     pub(crate) attach_open: bool,
     pub(crate) attach_entries: Vec<crate::picker::PickEntry>,
 
+    /// What the room calls each participant, and the colour it gave them —
+    /// refreshed from the collaboration context every frame (see
+    /// [`ui::presence::PresenceCtx`]). A peer never writes its own name into
+    /// the shared document, so this is where a name comes from; the document's
+    /// stored name is only a fallback for a participant the room has not
+    /// spoken about yet.
+    pub(crate) room_names: HashMap<Id, String>,
+    pub(crate) room_colors: HashMap<Id, (u8, u8, u8)>,
+
+    /// The `@` picker: the shared [`ui::widget::ContextMenu`] popover, plus the
+    /// participants its rows stand for and the run in the composer it will
+    /// replace. Composed, not hand-rolled — keyboard navigation, hover, the
+    /// overlay tier and theming all come from the primitive.
+    pub(crate) mention_menu: UiContextMenu,
+    pub(crate) mention_rows: Vec<crate::mention::Participant>,
+    pub(crate) mention_query: Option<crate::mention::MentionQuery>,
+
     // Structure editing.
     pub(crate) menu: Option<ContextMenu>,
     /// Inline rename editor: the target being renamed + its working text.
@@ -475,6 +492,11 @@ impl ChatApp {
             editing: None,
             attach_open: false,
             attach_entries: Vec::new(),
+            room_names: HashMap::new(),
+            room_colors: HashMap::new(),
+            mention_menu: UiContextMenu::new(),
+            mention_rows: Vec::new(),
+            mention_query: None,
             menu: None,
             rename: None,
             swipe: None,
@@ -610,6 +632,7 @@ impl ChatApp {
             channels,
             active_channel: self.active_channel.clone(),
             messages,
+            participants: self.participants(),
         }
     }
 
@@ -1194,6 +1217,108 @@ impl ChatApp {
         }
     }
 
+    // --- who is in the room, and what the room calls them -----------------
+
+    /// Take the room's view of the participants off the presence store.
+    ///
+    /// Called once per frame from `draw_with_presence`. The presence store is
+    /// seeded from `CollabEvent::Context` — the broker's roster snapshot — so a
+    /// name here is the room's answer, arrived over the same transport as the
+    /// messages. Nothing a peer says about itself reaches this map.
+    pub(crate) fn adopt_room(&mut self, presence: &PresenceCtx) {
+        for (id, name) in &presence.names {
+            let name = name.trim();
+            if name.is_empty() {
+                continue;
+            }
+            let current = self.room_names.get(&id.0);
+            if current.map(|c| c.as_str()) != Some(name) {
+                self.room_names.insert(id.0.clone(), name.to_string());
+            }
+        }
+        // A colour is the same kind of answer: assigned per room so two people
+        // never collide, and shared with the caret pill and the cursor.
+        for id in presence.names.keys() {
+            self.room_colors.insert(id.0.clone(), presence.color_for(id));
+        }
+    }
+
+    /// What to call `id`: the room's answer first, the document's stored name
+    /// as an offline fallback, and the raw id last so a label is never blank.
+    ///
+    /// The precedence is the point. A client that could name itself would be
+    /// telling every other peer what to call it, and two peers disagreeing
+    /// about a third's name is a difference nobody can settle. So the room
+    /// answers, and a peer only ever supplies its id.
+    pub(crate) fn display_name(&self, id: &str) -> String {
+        if let Some(n) = self.room_names.get(id) {
+            if !n.trim().is_empty() {
+                return n.clone();
+            }
+        }
+        if let Some(u) = self.users.iter().find(|u| u.id == id) {
+            if !u.name.trim().is_empty() {
+                return u.name.clone();
+            }
+        }
+        id.to_string()
+    }
+
+    /// The avatar monogram for `id`, derived from whatever the room calls them
+    /// so the letter never disagrees with the name beside it.
+    pub(crate) fn initials_for(&self, id: &str) -> String {
+        let name = self.display_name(id);
+        let s = ui::widget::Avatar::initials_for_name(&name);
+        if s.is_empty() {
+            name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default()
+        } else {
+            s
+        }
+    }
+
+    /// The participant's own colour, in the shared presence vocabulary: the
+    /// room's assignment when it made one, otherwise the system-wide
+    /// per-user colour every other surface derives the same way.
+    pub(crate) fn participant_color(&self, id: &str) -> (u8, u8, u8) {
+        self.room_colors
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| ui::presence::user_color(id))
+    }
+
+    /// Everyone in this room the composer can address: people and agents
+    /// alike, named by the room.
+    ///
+    /// The membership list is the shared document's — it converges, so a peer
+    /// that is currently offline is still someone you can mention — and the
+    /// names come from [`Self::display_name`]. An agent is a participant like
+    /// any other; only its `is_agent` flag differs, and only so the picker can
+    /// say which is which.
+    pub(crate) fn participants(&self) -> Vec<crate::mention::Participant> {
+        let mut out: Vec<crate::mention::Participant> = self
+            .users
+            .iter()
+            .map(|u| crate::mention::Participant {
+                id: u.id.clone(),
+                name: self.display_name(&u.id),
+                is_agent: u.is_agent,
+            })
+            .collect();
+        // Anyone the room is talking about who has not yet written themselves
+        // into the document is still addressable.
+        for id in self.room_names.keys() {
+            if !out.iter().any(|p| &p.id == id) {
+                out.push(crate::mention::Participant {
+                    id: id.clone(),
+                    name: self.display_name(id),
+                    is_agent: false,
+                });
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
     /// The members roster shown in the right flap when no thread is open: every
     /// user in the workspace paired with the voice channel they're currently in
     /// (if any). Sorted in-call first, then by presence, then by name. Real
@@ -1212,8 +1337,11 @@ impl ChatApp {
             .users
             .iter()
             .cloned()
-            .map(|u| {
+            .map(|mut u| {
                 let voice = in_voice.get(u.id.as_str()).cloned();
+                // The room's answer, not whatever the document happens to hold.
+                u.name = self.display_name(&u.id);
+                u.initials = self.initials_for(&u.id);
                 (u, voice)
             })
             .collect();
@@ -1445,15 +1573,11 @@ impl Widget for ChatApp {
             // workspace or adopted a peer's shared document. Guarded so it
             // writes once and doesn't churn the doc (which would spam empty
             // collab deltas) on subsequent frames.
-            if ChatDoc::ensure_user(
-                doc,
-                &self.me.id,
-                &self.me.name,
-                &self.me.initials,
-                self.me.color_idx,
-                model::Presence::Online,
-            ) {
-            }
+            // Membership only. A peer records that it is here and what kind of
+            // participant it is; it does not get to say what it is called. The
+            // room answers that (see `adopt_room` / `display_name`), which is
+            // why two peers can never disagree about a third's name.
+            ChatDoc::ensure_member(doc, &self.me.id, false, model::Presence::Online);
         } else if self.shot_starter {
             // `--shots` capture of the honest first-run empty workspace.
             ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
@@ -1689,6 +1813,12 @@ impl Widget for ChatApp {
         // file-embed hydration are gated by the real grant policy (the
         // compositor hands each app its context here every frame).
         self.perms = ChatPermissions::from_context(permissions.clone());
+        // Adopt the room's answer for who everybody is. Names and colours are
+        // the room's to give: they arrive on the collaboration context stream
+        // and land in the presence store, and this is the one door an app has
+        // onto that store. Taken before `draw` so the same frame that learns a
+        // name paints it.
+        self.adopt_room(presence);
         // Root spans the whole window — always paint.
         self.draw(scene, tf, tr, theme, presence);
     }

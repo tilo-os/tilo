@@ -10,7 +10,21 @@ use vello::kurbo::{Point, Vec2};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::widget::TextInput;
+use ui::widget::{ContextMenu as UiContextMenu, TextInput};
+
+/// How many participants the `@` picker offers at once. Enough to cover a small
+/// room without the popover becoming a scrolling list of its own.
+const MENTION_ROWS_MAX: usize = 6;
+
+/// A picker row's label: the participant's name, and for an agent a marker so a
+/// person can tell at a glance that they are addressing software.
+fn mention_row_label(p: &crate::mention::Participant) -> String {
+    if p.is_agent {
+        format!("{}  {}", p.name, crate::i18n::t("chat-mention-agent-tag"))
+    } else {
+        p.name.clone()
+    }
+}
 use ui::Widget;
 
 use crate::actions;
@@ -219,6 +233,13 @@ impl ChatApp {
                 return;
             }
         }
+        // While the `@` picker is up it owns Up/Down/Enter/Escape — the keys
+        // that mean "move through the list" rather than "edit the text". Every
+        // other keystroke still reaches the composer, so the list narrows as
+        // you keep typing.
+        if self.mention_menu.is_open() && self.route_mention_key(event, doc) {
+            return;
+        }
         let key = self.draft_key();
         drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc);
         if self.focused_composer_mut().take_submit() {
@@ -227,6 +248,146 @@ impl ChatApp {
             ChatDoc::set_draft(doc, &key, &text);
             self.reload(doc);
         }
+        self.refresh_mention_picker();
+    }
+
+    /// Give the open `@` picker first refusal on a keystroke. Returns whether
+    /// it consumed one.
+    ///
+    /// The popover is the shared [`ui::widget::ContextMenu`], so this is only
+    /// the routing: the highlight movement, the wrap-around, the dismissal and
+    /// the hit test are the primitive's.
+    fn route_mention_key(&mut self, event: &WindowEvent, doc: &mut AutoCommit) -> bool {
+        let WindowEvent::KeyboardInput {
+            event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        match logical_key {
+            Key::Named(NamedKey::ArrowUp)
+            | Key::Named(NamedKey::ArrowDown)
+            | Key::Named(NamedKey::Escape) => {
+                let mut handled = false;
+                self.drive_mention_menu(event, &mut handled);
+                true
+            }
+            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Tab) => {
+                // Enter with a row highlighted picks that participant; with
+                // none, fall through so Enter still sends the message.
+                match self.mention_menu.hovered() {
+                    Some(idx) => {
+                        self.accept_mention(idx, doc);
+                        true
+                    }
+                    None => {
+                        self.close_mention_picker();
+                        false
+                    }
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Hand an event to the picker popover through the `Widget` surface the
+    /// primitive implements.
+    fn drive_mention_menu(&mut self, event: &WindowEvent, handled: &mut bool) {
+        use ui::widget::Widget;
+        let mut throwaway = AutoCommit::new();
+        let root = automerge::ROOT;
+        let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+        let mut focus_target = None;
+        self.mention_menu.handle_event(
+            event,
+            1.0,
+            &Modifiers::default(),
+            &mut throwaway,
+            &root,
+            handled,
+            &mut focus_target,
+            taffy::NodeId::new(0),
+            &taffy,
+        );
+    }
+
+    /// Recompute whether the `@` picker should be up, and for whom.
+    ///
+    /// Driven off the composer's own text and caret rather than off a
+    /// remembered keystroke, so it is right after a paste, an arrow key, a
+    /// click into the middle of a word, or an undo — any way the caret can end
+    /// up inside an `@`-run.
+    pub(crate) fn refresh_mention_picker(&mut self) {
+        if self.editing.is_some() || self.rename.is_some() {
+            self.close_mention_picker();
+            return;
+        }
+        let room = self.participants();
+        let (text, caret) = {
+            let c = self.focused_composer();
+            (c.value().to_string(), c.cursor_pos())
+        };
+        let Some(q) = crate::mention::picker_query(&text, caret, &room) else {
+            self.close_mention_picker();
+            return;
+        };
+        let rows: Vec<crate::mention::Participant> = crate::mention::candidates(&room, &q.query)
+            .into_iter()
+            .take(MENTION_ROWS_MAX)
+            .cloned()
+            .collect();
+        if rows.is_empty() {
+            self.close_mention_picker();
+            return;
+        }
+        let same = rows == self.mention_rows;
+        self.mention_rows = rows;
+        self.mention_query = Some(q);
+        if !same || !self.mention_menu.is_open() {
+            self.mention_menu = UiContextMenu::new();
+            for p in &self.mention_rows {
+                self.mention_menu.push(ui::widget::MenuItem::action(
+                    mention_row_label(p),
+                    || {},
+                ));
+            }
+            // Anchored by the composer at draw time; opened here so the
+            // primitive owns "is a menu up" from this point on.
+            self.mention_menu.open_at([0.0, 0.0]);
+            self.mention_menu.set_highlight(Some(0));
+        }
+    }
+
+    /// Take the picker down and forget what it was offering.
+    pub(crate) fn close_mention_picker(&mut self) {
+        if self.mention_menu.is_open() {
+            self.mention_menu.close();
+        }
+        self.mention_rows.clear();
+        self.mention_query = None;
+    }
+
+    /// Complete the composer's `@`-run to the participant on row `idx`.
+    pub(crate) fn accept_mention(&mut self, idx: usize, doc: &mut AutoCommit) {
+        let (Some(who), Some(q)) = (self.mention_rows.get(idx).cloned(), self.mention_query.clone())
+        else {
+            self.close_mention_picker();
+            return;
+        };
+        let key = self.draft_key();
+        let (text, caret) = {
+            let c = self.focused_composer();
+            crate::mention::apply_completion(c.value(), &q, c.cursor_pos(), &who)
+        };
+        {
+            let c = self.focused_composer_mut();
+            c.set_text(&text);
+            c.set_cursor_pos(caret);
+        }
+        ChatDoc::set_draft(doc, &key, &text);
+        self.close_mention_picker();
+        self.reload(doc);
     }
 
     /// Forward a `CursorMoved` to both composers so their hover / drag-select
@@ -1023,9 +1184,24 @@ impl ChatApp {
         // stays a direct write inside the same event.
         let channel = self.active_channel.clone();
         let author = self.me.id.clone();
+        // Bind `@name` to participants once, here, at authoring time. The
+        // message carries the resolved references, so no reader — a peer, a
+        // notification, an agent watching the room — ever re-parses the body to
+        // work out who it was addressed to.
+        let mentions = crate::mention::resolve(&text, &self.participants());
+        self.close_mention_picker();
         self.perform_action(
             doc,
-            actions::send_message_action(&channel, &new_message_id(), &author, now_secs(), &text, parent, None),
+            actions::send_message_action(
+                &channel,
+                &new_message_id(),
+                &author,
+                now_secs(),
+                &text,
+                parent,
+                None,
+                mentions,
+            ),
         );
         ChatDoc::clear_draft(doc, &key);
         self.caret = 0;
@@ -1091,6 +1267,7 @@ impl ChatApp {
                 "",
                 None,
                 Some(attachment),
+                Vec::new(),
             ),
         );
         self.scroll = 0.0;

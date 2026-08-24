@@ -69,6 +69,10 @@ pub struct NewMessage {
     pub attachment: Option<Attachment>,
     pub history: Vec<EditRecord>,
     pub edited: bool,
+    /// Who the body refers to, already resolved to participant ids. Minted at
+    /// authoring time by [`crate::mention::resolve`] and carried into the
+    /// document, so a reader never has to re-parse the text.
+    pub mentions: Vec<crate::mention::Mention>,
 }
 
 pub struct ChatDoc;
@@ -552,6 +556,20 @@ impl ChatDoc {
             }
         }
 
+        // mentions — an ordered List of resolved participant references. A
+        // list (not a set) because two mentions of one person are two
+        // references, and the order is the order they read in the body.
+        let mentions = doc
+            .put_object(&block, "mentions", ObjType::List)
+            .expect("mentions");
+        for (i, m) in nm.mentions.iter().enumerate() {
+            let e = doc.insert_object(&mentions, i, ObjType::Map).expect("mention");
+            let _ = doc.put(&e, "user", m.user.as_str());
+            let _ = doc.put(&e, "start", m.start as i64);
+            let _ = doc.put(&e, "len", m.len as i64);
+            let _ = doc.put(&e, "agent", m.is_agent);
+        }
+
         // history
         let hist = doc.put_object(&block, "history", ObjType::List).expect("hist");
         for (i, rec) in nm.history.iter().enumerate() {
@@ -810,6 +828,88 @@ impl ChatDoc {
             wrote = true;
         }
         wrote
+    }
+
+    /// Record that `id` is in this room, **without claiming what they are
+    /// called**.
+    ///
+    /// A display name is the room's to give, not a client's to declare: it
+    /// arrives over the collaboration context stream and is read back through
+    /// [`crate::app::ChatApp::display_name`]. A peer that wrote its own name in
+    /// here would be telling everyone else what to call it, and two peers
+    /// disagreeing about a third's name is a difference nobody can adjudicate.
+    /// So this writes membership and kind and leaves `name` alone — including
+    /// any name an older release already stored, which stays usable as an
+    /// offline fallback.
+    ///
+    /// Returns whether anything actually changed, so the caller can run it
+    /// every frame without churning the document (and spraying empty deltas).
+    pub fn ensure_member(
+        doc: &mut AutoCommit,
+        id: &str,
+        is_agent: bool,
+        status: Presence,
+    ) -> bool {
+        let users = get_or_map(doc, &ROOT, "users");
+        let u = get_or_map(doc, &users, id);
+        let mut wrote = false;
+        if get_bool(doc, &u, "agent") != is_agent {
+            let _ = doc.put(&u, "agent", is_agent);
+            wrote = true;
+        }
+        if get_str(doc, &u, "status") != status.as_str() {
+            let _ = doc.put(&u, "status", status.as_str());
+            wrote = true;
+        }
+        wrote
+    }
+
+    /// Mark a member as an agent (or not). The seam an automated participant
+    /// uses to announce what it is when it joins a room's chat.
+    pub fn set_member_is_agent(doc: &mut AutoCommit, id: &str, is_agent: bool) -> bool {
+        let users = get_or_map(doc, &ROOT, "users");
+        let u = get_or_map(doc, &users, id);
+        if get_bool(doc, &u, "agent") == is_agent {
+            return false;
+        }
+        let _ = doc.put(&u, "agent", is_agent);
+        true
+    }
+
+    /// The participant references stored on one message.
+    ///
+    /// The out-of-app read path: a consumer with the document — an agent
+    /// watching the room, an indexer — asks a message who it mentions and gets
+    /// participant ids, never prose to re-parse.
+    pub fn message_mentions(
+        doc: &AutoCommit,
+        channel: &str,
+        msg_id: &str,
+    ) -> Vec<crate::mention::Mention> {
+        match Self::find_message_obj(doc, channel, msg_id) {
+            Some(m) => Self::read_mentions(doc, &m),
+            None => vec![],
+        }
+    }
+
+    /// Every message in the document that refers to `user`, newest last, paired
+    /// with the channel it was posted in.
+    ///
+    /// This is what "notice that I was mentioned" is built on: one pass over
+    /// structure, no text scanning, and it works the same whether `user` is a
+    /// person or an agent.
+    pub fn messages_mentioning(doc: &AutoCommit, user: &str) -> Vec<(String, Message)> {
+        let Some(root_map) = map_at(doc, &ROOT, "messages") else { return vec![] };
+        let mut out = Vec::new();
+        for channel in doc.keys(&root_map) {
+            for m in Self::list_messages(doc, &channel) {
+                if m.mentions_user(user) {
+                    out.push((channel.clone(), m));
+                }
+            }
+        }
+        out.sort_by_key(|(_, m)| m.ts);
+        out
     }
 
     /// The peer's `read` watermark map (channel → count), created on demand
@@ -1219,6 +1319,7 @@ impl ChatDoc {
                     initials: get_str(doc, &u, "initials"),
                     color_idx: get_i64(doc, &u, "color_idx") as usize,
                     status: Presence::from_str(&get_str(doc, &u, "status")),
+                    is_agent: get_bool(doc, &u, "agent"),
                 })
             })
             .collect()
@@ -1266,8 +1367,29 @@ impl ChatDoc {
                 history: Self::read_history(doc, &m),
                 parent: if parent.is_empty() { None } else { Some(parent) },
                 reactions: Self::read_reactions(doc, &m),
+                mentions: Self::read_mentions(doc, &m),
                 attachment: Self::read_attachment(doc, &m),
                 pinned: get_bool(doc, &m, "pinned"),
+            });
+        }
+        out
+    }
+
+    /// The resolved participant references stored on a message block.
+    fn read_mentions(doc: &AutoCommit, msg: &ObjId) -> Vec<crate::mention::Mention> {
+        let Some(list) = list_at(doc, msg, "mentions") else { return vec![] };
+        let mut out = Vec::new();
+        for i in 0..doc.length(&list) {
+            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else { continue };
+            let user = get_str(doc, &e, "user");
+            if user.is_empty() {
+                continue;
+            }
+            out.push(crate::mention::Mention {
+                user,
+                start: get_i64(doc, &e, "start").max(0) as usize,
+                len: get_i64(doc, &e, "len").max(0) as usize,
+                is_agent: get_bool(doc, &e, "agent"),
             });
         }
         out
