@@ -262,6 +262,55 @@ pub enum CollabRequest {
         /// and "did I ask for it" are the same name.
         app_id: String,
     },
+    /// "I have just carried this content out of one application and into
+    /// another."
+    ///
+    /// A report, not a request. The change it describes has already happened
+    /// and replicated as an ordinary document delta; this says the one thing
+    /// the delta cannot, which is that the two changes were one act.
+    ///
+    /// # Why anybody has to say it
+    ///
+    /// A session watching its own applications works this out for itself: the
+    /// bytes cross out of an app's sandbox through
+    /// [`CollabRequest::OfferBlob`], on a route that names the app that sent
+    /// them, so "who produced this hash" is already recorded by the time an
+    /// action names it.
+    ///
+    /// That evidence does not exist for a participant without windows. Its
+    /// work is a document delta on one app's state and another delta on a
+    /// second app's, and nothing on the wire says the content in the second
+    /// is what the first produced — the two are exactly as related as any two
+    /// documents that changed near each other, which is to say not at all.
+    /// Pairing them by timing is the guess this whole path exists to avoid.
+    ///
+    /// So the participant that performed the operation reports it, because it
+    /// is the only thing that saw both halves: it asked one application for
+    /// its product and handed that value to another application's action.
+    ///
+    /// # What it is not allowed to say
+    ///
+    /// Who did it. That is the session's own answer for every frame on this
+    /// socket, resolved the same way the sender's caret is named, so a
+    /// crossing is coloured as the same participant a viewer already sees
+    /// working. A caller supplying its own attribution would be supplying the
+    /// half it is not entitled to — the same split
+    /// [`CollabRequest::OpenApp`] makes.
+    ///
+    /// **Never fanned out**, for the same reason `OpenApp` is not: it is
+    /// addressed to the session that draws these windows. Another peer's
+    /// desktop has its own answer about where these applications are, and
+    /// most of the time the answer is that they are not there.
+    CarriedContent {
+        /// blake3 hex of the content that travelled — the object's identity,
+        /// and what the bytes are looked up by so the thing itself can be
+        /// drawn rather than a token standing in for it.
+        hash: String,
+        /// The application whose document produced the content.
+        from_app: String,
+        /// The application whose action it was handed to.
+        into_app: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1928,6 +1977,18 @@ async fn drive_shovel(
                      was asked of the session",
                 );
             }
+            // Reported by a participant without windows, which is not what
+            // this transport carries: an app that placed its own content into
+            // its own document crossed nothing, and one that took it from
+            // another app was watched doing it — the offer that carried the
+            // bytes out named the app that made them.
+            CollabRequest::CarriedContent { hash, from_app, into_app } => {
+                tracing::warn!(
+                    %hash, %from_app, %into_app,
+                    "collab: a packaged app reported carrying content between \
+                     applications; the session watches its own offers for that",
+                );
+            }
         }
     }
 }
@@ -2035,6 +2096,15 @@ async fn drive_relay(
                             %app_id,
                             "collab: this relay session hosts no desktop, so it \
                              cannot open an application",
+                        );
+                    }
+                    // Nothing on the far side of a relay draws these windows,
+                    // so there is no crossing for anyone there to watch.
+                    CollabRequest::CarriedContent { hash, from_app, into_app } => {
+                        tracing::warn!(
+                            %hash, %from_app, %into_app,
+                            "collab: this relay session hosts no desktop, so a \
+                             crossing between applications has nowhere to be drawn",
                         );
                     }
                 }
@@ -2399,6 +2469,11 @@ pub mod broker {
                 // fabricating a refusal would teach a caller that this relay
                 // decides such things, which it does not.
                 CollabRequest::OpenApp { .. } => continue,
+                // Addressed to the session that draws the windows, and this
+                // loopback draws none. Not fanned out for the same reason an
+                // open is not: the other peer's desktop has its own answer
+                // about where these applications are.
+                CollabRequest::CarriedContent { .. } => continue,
             };
 
             let Ok(bytes) = serde_json::to_vec(&event) else { continue };

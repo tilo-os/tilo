@@ -1571,6 +1571,7 @@ impl Session {
         argument: Option<&str>,
         view: &View,
         caret: Option<&str>,
+        carried_from: Option<&str>,
     ) -> Result<Result<(), String>> {
         // The app's own words for this operation, for anything said out
         // loud. Taken from the same fresh survey the dispatch resolves
@@ -1640,6 +1641,14 @@ impl Session {
         match outcome {
             Ok(Some(delta)) => {
                 self.link.send(&CollabRequest::SyncIncremental { data: delta })?;
+                // The operation went through and it took something out of
+                // another application, so say so — after the success and
+                // never before, because a refused operation must leave no
+                // trace and a report made in advance would put a crossing on
+                // somebody's screen for work that did not happen.
+                if let (Some(from), Some(hash)) = (carried_from, argument) {
+                    self.report_carried(hash.trim(), from, &namespace)?;
+                }
                 // Only now — the operation went through and this resource is
                 // what the agent is demonstrably working on. Recording it
                 // before the outcome is known would make a refusal set the
@@ -1819,10 +1828,14 @@ impl Session {
             }
         }
         let sequence = plan.is_sequence();
-        // What the last step left behind, and what the room's own words for
-        // the steps already carried out are. Both exist only for the sentence
-        // at the end and for binding the next argument; neither is a decision.
-        let mut carried: Option<surface::Product> = None;
+        // What the last step left behind, *and which application left it*.
+        // The app was already known here and thrown away, and it is the half
+        // that cannot be recovered afterwards: a content hash names bytes and
+        // says nothing about what made them, so a step handed one has no way
+        // back to the step that produced it. Keeping the pair is what lets
+        // the crossing between the two applications be reported rather than
+        // guessed from two documents changing near each other.
+        let mut carried: Option<(String, surface::Product)> = None;
         let mut done: Vec<String> = Vec::new();
 
         let total = plan.steps.len();
@@ -1891,8 +1904,14 @@ impl Session {
                     // request, not one from a model, and not a second reading
                     // of the other app's document.
                     let bound;
+                    // Owned rather than borrowed out of `carried`, which is
+                    // reassigned a few lines below: the producing app is one
+                    // short string, and holding a borrow across the dispatch
+                    // that replaces what it points into is not worth the
+                    // saving.
+                    let mut from_app: Option<String> = None;
                     let argument = if carries {
-                        let Some(product) = carried.as_ref() else {
+                        let Some((producer, product)) = carried.as_ref() else {
                             let reply = refusal(
                                 &name,
                                 &done,
@@ -1904,11 +1923,16 @@ impl Session {
                             return Ok(Ran::Said);
                         };
                         bound = product.argument().to_string();
+                        // Only where the argument really was carried. An
+                        // operation given a value from anywhere else crossed
+                        // nothing, and reporting one would draw a hand-off
+                        // that did not happen.
+                        from_app = Some(producer.clone());
                         Some(bound.as_str())
                     } else {
                         argument.as_deref()
                     };
-                    match self.perform(&id, argument, &view, focus.as_deref())? {
+                    match self.perform(&id, argument, &view, focus.as_deref(), from_app.as_deref())? {
                         Err(why) => {
                             let reply = refusal(&name, &done, label.as_deref(), &why);
                             self.reply(to, &reply)?;
@@ -1924,9 +1948,10 @@ impl Session {
                             // something transferable.
                             let namespace = surface::decode_address(&id)
                                 .map(|a| surface::app_of(&a.resource).to_string());
-                            carried = namespace
-                                .clone()
-                                .and_then(|ns| self.product(&ns, &self.view(focus.clone(), 0)));
+                            carried = namespace.clone().and_then(|ns| {
+                                self.product(&ns, &self.view(focus.clone(), 0))
+                                    .map(|p| (ns, p))
+                            });
                             tracing::info!(
                                 step = n + 1,
                                 of = total,
@@ -2064,6 +2089,90 @@ impl Session {
         Ok(())
     }
 
+
+    /// Tell the session that content just crossed from one application into
+    /// another, and hand it the bytes that crossed.
+    ///
+    /// # Why this has to be said at all
+    ///
+    /// A session works a crossing out for itself when it can watch one: an
+    /// app's bytes leave its sandbox through the collaboration socket, on a
+    /// route naming the app that sent them, so by the time an action names
+    /// that hash the session already knows who produced it.
+    ///
+    /// Nothing here produces such an offer. Both halves happened inside this
+    /// process — one application's own code was asked what its document
+    /// denotes, and the value it answered with was handed to a second
+    /// application's action — and what left this process was two document
+    /// deltas that look unrelated. Pairing them by timing is precisely the
+    /// guess the drawing side refuses to make, and it is right to: two
+    /// documents changing near each other is not evidence of anything.
+    ///
+    /// So the pairing is reported, by the only component that saw both
+    /// halves. It says what it did; it does not say who it is. Who performed
+    /// it is the session's own answer for this connection, resolved as it is
+    /// for the caret this agent already puts in the document.
+    ///
+    /// # Why the bytes go with it
+    ///
+    /// Two reasons, and the second is not about drawing at all.
+    ///
+    /// The document just published names content that, until now, existed
+    /// only in this process. Every other replica holds a reference with
+    /// nothing behind it, and an image-shaped gap that never fills is what
+    /// they would each show. `OfferBlob` is the frame that already means "I
+    /// have just stored this content; the room may need it", and the room
+    /// does.
+    ///
+    /// It is also what lets the crossing be *of something*. The session draws
+    /// the payload itself when it holds the bytes, and a plain card when it
+    /// does not — honest either way, but a photograph visibly moving between
+    /// two windows is the thing worth watching, and a coloured rectangle is
+    /// not.
+    ///
+    /// Both are sent after the operation succeeded. Neither is waited on.
+    fn report_carried(&mut self, hash: &str, from: &str, into: &str) -> Result<()> {
+        if hash.is_empty() || from.is_empty() || into.is_empty() || from == into {
+            return Ok(());
+        }
+        // The id a launched copy of each app announces, so the session
+        // resolves these against the windows it has rather than against a
+        // second vocabulary. The namespace is the fallback, and the session
+        // matches on the tail of either, so a contract this build does not
+        // know about still names something findable.
+        let app_id = |ns: &str| {
+            surface::for_namespace(ns)
+                .map(|c| c.app_id.to_string())
+                .unwrap_or_else(|| ns.to_string())
+        };
+        match qdoc::blobstore::store().get(hash) {
+            Some(bytes) => {
+                tracing::info!(%hash, bytes = bytes.len(), "offering the content that crossed");
+                self.link.send(&CollabRequest::OfferBlob {
+                    hash: hash.to_string(),
+                    bytes,
+                })?;
+            }
+            // Said rather than passed over. The operation succeeded, so the
+            // document names this content — and if the bytes are not here
+            // then nobody can be sent them, and every replica of that
+            // document will show a gap where the picture is. That is a
+            // report worth making even though nothing can be done about it
+            // from here.
+            None => tracing::warn!(
+                %hash,
+                "the content that crossed is not in this process's store, so the \
+                 room cannot be sent it and the document will show a gap",
+            ),
+        }
+        self.link.send(&CollabRequest::CarriedContent {
+            hash: hash.to_string(),
+            from_app: app_id(from),
+            into_app: app_id(into),
+        })?;
+        tracing::info!(%hash, %from, %into, "reported a crossing between applications");
+        Ok(())
+    }
 
     /// Put the agent's caret on a block, so the room can see it working.
     fn show_caret(&mut self, block: &str) -> Result<()> {

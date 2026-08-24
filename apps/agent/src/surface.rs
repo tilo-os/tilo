@@ -256,13 +256,24 @@ fn word_processor_resources(view: &View, doc: &AutoCommit) -> Vec<Resource> {
             .first()
             .map(|b| b.id.clone())
     });
-    let Some(anchor) = anchor else {
-        return Vec::new();
-    };
-    let targets = if view.target_blocks.is_empty() {
-        vec![anchor.clone()]
-    } else {
+    // A document with nothing in it is still a document, and it used to be
+    // surveyed as though it were not there at all: no blocks meant no anchor,
+    // no anchor meant an empty tree, and an empty tree meant a room holding an
+    // open word processor reported nothing that could be done to it. Since
+    // applications start empty, that is the state a document is in exactly
+    // when somebody first wants to put something into it.
+    //
+    // The empty anchor is not an invented id — it names no block, and every
+    // operation anchored on it appends to the end of the body, which is the
+    // only place there is. Block-level formatting targets nothing, because
+    // there is nothing to format yet.
+    let anchor = anchor.unwrap_or_default();
+    let targets = if !view.target_blocks.is_empty() {
         view.target_blocks.clone()
+    } else if anchor.is_empty() {
+        Vec::new()
+    } else {
+        vec![anchor.clone()]
     };
     word_processor::actions::provide_resources(
         &word_processor::actions::WpResourceCtx {
@@ -618,11 +629,13 @@ fn openable(
                      operations on this list.",
                     c.title
                 )),
-                // Inert on this descriptor: an open never becomes an
-                // `EncodedAction` and never reaches `dispatch_by`, because
-                // there is no replica for it to mutate. Named for what it
-                // would be if it did — the session hosting the room is the
-                // only place an application can start.
+                // Inert on this descriptor, but not because an open goes
+                // nowhere — it is dispatched, just not through the door.
+                // `Session::perform` recognises the address before the door
+                // sees it and asks the session over the socket instead, so
+                // nothing here is ever encoded or run against a replica.
+                // Named for where the work does land: the session hosting
+                // the room is the only place an application can start.
                 locus: qos_actions::ExecutionLocus::ServerPreferred,
                 input: qos_actions::InputSpec::None,
             },
@@ -861,6 +874,41 @@ mod tests {
     fn an_address_with_a_path_in_it_round_trips() {
         let a = ActionAddress::new("files.entry:/var/workspace/a.b/plan.md", "rename");
         assert_eq!(decode_address(&encode_address(&a)), Some(a));
+    }
+
+    /// A word processor holding a document with nothing in it is still a
+    /// word processor with something to be done to it.
+    ///
+    /// This used to report an empty tree: no blocks meant no anchor, and no
+    /// anchor meant the survey returned nothing at all — so a room containing
+    /// an open, untouched document looked exactly like a room containing no
+    /// word processor. Since applications start empty, that is the state a
+    /// document is in precisely when somebody first wants to put something
+    /// into it.
+    #[test]
+    fn a_document_with_no_blocks_is_still_something_to_act_on() {
+        let mut doc = AutoCommit::new();
+        qdoc::model::init(&mut doc, &automerge::ROOT);
+        doc.commit();
+        let c = qdoc::model::open(&doc, &automerge::ROOT).expect("the schema is there");
+        assert!(
+            qdoc::model::materialize(&doc, &c).blocks.is_empty(),
+            "this test is about a document with nothing in it",
+        );
+
+        // No caret either: the agent has no screen, and a block id it made up
+        // would be worse than none.
+        let tree = word_processor_resources(&View::default(), &doc);
+        assert!(
+            !tree.is_empty(),
+            "an empty document reported nothing that could be done to it",
+        );
+        let places = tree[0].actions.iter().any(|a| a.id == "place-image");
+        assert!(
+            places,
+            "the document exports {:?}, none of which places a picture",
+            tree[0].actions.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+        );
     }
 
     #[test]
