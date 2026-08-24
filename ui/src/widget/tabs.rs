@@ -5091,6 +5091,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn squeezed_pills_still_name_their_tabs() {
         let mut tr = TextRenderer::new();
         let theme = crate::theme::Theme::dark();
