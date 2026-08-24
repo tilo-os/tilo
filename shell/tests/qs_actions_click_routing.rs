@@ -529,6 +529,46 @@ fn a_click_beside_the_copy_button_does_not_copy() {
     );
 }
 
+/// A workspace with a single strip offers no strip ribbon at all —
+/// nothing painted, and nothing to click.
+///
+/// This is the shape of the empty desktop, and the segment it used to
+/// draw was the brightest mark on the screen while standing for a choice
+/// between strips that did not exist. Driven through the real host, so
+/// the assertion cannot pass by disagreeing with the geometry the shell
+/// actually builds.
+#[test]
+fn a_single_strip_workspace_offers_no_strip_ribbon() {
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (taffy, host_node) = layout_host(&mut host);
+
+    let ribbon = host.strip_ribbon_for_tests();
+    assert_eq!(ribbon.count, 1, "fixture should present a single strip");
+    assert!(!ribbon.is_visible(), "a lone strip still presents a ribbon");
+    assert_eq!(ribbon.segment_rect(0), None, "a lone strip still has segment geometry");
+
+    // Sweep the gutter the ribbon would have occupied: no segment may
+    // answer a hit-test anywhere along it.
+    let x = ribbon.content.x1
+        - ui::chrome::shell::RIBBON_MARGIN
+        - ui::chrome::shell::RIBBON_SEG_W / 2.0;
+    let mut y = ribbon.content.y0;
+    while y < ribbon.content.y1 {
+        assert_eq!(ribbon.hit(Point::new(x, y)), None, "still hittable at ({x}, {y})");
+        y += 8.0;
+    }
+
+    // And a real click through that gutter changes nothing.
+    let before = chrome.borrow().strip_focus();
+    click_at(&mut host, &taffy, host_node, x, ribbon.content.center().y);
+    assert_eq!(
+        chrome.borrow().strip_focus(),
+        before,
+        "a click in the empty ribbon gutter moved strip focus"
+    );
+}
+
 /// Clicking a strip-ribbon segment moves strip focus through the
 /// production click path.
 ///
