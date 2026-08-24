@@ -12,9 +12,8 @@
 //!
 //! So the peers here are not fixtures. They are
 //! [`ui::collaboration::CollaborationManager`] — the same type chat itself
-//! constructs — connected the way the launcher connects one: an fd in
-//! `QOS_SVC_COLLAB_FD`, `QUICK_COLLAB_SOCK` explicitly cleared so the legacy
-//! branch cannot be taken, talking to
+//! constructs — connected the way the launcher connects one: over a
+//! connected fd on the capnp socket, talking to
 //! [`shell::shell::collab_broker::spawn_full`], the broker the compositor
 //! binds, with both sockets bound. The agent joins the JSON socket because
 //! that is the transport `qos-agent` itself has: its whole wire module is the
@@ -34,7 +33,6 @@ use std::collections::HashSet;
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
@@ -55,16 +53,6 @@ const AGENT_NAME: &str = "Claude";
 const ADA: &str = "u_ada";
 const CHANNEL: &str = "c_general";
 
-/// Connecting a peer means writing the process environment, because that is
-/// where a launched app reads its fd and its room from. Every test here is
-/// serialised behind this so no two are mid-handshake at once.
-fn env_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-}
-
 fn wait_for(path: &PathBuf) -> UnixStream {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -76,24 +64,29 @@ fn wait_for(path: &PathBuf) -> UnixStream {
     }
 }
 
-/// A peer of `app`, connected the way the launcher connects a sandboxed app:
-/// a connected fd on the **capnp** socket, named in `QOS_SVC_COLLAB_FD`.
+/// A peer of `app` on the **capnp** socket, connected the way the launcher
+/// connects a sandboxed app: over an already-connected fd, announcing its
+/// package and its room.
 ///
-/// `QUICK_COLLAB_SOCK` is removed rather than merely left unset. The manager
-/// prefers the legacy dialect whenever that variable names a socket it can
-/// reach, and a stray one from another test would silently downgrade this peer
-/// to the transport these tests exist to avoid.
+/// The launcher passes those three in the environment, because a process it
+/// spawned has nowhere else to read them from. This harness has somewhere
+/// else — it bound the socket and minted the room itself — and writing them
+/// into the environment anyway is what made this file unsafe to run in
+/// parallel. `set_var` is process-wide, and from the second peer onwards
+/// there are live shovel and broker threads reading the environment while it
+/// is being rewritten. A mutex around the writers cannot close that, because
+/// the readers belong to a `Room` some other test is still holding, outside
+/// any lock this file could take; that is why these were green only at
+/// `--test-threads=1`.
+///
+/// Passing the address removes the shared state instead of guarding it.
+/// Nothing in this file writes the environment now, so nothing here needs a
+/// lock. It settles the transport structurally too: `from_connected_fd` goes
+/// straight to the capnp path, so a stray `QUICK_COLLAB_SOCK` can no longer
+/// downgrade this peer to the dialect these tests exist to avoid.
 fn capnp_peer(capnp_sock: &PathBuf, room: &Uuid, app: &str) -> CollaborationManager {
     let fd = wait_for(capnp_sock).into_raw_fd();
-    // SAFETY: every test in this file holds `env_lock` across this call, and
-    // `CollaborationManager::new` reads these before it returns.
-    unsafe {
-        std::env::remove_var("QUICK_COLLAB_SOCK");
-        std::env::set_var("QOS_SVC_COLLAB_FD", fd.to_string());
-        std::env::set_var("QOS_WORKSPACE_ID", room.to_string());
-        std::env::set_var("QOS_PACKAGE_ID", app);
-    }
-    let m = CollaborationManager::new();
+    let m = CollaborationManager::from_connected_fd(fd, app, *room);
     assert!(
         m.is_connected(),
         "the {app} peer did not reach the broker over capnp — these tests \
@@ -298,7 +291,6 @@ impl Room {
     /// `conversation` is the channel as the chat app holds it; `document` is
     /// the page the word processor holds, when the test needs one.
     fn open(conversation: AutoCommit, document: Option<AutoCommit>) -> Self {
-        let _guard = env_lock();
         let (dir, json, capnp, handle) = broker();
         let room = Uuid::new_v4();
 

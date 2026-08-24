@@ -54,11 +54,9 @@ use std::io::{Read, Write};
 #[cfg(feature = "legacy-broker")]
 use std::os::unix::net::UnixStream;
 
-// `RawFd` is used unconditionally in the test-only `SdkConnectSource::Fd`
-// variant and in `from_sdk_fd_for_test`. Both are `#[cfg(test)]` so a
-// release build without tests doesn't need it — the cfg-gated import
-// below keeps the release build warning-free.
-#[cfg(test)]
+// `RawFd` is how a caller that already holds a broker connection names it:
+// `SdkConnectSource::Fd` and `CollaborationManager::from_connected_fd` take
+// the fd instead of reading one out of the environment.
 use std::os::fd::RawFd;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -577,12 +575,12 @@ struct LegacyStream {
 /// How the shovel thread reaches the broker.
 ///
 /// `Env` is the production path: the launcher passed `QOS_SVC_COLLAB_FD`;
-/// `runtime_collab::try_connect()` reads it. `Fd` is for the in-tree
-/// tests — the mock server hands us a specific connected fd (no env
-/// var, no cross-test races).
+/// `runtime_collab::try_connect()` reads it. `Fd` is for a caller that
+/// already holds the connection — a harness that bound the broker socket
+/// itself hands the connected fd over, so nothing it does depends on a
+/// process-wide variable some other test could be rewriting at the time.
 enum SdkConnectSource {
     Env,
-    #[cfg(test)]
     Fd(RawFd),
 }
 
@@ -593,14 +591,9 @@ impl SdkConnectSource {
     fn build_client(self) -> Result<runtime_collab::CollabClient, runtime_portal::NotAvailable> {
         match self {
             SdkConnectSource::Env => runtime_collab::try_connect(),
-            #[cfg(test)]
             SdkConnectSource::Fd(fd) => {
-                use capnp_rpc::rpc_twoparty_capnp;
-                let unix = runtime_portal::UnixCapnpClient::from_connected_fd(
-                    fd,
-                    rpc_twoparty_capnp::Side::Client,
-                )?;
-                let raw: runtime_collab::CollabServiceClient = unix.bootstrap();
+                let raw: runtime_collab::CollabServiceClient =
+                    runtime_portal::open_service_on_fd(fd)?;
                 Ok(runtime_collab::CollabClient::from_raw(raw))
             }
         }
@@ -775,31 +768,39 @@ impl CollaborationManager {
         }
     }
 
-    /// Test-only: build a manager talking to an SDK broker on the
-    /// given already-connected client fd. Bypasses env-var lookup so
-    /// two tests in the same process do not race on `QOS_SVC_COLLAB_FD`.
+    /// A manager on a broker connection the caller already holds, addressed
+    /// by argument rather than by environment.
     ///
-    /// Auto-sends the same auto-Hello the production constructor
-    /// does, using the passed `app_id` / `cluster_id` for a
-    /// deterministic test fixture.
-    #[cfg(test)]
-    fn from_sdk_fd_for_test(fd: RawFd, app_id: &str, cluster_id: Uuid) -> Self {
-        Self::from_sdk_fd_for_test_with_identity(fd, app_id, cluster_id, Vec::new())
+    /// [`Self::new`] learns three things from the process environment: which
+    /// fd reaches the broker (`QOS_SVC_COLLAB_FD`), and the app and room to
+    /// announce (`QOS_PACKAGE_ID`, `QOS_WORKSPACE_ID`). That is right for a
+    /// launched app, which is told them that way and has no other source. A
+    /// harness has another source — it bound the socket and minted the room
+    /// itself — and taking the environment route anyway is what makes such a
+    /// harness unsafe to run in parallel: `set_var` is process-wide and, on
+    /// edition 2024, unsound while any other thread reads the environment,
+    /// which every manager already built has a shovel thread doing. A mutex
+    /// around the writes does not close that, because the readers are not
+    /// inside it.
+    ///
+    /// So this takes the address instead. The auto-Hello is the same one
+    /// [`Self::new`] sends; only where its values come from differs.
+    pub fn from_connected_fd(fd: RawFd, app_id: &str, cluster_id: Uuid) -> Self {
+        Self::from_connected_fd_with_identity(fd, app_id, cluster_id, Vec::new())
     }
 
-    /// Test-only: like [`Self::from_sdk_fd_for_test`] but stamps the
-    /// join_channel call with a caller-supplied identity blob. Kept
-    /// alongside the empty-blob variant so tests that don't care
-    /// about the identity path stay concise.
-    #[cfg(test)]
-    fn from_sdk_fd_for_test_with_identity(
+    /// Like [`Self::from_connected_fd`] but stamps the join_channel call
+    /// with a caller-supplied identity blob. Kept alongside the empty-blob
+    /// variant so callers that do not exercise the identity path stay
+    /// concise.
+    pub fn from_connected_fd_with_identity(
         fd: RawFd,
         app_id: &str,
         cluster_id: Uuid,
         identity_bytes: Vec<u8>,
     ) -> Self {
         let sdk = Self::spawn_sdk(SdkConnectSource::Fd(fd), identity_bytes)
-            .expect("spawn_sdk from Fd source must succeed in tests");
+            .expect("a broker connection the caller already holds lifts into RPC");
         let mut manager = Self {
             backend: Backend::Sdk(sdk),
             identity: None,
@@ -3006,7 +3007,7 @@ mod tests {
         unsafe { std::env::remove_var(runtime_identity::IDENTITY_ENV_VAR) };
         let cluster = Uuid::new_v4();
         let _mgr =
-            CollaborationManager::from_sdk_fd_for_test_with_identity(fd, "alice", cluster, Vec::new());
+            CollaborationManager::from_connected_fd_with_identity(fd, "alice", cluster, Vec::new());
 
         assert!(
             wait_until(
@@ -3077,7 +3078,7 @@ mod tests {
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let cluster = Uuid::new_v4();
-        let _mgr = CollaborationManager::from_sdk_fd_for_test_with_identity(
+        let _mgr = CollaborationManager::from_connected_fd_with_identity(
             fd,
             "alice",
             cluster,
@@ -3128,7 +3129,7 @@ mod tests {
             blob_backlog: vec![(hash.clone(), bytes.clone())],
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::new_v4());
+        let mut mgr = CollaborationManager::from_connected_fd(fd, "alice", Uuid::new_v4());
         assert!(
             wait_until(
                 || !captures.lock().unwrap().joined.is_empty(),
@@ -3226,7 +3227,7 @@ mod tests {
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let cluster = Uuid::new_v4();
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", cluster);
+        let mut mgr = CollaborationManager::from_connected_fd(fd, "alice", cluster);
 
         // Auto-Hello reaches the broker.
         assert!(
@@ -3282,7 +3283,7 @@ mod tests {
             blob_backlog: vec![],
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+        let mut mgr = CollaborationManager::from_connected_fd(fd, "alice", Uuid::nil());
 
         assert!(
             wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
@@ -3329,7 +3330,7 @@ mod tests {
             blob_backlog: vec![],
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+        let mut mgr = CollaborationManager::from_connected_fd(fd, "alice", Uuid::nil());
         assert!(
             wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
             "join_channel must be observed",
@@ -3417,7 +3418,7 @@ mod tests {
             blob_backlog: vec![],
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+        let mut mgr = CollaborationManager::from_connected_fd(fd, "alice", Uuid::nil());
         let events = drain_events(&mut mgr, Duration::from_secs(2));
 
         let signed: Vec<_> = events
@@ -3452,7 +3453,7 @@ mod tests {
             blob_backlog: vec![],
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+        let mut mgr = CollaborationManager::from_connected_fd(fd, "alice", Uuid::nil());
         let events = drain_events(&mut mgr, Duration::from_secs(2));
 
         let ctx = events
@@ -3502,7 +3503,7 @@ mod tests {
             blob_backlog: vec![],
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+        let mut mgr = CollaborationManager::from_connected_fd(fd, "alice", Uuid::nil());
         let events = drain_events(&mut mgr, Duration::from_secs(2));
 
         let keyed: Vec<_> = events
@@ -3576,7 +3577,7 @@ mod tests {
             blob_backlog: vec![],
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+        let mut mgr = CollaborationManager::from_connected_fd(fd, "alice", Uuid::nil());
         let events = drain_events(&mut mgr, Duration::from_secs(2));
 
         // Extract the presence-relevant events in order.
@@ -3639,7 +3640,7 @@ mod tests {
             blob_backlog: vec![],
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+        let mut mgr = CollaborationManager::from_connected_fd(fd, "alice", Uuid::nil());
         assert!(
             wait_until(|| !captures.lock().unwrap().joined.is_empty(), Duration::from_secs(2)),
             "join_channel must precede scrollback fetch",
