@@ -160,10 +160,6 @@ DOC_TEXT = _doc_text_bin()
 # the shell's own action provider — the same registry that feeds the
 # command palette, reached with no palette and no keystroke.
 AGENT_PROVIDER = "actions"
-AGENT_ACTION_ID = "room.activity.open"
-# Its effect, as a key under `chrome.overlays` in `state_dump`.
-AGENT_ACTION_EFFECT = "room_activity"
-
 # The provider that launches installed applications, and the two apps the
 # storyboard opens. An app is started by its own id through the same
 # registry that feeds the palette, so the demo drives the production
@@ -184,32 +180,38 @@ CHAT_APP = "dev.qos.chat"
 #: silently, which is the worst way for this to be wrong.
 IMAGE_EDITOR = "dev.qos.photos"
 
-#: The applications the workspace carries, left to right along the strip.
+#: The three applications beat 2 opens, in the order it opens them.
 #:
-#: The order is load-bearing rather than a preference, because a strip
-#: scrolls: only neighbours are ever in frame together, so which pairs
-#: this film can show is decided here and nowhere else. Files sits next
-#: to the word processor because a photograph is dragged from one into
-#: the other and a drag that starts off the edge of the screen is not a
-#: drag anybody can see; the image editor sits next to the word
-#: processor because the two of them end up sharing one window.
+#: Chat, then Files, then the word processor. The order is load-bearing
+#: rather than a preference: it is how somebody actually sets a
+#: workspace up, and the earlier cut had it backwards — one application,
+#: then invitations into a room with nothing in it, then everything else
+#: arriving later with no explanation of why.
 #:
-#: The first two are opened by beats that are about opening them — Files
-#: on an empty desktop, the word processor fetched onto a machine that
-#: did not have it. `STRIP_EXTRAS` is the rest, opened together off
-#: camera, and adding a fifth application to this film is adding its id
-#: to that tuple.
-STRIP_EXTRAS = (IMAGE_EDITOR, CHAT_APP)
+#: The image editor is deliberately **not** here. Beat 5 has the agent
+#: open it, and an editor already on the strip would turn the film's
+#: payoff into a window that was there all along.
+BEAT_TWO_ORDER = (CHAT_APP, FILES_APP, WORD_PROCESSOR)
 
-#: What to type into the palette when an app's own id is not in the
-#: catalogue an empty query builds — see `Session.launch`. Only needed
-#: for the apps opened by id here; the rest name themselves.
-STRIP_SEARCH = {
-    # "photos", not "image": "image" also matches the Disk Imager, and a
-    # search that can return the wrong application is a search this film
-    # cannot rely on.
-    IMAGE_EDITOR: "photos",
+#: What to type into the palette for each of them.
+#:
+#: Every app in beat 2 is opened by searching, so each needs a query
+#: that reaches it and nothing else. "photos", not "image", is the
+#: lesson these were checked against: "image" also matches the Disk
+#: Imager, and a search that can return the wrong application is a
+#: search this film cannot rely on.
+BEAT_TWO_SEARCH = {
     CHAT_APP: "chat",
+    FILES_APP: "files",
+    WORD_PROCESSOR: "word processor",
+}
+
+#: What to call each of them in the transcript — the name on the row a
+#: person would have clicked, rather than a package id.
+BEAT_TWO_TITLE = {
+    CHAT_APP: "chat",
+    FILES_APP: "Files",
+    WORD_PROCESSOR: "the word processor",
 }
 
 # Machine state, deliberately *not* isolated per session: without these
@@ -254,8 +256,6 @@ LIVE_APPS = os.path.join(TARGET, "qos-apps-live")
 # peer: it is a subject in the permission model, and the grant is scoped
 # to one app rather than to the workspace.
 AGENT_SUBJECT = "agent:claude"
-AGENT_SCOPE = f"app:{WORD_PROCESSOR}"
-
 #: Every app the agent is given leave to work in, as separate grants.
 #:
 #: Two, because the film asks for two: it is handed a photograph and told
@@ -334,47 +334,6 @@ def _typing_jitter(who: str):
     while True:
         yield rng.triangular(lo, hi, lo + (hi - lo) * 0.35)
 
-# What quinten types into the document, and what xaver's session is then
-# asked whether it holds.
-# What quinten writes in beat 7 — and it is the *same* writing the agent
-# is later asked about, rather than a separate sentence typed to prove
-# crossing and then abandoned.
-#
-# It used to be "the same document on both machines", which said what
-# the beat was demonstrating instead of being a thing a person would
-# write. Beat 9 then typed a second, unrelated block — the event notes —
-# so the film contained two acts of writing, the first of which existed
-# only to be checked. At sixty words a minute that is eight seconds of
-# somebody typing a caption about the demo they are in.
-#
-# Now there is one document. He writes his notes; his colleague receives
-# them; later he asks the agent about them. The prose and the bullets
-# disagree with each other on purpose — see `AGENT_PROSE`.
-#
-# Shorter than it reads, on purpose. Typed at a true sixty words a
-# minute this is thirteen seconds; the longer version it replaced was
-# twenty-two, which is a third of the whole film spent watching one
-# person type. The cut came out of the wording and not out of the pace,
-# because the pace is the part a viewer can tell is faked.
-#
-# `seven` against `18:00` is the disagreement the agent is expected to
-# notice — the one thing in here that is not just filler to be
-# reformatted, and the reason the instruction in beat 9 is worth giving.
-TYPED_TEXT = ("Doors at seven, room seats 240.\n\n"
-              "- Doors: 18:00\nSound check: 18:30\n")
-
-#: The distinctive fragment the crossing is checked on. Short, and
-#: nothing else in the document contains it.
-TYPED_PROOF = "room seats 240"
-
-# Checked here rather than discovered as a crossing that fails against a
-# document which is in fact perfectly correct. Rewording `TYPED_TEXT`
-# and leaving this behind is a one-line change that breaks a beat
-# somewhere else entirely, and it has already happened once.
-assert TYPED_PROOF in TYPED_TEXT, (
-    f"the crossing is checked on {TYPED_PROOF!r}, which is not in the "
-    f"text anyone types: {TYPED_TEXT!r}")
-
 # Characters a US layout only produces with shift held, and the key that
 # carries each one. `Session.type_prose` presses a real Shift across
 # these; without it a client resolves the bare keycode and puts the
@@ -423,19 +382,38 @@ SHIFTED_KEYS.update({
 # to notice rather than something to reformat — and without a real
 # disagreement to point at, the model declines to raise one about half
 # the time, which is the correct behaviour and a poor beat.
-AGENT_PROSE = ("Doors open at seven and the room seats two hundred "
-               "and forty.\n")
-AGENT_BULLETS = "\n- Doors: 18:00\nSound check: 18:30\nSeating: 240\n\n"
-# Asking for a run sheet rather than a table. A table is a shape and the
-# app has a button for it; a run sheet is a judgement about which of
-# these lines is a scheduled item, what order they belong in, and
-# whether they are consistent — which is the difference between a
-# formatting command and something worth filming.
-AGENT_INSTRUCTION = "Claude: make this a run sheet\n"
-# One cell's text, looked for in the document afterwards. If the table
-# came out empty this is gone, and the claim fails instead of passing on
-# the existence of a grid.
-AGENT_BULLET_PROOF = "Sound check"
+#: The one instruction in the film, typed by xaver into the compose
+#: surface his right-click opened.
+#:
+#: `@claude` rather than `Claude:` because this is a message in the room
+#: rather than a paragraph in a document, and the room resolves an
+#: `@mention` to a participant id at send. That is a stronger address
+#: than a name matched out of prose: `apps/agent/src/listen.rs` reads the
+#: structured mention list chat mints, never the body, so two people
+#: called Claude cannot both be meant.
+#:
+#: One sentence, covering two applications. Not one instruction per app —
+#: that is the claim. "make square" is a crop in the image editor and
+#: "put in open document" is a placement in the word processor, and the
+#: agent resolves each clause against what the room exports rather than
+#: against anything written here.
+#:
+#: What it does **not** carry is the photograph's address. That rides
+#: along as the compose surface's subject, because the right-click picked
+#: it — so "this" is never a word the agent has to interpret. The
+#: assertion in `say_something_about` that the id is *not* in the
+#: sentence is what keeps the two apart.
+AGENT_INSTRUCTION = "@claude make square and put in open document"
+
+#: What the document must carry afterwards, and where it must carry it.
+#:
+#: The mime the content store sniffed off the cropped bytes and wrote
+#: into the descriptor beside the hash. Deliberately not the PNG's own
+#: signature: an image travels as a hash with its bytes in a
+#: content-addressed store beside the document, so a document still
+#: carrying the bytes would now be the bug. See
+#: `image_is_in_the_document`.
+AGENT_IMAGE_PROOF = "image/png"
 
 # How long to wait for a change to cross between sessions.
 SYNC_TIMEOUT_S = 25.0
@@ -2689,34 +2667,6 @@ def windows_overlapping(s: Session) -> list[str]:
     return out
 
 
-#: How much of the strip one group takes, for the whole film.
-#:
-#: Set once, before the first frame, and never changed again. It used to
-#: be set per beat — a group takes about three quarters of the strip by
-#: default, so opening a second window put it mostly past the right edge
-#: and the beat then evened the shares out to bring it back. That worked,
-#: and it did it *on camera*: every window jumped to a new size and
-#: position a second after the app appeared, which reads as a glitch and
-#: undoes the impression that the window opened where it belonged.
-#:
-#: 500 is half each, which is what two groups need on a 1920 output —
-#: measured, not guessed: two 500-permille groups land at 291..1091 and
-#: 1099..1899 beside the wheel disc, both whole.
-#: Whether the film shows the machine fetching an application it does
-#: not have.
-#:
-#: The capability is real and, since the palette started saying so, it is
-#: finally visible: the row reads "Fetch and open …" beside a "not on
-#: this machine" badge, and the open counts real megabytes. It is also
-#: the one beat in this film that is not about collaboration or about
-#: agents — it is package management, and it costs twelve seconds of a
-#: budget of a hundred.
-#:
-#: So it is cut, and the fetch is exercised off camera anyway so the
-#: transcript still proves the machine gained the app. `--fetch-on-camera`
-#: puts it back.
-FETCH_ON_CAMERA = False
-
 FILM_GROUP_SHARE = 500
 
 #: How far `frame_windows` may narrow the groups to get a shot's
@@ -3160,6 +3110,54 @@ def frame_one_window(s: Session, app_id: str, prefer: dict | None = None,
 #: the third, so a page that gained a sentence is never confused with a
 #: page that only blinked.
 SCREEN_MOVED_PX = 4000
+
+
+def wait_for_xavers_windows(xaver: Session,
+                            timeout: float = DOC_SYNC_TIMEOUT_S) -> dict[str, dict]:
+    """Wait until xaver's machine is holding the room's applications.
+
+    Joining a room does not copy pictures of somebody else's windows.
+    The room document says which applications are open in it, and each
+    machine that holds the room **starts its own local instance** of
+    each — `peer_windows::open_for` calls
+    `launcher::launch_in_workspace` on this side, with the room's
+    capabilities published first, exactly as a launch from the palette
+    does.
+
+    That is why the next two beats are his rather than a click on a
+    replicated view: the file manager under his pointer is a process on
+    his machine reading his home, and it is the reason the gesture in
+    beat 4 can produce a compose surface and a log line at all.
+
+    It is also why this waits rather than asserts. Three sandbox spawns
+    do not finish the instant a room index entry replicates, and a beat
+    that cut to his screen the moment he joined would be filming an
+    empty desktop under a caption about a shared workspace.
+
+    Returns what actually arrived, keyed by app id, so a caller can say
+    which of them did not — an app that is not installed on this machine
+    comes back as a card saying so rather than as a window, and that is
+    a different failure from a slow spawn.
+    """
+    want = set(BEAT_TWO_ORDER)
+
+    def here() -> dict[str, dict]:
+        found: dict[str, dict] = {}
+        for app_id in want:
+            tile = best_tile(xaver, app_id, VIEWPORT)
+            if tile is not None:
+                found[app_id] = tile
+        return found
+
+    deadline = time.time() + timeout
+    landed = here()
+    while time.time() < deadline and len(landed) < len(want):
+        time.sleep(0.6)
+        landed = here()
+    if landed:
+        note(f"xaver's machine opened {len(landed)} of {len(want)} "
+             f"application(s) for itself: {sorted(landed)}")
+    return landed
 
 
 def screen_shot(s: Session, where: str) -> str | None:
@@ -4051,6 +4049,18 @@ def image_is_in_the_document(session: Session, room: str, png: bytes,
     presence, and a phantom collaborator arriving mid-take would be a
     thing on screen that the demo did not do.
     """
+    # An empty `png` would make the negative guard below vacuous —
+    # `carries_bytes(blob, b"")` is True of every blob there is — so the
+    # "and the document is *not* carrying the bytes themselves" half
+    # would report a pass it never performed. Refused rather than
+    # defaulted: a caller with no image to compare against is asking a
+    # question this function cannot answer, and saying so is the
+    # difference between absent and unreadable.
+    if len(png) < 24:
+        raise CannotDecode(
+            f"image_is_in_the_document needs the image's own bytes to check "
+            f"that the document is not carrying them; it was given "
+            f"{len(png)}B, and an empty needle matches every document")
     try:
         reader = DocumentReader(session.collab_json_sock, room, record=None)
     except OSError:
@@ -4332,60 +4342,6 @@ class Registry:
         return False
 
 
-def type_into_the_document(s: Session, wp: dict | None, text: str) -> bool:
-    """Put the caret in the page and type, the way a person would.
-
-    The word processor is a foreign client, so its insides are not in
-    the compositor's widget registry and there is no name to aim at.
-    Its *tile* has one, which is as close as the shell can get: click
-    into the middle of the page, then type.
-
-    The click is belt and braces now rather than a workaround. It was
-    added because typing without it put nothing in the document, and
-    that was read as the app opening with its caret outside the body —
-    which is not what was wrong: the app opens with the caret at the
-    start of the body, draws it there, and takes keystrokes with
-    nothing clicked (`apps/word-processor/tests/opens_ready_to_type.rs`
-    and the framebuffer reading beside it in `widget.rs`). What the
-    click also does is settle which window the seat is pointed at, and
-    that is worth keeping in a scripted run.
-    """
-    surface = (wp or {}).get("surface_id")
-    stem = f"foreign-surface-{surface}"
-    named = next((n for n in s.target_names()
-                  if n == stem or n.startswith(stem + "[")), None)
-    rect = s.named_rect(named) if named else None
-    if not rect:
-        others = [n for n in s.target_names()
-                  if n.startswith("foreign-surface-")]
-        note(f"{s.name}: no laid-out tile for surface {surface}; "
-             f"laid out now: {others or 'none'}")
-        return False
-    bx, by, bw, bh = rect
-    s.click_at(bx + bw * 0.4, by + bh * 0.35)
-    s.settle(1.0)
-    # To the end of what is already there, rather than wherever the
-    # click happened to land. By this point the document has a sentence
-    # and an image in it, and a caret dropped into the middle of that
-    # writes the list into the middle of it — or replaces a selected
-    # image with the first character typed.
-    #
-    # A *held* Control, not the `modifiers` mask. That mask is the
-    # compositor's own, read by chrome; a client resolves keycodes
-    # through the seat's xkb state, which the mask never touches. So the
-    # `modifiers(ctrl=True)` this used to do sent a bare `End` — end of
-    # the *line*, not of the document — and did it silently, which is
-    # exactly the kind of thing that only shows up as a list typed into
-    # the middle of a paragraph.
-    s.key_down("Control")
-    s.key("End")
-    s.key_up("Control")
-    s.settle(0.5)
-    s.type_prose(text)
-    s.settle(1.0)
-    return True
-
-
 def sources_newer_than(binary: str, roots: list[str]) -> list[str] | None:
     """Which `.rs` files under `roots` are newer than `binary`.
 
@@ -4592,58 +4548,29 @@ VIEWPORT: tuple[int, int] = (0, 0)
 EMPTY_DESKTOP_HOLD_S = 0.8
 
 
-def beat_one(quinten: Session, shots: str) -> tuple[dict, dict | None]:
-    banner("1.  an empty desktop, and Files opened on it")
+def beat_one(quinten: Session, shots: str) -> dict:
+    banner("1.  boot — a cold machine reaching a usable desktop")
     # The host's screen. A first boot really is empty here — one
     # workspace, no strips, no windows — so "empty" is read off the tree
     # rather than asserted about a backdrop.
     cut("quinten")
 
-    # Only what has to be true *before* the launch, because everything
-    # asked here is a round trip into a compositor the camera is already
-    # most of the way through, and the answer is seconds of empty desktop
-    # in front of the first window. The rest of this run's bookkeeping —
-    # three processes, three identities, who owns the room — is as true
-    # after the launch as before it, and is printed there instead.
+    # Only what has to be true *before* anything opens, because
+    # everything asked here is a round trip into a compositor the camera
+    # is already most of the way through, and the answer is seconds of
+    # empty desktop in front of the first window. The rest of this run's
+    # bookkeeping is as true afterwards as before, and is printed there.
     host_ws = quinten.active_workspace()
     claim("his desktop starts with no windows on it",
           len(quinten.tabs_here()), 0)
     quinten.park_pointer()
     quinten.snapshot(os.path.join(shots, "01-empty-desktop.png"))
+    # The film opens on an empty desktop, and the boot bumper is cut to
+    # end where the desktop arrives rather than after it — so this hold
+    # is the far side of that join and the same picture is on both sides
+    # of it. See `docs/boot-bumper-cut.md`.
     read_hold(EMPTY_DESKTOP_HOLD_S)
 
-    step("he opens Files")
-    # By its own id through the applications provider — the registry that
-    # feeds the palette. There is no on-screen affordance for the first
-    # window; the palette is a chord, and this is the same row it offers.
-    #
-    # The camera gets out of the way while the app starts. Snapshotting
-    # is most of a filmed compositor's event loop, and the compositor is
-    # what spawns this client, hands it its configure and takes its first
-    # buffer — so filming the launch at full rate is the camera competing
-    # with the thing it is filming. Measured on this build: 1.9s to a
-    # first frame and 2.2s to a window that fills its tab with the camera
-    # eased, against 3.3s for both with it running flat out. The film
-    # loses frame rate for two seconds at the front and gets a second of
-    # its opening back, and — more to the point — stops showing the
-    # product's own speed as worse than it is.
-    with easing(4.0):
-        painted = quinten.launch(FILES_APP)
-    claim("Files opened and painted a frame", painted is not None, True)
-    if painted:
-        note(f"surface {painted.get('surface_id')} at frame "
-             f"{painted.get('frame_seq')}")
-    tabs = quinten.tabs_here()
-    claim("and it is the only window on his desktop", len(tabs), 1)
-    quinten.snapshot(os.path.join(shots, "02-files.png"))
-
-    # What this run is made of, said once — and off camera, because none
-    # of it has a picture. Three process ids and three libp2p identities
-    # are read out of three sessions, and every one of those reads is a
-    # round trip into a compositor the camera is already most of the way
-    # through: filmed, they are a window sitting still while a script
-    # does bookkeeping, which is exactly the dead air at the front of
-    # this film that nothing on screen accounted for.
     with off_camera("the run's own bookkeeping - three processes, three "
                     "identities, who owns the room - which is a transcript "
                     "fact and not a shot"):
@@ -4655,213 +4582,157 @@ def beat_one(quinten: Session, shots: str) -> tuple[dict, dict | None]:
         claim("three separate libp2p identities", len(set(ids.values())), 3)
         note(f"quinten's room {host_ws['room']}  named {host_ws['name']!r}")
         claim("quinten owns his room", host_ws["owner"], quinten.user)
-    # The surface travels with it: beat 8 drags a file *out of this
-    # window*, and by then a second client is on screen announcing the
-    # same wayland app-id. The surface the launch saw paint is the only
-    # thing that tells the two apart.
-    return host_ws, painted
+    return host_ws
 
 
-def beat_two(quinten: Session, xaver: Session, host_ws: dict,
-             shots: str) -> None:
-    banner("2.  quinten invites xaver")
+def beat_two(quinten: Session, shots: str) -> dict[str, dict]:
+    banner("2.  an empty workspace, and three applications opened into it")
+    cut("quinten")
+
+    # The order is the point, and it is the film's order rather than a
+    # convenience: chat, then Files, then the word processor. It is how
+    # somebody actually sets a workspace up. An earlier cut had it
+    # backwards — one application, then invitations into a room with
+    # nothing in it, then everything else arriving later with no
+    # explanation of why.
+    #
+    # Every one of them through the palette. Opening by address is a
+    # window appearing out of nothing and a viewer has to be told what
+    # happened; the search — the key, a few letters, the row — *shows*
+    # it, and shows that the desktop has one way in rather than a menu
+    # per application. `via="palette"` takes that route deliberately
+    # rather than as a fallback, so all three are opened the same way
+    # and none of them is opened the way none of the others were.
+    opened: dict[str, dict] = {}
+    for n, app_id in enumerate(BEAT_TWO_ORDER, start=1):
+        search = BEAT_TWO_SEARCH[app_id]
+        step(f"he opens {BEAT_TWO_TITLE[app_id]} — the key, {search!r}, the row")
+        # The camera gets out of the way while the app starts.
+        # Snapshotting is most of a filmed compositor's event loop, and
+        # the compositor is what spawns this client, hands it its
+        # configure and takes its first buffer — so filming a launch at
+        # full rate is the camera competing with the thing it is
+        # filming.
+        with easing(4.0):
+            painted = quinten.launch(app_id, search=search, via="palette")
+        claim(f"{BEAT_TWO_TITLE[app_id]} opened and painted a frame",
+              painted is not None, True)
+        if painted is None:
+            gap(f"{app_id} never painted, so the workspace this film is "
+                f"about is a window short. See {quinten.log_path}")
+            continue
+        opened[app_id] = painted
+        note(f"surface {painted.get('surface_id')} at frame "
+             f"{painted.get('frame_seq')}")
+        claim(f"and his desktop now holds {n} window(s)",
+              len(quinten.tabs_here()), n)
+
+    # A group takes about three quarters of the strip by default, so a
+    # third window opens mostly past the right edge — the strip working
+    # exactly as designed, and the beat's own subject half out of frame
+    # while it does. An even share puts all three in the picture that
+    # claims all three are there.
+    frame_windows(quinten, list(opened), VIEWPORT)
+    read_hold()
+    quinten.snapshot(os.path.join(shots, "02-three-applications.png"))
+    claim("three applications, one workspace, opened one way",
+          sorted(opened), sorted(BEAT_TWO_ORDER))
+    return opened
+
+
+def beat_three(quinten: Session, xaver: Session, agent: Session,
+               host_ws: dict, shots: str) -> None:
+    banner("3.  inviting people — xaver, then Claude")
     cut("quinten")
 
     step("he opens the room's people")
-    # Through the chrome, at a pace a viewer can follow, and every step of
-    # it a click on something painted. This whole beat used to pass in
-    # under a second because it was invoked as an action: every claim held
-    # and the collaboration UI never appeared, which is the one thing the
+    # Through the chrome, at a pace a viewer can follow, and every step
+    # of it a click on something painted. This used to pass in under a
+    # second because it was invoked as an action: every claim held and
+    # the collaboration UI never appeared, which is the one thing the
     # beat exists to put on screen.
     via = show_collaborators(quinten)
     note(f"opened from {via}")
     claim("the collaborators panel is up", quinten.overlays()["collaborators"],
           True)
-    here = quinten.active_workspace().get("collaborators") or []
-    note(f"the room holds {len(here)} collaborator(s) — an empty roster is "
-         f"exactly when the way in matters most, and it is the case that "
-         f"used to paint nothing at all")
     read_hold()
-    quinten.snapshot(os.path.join(shots, "02a-collaborators-empty.png"))
+    quinten.snapshot(os.path.join(shots, "03a-collaborators-empty.png"))
 
-    token = invite_from_the_panel(quinten, xaver.user, shots, "02b")
+    step("xaver first")
+    token = invite_from_the_panel(quinten, xaver.user, shots, "03b")
     claim("quinten raised an invite from the panel he opened", bool(token),
           True)
     if not token:
         raise SystemExit("no invite token: the rest cannot run")
     note("the token is a signed blob carrying the room id, the owner's "
          "address and an expiry. The name is not in it: it waits on this "
-         "machine until somebody redeems the token and is written into the "
-         "room document then, by the room's own authority, so both "
-         "machines can attribute a cursor to a person nobody self-declared")
-
-    # Redeeming is xaver's, and it is his screen that changes — and the
-    # film does not go there for it.
-    #
-    # This is filmed, and the reasoning that took it off camera was
-    # wrong. Watching somebody paste a string into a dialog is indeed the
-    # least surprising thing in this system — but the beat is not the
-    # paste, it is *a second machine joining*, which is the claim the
-    # whole first half is building toward. Taken away, the roster simply
-    # gains a member and the audience is asked to believe a join
-    # happened somewhere they could not see.
-    #
-    step("the token travels — by hand, off quinten's clipboard")
-    # He does not redeem it the instant it is minted. That reads as
-    # staged, because it is: two sessions on one machine sharing a
-    # clipboard. A person reads a code, crosses to another machine, and
-    # enters it — and the seconds that takes are seconds the room sits
-    # there waiting, which is both the truth and room for a voice-over.
-    #
-    # The redemption itself stays off camera. Watching somebody paste a
-    # string into a dialog is the least surprising thing in this system,
-    # and the beat that matters is his arrival on the roster of the
-    # screen already being watched.
-    quinten.settle(4.0)
+         "machine until somebody redeems the token and is written into "
+         "the room document then, by the room's own authority")
     with off_camera("xaver redeeming the invitation on his own machine — "
                     "quinten's roster gains him on screen shortly"):
         claim("xaver joined",
-              join_room(xaver, token, via="panel", shots=shots, tag="02c"), True)
+              join_room(xaver, token, via="panel", shots=shots, tag="03c"), True)
         claim("xaver's own state holds quinten's room",
               xaver.active_workspace()["room"], host_ws["room"])
-        claim("and his own copy names quinten as owner",
-              xaver.active_workspace()["owner"], quinten.user)
 
-
-def beat_three(quinten: Session, agent: Session, host_ws: dict,
-               shots: str) -> None:
-    banner("3.  quinten invites the agent")
-    # No cut anywhere in this beat. It runs off camera (see `run`): it is
-    # the same card the film has just spent fifteen seconds on, made out
-    # to a different name, and the half of it that is actually new — an
-    # agent is a subject in the permission model, not a peer — is a
-    # question asked of the authority gate and answered in this
-    # transcript. There is nothing in it that a second look at the same
-    # modal would show.
-    step("he opens the room's people again — xaver is in it now")
-    via = show_collaborators(quinten)
-    note(f"opened from {via}")
-    claim("the collaborators panel is up", quinten.overlays()["collaborators"],
-          True)
-    quinten.snapshot(os.path.join(shots, "03a-collaborators-xaver.png"))
-
-    step("a second invitation — but an agent is not a peer")
-    token = invite_from_the_panel(quinten, agent.user, shots, "03b")
+    step("then Claude — admitted the same way, and marked as an agent")
+    token = invite_from_the_panel(quinten, agent.user, shots, "03d")
     claim("quinten raised a second invite from the same panel", bool(token),
           True)
     if not token:
         raise SystemExit("no second token: the agent cannot join")
-
     # No cut. The agent has no screen worth filming and showing one
     # inverts the claim: it is a participant in somebody else's room, so
-    # it appears as a row in a roster, a caret in a document and a name
-    # in a history — never as a desktop of its own.
+    # it appears as a row in a roster and a caret in a document, never
+    # as a desktop of its own.
     claim("the agent joined the room", join_room(agent, token, via="action"),
           True)
     claim("the agent's own state holds quinten's room",
           agent.active_workspace()["room"], host_ws["room"])
-    # Where the two routes differ, said plainly. The agent has no mouse
-    # to reach a top bar with, so it raises the same card by its stable
-    # address — `peer.connect`, one of the actions beat 9 enumerates —
-    # and redeems with the card's own Paste and Join. The token is not
-    # typed on either machine, and there is no route here that types it.
-    note("the agent reached the same prompt by address rather than by "
-         "opening a panel; the token was pasted and redeemed with the "
-         "card's own buttons, never typed")
 
-    step("what the agent is allowed to do, before quinten says so")
-    # The more interesting half, and the one that makes an agent a
-    # different kind of participant: it is a subject in the permission
-    # model, `agent:<id>`, and its authority is a grant on a scope. Asked
-    # of the production gate, which answers about a verb on a scope.
-    def may_write(app: str) -> bool:
-        answer = quinten.check_action(AGENT_SUBJECT, app, "SpliceText") \
-            .get("answer", {}) or {}
-        return bool(answer.get("permitted"))
+    with off_camera("what the agent may do, asked of the authority gate — "
+                    "a question with no picture"):
+        def may_write(app: str) -> bool:
+            answer = quinten.check_action(AGENT_SUBJECT, app, "SpliceText") \
+                .get("answer", {}) or {}
+            return bool(answer.get("permitted"))
 
-    probe = quinten.check_action(AGENT_SUBJECT, WORD_PROCESSOR, "SpliceText")
-    note(f"check_action({AGENT_SUBJECT}, {WORD_PROCESSOR}, SpliceText) -> "
-         f"{json.dumps(probe.get('answer', probe))[:140]}")
-    claim("the agent may not write to the word processor yet",
-          may_write(WORD_PROCESSOR), False)
+        claim("the agent may not write to the word processor yet",
+              may_write(WORD_PROCESSOR), False)
+        # Two grants rather than one broad one, because that is the
+        # claim. A grant names an application, not the workspace, so an
+        # agent handed a photograph to crop cannot thereby start
+        # anything it likes — and these two are exactly the two windows
+        # it touches in beat 5.
+        for scope in AGENT_SCOPES:
+            granted = quinten.grant(AGENT_SUBJECT, scope, "write")
+            claim(f"quinten grants it write on {scope}", "err" not in granted,
+                  True)
+            if "err" in granted:
+                note(json.dumps(granted["err"])[:200])
+        claim("now it may — the same question, the same gate",
+              bool(wait_for(lambda: may_write(WORD_PROCESSOR),
+                            timeout=SYNC_TIMEOUT_S)), True)
+        claim("and still may not write to an app it was not granted",
+              may_write("dev.qos.terminal"), False)
+        note("a capability is a verb on a scope; the scope here is one app")
+        admitted = quinten.grant(f"person:{agent.user}", "workspace", "write")
+        claim("quinten admits the agent's session as an editor",
+              "err" not in admitted, True)
 
-    step(f"quinten grants it write on {AGENT_SCOPE} — that app, and nothing else")
-    granted = quinten.grant(AGENT_SUBJECT, AGENT_SCOPE, "write")
-    claim("the grant was accepted", "err" not in granted, True)
-    if "err" in granted:
-        note(json.dumps(granted["err"])[:200])
-    claim("now it may — the same question, the same gate",
-          bool(wait_for(lambda: may_write(WORD_PROCESSOR), timeout=SYNC_TIMEOUT_S)),
-          True)
-    # And the scope is a real boundary rather than a label: the grant
-    # named one app, so it must not answer for another.
-    claim("and still may not write to a different app",
-          may_write("dev.qos.terminal"), False)
-    note("a capability is a verb on a scope; the scope here is one app")
-
-    step("and the session it drives is admitted to the room as itself")
-    # The grant above is about the principal inside an app. The session
-    # is a separate subject, and a guest who has only been let in is not
-    # yet allowed to act — so it is admitted explicitly, the same way
-    # xaver would be.
-    admitted = quinten.grant(f"person:{agent.user}", "workspace", "write")
-    claim("quinten admits the agent's session as an editor",
-          "err" not in admitted, True)
-    if "err" in admitted:
-        note(json.dumps(admitted["err"])[:200])
-
-
-def beat_four(quinten: Session, xaver: Session, agent: Session,
-              host_ws: dict, shots: str) -> None:
-    banner("4.  both have joined — and each session can see the others")
-
-    cut("quinten")
-
-    # Two socket reads with nothing in frame. The comment inside
-    # already says this question has no picture and that what it
-    # produces is a line in the transcript -- so the camera should
-    # not have been running through it, and was.
-    with off_camera("the other two sessions are asked what they call quinten's\n     room -- answered over a socket, with nothing on screen"):
-        step("read quinten's room back out of the other two")
-        # Neither of these is quinten's own state — each guest independently
-        # reports the room it now holds — and neither is filmed from the
-        # guest. Asking a far session what it holds is a question, and a
-        # question has no picture: what it produces is a line in this
-        # transcript. The camera stays where the story is, and what xaver
-        # holds is *seen* in the last shot of the film rather than described
-        # over a screenshot of his backdrop.
-        claim("xaver's own copy carries quinten's name for the room",
-              xaver.active_workspace()["name"], host_ws["name"])
-        # Read from the agent's session, shot on nobody's: it is asserted
-        # here and *seen* in the roster on quinten's screen below.
-        claim("the agent's own copy carries it too",
-              agent.active_workspace()["name"], host_ws["name"])
-
-    step("and the room's people, from the top bar")
-    # Now there is a roster, so the affordance exists: the avatar stack
-    # is drawn and clicking it opens the panel. This is also where the
-    # names have to hold up — a roster listing `peer-2` and
-    # `peer@11895642303397647149` beside `xaver` is three label styles
-    # for three participants, and a room nobody can read.
+    step("both of them in the room's own list — which is what membership is")
+    # Read off the room's capability list, which *is* the membership
+    # (`state.rs`: "Room membership lives here"), and is the same list
+    # the panel on screen is drawn from. Read here rather than from
+    # `peers`, which carries pointers and nothing else.
+    #
+    # This is also the honest place to look for the agent. Claude has no
+    # mouse — a pointer that has never moved publishes nothing, by
+    # design — so asserting a cursor for it would be asserting something
+    # that should not exist. What makes it a participant is that it
+    # holds a capability in the room.
     via = show_collaborators(quinten)
     note(f"opened from {via}")
-    claim("the collaborators panel is up on quinten's screen",
-          quinten.overlays()["collaborators"], True)
-    # Who is in this room, read off the room's own capability list —
-    # which *is* the membership (`state.rs:877`: "Room membership lives
-    # here"), and is the same list the panel on screen is drawn from.
-    #
-    # Read here rather than from `peers`, which carries pointers and
-    # nothing else: a `peers()["roster"]` lookup returned an empty list
-    # on every run this demo has ever made, and printed nothing, so the
-    # roster was never actually being checked.
-    #
-    # This is also the honest place to look for the agent. Claude is a
-    # participant in this room and has no mouse — a pointer that has
-    # never moved publishes nothing, by design — so asserting a cursor
-    # for it would be asserting something that should not exist. What
-    # makes it a participant is that it holds a capability in the room,
-    # and that is what is checked.
     caps = quinten.active_workspace().get("capabilities") or []
     members: dict[str, list[str]] = {}
     for cap in caps:
@@ -4870,806 +4741,187 @@ def beat_four(quinten: Session, xaver: Session, agent: Session,
             if f'"{name}"' in subject or f":{name}" in subject:
                 members.setdefault(name, []).append(str(cap.get("verb")))
     if not caps:
-        # Said as a gap rather than asserted away. An empty list here is
-        # this reader looking in the wrong place, not a room with nobody
-        # in it — three participants joined it two beats ago.
         gap("the active workspace reported no capability list, so who is "
             "in this room could not be read off it")
     else:
         note(f"the room's own capability list names {sorted(members)} "
              f"across {len(caps)} capabilities")
-        claim("the agent is in the room the same way the people are — by "
+        claim("xaver is in it", xaver.user in members, True)
+        claim("and the agent is in it the same way the people are — by "
               "holding a capability in it", agent.user in members, True)
-        if agent.user in members:
-            note(f"{agent.user} holds {sorted(set(members[agent.user]))} "
-                 f"here — which is what makes it a member of this room: a "
-                 f"capability, granted by the owner, in the same list the "
-                 f"people are in")
-    read_hold()
-    quinten.snapshot(os.path.join(shots, "03a-roster.png"))
+    read_hold(READ_HOLD_S * 1.5)
+    quinten.snapshot(os.path.join(shots, "03e-roster.png"))
     close_collaborators(quinten)
 
-    step("and the cursors — on a desktop with nothing open on it")
-    # `peers` is read from the same PresenceCtx the overlay draws from,
-    # which is the only way to tell "no peer arrived" from "a peer
-    # arrived and was not drawn" — those make the same picture.
+    # The cut the rest of the film is held on. Taken here rather than at
+    # the top of beat 4 because the beat that earns it is this one: a
+    # second machine that joined a room and now holds what is in it.
     #
-    # This beat is deliberately shot on an empty desktop, and that used
-    # to be exactly the case that could not work: a session only put its
-    # cursor on the wire as a side effect of some local app publishing
-    # one, so two people looking at empty desktops published nothing
-    # between them. It is level-triggered from the frame loop now, and a
-    # pointer that has stopped is restated about once a second — so a
-    # peer who joins in the middle of this beat arrives to find the
-    # others already on screen, without anyone having to waggle a mouse
-    # to announce themselves.
-    WHERE_Q = (880.0, 520.0)
-    WHERE_X = (640.0, 610.0)
-    quinten.pointer_move(*WHERE_Q)
-    quinten.settle(0.6)
-    # Moved, not filmed. Both halves of this are one fact seen from two
-    # sides, and one side is enough to put on screen: quinten's desktop
-    # carrying xaver's cursor, with nothing open on either machine, is
-    # the picture. Cutting to xaver to watch him move a mouse shows the
-    # cause of something the audience has already been shown the effect
-    # of.
-    xaver.pointer_move(*WHERE_X)
-    xaver.settle(0.6)
-
-    def seen_by(watcher: Session, who: str):
-        """Peer `who`'s pointer, as `watcher`'s session holds it.
-
-        Both stores, because a person's pointer has lived in either. It
-        was once filed into `pointers` *and* `remote_cursors`, which is
-        what drew some peers twice; consolidating that left a reader of
-        only one key looking at an empty list while the cursor was on
-        screen, correctly drawn and correctly named. Reading both is the
-        honest question — "does this session hold a pointer for that
-        person" — rather than a question about where it is filed.
-
-        A row is matched on either field, because the two carry
-        different facts and only one of them is a person's name. The
-        *identity* is `peer@<handle>`, derived from the handle the
-        frames arrive under (`peer_presence.rs:420`); the *name* is what
-        the room calls that identity, written into the room document
-        under the inviter's authority. A peer that could announce its own
-        name could announce anybody's, so identity stopped being the
-        sending session's word for who is at it — and a predicate
-        written against `user == "quinten"` stopped matching anything at
-        exactly that moment, which read here as presence failing while
-        it was working.
-        """
-        peers = watcher.peers() or {}
-        rows = []
-        for key in ("pointers", "remote_cursors"):
-            rows.extend(peers.get(key) or [])
-        return [r for r in rows
-                if who in (r.get("name"), r.get("user"))] or None
-
-    def at_the_origin(row: dict) -> bool:
-        """A pointer painted where nobody is.
-
-        A roster entry that conjures a cursor at (0, 0) has been fixed
-        once already. It is worth failing on rather than shooting around,
-        because on screen it is indistinguishable from a peer who happens
-        to have parked in the corner — and it is only wrong when the peer
-        is demonstrably somewhere else, which is the one thing a harness
-        can check and an eye cannot.
-        """
-        return abs(float(row.get("x", 0.0))) < 1.0 and \
-            abs(float(row.get("y", 0.0))) < 1.0
-
-    # Bounded on camera, not in the claim: a cursor that is going to
-    # cross has crossed within a few seconds, and the alternative is
-    # filming an empty desktop for twenty-five under a caption about a
-    # cursor appearing on it.
-    with patience(4.0):
-        on_xaver = wait_for(lambda: seen_by(xaver, quinten.user),
-                            timeout=SYNC_TIMEOUT_S)
-    claim("xaver's session paints quinten's cursor on an empty desktop",
-          bool(on_xaver), True)
-    if on_xaver:
-        row = on_xaver[0]
-        note(f"xaver's screen holds {json.dumps(row)}")
-        # The name is the other half of the beat, and it is a different
-        # fact from the id: the id is the identity and is never blank,
-        # the name is what the *room* calls that identity, and the pill
-        # over the cursor draws the name. A cursor reading `peer-1` is a
-        # cursor nobody can attribute to a person.
-        #
-        # Asserted on the *name*, and deliberately not on the id. The id
-        # is `peer@<handle>` and is supposed to be: the sending session
-        # does not get to say who is at it, or a peer could sit in a room
-        # under somebody else's name. So "the label is trustworthy" is a
-        # claim about where the name came from — the room document, which
-        # only the room's authority can write — and this checks that the
-        # id is a handle rather than a person's word for themselves.
-        claim("the identity is the session's handle, not a name it chose "
-              "for itself",
-              str(row.get("user", "")).startswith("peer@"), True)
-        claim("and the pill over it reads his name, resolved from the room",
-              row.get("name"), quinten.user)
-        claim(f"and puts it where he actually is, not at the origin",
-              at_the_origin(row), False)
-        if at_the_origin(row):
-            note(f"quinten's pointer is at {WHERE_Q} and his peer row on "
-                 f"xaver's screen is at the origin — a cursor is being "
-                 f"painted where he is not")
-    xaver.snapshot(os.path.join(shots, "03-xaver-joined.png"))
-
-    with patience(4.0):
-        on_quinten = wait_for(lambda: seen_by(quinten, xaver.user),
-                              timeout=SYNC_TIMEOUT_S)
-    claim("and quinten's paints xaver's, the other way", bool(on_quinten), True)
-    if on_quinten:
-        claim("also at a real position", at_the_origin(on_quinten[0]), False)
-        note(f"quinten's screen holds {json.dumps(on_quinten[0])}")
-    # Whether the agent publishes a pointer of its own is a fact about the
-    # product, and it is read rather than assumed in either direction: an
-    # earlier draft of this beat stated in a comment that it does not, and
-    # a shot from that same run had a pill reading `Claude` in it.
-    agent_seen = seen_by(quinten, agent.user)
-    if agent_seen:
-        # Reported, not shot around, and not fixed here: the compositor
-        # restates every session's pointer from its own frame loop, so a
-        # session that has never had a pointer moved through it still
-        # publishes one — and the agent is a session.
-        #
-        # That was half the story and the half that sent three fixes to
-        # the wrong place. The agent had a pointer because *this file*
-        # gave it one: redeeming an invitation had no address, so joining
-        # meant clicking Paste and Join, and the position those clicks
-        # left behind was restated to the room once a second afterwards.
-        # It now joins through `peer.join`, which takes the token and
-        # touches nothing.
-        #
-        # So if this fires again, the first question is which route the
-        # agent took — not what the compositor is publishing.
-        gap("the agent publishes a desktop cursor: a pill reading "
-            f"{agent.user!r} is painted on quinten's screen at "
-            f"{json.dumps(agent_seen[0])}. A pointer is for pointing at "
-            f"something you are looking at, and this participant never "
-            f"looks at a screen. It joined by address and should never "
-            f"have acquired a position — so check what gave it one "
-            f"before looking at how presence is published")
-    else:
-        note(f"{agent.user} publishes no desktop cursor, which is right: "
-             f"what makes it a member of this room is the capability "
-             f"above, and where it appears is in the document")
-    read_hold()
-
-    step("and they stay there without anyone moving")
-    # The property that makes this beat filmable, asserted rather than
-    # assumed. An edge-triggered cursor is published when it moves and
-    # then forgotten, which looks identical to this one for a second and
-    # then leaves an empty desktop behind — and means a peer arriving
-    # later sees nobody until somebody jiggles a mouse. Nothing is moved
-    # here on purpose: both pointers have been still since above.
-    # Three seconds of two motionless cursors. The claim is worth making
-    # -- an edge-triggered cursor looks identical for a second and then
-    # leaves an empty desktop -- and there is nothing in it to watch,
-    # because what is being asserted is that the picture does not change.
-    with off_camera("three seconds pass with nobody moving, and both "
-                    "cursors are still being published"):
-        quinten.settle(3.0)
-        still_there = seen_by(quinten, xaver.user)
-    claim("xaver's cursor is still on quinten's screen 3s after it stopped",
-          bool(still_there), True)
-    if not still_there:
-        note("a stopped pointer is no longer being restated, so a peer who "
-             "joins after the last mouse movement arrives to an empty room")
-
-
-def beat_five(quinten: Session, registry, shots: str) -> dict | None:
-    banner("5.  \"word processor\" — a machine that does not have it")
-    cut("quinten")
-
-    installed = set(installed_ids(quinten.apps_dir))
-    claim("this machine does not have the word processor",
-          WORD_PROCESSOR in installed, False)
-    note(f"{len(installed)} applications installed; {WORD_PROCESSOR} is not "
-         f"one of them")
-    if registry is None:
-        gap("no local registry was served, so the fetch could not be filmed: "
-            "build it with `cargo build -p app-catalogue --bins --examples` "
-            "and `cargo build -p qos-install --bin qos-install`")
-        return None
-    note(f"a registry at {registry.base_url} offers it")
-
-    step("he searches for it, and the row is offered like any other")
-    quinten.modifiers(logo=True)
-    quinten.key("k")
-    quinten.modifiers()
-    quinten.settle(0.4)
-    quinten.type_prose("word processor")
-    quinten.settle(1.2)
-    pal = quinten.palette()
-    rows = pal.get("rows") or []
-    offered = next((r for r in rows if WORD_PROCESSOR in json.dumps(r)), None)
-    claim("the palette offers an app this machine does not have",
-          offered is not None, True)
-    if offered:
-        note(f"row: {offered.get('title')!r} — {offered.get('subtitle')!r}")
-        # And that the row *says so*, which is the half this beat used to
-        # spend eleven seconds not showing.
-        #
-        # The capability was always real — the palette listed an app the
-        # machine did not have and activating it fetched one. The row was
-        # identical to a row for an app already here, so on film it was an
-        # ordinary app launch and a viewer had no way to tell. A beat that
-        # demonstrates something invisibly is a beat that costs its
-        # seconds and argues nothing.
-        badge = offered.get("badge")
-        claim("and the row says it is not on this machine",
-              bool(badge), True)
-        if badge:
-            note(f"the row carries {badge!r}, and its title is the fetch "
-                 f"verb rather than the ordinary open one")
-        else:
-            gap("the row for an app this machine does not have is "
-                "indistinguishable from one for an app it has, so this "
-                "beat shows a capability the audience cannot see")
-    quinten.snapshot(os.path.join(shots, "04-palette-offer.png"))
-
-    step("he presses Enter — fetch, verify, unpack, run")
-    before = {f.get("surface_id") for f in quinten.foreign_frames()}
-    # The one number in this film a viewer might time with a stopwatch,
-    # so the camera gets out of the way while it is being taken. The
-    # poll below queues behind the camera too, which is why it loosens
-    # as well.
-    with easing(4.0):
-        quinten.key("Enter")
-        began = time.time()
-        painted = None
-        deadline = time.time() + LAUNCH_TIMEOUT_S * 2
-        while time.time() < deadline:
-            for f in quinten.foreign_frames():
-                if f.get("surface_id") not in before and f.get("frame_seq", 0) > 0:
-                    painted = f
-                    break
-            if painted:
-                break
-            time.sleep(0.25)
-        took = time.time() - began
-    claim("the word processor was fetched and opened", painted is not None, True)
-    if painted is None:
-        note(f"see {quinten.log_path}")
-        return None
-    note(f"{took:.1f}s from Enter to first frame — one machine, one LAN hop, "
-         f"an unoptimised payload; not a number to quote")
-    claim("and it is installed now, on the machine that lacked it",
-          WORD_PROCESSOR in set(installed_ids(quinten.apps_dir)), True)
-    # A group takes about three quarters of the strip by default, so the
-    # second window opens mostly past the right edge — the strip is
-    # working exactly as designed, and the app the beat is about is half
-    # off screen while it does. Give every group an even share, so the
-    # window this beat just opened is actually in the frame that shows it.
-    frame_windows(quinten, [FILES_APP, WORD_PROCESSOR], VIEWPORT)
-    # A beat later than the first frame. `painted` means the app has
-    # presented *something*, and what a `ui` app presents first is its
-    # splash — so the shot that is supposed to show a word processor
-    # arriving on a machine that lacked it was a title and a spinner.
-    #
-    # 2.5s was not enough of a beat: it produced exactly that shot, a
-    # centred "Word Processor" over a dot spinner, in the frame the
-    # letter's "an app appears with no install step" rests on. Held long
-    # enough for the app to finish starting, and held *on camera* rather
-    # than settled quietly, because an app coming up is worth watching
-    # and this is the moment the beat is for.
-    quinten.settle(2.0)
-    # Two and a half seconds, not five. The five was set when an app took
-    # ten seconds to appear and the hold was covering the tail of that
-    # wait; a window now arrives in about three, and holding on a
-    # finished, motionless window for five more is the beat asking for
-    # patience it has not earned.
-    if RECORDER:
-        RECORDER.hold(1.5)
-    else:
-        quinten.settle(1.5)
-    quinten.snapshot(os.path.join(shots, "05-word-processor.png"))
-    return painted
-
-
-def beat_six(quinten: Session, xaver: Session, baseline: dict,
-             opened: list[str], shots: str) -> str | None:
-    banner("6.  xaver's screen — the window, and what quinten wrote in it")
-
-    # Both halves of the rule get asserted, because either alone is easy
-    # to satisfy wrongly: the window must arrive, *and* he must not be
-    # moved to it.
-    #
-    # The baseline is taken before beat 5 opens anything, not here.
-    # Measuring "a tab quinten has that xaver lacks" at this point asks
-    # the question after the answer: replication is quick, and a run
-    # where the window had already crossed reported that there was
-    # nothing to watch — the success and the failure both came out as
-    # silence. What is watched instead is the tab that did not exist
-    # when the baseline was taken, which is the window beat 5 opened.
-    #
-    # No cut, and asked *before* beat 7 — because beat 7 has xaver open a
-    # word processor on his own machine, and opening an app moves your
-    # focus to it. Asked afterwards, "his view did not move" is measured
-    # across a window he opened himself: it failed exactly that way once,
-    # reporting a replication bug that was a person clicking on their own
-    # computer. The claim is that *somebody else's* window arriving does
-    # not move you, so nothing of his own may happen in between.
-    #
-    # What the film shows is separate and later — see `show_xavers_screen`,
-    # which frames the same screen once it is also carrying the sentence
-    # quinten typed.
-    before_view = baseline["view"]
-    before_groups = baseline["groups"]
-    # Handed in, not diffed here. Since this beat moved after beat 7 there
-    # is a second word processor in the room — the one xaver opened on his
-    # own machine — and a tab that is new since the baseline could be
-    # either. Watching *his own* tab arrive in his own tree is a claim
-    # that cannot fail, printed under a heading about replication. What is
-    # watched is the tab quinten's machine opened, identified before
-    # xaver opened anything.
-    fresh = list(opened)
-    note(f"quinten holds {len(quinten.tabs_here())} tab(s); xaver holds "
-         f"{len(xaver.tabs_here())}; the tab under test is the one his "
-         f"machine opened in beat 5, taken before xaver opened his own")
-
-    # Keep this beat on one of qOS's own apps. Those replicate through
-    # the room document and are drawn from it on the far side, which is
-    # what makes a real window appear there. A foreign Wayland surface
-    # has no such description to replicate and degrades to a card
-    # reading "coming soon" — true to what the system can do today, and
-    # the wrong thing to put in a shot whose whole claim is that the
-    # window opened over there.
-    step("the tab quinten's word processor opened, read out of xaver's tree")
-    if not fresh:
-        gap("beat 5 opened no window on quinten's session, so there was "
-            "nothing for this beat to watch cross")
-        return None
-    tid = sorted(fresh)[0]
-    landed = wait_for(lambda: tid in xaver.tabs_here(), timeout=DOC_SYNC_TIMEOUT_S)
-    claim("the window quinten opened is open for xaver too", bool(landed), True)
-    if landed:
-        arrived = xaver.tabs_here()[tid]
-        note(f"tab {tid} in xaver's workspace, titled {arrived.get('title')!r}")
-    else:
-        note(f"tab {tid} had not replicated after {DOC_SYNC_TIMEOUT_S:.0f}s")
-
-    step("and his own view did not move")
-    after_view = xaver.view_state()
-    claim("xaver's active workspace did not move",
-          after_view["active"], before_view["active"])
-    claim("xaver's scrolled-to strip did not move",
-          after_view["active_strip"], before_view["active_strip"])
-    claim("xaver's focus did not move",
-          after_view["active_group"], before_view["active_group"])
-    for g, was in before_groups.items():
-        if g in xaver.groups_here():
-            claim(f"the tab in front of him in group {g[:6]}… did not change",
-                  xaver.groups_here()[g]["active_tab"], was["active_tab"])
-    note("which windows exist is the workspace; which one you are looking "
-         "at is you, and the second does not travel")
-    xaver.snapshot(os.path.join(shots, "06-xaver-window.png"))
-    return tid
-
-
-def show_xavers_screen(xaver: Session, shots: str) -> None:
-    """The shot the film's one excursion was made for.
-
-    Everything in it has already been proven — the window arrived in beat
-    6, the sentence in beat 7 — and neither proof is a picture: both are
-    answers to questions put over a socket. This is where a viewer gets
-    to see the two of them on one screen at the same time, which is the
-    only thing a second machine is worth crossing to.
-
-    Framed rather than merely visited: an even share of the strip, every
-    window whole, and then the document brought up in front. A previous
-    cut ended its excursion on this session's file manager showing an
-    empty folder, under a caption about a document two other participants
-    had just written into.
-    """
-    frame_one_window(xaver, WORD_PROCESSOR)
-    read_hold(READ_HOLD_S * 1.5)
-    xaver.snapshot(os.path.join(shots, "06b-xaver-window-and-text.png"))
-
-
-def xaver_works_in_files(xaver: "Session", stop: "threading.Event") -> None:
-    """Move Xaver's pointer around his file manager until told to stop.
-
-    This is the shot the film exists for, and until now it did not
-    happen: while quinten wrote, xaver sat perfectly still, so the
-    strongest frame in the demo showed one person working and a second
-    person's name on a roster.
-
-    Two people in one document is what every editor on the market has.
-    Two people in *different applications* in one room, each seeing the
-    other, is the thing that needs an operating system underneath it —
-    and the file manager is the proof, because nobody wrote a line of
-    collaboration code for it. It is collaborative because it is in the
-    room.
-
-    So he uses it. His pointer travels over his own Files window, which
-    publishes presence, which quinten's screen draws as a cursor in his
-    colour. Nothing is faked: a real second session really is moving a
-    real pointer over a real application.
-
-    Deliberately only the pointer. Clicking would navigate him somewhere,
-    and a beat that changes what a second person is looking at while the
-    first person types is two things happening rather than one.
-    """
-    # Over his file list, which is the left half of his strip. A slow
-    # arc rather than a straight line: a pointer that travels in a
-    # perfectly straight line at a constant speed is the one thing a
-    # hand never does.
-    path = [
-        (520.0, 300.0), (600.0, 340.0), (700.0, 390.0), (760.0, 430.0),
-        (700.0, 470.0), (600.0, 430.0), (540.0, 370.0), (620.0, 320.0),
-    ]
-    i = 0
-    while not stop.is_set():
-        x, y = path[i % len(path)]
-        try:
-            xaver.pointer_move(x, y)
-        except Exception:                       # noqa: BLE001
-            return
-        i += 1
-        stop.wait(0.55)
-
-
-def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
-               quinten_wp: dict | None, shots: str) -> None:
-    banner("7.  quinten writes, and xaver's screen is asked what it holds")
-    room = host_ws["room"]
-
-    # If beat 5 never got a word processor onto quinten's machine there is
-    # nothing here to type into, and typing anyway would send the text to
-    # whatever happened to hold focus — which reads afterwards exactly
-    # like a document that failed to cross. Say which of the two it was.
-    if quinten_wp is None:
-        gap("quinten has no word processor open (beat 5 did not put one "
-            "there), so there was nothing for him to write in and nothing "
-            "for this beat to watch cross")
-        return
-
-    step("xaver already has the window — he opens nothing")
-    # He does not launch anything here, and that is the point rather than
-    # a shortcut. The window arrived on his machine in beat 6 because it
-    # belongs to a room he is in; asking him to open a second copy of an
-    # app he can already see would be staging work the product exists to
-    # remove.
-    #
-    # It also used to be wrong in a way that hid itself. Opening the app
-    # here started a *second* window on every machine in the room — one
-    # locally-owned tab projects back into the room and every member
-    # materialises it — so this beat quietly produced the duplicate
-    # word processors that turned up in the frames. Since that was fixed,
-    # a launch on his side focuses the window he has instead of making
-    # one, so waiting for a new surface here waits for something that by
-    # design never arrives.
-    # Identified the same way the beat-6 assertion identifies it: a tab
-    # on his machine whose title names the app. Deliberately not "any new
-    # tab" — see beat 6 on why a tab he opened himself is a claim that
-    # cannot fail.
-    his = next(
-        (t for t in xaver.tabs_here().values()
-         if (t.get("title") or "").lower().startswith("word processor")),
-        None,
-    )
-    claim("the window that crossed in beat 6 is his to type in",
-          his is not None, True)
-    if his is None:
-        gap("xaver has no word processor on screen, so there is no far "
-            "screen to read a document back off")
-        return
-    # With the viewport, so the framing is measured rather than performed
-    # and assumed: this beat's shot is the far screen, and a far screen
-    # that is half off the frame shows nothing about what it holds.
-    frame_windows(xaver, [FILES_APP, WORD_PROCESSOR], VIEWPORT)
-    # Both apps have to have attached to their broker and announced their
-    # address before either types, or the first keystrokes go out to
-    # nobody and it reads as a transport failure.
-    #
-    # Waited *for*, not waited *out*. Six fixed seconds was a guess that
-    # was too long whenever the machine was quick and would still have
-    # been too short on a loaded one — the worst of both, and six seconds
-    # of an unmoving screen in a seventy-five second film. This asks the
-    # far session whether its app is on the wire and stops as soon as it
-    # says yes.
-    attached = wait_for(
-        lambda: any((t.get("title") or "").lower().startswith("word processor")
-                    for t in xaver.tabs_here().values()),
-        timeout=8.0)
-    if not attached:
-        note("xaver's word processor did not announce itself within 8s; "
-             "typing anyway, and the claims below will say what happened")
-    xaver.settle(0.8)
-
-    # What xaver's screen looks like before a word of it exists. The
-    # claim below is answered over a socket, and a socket cannot tell you
-    # whether the app *drew* anything: a run once passed "xaver's own
-    # word processor holds what quinten typed" with both pages on his
-    # screen reading "Start writing…" for the whole beat. Assertion
-    # green, screen blank — which is the failure this whole file is
-    # written against, so it is checked rather than hoped for.
-    before_screen = screen_shot(
-        xaver, os.path.join(shots, "07a-xaver-before-the-text.png"))
-
-    step("quinten writes the notes for the evening")
-    cut("quinten")
-    # No click first, and that is the point rather than an omission.
-    #
-    # The word processor opens with its caret already in the body, so
-    # there is nothing to put right — and clicking anyway can move focus
-    # *off* the page onto the style panel beside it, which is a click
-    # that lands squarely inside the window and still sends every
-    # keystroke after it somewhere that is not the document. A beat that
-    # clicked first read downstream as a document which failed to cross:
-    # the wrong layer, and a much more alarming bug than the real one.
-    #
-    # If it turns out the caret was not there, the fallback below aims
-    # one into the page and tries again — and the transcript says which
-    # of the two actually wrote the text, because they are different
-    # claims about how usable the app is.
-    # He is not alone on this. Xaver's hand starts moving in his own
-    # file manager now, so what the camera holds for the next few
-    # seconds is two people working in two different applications in one
-    # room — which is the whole argument.
-    xaver_busy = threading.Event()
-    xaver_hand = threading.Thread(
-        target=xaver_works_in_files, args=(xaver, xaver_busy), daemon=True)
-    xaver_hand.start()
-    # He puts the caret in the page, then writes. One click, once.
-    #
-    # This used to type with no click at all, on the reasoning above:
-    # the app opens with its caret in the body, and a click can land on
-    # the style panel and send every keystroke somewhere that is not the
-    # document. The first half of that turns out not to be true. The
-    # caret is *not* in the body on open, so the no-click path failed on
-    # every run and the fallback retyped the whole thing — which put
-    # thirteen seconds of keystrokes producing nothing on screen into the
-    # film, then a click, then the same words typed a second time. Fifty
-    # -three seconds on a beat whose content is thirteen.
-    #
-    # The panel worry is real and is handled by aiming rather than by not
-    # aiming: the click goes to 40% of the tile's width, and the panel
-    # occupies the last 250px of an 800px window, so it is nowhere near.
-    #
-    # That the app cannot be typed into until it is clicked is a finding
-    # about the app, not about this script -- see docs/demo-todo.md.
-    typed_here = type_into_the_document(quinten, quinten_wp, TYPED_TEXT)
-    quinten.settle(1.5)
-
-    def quinten_holds() -> bool:
-        """Ask his own app whether the text is in its document."""
-        reader = None
-        try:
-            reader = DocumentReader(quinten.collab_json_sock, room,
-                                    record=None, handle="control")
-            _doc, found = reader.await_document(TYPED_PROOF, 20.0)
-            return bool(found)
-        except OSError as e:
-            note(f"quinten's own session could not be asked ({e})")
-            return False
-        except CannotDecode as e:
-            # Not "the words are missing" -- nobody looked. Said in those
-            # words, because the branch below reads the `False` as an app
-            # that dropped the keystrokes and sends the reader after the
-            # wrong thing.
-            note(f"{e}, so his document could not be read either way")
-            return False
-        finally:
-            if reader is not None:
-                reader.close()
-
-    # Asked with the camera down. The words are already visibly on the
-    # page — that is the shot that just happened — and this only settles
-    # whether they reached the *document* or merely the screen, which
-    # decides how a later failure is described rather than being
-    # something to watch. On camera it was up to twenty seconds of a
-    # still page after the typing finished, and beat seven ran to
-    # sixty-six against a budget of seventy-five for the whole film.
-    with off_camera("his own app is asked whether the words reached its "
-                    "document, which decides what a later failure means"):
-        landed = quinten_holds()
-    if landed:
-        note("the words are in his document, not merely on his screen")
-    else:
-        note("the caret was aimed into the page and the words still did "
-             "not reach the document — so this is the app, not the aim")
-        # No second attempt. Retyping here is what put the words on
-        # screen twice and thirteen wasted seconds of keystrokes into the
-        # film; if an aimed caret did not take them, typing them again
-        # into the same place will not either, and the claim below is
-        # allowed to fail and say so.
-        surface = (quinten_wp or {}).get("surface_id")
-        laid = [n for n in quinten.target_names()
-                if n.startswith("foreign-surface-")]
-        note(f"his word processor is surface {surface}; client tiles laid "
-             f"out right now: {laid or 'none at all'}")
-
-    quinten.snapshot(os.path.join(shots, "07-quinten-typed.png"))
-
-    step("first, that he typed into the document and not at the chrome")
-    # The control, and the reason this beat can tell its two failures
-    # apart. If the text never reaches xaver, that is either a document
-    # which did not cross or a document which never had the text in it,
-    # and both end as an empty page on the far screen.
-    claim("quinten's own document holds what he typed", landed, True)
-    if not typed_here:
-        gap("there was no laid-out tile to aim a caret into, so the words "
-            "were never typed and nothing below this is about the network")
-    elif not landed:
-        note("the keystrokes did not reach his document at all, so nothing "
-             "downstream of this is about the network")
-
-    step("and xaver's session is asked what it now holds")
-    # The one excursion in the film, and it stays open across beat 6:
-    # this is the first moment a second machine has anything on it worth
-    # crossing for. Everything before this — his redeeming the invite,
-    # his opening his own copy of the app — happened while the camera
-    # stayed with the person the story is about.
+    # And taken *late*. A cut the instant he joins shows an empty
+    # desktop, which argues the opposite of what the beat claims — what
+    # it claims is that the workspace is the shared thing, so joining it
+    # brings what is in it. So his windows are waited for off camera,
+    # and the camera arrives to find them already there.
+    with off_camera("xaver's machine opening, for itself, the applications "
+                    "the room told it about — waited for rather than filmed, "
+                    "because a desktop filling up is the cause and his "
+                    "screen holding them is the effect"):
+        landed = wait_for_xavers_windows(xaver)
     cut("xaver")
-    # What is mechanically readable from here is presence — but only the
-    # *pointer* half of it, and the pointer is the wrong half for a man
-    # who is typing.
-    #
-    # He clicks once to put the caret in the page and then does not touch
-    # the mouse for thirteen seconds, so his pointer is resting and
-    # eventually stops being published. This beat asserted his pointer
-    # and passed for a while only because an earlier version typed the
-    # notes twice with a click in between, which refreshed it; typing
-    # once, as a person does, it ages out and the claim fails on a room
-    # that is working perfectly. What xaver's screen actually carries
-    # while quinten writes is his *caret*, with his name on it, which is
-    # visible in this beat's own shot and is not in the state dump at
-    # all (`native.rs` publishes `pointers` and `roster`, no carets).
-    #
-    # So the claim is what the harness can honestly see: he is a
-    # participant in xaver's room, by name, and his live pointer is
-    # reported when it is there rather than required to be.
-    def quinten_pointer():
-        # Either field: the identity is `peer@<handle>` and the name is
-        # what the room calls it. See `seen_by` in beat 4.
-        rows = (xaver.peers() or {}).get("pointers") or []
-        return [r for r in rows
-                if quinten.user in (r.get("name"), r.get("user"))] or None
+    step("his screen — three applications he did not open")
+    if len(landed) < len(BEAT_TWO_ORDER):
+        gap(f"only {len(landed)} of {len(BEAT_TWO_ORDER)} applications "
+            f"reached xaver's machine ({sorted(landed)}), so his screen is "
+            f"not yet showing the room he joined. A peer window opens a "
+            f"local instance of the app (shell/src/shell/peer_windows.rs); "
+            f"one that is not installed on his machine says so on the card "
+            f"instead of opening.")
+    claim("what the room holds is what he holds",
+          sorted(landed), sorted(BEAT_TWO_ORDER))
+    frame_windows(xaver, list(landed), VIEWPORT)
+    read_hold(READ_HOLD_S * 1.5)
+    xaver.snapshot(os.path.join(shots, "03f-xaver-joined.png"))
+    note("he is not the host, and he opened none of these")
 
-    def quinten_in_the_room():
-        rows = (xaver.peers() or {}).get("roster") or []
-        return [r for r in rows
-                if quinten.user in (r.get("label"), r.get("user"))
-                or (r.get("label") or "") == quinten.name] or None
 
-    with patience(4.0):
-        seen = wait_for(lambda: quinten_pointer() or quinten_in_the_room(),
-                        timeout=SYNC_TIMEOUT_S)
-    resting = quinten_pointer() is None and seen is not None
-    if resting:
-        note("his pointer is not being published — it has been resting "
-             "since the click that placed his caret, and what carries him "
-             "on xaver's screen while he writes is the caret, seen in the "
-             "shot below")
-    if seen:
-        claim("xaver's screen carries quinten while he is typing",
-              bool(seen), True)
+def beat_four(xaver: Session, shots: str) -> bool:
+    banner("4.  xaver: one instruction, from the person holding the thing")
+    # No cut. Beats 4 and 5 are one held shot on his screen — he
+    # instructs, and he watches it happen. An earlier version cut back
+    # to the owner for beat 5, which asked a viewer to change seats in
+    # the middle of the payoff.
+
+    # His own file manager, on his own machine — a real local client the
+    # room opened for him, not a picture of somebody else's window. That
+    # is what makes the next gesture his: `peer_windows::open_for` runs
+    # `launcher::launch_in_workspace` on this side, so the rows under
+    # his pointer are being drawn by a process on his machine, reading
+    # his home.
+    tile = best_tile(xaver, FILES_APP, VIEWPORT)
+    if tile is None:
+        gap("xaver has no file manager window on screen, so there is no "
+            "image for him to right-click. Without it this beat cannot "
+            "run at all.")
+        return False
+    frame_one_window(xaver, FILES_APP)
+    tile = best_tile(xaver, FILES_APP, VIEWPORT) or tile
+    rect = (tile["x"], tile["y"], tile["w"], tile["h"])
+
+    log = LogTail(xaver.log_path)
+    log.catch_up()
+    listing = expected_listing(xaver.home)
+
+    # The gesture the whole desktop hangs its argument on, driven rather
+    # than simulated — every step of it something somebody could have
+    # done. What crosses is the photograph's **address**, so the agent
+    # never has to work out what "this" was, and the sentence still
+    # means the same thing in a session opened tomorrow.
+    said = say_something_about(xaver, log, rect, PHOTO_NAME, listing,
+                               AGENT_INSTRUCTION, shots, "04")
+    claim("xaver sent one instruction about the photograph", said, True)
+    if not said:
+        return False
+    note(f"one instruction, covering two applications: "
+         f"{AGENT_INSTRUCTION!r}. Not one per app — the agent resolves "
+         f"each clause against what the room exports")
+    read_hold(READ_HOLD_S * 1.5)
+    xaver.snapshot(os.path.join(shots, "04-instruction-sent.png"))
+    return True
+
+
+def beat_five(xaver: Session, agent: Session, host_ws: dict,
+              shots: str) -> None:
+    banner("5.  still on xaver's screen: and he watches it happen")
+    # Still no cut. This is the second half of one held shot.
+    #
+    # On *xaver's* screen, not the owner's. He asked for it, so he sees
+    # it land, on a machine where he owns nothing and opened nothing.
+    # That is a stronger claim than watching it arrive where it was
+    # already going, and it costs a cut rather than adding one.
+    room = host_ws["room"]
+    baseline = agent.input_ops
+
+    before = set(xaver.tabs_here())
+    step("Claude opens the image editor — a window nobody at this desk asked for")
+    # The best seconds in the film when it works, and the worst two
+    # minutes when it does not. Bounded accordingly.
+    with patience(14.0):
+        ran = run_the_agent(agent, room, shots)
+    if ran is None:
+        gap("qos-agent is not built, so nothing could act on the "
+            "photograph (cargo build --profile demo -p agent --bin qos-agent)")
+        return
+    claim("the agent carried out the instruction", ran, True)
+    claim("and no synthetic input reached its session to do it",
+          agent.input_ops, baseline)
+
+    # Read off *xaver's* tree. The editor is a window the agent opened,
+    # in a room xaver is in, so his machine opens its own instance the
+    # same way it opened the other three — and that is the picture.
+    editor = wait_for(lambda: best_tile(xaver, IMAGE_EDITOR, VIEWPORT),
+                      timeout=DOC_SYNC_TIMEOUT_S)
+    claim("the image editor is open on xaver's screen too", bool(editor), True)
+    if editor:
+        fresh = [t for t in xaver.tabs_here() if t not in before]
+        note(f"{len(fresh)} window(s) new on his machine since he sent it: "
+             f"{fresh or 'none'}")
+        frame_windows(xaver, [IMAGE_EDITOR, WORD_PROCESSOR], VIEWPORT)
+        read_hold()
+        xaver.snapshot(os.path.join(shots, "05a-image-editor.png"))
     else:
-        gap("quinten's presence did not reach xaver's session")
+        gap("no image editor window reached xaver's machine, so the "
+            "crossing has no near end to be watched from")
 
-    step("and his word processor is asked for the document it is holding")
-    # The beat itself, and the one claim whose subject is inside a
-    # client. Asked of xaver's *app*, in the app's own protocol: a late
-    # joiner on his session's broker announces the word processor's
-    # address and sends the `Arrived` every toolkit answers with its
-    # whole document. What comes back was produced by his running app
-    # out of the document it holds, so the answer is about his screen
-    # and not about the wire.
-    #
-    # The camera stays on xaver for the whole wait, so if the document
-    # converges the arrival is on film rather than described afterwards.
-    reader = None
-    doc, carried = None, False
+    step("and the picture crosses into the document")
+    # The crossing is the beat: a smooth hand-off, not two windows
+    # independently changing. What it is asserted on is the document,
+    # not the screen — an image that appeared on screen and an image
+    # that is in the document are different claims, and only the second
+    # one replicates.
+    read_hold(READ_HOLD_S * 2.0)
+    xaver.snapshot(os.path.join(shots, "05b-crossing.png"))
+
+    step("read back off xaver's own word processor — a session that made "
+         "none of this")
+    # Asked of the app running on his machine, which did not perform the
+    # crop, did not open the editor and did not send the instruction. A
+    # claim read out of the session that made the change proves that
+    # session agrees with itself; this one is the room agreeing.
+    # The photograph as it sits in his home, so the check that the
+    # document is *not* carrying raw image bytes has something real to
+    # look for. Its first bytes are the PNG signature and the IHDR the
+    # agent cropped, so a document that embedded the original would be
+    # caught here; one that embedded the *cropped* bytes would not, and
+    # the positive claim below rests on the reference rather than on
+    # this guard.
     try:
-        reader = DocumentReader(xaver.collab_json_sock, room, record=None)
-        # Filmed for as long as it usually takes, and no longer. When it
-        # works the sentence turns up on his page in a few seconds and
-        # that is the shot; when it does not, a minute of an unchanged
-        # page under a caption about a document arriving is the worst
-        # thing this film could contain.
-        with patience(6.0):
-            doc, carried = reader.await_document(TYPED_PROOF,
-                                                 DOC_SYNC_TIMEOUT_S)
+        with open(os.path.join(xaver.home, PHOTO_NAME), "rb") as fh:
+            original = fh.read()
     except OSError as e:
-        gap(f"xaver's session has no JSON broker to ask ({e}) — "
-            f"looked at {xaver.collab_json_sock}")
+        gap(f"the photograph could not be read back off xaver's home, so "
+            f"the document check has nothing to compare against: {e}")
+        return
+    try:
+        carried, size_bytes = image_is_in_the_document(
+            xaver, room, original, timeout=DOC_SYNC_TIMEOUT_S)
     except CannotDecode as e:
-        gap(f"{e} — so what his document holds was not established")
-        doc = None
-    finally:
-        if reader is not None:
-            reader.close()
-
-    # Which of the three outcomes this was decides how it is recorded,
-    # and the distinction is not cosmetic. A document that came back
-    # without the text is a question that was *asked and answered*: the
-    # claim is false, it counts as a failure, and it gates the exit code
-    # like every other claim here. Silence is a different thing — nothing
-    # was established either way — and that is what a GAP is for.
-    if doc is not None:
-        claim("xaver's own word processor holds what quinten typed",
-              carried, True)
-        if carried:
-            note(f"answered with a {len(doc)} byte document carrying "
-                 f"{TYPED_PROOF!r} — produced by his app out of the "
-                 f"document it holds, not read back off the wire")
-        else:
-            note(f"his app answered with {len(doc)} bytes and none of it "
-                 f"is {TYPED_PROOF!r}: the two apps are attached and "
-                 f"answer each other's handshake, and their documents "
-                 f"are still two documents. Presence crosses, the "
-                 f"document does not, and nothing on his screen shows "
-                 f"what quinten wrote")
-    else:
-        gap(f"no app in xaver's session answered the late-join handshake "
-            f"within {DOC_SYNC_TIMEOUT_S:.0f}s, so his document was never "
-            f"read back — this run establishes nothing about beat 7 in "
-            f"either direction. See {xaver.log_path}")
-    # His hand stops here. It has been moving through the typing and the
-    # crossing, which is the span the shot is about; leaving it running
-    # would put a wandering cursor over the beats after this one, where
-    # it means nothing and only competes for attention.
-    xaver_busy.set()
-    xaver_hand.join(timeout=3.0)
-    xaver.settle(2.0)
-    after_screen = screen_shot(
-        xaver, os.path.join(shots, "08-xaver-received.png"))
-
-    # The cross-check. Only meaningful when the socket said yes: a
-    # document that never arrived is allowed to leave the screen alone.
+        gap(f"the document could not be read, so whether the picture "
+            f"landed in it is unknown rather than false: {e}")
+        return
+    claim("the photograph is in the document on his machine", carried, True)
     if carried:
-        moved = pixels_moved(before_screen, after_screen)
-        if moved is None:
-            gap("xaver's session answered with the text, and his screen "
-                "could not be compared, so whether his app drew any of "
-                "it is not established by this run")
-        elif moved < SCREEN_MOVED_PX:
-            # Two different failures wear this shape, and the message
-            # used to name only the first — which sent three separate
-            # investigations at a broker that had already been fixed.
-            #
-            #   * the document reached a *different* app from the one on
-            #     screen, or
-            #   * the app on screen never finished opening, so there was
-            #     nothing to draw the document into.
-            #
-            # The second is not a collaboration failure at all, and
-            # reading it as one is expensive: the last time this fired,
-            # the guest's word processor was sitting under its "Opening…"
-            # card while the text underneath it had converged perfectly.
-            still_opening = any(
-                (f.get("app_id") or "") == WORD_PROCESSOR and f.get("opening")
-                for f in xaver.foreign_frames())
-            because = ("his word processor had not finished opening, so "
-                       "there was no app drawn to put the document in — "
-                       "which is a window-presentation failure and not a "
-                       "collaboration one"
-                       if still_opening else
-                       "the app that answered is not the app that is "
-                       "drawn; check which channel the handshake was "
-                       "answered on")
-            gap(f"xaver's session answered with a document carrying "
-                f"{TYPED_PROOF!r}, and {moved} pixels of his screen moved "
-                f"while it arrived — a blinking caret, and no text. "
-                f"{because}. This is the shot the film crosses to a "
-                f"second machine to get. See {xaver.log_path}")
-        else:
-            note(f"and {moved} pixels of his screen moved while it "
-                 f"arrived, so the app that answered is the app that is "
-                 f"drawn")
-
-
-#: Where the file view puts its rows, straight off the app's own
-#: constants (`views/file_view.rs:63`): a 30px column header, then rows
-#: of 34px. Used only to convert a press that landed on the *wrong* row
-#: into an aimed one — never to guess where a row is in the first place.
-LIST_ROW_H = 34.0
-LIST_HEADER_H = 30.0
+        note(f"the document carries a {AGENT_IMAGE_PROOF} reference; "
+             f"{size_bytes}B of document reached this session, and the "
+             f"bytes themselves live in the content store beside it "
+             f"rather than in the change")
+    else:
+        gap("the word processor on xaver's machine holds no image "
+            "reference, so the picture did not cross into the document "
+            "even if something appeared on screen")
+    frame_one_window(xaver, WORD_PROCESSOR)
+    read_hold(READ_HOLD_S * 2.0)
+    xaver.snapshot(os.path.join(shots, "05c-in-the-document.png"))
+    note("the video is finished after this")
 
 
 def expected_listing(home: str) -> list[str]:
@@ -5791,878 +5043,51 @@ def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
     return None
 
 
-def beat_eight(quinten: Session, files: dict | None, wp: dict | None,
-               shots: str) -> None:
-    banner("8.  a photograph dragged out of Files and into the document")
-    # Named while the camera is down, so the film comes back up on
-    # quinten rather than on the screen the excursion left behind.
-    cut("quinten")
-    # Run, asserted, and left out of the cut — see `run`. It is the
-    # longest beat here by a distance, most of that spent moving a
-    # pointer slowly enough for two processes to hand a drag between
-    # them, and none of the claims this film is cut to support is about
-    # drag and drop.
-    #
-    # What makes this beat worth running is not that a picture appears in
-    # a document. It is *how* it gets there: Files and the word processor
-    # are two sandboxed clients with two different mount namespaces, so
-    # the path Files is holding means nothing in the other app's world.
-    # The drag carries the file's **bytes**, not its name — Files reads
-    # its own file at the start of the gesture, because it has the
-    # authority to read what it is showing, the compositor brokers a
-    # pipe, and the receiving toolkit spools what comes down it into its
-    # own directory. Neither app is ever given a path into the other's.
-    note("two sandboxed clients, two mount namespaces: the drag carries "
-         "the file's bytes, not a path either app could resolve")
-
-    photo = os.path.join(quinten.home, PHOTO_NAME)
-    claim("there is a photograph in his home to drag",
-          os.path.exists(photo), True)
-    if not os.path.exists(photo):
-        return
-    payload = open(photo, "rb").read()
-
-    # Both windows whole, before anything is aimed at either of them. A
-    # drag that starts or ends off the edge of the screen is not a drag
-    # anybody can see.
-    unpainted = wait_until_painted(quinten)
-    if unpainted:
-        gap(f"the shell is not painting {unpainted} yet, so this would be "
-            f"filmed against an empty desktop")
-    frame_windows(quinten, [FILES_APP, WORD_PROCESSOR], VIEWPORT)
-    quinten.settle(0.5)
-    tiles = painted_tiles(quinten)
-    if VIEWPORT:
-        # The two ends of the gesture, and only those. The strip carries
-        # four applications and the screen holds two of them, so asking
-        # whether *every* window is whole is asking a scrolling strip to
-        # stop scrolling. What this drag needs is narrower and is still a
-        # thing that can be false: the window the photograph comes out of
-        # and the window it goes into, both wholly on screen, neither
-        # behind the other.
-        ends = [FILES_APP, WORD_PROCESSOR]
-        clipped = (subjects_off_screen(quinten, ends, VIEWPORT)
-                   + subjects_overlapping(quinten, ends, VIEWPORT))
-        claim("both ends of the drag are wholly on screen, side by side",
-              clipped, [])
-        if clipped:
-            gap("a window is cut off, so the gesture would cross an edge "
-                "the camera cannot show — " + "; ".join(clipped))
-            quinten.snapshot(os.path.join(shots, "09-not-in-frame.png"))
-            return
-
-    def tile_for(app_id: str, painted: dict | None) -> tuple | None:
-        sid = (painted or {}).get("surface_id")
-        if sid is not None and int(sid) in tiles:
-            return tiles[int(sid)]["rect"]
-        # No surface id to hand (an earlier beat did not return one):
-        # fall back to the app id, which is unambiguous while there is
-        # one window per app on screen.
-        for t in tiles.values():
-            if t["app_id"] == app_id:
-                return t["rect"]
-        return None
-
-    files_tile = tile_for(FILES_APP, files)
-    wp_tile = tile_for(WORD_PROCESSOR, wp)
-    # And that they are not the same window seen twice, nor two windows
-    # stacked. `tile_for` falls back to matching on app id when the
-    # surface an earlier beat opened is no longer laid out, which is how
-    # this beat once aimed a drag between a full-screen file manager and
-    # a word processor drawn underneath it, having just asserted that
-    # both were wholly on screen.
-    stacked = windows_overlapping(quinten)
-    claim("and neither window is drawn on top of the other", stacked, [])
-    if stacked:
-        gap("the two windows this gesture goes between are stacked, so a "
-            "drag across them is not a gesture the camera can show — "
-            + "; ".join(stacked))
-        quinten.snapshot(os.path.join(shots, "09-not-in-frame.png"))
-        return
-    claim("Files is on screen to drag out of", files_tile is not None, True)
-    claim("the word processor is on screen to drop into",
-          wp_tile is not None, True)
-    if not files_tile or not wp_tile:
-        gap("both windows have to be on screen at once for this gesture; "
-            f"the session is painting {[t['app_id'] for t in tiles.values()]}")
-        return
-    note(f"Files at {[round(v) for v in files_tile]}, "
-         f"the document at {[round(v) for v in wp_tile]}")
-    quinten.snapshot(os.path.join(shots, "09-before-drag.png"))
-
-    log = LogTail(quinten.log_path)
-    log.catch_up()
-
-    # A blank line at the end of the document for the photograph to land
-    # on. Without one it goes in wherever along the existing text the
-    # pointer happens to be over, which is the middle of a word about as
-    # often as not.
-    #
-    # Aimed at 30% down, not 20%: the top band of the page is the header
-    # zone, and a click there opens header editing — which paints a
-    # labelled dashed box across the top of the document and stays on
-    # screen for the rest of the beat.
-    wx0, wy0, ww0, wh0 = wp_tile
-    quinten.click_at(wx0 + ww0 * 0.30, wy0 + wh0 * 0.30)
-    quinten.settle(0.8)
-    quinten.key_down("Control")
-    quinten.key("End")
-    quinten.key_up("Control")
-    quinten.key("Enter")
-    quinten.settle(0.6)
-
-    step(f"he presses on {PHOTO_NAME}")
-    # A click first, so the press that starts the drag is not the one
-    # that focuses the window. The first click on an unfocused client is
-    # spent on the focus change and never reaches the app's own widgets —
-    # measured, and the cause of a drag that produced nothing at all.
-    fx, fy, fw, fh = files_tile
-    quinten.click_at(fx + fw * 0.45, fy + fh * 0.16)
-    quinten.settle(0.8)
-
-    listing = expected_listing(quinten.home)
-    note(f"his home lists as {listing}")
-    held = press_the_photo_row(quinten, log, files_tile, PHOTO_NAME, listing)
-    claim(f"the press landed on {PHOTO_NAME}'s own row", held is not None, True)
-    if held is None:
-        gap(f"no press landed on {PHOTO_NAME}: the file rows belong to a "
-            f"client and are not addressable by name from the compositor, "
-            f"so this is aimed at pixels and the app did not report a row "
-            f"under any of them. See {quinten.log_path}")
-        quinten.snapshot(os.path.join(shots, "09-missed-the-row.png"))
-        return
-    hx, hy = held
-
-    step("and drags it across the desktop")
-    # Past the app's own drag threshold first, slowly, while the button
-    # is still down. That is the moment Files opens a `wl_data_source`
-    # and hands the gesture to the compositor; a drag that teleports to
-    # its destination never gives either process a frame in which to do
-    # it, and nothing is ever picked up.
-    for step_px in (4, 10, 18, 30):
-        quinten.pointer_move(hx + step_px, hy - step_px * 0.4)
-        quinten.settle(0.12)
-    promoted = log.await_line(LogTail.CARRIED, 3.0)
-    claim("Files handed the gesture out as a client drag", promoted, True)
-    if promoted:
-        note("from here the picture on screen belongs to the compositor: "
-             "the source window will not see another motion event, and "
-             "will never see the release")
-    took = log.await_line(LogTail.PROMOTED, 3.0)
-    claim("and the compositor took it", took, True)
-
-    # Across, in steps, with the chip drawn at the cursor the whole way.
-    #
-    # Where it is released matters more than it looks. The word
-    # processor moves its caret to the drop point before inserting
-    # (`widget.rs:5792`), clamping the pointer to the nearest line and
-    # then picking a character position along it — so a drop over the
-    # middle of the page lands the photograph in the middle of a *word*.
-    # The first take of this beat cut "and" in half and left a
-    # spell-check squiggle on screen.
-    #
-    # An empty last line was opened above, so releasing *below* all the
-    # text clamps to that line, where there is no character to land in
-    # the middle of. Left of centre keeps it off the styles panel, which
-    # the drop handler ignores entirely.
-    wx, wy, ww, wh = wp_tile
-    drop = (wx + ww * 0.30, wy + wh * 0.55)
-    x0, y0 = hx + 30, hy - 12
-    frames = 26
-    for i in range(1, frames + 1):
-        t = i / frames
-        quinten.pointer_move(x0 + (drop[0] - x0) * t,
-                             y0 + (drop[1] - y0) * t)
-        quinten.settle(0.05)
-        if i == frames // 2:
-            # Mid-flight, over open desktop between the two windows:
-            # this is the frame that shows the drag is the OS's and not
-            # either app's.
-            quinten.snapshot(os.path.join(shots, "10-carrying.png"))
-    quinten.settle(0.4)
-    quinten.snapshot(os.path.join(shots, "11-over-the-page.png"))
-
-    step("and drops it on the page")
-    log.read()
-    quinten.pointer_button(False)
-
-    # The payoff, off the receiving app's own account of its own
-    # document.
-    #
-    # This used to watch for a change the size of the file, on the
-    # reasoning that an image moves two orders of magnitude more than a
-    # keystroke. That is now exactly backwards. Images no longer travel
-    # inside the document: it carries a BLAKE3 reference and the bytes go
-    # to a content-addressed store, because a 146 kB change exceeded the
-    # publish ceiling, was dropped, and — since Automerge holds a change
-    # whose ancestors are missing — froze every other machine's copy at
-    # that point, permanently and silently.
-    #
-    # So the file-sized change must *not* appear, and what is watched for
-    # instead is the reference: a small change carrying the hash, after
-    # which the page holds an image. A test looking for the old
-    # behaviour would now be asserting the bug.
-    # Asked of the page, because the wire no longer answers it. The
-    # reference is a few dozen bytes and reaches the log as nothing
-    # distinguishable from a keystroke, so the honest evidence that a
-    # photograph arrived is that a photograph is on screen: a large
-    # region of the page that was paper a moment ago is not any more.
-    #
-    # `pixels_moved` thresholds rather than comparing exactly, because a
-    # blinking caret changes bytes on a page where nothing happened.
-    before_page = screen_shot(quinten, os.path.join(shots, "11a-before-drop.png"))
-    biggest = 0
-    landed = False
-    deadline = time.time() + 25.0
-    while time.time() < deadline:
-        biggest = max(biggest, log.biggest_delta(log.read()))
-        after_page = screen_shot(quinten, os.path.join(shots, "11b-after-drop.png"))
-        moved = pixels_moved(before_page, after_page)
-        if moved is not None and moved > 20000:
-            landed = True
-            break
-        time.sleep(0.5)
-    claim("the photograph is on the page", landed, True)
-    note(f"largest change the word processor broadcast after the drop: "
-         f"{biggest} bytes, against a {len(payload)}-byte file — the bytes "
-         f"travel beside the document now, not inside it, which is why "
-         f"this beat asks the page rather than the wire")
-    quinten.settle(2.0)
-    quinten.snapshot(os.path.join(shots, "12-image-in-the-document.png"))
-
-    if not landed:
-        gap(f"no reference to the photograph reached the document "
-            f"within 25s of the drop. See {quinten.log_path}")
-        return
-
-    step("and it is in the document, not merely on the screen")
-    # Asked of the app, after the camera has moved on: a late joiner on
-    # this session's broker gets the whole document back, and the
-    # photograph's own bytes are either in it or they are not.
-    room = quinten.active_workspace()["room"]
-    # Read, reported, and deliberately not asserted on.
-    #
-    # This was a claim, and it failed on three consecutive runs in which
-    # the photograph was demonstrably in the document and rendered on
-    # both machines. It looked for a reference in the bytes the app
-    # answers a late joiner with, and it has now been wrong twice about
-    # what those bytes contain: first `blob_w`, which is projected onto
-    # the materialised snapshot at read time and never stored; then the
-    # mime, which a saved document does carry — `crates/doc/qdoc/tests/
-    # blob_reference.rs` proves it — but which this frame evidently is
-    # not, and no third guess is worth a false failure on a working
-    # product.
-    #
-    # What is asserted instead is the app's own answer above ("the
-    # photograph is on the page"), produced by the running word
-    # processor out of the document it holds, which is the same standard
-    # every other claim about a document's contents in this file is held
-    # to. The picture arriving on the *other* machine is the real proof
-    # and it is a frame, not a socket read: see the last shot.
-    #
-    # If this is ever worth asserting again, assert it on the hash — it
-    # is the address the content store is keyed by — and get a blake3
-    # onto this machine first, because the ASCII the wire happens to
-    # carry has now cost more than it has proved.
-    carried, size_bytes = image_is_in_the_document(quinten, room, payload)
-    if carried:
-        note(f"the document the app answered with ({size_bytes} bytes) "
-             f"carries an image reference, and the bytes are not in it")
-    elif size_bytes:
-        note(f"the app answered with {size_bytes} bytes carrying no "
-             f"reference this can recognise — the claim above and the "
-             f"final frame are what establish the photograph is in the "
-             f"document, not this")
-    else:
-        gap("the app never answered the late-join handshake, so the "
-            "document could not be read back and the delta above is the "
-            "only account of the image landing")
-
-
-def tab_groups_here(s: Session) -> list[dict]:
-    """Every window group in the active workspace, with what each of its
-    tabs actually *is*.
-
-    `Session.groups_here` flattens a tab down to its title, which is
-    enough to say how many there are and not enough to say what they
-    are. The one claim the tabbing beat rests on — that these two pills
-    are two different applications rather than two documents inside one
-    — is a claim about the client drawing each tab, so it has to come
-    off the tile.
-    """
-    tree = s.tree()
-    out: list[dict] = []
-    for ws in tree["workspaces"]:
-        if ws["id"] != tree["active"]:
-            continue
-        for strip in ws.get("strips", []):
-            for group in strip.get("window_groups", []):
-                tabs = []
-                for t in group.get("tabs", []):
-                    tile = t.get("tile") or {}
-                    foreign = (tile.get("Foreign")
-                               if isinstance(tile, dict) else None)
-                    sid = (foreign or {}).get("surface_id")
-                    tabs.append({
-                        "id": t.get("id"),
-                        "title": t.get("title") or "",
-                        "app_id": (foreign or {}).get("app_id"),
-                        "surface_id": int(sid) if sid is not None else None,
-                    })
-                out.append({"id": group.get("id"),
-                            "active_tab": group.get("active_tab"),
-                            "tabs": tabs})
-    return out
-
-
-def open_the_rest_of_the_strip(quinten: Session) -> dict[str, dict]:
-    """Open `STRIP_EXTRAS`, to the right of what is already there.
-
-    Off camera, and in one go, because four applications opening one
-    after another is four identical launches and the film has already
-    shown two of them properly. What the strip is *for* is worth
-    watching; watching it fill up is not.
-
-    Each in a group of its own — `place_next_window` — because tabs
-    tile inside a group and two windows are only side by side when
-    they are in separate groups. The order is `STRIP_APPS`'s, so the
-    pairs later beats need are neighbours.
-
-    Returns what actually opened, by app id. An app that will not start
-    is reported and skipped rather than faked: the beats that need one
-    check this map and decline if it is not there.
-    """
-    opened: dict[str, dict] = {}
-    for app in STRIP_EXTRAS:
-        # The far end of the strip, before each launch. A new group is
-        # inserted *immediately right of whatever has focus*
-        # (`tab_binding.rs`), not appended — so the strip's order is
-        # decided by what is focused when each window arrives rather
-        # than by the order of these calls. The beat before this one
-        # leaves Files focused, which put both extras between Files and
-        # the word processor: the two windows that then had to be framed
-        # together were three groups apart, and the one the beat was
-        # about came back 788px past the right edge.
-        order = strip_order(quinten)
-        if order and order[-1]["surfaces"]:
-            jump_to_group(quinten, order[-1]["surfaces"][0])
-        quinten.place_next_window(app)
-        painted = quinten.launch(app, search=STRIP_SEARCH.get(app))
-        if painted is None:
-            note(f"{app} did not open, so the strip carries "
-                 f"{len(opened) + 2} applications rather than "
-                 f"{len(STRIP_EXTRAS) + 2}")
-            continue
-        opened[app] = painted
-        # The film's share, on the group that has just appeared.
-        # `Session.launch` already applies it on sight of the group, but
-        # an app that opened by the palette route got there through a
-        # path that sets its own default first, and a group left at two
-        # thirds is a window hanging off the side of every later shot.
-        quinten.set_group_width(FILM_GROUP_SHARE)
-    return opened
-
-
-def beat_strip(quinten: Session, extras: dict[str, dict],
-               wp: dict | None, shots: str) -> None:
-    """Four applications on one strip, and two of them made one window.
-
-    The beat this film was missing. Everything else here is about
-    collaboration or about agents; this is about the desktop itself, and
-    it argues two things a viewer cannot get from a still.
-
-    The first is that the strip is longer than the screen and moves. Two
-    windows are in frame at a readable size and the other two are past
-    the edges, and the shot pans from one pair to the next — which is
-    what makes it a strip rather than a grid that shrinks everything to
-    fit.
-
-    The second is tabbing, and it is the one that needs saying out loud.
-    Everywhere else a tab belongs to its application: a browser's tabs
-    are the browser's, an editor's are the editor's, and nothing can
-    ever be tabbed beside them. Here the compositor owns the frame, so a
-    tab group holds *windows* and a window is any application at all. So
-    the image editor is dragged onto the word processor's bar and the
-    two share one window with a tab each, and the tabs switch between
-    two different programs. Two documents tabbed inside one app would
-    have shown nothing.
-    """
-    banner("the strip: four applications, and two of them in one window")
-    cut("quinten")
-
-    order = strip_order(quinten)
-    note(f"the strip carries {len(order)} window group(s), "
-         f"{len(extras) + 2} applications")
-
-    editor = extras.get(IMAGE_EDITOR)
-    # Only neighbours are ever in frame together on a strip, so the two
-    # windows the merge happens between have to be side by side for it to
-    # be watchable. Said here rather than left to be inferred from a
-    # framing that refuses two steps later.
-    if editor is not None and wp is not None:
-        a = group_index_of(quinten, wp, order)
-        b = group_index_of(quinten, editor, order)
-        if a is not None and b is not None and abs(a - b) != 1:
-            note(f"the word processor is group {a} and the image editor "
-                 f"group {b}, so they are not neighbours and cannot share "
-                 f"a frame")
-
-    # The far end first, so the pan below runs right to left and ends on
-    # the pair the tabbing happens to. Whichever of the two extras is
-    # actually there — an app another hand is still making usable may not
-    # be — and each named by the window its launch handed back rather
-    # than by its app id, because the image editor and the chat both
-    # announce themselves to wayland as `app` and an id that names two
-    # different programs names neither.
-    far = [extras[a] for a in STRIP_EXTRAS if a in extras]
-    if len(far) >= 2:
-        step("two of the four are in frame; the other two are past the edges")
-        if frame_windows(quinten, far, VIEWPORT):
-            off = [a.rsplit(".", 1)[-1] for a in (FILES_APP, WORD_PROCESSOR)]
-            note(f"{', '.join(off)} are on the same strip, scrolled off it")
-            quinten.snapshot(os.path.join(shots, "10-strip-right.png"))
-            read_hold(0.5)
-    elif far:
-        note("only one of the extra applications opened, so the strip "
-             "cannot show a pair at its far end")
-
-    if editor is None:
-        gap("the image editor did not open, so there is no second "
-            "application to put in the word processor's window and the "
-            "tabbing is not filmed")
-        return
-    if wp is None:
-        gap("the word processor never opened, so there is nothing to tab "
-            "the image editor beside")
-        return
-
-    step("the strip scrolls back one window")
-    # The pair the merge happens to, both whole before anything moves —
-    # a window sliding into a tab bar that is off the edge of the screen
-    # is a window disappearing.
-    if not frame_windows(quinten, [wp, editor], VIEWPORT):
-        gap("the word processor and the image editor are not in frame "
-            "together, so the merge would happen off camera")
-        return
-    quinten.snapshot(os.path.join(shots, "11-strip-pair.png"))
-
-    before_groups = len(tab_groups_here(quinten))
-    before = quinten.input_ops
-
-    step("the image editor is dropped onto the word processor's tab bar")
-    note("in every other desktop a tab belongs to its application. Here "
-         "the compositor owns the frame, so this bar holds two programs")
-    resp = quinten.merge_into_group(editor["surface_id"], wp["surface_id"])
-    if "err" in resp:
-        gap("the strip refused to merge the two windows — "
-            + json.dumps(resp["err"])[:160])
-        return
-    quinten.settle(0.7)
-
-    # Read off the tree, which is where a tab group actually is. A shot
-    # of a bar with two pills in it would be a picture of the answer, not
-    # the answer: the same picture comes out of one app drawing two tabs
-    # of its own, which is the thing this beat exists to say it is not.
-    groups = tab_groups_here(quinten)
-    merged = next((g for g in groups if len(g["tabs"]) > 1), None)
-    claim("the two windows are now one group with two tabs",
-          merged is not None and len(merged["tabs"]) == 2, True)
-    claim("and the strip is one group shorter than it was",
-          len(groups), before_groups - 1)
-    if merged is None:
-        gap("no group on the strip holds more than one tab, so the merge "
-            "did not take")
-        return
-    note(f"one window, two tabs: {[t['title'] for t in merged['tabs']]}")
-    # The claim the beat is for, and the one a viewer is being asked to
-    # believe: those two pills are two *different applications*, not two
-    # documents inside one.
-    #
-    # Asserted on the two **surfaces** rather than on the app id each
-    # client announces, because an announced app id is not an identity.
-    # The image editor calls itself `org.qos.app` — the toolkit's default,
-    # which every app that has not set one of its own answers with — so a
-    # name check here would have compared the word processor against a
-    # string shared by half the fleet. A surface id is the compositor's
-    # own handle on one wayland client, and these two are the windows
-    # this run watched two different launches open: one asked for by
-    # `dev.qos.word-processor`, one by `dev.qos.photos`.
-    note(f"the two clients announce themselves as "
-         f"{sorted({t['app_id'] for t in merged['tabs'] if t['app_id']})} — "
-         f"so which application each is comes from the launch that opened "
-         f"it, not from what it calls itself")
-    claim("and they are the two windows two different applications "
-          "opened, not two documents in one",
-          sorted(t["surface_id"] for t in merged["tabs"]),
-          sorted([int(wp["surface_id"]), int(editor["surface_id"])]))
-    quinten.snapshot(os.path.join(shots, "12-tabbed.png"))
-    read_hold(1.0)
-
-    step("and the tabs switch between them")
-
-    def active_tab_surface(s: Session, group_id) -> int | None:
-        """Which window the merged group is currently showing."""
-        group = next((g for g in tab_groups_here(s) if g["id"] == group_id),
-                     None)
-        if group is None:
-            return None
-        return next((t["surface_id"] for t in group["tabs"]
-                     if t["id"] == group["active_tab"]), None)
-
-    def show_tab(surface_id: int) -> None:
-        """Bring the tab holding `surface_id` to the front of the group.
-
-        By the pill's own name in the registry first, so what happens is
-        a click on the tab a viewer can see rather than on wherever the
-        layout happened to put one. A horizontal wheel is the fallback,
-        and not a lesser gesture — it is the OS's own "sideways is the
-        next window", driving the same `cycle_active_tab` the pill does —
-        for the case where two tabs share a title and a name cannot pick
-        between them.
-        """
-        want = next((t for t in merged["tabs"]
-                     if t["surface_id"] == int(surface_id)), None)
-        title = (want or {}).get("title")
-        for name in ([f"tab:{title}[{merged['id']}]"] if title else []):
-            if quinten.named_rect(name):
-                quinten.click_named(name)
-                quinten.settle(0.7)
-                if active_tab_surface(quinten, merged["id"]) == int(surface_id):
-                    return
-        for _ in range(len(merged["tabs"])):
-            quinten.scroll(1.0, 0.0)
-            quinten.settle(0.6)
-            if active_tab_surface(quinten, merged["id"]) == int(surface_id):
-                return
-
-    # The window is already showing the image editor: a tab arriving on a
-    # bar becomes the one in front, which is what makes the merge visible
-    # at all. So the switch that follows goes the other way — to the word
-    # processor — and there is exactly one of them.
-    #
-    # It used to switch *to* the image editor first, which was a click on
-    # the tab that was already in front: the tree agreed, the assertion
-    # passed, and the screen moved by 1349 pixels, all of it the cursor.
-    # A gesture that changes nothing is not a demonstration of anything.
-    claim("the window is showing the application that just joined it",
-          active_tab_surface(quinten, merged["id"]),
-          int(editor["surface_id"]))
-    shown_before = screen_shot(
-        quinten, os.path.join(shots, "12a-before-switch.png"))
-    show_tab(wp["surface_id"])
-    # Asserted on what the window is showing, not on whether a click was
-    # delivered. "The pill was there and I pressed it" is a claim about
-    # the harness; the thing being demonstrated is that pressing it puts
-    # the other application in the frame.
-    #
-    # And it leaves the document in front, which the beat after this one
-    # is about — a shot of an image editor under a caption about a
-    # document is a shot of the wrong thing.
-    claim("switching tab puts the other application in the window",
-          active_tab_surface(quinten, merged["id"]), int(wp["surface_id"]))
-    shown_after = screen_shot(
-        quinten, os.path.join(shots, "13-tab-switched.png"))
-    moved = pixels_moved(shown_before, shown_after)
-    if moved is not None:
-        # And on the screen, because the tree agreeing is not the same as
-        # the compositor drawing it.
-        claim("and the screen changes with it",
-              moved > SCREEN_MOVED_PX, True)
-        note(f"{moved} pixels differ between the two tabs")
-    read_hold(1.0)
-    claim("every one of those was a person's gesture",
-          quinten.input_ops > before, True)
-
-
-def beat_nine(quinten: Session, xaver: Session, agent: Session,
-              host_ws: dict, quinten_wp: dict | None, shots: str) -> None:
-    banner("9.  the agent acts, and the room shows who did it")
-    # The camera stays on the people. An agent is a participant in
-    # somebody else's room, so what it does is shown the way any other
-    # collaborator's actions are shown — arriving on their screens — and
-    # never as a desktop of its own. Everything it is asked below is
-    # asked over its control socket and printed to the transcript; none
-    # of it is filmed, because there is nothing there to film.
-    cut("quinten")
-
-    baseline = agent.input_ops
-    note(f"synthetic-input commands sent to the agent so far: {baseline}")
-
-    # Filmed as nothing, because it is nothing to look at.
-    #
-    # The comment above already said none of this is filmed; the
-    # camera was on quinten the whole time regardless, holding a
-    # still desktop through four steps whose claims are all about
-    # things that did *not* happen -- a palette that did not open, a
-    # revision that did not move, an input count that did not rise.
-    # Those are worth proving and there is no frame in them.
-    #
-    # What stays on camera is the half a viewer can see: the agent
-    # changing the document two other people are looking at.
-    with off_camera("the agent is asked what it can address, and one action is\n     invoked by name -- claims about things that did not happen"):
-        step("it enumerates what this session exports")
-        surface = agent.enumerate_actions("")
-        actions = surface["actions"]
-        providers: dict[str, int] = {}
-        for a in actions:
-            providers[a["provider"]] = providers.get(a["provider"], 0) + 1
-        note(f"{surface['count']} addressable actions across "
-             f"{len(providers)} providers")
-        claim("every entry carries provider, id, kind and title",
-              all(isinstance(a.get(k), str) and a[k]
-                  for a in actions for k in ("provider", "id", "kind", "title")), True)
-        claim("no entry carries a screen position",
-              any(k in a for a in actions for k in ("rect", "x", "y")), False)
-
-        step("enumerating is read-only: surveying cannot fire a side-effect")
-        before_chrome = agent.chrome()
-        for query in ("", "room", "word"):
-            agent.enumerate_actions(query)
-        after_chrome = agent.chrome()
-        claim("the chrome revision did not move",
-              after_chrome["revision"], before_chrome["revision"])
-        claim("the palette did not open", after_chrome["palette"]["visible"], False)
-
-        step("it invokes one action by its address")
-        picked = next((a for a in actions if a["provider"] == AGENT_PROVIDER
-                       and a["id"] == AGENT_ACTION_ID), None)
-        claim(f"the catalogue offers ({AGENT_PROVIDER}, {AGENT_ACTION_ID})",
-              picked is not None, True)
-        if picked is None:
-            raise SystemExit("the agent's chosen action is not exported")
-        claim("the effect is absent beforehand",
-              agent.overlays()[AGENT_ACTION_EFFECT], False)
-        resp = agent.invoke_action(AGENT_PROVIDER, AGENT_ACTION_ID)
-        claim("the invocation was accepted", "answer" in resp, True)
-        claim("the reply names the address that ran",
-              (resp.get("answer", {}).get("provider"), resp.get("answer", {}).get("id")),
-              (AGENT_PROVIDER, AGENT_ACTION_ID))
-        landed = wait_for(lambda: agent.overlays()[AGENT_ACTION_EFFECT], timeout=8)
-        claim("the action changed live state", bool(landed), True)
-        # Deliberately not filmed: this one opened a panel on the agent's own
-        # session, and the agent's own session is the one screen this film
-        # does not show.
-
-        step("no synthetic input was used to do it")
-        claim("no keystroke, click or modifier reached the agent since",
-              agent.input_ops, baseline)
-        note("the address (provider, id) is the entire input to the invocation")
-
-    # The action above was a shell action, so it changed the shell: it
-    # opened a panel on the agent's own session. The document is reached
-    # the other way round, and the next step is that — not a lesser
-    # substitute for it.
-    #
-    # `qos-agent` joins the room's collaboration broker as an ordinary
-    # CRDT peer and applies `WordProcessorAction` — the same variants the
-    # word processor's own toolbar dispatches — under its own `ActorId`,
-    # then broadcasts the result. So the exported action is the
-    # *vocabulary* and the CRDT is the *transport*: what arrives on the
-    # other two screens is the app's own operation, attributable to the
-    # participant that made it. And it holds no screen while it does —
-    # there is no winit, wgpu or vello anywhere in `apps/agent`.
-    note("what it just invoked was a shell action, so it moved the shell. "
-         "The document is reached as a participant: apps/agent applies "
-         "the word processor's own actions under its own actor and "
-         "broadcasts them, with no window of its own")
-
-    # A terminal used to be opened here, because opening a window was
-    # the only visible thing an agent could do by address. It ended the
-    # film on a `bash` prompt in a fourth window — a developer machine,
-    # in the last shot a viewer keeps, arguing against the strip the
-    # letter points at. What follows is the beat that was wanted
-    # instead: the agent changes the document the other two are looking
-    # at, and it is read back off somebody else's screen.
-    step("quinten writes the notes, and asks Claude for a run sheet")
-    cut("quinten")
-    # The prose first, then the bullets that contradict it. Order
-    # matters: the agent reads the page it is given, and a disagreement
-    # it can only see half of is one it cannot raise.
-    # The notes are already there — he wrote them in beat 7 and his
-    # colleague watched them arrive. Typing them a second time here made
-    # the agent's beat mostly a typing beat: a hundred and thirty
-    # characters at a readable pace before anything interesting happened.
-    #
-    # What is typed now is the one line the beat is actually about.
-    if not type_into_the_document(quinten, quinten_wp, ""):
-        gap("nothing could be typed into quinten's document, so there is "
-            "no list for the agent to act on")
-        return
-    quinten.settle(1.0)
-    read_hold()
-    quinten.type_prose(AGENT_INSTRUCTION)
-    quinten.settle(1.5)
-    # What he asked for, in his own document, addressed to a participant
-    # by name. Nothing else in the film explains what is about to happen,
-    # so this frame has to be readable.
-    read_hold(READ_HOLD_S * 1.5)
-    quinten.snapshot(os.path.join(shots, "11-instruction.png"))
-    note(f"the instruction is a line in the document: {AGENT_INSTRUCTION!r}")
-
-    step("the agent reads it and carries it out — with no window at all")
-    # The best fifteen seconds in the film when it works — a table
-    # assembling itself in a document nobody is touching — and the worst
-    # two minutes in it when it does not. Bounded accordingly.
-    with patience(11.0):
-        ran = run_the_agent(agent, host_ws["room"], shots)
-    if ran is None:
-        gap("qos-agent is not built, so the agent could not act on the "
-            "document (cargo build -p agent --bin qos-agent)")
-        return
-    claim("the agent carried out the instruction", ran, True)
-    claim("and no synthetic input reached its session to do it",
-          agent.input_ops, baseline)
-
-    step("and xaver's own word processor is asked what it holds now")
-    # The payoff, read off the screen of somebody who did not make the
-    # change. The assertion is that the *content* survived into the
-    # table: a table with the rows empty is what this beat produced
-    # before, and it is indistinguishable from success in a transcript
-    # that only asks whether a table exists.
-    #
-    # Asked of xaver's session and *filmed on quinten's*. That a third
-    # participant's edit reached a fourth machine is the strongest form
-    # of the claim and is worth asserting; it is not worth a second
-    # excursion, because the same edit is arriving on the screen already
-    # on camera, in the document the audience has watched being written.
-    # An agent's work showing up in your document the way a colleague's
-    # does is the whole point, and it is a point about *your* screen.
-    reader = None
-    try:
-        reader = DocumentReader(xaver.collab_json_sock, host_ws["room"],
-                                record=None)
-        # A question over a socket, with the camera on a screen it is not
-        # about. Nothing here is worth a minute of film in either
-        # direction.
-        with patience(3.0):
-            doc, carried = reader.await_document(AGENT_BULLET_PROOF,
-                                                 DOC_SYNC_TIMEOUT_S)
-    except OSError as e:
-        gap(f"xaver's session has no JSON broker to ask ({e})")
-        doc, carried = None, False
-    except CannotDecode as e:
-        gap(f"{e} — so what his screen holds was not established")
-        doc, carried = None, False
-    finally:
-        if reader is not None:
-            reader.close()
-    if doc is not None:
-        claim("xaver's document carries the rows the agent made, with the "
-              "text still in them", carried, True)
-    else:
-        gap("xaver's app never answered, so what his screen holds was not "
-            "established")
-    # The last shot of the film, so it is framed like one: even shares,
-    # the strip scrolled back, and every window whole. An accumulation
-    # of everything the run happened to open is the picture that argues
-    # against the layout this is meant to show off.
-    #
-    # …and then pointed at the subject. Framing the strip is not the same
-    # as choosing what the shot is of: an earlier cut ended on a file
-    # manager showing an empty folder, under a caption about a document
-    # two other participants had just written into.
-    frame_one_window(quinten, WORD_PROCESSOR, prefer=quinten_wp)
-    read_hold(READ_HOLD_S * 1.5)
-    quinten.snapshot(os.path.join(shots, "12-agent-table.png"))
-    xaver.snapshot(os.path.join(shots, "12b-xaver-agent-table.png"))
-
-
 def run(quinten: Session, xaver: Session, agent: Session, shots: str,
         registry) -> None:
-    """Every beat, in order — and which of them the camera is up for.
+    """The five beats of `docs/demo-script.md`, in order.
 
-    All nine run and all nine are asserted; the transcript is the same
-    either way. What differs is the cut, and the cut is decided here
-    rather than inside the beats, so the shape of the film is one
-    readable page instead of nineteen scattered decisions.
+    Everything below is what a viewer sees, and anything not here is not
+    in the film. That is a change in kind from what this function used
+    to be: it ran nine beats and chose a cut over the top of them, so
+    the film's shape was a decision taken here about which of nine
+    things to show. The script settled the shape instead, and what is
+    left is five beats and two cuts.
 
-    The shape is one excursion: quinten's screen for the length of the
-    story, out to xaver once at the moment his machine is holding
-    something worth crossing for — a window he never opened, carrying a
-    sentence he never typed — and back. Two cuts. The previous version
-    had eleven, and a stranger watching it spent most of them working out
-    whose machine they were on instead of watching what happened on it.
+    The cuts, and why there are only two. Quinten's screen for the first
+    half — the desktop being set up and the room being filled — then one
+    cut to xaver, held for the whole of the second half. He instructs,
+    and he watches it happen. An earlier version switched at nearly
+    every step, and a viewer spends each of those working out whose
+    machine they are on rather than watching what happens on it; a later
+    one cut back for beat 5, which asked them to change seats in the
+    middle of the payoff.
 
-    The other two participants are visible *through* quinten's screen
-    rather than by going to theirs: xaver arrives as a row in a roster
-    and a cursor on the backdrop, and the agent as a chip in that same
-    roster and then an edit landing in the document on camera. Which is
-    also what collaboration software looks like when it works — you stay
-    on your own screen.
+    The agent is never cut to and has no shot of its own. It appears as
+    a chip in a roster, a window it opened on somebody else's desktop
+    and a picture landing in somebody else's document — which is the
+    claim. `cut` refuses its name outright, and the run fails at the end
+    if a single frame turns out to have come from its session.
 
-    The beats that are run but not filmed are not filler — they are the
-    proof for claims the film makes elsewhere, or beats good enough to
-    deserve their own minute rather than fifteen seconds of this one.
+    `registry` is accepted and unused. The machine that fetches an
+    application it does not have is a real capability and was a beat of
+    its own in the nine-beat cut; the five-beat script does not list it,
+    and a beat that adds a second argument is cut rather than kept
+    because the machinery for it happens to be standing.
     """
-    host_ws, files = beat_one(quinten, shots)
-    # Quinten raises the invitation on camera, at length, because it is
-    # the gesture the whole collaboration story hangs off. Xaver redeeming
-    # it is a person pasting a string into a dialog, and happens off
-    # camera inside the beat.
-    beat_two(quinten, xaver, host_ws, shots)
-    with off_camera("the agent's invitation — the same card, a different "
-                    "name on it — and the permission check that follows, "
-                    "which is a question to the authority gate and has no "
-                    "picture"):
-        beat_three(quinten, agent, host_ws, shots)
-    # Everything xaver holds and is looking at *before* the word
-    # processor exists anywhere. Beat 6 measures against this rather than
-    # against the state it finds when it starts, so "the window crossed
-    # before we looked" reads as the success it is.
-    baseline = {
-        "tabs": set(xaver.tabs_here()),
-        "view": xaver.view_state(),
-        "groups": xaver.groups_here(),
-    }
-    beat_four(quinten, xaver, agent, host_ws, shots)
-    if FETCH_ON_CAMERA:
-        wp = beat_five(quinten, registry, shots)
+    host_ws = beat_one(quinten, shots)
+    beat_two(quinten, shots)
+    beat_three(quinten, xaver, agent, host_ws, shots)
+    # Beats 4 and 5 are one held shot on xaver's screen. The cut into it
+    # is taken at the end of beat 3, once his machine is holding the
+    # applications, so neither of these takes one.
+    if beat_four(xaver, shots):
+        beat_five(xaver, agent, host_ws, shots)
     else:
-        # Same fetch, same registry, same install path — off camera, so
-        # the run still establishes that this machine did not have the
-        # app and has it afterwards. What the film loses is the watching.
-        with off_camera("the machine fetches an application it does not "
-                        "have, verifies it and runs it"):
-            wp = beat_five(quinten, registry, shots)
-    # Which tab beat 5 opened, read now — before beat 7 puts a second
-    # word processor in the room and makes "new since the baseline"
-    # ambiguous. Beat 6 is asked about this one specifically.
-    opened = [t for t in quinten.tabs_here() if t not in baseline["tabs"]]
-    note(f"beat 5 opened {len(opened)} tab(s) on quinten's machine: "
-         f"{opened or 'none'}")
-    # Proven here, seen later. Beat 6 has to run before beat 7 — beat 7
-    # has xaver open an app on his own machine, and that moves his own
-    # focus, which is the thing beat 6 asserts nothing did. Both its
-    # claims are answers over a socket rather than pictures, so running
-    # it off camera costs the film nothing.
-    with off_camera("xaver's tree, read over a socket: the window is there "
-                    "and his view did not move. His screen is seen holding "
-                    "it, and the sentence, in the excursion below"):
-        beat_six(quinten, xaver, baseline, opened, shots)
-    # The excursion: beat 7 opens it at its own last step, once his screen
-    # has the sentence on it too, and the shot closes it. Beat 9 cuts back.
-    beat_seven(quinten, xaver, host_ws, wp, shots)
-    show_xavers_screen(xaver, shots)
-    with off_camera("the photograph dragged between two sandboxes: the "
-                    "longest beat here, and not one of the things this "
-                    "cut is arguing"):
-        beat_eight(quinten, files, wp, shots)
-    # After the drag, deliberately. The drag needs Files and the word
-    # processor in separate groups and both in frame; the tabbing that
-    # follows spends one of those groups. Running it the other way round
-    # would mean the two ends of the gesture were a tab apart, and beat 8
-    # would be filming a window it had to bring up first.
-    #
-    # And after the extras have opened rather than before, which happens
-    # off camera between the two — four applications appearing one after
-    # another is four identical launches, and the film has shown two of
-    # them properly already.
-    with off_camera("the other two applications open, to the right of what "
-                    "is already on the strip"):
-        extras = open_the_rest_of_the_strip(quinten)
-    beat_strip(quinten, extras, wp, shots)
-    beat_nine(quinten, xaver, agent, host_ws, wp, shots)
-
+        gap("beat 4 did not send an instruction, so there was nothing for "
+            "beat 5 to watch happen. Beat 5 is not run: a beat that "
+            "reports on work nobody asked for would be reporting on "
+            "whatever the room happened to contain.")
 
 
 
