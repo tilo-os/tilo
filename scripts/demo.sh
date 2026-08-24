@@ -57,6 +57,52 @@ done
 
 say() { printf '\033[1m[demo]\033[0m %s\n' "$*"; }
 
+# 0. No discrete GPU may be asleep.
+#
+# Two hard freezes came from this, and neither wrote anything down: both
+# crashed boots end mid-sentence with no GPU reset, no hung task and no
+# panic, which is a wedged PCIe transaction rather than a driver fault --
+# a CPU stuck on an unanswered read never reaches the code that logs.
+#
+# The mechanism is that creating a `wgpu::Instance` loads every Vulkan
+# ICD installed, and this machine has an NVIDIA one alongside a dGPU that
+# runtime power management keeps in D3Cold. Enumerating through it
+# reaches across the bus to a powered-down device; opening a photograph
+# starts an application, and starting one enumerates again.
+#
+# `pin_gpu` in the rig keeps *this* run off it, and that is the real fix.
+# This check exists because the rig is not the only thing on the machine
+# that touches a GPU -- a browser reaching for nvidia-vaapi and a music
+# player holding contexts both showed up in the same logs -- so while a
+# take is being filmed the device should simply not be allowed to sleep.
+#
+# Refused rather than warned, and refused rather than fixed: writing to
+# it needs root, and a script that quietly takes root to change a power
+# policy is worse than one that says what to type. The state is lost on
+# every reboot, which is exactly why this is checked every run.
+for dev in /sys/bus/pci/devices/*/power/control; do
+  pci="${dev%/power/control}"
+  pci="${pci##*/}"
+  class="$(cat "/sys/bus/pci/devices/$pci/class" 2>/dev/null || echo)"
+  case "$class" in 0x0300*|0x0302*) ;; *) continue ;; esac
+  vendor="$(cat "/sys/bus/pci/devices/$pci/vendor" 2>/dev/null || echo)"
+  [ "$vendor" = "0x10de" ] || continue      # NVIDIA only
+  [ "$(cat "$dev" 2>/dev/null)" = "auto" ] || continue
+  if [ "${QOS_DEMO_ALLOW_SLEEPING_GPU:-}" = "1" ]; then
+    echo "[demo] WARNING: $pci may sleep mid-run; you asked to proceed."
+    continue
+  fi
+  echo "[demo] REFUSING TO START: the discrete GPU at $pci is allowed to"
+  echo "[demo] suspend, and a run that enumerates it while it is going"
+  echo "[demo] down has frozen this machine twice with no log."
+  echo "[demo]"
+  echo "[demo]   echo on | sudo tee /sys/bus/pci/devices/$pci/power/control"
+  echo "[demo]"
+  echo "[demo] Undo with 'auto' when you are done filming. To run anyway:"
+  echo "[demo]   QOS_DEMO_ALLOW_SLEEPING_GPU=1 scripts/demo.sh ..."
+  exit 1
+done
+
 # 1. Nothing of ours may already hold the GPU.
 bash scripts/demo-guard.sh --reap || exit 1
 
