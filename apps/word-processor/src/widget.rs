@@ -13817,3 +13817,366 @@ fn is_dnd_spool_path(path: &std::path::Path) -> bool {
         .any(|dir| path.starts_with(dir))
         || path.starts_with(std::env::temp_dir())
 }
+
+
+// ---- a document that opens ready to be written in --------------------------
+//
+// The caret being in the model is not the same claim as a person being able to
+// see one, so these read the caret back off the framebuffer: the pixels that
+// changed have to land on the first character position of the first block.
+// Next to it sits the guard for the other half — the style inspector must
+// still be able to take the keyboard off the page, and the page must be able
+// to take it back.
+#[cfg(test)]
+mod opens_ready_to_type {
+    use super::tests::pipeline_draw;
+    use super::*;
+    use taffy::AvailableSpace;
+    use ui::offscreen::OffscreenRenderer;
+    use ui::permissions::PermissionContext;
+
+    const W: u32 = 1000;
+    const H: u32 = 700;
+
+    /// A document as it arrives from a file: content decoded straight into the
+    /// CRDT by the format's codec (what `open_document` does either side of
+    /// reading the bytes), and a widget that has never been touched.
+    ///
+    /// Deliberately not built by typing into it — that would leave the caret
+    /// wherever the typing stopped, which is the one thing these tests must
+    /// not be handed for free.
+    fn opened_with_content() -> (ui::State, WordProcessorWidget) {
+        use qdoc::FormatProvider;
+        let mut state = ui::State::new();
+        let containers = qdoc::model::init(&mut state.doc, &state.root);
+        let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &containers, ids: &mut ids };
+            qdoc::MarkdownCodec
+                .import(
+                    b"Doors at seven, room seats 240.\n\nThe room is on the second floor.\n",
+                    &mut dm,
+                )
+                .expect("the markdown imports");
+        }
+        (state, WordProcessorWidget::new())
+    }
+
+    /// The five passes under `theme`, rasterised.
+    fn render(
+        wp: &mut WordProcessorWidget,
+        state: &mut ui::State,
+        theme: &Theme,
+    ) -> Vec<u8> {
+        let presence = PresenceCtx::empty();
+        let permission = PermissionContext::permissive();
+        let mut tr = TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        wp.sync(&mut state.doc, &state.root);
+        let child = wp.build_layout(&mut taffy, theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(W as f32),
+                        height: Dimension::length(H as f32),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        {
+            let measure_map = node_map.clone();
+            let trr = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size {
+                        width: AvailableSpace::Definite(W as f32),
+                        height: AvailableSpace::Definite(H as f32),
+                    },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, trr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        wp.apply_layout(&taffy, child, Point::ORIGIN);
+        let mut scene = Scene::new();
+        wp.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence, &permission);
+        OffscreenRenderer::new(W, H).render(&scene, ChromeColors::for_theme(theme).canvas)
+    }
+
+    /// The bounding box of every pixel that differs between two frames, or
+    /// `None` when they are identical.
+    fn differing_bbox(a: &[u8], b: &[u8]) -> Option<Rect> {
+        let mut bbox: Option<Rect> = None;
+        for y in 0..H {
+            for x in 0..W {
+                let (ar, ag, ab, _) = OffscreenRenderer::sample(a, W, x, y);
+                let (br, bg, bb, _) = OffscreenRenderer::sample(b, W, x, y);
+                let differs = ar.abs_diff(br).max(ag.abs_diff(bg)).max(ab.abs_diff(bb)) > 8;
+                if !differs {
+                    continue;
+                }
+                let p = Rect::new(x as f64, y as f64, x as f64 + 1.0, y as f64 + 1.0);
+                bbox = Some(match bbox {
+                    Some(r) => r.union(p),
+                    None => p,
+                });
+            }
+        }
+        bbox
+    }
+
+    /// Where the caret for `offset` of the first laid block belongs on screen,
+    /// through the same geometry `draw` fills it with.
+    fn caret_rect_of_first_block(wp: &WordProcessorWidget) -> Rect {
+        let first = wp.laid.first().expect("the body was laid out");
+        // The shaped text lives in the layout cache, keyed by block id — the
+        // same lookup `draw` makes on its way to painting the caret.
+        let (_, layout) = wp
+            .layout_cache
+            .get(&first.id)
+            .expect("the first block was shaped");
+        let (cx, cy, ch) = layout.caret_geometry(0);
+        let r = Rect::new(
+            first.text_x + cx as f64,
+            first.layout_y + cy as f64,
+            first.text_x + cx as f64 + CARET_WIDTH,
+            first.layout_y + cy as f64 + ch as f64,
+        );
+        wp.content_transform(Affine::IDENTITY).transform_rect_bbox(r)
+    }
+
+    /// A whole left click: move, press, release. The release is what turns a
+    /// press on an inspector value box into a request to type into it.
+    fn click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mods = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        for ev in [
+            WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: (pt.x, pt.y).into(),
+            },
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        ] {
+            wp.handle_event(
+                &ev, 1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node,
+                &taffy,
+            );
+        }
+    }
+
+    /// One typed character through the production keyboard path.
+    fn press(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
+        use winit::keyboard::{NativeKeyCode, PhysicalKey, SmolStr};
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mods = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        // SAFETY: as elsewhere in this file — `KeyEvent`'s public fields all
+        // tolerate the zero bit pattern and the ones read here are overwritten;
+        // the private platform payload is plain.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.logical_key = Key::Character(SmolStr::new(ch.to_string()));
+        ev.text = Some(SmolStr::new(ch.to_string()));
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        wp.handle_event(
+            &WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            },
+            1.0,
+            &mods,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+    }
+
+    /// The caret is on screen when the document opens, at the first character
+    /// position of the body — not merely somewhere in the model.
+    ///
+    /// Read off the framebuffer: focus is the only thing that decides whether
+    /// the body caret is painted, so the pixels that differ between a focused
+    /// frame and an unfocused one *are* the caret. They have to land on the
+    /// geometry of the first block's offset 0, in every palette.
+    #[test]
+    fn a_freshly_opened_document_draws_its_caret_at_the_start_of_the_body() {
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high-contrast", Theme::high_contrast()),
+        ] {
+            let (mut state, mut wp) = opened_with_content();
+            let with_caret = render(&mut wp, &mut state, &theme);
+            let expected = caret_rect_of_first_block(&wp);
+
+            wp.set_focus(false);
+            let without_caret = render(&mut wp, &mut state, &theme);
+
+            let drawn = differing_bbox(&with_caret, &without_caret)
+                .unwrap_or_else(|| panic!("{name}: nothing was painted for the caret"));
+
+            // Within a pixel of anti-aliased bleed on each side of where the
+            // production geometry puts offset 0 of the first block.
+            let slack = 1.5;
+            assert!(
+                (drawn.x0 - expected.x0).abs() <= slack + 1.0
+                    && (drawn.y0 - expected.y0).abs() <= slack + 1.0
+                    && (drawn.x1 - expected.x1).abs() <= slack + 1.0
+                    && (drawn.y1 - expected.y1).abs() <= slack + 1.0,
+                "{name}: the caret was painted at {drawn:?}, not at the start of \
+                 the body ({expected:?})",
+            );
+            assert!(
+                drawn.height() > 6.0,
+                "{name}: the caret is a line-tall bar, not a speck: {drawn:?}",
+            );
+        }
+
+        // And the reading above is one this measurement could have failed:
+        // with the caret at the far end of the document instead, the pixels
+        // that change are somewhere else entirely.
+        let (mut state, mut wp) = opened_with_content();
+        let theme = Theme::dark();
+        render(&mut wp, &mut state, &theme);
+        let start = caret_rect_of_first_block(&wp);
+        wp.model_mut().move_doc_end(&state.doc);
+        let with_caret = render(&mut wp, &mut state, &theme);
+        wp.set_focus(false);
+        let without_caret = render(&mut wp, &mut state, &theme);
+        let drawn = differing_bbox(&with_caret, &without_caret)
+            .expect("a caret at the end of the document is painted too");
+        assert!(
+            (drawn.y0 - start.y0).abs() > 2.0 || (drawn.x0 - start.x0).abs() > 2.0,
+            "a caret at the document's end must not measure as one at its \
+             start: {drawn:?} against {start:?}",
+        );
+    }
+
+    /// The style inspector still takes the keyboard off the page, and the page
+    /// still takes it back.
+    ///
+    /// A click on one of the inspector's value boxes is a request to type a
+    /// number into it, so what is typed next belongs to the field and must not
+    /// reach the document. Clicking back onto the page ends that, and the
+    /// characters after it go where the person is looking.
+    #[test]
+    fn the_style_inspector_takes_the_keyboard_off_the_page_and_gives_it_back() {
+        let (mut state, mut wp) = opened_with_content();
+        pipeline_draw(&mut wp, &mut state, W, H);
+        assert!(wp.styles_panel_open, "the inspector is up");
+
+        let (field, _) = wp
+            .panel_hits
+            .iter()
+            .find(|(_, h)| matches!(h, PanelHit::Num(NumField::Size)))
+            .expect("the inspector has a Size value box")
+            .clone();
+        click(&mut wp, &mut state, field.center());
+        assert_eq!(
+            wp.editing_field,
+            Some(NumField::Size),
+            "clicking the value box asked to type into it",
+        );
+
+        let before = wp.model().block_texts(&state.doc);
+        press(&mut wp, &mut state, '9');
+        assert_eq!(
+            wp.model().block_texts(&state.doc),
+            before,
+            "the digit went into the field, not into the document",
+        );
+
+        // Back onto the page, at the first block's own first character.
+        let caret = caret_rect_of_first_block(&wp);
+        click(&mut wp, &mut state, Point::new(caret.x0 + 1.0, caret.center().y));
+        assert!(
+            wp.editing_field.is_none(),
+            "the page took the keyboard back off the inspector",
+        );
+
+        press(&mut wp, &mut state, 'X');
+        let after = wp.model().block_texts(&state.doc);
+        assert_ne!(after, before, "typing after the click reached the document");
+        assert!(
+            after.first().is_some_and(|t| t.starts_with('X')),
+            "and it landed where the click put the caret: {after:?}",
+        );
+    }
+
+    // ---- visual proof ------------------------------------------------------
+    // Set `QOS_WP_READY_SHOTS=<dir>` to write the frames this behaviour is
+    // judged on: a document as it opens, and the same document after typing
+    // with nothing clicked. A normal `cargo test` run leaves it a no-op.
+
+    /// Render into `dir/name.png` through the production draw.
+    fn write_png(
+        wp: &mut WordProcessorWidget,
+        state: &mut ui::State,
+        theme: &Theme,
+        dir: &std::path::Path,
+        name: &str,
+    ) {
+        let rgba = render(wp, state, theme);
+        // `render` already rasterised the frame; write those exact bytes so the
+        // picture is the one the assertions were made against.
+        let file = std::fs::File::create(dir.join(format!("{name}.png"))).expect("a png to write");
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), W, H);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .expect("a png header")
+            .write_image_data(&rgba)
+            .expect("the png body");
+    }
+
+    #[test]
+    fn render_ready_to_type_shots() {
+        let Some(dir) = std::env::var_os("QOS_WP_READY_SHOTS") else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).expect("a directory to write into");
+        for (tag, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high-contrast", Theme::high_contrast()),
+        ] {
+            let (mut state, mut wp) = opened_with_content();
+            write_png(&mut wp, &mut state, &theme, &dir, &format!("just-opened-{tag}"));
+            for ch in "Yes, ".chars() {
+                press(&mut wp, &mut state, ch);
+            }
+            write_png(&mut wp, &mut state, &theme, &dir, &format!("typed-no-click-{tag}"));
+        }
+    }
+}
