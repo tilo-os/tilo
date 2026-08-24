@@ -110,6 +110,25 @@ impl TableDraft {
     /// refused rather than padded: padding invents a claim about which
     /// column a value belongs to, and the whole point of this table is
     /// that the columns mean something.
+    /// Drop rows with nothing in them.
+    ///
+    /// A row of empty cells is not a row; on the page it is a band of
+    /// ruled whitespace in the middle of a table, and it was drafted in a
+    /// live run of the very beat this exists for. The recipe already asks
+    /// for the row to be dropped rather than kept with a blank in it, so
+    /// this enforces what the instruction says instead of leaving it to
+    /// be followed.
+    ///
+    /// Dropped rather than refused, deliberately. Refusing the draft
+    /// would trade a table with one blank line in it for a refusal, and
+    /// the blank line is a smaller fault than not answering at all. What
+    /// is *not* done here is padding a ragged row: that would invent a
+    /// claim about which column a value belongs to, and
+    /// [`Self::check`] still refuses those.
+    pub fn drop_blank_rows(&mut self) {
+        self.rows.retain(|r| r.iter().any(|c| !c.trim().is_empty()));
+    }
+
     pub fn check(&self) -> Result<(), String> {
         if self.headers.is_empty() {
             return Err("it has no columns".to_string());
@@ -475,8 +494,12 @@ impl Recipe {
         if !self.needs_table {
             return Ok(self.instruction());
         }
-        let draft =
+        let mut draft =
             table.ok_or_else(|| Refused::Unusable("it came with no table to write".to_string()))?;
+        // Before the gate, so a draft that is empty *once the blank rows
+        // are gone* is refused as having no rows rather than written as a
+        // table of nothing.
+        draft.drop_blank_rows();
         draft.check().map_err(Refused::Unusable)?;
         Ok(Instruction::RunSheet(draft))
     }
@@ -1032,6 +1055,75 @@ mod tests {
                     panic!("{} is offered but maps to no instruction", recipe.id)
                 }
             }
+        }
+    }
+
+    /// A row with nothing in it does not reach the page.
+    ///
+    /// Drafted by a live model in a run of the demo's own beat: the two
+    /// real events, and then `["", ""]`. It passes every bound `check`
+    /// applies -- it is exactly as wide as the header, and the table as a
+    /// whole is not blank -- so nothing refused it and the page got a band
+    /// of ruled whitespace through the middle of the payoff frame.
+    ///
+    /// Asserted through `from_answer`, which is the gate every drafted
+    /// table actually passes through, rather than through the normaliser
+    /// on its own.
+    #[test]
+    fn a_blank_row_is_dropped_rather_than_written() {
+        let offers = surveyed();
+        let drafted = TableDraft {
+            headers: vec!["Time".into(), "Item".into()],
+            rows: vec![
+                vec!["18:00".into(), "Doors".into()],
+                vec!["".into(), "".into()],
+                vec!["18:30".into(), "Sound check".into()],
+                vec!["  ".into(), "\t".into()],
+            ],
+            note: None,
+        };
+        // It is well-formed by every bound the gate applies, which is why
+        // this reached a document in the first place.
+        assert_eq!(drafted.check(), Ok(()));
+
+        let Ok(Instruction::RunSheet(written)) =
+            Instruction::from_answer("runsheet", "asked", Some(drafted), &offers)
+        else {
+            panic!("a well-formed draft must still be accepted");
+        };
+        assert_eq!(
+            written.rows,
+            vec![
+                vec!["18:00".to_string(), "Doors".to_string()],
+                vec!["18:30".to_string(), "Sound check".to_string()],
+            ],
+            "the blank rows survived into the table"
+        );
+        // Whitespace is not content: a row of spaces and tabs reads as an
+        // empty band on the page exactly as a row of empty strings does.
+        assert!(
+            !written.grid().iter().any(|r| r.iter().all(|c| c.trim().is_empty())),
+            "a row of whitespace is still a blank row: {:?}",
+            written.grid()
+        );
+    }
+
+    /// And a draft that is *only* blank rows is refused, not written as a
+    /// table with a header and nothing under it.
+    #[test]
+    fn a_draft_with_nothing_but_blank_rows_is_refused() {
+        let offers = surveyed();
+        let empty = TableDraft {
+            headers: vec!["Time".into(), "Item".into()],
+            rows: vec![vec!["".into(), "".into()], vec![" ".into(), " ".into()]],
+            note: None,
+        };
+        match Instruction::from_answer("runsheet", "asked", Some(empty), &offers) {
+            Err(Refused::Unusable(why)) => assert!(
+                why.contains("no rows"),
+                "refused for the wrong reason: {why}"
+            ),
+            other => panic!("a table of nothing must not be written: {other:?}"),
         }
     }
 
