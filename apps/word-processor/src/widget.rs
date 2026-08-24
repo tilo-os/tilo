@@ -8215,7 +8215,25 @@ impl WordProcessorWidget {
         // Place the caret under the click; select the word when there's no
         // selection so Cut/Copy act on something.
         let had_selection = self.inner.has_selection();
+        // A right-click *inside* a selection acts on that selection. Seating the
+        // caret at the click would throw away the very thing the menu — and the
+        // compose surface beside it — is about, so the range is restored when
+        // the click lands within it. Outside it, the caret moves as usual.
+        let span = self.inner.selection_span(state);
+        let was_selected = self.inner.selection_blocks(state);
         self.caret_from_pointer(content_pt, false);
+        if let Some((start, end)) = span {
+            let c = self.inner.caret().clone();
+            let inside = was_selected
+                .iter()
+                .any(|(b, s, e)| b == &c.block && c.offset >= *s && c.offset <= *e);
+            if inside {
+                self.inner.set_caret(start);
+                self.inner.clear_anchor();
+                self.inner.set_anchor();
+                self.inner.set_caret(end);
+            }
+        }
         // Raw click char offset (before `select_word` snaps the caret to the word
         // end) — used to test which tracked-change / comment range was clicked.
         let raw_click_off = self.inner.caret.offset;

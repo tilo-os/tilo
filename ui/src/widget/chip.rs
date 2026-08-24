@@ -22,6 +22,7 @@ use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
+use crate::tokens::colors::AccentChip;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
@@ -165,11 +166,24 @@ pub struct ChipStyle {
     /// Multiplies every painted alpha. Lets a caller fade a whole chip
     /// without recolouring it stop by stop.
     pub alpha: f32,
+    /// Fill, edge and ink already measured against the ground this chip
+    /// lands on. Overrides the derivation from [`Self::tint`].
+    ///
+    /// `tint` alone can only paint the accent at a fixed wash and then
+    /// letter the label in that same accent — which is legible over some
+    /// grounds and 3.8:1 over others, because `accent × 0.18` is a
+    /// different colour on a white panel than on a dark menu and only the
+    /// composite can be measured. A caller that knows its ground resolves
+    /// the three together through
+    /// [`Colors::accent_chip_on`](crate::tokens::colors::Colors::accent_chip_on)
+    /// and hands the result over, so the pill keeps its hue and the label
+    /// stops sharing it.
+    pub resolved: Option<AccentChip>,
 }
 
 impl Default for ChipStyle {
     fn default() -> Self {
-        Self { tint: None, ghost: false, bare: false, alpha: 1.0 }
+        Self { tint: None, ghost: false, bare: false, alpha: 1.0, resolved: None }
     }
 }
 
@@ -195,6 +209,12 @@ impl ChipStyle {
     /// [`ChipStyle::bare`] for when this is the right shape.
     pub fn bare(tint: Option<Color>) -> Self {
         Self { tint, bare: true, ..Self::default() }
+    }
+
+    /// Chip painted from colours the caller has already measured against
+    /// the ground it lands on. See [`ChipStyle::resolved`].
+    pub fn measured(chip: AccentChip) -> Self {
+        Self { resolved: Some(chip), ..Self::default() }
     }
 
     /// Fade the whole chip by `alpha` (clamped to `0.0..=1.0`).
@@ -275,10 +295,11 @@ impl Chip {
         // 0.18 fill / full-strength border the selected widget state uses,
         // so a rail of these reads identically to a row of real Chips.
         if !style.bare {
-            let (bg, border) = match (style.tint, style.ghost) {
-                (_, true) => (colors.surface_white_5, colors.border_standard),
-                (Some(t), _) => (t.with_alpha_factor(0.18), t),
-                (None, _) => (colors.surface_white_5, colors.border_standard),
+            let (bg, border) = match (style.resolved, style.tint, style.ghost) {
+                (Some(c), _, false) => (c.fill, c.border),
+                (_, _, true) => (colors.surface_white_5, colors.border_standard),
+                (_, Some(t), _) => (t.with_alpha_factor(0.18), t),
+                (_, None, _) => (colors.surface_white_5, colors.border_standard),
             };
             scene.fill(Fill::NonZero, transform, fade(bg, 1.0), None, &pill);
             let stroke = if style.ghost {
@@ -306,10 +327,11 @@ impl Chip {
         // A bare chip has no fill to sit the lead against, so a `text_dim`
         // glyph beside a `text_primary` label reads as two unrelated marks
         // rather than as one token. Pull the lead up to the label there.
-        let lead_col = match style.tint {
-            Some(t) => t,
-            None if style.bare => colors.text_primary,
-            None => colors.text_dim,
+        let lead_col = match (style.resolved, style.tint) {
+            (Some(c), _) if !style.bare => c.ink,
+            (_, Some(t)) => t,
+            (_, None) if style.bare => colors.text_primary,
+            (_, None) => colors.text_dim,
         };
         match lead {
             ChipLead::None => {}
@@ -342,10 +364,11 @@ impl Chip {
             return;
         }
         let (_, lh) = text_renderer.measure(&shown, size, None);
-        let label_col = match (style.tint, style.ghost) {
-            (_, true) => colors.text_dim,
-            (Some(t), _) => t,
-            (None, _) => colors.text_primary,
+        let label_col = match (style.resolved, style.tint, style.ghost) {
+            (Some(c), _, false) if !style.bare => c.ink,
+            (_, _, true) => colors.text_dim,
+            (_, Some(t), _) => t,
+            (_, None, _) => colors.text_primary,
         };
         text_renderer.draw_text(
             scene,

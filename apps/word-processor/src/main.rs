@@ -117,9 +117,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         // that paragraph's address. The destinations are demo values, seeded
         // here and only here — the editor itself never invents a roster.
         let demo = (scenario.as_deref() == Some("remark")).then(seed_remark_demo);
-        let (mut state, mut wp) = build_concrete(demo.as_deref().or(file.as_deref()))?;
+        let (state, mut wp) = build_concrete(demo.as_deref().or(file.as_deref()))?;
         if scenario.as_deref() == Some("remark") {
-            select_demo_phrase(&mut state, &mut wp);
             wp.set_remark_destinations(vec![
                 ui::widget::DestinationOption::localised(qos_reference::Destination::channel(
                     "c_run", "run-of-show",
@@ -362,6 +361,11 @@ fn render_shot(mut state: State, mut widget: WordProcessorWidget, viewport: (u32
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     widget.sync(&mut state.doc, &state.root);
+    // After `sync`, which binds the model to the document: a selection made
+    // before it would move a caret through a document the model cannot see yet.
+    if scenario == Some("remark") {
+        select_demo_phrase(&mut state, &mut widget);
+    }
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
@@ -400,6 +404,9 @@ fn render_shot(mut state: State, mut widget: WordProcessorWidget, viewport: (u32
 
     let mut scene = Scene::new();
     widget.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+    // The top layer, exactly as `App` runs it: menus, popovers and the compose
+    // surface paint here so nothing drawn later can occlude them.
+    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();

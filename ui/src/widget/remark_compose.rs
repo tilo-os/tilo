@@ -185,7 +185,12 @@ impl RemarkCompose {
             selector: Dropdown::new(Vec::new(), "").with_id("remark_destination"),
             input: TextInput::new(Vec::new())
                 .with_id("remark_input")
-                .with_enter_submits(true),
+                .with_enter_submits(true)
+                // The field is focused the moment the panel opens, so a
+                // placeholder that hides on focus would never be read at all —
+                // leaving an empty box with a caret and no statement of what to
+                // type into it.
+                .with_placeholder_while_focused(true),
             send: Button::new("remark_send", "", None)
                 .with_style(ButtonStyle::Primary)
                 .on_click(move || flag.store(true, Ordering::Relaxed)),
@@ -263,23 +268,39 @@ impl RemarkCompose {
     pub fn place_beside(&mut self, menu: Rect, bounds: Rect) {
         let w = PANEL_W;
         let h = self.rect.height();
-        let right = menu.x1 + BESIDE_GAP;
-        let left = menu.x0 - BESIDE_GAP - w;
-        let x = if right + w <= bounds.x1 - EDGE_MARGIN {
-            right
-        } else if left >= bounds.x0 + EDGE_MARGIN {
-            left
-        } else {
-            // Neither side fits: hug the right edge rather than overflow it.
-            (bounds.x1 - EDGE_MARGIN - w).max(bounds.x0 + EDGE_MARGIN)
-        };
         // Top-aligned with the menu, lifted only as far as staying on screen
-        // needs — so the panel still reads as belonging to the click.
-        let y = menu
+        // needs, so the panel still reads as belonging to the click.
+        let level = menu
             .y0
             .min(bounds.y1 - EDGE_MARGIN - h)
             .max(bounds.y0 + EDGE_MARGIN);
-        self.anchor = Point::new(x, y);
+        // Horizontally clamped fallback position, used by every branch below.
+        let clamped_x = menu
+            .x0
+            .min(bounds.x1 - EDGE_MARGIN - w)
+            .max(bounds.x0 + EDGE_MARGIN);
+
+        let right = menu.x1 + BESIDE_GAP;
+        if right + w <= bounds.x1 - EDGE_MARGIN {
+            self.anchor = Point::new(right, level);
+            return;
+        }
+        // Under the menu before beside it on the left. The panel is *about*
+        // what is selected, and a selection runs back from the click the menu
+        // opened at — so the space to the menu's left is the one place the
+        // panel must not take, or it hides its own subject. Below covers
+        // neither the selection nor the menu.
+        let below = menu.y1 + BESIDE_GAP;
+        if below + h <= bounds.y1 - EDGE_MARGIN {
+            self.anchor = Point::new(clamped_x, below);
+            return;
+        }
+        let left = menu.x0 - BESIDE_GAP - w;
+        if left >= bounds.x0 + EDGE_MARGIN {
+            self.anchor = Point::new(left, level);
+            return;
+        }
+        self.anchor = Point::new(clamped_x, level);
     }
 
     /// Open the surface for whatever `referent` currently has selected.
@@ -448,10 +469,21 @@ impl Widget for RemarkCompose {
             node_map.insert(node, self as *mut dyn Widget);
             return node;
         }
+        let send = self.send.build_layout(taffy, theme, node_map);
+        // The confirm action sits at the trailing edge, where a dialog's does.
+        // Left-aligned under a full-width field it reads as a stray control
+        // with a hole beside it rather than as the end of the form.
+        let _ = taffy.set_style(
+            send,
+            Style {
+                align_self: Some(taffy::AlignItems::End),
+                ..taffy.style(send).cloned().unwrap_or_default()
+            },
+        );
         let children = vec![
             self.selector.build_layout(taffy, theme, node_map),
             self.input.build_layout(taffy, theme, node_map),
-            self.send.build_layout(taffy, theme, node_map),
+            send,
         ];
         let node = taffy
             .new_with_children(
@@ -543,13 +575,24 @@ impl Widget for RemarkCompose {
                 text_renderer,
             );
             let w = natural.min(avail);
+            // Resolved against the panel's own surface rather than tinted
+            // from the accent token. `accent × 0.18` is one colour over a
+            // white panel and another over a dark menu, and lettering the
+            // label in the accent it was washed from leaves this chip — the
+            // panel's only statement of *what* is being talked about — at
+            // 3.8:1 in the light theme. Measured, it keeps the hue and the
+            // label stops sharing it.
+            let measured = colors.accent_chip_on(
+                colors.surfaces.overlay,
+                crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+            );
             Chip::draw_at(
                 scene,
                 transform,
                 Rect::new(cx, cy, cx + w, cy + CHIP_H),
                 &r.label,
                 ChipLead::Glyph(crate::icons::Icon::ChevronRight),
-                ChipStyle::tinted(theme.accent_primary),
+                ChipStyle::measured(measured),
                 theme,
                 text_renderer,
             );
