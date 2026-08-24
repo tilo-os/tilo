@@ -608,8 +608,30 @@ pub fn write_revert_patches(
 ) {
     // Patches describing how to get from `from_heads` back to `to_heads`.
     let patches = doc.diff(from_heads, to_heads);
-    let entry_after = from_heads;
-    let entry_before = to_heads;
+    write_patches(doc, patches, to_heads, from_heads);
+}
+
+/// Write an already-derived patch set forward into `doc`'s open transaction.
+///
+/// The half of [`write_revert_patches`] after the diff, split out so a caller
+/// that needs to *filter* the patch set can reuse the index translation rather
+/// than reimplement it. `ui::history_source::revert` is that caller: it drops
+/// the patches that would overwrite somebody's later edit and writes the rest.
+///
+/// The two anchors are the head sets the patch indices are expressed against.
+/// `insert_anchor` is the state in which a re-inserted element's boundary is
+/// meaningful (the element does not exist after the action being inverted);
+/// `index_anchor` is the state in which an element the patch deletes or
+/// overwrites still exists. Passing them the wrong way round silently moves
+/// edits to neighbouring positions, so both are named rather than positional.
+pub fn write_patches(
+    doc: &mut AutoCommit,
+    patches: Vec<automerge::Patch>,
+    insert_anchor: &[ChangeHash],
+    index_anchor: &[ChangeHash],
+) {
+    let entry_after = index_anchor;
+    let entry_before = insert_anchor;
         // Recreated objects get a fresh ExId; map the patch's (old) ObjId to it
         // so nested child patches target the new object.
         let mut remap: HashMap<ObjId, ObjId> = HashMap::new();
