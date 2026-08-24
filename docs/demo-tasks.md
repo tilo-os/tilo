@@ -291,6 +291,24 @@ the claim is "the document was written into", and it was, with this:
       types the instruction one character at a time, with a pause after
       the colon, across the broker both transports share.
 
+      And the test was shown to *catch* it rather than merely to pass:
+      with the settle window put back to zero and nothing else changed,
+      it fails, and what it fails with is the frame --
+
+      > Scribe: I can't "m" here. I can insert table, insert page break,
+      > or align left, among 3 other things.ake this a run sheet
+
+      That is the whole fault in one line. The instruction was read when
+      it said `Scribe: m`; the refusal was written over it; and
+      `ake this a run sheet` -- the rest of what the person was typing --
+      arrived afterwards and landed on the end of the reply. Nobody had
+      to guess that the reply "landed on the same block as the
+      instruction". It is what a splice does when the typing has not
+      stopped.
+
+      The same line settles the first fault too: three operations, in
+      the app's own words, no address anywhere in it.
+
 The lesson, again and at cost: a claim proves the assertion somebody
 wrote. "The document was written into" is true of a refusal, of a wall
 of jargon, and of the best sentence in the film. Only the frame tells
@@ -332,13 +350,33 @@ processor's tree rather than a stand-in):
 So the beat works. What it is not is deterministic, and a take should be
 watched rather than assumed.
 
-### Verified red, and not by me
+### Verified red at this commit, and not by this work
+
+Measured, not inherited. `cargo test -p agent` now builds every target,
+which it did not before, so these are real readings rather than a list
+somebody handed on.
 
 - **`a_discovered_operation_reaches_the_file_explorer_too` fails.** The
   rename never reaches the explorer's shared buffer. Inherited untested
   and failing at this commit; the settle window above is provably a
   no-op for it (the page is seeded whole, so the instruction is neither
   empty nor moving). Cause not established.
+- **`relay_roundtrip`: 2 of 5 green**, from two causes and neither of
+  them timing.
+  - `the_agent_turns_bullets_into_a_table_on_the_peers_replica` builds
+    the right table -- the cell assertion above it passes -- and then
+    fails because the versions after the seed carry `quinten` as well as
+    `Scribe`. That is authorship being recorded in the document
+    (`ff30677af`), so the assertion is out of date rather than the code.
+  - Two others fail on a *fixture precondition*: they seed a change too
+    big to cross by writing a 146 KB blob, and `save_incremental` now
+    returns 333 bytes for it. The hole they mean to seed is no longer a
+    hole, so what they go on to assert is not being exercised. Worth
+    more than the red: this is a fixture that stopped meaning what it
+    says.
+- **`listens_in_chat`: 5 of 8 green**, the three red the same three
+  already recorded above. Worth noting that this number could not have
+  been measured recently -- the target did not compile.
 - **Four agent test targets had stopped building**, one of them for the
   same reason `2e5ef06ef` exists: `ChatDoc::seed_starter` lost the
   arguments that let a peer name itself. Fixed by having the *room* name
