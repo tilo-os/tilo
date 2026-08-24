@@ -99,7 +99,14 @@ impl PickerScope {
     /// already holds would make the portal incapable of granting
     /// anything new, which is the only thing it is for.
     pub fn for_user() -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        // `QOS_USER_HOME` first: a confined process's own `HOME` is its
+        // per-app directory, so reading `HOME` here scopes the picker —
+        // and the breadcrumb it draws — to a folder with none of the
+        // user's files in it. The override names the home this process
+        // was actually granted, which is both the correct reach and the
+        // one the screenshot harness pins away from the real account.
+        let home = ui::sysdirs::user_home_override()
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
         let mut roots: Vec<PathBuf> = Vec::new();
         if let Some(h) = home.as_ref().filter(|h| h.is_dir()) {
             roots.push(h.clone());

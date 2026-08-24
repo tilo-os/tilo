@@ -88,6 +88,14 @@ def stage(root: Path | None = None, *, fresh: bool = True) -> dict[str, str]:
 
     return {
         "HOME": str(root),
+        # The same directory under the name `ui::sysdirs` looks for.
+        # `HOME` alone is not the whole story: the surfaces that resolve
+        # through `QOS_USER_HOME` — the file chooser's scope, the
+        # palette's file provider — otherwise fall back to the process's
+        # own home, and `UserDirs::from_system` keeps reading the real
+        # account's `user-dirs.dirs`, which is how a localized folder set
+        # from the operator's machine ends up in an English frame.
+        "QOS_USER_HOME": str(root),
         "XDG_DATA_HOME": str(data_home),
         "XDG_CONFIG_HOME": str(root / ".config"),
         "XDG_CACHE_HOME": str(root / ".cache"),

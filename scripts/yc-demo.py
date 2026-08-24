@@ -449,6 +449,83 @@ def ok(resp: dict) -> dict:
     return resp
 
 
+#: The one language the film is shot in.
+#:
+#: Not a preference — a fact the frames depend on. Only some strings have
+#: a German catalogue, so a session that drifts off this does not come
+#: out German, it comes out *half* German: an English strip of tabs over
+#: a German toolbar, or one palette row reading "Notebook holen und
+#: öffnen — Opens beside · Office · von qOS main". That is what broken
+#: software looks like, and it is the kind of thing nobody spots until it
+#: is on camera.
+DEMO_LOCALE = "en_US.UTF-8"
+
+
+def pin_locale(env: dict) -> dict:
+    """Pin every variable that can choose a language, and prove it took.
+
+    A real qOS install has the OS set this and cannot drift. A session
+    nested on somebody's desktop inherits whatever they use, and the
+    machine filming this is German — so the harness pins it rather than
+    hoping.
+
+    Three readers, three different orders, which is why this sets more
+    than one variable: the shell and the word processor read `LC_ALL`,
+    `LANGUAGE`, `LANG` (`shell/src/shell/i18n.rs`,
+    `apps/word-processor/src/i18n.rs`), and `.desktop` name lookup reads
+    `LC_ALL`, `LC_MESSAGES`, `LANG`
+    (`crates/system/desktop-entry/src/locale.rs`). Pinning only the two
+    the apps read leaves app *names* free to come back in another
+    language.
+
+    `LANGUAGE` is removed rather than set: it outranks `LANG`, and it is
+    a colon-separated *list* rather than a locale, so there is no value
+    of it that means this locale and nothing else.
+    """
+    env["LC_ALL"] = DEMO_LOCALE
+    env["LANG"] = DEMO_LOCALE
+    env["LC_MESSAGES"] = DEMO_LOCALE
+    env.pop("LANGUAGE", None)
+    # Every remaining category, so `LC_TIME=de_DE` cannot put a German
+    # date on screen under an English shell either. This is what `LC_ALL`
+    # already means to a POSIX `setlocale`; making it explicit is what
+    # lets `assert_locale_pinned` be a blanket check rather than a list
+    # of the variables somebody remembered.
+    for var in [k for k in env if k.startswith("LC_")]:
+        env[var] = DEMO_LOCALE
+    return env
+
+
+def assert_locale_pinned(env: dict, where: str) -> None:
+    """Raise unless `env` starts a session in the language the film pins.
+
+    Called at the spawn itself rather than next to `pin_locale`, so that
+    it is checking what the process is actually handed rather than what
+    the line above it just wrote. Delete the `pin_locale` call, add a
+    spawn path that forgets it, or let something downstream put a
+    category back, and this is what fails — instead of a frame coming out
+    half German and nobody noticing until it is on camera. Nothing else
+    in this harness looks at a word on the screen: every assertion in
+    this file passed for the whole time the bug was live.
+
+    The check is every `LC_*` / `LANG*` in the environment, not a list of
+    the three readers known today, so a reader added later is covered
+    without anyone remembering to come back here.
+    """
+    leaked = sorted(
+        f"{k}={env[k]!r}"
+        for k in env
+        if (k.startswith("LC_") or k.startswith("LANG")) and env[k] != DEMO_LOCALE
+    )
+    if leaked:
+        raise RuntimeError(
+            f"refusing to start {where} under a locale the film has not "
+            "pinned: " + ", ".join(leaked) + f". Every LC_*/LANG* must be "
+            f"{DEMO_LOCALE!r} (LANGUAGE unset) — see pin_locale. A session "
+            "that drifts off this films in two languages at once."
+        )
+
+
 class Session:
     """One running compositor, addressed by its control socket."""
 
@@ -536,21 +613,11 @@ class Session:
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("QUICK_COLLAB_SOCK", None)
         env.pop("QUICK_COLLAB_CAPNP_SOCK", None)
-        # One language on screen. An app reads `LC_ALL`, then `LANGUAGE`,
-        # then `LANG` (`apps/word-processor/src/i18n.rs:88`), bwrap does
-        # not clear the environment, and the machine filming this is
-        # German — so the shell chrome said "Home" and "Word Processor"
-        # in English while the toolbar under it read "Neu / Tabelle /
-        # Stile / Schriftart". Two languages in one frame reads as broken
-        # software, and every assertion in this file passed while it did:
-        # nothing here looks at a word on the screen.
-        #
-        # A real qOS install has the OS set this and cannot drift; a
-        # session nested on somebody's desktop inherits whatever they
-        # use, so the harness pins it. `LANGUAGE` is dropped rather than
-        # set, because it outranks `LANG` and is a colon-separated list
-        # that would quietly win.
-        env.pop("LANGUAGE", None)
+        # One language on screen — see `pin_locale`, which is applied to
+        # the finished environment below rather than here, so that it
+        # validates what the compositor is actually handed. bwrap does
+        # not clear the environment, so whatever is left here is what the
+        # sandboxed apps inherit too.
         env.update(
             XDG_RUNTIME_DIR=self.runtime_dir,
             XDG_CONFIG_HOME=os.path.join(self.dir, "config"),
@@ -565,8 +632,6 @@ class Session:
             # identities nobody at this machine can administer, into
             # somebody's live desktop. `--out` is absolutised for the
             # same reason; this is the belt to that pair of braces.
-            LC_ALL="en_US.UTF-8",
-            LANG="en_US.UTF-8",
             QOS_STATE_PATH=os.path.join(self.dir, "config", "state.json"),
             QOS_USER_ID=self.user,
             QOS_PEER_KEY_PATH=os.path.join(self.dir, "keys", "peer-key"),
@@ -592,6 +657,17 @@ class Session:
                 "info,shell::selection=debug,file_explorer::drag=debug"),
             # A home of this session's own, staged with the demo's files.
             HOME=self.home,
+            # The same directory again, under the name `ui::sysdirs`
+            # looks for. `HOME` alone leaves two gaps. A surface that
+            # resolves through `QOS_USER_HOME` — the file chooser's
+            # scope, the palette's file provider — would otherwise fall
+            # back to `dirs::home_dir()`, and `UserDirs::from_system`
+            # would keep reading the *machine's* `user-dirs.dirs`, which
+            # is how a German desktop put `Bilder` and `Dokumente` beside
+            # an English `Documents` in the same frame. With the override
+            # set, the standard folders resolve underneath this home and
+            # nothing consults the real account's configuration.
+            QOS_USER_HOME=self.home,
             # The two stores an app launch cannot do without. The install
             # root is this session's; the runtime bundle is the machine's,
             # because every packaged app pins it and none of them ship it.
@@ -616,12 +692,21 @@ class Session:
         # than found on PATH so the run measures the binaries built for it.
         for var, path in self.tools.items():
             env[var] = path
+        # Last, on the finished environment: everything above may add to
+        # it. The matching check sits at the spawn itself.
+        pin_locale(env)
         os.makedirs(os.path.join(self.dir, "store-config"), exist_ok=True)
         os.makedirs(os.path.join(self.dir, "store-cache"), exist_ok=True)
         self._log = open(self.log_path, "w")
         argv = [self.binary, "--mode", "native", "--backend", "headless"]
         if self.peer_sync:
             argv.append("--enable-peer-sync")
+        # Every demo compositor is spawned from here — the windowed
+        # session the camera sees included, because its subclass overrides
+        # the spawn and not this. So this one line is the choke point at
+        # which "a demo session would start in the wrong language" stops
+        # being possible to do quietly.
+        assert_locale_pinned(env, f"the {self.name!r} session")
         self.proc = subprocess.Popen(
             argv,
             cwd=REPO, env=env, stdout=self._log, stderr=subprocess.STDOUT,

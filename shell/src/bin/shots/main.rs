@@ -435,6 +435,16 @@ Examples:\n\
 }
 
 fn main() {
+    // A home of the harness's own, before anything can read the real one.
+    //
+    // First statement in `main` for two reasons. It pins environment
+    // variables, which is only sound while this process is still
+    // single-threaded — the font warmup below spawns the first thread.
+    // And every home-reading surface downstream (Files, the palette's
+    // file provider, the portal's picker scope) resolves its root once,
+    // early, so a pin applied later would arrive after the answer.
+    driver::stage_demo_home();
+
     // One language on screen, and the same one every time.
     //
     // Every other surface that photographs this compositor pins its

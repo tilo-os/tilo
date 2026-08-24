@@ -1304,6 +1304,207 @@ pub fn key_press_event(key: Key) -> WindowEvent {
 }
 
 // =====================================================================
+// The demo home
+// =====================================================================
+
+/// The identity the harness renders as.
+///
+/// Deliberately not a plausible human name. These frames are reviewed,
+/// pasted into issues and shared, so the owner's name should read as
+/// obviously synthetic at a glance rather than being mistaken for a real
+/// account — which is exactly what went wrong when it was the operator's.
+pub const DEMO_USER: &str = "demo";
+
+/// The photograph the demo tree carries, by the name it wears on screen.
+/// Matches the demo rig's, so both rigs show the same furniture.
+pub const PHOTO_NAME: &str = "harbour.png";
+
+/// Where the staged home lives.
+///
+/// Under `/var/tmp` rather than the checkout: Files draws the directory
+/// it is showing component by component, and a home inside a worktree
+/// renders as `… › quickdesktop › .claude › worktrees › …`, which tells a
+/// viewer both that this is a harness and which tooling built it. Every
+/// component of this path reads as an ordinary machine's own.
+const DEMO_HOME: &str = "/var/tmp/qos/home/demo";
+
+/// Stage a demo home and point this process's home-reading surfaces at it.
+///
+/// `shots` renders the real shell with the real widgets: the Files app
+/// really lists a directory, and the palette's file provider really walks
+/// one. Unpinned, that directory is whoever ran the harness — which is
+/// how shots came back showing an operator's actual home, project folders
+/// and a German/English mix of XDG names included, and how typing three
+/// letters into the palette surfaced real private paths. Every one of
+/// those frames gets reviewed and shared.
+///
+/// Three variables, because the leak has three doors:
+///
+/// - `QOS_USER_HOME` is the load-bearing one. `ui::sysdirs` treats it as
+///   "the home this process was granted", and `UserDirs::under` then
+///   resolves the standard folders beneath it *without* consulting the
+///   real `user-dirs.dirs` — which is what keeps a localized `Bilder` /
+///   `Dokumente` pair from mixing into an otherwise English frame.
+/// - `HOME`, because `dirs::home_dir()` is still what a surface reads
+///   when it consults no override, and a clean shot should not depend on
+///   having found every last one of them.
+/// - `QOS_USER_ID`, because the person's *name* leaks separately from
+///   their files: `local_user_id()` falls back to the OS account name,
+///   and that is what wrote "granted by <account>" across the
+///   permissions panel and filled its Who dropdown.
+///
+/// An explicit `QOS_USER_HOME` already in the environment wins, so
+/// shooting a chosen tree on purpose stays possible — the same contract
+/// `QOS_SHOTS_LANG` offers for the locale.
+///
+/// Staging a file tree is not fabricating content: nothing here carries
+/// anyone's name, and the documents hold only the few lines written below.
+///
+/// # Panics
+///
+/// Exits rather than rendering against the real home if the tree cannot
+/// be staged. A harness that quietly falls back to `$HOME` on a failed
+/// `mkdir` is one whose privacy guarantee is invisible when it is not
+/// holding — the frames would look fine and be wrong.
+pub fn stage_demo_home() {
+    let pinned = std::env::var_os("QOS_USER_HOME").is_some_and(|v| !v.is_empty());
+    if !pinned {
+        let home = std::path::PathBuf::from(DEMO_HOME);
+        if let Err(e) = write_demo_home(&home) {
+            eprintln!(
+                "shots: could not stage the demo home at {}: {e}",
+                home.display()
+            );
+            eprintln!("shots: refusing to render against the real home");
+            std::process::exit(1);
+        }
+        // SAFETY: called from the top of `main`, before this process
+        // spawns a thread. The font/Vello warmup and the search
+        // provider's index walk both start later and only ever read
+        // these variables.
+        unsafe {
+            std::env::set_var("QOS_USER_HOME", &home);
+            std::env::set_var("HOME", &home);
+        }
+    }
+    if !std::env::var_os("QOS_USER_ID").is_some_and(|v| !v.is_empty()) {
+        // SAFETY: as above — still single-threaded here.
+        unsafe { std::env::set_var("QOS_USER_ID", DEMO_USER) };
+    }
+}
+
+/// Write the demo tree. Mirrors the demo rig's `stage_home` layout: the
+/// ordinary furniture of a home directory, so a frame of Files shows
+/// something a viewer believes and a drag beat has a row to pick up.
+fn write_demo_home(home: &std::path::Path) -> std::io::Result<()> {
+    for folder in ["Documents", "Downloads", "Pictures", "Projects"] {
+        std::fs::create_dir_all(home.join(folder))?;
+    }
+    std::fs::write(
+        home.join("Documents").join("Launch plan.md"),
+        "# Launch plan\n\n- Venue - The Hall\n- Date - 3 Sep\n",
+    )?;
+    std::fs::write(
+        home.join("Documents").join("Checklist.md"),
+        "# Checklist\n\n- Doors\n- Sound\n- Seating\n",
+    )?;
+    std::fs::write(home.join("Projects").join("README.md"), "# Projects\n")?;
+    // Written twice: in `Pictures`, where a person would look for it,
+    // and at the top of the home, which is the directory Files is
+    // showing when a drag beat starts.
+    let photo = harbour_png();
+    std::fs::write(home.join("Pictures").join(PHOTO_NAME), &photo)?;
+    std::fs::write(home.join(PHOTO_NAME), &photo)?;
+    Ok(())
+}
+
+/// A photograph — a sun over ridged hills, drawn pixel by pixel.
+///
+/// It has to read as a photograph at two sizes at once: as a thumbnail in
+/// a file row, where only the sky/land split and the sun survive, and
+/// opened in Photos, where a flat gradient would look obviously
+/// synthetic. So there is a horizon, a light source, ridges that pale
+/// with distance, and a little grain.
+///
+/// Generated rather than checked in, because a binary blob in the tree is
+/// one nobody can review.
+fn harbour_png() -> Vec<u8> {
+    const W: usize = 512;
+    const H: usize = 320;
+    let horizon = (H as f32 * 0.56) as usize;
+    let (sun_x, sun_y) = (W as f32 * 0.72, horizon as f32 * 0.42);
+    let sun_r = (H as f32 * 0.055).max(6.0);
+
+    // Each ridge: how far below the horizon its crest sits, its
+    // amplitude, its wavelength, a phase, and how dark it is. Front
+    // ridges are darker, which is what reads as distance.
+    let ridges: [(f32, f32, f32, f32, f32); 3] = [
+        (2.0, 7.0, 190.0, 0.6, 0.62),
+        (26.0, 11.0, 130.0, 2.1, 0.42),
+        (62.0, 16.0, 90.0, 4.0, 0.24),
+    ];
+
+    let mut rgb = vec![0u8; W * H * 3];
+    for y in 0..H {
+        for x in 0..W {
+            let (fx, fy) = (x as f32, y as f32);
+            let (mut r, mut g, mut b);
+            if y < horizon {
+                // Sky: deep blue up top warming towards the horizon.
+                let t = fy / horizon as f32;
+                r = 60.0 + 150.0 * t * t;
+                g = 96.0 + 120.0 * t;
+                b = 156.0 + 40.0 * t;
+                // The sun, plus the glow around it.
+                let d = ((fx - sun_x).powi(2) + (fy - sun_y).powi(2)).sqrt();
+                if d < sun_r {
+                    r = 255.0;
+                    g = 244.0;
+                    b = 214.0;
+                } else {
+                    let glow = (1.0 - (d - sun_r) / (sun_r * 6.0)).clamp(0.0, 1.0).powi(2);
+                    r += 150.0 * glow;
+                    g += 110.0 * glow;
+                    b += 40.0 * glow;
+                }
+            } else {
+                // Land: the frontmost ridge whose crest this pixel is below.
+                let mut shade = 0.72;
+                for (drop, amp, wave, phase, dark) in ridges {
+                    let crest = horizon as f32 + drop + amp * (fx / wave + phase).sin();
+                    if fy >= crest {
+                        shade = dark;
+                    }
+                }
+                r = 226.0 * shade;
+                g = 150.0 * shade + 26.0;
+                b = 110.0 * shade + 40.0;
+            }
+            // Grain, so flat areas are not suspiciously uniform. A cheap
+            // hash of the coordinates keeps the image byte-identical
+            // between runs, which a snapshot test relies on.
+            let n = ((x * 7919 + y * 104_729) % 17) as f32 - 8.0;
+            let i = (y * W + x) * 3;
+            rgb[i] = (r + n).clamp(0.0, 255.0) as u8;
+            rgb[i + 1] = (g + n).clamp(0.0, 255.0) as u8;
+            rgb[i + 2] = (b + n).clamp(0.0, 255.0) as u8;
+        }
+    }
+
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, W as u32, H as u32);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut writer = enc.write_header().expect("PNG header for an in-memory buffer");
+        writer
+            .write_image_data(&rgb)
+            .expect("PNG body for an in-memory buffer");
+    }
+    out
+}
+
+// =====================================================================
 // Tests
 // =====================================================================
 
@@ -1693,6 +1894,62 @@ mod tests {
             Some(files_tab_id),
             "Ctrl+K must scope to the tab in the CLICKED group; \
              expected files_tab_id={files_tab_id}, got {active_tab:?}"
+        );
+    }
+
+    /// The staged home carries the furniture the frames need.
+    ///
+    /// A home holding one folder called `Demo` is not a home anybody
+    /// believes, and the beats that browse Files, open the photograph and
+    /// search the palette each need something real to land on. Asserting
+    /// the tree here is what stops a staging change from emptying a shot
+    /// silently — an empty Files pane still renders, and still looks fine.
+    #[test]
+    fn the_staged_home_has_the_demo_furniture() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path();
+        write_demo_home(home).expect("the demo home stages");
+
+        for folder in ["Documents", "Downloads", "Pictures", "Projects"] {
+            assert!(
+                home.join(folder).is_dir(),
+                "the sidebar lists {folder}, so it has to exist"
+            );
+        }
+        for doc in ["Launch plan.md", "Checklist.md"] {
+            assert!(home.join("Documents").join(doc).is_file(), "missing {doc}");
+        }
+        // In `Pictures` where a person looks for it, and at the top of
+        // the home because that is the directory Files is showing when a
+        // drag beat starts.
+        assert!(home.join("Pictures").join(PHOTO_NAME).is_file());
+        assert!(home.join(PHOTO_NAME).is_file());
+    }
+
+    /// The photograph is a real, decodable image rather than a stub.
+    ///
+    /// Test fixtures in this tree have lied before — byte-stub "media"
+    /// files that every check passed and no decoder could open. Photos
+    /// opening this file is a beat, so decode it and look at it.
+    #[test]
+    fn the_photograph_is_a_real_png() {
+        let bytes = harbour_png();
+        let decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
+        let mut reader = decoder.read_info().expect("harbour.png must decode");
+        let mut buf = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buf).expect("a full frame");
+        assert_eq!((info.width, info.height), (512, 320));
+
+        // A flat fill would decode fine and read as broken software. The
+        // image has a sky, a horizon and a sun, so it must span a wide
+        // range of values rather than a handful.
+        let distinct: std::collections::HashSet<&[u8]> =
+            buf[..info.buffer_size()].chunks(3).collect();
+        assert!(
+            distinct.len() > 500,
+            "the photograph is nearly uniform ({} distinct colours) — it \
+             will read as a synthetic swatch at document size",
+            distinct.len()
         );
     }
 }

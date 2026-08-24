@@ -134,7 +134,17 @@ impl FilesProvider {
     /// Users who query before the walker finishes get whatever the
     /// tantivy content index knows so far.
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+        Self::rooted_at(search_root())
+    }
+
+    /// The provider rooted at an explicit directory.
+    ///
+    /// Every path a query can ever return is discovered by walking this
+    /// one root, so pinning it *bounds* the palette rather than merely
+    /// re-aiming it: no needle typed into the search field can surface a
+    /// path from outside the tree below `home`. The screenshot harness
+    /// pins it at a staged demo home for exactly that reason.
+    pub fn rooted_at(home: PathBuf) -> Self {
         let name_index: Arc<Mutex<NameIndex>> = Arc::new(Mutex::new(NameIndex::default()));
         {
             let name_index = Arc::clone(&name_index);
@@ -973,6 +983,32 @@ fn spawn_open(path: &Path, _is_dir: bool) {
 /// `~/tupo/epopy/epo-docs/openapi.yaml` is more likely to be what someone
 /// meant than anything eight levels down, which is the same judgement
 /// [`DEPTH_FREE`] encodes in the score.
+/// The directory the palette's file results are drawn from.
+///
+/// `QOS_USER_HOME` wins over this process's own `HOME`, and that order is
+/// not a preference. `dirs::home_dir()` answers with wherever the process
+/// happens to be rooted, which on a machine *screenshotting* or filming
+/// qOS is the operator's real home — and every file under it is then one
+/// three-letter needle away from the palette, on camera. The override
+/// (`ui::sysdirs::user_home_override`) is the deliberate hook that says
+/// "search *this* home instead"; the screenshot harness and the demo rig
+/// set it. Falling back to `/tmp` when neither resolves keeps the failure
+/// boring rather than surprising.
+fn search_root() -> PathBuf {
+    resolve_search_root(ui::sysdirs::user_home_override(), dirs::home_dir())
+}
+
+/// The precedence itself, with both inputs as parameters.
+///
+/// Split out so a test can pin them: mutating `HOME` inside a test binary
+/// that runs some 1600 tests in parallel is a race, not a fixture, and
+/// this is the rule worth asserting on.
+fn resolve_search_root(granted: Option<PathBuf>, process_home: Option<PathBuf>) -> PathBuf {
+    granted
+        .or(process_home)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
 fn walk_home(home: &Path, index: Arc<Mutex<NameIndex>>) {
     let entries = walk_breadth_first(home, MAX_ENTRIES);
     if let Ok(mut guard) = index.lock() {
@@ -1464,6 +1500,78 @@ mod tests {
                 entries.iter().map(|e| &e.display).collect::<Vec<_>>()
             );
         }
+    }
+
+    /// The palette cannot reach outside the home it was rooted at.
+    ///
+    /// This is the invariant the screenshot harness and the demo rig
+    /// both stand on: they pin a staged home, and what makes that a
+    /// guarantee rather than a redirection is that no entry the walk
+    /// produces can name a path outside it. Before the root was pinned
+    /// this provider walked `dirs::home_dir()`, and three letters typed
+    /// into the palette on camera surfaced real private paths.
+    ///
+    /// A symlink is the one way a walk rooted at `root` could still read
+    /// somebody's real files, so the fixture plants one deliberately.
+    #[test]
+    fn a_walk_cannot_escape_the_root() {
+        let outside = tempfile::tempdir().expect("tempdir");
+        std::fs::write(outside.path().join("private-secret.txt"), b"x").unwrap();
+        std::fs::create_dir_all(outside.path().join("private-tree")).unwrap();
+        std::fs::write(
+            outside.path().join("private-tree").join("secret.md"),
+            b"x",
+        )
+        .unwrap();
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let root = home.path();
+        std::fs::create_dir_all(root.join("Documents")).unwrap();
+        std::fs::write(root.join("Documents").join("Launch plan.md"), b"x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("escape-hatch")).unwrap();
+
+        let entries = walk_breadth_first(root, 500);
+        assert!(!entries.is_empty(), "the staged tree must produce entries");
+        for e in &entries {
+            assert!(
+                e.path.starts_with(root),
+                "the walk escaped its root: {} is outside {}",
+                e.path.display(),
+                root.display()
+            );
+            assert!(
+                e.display.starts_with("~/"),
+                "every entry must render relative to the pinned home, or a \
+                 real path is about to be drawn on screen; got {}",
+                e.display
+            );
+        }
+        assert!(
+            !entries.iter().any(|e| e.display.contains("secret")),
+            "a file outside the pinned home reached the index: {:?}",
+            entries.iter().map(|e| &e.display).collect::<Vec<_>>()
+        );
+    }
+
+    /// A granted home outranks the process's own.
+    ///
+    /// The precedence *is* the mechanism: `QOS_USER_HOME` is what the
+    /// screenshot harness and the demo rig set, and if the process's own
+    /// `HOME` won instead, both rigs would quietly index the machine
+    /// they run on while every frame still looked correct.
+    #[test]
+    fn the_granted_home_outranks_the_process_home() {
+        let granted = PathBuf::from("/var/tmp/qos/home/demo");
+        let real = PathBuf::from("/home/somebody");
+        assert_eq!(
+            resolve_search_root(Some(granted.clone()), Some(real.clone())),
+            granted,
+            "the granted home must win over the process's own"
+        );
+        // With no grant, the process's own home is still the right answer.
+        assert_eq!(resolve_search_root(None, Some(real.clone())), real);
+        // With neither, anything rather than a guess at a real home.
+        assert_eq!(resolve_search_root(None, None), PathBuf::from("/tmp"));
     }
 
     /// Build a provider whose name index is already populated, without
