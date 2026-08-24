@@ -33,7 +33,12 @@ fn now_secs() -> i64 {
 /// Build an envelope for `action` at the doc's current heads, without applying.
 /// Used by [`dispatch`] so a `ServerPreferred` action can be *submitted* before
 /// (or instead of) being applied locally.
-fn envelope_for(doc: &mut Doc, action: &dyn Action, encoded: EncodedAction) -> ActionEnvelope {
+fn envelope_for(
+    doc: &mut Doc,
+    action: &dyn Action,
+    encoded: EncodedAction,
+    actor: Option<&[u8]>,
+) -> ActionEnvelope {
     let base = doc.get_heads();
     ActionEnvelope {
         id: ActionId::new(),
@@ -41,6 +46,7 @@ fn envelope_for(doc: &mut Doc, action: &dyn Action, encoded: EncodedAction) -> A
         base_heads: base.iter().map(|h| h.0).collect(),
         timestamp: now_secs(),
         locus: action.locus(),
+        actor: actor.filter(|a| !a.is_empty()).map(|a| a.to_vec()),
     }
 }
 
@@ -138,7 +144,23 @@ pub fn apply_local(
     action: &dyn Action,
     encoded: EncodedAction,
 ) -> Result<ActionEnvelope, ActionError> {
-    let env = envelope_for(doc, action, encoded);
+    apply_local_by(doc, action, encoded, None)
+}
+
+/// [`apply_local`], attributing the change to `actor`.
+///
+/// The one thing an action authored by somebody other than the app needs: the
+/// resulting Automerge change commits under *their* actor, so the room's
+/// history names them the way it names a person who typed. Pass `None` for the
+/// app's own dispatch and the [`ActionId`]-derived actor is used, exactly as
+/// before.
+pub fn apply_local_by(
+    doc: &mut Doc,
+    action: &dyn Action,
+    encoded: EncodedAction,
+    actor: Option<&[u8]>,
+) -> Result<ActionEnvelope, ActionError> {
+    let env = envelope_for(doc, action, encoded, actor);
     apply_under_envelope(doc, action, &env)?;
     Ok(env)
 }
@@ -230,14 +252,30 @@ pub fn dispatch(
     encoded: EncodedAction,
     transport: &mut dyn ActionTransport,
 ) -> Result<Dispatched, ActionError> {
+    dispatch_by(doc, action, encoded, transport, None)
+}
+
+/// [`dispatch`], attributing the change to `actor`.
+///
+/// This is the path [`crate::door`] takes, and the reason attribution is a
+/// dispatch-level concern rather than something an app remembers to do: an
+/// action that arrives through the door carries who asked for it, and the
+/// executor is the only place that decides which actor a change commits under.
+pub fn dispatch_by(
+    doc: &mut Doc,
+    action: &dyn Action,
+    encoded: EncodedAction,
+    transport: &mut dyn ActionTransport,
+    actor: Option<&[u8]>,
+) -> Result<Dispatched, ActionError> {
     match action.locus() {
         ExecutionLocus::ClientLocal => {
-            let env = apply_local(doc, action, encoded)?;
+            let env = apply_local_by(doc, action, encoded, actor)?;
             transport.replicate(&env);
             Ok(Dispatched::AppliedLocal(env))
         }
         ExecutionLocus::ServerPreferred => {
-            let env = envelope_for(doc, action, encoded);
+            let env = envelope_for(doc, action, encoded, actor);
             match transport.submit_to_host(&env) {
                 HostDecision::AcceptedByHost => Ok(Dispatched::SubmittedToHost(env)),
                 HostDecision::NoHostFallbackLocal => {

@@ -29,6 +29,18 @@ pub struct ActionEnvelope {
     /// The action's declared execution locus, carried so the transport can
     /// honor it.
     pub locus: ExecutionLocus,
+    /// The participant that authored this action, when it was authored by
+    /// someone the app can name — a person, an agent, another session that
+    /// reached the app through [`crate::door`].
+    ///
+    /// These bytes become the Automerge actor the change commits under, so the
+    /// edit is attributed in history exactly like a person typing it. `None` is
+    /// the app's own dispatch, which keeps the [`ActionId`]-derived actor.
+    ///
+    /// Determinism is unaffected: a replaying replica reads the actor off the
+    /// envelope, so origin and peer still commit the byte-identical change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<Vec<u8>>,
 }
 
 impl ActionEnvelope {
@@ -37,8 +49,16 @@ impl ActionEnvelope {
         self.base_heads.iter().map(|b| ChangeHash(*b)).collect()
     }
 
-    /// The deterministic actor id derived from [`ActionId`].
+    /// The actor this action's change commits under.
+    ///
+    /// The authoring participant when the envelope names one, else the
+    /// deterministic actor derived from [`ActionId`]. Either way it is read off
+    /// the envelope, which is what keeps a replayed change identical to the
+    /// original: the replica never substitutes its own actor.
     pub fn actor(&self) -> ActorId {
-        ActorId::from(self.id.actor_bytes().to_vec())
+        match &self.actor {
+            Some(bytes) if !bytes.is_empty() => ActorId::from(bytes.clone()),
+            _ => ActorId::from(self.id.actor_bytes().to_vec()),
+        }
     }
 }

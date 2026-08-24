@@ -23,6 +23,15 @@
 //! resource exports [`ActionSpec`]s. The palette lists them; choosing one
 //! [`dispatch`](executor::dispatch)es the underlying action.
 //!
+//! ## The door
+//!
+//! An app's resource tree is only useful to the app that built it until someone
+//! else can reach it. [`door`] is that reach: [`door::survey`] turns a live tree
+//! into inert, stably-addressed descriptors, and [`door::invoke`] performs one
+//! of them **attributed to the caller**. It is how an agent, a script, or
+//! another person's session acts on an app without the app growing a bespoke
+//! remote-control surface of its own.
+//!
 //! ## Execution locus
 //!
 //! Each action declares an [`ExecutionLocus`]: `ClientLocal` (this client
@@ -32,15 +41,18 @@
 //! execution when no host answers.
 
 pub mod action;
+pub mod door;
 pub mod envelope;
 pub mod executor;
 pub mod registry;
 pub mod resource;
 
 pub use action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
+pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec};
 pub use envelope::ActionEnvelope;
 pub use executor::{
-    apply_local, dispatch, replay, ActionTransport, Dispatched, HostDecision, LocalTransport,
+    apply_local, apply_local_by, dispatch, dispatch_by, replay, ActionTransport, Dispatched,
+    HostDecision, LocalTransport,
 };
 pub use registry::ActionRegistry;
 pub use resource::{
