@@ -123,24 +123,15 @@ impl ApplicationsProvider {
             };
             let package_id = app.package_id.clone();
             let display_name = app.display_name.clone();
-            // The category, when the publisher declared one, is the more
-            // useful second line than the version: it tells you what kind
-            // of app the row will open.
             // Where the window will land leads the line. It is the one
             // part of a launch row that changes with context, and a user
             // who opened the palette from a specific group's "+" needs to
             // see that the pick honours that group before they commit.
-            let detail = match app.category.as_deref() {
-                Some(cat) => format!("{cat} · {}", app.package_id),
-                None => format!("{} · {}", app.package_id, app.version),
-            };
-            let subtitle = i18n::t_args(
-                "palette-app-subtitle",
-                &[
-                    i18n::arg("hint", open_target.result_hint()),
-                    i18n::arg("detail", detail.as_str()),
-                ],
-            );
+            //
+            // Then the category, when the publisher declared one, and
+            // nothing else. See `disambiguate_colliding_titles` for why
+            // the package id is not here.
+            let subtitle = launch_subtitle(open_target, app.category.as_deref());
             out.push(SearchResult::nullary_fallible(
                 kind.clone(),
                 self.id(),
@@ -210,17 +201,10 @@ impl ApplicationsProvider {
             // the palette elides a subtitle from the middle: the part
             // that says this is not a local app is the part that has to
             // survive a narrow window.
-            let detail = match app.category.as_deref() {
-                Some(cat) => format!("{cat} · {}", app.package_id),
-                None => format!("{} · {}", app.package_id, app.version),
-            };
-            let subtitle = i18n::t_args(
-                "palette-app-subtitle-remote",
-                &[
-                    i18n::arg("hint", open_target.result_hint()),
-                    i18n::arg("detail", detail.as_str()),
-                    i18n::arg("registry", app.registry.as_str()),
-                ],
+            let subtitle = remote_launch_subtitle(
+                open_target,
+                app.category.as_deref(),
+                app.registry.as_str(),
             );
             out.push(SearchResult {
                 kind: ResourceKind::Application,
@@ -627,7 +611,105 @@ impl SearchProvider for ApplicationsProvider {
             &installed_ids,
             ctx.chrome.open_target,
         ));
+        // Both lists are in hand, so a name that collides *across* them
+        // is caught too — which is the collision a user could least
+        // resolve on their own.
+        disambiguate_colliding_titles(&mut out);
         out
+    }
+}
+
+/// The second line of a launch row: where the window lands, then what
+/// kind of app it is, when the publisher said.
+///
+/// Deliberately short. Everything on this line is there because the
+/// person choosing needs it *before* they press Enter, and neither the
+/// version nor the package id passes that test — see
+/// [`disambiguate_colliding_titles`].
+fn launch_subtitle(open_target: OpenTarget, category: Option<&str>) -> String {
+    match category {
+        Some(cat) => i18n::t_args(
+            "palette-app-subtitle",
+            &[
+                i18n::arg("hint", open_target.result_hint()),
+                i18n::arg("detail", cat),
+            ],
+        ),
+        None => open_target.result_hint().to_string(),
+    }
+}
+
+/// [`launch_subtitle`] for a row whose app has to come over the network,
+/// which names the registry as well.
+///
+/// A publisher who declared no category leaves nothing to sit between
+/// the landing hint and the registry, so that row takes its own string
+/// rather than rendering an empty field between two separators.
+fn remote_launch_subtitle(
+    open_target: OpenTarget,
+    category: Option<&str>,
+    registry: &str,
+) -> String {
+    match category {
+        Some(cat) => i18n::t_args(
+            "palette-app-subtitle-remote",
+            &[
+                i18n::arg("hint", open_target.result_hint()),
+                i18n::arg("detail", cat),
+                i18n::arg("registry", registry),
+            ],
+        ),
+        None => i18n::t_args(
+            "palette-app-subtitle-remote-plain",
+            &[
+                i18n::arg("hint", open_target.result_hint()),
+                i18n::arg("registry", registry),
+            ],
+        ),
+    }
+}
+
+/// Append the package id to any rows whose titles are identical.
+///
+/// The id used to be on every row, unconditionally: `Open Photos` read
+/// `Opens beside · Graphics · dev.qos.photos`. That is a developer's
+/// name for the app printed under the user's name for it, and the
+/// argument for showing it — that the row should say what it will
+/// launch — only bites when two rows would otherwise be the same row.
+/// Answering it on every row spends the most-read line in the palette
+/// on a string nobody chooses an app by, and pushes the part that does
+/// distinguish one row from another towards the right edge.
+///
+/// So it is shown exactly when it decides something. Two apps called
+/// `Sheets` are told apart by their ids; one app called `Sheets` is
+/// told apart by nothing, because there is nothing to tell it apart
+/// from.
+///
+/// Runs across the installed and not-yet-installed rows together, since
+/// a collision between the two lists is precisely the case a user could
+/// not otherwise resolve.
+fn disambiguate_colliding_titles(rows: &mut [SearchResult]) {
+    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for r in rows.iter() {
+        *seen.entry(r.title.as_str()).or_insert(0) += 1;
+    }
+    let colliding: std::collections::HashSet<String> = seen
+        .into_iter()
+        .filter(|(_, n)| *n > 1)
+        .map(|(t, _)| t.to_string())
+        .collect();
+    if colliding.is_empty() {
+        return;
+    }
+    for r in rows.iter_mut() {
+        if !colliding.contains(&r.title) {
+            continue;
+        }
+        let id = r.id.clone();
+        r.subtitle = Some(match r.subtitle.take() {
+            Some(s) if !s.is_empty() => format!("{s} · {id}"),
+            _ => id,
+        });
     }
 }
 
@@ -721,6 +803,20 @@ mod tests {
         app_in(package_id, display_name, None)
     }
 
+    /// A launch row with the title / id / subtitle a collision test
+    /// needs, and an activation that does nothing.
+    fn row_titled(title: &str, id: &str, subtitle: &str) -> SearchResult {
+        SearchResult::nullary_fallible(
+            ResourceKind::Application,
+            "applications",
+            id.to_string(),
+            title.to_string(),
+            Some(subtitle.to_string()),
+            100,
+            |_doc, _root, _chrome: &Chrome| -> Result<(), ActionError> { Ok(()) },
+        )
+    }
+
     fn offered(package_id: &str, display_name: &str, category: Option<&str>) -> CatalogueApp {
         CatalogueApp {
             package_id: package_id.to_string(),
@@ -758,8 +854,10 @@ mod tests {
         assert_eq!(out[0].score, 100, "prefix match on the display name");
         assert_eq!(
             out[0].subtitle.as_deref(),
-            Some("Opens beside · dev.qos.hello · 0.1.0"),
-            "the row names the package it will launch"
+            Some("Opens beside"),
+            "with no category declared there is nothing to add: the version \
+             and the package id are developer names for the app, and this \
+             line is read by someone choosing between apps"
         );
     }
 
@@ -777,8 +875,50 @@ mod tests {
         assert_eq!(out[0].score, 20, "category ranks below name and id matches");
         assert_eq!(
             out[0].subtitle.as_deref(),
+            Some("Opens beside · Office"),
+            "a declared category is the more useful second line than the \
+             version or the package id"
+        );
+    }
+
+    /// The package id earns its place only when it decides something.
+    ///
+    /// It used to be on every row — `Open Photos` reading `Opens beside
+    /// · Graphics · dev.qos.photos` — which spends the most-read line in
+    /// the palette on a developer's name for the app printed under the
+    /// user's name for it. The argument for showing it is that the row
+    /// should say what it will launch, and that argument only bites when
+    /// two rows would otherwise read identically. So: shown then, and
+    /// not otherwise.
+    #[test]
+    fn the_package_id_appears_only_when_two_rows_would_read_the_same() {
+        let mut alone = vec![
+            row_titled("Open Sheets", "dev.qos.sheets", "Opens beside · Office"),
+            row_titled("Open Notes", "dev.qos.notes", "Opens beside · Office"),
+        ];
+        disambiguate_colliding_titles(&mut alone);
+        assert_eq!(
+            alone[0].subtitle.as_deref(),
+            Some("Opens beside · Office"),
+            "two differently-named apps are already told apart by their names"
+        );
+
+        let mut clash = vec![
+            row_titled("Open Sheets", "dev.qos.sheets", "Opens beside · Office"),
+            row_titled("Open Sheets", "com.other.sheets", "Opens beside · Office"),
+        ];
+        disambiguate_colliding_titles(&mut clash);
+        assert_eq!(
+            clash[0].subtitle.as_deref(),
             Some("Opens beside · Office · dev.qos.sheets"),
-            "a declared category is the more useful second line than the version"
+            "identical titles have to be separable, and the id is what \
+             separates them"
+        );
+        assert_eq!(
+            clash[1].subtitle.as_deref(),
+            Some("Opens beside · Office · com.other.sheets"),
+            "both sides of a collision are named, or the reader still \
+             cannot tell which is which"
         );
     }
 
