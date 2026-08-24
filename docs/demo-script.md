@@ -75,6 +75,37 @@ Not the main focus.
 
 ---
 
+## How it is shot
+
+These decisions outlived the structure they were written for. They were
+settled while the film was nine beats, and they are about how a viewer
+reads a cut rather than about which beats there are, so they still hold.
+
+**A caption names whose screen this is**, at the bottom of frame, on every
+segment: the person and their relationship to the room. Two machines
+running the same OS are otherwise indistinguishable across a cut. It is
+drawn into the recording, not added to the shell — a caption, not desktop
+chrome.
+
+**The agent has no cursor and no cut.** A mouse pointer is an instrument
+for pointing at something you are looking at, so giving one to an agent
+that never looks at a screen contradicts the claim this film exists to
+make. Its presence is a caret in the document at the moment it acts, and
+its arrival is a chip in the roster. There is no shot of its "view"
+because there is nothing to shoot — and that absence is the demonstration.
+The run asserts zero frames come from its session, and fails if any do.
+
+**Cut sparingly, and only where the cut proves something.** Beat 4 is on
+xaver's screen because the argument is that the instruction comes from
+somebody who owns none of this; beat 5 is on the owner's because the
+argument is that the result arrives where he is. An earlier version
+switched at nearly every step, and a viewer spends each of those
+re-orienting rather than watching.
+
+**The boot bumper ends where the desktop arrives**, not after it. The film
+opens on an empty desktop, so holding one first shows the same picture on
+both sides of a cut. See `boot-bumper-cut.md`.
+
 ## Standing constraints
 
 - **Strip legibility.** It must always be clear what part of the
