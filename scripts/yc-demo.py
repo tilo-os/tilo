@@ -1286,11 +1286,27 @@ class Session:
             # "image" once opened the Disk Imager, put it in the strip
             # beside the word processor and captioned it as the image
             # editor, and the only sign was on screen.
+            #
+            # `selected_id` is the row's id and the ids are *positional*
+            # (`result:0`), so it says which row rather than which app —
+            # comparing an app id against it directly is a check that can
+            # only ever fail, which is what it did. The row it names is
+            # what has to be looked at.
             selected = pal.get("selected_id")
-            if selected is not None and app_id not in json.dumps(selected):
+            chosen = next((r for r in rows if r.get("id") == selected), None)
+            if chosen is None and isinstance(selected, str):
+                m = re.fullmatch(r"\w+:(\d+)", selected)
+                if m and int(m.group(1)) < len(rows):
+                    chosen = rows[int(m.group(1))]
+            if chosen is None:
+                note(f"{self.name}: the palette says {selected!r} is "
+                     f"selected and no row answers to that, so which row "
+                     f"Enter takes could not be checked")
+            elif app_id not in json.dumps(chosen):
                 note(f"{self.name}: {search!r} offers {app_id} but has "
-                     f"{selected!r} selected, and Enter takes the "
-                     f"selection — refusing to open the wrong application")
+                     f"{chosen.get('label')!r} selected, and Enter takes "
+                     f"the selection — refusing to open the wrong "
+                     f"application")
                 self.key("Escape")
                 return None
             self.key("Enter")
@@ -4783,6 +4799,20 @@ def beat_three(quinten: Session, xaver: Session, agent: Session,
               join_room(xaver, token, via="panel", shots=shots, tag="03c"), True)
         claim("xaver's own state holds quinten's room",
               xaver.active_workspace()["room"], host_ws["room"])
+        # And admitted as an editor, which is a separate act from being
+        # let in. Redeeming a token puts somebody in the room; it does
+        # not decide what they may do there, and without this xaver
+        # holds no capability at all — the room's own list named
+        # quinten and the agent, and the beat that claims both guests
+        # are in it the same way failed on the guest who is a person.
+        #
+        # The same grant the agent's session gets below, so "admitted
+        # the same way" is something this run does rather than
+        # something it says.
+        admitted = quinten.grant(f"person:{xaver.user}", "workspace", "write")
+        claim("quinten admits xaver as an editor", "err" not in admitted, True)
+        if "err" in admitted:
+            note(json.dumps(admitted["err"])[:200])
 
     step("then Claude — admitted the same way, and marked as an agent")
     # The panel again, because raising the invite closed it: the card
@@ -5591,8 +5621,8 @@ def main() -> int:
 
     print(f"compositor:    {args.shell}")
     print(f"run directory: {args.out}")
-    print(f"apps:          {len(entries)} installed for xaver and the agent, "
-          f"{len(entries) - (1 if WORD_PROCESSOR in entries else 0)} for quinten")
+    print(f"apps:          {len(entries)} installed on each of the three "
+          f"machines")
     for var, path in sorted(tools.items()):
         print(f"  {var:20} {path}")
     for var in ("QOS_CATALOGUE_BIN", "QOS_INSTALL_BIN", "QOS_LAUNCHER_BIN"):
