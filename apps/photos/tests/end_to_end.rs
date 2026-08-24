@@ -659,3 +659,132 @@ fn the_colours_this_app_chooses_are_legible_in_every_theme() {
         );
     }
 }
+
+/// Every toolbar control must be reachable at every window size the app can
+/// be given.
+///
+/// The strip used to be seven fixed 120 px buttons, so it was always 912 px
+/// wide and simply overflowed anything narrower: at 720 px Copy was cut in
+/// half and Save was entirely off-screen, with no overflow affordance to
+/// reach it. `the_whole_photograph_is_inside_the_canvas_at_every_window_size`
+/// passed throughout, because the canvas was fine — it was the chrome above
+/// it that had escaped.
+///
+/// Two frames per size on purpose: the strip refits from the width the last
+/// layout measured, the same way the shared `ui::widget::Toolbar` recomputes
+/// from an extent its host passes in. `ui::App` redraws continuously, so the
+/// settled frame is the one anybody sees.
+#[test]
+fn every_toolbar_control_is_inside_the_window_at_every_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = staged(dir.path(), 1200, 800);
+
+    for (w, h) in [
+        (1600.0, 900.0),
+        (1280.0, 800.0),
+        (960.0, 700.0), // half of a 1920 display
+        (800.0, 600.0), // half of a 1600 display
+        (720.0, 560.0), // where Save used to vanish
+        (480.0, 640.0),
+        (360.0, 520.0),
+    ] {
+        let mut hz = Harness::new(w, h);
+        hz.app.open_path(&mut hz.state.doc, &path);
+        hz.frame();
+        hz.frame();
+
+        let window = hz.window_rect();
+        let items = hz.app.toolbar_item_rects();
+        assert_eq!(items.len(), 7, "{w}x{h}: the toolbar lost a control entirely");
+
+        for (name, r) in items {
+            assert!(
+                r.width() > 0.0 && r.height() > 0.0,
+                "{w}x{h}: `{name}` was squeezed to nothing: {r:?}"
+            );
+            assert!(
+                r.x0 >= window.x0 - 0.5 && r.x1 <= window.x1 + 0.5,
+                "{w}x{h}: `{name}` ({:.1}..{:.1}) is outside the window (0..{w}) \
+                 — it cannot be clicked",
+                r.x0,
+                r.x1
+            );
+        }
+    }
+}
+
+/// The per-character estimate `build_layout` sizes buttons with must be
+/// generous enough for the glyphs `draw` actually lays down.
+///
+/// `build_layout` gets a `Theme` but no `TextRenderer`, so it approximates a
+/// label's width at 7 px a character — the same constant the shared
+/// `ui::widget::Toolbar` uses. This measures the real shaped text against
+/// that estimate, so a label that outgrows it fails here rather than
+/// silently rendering clipped or overlapping its neighbour.
+#[test]
+fn toolbar_labels_fit_inside_the_buttons_they_are_sized_for() {
+    // Mirrors `Button::paint`: 14 px, Medium, an icon derived from the
+    // button height, and a 6 px gap between the two.
+    const TEXT_PX: f32 = 14.0;
+    const BTN_H: f32 = 34.0;
+    const ICON_W: f32 = BTN_H - 14.0;
+    const ICON_GAP: f32 = 6.0;
+    const LABEL_PAD_X: f32 = 12.0;
+
+    photos::strings::install();
+    let mut text = TextRenderer::new();
+
+    for key in ["photos-open", "photos-copy", "photos-save"] {
+        let label = ui::i18n::I18nManager::lookup(key, None);
+        let (measured, _) =
+            text.measure_weighted(&label, TEXT_PX, None, ui::text_render::TextWeight::Medium);
+        let estimated = label.chars().count() as f32 * photos::app::APPROX_CHAR_W;
+        let budget = LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + estimated;
+        let needed = LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + measured as f32;
+        println!(
+            "{label}: {} chars, shaped {measured:.1} px ({:.2} px/char), budget {estimated:.1} px",
+            label.chars().count(),
+            measured as f32 / label.chars().count() as f32,
+        );
+        assert!(
+            needed <= budget,
+            "`{label}` shapes to {measured:.1} px but is budgeted {estimated:.1} px \
+             ({needed:.1} px needed in a {budget:.1} px button)"
+        );
+    }
+}
+
+/// With nothing open there is no status line, so no band is reserved for one.
+///
+/// A zero-height strip is the point: the app used to keep a 29 px plate and a
+/// rule under the empty state with not one glyph in it, which reads as a
+/// control that failed to draw rather than as one with nothing to say.
+#[test]
+fn an_empty_app_reserves_no_status_band() {
+    let mut hz = Harness::new(1000.0, 700.0);
+    hz.frame();
+
+    assert!(!hz.app.has_image(), "nothing should be open");
+    assert_eq!(
+        hz.app.status(),
+        "",
+        "an app with no photograph open has nothing to report"
+    );
+    assert_eq!(
+        hz.app.status_rect().height(),
+        0.0,
+        "an empty status line still reserved a band: {:?}",
+        hz.app.status_rect()
+    );
+
+    // And once a photograph is open the band comes back with text in it.
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = staged(dir.path(), 200, 150);
+    hz.app.open_path(&mut hz.state.doc, &path);
+    hz.frame();
+    assert!(
+        hz.app.status_rect().height() > 0.0,
+        "an open photograph must get a status line"
+    );
+    assert!(hz.app.status().contains("200"), "got `{}`", hz.app.status());
+}
