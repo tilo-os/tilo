@@ -60,6 +60,21 @@ use vello::kurbo::Rect;
 
 use crate::shell::search::action_api::ArgValue;
 
+/// Which pointer button a [`Command::PointerButton`] means.
+///
+/// Spelled out rather than passed as a number: `3` is the right button in
+/// X11's numbering, `BTN_RIGHT` is `0x111` in evdev's, and winit calls it
+/// `MouseButton::Right`. A harness should not have to know which of those
+/// this end speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PointerButtonKind {
+    #[default]
+    Left,
+    Right,
+    Middle,
+}
+
 /// Top-level command envelope. Tag is `op`; remaining fields are
 /// per-variant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -230,8 +245,18 @@ pub enum Command {
     /// right, over two clients, and cannot check afterwards. Drives the
     /// same `GroupRow` splice the drag commits.
     MergeTabIntoGroup { surface_id: u64, into_surface_id: u64 },
-    /// Press or release the left pointer button at the current position.
-    PointerButton { pressed: bool },
+    /// Press or release a pointer button at the current position.
+    ///
+    /// `button` defaults to the left one, so every existing caller keeps
+    /// working unchanged. The right button exists because a context menu
+    /// is opened with it, and a harness that cannot press it cannot drive
+    /// the gesture this desktop hangs a good deal on -- select a thing,
+    /// right-click, say something about it.
+    PointerButton {
+        pressed: bool,
+        #[serde(default)]
+        button: PointerButtonKind,
+    },
     /// Copy `text` from **in-process chrome**, through the same
     /// `ui::text_selection::clipboard_copy` every hosted widget calls.
     ///
@@ -595,6 +620,16 @@ pub enum PlannedAction {
     /// Inject a left mouse button event. `pressed=true` is button-down,
     /// `false` is button-up.
     MouseLeftButton { pressed: bool },
+    /// Press or release a pointer button that is not the left one.
+    ///
+    /// Kept separate from [`Self::MouseLeftButton`] rather than folded
+    /// into it: the left button is planned from a dozen call sites here
+    /// and in `native.rs`, and widening all of them to carry a value they
+    /// would every one of them pass as `Left` is churn that buys nothing.
+    MousePointerButton {
+        pressed: bool,
+        button: PointerButtonKind,
+    },
     /// Inject a keyboard press or release for `key`. The transport
     /// translates `KeyTag` to `winit::keyboard::Key` and synthesises
     /// a `WindowEvent::KeyboardInput`.
@@ -1095,9 +1130,17 @@ pub fn dispatch_command<S: ControlState>(
                 into_surface_id: *into_surface_id,
             }],
         ),
-        Command::PointerButton { pressed } => (
+        Command::PointerButton { pressed, button } => (
             Response::Ok { frame: 0 },
-            vec![PlannedAction::MouseLeftButton { pressed: *pressed }],
+            vec![match button {
+                PointerButtonKind::Left => {
+                    PlannedAction::MouseLeftButton { pressed: *pressed }
+                }
+                other => PlannedAction::MousePointerButton {
+                    pressed: *pressed,
+                    button: *other,
+                },
+            }],
         ),
         // Both clipboard ops call straight into `ui`, exactly as a hosted
         // widget does, rather than reaching into the compositor's mirror
