@@ -5023,47 +5023,60 @@ def beat_five(xaver: Session, agent: Session, host_ws: dict,
     read_hold(READ_HOLD_S * 2.0)
     xaver.snapshot(os.path.join(shots, "05b-crossing.png"))
 
-    step("read back off xaver's own word processor — a session that made "
-         "none of this")
-    # Asked of the app running on his machine, which did not perform the
-    # crop, did not open the editor and did not send the instruction. A
-    # claim read out of the session that made the change proves that
-    # session agrees with itself; this one is the room agreeing.
-    # The photograph as it sits in his home, so the check that the
-    # document is *not* carrying raw image bytes has something real to
-    # look for. Its first bytes are the PNG signature and the IHDR the
-    # agent cropped, so a document that embedded the original would be
-    # caught here; one that embedded the *cropped* bytes would not, and
-    # the positive claim below rests on the reference rather than on
-    # this guard.
-    try:
-        with open(os.path.join(xaver.home, PHOTO_NAME), "rb") as fh:
-            original = fh.read()
-    except OSError as e:
-        gap(f"the photograph could not be read back off xaver's home, so "
-            f"the document check has nothing to compare against: {e}")
-        return
-    try:
-        carried, size_bytes = image_is_in_the_document(
-            xaver, room, original, timeout=DOC_SYNC_TIMEOUT_S)
-    except CannotDecode as e:
-        gap(f"the document could not be read, so whether the picture "
-            f"landed in it is unknown rather than false: {e}")
-        return
-    claim("the photograph is in the document on his machine", carried, True)
-    if carried:
-        note(f"the document carries a {AGENT_IMAGE_PROOF} reference; "
-             f"{size_bytes}B of document reached this session, and the "
-             f"bytes themselves live in the content store beside it "
-             f"rather than in the change")
-    else:
-        gap("the word processor on xaver's machine holds no image "
-            "reference, so the picture did not cross into the document "
-            "even if something appeared on screen")
+    # The picture, in the document, on his screen. The last frame of the
+    # film, and it is taken *before* the readback below rather than
+    # after: reading the document attaches a late joiner to his broker,
+    # and a collaborator arriving is something a viewer can see — a
+    # phantom participant appearing in the last shot, put there by the
+    # rig checking its own work.
     frame_one_window(xaver, WORD_PROCESSOR)
     read_hold(READ_HOLD_S * 2.0)
     xaver.snapshot(os.path.join(shots, "05c-in-the-document.png"))
     note("the video is finished after this")
+
+    with off_camera("the document itself, asked of the app holding it — a "
+                    "late joiner attaches to do it, and an extra "
+                    "collaborator arriving is a thing on screen the film "
+                    "did not do"):
+        step("read back off xaver's own word processor — a session that "
+             "made none of this")
+        # Asked of the app running on his machine, which did not perform
+        # the crop, did not open the editor and did not send the
+        # instruction. A claim read out of the session that made a change
+        # proves that session agrees with itself; this one is the room
+        # agreeing.
+        #
+        # The photograph as it sits in his home gives the negative half
+        # something real to look for. Its first bytes are the PNG
+        # signature and the IHDR the agent cropped, so a document that
+        # embedded the *original* is caught; one that embedded the
+        # cropped bytes is not, and the positive claim rests on the
+        # reference rather than on this guard.
+        try:
+            with open(os.path.join(xaver.home, PHOTO_NAME), "rb") as fh:
+                original = fh.read()
+        except OSError as e:
+            gap(f"the photograph could not be read back off xaver's home, "
+                f"so the document check has nothing to compare against: {e}")
+            return
+        try:
+            carried, size_bytes = image_is_in_the_document(
+                xaver, room, original, timeout=DOC_SYNC_TIMEOUT_S)
+        except CannotDecode as e:
+            gap(f"the document could not be read, so whether the picture "
+                f"landed in it is unknown rather than false: {e}")
+            return
+        claim("the photograph is in the document on his machine", carried,
+              True)
+        if carried:
+            note(f"the document carries a {AGENT_IMAGE_PROOF} reference; "
+                 f"{size_bytes}B of document reached this session, and the "
+                 f"bytes themselves live in the content store beside it "
+                 f"rather than in the change")
+        else:
+            gap("the word processor on xaver's machine holds no image "
+                "reference, so the picture did not cross into the document "
+                "even if something appeared on screen")
 
 
 def expected_listing(home: str) -> list[str]:
