@@ -4916,6 +4916,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
 
+        // And a request for the surface itself, when the session draws it.
+        // Beside the drain above rather than at the gesture for the same
+        // reason: the widget that made the request cannot reach the transport
+        // it has to leave on.
+        if app.pump_remark_requests() {
+            window.request_redraw();
+        }
+
         if let Some(before) = app.root_widget.take_committed_action() {
             if app.state.doc.get_heads() != before {
                 app.state.record_committed_action(before, None, None);
