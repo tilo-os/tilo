@@ -3367,6 +3367,31 @@ impl AppHandler {
         ))
         .map_err(|e| format!("could not create a drawing surface: {e}"))?;
         let device_handle = &render_cx.devices[surface.dev_id];
+        // Which GPU this app is drawing on, recorded once at startup.
+        //
+        // The launcher pins each app to the compositor's render node — it
+        // hides every other node behind a tmpfs over `/dev/dri` and points
+        // `VK_DRIVER_FILES` / `__EGL_VENDOR_LIBRARY_FILENAMES` at that
+        // driver's manifests — and it logs the node it chose. Nothing
+        // recorded the *other* end of that: which adapter wgpu then
+        // selected. Without it, "the app picked the wrong GPU" can only be
+        // argued from inference, and a surface error whose text mentions an
+        // adapter (see `render_thread::configure_surface_checked`) reads
+        // like confirmation of exactly that.
+        //
+        // vello asks for an adapter that can present to this surface, so a
+        // mismatch cannot get this far; this line is what makes that
+        // checkable rather than assumed.
+        let adapter_info = device_handle.adapter().get_info();
+        tracing::info!(
+            backend = ?adapter_info.backend,
+            adapter = %adapter_info.name,
+            device_type = ?adapter_info.device_type,
+            driver = %adapter_info.driver,
+            driver_info = %adapter_info.driver_info,
+            pci = %adapter_info.device_pci_bus_id,
+            "drawing on this adapter",
+        );
         // vello 0.9's `create_surface` builds the blitter pipeline against
         // the format it chose; flipping to the sRGB suffix here would
         // panic on the format mismatch in the first blit.
@@ -3741,13 +3766,27 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // re-request a redraw after this one so the user
                 // doesn't see a stale image.
                 let mut needs_followup_redraw = false;
+                let mut surface_gone = false;
                 while let Ok(outcome) = render.frame_complete.try_recv() {
                     match outcome {
                         FrameOutcome::Presented => {}
                         FrameOutcome::Reconfigured | FrameOutcome::Skipped => {
                             needs_followup_redraw = true;
                         }
+                        FrameOutcome::SurfaceGone => {
+                            surface_gone = true;
+                        }
                     }
+                }
+                if surface_gone {
+                    // There is nothing left to draw on — normally because
+                    // the compositor hosting this window exited. Leave the
+                    // way any other close does, so the session teardown
+                    // that is already under way finishes normally instead
+                    // of the process aborting mid-frame.
+                    tracing::info!("drawing surface is gone; closing the window");
+                    event_loop.exit();
+                    return;
                 }
 
                 // Pull a recycled Scene buffer from the worker's
