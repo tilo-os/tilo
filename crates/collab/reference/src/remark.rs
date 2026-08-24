@@ -234,7 +234,7 @@ mod tests {
             "word_processor.block",
             "word-processor.block:blk_7",
             "¶3 of Run sheet",
-            Span::new(12, 41),
+            Span::chars(12, 41),
         )
     }
 
@@ -259,7 +259,7 @@ mod tests {
         // The address — as an id, not a rendering.
         assert_eq!(got.reference.resource_id().as_str(), "word-processor.block:blk_7");
         assert_eq!(got.reference.kind, "word_processor.block");
-        assert_eq!(got.reference.span, Some(Span::new(12, 41)));
+        assert_eq!(got.reference.span, Some(Span::chars(12, 41)));
         // The body, verbatim and free of any encoded address.
         assert_eq!(got.text, "the times contradict the prose");
         assert!(
