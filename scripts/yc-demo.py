@@ -4774,6 +4774,16 @@ def beat_three(quinten: Session, xaver: Session, agent: Session,
               xaver.active_workspace()["room"], host_ws["room"])
 
     step("then Claude — admitted the same way, and marked as an agent")
+    # The panel again, because raising the invite closed it: the card
+    # carries the question and then the token, and a menu over that is a
+    # menu over the thing the click was for. Re-opening it is also the
+    # honest picture of the second invitation — the same panel, now with
+    # xaver in it, and one more name going in the same way.
+    via = show_collaborators(quinten)
+    note(f"opened from {via} — and xaver is in it now")
+    claim("the collaborators panel is up again",
+          quinten.overlays()["collaborators"], True)
+    quinten.snapshot(os.path.join(shots, "03c2-collaborators-xaver.png"))
     token = invite_from_the_panel(quinten, agent.user, shots, "03d")
     claim("quinten raised a second invite from the same panel", bool(token),
           True)
