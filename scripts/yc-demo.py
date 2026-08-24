@@ -235,11 +235,11 @@ BEAT_TWO_TITLE = {
 # that would make the path stop mattering.
 HOMES_ROOT = "/var/tmp/qos/home"
 
-# The photograph beat 8 drags into the document, by the name it wears on
+# The photograph xaver right-clicks in beat 4, by the name it wears on
 # screen. Named once because four places have to agree about it: the
 # staging that writes it, the assertion that it is there, the row the
-# press has to land on, and the chip the compositor paints at the cursor
-# while it crosses — that last one reads the name out of the `text/uri-list`
+# press has to land on, and the compose surface that opens over it —
+# that last one carries the file's *address*, read out of the app's own
 # the source app is offering, so what is on camera is the file's real name
 # rather than anything this script told it to say.
 PHOTO_NAME = "harbour.png"
@@ -256,19 +256,41 @@ LIVE_APPS = os.path.join(TARGET, "qos-apps-live")
 # peer: it is a subject in the permission model, and the grant is scoped
 # to one app rather than to the workspace.
 AGENT_SUBJECT = "agent:claude"
-#: Every app the agent is given leave to work in, as separate grants.
+#: Every app the agent is given leave to act in, by the resource
+#: namespace its ids start with (`apps/agent/src/surface.rs`).
 #:
-#: Two, because the film asks for two: it is handed a photograph and told
-#: to square it and put it in the open document, which is an operation in
-#: the image editor and an operation in the word processor. Leave to work
-#: in an app is also leave to open it, so `photos` covers both opening the
-#: editor and cropping in it.
+#: Three, and they are not interchangeable. Two are the windows it
+#: touches on camera: it is handed a photograph and told to square it
+#: and put it in the open document, which is an operation in the image
+#: editor and an operation in the word processor. Leave to work in an
+#: app is also leave to *open* it, so `photos` covers both bringing the
+#: editor into the room and cropping in it.
+#:
+#: The third is the channel it was spoken to in. The instruction reaches
+#: it as a message in the room's conversation, and every summons is
+#: answered in the channel it came from — including the ones it
+#: declines, because somebody who mentions an agent and sees nothing
+#: cannot tell refusal from a crash from never having been heard. An
+#: agent that could read the room but not answer in it would be the
+#: silent case by construction.
 #:
 #: Separate grants rather than one broad one, because that is the claim.
 #: A grant names an application, not the workspace, so an agent handed a
-#: photograph to crop cannot thereby start anything it likes -- and the
-#: two entries here are exactly the two windows it touches on camera.
-AGENT_SCOPES = [f"app:{WORD_PROCESSOR}", f"app:{IMAGE_EDITOR}"]
+#: photograph to crop cannot thereby start anything it likes.
+#:
+#: One list, used twice: quinten grants these in beat 3 and the agent
+#: process runs with exactly them in beat 5. Two lists would let the
+#: film claim a boundary the run did not actually impose.
+AGENT_NAMESPACES = ("word-processor", "photos", "chat")
+
+#: The same three, as the scopes the shell's authority gate is asked
+#: about. `Scope::App` takes the package id rather than the namespace.
+AGENT_SCOPE_APPS = {
+    "word-processor": WORD_PROCESSOR,
+    "photos": IMAGE_EDITOR,
+    "chat": CHAT_APP,
+}
+AGENT_SCOPES = [f"app:{AGENT_SCOPE_APPS[ns]}" for ns in AGENT_NAMESPACES]
 
 # How fast a person types, on camera.
 #
@@ -545,7 +567,7 @@ class Session:
     """One running compositor, addressed by its control socket."""
 
     #: Whether this session gossips its presence to peers on the network.
-    #: On for the nine-beat film, whose whole subject is other people;
+    #: On for this film, whose whole subject is other people;
     #: worth turning off for a single-session take, because mdns finds
     #: every other qOS session on the machine — another agent's harness,
     #: a demo somebody left running — and paints a cursor and a name pill
@@ -2972,8 +2994,8 @@ def frame_windows(s: Session, subjects: list,
     not only once before filming: `set_group_widths` walks the groups
     that exist when it is called, so a share settled on an empty desktop
     governs nothing opened afterwards, and a group opened by a route
-    that does not go through `Session.launch` — beat 5 fetches its app
-    through the palette and installs it — takes the launch default of
+    that does not go through `Session.launch` — a peer window opens its
+    app on the far side itself — takes the launch default of
     `WIDTH_NORMAL_PERMILLE`, two thirds. Measured: two thirds of a
     1596px usable strip is 1065px, which put a second window's right
     edge 247px past a 1920px frame, printed underneath a claim that both
@@ -4136,8 +4158,8 @@ def a_real_png(width: int = 512, height: int = 320) -> bytes:
 
     Generated rather than embedded because a checked-in JPEG is a binary
     blob nobody can review, and because the demo wants a payload whose
-    size it chose: the whole point of beat 8 is that ~98 KB of image
-    crosses into the document where a keystroke moves ~100 bytes, and
+    size it chose: an image of ~98 KB crosses into the document where a
+    keystroke moves ~100 bytes, and
     that number should come from this function rather than from whatever
     file somebody happened to drop in the tree.
     """
@@ -4248,7 +4270,7 @@ def stage_home(path: str) -> str:
     home anybody believes, and it gives a drag beat nothing to pick up.
     The tree below is the ordinary furniture of a home directory — the
     XDG folders the sidebar already lists, a couple of documents, and
-    the photograph beat 8 drags in.
+    the photograph beat 4 is about.
 
     Staging a *file tree* is not the same as fabricating content: there
     is no invented correspondence here and nobody's name on anything.
@@ -4256,14 +4278,14 @@ def stage_home(path: str) -> str:
     """
     for folder in ("Documents", "Downloads", "Pictures", "Projects"):
         os.makedirs(os.path.join(path, folder), exist_ok=True)
-    # The photograph beat 8 drags into the document, written twice.
+    # The photograph beat 4 is about, written twice.
     #
     # In `Pictures`, because that is where it belongs and where a person
     # would look for it — and at the top of the home, because that is
-    # the directory Files is *showing* when the beat starts, and a drag
-    # can only pick up a row that is on screen. Navigating there first
-    # would be two more client-aimed clicks before the gesture the beat
-    # is actually about, each of which can miss.
+    # the directory Files is *showing* when the beat starts, and a
+    # right-click can only land on a row that is on screen. Navigating
+    # there first would be two more client-aimed clicks before the
+    # gesture the beat is actually about, each of which can miss.
     #
     # Both are the same bytes, so whichever is dragged produces the same
     # payload and the same document delta.
@@ -4286,9 +4308,9 @@ class Registry:
 
     The `serve-test-registry` example packs a real binary into a real
     package, signs it, and writes the `registries.toml` the catalogue
-    reads — so the fetch in beat 5 verifies an ed25519 signature and a
-    BLAKE3 digest for real. Absent binaries are a supported state: the
-    beat says the fetch could not be filmed and the film goes on.
+    reads — so a fetch through the palette verifies an ed25519 signature
+    and a BLAKE3 digest for real. Nothing in the five-beat film fetches
+    an application, so absent binaries cost this run nothing.
     """
 
     def __init__(self, example_bin: str, payload: str, config_dir: str,
@@ -4428,25 +4450,27 @@ def agent_binary() -> str | None:
 
 def run_the_agent(agent: Session, room: str, shots: str,
                   timeout: float = 120.0) -> bool | None:
-    """Let the agent join the document and carry out one instruction.
+    """Let the agent join the room and carry out one instruction.
 
     It connects to its own session's broker, which is how its edits
     reach the other two: the same libp2p republish every peer's edits
     take.
 
-    It runs **with** the model. `--no-model` was passed until today, on
-    the reasoning that a keyword table keeps a film reproducible — but
-    the model was only ever a four-way classifier choosing between
-    table, caption, heading and none, with every character computed
-    locally, so a live run and an offline one produced byte-identical
-    documents. What it now drafts is the content, and the difference is
-    the beat: it decides which lines are scheduled items, orders them,
-    and says when they contradict the prose above them.
+    It joins the **room** rather than one application, and that is what
+    the film's instruction requires. One sentence covers two apps —
+    square the photograph, put it in the open document — so the agent
+    has to hold the conversation it was addressed in, the image editor
+    it opens, and the word processor it writes to, at the same time. An
+    `--app` that names one of them narrows the broker's fan-out to that
+    one, and the other two clauses then resolve against nothing.
 
-    The keyword fallback remains and knows `table`, `caption` and
-    `heading` — not `run sheet`. If the model is unreachable it answers
-    on the page saying it cannot do what was asked, which is honest and
-    is not the beat.
+    It runs **with** the model, because the instruction is not a
+    keyword. `Recipe::from_keywords` knows `table`, `caption` and
+    `heading`; it does not know that "make square" is a crop with a
+    centred unit rectangle, nor that "put in open document" is a
+    placement whose subject is whatever the crop just produced. If the
+    model is unreachable the agent says on the page that it cannot do
+    what was asked, which is honest, and is not the beat.
 
     Returns None when the binary is not built, so a caller can say that
     rather than report a failure it did not observe.
@@ -4456,26 +4480,37 @@ def run_the_agent(agent: Session, room: str, shots: str,
         return None
     log_path = os.path.join(shots, "agent.log")
     with open(log_path, "w") as log:
-        # `--app` is named rather than left to its default, because the
-        # default is the whole reason this beat once filmed a file
-        # manager: with no address to narrow on, the broker's fan-out is
-        # room-wide, the agent is offered every document open in the room
-        # and takes whichever arrives first — and in one run that was the
-        # file explorer's, whose actor id (`files-2`) then refused to
-        # merge with the word processor's when that finally turned up.
+        # `--app ""` joins the room rather than one app. The broker
+        # narrows its fan-out to an application only when both ends name
+        # one, so a connection announcing nothing is handed every app's
+        # state — which is exactly what an instruction spanning two of
+        # them needs.
         #
-        # `--record` is the other half of that address and is deliberately
-        # *not* passed: it names the file a document was opened from, and
-        # this document has no file. It is the untitled document the app
-        # created when beat 5 launched it, so its record is empty, and
-        # `--record ""` would be a different address from "no record"
-        # rather than the same one. Staging a file to open instead would
-        # give this something to name — it needs a way to launch a
-        # packaged app *on* a path, which the applications action does
-        # not expose today.
+        # This used to name the word processor, for a real reason: with
+        # no address to narrow on the agent was offered every document
+        # open in the room and took whichever arrived first, and in one
+        # run that was the file explorer's, whose actor id then refused
+        # to merge with the word processor's. What makes the room safe
+        # to join now is that the subject is carried rather than
+        # inferred — the compose surface sends the photograph's address
+        # with the sentence, so the agent is not guessing which of the
+        # documents on offer was meant.
+        #
+        # `--record` is deliberately *not* passed: it names the file a
+        # document was opened from, and this document has none. It is
+        # the untitled document the word processor created when beat 2
+        # launched it, so its record is empty, and `--record ""` would
+        # be a different address from "no record" rather than the same
+        # one.
+        #
+        # The grants are the list quinten granted on camera in beat 3,
+        # not a second one written here — see `AGENT_NAMESPACES`.
+        grants: list[str] = []
+        for namespace in AGENT_NAMESPACES:
+            grants += ["--grant", namespace]
         proc = subprocess.Popen(
             [binary, "--workspace", str(room), "--name", "Claude",
-             "--app", WORD_PROCESSOR,
+             "--app", "", *grants,
              "--socket", agent.collab_json_sock, "--once",
              "--pace-ms", "250"],
             stdout=log, stderr=subprocess.STDOUT, cwd=REPO,
@@ -5351,10 +5386,15 @@ def main() -> int:
     for short, name in zip("qxa", ("quinten", "xaver", "Claude")):
         run_dir = os.path.join(args.out, name)
         apps_dir = os.path.join(run_dir, "qos-apps")
-        # Quinten is the machine that does not have it yet. Everyone
-        # else does, so xaver can open his own copy in beat 7.
-        compose_registry(apps_dir, entries,
-                         drop=(WORD_PROCESSOR,) if name == "quinten" else ())
+        # Every machine holds every app. Quinten's used to be missing
+        # the word processor so a beat could film it being fetched, and
+        # the five-beat film has no such beat — which mattered rather
+        # than merely going unused: beat 2 opens the word processor
+        # through the palette, so on a machine without it that open
+        # would silently become a fetch, and one of three supposedly
+        # identical gestures would take ten seconds longer than the
+        # others for a reason nothing on screen explained.
+        compose_registry(apps_dir, entries)
         sessions.append(Session(
             name, name, run_dir,
             os.path.join(runtime, f"qos-yc-{short}-{pid}.sock"),
@@ -5377,7 +5417,7 @@ def main() -> int:
         print(f"  {var:20} {path}")
     for var in ("QOS_CATALOGUE_BIN", "QOS_INSTALL_BIN", "QOS_LAUNCHER_BIN"):
         if var not in tools:
-            print(f"  {var:20} MISSING — beat 5 cannot fetch anything")
+            print(f"  {var:20} MISSING — no app can be fetched")
 
     global RECORDER
     record_dir = None
@@ -5407,8 +5447,10 @@ def main() -> int:
             establish_strip(s_)
         if RECORDER:
             RECORDER.start(quinten.name)
-        # The registry quinten fetches from in beat 5. Its config dir is
-        # his store's, which is how the catalogue in his session finds it.
+        # Served but unused: no beat in this film fetches an
+        # application. Kept standing because the capability is real and
+        # the next cut may ask for it again, and because serving it
+        # costs one process that nothing queries.
         with Registry(
             os.path.join(TARGET, "debug", "examples",
                          "serve-test-registry"),
@@ -5418,8 +5460,7 @@ def main() -> int:
             os.path.join(args.out, "registry.log"),
         ) as registry:
             if registry is None:
-                print("no local registry: beat 5 will report the fetch as "
-                      "unfilmed rather than skip past it")
+                print("no local registry: nothing in this film needs one")
             else:
                 print(f"registry:      {registry.base_url}")
             run(quinten, xaver, agent, shots, registry)
