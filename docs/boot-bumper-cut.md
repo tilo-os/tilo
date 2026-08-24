@@ -8,6 +8,22 @@ exists.** A new OS build shifts every timestamp, so the rules below are
 anchored to what is on screen, with the timings from the 2026-08-22 recording
 given only as an example of the shape.
 
+## Where it lives
+
+`films/qos-boot-bumper.mp4` — the cut, 7.5s. `films/qos-boot-bumper-source.mp4`
+is the full recording it was cut from, kept so the cut can be revised without
+re-recording a boot.
+
+Not under `target/`. It was there once and a routine reclaim deleted it along
+with everything else in that directory, which is exactly what `target/` is for.
+A recorded boot is the one asset here that cannot be regenerated on demand: it
+needs a real machine starting, and every OS build shifts the timings the cut is
+anchored to.
+
+The rig does not read this file. The bumper is concatenated in front of the
+driven take during assembly, so nothing fails at run time if it is missing —
+which is how it went missing unnoticed.
+
 ## What the audience should see
 
 Four things, in order, and nothing else:
