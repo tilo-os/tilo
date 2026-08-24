@@ -31,7 +31,7 @@ use vello::kurbo::Point;
 /// CRDT map key holding the inline-rename field's `Text` object. Seeded with
 /// the current name when a rename begins; the in-place editor's `TextInput`
 /// edits it and `commit_rename` reads the chosen name back out.
-const RENAME_QUERY_PATH: &str = "files.rename_query";
+pub(crate) const RENAME_QUERY_PATH: &str = "files.rename_query";
 
 /// Width (logical px) at/above which the places list docks beside the file
 /// view; below it the places list becomes an overlay drawer *over* the file
@@ -2344,6 +2344,13 @@ impl Widget for FileExplorerWidget {
                 self.rename_buffer = text;
             }
         }
+    }
+
+    /// Publish the open directory and the entries in it (delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`]).
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn build_layout(

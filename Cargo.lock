@@ -3999,6 +3999,8 @@ dependencies = [
  "mime_guess",
  "open",
  "qdoc",
+ "qos-actions",
+ "serde",
  "taffy",
  "tempfile",
  "thumbnail",
@@ -10400,6 +10402,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "photos"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "automerge",
+ "image",
+ "png 0.18.1",
+ "qos-actions",
+ "serde",
+ "serde_json",
+ "taffy",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+ "ui",
+ "uuid",
+ "vello",
+ "winit",
+]
+
+[[package]]
 name = "pico-args"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11221,6 +11244,15 @@ dependencies = [
  "tokio",
  "tracing",
  "zbus 4.4.0",
+]
+
+[[package]]
+name = "qos-reference"
+version = "0.1.0"
+dependencies = [
+ "qos-actions",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -13232,6 +13264,7 @@ dependencies = [
  "pollster",
  "postcard",
  "qdoc",
+ "qos-actions",
  "qos-bluez",
  "qos-callstream",
  "qos-desktop-entry",

@@ -13,6 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
+# The action model: the resource tree the explorer publishes and the one
+# document action it exports over its rename buffer.
+qos-actions = { path = "../../crates/collab/actions" }
+serde.workspace = true
 # Source of truth for which extensions are editable documents (so the file
 # manager and the codecs agree on what opens in the word processor).
 qdoc = { path = "../../crates/doc/qdoc" }
