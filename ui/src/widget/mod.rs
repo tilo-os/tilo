@@ -93,6 +93,25 @@ pub trait Widget {
     ) {
     }
 
+    /// Collect a remark this app has finished composing, once.
+    ///
+    /// The counterpart to [`set_remark_destinations`](Self::set_remark_destinations),
+    /// and the reason that one was not enough on its own. The room tells an app
+    /// where a remark may go; this is how the written one gets back out. Until
+    /// it existed the compose surface ran to completion — panel closed, text
+    /// taken, [`Remark`](qos_reference::Remark) built — and the message sat in
+    /// the app's outbox with nothing in the process ever asking for it.
+    ///
+    /// Drained once per frame by the host ([`crate::app::App`]), which is the
+    /// half that can address it: it holds the room's roster, so it can resolve
+    /// the `@name`s the toolkit deliberately leaves unresolved, and it holds
+    /// the collaboration connection the message leaves on. An app that offers
+    /// the gesture returns its [`RemarkHost`](crate::widget::RemarkHost)'s
+    /// outbox here; every other app inherits the default and returns `None`.
+    fn take_remark(&mut self) -> Option<qos_reference::Remark> {
+        None
+    }
+
     fn get_rect(&self) -> vello::kurbo::Rect;
 
     /// Resolve the OS cursor shape this widget wants while the pointer
@@ -792,6 +811,7 @@ pub mod color_picker;     pub use color_picker::ColorPicker;
 pub mod popover_widget;   pub use popover_widget::PopoverWidget;
 pub mod popover;          pub use popover::Popover;
 pub mod remark_compose;   pub use remark_compose::{DestinationOption, RemarkCompose};
+pub mod remark_host;      pub use remark_host::RemarkHost;
 pub mod modal_dialog;     pub use modal_dialog::ModalDialog;
 pub mod modal_frame;      pub use modal_frame::{ModalAction, ModalEmphasis, ModalFrame, ModalHit, ModalLayout, ModalSpec};
 pub mod modal_prompt;     pub use modal_prompt::PromptBody;
