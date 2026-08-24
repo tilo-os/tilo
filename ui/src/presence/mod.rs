@@ -907,12 +907,24 @@ impl PresenceCtx {
             list.push((user.clone(), pos));
         }
         self.pointer_seen.insert((key.clone(), user.clone()), now);
-        // Desktop scopes only. A pointer under a workspace is somebody
-        // on that desktop, which is what the roster asks about; a
-        // pointer inside a widget is a position in a document, and
+        // Desktop scopes only. A pointer on a desktop is somebody on
+        // that desktop, which is what the roster asks about; a pointer
+        // inside a surface's content is a position in a document, and
         // registering it here would put a presence dot on whatever the
         // peer's mouse happened to be over.
-        if matches!(key, PresenceKey::Workspace { .. }) {
+        //
+        // Both spellings the system produces, so that moving the store
+        // from one to the other cannot quietly empty the roster. Not
+        // `scopes_a_desktop_pointer`, which also answers yes for the
+        // synthesised legacy tag — that one names no room and is a
+        // routing artefact, not somebody's presence anywhere.
+        if matches!(
+            key,
+            PresenceKey::Workspace { .. }
+                | PresenceKey::Pointer {
+                    space: PointerSpace::Desktop { .. }
+                }
+        ) {
             self.register_presence(key, user);
         }
     }

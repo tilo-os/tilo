@@ -2052,7 +2052,7 @@ fn spawn_inner(
                             // once, for every app at the same time —
                             // as opposed to being handed to all of
                             // them and sorted out afterwards by each.
-                            if !relays_to_local_apps(&key, &payload) {
+                            if !relays_to_local_apps(&payload) {
                                 continue;
                             }
                             // A peer saying it has arrived is a peer
@@ -2370,36 +2370,37 @@ fn spawn_inner(
 ///
 /// The cluster fan-out below hands one arriving frame to every app in
 /// the room. That is right for everything a room shares — a caret, a
-/// selection, an arrival — because those are positions in a
-/// *document*, and a document is the same document on both machines.
+/// selection, a typing run, an arrival — because those are positions
+/// in a *document*, and the document is the same document on both
+/// machines. It is wrong for every pointer that arrives on this
+/// queue, and the reason is structural rather than a matter of which
+/// scope the sender happened to name.
 ///
-/// It is wrong for a pointer measured inside a window. Those are
-/// pixels in the sending machine's window, at its size, its scroll
-/// position and its scale, and there is no window here they describe.
-/// Handing them over anyway is what drew one person once per open
-/// window: every app took the numbers for its own and placed them at
+/// This queue carries frames an *app* published. An app measures its
+/// pointer where winit hands it to them: inside its own window, at
+/// that machine's window size, scroll position and scale. No window
+/// here is the one those pixels describe, whatever the frame calls
+/// the scope it was published under — and the old spelling called it
+/// the room, which named the audience and said nothing about the
+/// space at all. Relaying them is what drew one person once per open
+/// window: each app took the numbers for its own and placed them at
 /// the same offset in its own content.
 ///
 /// Where that person's pointer *is* arrives by the path that can say
-/// so: their compositor republishes the position in desktop
-/// coordinates (`shell::peer_presence`), and this host's compositor
-/// paints it, once, above every window. Nothing is lost by refusing
-/// the surface-space copy; a second answer to a question that already
-/// has one is the thing being removed.
+/// so, and does so whatever version they are running: their
+/// compositor republishes the position in desktop coordinates
+/// (`shell::peer_presence`), and this host's compositor paints it
+/// once, above every window. So nothing is lost by refusing the
+/// in-window copy — the second answer to a question that already has
+/// one is exactly what is being removed.
 ///
-/// Everything without a surface space still relays, including the
-/// keyless legacy dialects, whose pointers no compositor claims.
-pub(crate) fn relays_to_local_apps(
-    key: &ui::presence::PresenceKey,
-    payload: &ui::collaboration::PresencePayload,
-) -> bool {
-    if !matches!(payload, ui::collaboration::PresencePayload::Pointer { .. }) {
-        return true;
-    }
-    !matches!(
-        key.pointer_space(),
-        Some(ui::presence::PointerSpace::Surface { .. })
-    )
+/// Refused for every pointer rather than only for the ones that admit
+/// which surface they were measured in, because the rule has to hold
+/// against a peer running an older build. One that names no space is
+/// not a pointer whose space is the desktop; it is a pointer that did
+/// not say, and this side cannot place what was never located.
+pub(crate) fn relays_to_local_apps(payload: &ui::collaboration::PresencePayload) -> bool {
+    !matches!(payload, ui::collaboration::PresencePayload::Pointer { .. })
 }
 
 fn remote_participant_id(
