@@ -6564,6 +6564,11 @@ def main() -> int:
                          "still honours QOS_TEST_CONTROL (any profile with "
                          "debug-assertions on — `demo` or `dev`, never "
                          "`--release`)")
+    ap.add_argument("--allow-stale-apps", action="store_true",
+                    help="film the machine's installed apps even though "
+                         "they were not built from this tree. Off by "
+                         "default: a run against someone else's build "
+                         "passes every assertion and proves nothing.")
     ap.add_argument("--allow-stale-shell", action="store_true",
                     help="record even if the compositor binary is older than "
                          "the sources under test (default: refuse, because a "
@@ -6730,16 +6735,53 @@ def main() -> int:
     # Where each of the film's own applications came from, before a
     # frame is recorded. An app that is nobody's is worth knowing about
     # now rather than as a launch that hands back None halfway through.
+    borrowed, absent = [], []
     for app in sorted({FILES_APP, WORD_PROCESSOR, CHAT_APP, IMAGE_EDITOR}):
         if app in live:
             continue
         if app in entries:
+            borrowed.append(app)
             print(f"{app}: {MACHINE_APPS} — not built from this tree, "
                   f"so this films the machine's installed payload")
         else:
+            absent.append(app)
             print(f"{app}: MISSING from both {LIVE_APPS} and "
                   f"{MACHINE_APPS} — the beat that opens it will report "
                   f"it as unopened")
+
+    # Refused, not warned.
+    #
+    # This printed its warning and carried on, and what came out was a run
+    # that passed every assertion while filming applications built weeks
+    # earlier by somebody else -- the changes under test were not in the
+    # picture, and nothing in the picture could say so. A frame carries no
+    # build id, so this is the last place that knows.
+    #
+    # The failure mode it produced is the expensive one: not a red run, but
+    # a green one that means nothing. The whole rig exists to refuse a
+    # success it did not verify, and an app it did not build is exactly
+    # that -- so the same standard applies to the payload as to the
+    # assertions.
+    #
+    # `--allow-stale-apps` for the case where borrowing really is intended
+    # (filming the installed set on purpose), which is rare enough to be
+    # worth typing.
+    if (borrowed or absent) and not getattr(args, "allow_stale_apps", False):
+        print()
+        if absent:
+            print(f"FATAL: no payload at all for: {', '.join(absent)}")
+        if borrowed:
+            print(f"FATAL: filming the machine's installed build of: "
+                  f"{', '.join(borrowed)}")
+        print()
+        print("These are applications the film drives, so a run against")
+        print("someone else's build proves nothing about this tree.")
+        print()
+        print("  QOS_DEMO_PROFILE=debug scripts/demo-apps-live.sh")
+        print()
+        print("or pass --allow-stale-apps to film the installed set on")
+        print("purpose.")
+        raise SystemExit(2)
 
     # A payload goes stale the same way the compositor does, and more
     # quietly. `demo-apps-live.sh` copies a binary into the payload, so

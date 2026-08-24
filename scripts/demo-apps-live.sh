@@ -67,6 +67,8 @@ STAGE="$OUT/.stage"
 APPS=(
     "dev.qos.word-processor|word-processor"
     "dev.qos.photos|photos"
+    "dev.qos.chat|chat"
+    "dev.qos.file-explorer|file-explorer"
 )
 
 case "$PROFILE" in
