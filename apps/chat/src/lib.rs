@@ -40,6 +40,7 @@ pub mod events;
 pub mod identity;
 pub mod images;
 pub mod media;
+pub mod mention;
 pub mod model;
 pub mod paint;
 pub mod permissions;
