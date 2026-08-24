@@ -43,7 +43,7 @@ use chat::mention::Mention;
 use chat::model::Presence;
 use qos_agent::{Config, Session};
 use qos_reference::ResourceRef;
-use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
+use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
 use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
 use uuid::Uuid;
 
@@ -230,6 +230,7 @@ fn agent(json: &PathBuf, room: Uuid) -> Session {
 
 /// Everything a peer has been sent since last time, merged into `into`.
 fn drain(peer: &mut CollaborationManager, into: &mut AutoCommit) {
+    let mut arrived = false;
     for ev in peer.poll() {
         match ev {
             CollabEvent::CRDTIncremental { data } => {
@@ -241,8 +242,20 @@ fn drain(peer: &mut CollaborationManager, into: &mut AutoCommit) {
                     let _ = into.merge(&mut other);
                 }
             }
+            CollabEvent::RemotePresenceUpdate {
+                payload: PresencePayload::Arrived,
+                ..
+            } => arrived = true,
             _ => {}
         }
+    }
+    // Answer an arrival with the whole document, which is what every app in a
+    // room does and what the agent's late-join depends on: the broker fans out
+    // live and keeps nothing, so a snapshot sent before the agent subscribed
+    // reaches nobody. Without this the agent joins an apparently empty room
+    // and the silence reads as it having nothing to say.
+    if arrived {
+        peer.send(CollabRequest::SyncCRDT { data: into.save() });
     }
 }
 
