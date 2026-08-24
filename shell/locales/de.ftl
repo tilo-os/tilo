@@ -18,3 +18,10 @@ notice-fetch-starting = Wird gestartet…
 notice-open-failed = { $app } konnte nicht geöffnet werden
 
 roster-kind-agent = Agent
+
+invite-composer-title = Jemanden einladen
+invite-composer-label = Wen lädst du ein?
+invite-composer-placeholder = Ihr Name in diesem Raum
+invite-composer-cancel = Abbrechen
+invite-composer-create = Einladung erstellen
+invite-composer-empty = Sag, für wen diese Einladung ist

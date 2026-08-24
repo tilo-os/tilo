@@ -112,20 +112,56 @@ pub struct ModalAction<'a> {
     pub emphasis: ModalEmphasis,
     /// A disabled action is painted dimmed and is not hit-testable.
     pub enabled: bool,
+    /// The pointer is over this action.
+    pub hovered: bool,
+    /// The pointer is held down on this action.
+    pub pressed: bool,
+    /// Keyboard focus is on this action, so it draws a focus ring and is
+    /// what Enter/Space activates.
+    pub focused: bool,
 }
 
 impl<'a> ModalAction<'a> {
     pub fn primary(label: &'a str) -> Self {
-        Self { label, emphasis: ModalEmphasis::Primary, enabled: true }
+        Self::of(label, ModalEmphasis::Primary)
     }
     pub fn secondary(label: &'a str) -> Self {
-        Self { label, emphasis: ModalEmphasis::Secondary, enabled: true }
+        Self::of(label, ModalEmphasis::Secondary)
     }
     pub fn danger(label: &'a str) -> Self {
-        Self { label, emphasis: ModalEmphasis::Danger, enabled: true }
+        Self::of(label, ModalEmphasis::Danger)
+    }
+    fn of(label: &'a str, emphasis: ModalEmphasis) -> Self {
+        Self {
+            label,
+            emphasis,
+            enabled: true,
+            hovered: false,
+            pressed: false,
+            focused: false,
+        }
     }
     pub fn enabled(mut self, v: bool) -> Self {
         self.enabled = v;
+        self
+    }
+    /// Builder: the pointer is over this action.
+    pub fn hovered(mut self, v: bool) -> Self {
+        self.hovered = v;
+        self
+    }
+    /// Builder: the pointer is held down on this action.
+    pub fn pressed(mut self, v: bool) -> Self {
+        self.pressed = v;
+        self
+    }
+    /// Builder: keyboard focus is on this action.
+    ///
+    /// Set it and the action draws the focus ring every other control in
+    /// the system draws. A modal whose buttons never take this is a modal
+    /// a keyboard user cannot see their way around.
+    pub fn focused(mut self, v: bool) -> Self {
+        self.focused = v;
         self
     }
 }
@@ -149,6 +185,10 @@ pub struct ModalSpec<'a> {
     pub body_height: f64,
     /// Widest the card may be drawn. Defaults to [`MODAL_MAX_WIDTH`].
     pub max_width: f64,
+    /// The pointer is over the close control.
+    pub close_hovered: bool,
+    /// Keyboard focus is on the close control.
+    pub close_focused: bool,
     /// Whether a click on the scrim dismisses. The scrim **always**
     /// swallows the click either way — a surface that lets clicks reach
     /// what is behind it is not modal. Turn this off for a modal that
@@ -164,6 +204,8 @@ impl<'a> Default for ModalSpec<'a> {
             actions: &[],
             body_height: 0.0,
             max_width: MODAL_MAX_WIDTH,
+            close_hovered: false,
+            close_focused: false,
             dismiss_on_scrim: true,
         }
     }
@@ -191,6 +233,16 @@ impl<'a> ModalSpec<'a> {
     }
     pub fn dismiss_on_scrim(mut self, v: bool) -> Self {
         self.dismiss_on_scrim = v;
+        self
+    }
+    /// Builder: the pointer is over the close control.
+    pub fn close_hovered(mut self, v: bool) -> Self {
+        self.close_hovered = v;
+        self
+    }
+    /// Builder: keyboard focus is on the close control.
+    pub fn close_focused(mut self, v: bool) -> Self {
+        self.close_focused = v;
         self
     }
 }
@@ -489,6 +541,8 @@ impl ModalFrame {
                 .style(ButtonStyle::Ghost)
                 .icon(Icon::X)
                 .radius(tokens.radii.sm as f64)
+                .hovered(spec.close_hovered)
+                .focused(spec.close_focused)
                 .accessible_name("Close");
             Button::paint(scene, transform, text_renderer, theme, &face);
         }
@@ -523,6 +577,9 @@ impl ModalFrame {
                 .radius(ACTION_H / 2.0)
                 .text_size(body_size)
                 .weight(TextWeight::Medium)
+                .hovered(a.hovered && a.enabled)
+                .pressed(a.pressed && a.enabled)
+                .focused(a.focused && a.enabled)
                 .disabled(!a.enabled);
             // Measured against the fill this face actually resolved, so a
             // themed accent cannot leave the primary action unreadable.

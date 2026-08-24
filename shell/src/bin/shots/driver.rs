@@ -516,6 +516,19 @@ impl ShellDriver {
     pub fn scene_setup(&mut self, name: &str) -> Result<(), String> {
         match name {
             "desktop" => {}
+            // The card that asks who an invite is for. Its own scene
+            // because the field is the surface a review looks at: an
+            // empty, focused input is where a caret sits wrong or a
+            // placeholder rides high, and neither shows up in a scene
+            // that only reaches the card once it holds a token.
+            "invite-composer" => {
+                self.with_chrome(|st| {
+                    st.peer_sync_enabled = true;
+                    st.peer_sync_invite_name = Some(String::new());
+                    st.bump();
+                });
+                self.fb.host_mut().update(&mut self.state, &self.root_obj);
+            }
             "overview" => {
                 self.with_chrome(|st| st.overlays.overview = true);
                 self.fb.host_mut().force_overview_settled(true);
@@ -1157,6 +1170,7 @@ impl ShellDriver {
         "room-activity-all",
         "room-activity-named",
         "collaborators",
+        "invite-composer",
     ];
 
     /// Resolve a "named" UI target (button, pill, tab) to its on-screen
