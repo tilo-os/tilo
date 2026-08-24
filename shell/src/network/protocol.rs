@@ -37,7 +37,31 @@ pub enum NeighbourMsg {
     /// wildcard: it is answered with no document at all. The transport
     /// emits one on peer-join, before it knows what the peer is in, and
     /// receiving it is what prompts a replica to name its own rooms.
-    SyncReq { since: Vec<u8>, room: String },
+    SyncReq {
+        since: Vec<u8>,
+        room: String,
+        /// The invitation this request is redeeming, when it is one.
+        ///
+        /// Asking a host for a room's document is what redeeming an
+        /// invite looks like from the host's side, and until this field
+        /// existed that was all the host got: a peer, and a room. One
+        /// host can have several invitations outstanding into the same
+        /// room, so the room could not say *which* invitation had just
+        /// been redeemed, and the name the inviter typed for one person
+        /// was handed to whoever asked first.
+        ///
+        /// The value is [`crate::network::invite::PeerInviteToken::invite_id`]
+        /// from the token this machine redeemed to get into `room`. It
+        /// travels signed inside the token and is quoted back here, so
+        /// the host matches an arrival to the invitation it was for
+        /// rather than to the room they have in common.
+        ///
+        /// `None` for a request that is not a redemption: the
+        /// transport's roomless peer-join kick, a peer that found the
+        /// room some other way, and every peer that predates the field.
+        #[serde(default)]
+        invite: Option<String>,
+    },
     /// Response carrying a batch of opaque Automerge change blobs for one
     /// room.
     ///
@@ -611,6 +635,7 @@ mod tests {
         round_trip(NeighbourMsg::SyncReq {
             since: vec![1, 2, 3],
             room: "6b3f9a10-0000-4000-8000-00000000000c".to_string(),
+            invite: None,
         });
     }
 

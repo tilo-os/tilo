@@ -131,6 +131,7 @@ mod tests {
         let msg = NeighbourMsg::SyncReq {
             since: vec![9, 9, 9],
             room: "6b3f9a10-0000-4000-8000-00000000000b".to_string(),
+            invite: None,
         };
         hub.broadcast(1, msg.clone());
 

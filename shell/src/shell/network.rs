@@ -113,6 +113,49 @@ const LISTEN_ADDRS: [&str; 2] = ["/ip4/127.0.0.1/tcp/0", "/ip4/0.0.0.0/tcp/0"];
 /// upper bound on how stale a guest's view of a room can be.
 const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// One outstanding invitation, and the name promised to whoever
+/// redeems it.
+///
+/// Held per invitation rather than per room. A host invites people
+/// faster than they arrive — two, three, before any of them knocks —
+/// and every one of those invitations names the same room, so the room
+/// cannot say which of them a given arrival redeemed. The invitation
+/// can, and this is what it carries until it is spent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingInvite {
+    /// The room this invitation is into. Checked at redemption: an id
+    /// minted for one room does not redeem an invitation to another,
+    /// even on a machine that governs both.
+    room: crate::shell::state::RoomId,
+    /// What the room will call whoever redeems it.
+    name: String,
+    /// The token's own expiry, so a promise nobody came for is dropped
+    /// rather than kept for a machine that could no longer redeem it
+    /// anyway.
+    expires_unix_seconds: u64,
+}
+
+/// Wall-clock seconds since the unix epoch, or `0` if the system clock
+/// is somehow before 1970. Matches what an invite token's expiry is
+/// measured against.
+fn now_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Drop the promises nobody can come and collect any more.
+///
+/// Run on both ends of an invitation's life — when one is parked and
+/// when one is redeemed — so an expired promise is never handed out,
+/// and a host that invites people all afternoon does not keep every
+/// name it has ever typed.
+fn prune_expired(pending: &mut std::collections::HashMap<String, PendingInvite>) {
+    let now = now_unix_seconds();
+    pending.retain(|_, held| held.expires_unix_seconds > now);
+}
+
 /// Shell-side handle for the peer-sync subsystem.
 ///
 /// Owns the tokio runtime that hosts the [`Actor`], the per-workspace
@@ -159,8 +202,8 @@ pub struct ShellNetwork {
     /// When [`Self::kick_periodic_sync`] last asked. `None` until the
     /// first tick, so the first frame after startup kicks a round.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
-    /// Names this machine has promised to whoever redeems the invite it
-    /// last minted for a room, keyed by that room.
+    /// Names this machine has promised to whoever redeems each invite
+    /// it has minted, keyed by that **invitation** — not by its room.
     ///
     /// An invite is minted before the person it is for has a `PeerId`
     /// this machine has ever seen, so the name cannot be written into
@@ -169,12 +212,32 @@ pub struct ShellNetwork {
     /// is both known and authenticated — and
     /// [`Self::name_invitee_on_arrival`] writes it then.
     ///
-    /// Not in the token: a token is a bearer credential that crosses
-    /// machines, so a name carried inside it would be a name its
-    /// *holder* presents, which is exactly the thing
-    /// `apply_room_changes` refuses. Kept here, it stays a statement by
-    /// the room's own authority.
-    pending_invitees: Mutex<std::collections::HashMap<crate::shell::state::RoomId, String>>,
+    /// Keyed by [`crate::network::invite::PeerInviteToken::invite_id`]
+    /// because a host invites people faster than they arrive. Keyed by
+    /// room, a second invitation overwrote the first: invite Xaver,
+    /// invite Claude, and whoever knocked first was called Claude while
+    /// the other was left as `peer@<handle>` with nothing waiting for
+    /// them. Invitations are independent, so the thing they are filed
+    /// under has to be the invitation.
+    ///
+    /// The *name* is still not in the token: a token is a bearer
+    /// credential that crosses machines, so a name carried inside it
+    /// would be a name its *holder* presents, which is exactly the
+    /// thing `apply_room_changes` refuses. Only the invitation's id
+    /// travels, and it is a label the holder cannot profit from
+    /// choosing — it selects which of this machine's own promises
+    /// applies, and every one of them was written here.
+    pending_invites: Mutex<std::collections::HashMap<String, PendingInvite>>,
+    /// The invitation this machine redeemed to get into each room, by
+    /// room.
+    ///
+    /// The other end of [`Self::pending_invites`]. A host can only
+    /// match an arrival to an invitation if the arrival says which
+    /// invitation it is, so every sync request this machine sends for a
+    /// room it joined by invite quotes that invitation's id
+    /// ([`Self::publish_outgoing`]). One entry per room because there
+    /// is one way into a room: the invite that was accepted for it.
+    redeemed_invites: Mutex<std::collections::HashMap<crate::shell::state::RoomId, String>>,
     /// Buffer of inbound presence updates pushed by [`Self::tick`] when
     /// a `NeighbourMsg::PresenceMoved` arrives. The shell's frame-tick
     /// hook drains this into `PresenceCtx::remote_cursors` once per
@@ -456,7 +519,8 @@ impl ShellNetwork {
             local_peer_id,
             listen_addrs,
             last_sync_kick: Mutex::new(None),
-            pending_invitees: Mutex::new(std::collections::HashMap::new()),
+            pending_invites: Mutex::new(std::collections::HashMap::new()),
+        redeemed_invites: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
@@ -1360,11 +1424,11 @@ impl ShellNetwork {
     /// why — it is held until that peer turns up and then written into
     /// the room document by the room's own authority.
     ///
-    /// Minting a second invite for a room replaces the name waiting on
-    /// it. Two invites out at once is one host inviting two people with
-    /// one room to attach a name to, and the honest thing to do with an
-    /// ambiguity nobody can resolve is to keep the answer to the last
-    /// question the user actually asked.
+    /// Minting a second invite leaves the first one alone. Each token
+    /// carries its own invitation id, the name is parked against that,
+    /// and the redeemer quotes it back — so two people invited before
+    /// either has arrived are two independent promises, and they can be
+    /// redeemed in either order.
     pub fn issue_invite_named(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -1430,12 +1494,24 @@ impl ShellNetwork {
             replica.tree.write().name_peer(room, &me, &peer, &me);
         }
 
-        // And park the invitee's name against the room, for
-        // `name_invitee_on_arrival` to write when they turn up.
-        if let Some(invitee) = invitee.map(str::trim).filter(|n| !n.is_empty())
-            && let Ok(mut pending) = self.pending_invitees.lock()
-        {
-            pending.insert(room, invitee.to_string());
+        // And park the invitee's name against *this invitation*, for
+        // `name_invitee_on_arrival` to write when they turn up. Against
+        // the invitation rather than the room, so inviting a second
+        // person does not overwrite the first person's name.
+        if let Some(invitee) = invitee.map(str::trim).filter(|n| !n.is_empty()) {
+            let parsed = crate::network::invite::validate_invite_token(&token)
+                .map_err(|e| format!("minted an invite this machine cannot read back: {e}"))?;
+            if let Ok(mut pending) = self.pending_invites.lock() {
+                prune_expired(&mut pending);
+                pending.insert(
+                    parsed.invite_id,
+                    PendingInvite {
+                        room,
+                        name: invitee.to_string(),
+                        expires_unix_seconds: parsed.expiry_unix_seconds,
+                    },
+                );
+            }
         }
         Ok(token)
     }
@@ -1450,23 +1526,47 @@ impl ShellNetwork {
     /// side: it is the same signal the replica records a participant
     /// on.
     ///
-    /// Three guards, each closing a way this could name the wrong
-    /// person: never this machine, never a peer the room has already
-    /// named, and only if `name_peer` accepts the write — which it does
-    /// only for a room this machine administers. The pending name is
-    /// consumed by the first peer that redeems it, so a second arrival
-    /// keeps its own id rather than inheriting somebody else's name.
-    fn name_invitee_on_arrival(&self, peer: &libp2p::PeerId, room: &str) {
+    /// `invite` is the invitation the arriving peer says it is
+    /// redeeming — [`crate::network::invite::PeerInviteToken::invite_id`],
+    /// quoted back on the request. It is what picks out *which* of this
+    /// host's outstanding promises applies, and without it a host with
+    /// two invitations out could only guess: the room they share cannot
+    /// tell them apart, which is how the second person to arrive ended
+    /// up unnamed.
+    ///
+    /// Four guards, each closing a way this could name the wrong
+    /// person: never this machine, only an invitation this machine
+    /// actually minted *for the room being asked about*, never a peer
+    /// the room has already named, and only if `name_peer` accepts the
+    /// write — which it does only for a room this machine administers.
+    /// The pending name is consumed by the peer that redeems that
+    /// invitation, and every other invitation is left standing for
+    /// whoever it was for.
+    fn name_invitee_on_arrival(&self, peer: &libp2p::PeerId, room: &str, invite: Option<&str>) {
         if *peer == self.local_peer_id {
             return;
         }
         let Some(room) = crate::shell::state::RoomId::parse(room) else {
             return;
         };
-        let Ok(mut pending) = self.pending_invitees.lock() else {
+        // No invitation quoted is not "any invitation will do". A peer
+        // that found this room some other way has redeemed nothing, and
+        // handing it a name meant for somebody who is still on their
+        // way is how that person loses theirs.
+        let Some(invite) = invite else {
             return;
         };
-        let Some(name) = pending.get(&room).cloned() else {
+        let Ok(mut pending) = self.pending_invites.lock() else {
+            return;
+        };
+        prune_expired(&mut pending);
+        // The invitation has to be one of this room's. Quoting an id
+        // minted for a different room is not a redemption of this one.
+        let Some(name) = pending
+            .get(invite)
+            .filter(|held| held.room == room)
+            .map(|held| held.name.clone())
+        else {
             return;
         };
         let base58 = peer.to_base58();
@@ -1479,10 +1579,9 @@ impl ShellNetwork {
             // already called is the name that was waiting, this is the
             // peer the invite was for, named at mint time because that
             // route knew their id (`peer.invite.named` does). Spend the
-            // pending copy rather than leave it lying around for the
-            // next machine that asks about this room.
+            // pending copy rather than leave it lying around.
             if existing == &name {
-                pending.remove(&room);
+                pending.remove(invite);
             }
             return;
         }
@@ -1492,9 +1591,62 @@ impl ShellNetwork {
                 peer = %base58,
                 %name,
                 %room,
+                invite = %invite,
                 "peer-sync: named the invitee that arrived"
             );
-            pending.remove(&room);
+            pending.remove(invite);
+        }
+    }
+
+    /// Record which invitation got this machine into `room`, so every
+    /// request it sends about that room can say so.
+    ///
+    /// A host cannot tell two of its own outstanding invitations apart
+    /// from the room they share; the only thing that distinguishes them
+    /// is the id inside the token, and the only party that can quote it
+    /// back is whoever redeemed it. Storing it here is what makes the
+    /// quoting possible.
+    fn note_redeemed_invite(&self, room: crate::shell::state::RoomId, token: &str) {
+        let Ok(parsed) = crate::network::invite::validate_invite_token(token) else {
+            return;
+        };
+        if let Ok(mut redeemed) = self.redeemed_invites.lock() {
+            redeemed.insert(room, parsed.invite_id);
+        }
+    }
+
+    /// Publish messages the replica produced, stamping every sync
+    /// request with the invitation that got this machine into the room
+    /// it names.
+    ///
+    /// The replica builds the requests and knows nothing about invites;
+    /// this is the layer that holds both, so this is where the two are
+    /// put together. Every round carries it, not just the first: a
+    /// single announcement at join time would be one gossip publish
+    /// against a mesh that may not have formed yet, and losing it would
+    /// leave the guest unnamed for as long as they stayed.
+    fn publish_outgoing(&self, outgoing: Vec<NeighbourMsg>) {
+        let redeemed = self
+            .redeemed_invites
+            .lock()
+            .map(|r| r.clone())
+            .unwrap_or_default();
+        for mut msg in outgoing {
+            if let NeighbourMsg::SyncReq {
+                ref room,
+                ref mut invite,
+                ..
+            } = msg
+                && invite.is_none()
+                && let Some(room) = crate::shell::state::RoomId::parse(room)
+                && let Some(id) = redeemed.get(&room)
+            {
+                *invite = Some(id.clone());
+            }
+            let _ = self.cmd_tx.try_send(NetCmd::Publish {
+                ws: DEFAULT_WS_TOPIC,
+                msg,
+            });
         }
     }
 
@@ -1537,15 +1689,14 @@ impl ShellNetwork {
         {
             let _ = self.cmd_tx.try_send(NetCmd::Connect { addr });
         }
+        // Before the first request goes out, so the very first thing
+        // the host hears from this machine already says which
+        // invitation it is answering.
+        self.note_redeemed_invite(room, token);
         replica.request_sync();
         let outgoing = replica.drain_outgoing();
         drop(replica);
-        for msg in outgoing {
-            let _ = self.cmd_tx.try_send(NetCmd::Publish {
-                ws: DEFAULT_WS_TOPIC,
-                msg,
-            });
-        }
+        self.publish_outgoing(outgoing);
         Ok(room)
     }
 
@@ -1558,12 +1709,7 @@ impl ShellNetwork {
         replica.request_sync();
         let outgoing = replica.drain_outgoing();
         drop(replica);
-        for msg in outgoing {
-            let _ = self.cmd_tx.try_send(NetCmd::Publish {
-                ws: DEFAULT_WS_TOPIC,
-                msg,
-            });
-        }
+        self.publish_outgoing(outgoing);
     }
 
     /// [`Self::publish_sync_requests`], rate-limited to
@@ -1865,8 +2011,13 @@ impl ShellNetwork {
                 // for somebody by name, this is the moment that name
                 // can be attached to an identity — before the replica
                 // answers, so the roster and the answer land together.
-                if let NeighbourMsg::SyncReq { ref room, .. } = msg {
-                    self.name_invitee_on_arrival(&peer, room);
+                if let NeighbourMsg::SyncReq {
+                    ref room,
+                    ref invite,
+                    ..
+                } = msg
+                {
+                    self.name_invitee_on_arrival(&peer, room, invite.as_deref());
                 }
                 let mut rep = self.replica.lock().unwrap();
                 // The peer's own identity, not the liveness handle's
@@ -1875,12 +2026,7 @@ impl ShellNetwork {
                 rep.handle_from(&crate::shell::state::PeerOrigin::peer(&peer), &msg);
                 let outgoing = rep.drain_outgoing();
                 drop(rep);
-                for out_msg in outgoing {
-                    let _ = self.cmd_tx.try_send(NetCmd::Publish {
-                        ws: DEFAULT_WS_TOPIC,
-                        msg: out_msg,
-                    });
-                }
+                self.publish_outgoing(outgoing);
             }
         }
     }
@@ -1942,7 +2088,8 @@ pub(crate) fn shell_network_for_test_with_store(
         local_peer_id: libp2p::PeerId::random(),
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
         last_sync_kick: Mutex::new(None),
-        pending_invitees: Mutex::new(std::collections::HashMap::new()),
+        pending_invites: Mutex::new(std::collections::HashMap::new()),
+        redeemed_invites: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
@@ -2009,6 +2156,21 @@ mod tests {
         (tmp, tree, net, rooms)
     }
 
+    /// Park a name against a fresh invitation into `room`, and hand
+    /// back the invitation's id — what a redeemer would quote.
+    fn park_invite(net: &ShellNetwork, room: crate::shell::state::RoomId, name: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        net.pending_invites.lock().unwrap().insert(
+            id.clone(),
+            PendingInvite {
+                room,
+                name: name.to_string(),
+                expires_unix_seconds: now_unix_seconds() + 3600,
+            },
+        );
+        id
+    }
+
     fn name_in(
         tree: &crate::shell::state::WorkspaceTreeHandle,
         room: crate::shell::state::RoomId,
@@ -2031,24 +2193,22 @@ mod tests {
     fn the_invitee_is_named_when_they_ask_this_room_for_its_document() {
         let (_tmp, tree, net, rooms) = net_with_rooms();
         let room = rooms[0];
-        net.pending_invitees
-            .lock()
-            .unwrap()
-            .insert(room, "Xaver".to_string());
+        let invite = park_invite(&net, room, "Xaver");
 
         let guest = libp2p::PeerId::random();
         assert_eq!(name_in(&tree, room, &guest), None, "nobody is named yet");
-        net.name_invitee_on_arrival(&guest, &room.to_string());
+        net.name_invitee_on_arrival(&guest, &room.to_string(), Some(&invite));
         assert_eq!(
             name_in(&tree, room, &guest).as_deref(),
             Some("Xaver"),
             "the room's own authority recorded the name the inviter gave"
         );
 
-        // And it is spent. A second machine that turns up keeps its own
-        // id rather than inheriting a name that was never for it.
+        // And it is spent. A second machine that turns up quoting the
+        // same invitation keeps its own id rather than inheriting a
+        // name that was never for it.
         let stranger = libp2p::PeerId::random();
-        net.name_invitee_on_arrival(&stranger, &room.to_string());
+        net.name_invitee_on_arrival(&stranger, &room.to_string(), Some(&invite));
         assert_eq!(
             name_in(&tree, room, &stranger),
             None,
@@ -2062,13 +2222,10 @@ mod tests {
     #[test]
     fn a_pending_name_does_not_leak_into_another_room() {
         let (_tmp, tree, net, rooms) = net_with_rooms();
-        net.pending_invitees
-            .lock()
-            .unwrap()
-            .insert(rooms[0], "Xaver".to_string());
+        let invite = park_invite(&net, rooms[0], "Xaver");
 
         let guest = libp2p::PeerId::random();
-        net.name_invitee_on_arrival(&guest, &rooms[1].to_string());
+        net.name_invitee_on_arrival(&guest, &rooms[1].to_string(), Some(&invite));
         assert_eq!(name_in(&tree, rooms[1], &guest), None);
         assert_eq!(
             name_in(&tree, rooms[0], &guest),
@@ -2076,7 +2233,7 @@ mod tests {
             "asking about another room does not redeem this one's invite"
         );
         assert!(
-            net.pending_invitees.lock().unwrap().contains_key(&rooms[0]),
+            net.pending_invites.lock().unwrap().contains_key(&invite),
             "and the name is still waiting for whoever actually redeems it"
         );
     }
@@ -2088,23 +2245,344 @@ mod tests {
     fn arrival_naming_refuses_this_machine_and_nonsense_rooms() {
         let (_tmp, tree, net, rooms) = net_with_rooms();
         let room = rooms[0];
-        net.pending_invitees
-            .lock()
-            .unwrap()
-            .insert(room, "Xaver".to_string());
+        let invite = park_invite(&net, room, "Xaver");
 
         let me = net.local_peer_id;
-        net.name_invitee_on_arrival(&me, &room.to_string());
+        net.name_invitee_on_arrival(&me, &room.to_string(), Some(&invite));
         assert_eq!(
             name_in(&tree, room, &me),
             None,
             "this machine's own sync request is not somebody arriving"
         );
 
-        net.name_invitee_on_arrival(&libp2p::PeerId::random(), "not-a-room");
+        net.name_invitee_on_arrival(&libp2p::PeerId::random(), "not-a-room", Some(&invite));
         assert!(
-            net.pending_invitees.lock().unwrap().contains_key(&room),
+            net.pending_invites.lock().unwrap().contains_key(&invite),
             "a room id that does not parse names nothing and spends nothing"
+        );
+    }
+
+    /// A host that governs a room and can mint real invites into it,
+    /// with the wire it publishes on left in the caller's hand.
+    ///
+    /// No swarm: the point of these is what the invitation state does,
+    /// and a live actor would put mdns discovery of whatever else is
+    /// running on the machine into the middle of it.
+    fn inviting_host() -> (
+        crate::shell::state::WorkspaceTreeHandle,
+        ShellNetwork,
+        mpsc::Receiver<NetCmd>,
+        crate::shell::state::RoomId,
+        crate::shell::state::WorkspaceId,
+    ) {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (room, ws) = {
+            let mut t = tree.write();
+            t.adopt_roomless_workspaces();
+            // A room with no owner is a room this machine may not name
+            // anybody in, so every assertion below would pass or fail
+            // for the wrong reason.
+            let me = crate::shell::state::local_user_id();
+            for w in t.workspaces.iter_mut() {
+                w.set_owner(me.clone());
+            }
+            let w = t.workspaces.first().expect("bootstrap leaves a workspace");
+            (w.room, w.id)
+        };
+        assert!(!room.is_nil(), "the fixture must govern a real room");
+        let (net, cmds) = shell_network_for_test(tree.clone(), 1);
+        // An invite carries the address a guest dials, and there is no
+        // swarm here to report one.
+        net.listen_addrs
+            .lock()
+            .unwrap()
+            .push("/ip4/127.0.0.1/tcp/4001".parse().expect("a multiaddr"));
+        (tree, net, cmds, room, ws)
+    }
+
+    /// What a guest reads off the token it was handed. Quoting it back
+    /// is what a redemption does, so a test that quotes it is quoting
+    /// exactly what travels.
+    fn invitation_in(token: &str) -> String {
+        crate::network::invite::validate_invite_token(token)
+            .expect("a token this machine just minted must verify")
+            .invite_id
+    }
+
+    /// Two invitations out at once, redeemed in the order they were
+    /// minted, and each person is called what they were invited as.
+    #[test]
+    fn invitations_out_together_are_redeemed_in_the_order_they_were_minted() {
+        let (tree, net, _cmds, room, ws) = inviting_host();
+        let for_xaver = net.issue_invite_named(ws, 3600, "Xaver").expect("mint");
+        let for_claude = net.issue_invite_named(ws, 3600, "Claude").expect("mint");
+
+        let xaver = libp2p::PeerId::random();
+        let claude = libp2p::PeerId::random();
+        net.name_invitee_on_arrival(&xaver, &room.to_string(), Some(&invitation_in(&for_xaver)));
+        net.name_invitee_on_arrival(&claude, &room.to_string(), Some(&invitation_in(&for_claude)));
+
+        assert_eq!(name_in(&tree, room, &xaver).as_deref(), Some("Xaver"));
+        assert_eq!(
+            name_in(&tree, room, &claude).as_deref(),
+            Some("Claude"),
+            "minting a second invite must not have spent the first one's name"
+        );
+    }
+
+    /// The same two invitations, redeemed the other way round.
+    ///
+    /// This is the case that was broken: invite one person, invite a
+    /// second before the first has redeemed anything, and the second
+    /// one knocks first. Both names were parked against the room, so
+    /// the second mint overwrote the first, whoever arrived first took
+    /// the surviving name, and the person who came after had nothing
+    /// waiting for them.
+    #[test]
+    fn invitations_out_together_are_redeemed_in_reverse_order() {
+        let (tree, net, _cmds, room, ws) = inviting_host();
+        let for_xaver = net.issue_invite_named(ws, 3600, "Xaver").expect("mint");
+        let for_claude = net.issue_invite_named(ws, 3600, "Claude").expect("mint");
+
+        let xaver = libp2p::PeerId::random();
+        let claude = libp2p::PeerId::random();
+        // Claude was invited second and arrives first.
+        net.name_invitee_on_arrival(&claude, &room.to_string(), Some(&invitation_in(&for_claude)));
+        net.name_invitee_on_arrival(&xaver, &room.to_string(), Some(&invitation_in(&for_xaver)));
+
+        assert_eq!(name_in(&tree, room, &claude).as_deref(), Some("Claude"));
+        assert_eq!(
+            name_in(&tree, room, &xaver).as_deref(),
+            Some("Xaver"),
+            "arriving second is not a reason to lose the name you were invited as"
+        );
+    }
+
+    /// A person and an agent invited back to back, agent first through
+    /// the door.
+    ///
+    /// The agent is admitted by capability *and* redeems a token, which
+    /// is what the two of them do in a real session — so if the two
+    /// routes shared one slot of pending-name state this is where they
+    /// would take each other's.
+    #[test]
+    fn a_person_and_an_agent_invited_together_keep_their_own_names() {
+        use crate::shell::state::{CapOverride, Subject, Verb};
+        let (tree, net, _cmds, room, ws) = inviting_host();
+        let me = crate::shell::state::local_user_id();
+
+        let for_xaver = net.issue_invite_named(ws, 3600, "Xaver").expect("mint");
+        // Admitting the agent is an ordinary grant on the room, the way
+        // `agent.invite` makes it.
+        let admitted = tree.write().grant_in_workspace(
+            ws,
+            &me,
+            CapOverride::membership(
+                Subject::agent("claude".to_string()),
+                ws.raw().to_string(),
+                Verb::Write,
+            )
+            .with_id("agent-member:claude".to_string()),
+        );
+        assert!(admitted.is_some(), "the fixture's owner administers this room");
+        let for_claude = net.issue_invite_named(ws, 3600, "Claude").expect("mint");
+
+        let xaver = libp2p::PeerId::random();
+        let claude = libp2p::PeerId::random();
+        net.name_invitee_on_arrival(&claude, &room.to_string(), Some(&invitation_in(&for_claude)));
+        net.name_invitee_on_arrival(&xaver, &room.to_string(), Some(&invitation_in(&for_xaver)));
+
+        assert_eq!(name_in(&tree, room, &claude).as_deref(), Some("Claude"));
+        assert_eq!(name_in(&tree, room, &xaver).as_deref(), Some("Xaver"));
+    }
+
+    /// Nobody who was invited by name is left showing the fallback.
+    ///
+    /// `peer@<handle>` is what the roster falls back to for somebody
+    /// the room never named, and it is the whole of what the user saw.
+    /// Asserted on the pair the frame loop actually builds a roster
+    /// from — `room_peer_labels` for what the room calls people, and
+    /// `room_roster` for the rows — rather than on the naming map the
+    /// tests above read, because the fallback lives in the second of
+    /// those and not the first.
+    #[test]
+    fn nobody_invited_by_name_is_left_as_a_bare_handle() {
+        let (tree, net, _cmds, room, ws) = inviting_host();
+        let for_xaver = net.issue_invite_named(ws, 3600, "Xaver").expect("mint");
+        let for_claude = net.issue_invite_named(ws, 3600, "Claude").expect("mint");
+
+        let xaver = libp2p::PeerId::random();
+        let claude = libp2p::PeerId::random();
+        net.name_invitee_on_arrival(&claude, &room.to_string(), Some(&invitation_in(&for_claude)));
+        net.name_invitee_on_arrival(&xaver, &room.to_string(), Some(&invitation_in(&for_xaver)));
+
+        let t = tree.read();
+        let workspace = t
+            .workspaces
+            .iter()
+            .find(|w| w.id == ws)
+            .expect("the workspace the invites were minted from");
+        let labels = t.room_peer_labels(room);
+        let arrived: std::collections::BTreeSet<u64> = [xaver, claude]
+            .iter()
+            .map(crate::network::behaviour::peer_liveness_handle)
+            .collect();
+        let rows = crate::shell::peer_presence::room_roster(
+            workspace,
+            &labels,
+            &arrived,
+            net.local_peer_id_hash(),
+        );
+
+        assert_eq!(rows.len(), 2, "both people are in the room: {rows:?}");
+        for row in &rows {
+            assert!(
+                !row.name.starts_with("peer@"),
+                "somebody the host typed a name for is on screen as a number: {row:?}"
+            );
+        }
+        let mut names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["Claude", "Xaver"]);
+    }
+
+    /// An invitation nobody redeems, and one that has run out, leave
+    /// the invitations beside them exactly as they were.
+    #[test]
+    fn an_unredeemed_or_expired_invitation_leaves_the_others_alone() {
+        let (tree, net, _cmds, room, ws) = inviting_host();
+        // Good the instant it is minted and not a second longer.
+        let expired = net.issue_invite_named(ws, 0, "Ghost").expect("mint");
+        let never_redeemed = net.issue_invite_named(ws, 3600, "Mallory").expect("mint");
+        let for_xaver = net.issue_invite_named(ws, 3600, "Xaver").expect("mint");
+
+        // The one that ran out redeems nothing, even quoted correctly.
+        let ghost = libp2p::PeerId::random();
+        net.name_invitee_on_arrival(&ghost, &room.to_string(), Some(&invitation_in(&expired)));
+        assert_eq!(
+            name_in(&tree, room, &ghost),
+            None,
+            "an invitation that has run out is not a name anybody may still collect"
+        );
+
+        // And the ones beside it are untouched.
+        let xaver = libp2p::PeerId::random();
+        net.name_invitee_on_arrival(&xaver, &room.to_string(), Some(&invitation_in(&for_xaver)));
+        assert_eq!(name_in(&tree, room, &xaver).as_deref(), Some("Xaver"));
+        assert_eq!(
+            net.pending_invites
+                .lock()
+                .unwrap()
+                .get(&invitation_in(&never_redeemed))
+                .map(|held| held.name.clone())
+                .as_deref(),
+            Some("Mallory"),
+            "an invitation nobody has redeemed is still waiting for the person it names"
+        );
+    }
+
+    /// The same name, twice, is two invitations.
+    ///
+    /// Two people can be called the same thing, and inviting a second
+    /// one must not hand the first one's promise away or leave the
+    /// second waiting on a slot that has already been spent.
+    #[test]
+    fn the_same_name_invited_twice_is_two_invitations() {
+        let (tree, net, _cmds, room, ws) = inviting_host();
+        let first = net.issue_invite_named(ws, 3600, "Claude").expect("mint");
+        let second = net.issue_invite_named(ws, 3600, "Claude").expect("mint");
+        assert_ne!(
+            invitation_in(&first),
+            invitation_in(&second),
+            "two invitations are two invitations even when they name the same person"
+        );
+
+        let one = libp2p::PeerId::random();
+        let two = libp2p::PeerId::random();
+        net.name_invitee_on_arrival(&two, &room.to_string(), Some(&invitation_in(&second)));
+        net.name_invitee_on_arrival(&one, &room.to_string(), Some(&invitation_in(&first)));
+
+        assert_eq!(name_in(&tree, room, &one).as_deref(), Some("Claude"));
+        assert_eq!(name_in(&tree, room, &two).as_deref(), Some("Claude"));
+    }
+
+    /// The round trip, through the code a running session runs.
+    ///
+    /// A host mints two invitations; a guest accepts the second one for
+    /// real, and the request it puts on the wire is inspected as it
+    /// goes — the invitation has to be *in* it, because the host has no
+    /// other way to tell which of its two promises just came due. That
+    /// request is then handed to the host through `tick`, which is the
+    /// function the compositor calls every frame, and the host names
+    /// the guest from it.
+    #[test]
+    fn a_guest_quotes_the_invitation_it_redeemed_and_the_host_names_it() {
+        let (host_tree, host_net, _host_cmds, room, ws) = inviting_host();
+        let _for_xaver = host_net.issue_invite_named(ws, 3600, "Xaver").expect("mint");
+        let for_claude = host_net.issue_invite_named(ws, 3600, "Claude").expect("mint");
+
+        // A second machine, which knows nothing except the token.
+        let guest_tree = WorkspaceTree::bootstrap_demo().shared();
+        let guest_ws = {
+            let mut t = guest_tree.write();
+            t.adopt_roomless_workspaces();
+            t.workspaces.first().expect("a workspace").id
+        };
+        let (guest_net, mut guest_cmds) = shell_network_for_test(guest_tree.clone(), 2);
+        let joined = guest_net
+            .accept_invite(guest_ws, &for_claude)
+            .expect("the token the host minted must be redeemable");
+        assert_eq!(joined, room, "the guest joined the room the token named");
+
+        // What actually went out on the wire.
+        let mut quoted: Option<String> = None;
+        while let Ok(cmd) = guest_cmds.try_recv() {
+            if let NetCmd::Publish {
+                msg:
+                    NeighbourMsg::SyncReq {
+                        room: ref asked,
+                        ref invite,
+                        ..
+                    },
+                ..
+            } = cmd
+                && asked == &room.to_string()
+            {
+                quoted = invite.clone();
+            }
+        }
+        assert_eq!(
+            quoted.as_deref(),
+            Some(invitation_in(&for_claude).as_str()),
+            "a guest that redeemed an invitation has to say which one, or a \
+             host with two out cannot tell them apart"
+        );
+
+        // And the host, driven the way a frame drives it.
+        let guest_peer = libp2p::PeerId::random();
+        host_net
+            .event_tx
+            .try_send(crate::network::actor::NetEvent::Msg {
+                ws: DEFAULT_WS_TOPIC,
+                peer: guest_peer,
+                msg: NeighbourMsg::SyncReq {
+                    since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new())
+                        .expect("empty heads serialise"),
+                    room: room.to_string(),
+                    invite: quoted,
+                },
+            })
+            .expect("the test channel has room");
+        host_net.tick();
+
+        assert_eq!(
+            name_in(&host_tree, room, &guest_peer).as_deref(),
+            Some("Claude"),
+            "the host named the arrival from the invitation it quoted"
+        );
+        assert!(
+            !host_net.pending_invites.lock().unwrap().is_empty(),
+            "and Xaver's invitation is still standing, waiting for Xaver"
         );
     }
 
