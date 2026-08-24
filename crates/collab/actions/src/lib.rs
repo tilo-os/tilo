@@ -274,6 +274,7 @@ mod tests {
             base_heads: vec![],
             timestamp: 0,
             locus: ExecutionLocus::ClientLocal,
+            actor: None,
         };
         assert!(matches!(
             replay(&mut doc, &env, &reg),
