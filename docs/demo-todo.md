@@ -207,3 +207,19 @@ on the floor. It passed, repeatedly, against a defect that was total.
 Worth auditing the other `scripts/headless-examples/` proofs for the
 same shape: a harness that arranges the conditions under which the
 answer is guaranteed.
+
+## A screen reader announces one table as four
+
+`accessibility_tree` gathers a table's cells by **adjacency**, the same
+assumption the layout pass made until it was fixed. When a peer types
+concurrently into the same anchor, the merge interleaves their lines
+between the cells — block order is a fractional key, ties break by block
+id, and the two replicas zipper — so the cells are no longer adjacent.
+
+Visually that produced four stray boxes instead of one grid, which is
+fixed. The accessibility tree still reports four one-cell tables, so
+somebody using a screen reader gets a worse version of the same defect
+and no way to see that it is one.
+
+Worth fixing with the same shape as the layout fix: gather by the
+`table` id the cells share, wherever they sit.
