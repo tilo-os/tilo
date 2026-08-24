@@ -233,13 +233,28 @@ fn drain(peer: &mut CollaborationManager, into: &mut AutoCommit) {
     let mut arrived = false;
     for ev in peer.poll() {
         match ev {
+            // Every frame in the room reaches a peer that named no record,
+            // and most of them belong to somebody else's document. Applying
+            // one of those does not merely fail: it leaves the replica in a
+            // state where the *next* delta — the one that did belong here —
+            // no longer materialises. That is what swallowed the agent's
+            // answer, which it had demonstrably put on the wire.
+            //
+            // So a delta is tried on a copy and kept only if it took. The
+            // real app has the same problem and solves it the same way, by
+            // refusing a document that is not its own rather than merging it.
             CollabEvent::CRDTIncremental { data } => {
-                let _ = into.load_incremental(&data);
+                let mut probe = into.clone();
+                if probe.load_incremental(&data).is_ok() {
+                    *into = probe;
+                }
             }
             CollabEvent::CRDTUpdate { data } => {
-                if let Ok(other) = AutoCommit::load(&data) {
-                    let mut other = other;
-                    let _ = into.merge(&mut other);
+                if let Ok(mut other) = AutoCommit::load(&data) {
+                    let mut probe = into.clone();
+                    if probe.merge(&mut other).is_ok() {
+                        *into = probe;
+                    }
                 }
             }
             CollabEvent::RemotePresenceUpdate {
