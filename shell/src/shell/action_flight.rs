@@ -347,6 +347,16 @@ pub fn note_reported_flight(actor: &str, hash: &str, from_app: &str, to_app: &st
     true
 }
 
+/// How many crossings are recorded and not yet drawn.
+///
+/// A look rather than a take, for a caller that has to wait for one to
+/// arrive — the recording rig, which sends a report over a socket and cannot
+/// start sampling the curve until the broker's reader thread has decoded it.
+/// Draining to find that out would consume the very thing it is waiting for.
+pub fn pending_len() -> usize {
+    ledger().lock().map(|l| l.pending.len()).unwrap_or(0)
+}
+
 /// Take everything recorded since the last drain. The compositor's side.
 pub fn take_pending() -> Vec<PendingFlight> {
     let Ok(mut l) = ledger().lock() else {
