@@ -184,6 +184,10 @@ layout-spacing-readout = { $name } spacing  { $px } px   Â·   drag the handle â€
 
 ## Canvas
 page-indicator = Page { $n }
+# Prefixes the zoom readout when the page is being scaled to fit a window too
+# narrow to show it whole, so the percentage reads as the window's limit rather
+# than as the zoom the user picked.
+zoom-fit = Fit
 # On-page placeholders (a missing/undecodable image; an embedded object we render
 # as a fidelity box rather than its content).
 canvas-image-missing = image
