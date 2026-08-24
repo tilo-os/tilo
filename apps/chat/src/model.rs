@@ -194,6 +194,10 @@ pub struct User {
     pub initials: String,
     pub color_idx: usize,
     pub status: Presence,
+    /// An automated agent acting in the room rather than a person. The roster
+    /// draws the distinction and the `@` picker offers both, so an agent can be
+    /// addressed exactly the way a colleague is.
+    pub is_agent: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,6 +288,10 @@ pub struct Message {
     /// `Some(parent_id)` when this message is a threaded reply.
     pub parent: Option<Id>,
     pub reactions: Vec<Reaction>,
+    /// Who this message refers to, resolved at authoring time. Structure, not
+    /// prose: a consumer asks the message who it mentions instead of scanning
+    /// `text` for `@`. See [`crate::mention`].
+    pub mentions: Vec<crate::mention::Mention>,
     pub attachment: Option<Attachment>,
     /// Pinned messages are flagged in the shared document so every peer sees the
     /// same pins. A plain scalar flag toggled by an action.
@@ -293,6 +301,19 @@ pub struct Message {
 impl Message {
     pub fn is_top_level(&self) -> bool {
         self.parent.is_none()
+    }
+
+    /// Whether this message refers to `user`. The question a notification, a
+    /// badge or an agent watching the room actually asks — answered from
+    /// structure, so it never depends on how the body happens to be spelled.
+    pub fn mentions_user(&self, user: &str) -> bool {
+        self.mentions.iter().any(|m| m.user == user)
+    }
+
+    /// Every participant this message refers to, in the order they appear.
+    /// Duplicates are kept: two mentions of one person are two references.
+    pub fn mentioned_ids(&self) -> impl Iterator<Item = &str> {
+        self.mentions.iter().map(|m| m.user.as_str())
     }
 }
 
@@ -413,6 +434,7 @@ mod tests {
             history: vec![],
             parent: parent.map(|s| s.to_string()),
             reactions: vec![],
+            mentions: vec![],
             attachment: None,
             pinned: false,
         }

@@ -74,6 +74,13 @@ pub enum ChatAction {
         text: String,
         parent: Option<String>,
         attachment: Option<Attachment>,
+        /// Who the body refers to, resolved to participant ids when the message
+        /// was authored (see [`crate::mention`]). Part of the payload — not
+        /// derived at apply — so a replay on another peer produces byte-identical
+        /// references without needing that peer's roster. `#[serde(default)]` so
+        /// a frame from a release that predates mentions still decodes.
+        #[serde(default)]
+        mentions: Vec<crate::mention::Mention>,
     },
     /// Replace a message's body, archiving the prior text into its edit history
     /// and flagging it edited. `ts` (the edit time) is minted at authoring.
@@ -143,6 +150,7 @@ impl Action for ChatAction {
                 text,
                 parent,
                 attachment,
+                mentions,
             } => {
                 ChatDoc::push_message_with_id(
                     doc,
@@ -154,6 +162,7 @@ impl Action for ChatAction {
                         text: text.clone(),
                         parent: parent.clone(),
                         attachment: attachment.clone(),
+                        mentions: mentions.clone(),
                         ..Default::default()
                     },
                 );
@@ -255,6 +264,7 @@ pub fn send_message_action(
     text: &str,
     parent: Option<String>,
     attachment: Option<Attachment>,
+    mentions: Vec<crate::mention::Mention>,
 ) -> ChatAction {
     ChatAction::SendMessage {
         channel: channel.to_string(),
@@ -264,6 +274,7 @@ pub fn send_message_action(
         text: text.to_string(),
         parent,
         attachment,
+        mentions,
     }
 }
 
@@ -386,6 +397,10 @@ pub struct ChatResourceCtx {
     pub channels: Vec<ChannelResource>,
     pub active_channel: String,
     pub messages: Vec<MessageResource>,
+    /// The room, as the composer sees it. Carried so a message posted from the
+    /// palette resolves `@name` into the same structured references a message
+    /// typed into the composer does — one binding rule, not two.
+    pub participants: Vec<crate::mention::Participant>,
 }
 
 fn immediate_spec(id: &str, label: &str, action: &ChatAction) -> ActionSpec {
@@ -453,9 +468,20 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
             {
                 let cid = ch.id.clone();
                 let me = ctx.me.clone();
+                let room = ctx.participants.clone();
                 move |text: &str| {
                     let id = format!("m_{}", uuid::Uuid::new_v4().simple());
-                    encode(&send_message_action(&cid, &id, &me, now_secs(), text, None, None))
+                    let mentions = crate::mention::resolve(text, &room);
+                    encode(&send_message_action(
+                        &cid,
+                        &id,
+                        &me,
+                        now_secs(),
+                        text,
+                        None,
+                        None,
+                        mentions,
+                    ))
                 }
             },
         ));
@@ -659,6 +685,14 @@ mod tests {
             channels,
             active_channel: "c_crit".to_string(),
             messages,
+            participants: ChatDoc::list_users(doc)
+                .into_iter()
+                .map(|u| crate::mention::Participant {
+                    id: u.id,
+                    name: u.name,
+                    is_agent: u.is_agent,
+                })
+                .collect(),
         }
     }
 
@@ -726,7 +760,7 @@ mod tests {
         let before = ChatDoc::list_messages(&doc, "c_general").len();
         dispatch(
             &mut doc,
-            &send_message_action("c_general", "m_test1", model::ME, TS, "hello", None, None),
+            &send_message_action("c_general", "m_test1", model::ME, TS, "hello", None, None, vec![]),
         );
         let msgs = ChatDoc::list_messages(&doc, "c_general");
         assert_eq!(msgs.len(), before + 1);
@@ -810,6 +844,7 @@ mod tests {
             "undo me",
             None,
             None,
+            vec![],
         ));
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
@@ -838,7 +873,7 @@ mod tests {
         let mut b = AutoCommit::load(&bytes).unwrap();
         assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
 
-        let action = send_message_action("c_general", "m_conv", "u_aria", TS, "converge", None, None);
+        let action = send_message_action("c_general", "m_conv", "u_aria", TS, "converge", None, None, vec![]);
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();

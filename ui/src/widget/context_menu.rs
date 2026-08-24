@@ -227,6 +227,33 @@ impl ContextMenu {
         self.hovered
     }
 
+    /// Pre-select an action row, so a menu opened by the keyboard already has
+    /// somewhere for Enter to land.
+    ///
+    /// A menu raised by a right-click starts with nothing highlighted, which is
+    /// correct: the pointer has not chosen anything yet. A menu raised *by
+    /// typing* — a completion list — is the opposite case; arriving with no row
+    /// selected would make the first Enter do nothing. Out-of-range indices and
+    /// separators are ignored rather than accepted, so a caller cannot leave
+    /// the highlight on a row that can never fire.
+    pub fn set_highlight(&mut self, idx: Option<usize>) {
+        self.hovered = match idx {
+            Some(i) if matches!(self.items.get(i), Some(MenuItem::Action { .. })) => Some(i),
+            Some(_) => return,
+            None => None,
+        };
+    }
+
+    /// Re-anchor an already-open menu, keeping the current highlight.
+    ///
+    /// [`open_at`](Self::open_at) is for raising a menu at the point the user
+    /// acted; this is for a menu whose anchor moves under it — a completion
+    /// list tracking a caret — where re-opening would be the wrong verb.
+    pub fn move_to(&mut self, position: [f32; 2]) {
+        self.position = Some(position);
+        self.layout_at_position();
+    }
+
     /// Move the keyboard hover to the next/previous action row, skipping
     /// separators. `dir > 0` moves down, `dir < 0` up.
     fn move_hover(&mut self, dir: i32) {
