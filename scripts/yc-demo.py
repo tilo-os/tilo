@@ -6436,7 +6436,7 @@ def main() -> int:
     if _agent_bin and refuse_if_stale(
             _agent_bin,
             [os.path.join(REPO, "apps", "agent", "src")],
-            "cargo build --profile demo -p agent",
+            "cargo build --profile demo -p agent --bin qos-agent",
             args.allow_stale_shell):
         return 2
 

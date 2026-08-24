@@ -145,7 +145,7 @@ few seconds each.
 Runs against target/demo/shell, the same as `yc-demo.py`:
 
     cargo build --profile demo -p shell --bin shell --bin qos-control
-    cargo build --profile demo -p qos-agent --bin qos-agent
+    cargo build --profile demo -p agent --bin qos-agent
     scripts/demo-apps-live.sh
 
 `--release` is not the profile: the control socket this records through
@@ -691,7 +691,7 @@ class Live:
         if binary is None:
             yc.gap("qos-agent is not built, so nothing here can act on an "
                    "instruction written to it — cargo build --profile demo "
-                   "-p qos-agent --bin qos-agent")
+                   "-p agent --bin qos-agent")
             self.args.agent = False
             return
         argv = [binary, "--workspace", str(self.room), "--name", "Claude",
@@ -1196,7 +1196,7 @@ def main() -> int:
         print("no qos-launcher in target/{demo,debug}: every app launch is "
               "refused without a sandbox to spawn into, so there would be "
               "nothing on screen. Build it:\n"
-              "  cargo build --profile demo -p qos-launcher --bin qos-launcher",
+              "  cargo build --profile demo -p launcher --bin qos-launcher",
               file=sys.stderr)
         return 2
 
