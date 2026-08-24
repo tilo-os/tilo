@@ -504,6 +504,57 @@ impl WindowGroup {
         self.pending_width_change = Some(self.width.permille());
     }
 
+    /// The width-resize grip on this group's trailing edge — the mark
+    /// [`Widget::draw`] paints *and* the region every pointer path
+    /// hit-tests — or `None` when this group's width is not the user's to
+    /// change.
+    ///
+    /// One rect for both, because they were two and they disagreed. The
+    /// paint was a 6 px capsule of at most 80 px, centred on the group;
+    /// the hit region was a 6 px column down the *entire* right edge. So
+    /// the pointer turned into a resize cursor hundreds of pixels away
+    /// from anything on screen, and the only thing actually drawn was a
+    /// small mark whose position said nothing about where the control
+    /// was. Deriving both from here is what stops that drifting again —
+    /// and it is why the gate below is inside the widget rather than at
+    /// the call site: gating only the paint would leave the band behind,
+    /// invisible and still taking presses.
+    ///
+    /// The gate is whether a drag could do anything. A maximized group is
+    /// the case that has one: [`Widget::build_layout`] replaces its width
+    /// with `Dimension::auto()` and lets it grow, so a drag updates
+    /// `self.width` and the layout ignores it — the pointer moves and
+    /// nothing on screen does. Restoring is what the restore pill is for,
+    /// and it is drawn for exactly this state.
+    pub fn resize_grip_rect(&self) -> Option<Rect> {
+        if self.maximized || self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return None;
+        }
+        // A strip with no room between its floor and its ceiling gives a
+        // drag nowhere to land.
+        let usable = self.strip_usable_px;
+        if max_group_px(usable) - min_group_px(usable) <= 0.5 {
+            return None;
+        }
+        // A quarter of the group, so a short tile does not carry a grip
+        // longer than itself, bounded so a tall one does not carry a
+        // stripe. The width is [`RESIZE_HANDLE_PX`]: the painted capsule
+        // and the pointer band are the same six pixels.
+        let h = (self.rect.height() * 0.25).clamp(24.0, 80.0);
+        let cy = self.rect.center().y;
+        Some(Rect::new(
+            self.rect.x1 - RESIZE_HANDLE_PX,
+            cy - h / 2.0,
+            self.rect.x1,
+            cy + h / 2.0,
+        ))
+    }
+
+    /// Does `p` land on the width-resize grip?
+    fn resize_grip_hit(&self, p: Point) -> bool {
+        self.resize_grip_rect().is_some_and(|r| r.contains(p))
+    }
+
     /// Imperative setter used by the between-groups `ResizeHandle`. Clamps
     /// a [`WindowWidth::Fraction`] into
     /// `[WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE]` and stamps the new
@@ -781,8 +832,13 @@ impl WindowGroup {
         if !self.bar_rect().contains(p) {
             return false;
         }
-        // Right-edge resize band belongs to the width-resize gesture.
-        if p.x >= self.rect.x1 - RESIZE_HANDLE_PX {
+        // The width-resize grip belongs to the width-resize gesture. It is
+        // asked for by rect rather than by "anything past x1 - 6": the
+        // grip is centred on the group and never reaches the bar, so
+        // excluding a whole column here surrendered the bar's trailing six
+        // pixels to a gesture that does not live there — a strip that
+        // neither resized nor grabbed.
+        if self.resize_grip_hit(p) {
             return false;
         }
         // The "+" chip sits in the trailing bar space, which is otherwise
@@ -1329,31 +1385,25 @@ impl Widget for WindowGroup {
         // dark wallpaper. Hover/drag brightens to `border_focus` so
         // the user can see whether they've grabbed the handle.
         //
-        // Hit zone is wider (`RESIZE_HANDLE_PX = 6`) than the painted
-        // grip so a mouse-cursor approach catches before the user
-        // notices the visual.
-        let grip_col = if self.hover_resize || self.resize_origin.is_some() {
-            theme.tokens.colors.border_focus
-        } else {
-            theme.tokens.colors.text_dim.with_alpha_factor(0.55)
-        };
-        let group_h = self.rect.height();
-        let grip_h = (group_h * 0.25).clamp(24.0, 80.0);
-        let grip_cx = self.rect.x1 - 3.0;
-        let grip_cy = self.rect.center().y;
-        let bar = |dx: f64| {
-            vello::kurbo::RoundedRect::from_rect(
-                Rect::new(
-                    grip_cx + dx - 1.0,
-                    grip_cy - grip_h / 2.0,
-                    grip_cx + dx + 1.0,
-                    grip_cy + grip_h / 2.0,
-                ),
-                1.0,
-            )
-        };
-        scene.fill(vello::peniko::Fill::NonZero, transform, grip_col, None, &bar(-2.0));
-        scene.fill(vello::peniko::Fill::NonZero, transform, grip_col, None, &bar(2.0));
+        // Where it goes, and whether it goes anywhere at all, is
+        // [`Self::resize_grip_rect`] — the same answer every pointer path
+        // takes, so the mark on screen is the control.
+        if let Some(grip) = self.resize_grip_rect() {
+            let grip_col = if self.hover_resize || self.resize_origin.is_some() {
+                theme.tokens.colors.border_focus
+            } else {
+                theme.tokens.colors.text_dim.with_alpha_factor(0.55)
+            };
+            let grip_cx = grip.center().x;
+            let bar = |dx: f64| {
+                vello::kurbo::RoundedRect::from_rect(
+                    Rect::new(grip_cx + dx - 1.0, grip.y0, grip_cx + dx + 1.0, grip.y1),
+                    1.0,
+                )
+            };
+            scene.fill(vello::peniko::Fill::NonZero, transform, grip_col, None, &bar(-2.0));
+            scene.fill(vello::peniko::Fill::NonZero, transform, grip_col, None, &bar(2.0));
+        }
 
         // Drag-in-flight visual: subtle accent ring around the whole group
         // so the user has a spatial signal the drag is live. Matches the
@@ -1624,12 +1674,11 @@ impl Widget for WindowGroup {
     }
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, m: &winit::event::Modifiers, s: &mut AutoCommit, p: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
         let children = taffy.children(node_id).unwrap();
-        let handle_rect = Rect::new(self.rect.x1 - RESIZE_HANDLE_PX, self.rect.y0, self.rect.x1, self.rect.y1);
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = pt;
-                self.hover_resize = handle_rect.contains(pt);
+                self.hover_resize = self.resize_grip_hit(pt);
                 self.restore_hover = self.maximized && self.restore_rect.contains(pt);
                 self.close_hover = self.maximized && self.close_rect.contains(pt);
                 if self.resize_origin.is_some() { self.update_resize(pt.x as f32); *handled = true; return; }
@@ -1900,10 +1949,13 @@ impl Widget for WindowGroup {
         !Widget::presented(self) && self.hosts.iter().any(|(_, h)| h.opening())
     }
     fn get_rect(&self) -> Rect { self.rect }
-    /// East-west resize cursor while the pointer sits in the group's
-    /// right-edge resize band (the `RESIZE_HANDLE_PX`-wide grip that
-    /// `draw` paints and `handle_event` hit-tests via `hover_resize`)
-    /// or a width-resize drag is in flight. Mirrors the inter-group
+    /// East-west resize cursor while the pointer sits on the group's
+    /// width-resize grip ([`WindowGroup::resize_grip_rect`] — the same
+    /// rect `draw` paints and `handle_event` hit-tests via
+    /// `hover_resize`), or while a width-resize drag is in flight. So the
+    /// cursor changes over the mark and nowhere else, and it does not
+    /// change at all over a group whose width a drag cannot move.
+    /// Mirrors the inter-group
     /// [`crate::widget::ResizeHandle`]'s `cursor_shape` so both resize
     /// affordances give the same OS feedback: without this the
     /// between-groups handle changed the cursor but a group's own
@@ -1913,13 +1965,7 @@ impl Widget for WindowGroup {
     /// the inter-group handle's 16 px hit area is smaller-area, so it
     /// still wins in the narrow overlap between two groups.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        let band = Rect::new(
-            self.rect.x1 - RESIZE_HANDLE_PX,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1,
-        );
-        if self.resize_origin.is_some() || band.contains(point) {
+        if self.resize_origin.is_some() || self.resize_grip_hit(point) {
             Some(winit::window::CursorIcon::EwResize)
         } else {
             None
@@ -3002,6 +3048,74 @@ mod tests {
             Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
             Some(winit::window::CursorIcon::EwResize),
             "an in-flight resize drag holds the east-west cursor across the group",
+        );
+    }
+
+    /// The resize grip is drawn where it can be grabbed, and nowhere else.
+    ///
+    /// It used to be two answers: a capsule of at most 80 px centred on the
+    /// group, and a hit band running the group's whole height. So the top
+    /// and bottom of every window's trailing edge turned the pointer into a
+    /// resize cursor and took presses with nothing drawn there at all —
+    /// hundreds of pixels of control that the screen never mentioned.
+    #[test]
+    fn the_resize_grip_claims_the_pointer_only_where_it_is_drawn() {
+        let mut g = make_group();
+        g.set_strip_usable_px(1200.0);
+        g.rect = Rect::new(0.0, 0.0, 800.0, 700.0);
+        let rect = g.get_rect();
+        let grip = g.resize_grip_rect().expect("a resizable group carries a grip");
+
+        assert!(
+            grip.height() < rect.height(),
+            "the grip is a mark on the edge, not the whole edge: {grip:?} in {rect:?}",
+        );
+        assert!(
+            (grip.x1 - rect.x1).abs() < f64::EPSILON
+                && (grip.width() - RESIZE_HANDLE_PX).abs() < f64::EPSILON,
+            "and it sits on the trailing edge, RESIZE_HANDLE_PX wide: {grip:?}",
+        );
+
+        // Above the grip, on the same column: drawn nothing, so claims
+        // nothing.
+        let above = Point::new(rect.x1 - 3.0, grip.y0 - 20.0);
+        assert!(!grip.contains(above), "the probe is off the grip by construction");
+        assert_eq!(
+            Widget::cursor_shape(&g, above),
+            None,
+            "the trailing edge above the grip is not a resize target",
+        );
+        assert_eq!(
+            Widget::cursor_shape(&g, grip.center()),
+            Some(winit::window::CursorIcon::EwResize),
+            "and the grip itself is",
+        );
+    }
+
+    /// A maximized group has no grip, in either sense.
+    ///
+    /// `build_layout` gives a maximized group `Dimension::auto()` and lets
+    /// it grow, so a width drag writes `self.width` and the layout ignores
+    /// it: the pointer moves and nothing on screen does. Gating only the
+    /// paint would have left the band there — invisible, still swallowing
+    /// presses on the edge of a window that cannot be resized.
+    #[test]
+    fn a_maximized_group_offers_no_resize_grip_to_paint_or_to_press() {
+        let mut g = make_group();
+        g.set_strip_usable_px(1200.0);
+        g.rect = Rect::new(0.0, 0.0, 800.0, 700.0);
+        let grip = g.resize_grip_rect().expect("a restored group has one");
+
+        g.maximized = true;
+        assert_eq!(
+            g.resize_grip_rect(),
+            None,
+            "a maximized group's width is not the pointer's to change",
+        );
+        assert_eq!(
+            Widget::cursor_shape(&g, grip.center()),
+            None,
+            "so the edge it used to sit on claims no resize cursor either",
         );
     }
 

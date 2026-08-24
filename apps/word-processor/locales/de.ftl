@@ -164,9 +164,9 @@ outline-untitled = (unbenannt)
 ## Page layout (ruler) bottom bar
 layout-margins = Ränder
 layout-spacing = Abstände
-layout-none-hint = Seitenlayout — Ränder oder Abstände wählen, dann auf der Seite ziehen
-layout-margins-readout = Ränder  L { $l }  O { $t }  R { $r }  U { $b }   ·   Ziehen = gegenüberliegendes Paar · Umschalt = eine Seite · Strg = alle proportional
-layout-spacing-readout = Abstand für { $name }  { $px } px   ·   Griff ziehen — jeder Block vom Typ "{ $name }" folgt
+layout-none-hint = Seitenlayout
+layout-margins-readout = Ränder  L { $l }  O { $t }  R { $r }  U { $b }
+layout-spacing-readout = Abstand für { $name }  { $px } px
 
 ## Canvas
 page-indicator = Seite { $n }
