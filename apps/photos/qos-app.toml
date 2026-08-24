@@ -55,7 +55,7 @@ mode = "off"
 # Opening and saving both go through the host chooser, so the app never needs
 # ambient read or write access to the user's pictures.
 [sandbox.portals]
-file-chooser = "required@1"
+file-chooser = "via-host"
 
 [sandbox.services]
 collab = "optional@1"
