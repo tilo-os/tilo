@@ -185,12 +185,21 @@ impl ChromeColors {
     /// available token is used for each slot — no new theme tokens are invented.
     fn for_theme(theme: &Theme) -> Self {
         let c = &theme.tokens.colors;
-        // Pick a paper tone: prefer the theme's lightest neutral when it is
-        // actually light (so light themes use their own near-white sheet), but
-        // never go dark — dark themes keep the canonical light paper so the
-        // document ink contrasts. `neutral[10]` is the lightest ramp slot.
-        let lightest = c.neutral[10];
-        let paper = if luminance(lightest) >= 0.85 { lightest } else { PAPER_DEFAULT };
+        // The sheet is document content, not chrome: it is the ground the
+        // document's own ink was authored against, so it is [`PAPER_DEFAULT`]
+        // in every palette and the theme decides what goes *on* it — the
+        // convention the `PAPER_*` block above states.
+        //
+        // It used to be derived from the palette instead: take `neutral[10]`
+        // when `luminance(neutral[10]) >= 0.85`, else the constant. That asks
+        // a colour which theme it belongs to, and the answer was wrong for
+        // the one palette that cares most. `Theme::high_contrast` is
+        // `Tokens::dark()` with its *surfaces* overridden; the neutral ramp
+        // stays the dark theme's, so the test said "light enough" and the
+        // high-contrast track drew its page on the dark theme's sheet —
+        // dimmer than the light theme's own paper. The palette asking for the
+        // most contrast on the machine got the least.
+        let paper = PAPER_DEFAULT;
         // A whisper of a tint off the sheet: enough to read as a reserved
         // box, not enough to look like a second surface. `on_card`'s own
         // tint step, so a placeholder and a gutter strip sit at the same
@@ -219,8 +228,11 @@ impl ChromeColors {
     }
 }
 
-/// Relative luminance (0..1) of a colour — used only to decide whether a theme's
-/// "lightest" surface is light enough to serve as paper.
+/// Relative luminance (0..1) of a colour. Test-only: the sheet is no longer
+/// chosen by asking a palette colour how light it is — see
+/// [`ChromeColors::for_theme`] — so the only readings left are the ones the
+/// tests take of what was drawn.
+#[cfg(test)]
 fn luminance(c: Color) -> f64 {
     let r = c.r() as f64 / 255.0;
     let g = c.g() as f64 / 255.0;
@@ -7877,6 +7889,20 @@ impl WordProcessorWidget {
         self.remark.is_open()
     }
 
+    /// The address the open compose surface is talking about.
+    ///
+    /// The *address*, not the label: a host following it resolves the block it
+    /// names, which is the whole point of the gesture.
+    pub fn remark_reference(&self) -> Option<&qos_reference::ResourceRef> {
+        self.remark.reference()
+    }
+
+    /// The destination the selector is showing, and therefore the one a remark
+    /// sent now would be delivered to.
+    pub fn remark_destination(&self) -> Option<&qos_reference::Destination> {
+        self.remark.destination()
+    }
+
     /// "Say something about this" without a pointer (`Ctrl+Shift+M`).
     ///
     /// The same surface the right-click raises, over the same selection and
@@ -8349,7 +8375,15 @@ impl WordProcessorWidget {
         // second thing to do with the selection, not a replacement for Cut and
         // Copy. Silently declines when the host has named no destinations, so a
         // session with no room behind it right-clicks exactly as it always did.
-        self.open_remark_beside(state, self.context_menu.rect());
+        //
+        // Only over a selection the person made. A right-click on a bare word
+        // snaps a selection around it so Cut and Copy have something to act on,
+        // but that selection is the editor's guess, not somebody pointing at
+        // something they want to talk about — raising a message box every time
+        // a misspelling is right-clicked would make the gesture noise.
+        if had_selection {
+            self.open_remark_beside(state, self.context_menu.rect());
+        }
         self.dirty = true;
     }
 
@@ -9289,6 +9323,37 @@ mod tests {
             assert!(
                 luminance(cc.paper) - luminance(PAPER_INK) > 0.5,
                 "paper/ink contrast must be ample",
+            );
+        }
+    }
+
+    /// Every palette draws the document on the same sheet — and in
+    /// particular the high-contrast track does not inherit the dark one's.
+    ///
+    /// The sheet used to be `neutral[10]` whenever that slot measured light
+    /// enough. `Theme::high_contrast` is `Tokens::dark()` with its surfaces
+    /// overridden and its neutral ramp untouched, so that test passed on the
+    /// dark theme's near-white and the high-contrast page came out dimmer
+    /// than the light theme's page. Reading the sheet off a palette colour is
+    /// what made a palette's identity invisible to the code deciding for it,
+    /// so the guard is that no palette gets a different answer.
+    #[test]
+    fn no_palette_draws_the_page_on_a_different_sheet() {
+        let light = ChromeColors::for_theme(&Theme::light()).paper;
+        for theme in [
+            Theme::dark(),
+            Theme::light(),
+            Theme::high_contrast(),
+            Theme::oled(),
+            Theme::nord(),
+            Theme::solarized(),
+        ] {
+            let paper = ChromeColors::for_theme(&theme).paper;
+            assert_eq!(
+                (paper.r(), paper.g(), paper.b()),
+                (light.r(), light.g(), light.b()),
+                "{} drew the page on a sheet of its own",
+                theme.name,
             );
         }
     }
