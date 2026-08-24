@@ -25,8 +25,24 @@ on the real path · `[!]` landed but unverified, or regressed.
 - [~] **Say something to a selection** — select anything, right-click,
       compose beside the context menu; the message carries the
       resource address, and a channel selector shows where it is going.
-- [~] **Image editor usable** — open, edit visibly, get the result out.
-      Crop/rotate/save glyphs landed.
+- [x] **An image editor exists at all** — and the brief that asked for
+      one was wrong. `apps/imager` is the **Disk Imager**, a ~5,800-line
+      USB/OS-install wizard; its history has never been anything else,
+      and adding photo editing to it would have destroyed working
+      functionality. There was no image viewer anywhere in the fleet,
+      but `ui::widget::ImageViewer` existed in the toolkit and no app
+      used it. So `apps/photos` (`dev.qos.photos`) now opens, fits,
+      rotates, crops, copies to the clipboard and saves.
+      Two calls worth keeping: a crop is stored in the **original's**
+      coordinates, so it keeps meaning the same region however often the
+      image is later turned; and **copy is deliberately not an action**,
+      because an action replays on every peer and a clipboard write
+      modelled as one would reach into the selection of every machine in
+      the room. The document holds a path plus crop and rotation and
+      never the pixels — asserted under 4096 bytes with a 4000x3000
+      image open.
+      **The demo scripts still name an image editor that does not
+      exist**; they need `dev.qos.photos`.
 - [~] **Four applications on the strip, and tabbing** — two in frame at
       a time; one tab group holding two *different* applications.
 
