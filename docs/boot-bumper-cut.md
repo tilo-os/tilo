@@ -15,9 +15,11 @@ Four things, in order, and nothing else:
 1. **A few seconds of console** — the *last* few, immediately before the
    greeter. Enough to read as "a real machine is starting", not enough to read
    as "watch a log scroll". Target **3 seconds**.
-2. **The greeter**, long enough to actually read: the qOS card, `quickuser`
-   already in the username field, the password field focused. Target
-   **3 seconds**, slowed if the recording is faster than that.
+2. **The greeter**, long enough to actually read: the qOS card, the focused
+   username field, the session set to qOS. Target **3 seconds**, slowed if the
+   recording is faster than that. The recorder does not pre-fill anything: the
+   greeter idles with an *empty* form and types both credentials in one burst
+   at the very end.
 3. **The filled login form — and end there.** Credentials in, the primary
    action visible, before anything is submitted.
 
@@ -71,10 +73,10 @@ first does not: the demo's desktop should still be the first desktop.
   hand straight over to the greeter.
 - **Any tail after the desktop has settled.** The example take had 62 seconds
   of motionless desktop; that is what `qos-boot-full-95s.mp4` is for.
-- **The duplicated status line.** The 2026-08-23 greeter renders
-  `Authenticating…` twice, stacked, with a spinner between them. It is a
-  greeter defect rather than a cut problem — fix it in the image if there is
-  time, and until then prefer a cut that does not dwell on it.
+- ~~The duplicated status line.~~ **Gone with the rebuilt greeter.** The
+  submitted state on `fbe59310b` is a single greyed `Signing you in…` on the
+  button itself, with no stacked second line and no internal session name.
+  Ending before it is now a pacing choice, not damage control.
 
 ## What to slow, and how much
 
@@ -113,22 +115,66 @@ scripts/demo-assemble.py --out final.mp4 boot-cut.mp4 qos-demo.mp4
 
 ## The 2026-08-23 recording, as a worked example
 
-`qos-boot-greeter-fbe59310b.mp4` — 1280x800, 28.1 s, the image carrying the
-rebuilt greeter. Measured spans:
+`qos-boot-greeter-fbe59310b.mp4` — 1280x800, 30 fps, 844 frames, 28.13 s, the
+image carrying the rebuilt greeter. Spans below are measured frame by frame
+(`signalstats` for the boundaries, extracted stills to identify content), and
+they correct an earlier pass of this file that had the ending a frame range too
+late.
 
-| span | content |
-|---|---|
-| → 17.0 s | console; the on-screen log freezes at kernel 13.5 s |
-| 17.5-20.5 s | black gap — cut entirely |
-| 21.0-24.5 s | greeter idle, legible |
-| 24.5-25.5 s | credentials typed |
-| ~25.5 s | filled form — **the ending frame** |
-| 25.6 s → | authenticating, then black. No desktop is reached at all. |
+| frames | span | content |
+|---|---|---|
+| 0-252 | → 8.4 s | TianoCore splash — cut |
+| 253-436 | 8.4-14.53 s | console, **actually scrolling** |
+| 437-440 | 14.57-14.67 s | black flash on modeset |
+| 441-528 | 14.70-17.6 s | console **frozen** — one unchanging frame |
+| 529-543 | 17.6-18.1 s | black |
+| 544-560 | 18.1-18.7 s | two failure lines alone on black |
+| 561-639 | 18.7-21.3 s | black gap — cut entirely |
+| 640-744 | 21.3-24.83 s | greeter idle, **username empty**, field focused |
+| 745-764 | 24.83-25.47 s | credentials typed, both fields, 0.63 s |
+| **764** | **25.467 s** | filled form, still editable — **the ending frame** |
+| 765-770 | 25.50-25.67 s | `Signing you in…` — already submitted |
+| 771→ | 25.70 s → | black. No desktop is reached at all. |
 
-Cut to **14.0-17.0** and **21.0-25.5**, joined: 7.5 s. The greeter holds for
-about three and a half seconds at real speed, so this recording needs **no
-slowing** — that was the previous take's one-second problem, not a standing
-property of the recorder.
+Two traps here that an earlier reading of this recording walked into:
+
+- **The console freezes at frame 436, not at 17 s.** Everything from 14.70 s on
+  is a single held frame, so a console beat taken from 14.0-17.0 is mostly a
+  still with a black flash in it. Take the last live second — frames 407-436 —
+  and nothing after.
+- **25.5 s is already the authenticating state.** The last frame with the form
+  filled *and* the `Log in` button still live is **764**. One frame later the
+  button is greyed. "Filled form" and "submitted" are 33 ms apart.
+
+**The form cannot be held at real speed.** The credential burst is 0.63 s
+end to end, and the filled state exists for two frames before submit. Holding
+it for the ~2 s the budget section asks for means slowing that span — this
+recording does need slowing, contrary to what this section previously claimed.
+`setpts=2.0*PTS` over frames 745-764 plus a short clone-hold on 764 gets there
+without the drag that 3× produced on the earlier take.
+
+### The 3.2 s cut, as built
+
+97 frames, 3.2333 s — chosen so that bumper + a 96.767 s demo lands on exactly
+100.000 s:
+
+| output frames | source | treatment | length |
+|---|---|---|---|
+| 0-26 | 410-436 | real speed | 0.900 s console |
+| 27-47 | 724-744 | real speed | 0.700 s greeter idle |
+| 48-87 | 745-764 | `setpts=2.0*PTS` | 1.333 s credentials going in |
+| 88-96 | 764 held | `tpad` clone | 0.300 s filled form |
+
+1280x800 into 1920x1080 is pillarboxed, not cropped — scaled to 1728x1080 and
+padded 96 px each side. Cropping to 16:9 would fill the frame but throws away
+real screen; and against the black console the bars are invisible anyway, so
+the only shot that shows them is the greeter, where a centred card carries it.
+
+At this length the console reads and the form reads, but the greeter gets 0.7 s
+of idle before typing starts, which is the beat that suffers. If the budget ever
+grows, spend it there first — 1.5 s of idle greeter before the credentials go in
+is the difference between "a login screen appeared" and "I saw the login
+screen".
 
 Two things this boot showed that are not visible in the film, because the
 on-screen console freezes before systemd's summary: `shell-firstboot.service`
