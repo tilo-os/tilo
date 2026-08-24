@@ -7125,6 +7125,14 @@ impl Widget for WordProcessorWidget {
     ) {
         Self::set_remark_destinations(self, destinations);
     }
+
+    /// Hand the finished remark to the host, which addresses and sends it.
+    ///
+    /// Delegates to the inherent method for the same reason
+    /// `set_remark_destinations` does: one way in, one way out.
+    fn take_remark(&mut self) -> Option<qos_reference::Remark> {
+        Self::take_remark(self)
+    }
     fn get_rect(&self) -> Rect {
         self.rect
     }
