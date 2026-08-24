@@ -316,6 +316,11 @@ impl Session {
             .collect()
     }
 
+    /// Whether the agent is holding the state of the app `namespace` names.
+    fn holds(&self, namespace: &str) -> bool {
+        self.held().iter().any(|(c, _)| c.namespace == namespace)
+    }
+
     /// Everything the room exports right now that the agent may perform.
     ///
     /// Asked, never remembered. Each app builds its own tree from the
@@ -326,17 +331,6 @@ impl Session {
         surface::offers(&self.held(), view, &self.cfg.permissions)
     }
 
-    /// The editor holding the document `namespace` authored.
-    fn editor_for(&mut self, namespace: &str) -> Option<&mut Editor> {
-        if self
-            .editor
-            .as_ref()
-            .is_some_and(|e| e.contract().namespace == namespace)
-        {
-            return self.editor.as_mut();
-        }
-        self.peers.get_mut(namespace)
-    }
 
     /// Changes this replica holds but cannot apply for want of what they
     /// were built on. Non-zero means what the agent can read is short of
@@ -718,6 +712,26 @@ impl Session {
         ) else {
             return Ok(false);
         };
+        // A room arrives one document at a time. A summons about an app whose
+        // state has not got here yet is one the agent can neither answer nor
+        // honestly refuse — it does not know yet, and "I can't act on that"
+        // would be a claim about timing dressed up as a claim about the
+        // request. Leave it unconsumed and look again next turn.
+        //
+        // Nothing is lost by waiting: the agent keeps asking the room until
+        // something is addressed to it, and `await_document` is what bounds
+        // the wait and names the cause if the state never comes.
+        if let Some(resource) = summons.subject.resource() {
+            let namespace = surface::app_of(resource);
+            if !self.holds(namespace) {
+                tracing::debug!(
+                    %namespace,
+                    message = %summons.message,
+                    "addressed, but that app's state is not here yet — waiting"
+                );
+                return Ok(false);
+            }
+        }
         self.addressed_seen = true;
         self.handled.insert(summons.message.clone());
         tracing::info!(
@@ -955,10 +969,21 @@ impl Session {
             self.show_caret(&focus)?;
         }
 
+        // Field borrows, not a `&mut self` helper: the registry and the
+        // replicas are disjoint parts of this session and the door needs both
+        // at once.
         let outcome = {
             let registry = &self.registry;
-            self.editor_for(&namespace)
-                .map(|ed| ed.invoke(view, &address, argument, registry))
+            let held = if self
+                .editor
+                .as_ref()
+                .is_some_and(|e| e.contract().namespace == namespace)
+            {
+                self.editor.as_mut()
+            } else {
+                self.peers.get_mut(namespace.as_str())
+            };
+            held.map(|ed| ed.invoke(view, &address, argument, registry))
         };
         let Some(outcome) = outcome else {
             let reply = format!(
