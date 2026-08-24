@@ -4817,6 +4817,23 @@ def beat_three(quinten: Session, agent: Session, host_ws: dict,
     if "err" in admitted:
         note(json.dumps(admitted["err"])[:200])
 
+    # And admitted as what it is. The grant above names the *session* --
+    # a subject the sync path needs in order to let this peer take part
+    # at all -- and names it a person, because that is the only kind a
+    # session has. Membership under an agent principal is the separate
+    # statement, and it is the one the beat makes out loud: the room's
+    # capability list is where "this member is an agent" is recorded,
+    # and every surface that marks one reads it there.
+    #
+    # Without this the room holds two grants about the agent and neither
+    # says it is one, so the roster reports a room of people -- which is
+    # what it did.
+    as_agent = quinten.grant(AGENT_SUBJECT, "workspace", "write")
+    claim("and admits it to the room as an agent, not as another person",
+          "err" not in as_agent, True)
+    if "err" in as_agent:
+        note(json.dumps(as_agent["err"])[:200])
+
 
 def beat_four(quinten: Session, xaver: Session, agent: Session,
               host_ws: dict, shots: str) -> None:
