@@ -996,6 +996,16 @@ class Session:
         takes about three quarters by default, so two never fit."""
         return call(self.sock, {"op": "set_group_width", "permille": permille})
 
+    def scroll(self, dx: float, dy: float) -> None:
+        """One wheel notch, with whatever modifiers are held.
+
+        Alt+Shift makes it the strip's own navigation gesture — the
+        compositor grabs it before any client sees it, selects the
+        neighbouring window and slides the strip to it.
+        """
+        self.input_ops += 1
+        ok(call(self.sock, {"op": "scroll", "dx": dx, "dy": dy}))
+
     def merge_into_group(self, surface_id: int, into_surface_id: int) -> dict:
         """Put the window drawing `surface_id` onto the tab bar of the
         group already drawing `into_surface_id`.
@@ -2521,69 +2531,113 @@ def establish_strip(s: Session) -> None:
              f"for the whole film; no beat resizes on camera")
 
 
-def tiles_for(s: Session, app_id: str) -> list[dict]:
-    """Every window on this screen announcing `app_id`, left to right."""
-    return sorted((t for t in painted_tiles(s).values()
-                   if t["app_id"] == app_id),
+def subject_name(subject) -> str:
+    """What to call a subject in a sentence."""
+    if isinstance(subject, dict):
+        sid = subject.get("surface_id")
+        app = subject.get("app_id")
+        return (f"{str(app).rsplit('.', 1)[-1]} (surface {sid})" if app
+                else f"surface {sid}")
+    if isinstance(subject, int):
+        return f"surface {subject}"
+    return str(subject).rsplit(".", 1)[-1]
+
+
+def tiles_for(s: Session, subject) -> list[dict]:
+    """Every window on this screen that is `subject`, left to right.
+
+    A subject is either an **app id** or a **window**: the dict
+    `Session.launch` hands back, or a bare surface id.
+
+    Both, because an app id is not an identifier here. A wayland client
+    announces whatever app-id it likes, and two of this film's four
+    applications announce the same one — the strip came back reading
+    `file-explorer, app, word-processor` for four windows, because the
+    image editor and the chat both call themselves `app`. Asking for
+    `dev.qos.imager` by name found nothing while its window was plainly
+    on screen, and asking for `app` would have been a coin toss between
+    two different programs.
+
+    A surface id is the compositor's own handle on one client and is
+    never ambiguous, so a beat that has been handed one uses it. App ids
+    stay for the beats written against them, where they are unambiguous
+    — one window per app on screen.
+    """
+    laid = painted_tiles(s)
+    if isinstance(subject, dict):
+        subject = subject.get("surface_id")
+    if isinstance(subject, int):
+        got = laid.get(int(subject))
+        return [dict(got, surface_id=int(subject))] if got else []
+    return sorted((dict(t, surface_id=sid) for sid, t in laid.items()
+                   if t["app_id"] == subject),
                   key=lambda t: t["rect"][0])
 
 
-def subjects_off_screen(s: Session, apps: list[str],
+def best_tile(s: Session, subject, viewport: tuple[int, int]) -> dict | None:
+    """The window for `subject` that is furthest into frame.
+
+    Two windows can be the same subject by the end of this film — a
+    session's own, and a peer's, replicated in. They show the same
+    document, so a beat only needs whichever of them is framed.
+    """
+    w, _h = viewport
+    best = None
+    for t in tiles_for(s, subject):
+        x0, _y0, tw, _th = t["rect"]
+        over = max(0.0, -x0) + max(0.0, (x0 + tw) - w)
+        if best is None or over < best[0]:
+            best = (over, t)
+    return best[1] if best else None
+
+
+def subjects_off_screen(s: Session, subjects: list,
                         viewport: tuple[int, int]) -> list[str]:
-    """Which of `apps` is not wholly on screen, and by how much.
+    """Which of `subjects` is not wholly on screen, and by how much.
 
     `windows_off_screen` asks it of every window there is. On a strip
     that scrolls, most of them are off the edges most of the time and
-    that is the layout working, so the question a beat can actually act
-    on is narrower: are the windows *this shot is about* whole.
+    that is the layout working, so the question a beat can act on is
+    narrower: are the windows *this shot is about* whole.
     """
     w, _h = viewport
     out = []
-    for app in apps:
-        tiles = tiles_for(s, app)
-        if not tiles:
-            out.append(f"{app} — no window on screen announces it")
+    for subject in subjects:
+        t = best_tile(s, subject, viewport)
+        if t is None:
+            out.append(f"{subject_name(subject)} - no window on screen is it")
             continue
-        # The best-placed one. Two windows can announce the same app id
-        # by the end of this film (a session's own, and a peer's,
-        # replicated in), and the beat only needs one of them framed.
-        best = None
-        for t in tiles:
-            x0, _y0, tw, _th = t["rect"]
-            over = max(0.0, -x0) + max(0.0, (x0 + tw) - w)
-            if best is None or over < best[0]:
-                best = (over, x0, tw)
-        over, x0, tw = best
-        if over <= 0.5:
-            continue
+        x0, _y0, tw, _th = t["rect"]
         said = []
         if x0 < -0.5:
             said.append(f"{-x0:.0f}px off the left")
         if x0 + tw > w + 0.5:
             said.append(f"{x0 + tw - w:.0f}px past the right")
-        out.append(f"{app} — {', '.join(said)}")
+        if said:
+            out.append(f"{subject_name(subject)} - {', '.join(said)}")
     return out
 
 
-def subjects_overlapping(s: Session, apps: list[str]) -> list[str]:
+def subjects_overlapping(s: Session, subjects: list,
+                         viewport: tuple[int, int]) -> list[str]:
     """Whether the windows this shot is about are drawn over each other.
 
-    The other half of "is this scene filmable", asked of the subjects for
-    the same reason as `subjects_off_screen`. A window a beat is not
+    The other half of "is this scene filmable", asked of the subjects
+    for the same reason as `subjects_off_screen`. A window a beat is not
     about may sit under another one all it likes.
     """
-    wanted = set(apps)
-    tiles = [(str(t["app_id"]), t["rect"]) for t in painted_tiles(s).values()
-             if t["app_id"] in wanted]
+    named = [(subject_name(sub), best_tile(s, sub, viewport))
+             for sub in subjects]
+    named = [(n, t) for n, t in named if t]
     out = []
-    for i in range(len(tiles)):
-        for j in range(i + 1, len(tiles)):
-            (a_id, (ax, ay, aw, ah)) = tiles[i]
-            (b_id, (bx, by, bw, bh)) = tiles[j]
-            if a_id == b_id:
-                # The same app twice is a window and its replica, not a
-                # fault — and they are meant to be interchangeable.
+    for i in range(len(named)):
+        for j in range(i + 1, len(named)):
+            (a_id, a) = named[i]
+            (b_id, b) = named[j]
+            if a["surface_id"] == b["surface_id"]:
                 continue
+            (ax, ay, aw, ah) = a["rect"]
+            (bx, by, bw, bh) = b["rect"]
             ox = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
             oy = max(0.0, min(ay + ah, by + bh) - max(ay, by))
             area = ox * oy
@@ -2594,7 +2648,7 @@ def subjects_overlapping(s: Session, apps: list[str]) -> list[str]:
     return out
 
 
-def subject_overflow(s: Session, apps: list[str],
+def subject_overflow(s: Session, subjects: list,
                      viewport: tuple[int, int]) -> tuple[float, float]:
     """`(widest subject, how far the subjects run off the side)`, in px.
 
@@ -2606,47 +2660,145 @@ def subject_overflow(s: Session, apps: list[str],
     """
     w, _ = viewport
     widest, over = 1.0, 0.0
-    for app in apps:
-        tiles = tiles_for(s, app)
-        if not tiles:
+    for subject in subjects:
+        t = best_tile(s, subject, viewport)
+        if t is None:
             continue
-        best = None
-        for t in tiles:
-            x0, _y0, tw, _th = t["rect"]
-            this = max(0.0, -x0) + max(0.0, (x0 + tw) - w)
-            if best is None or this < best[0]:
-                best = (this, tw)
-        widest = max(widest, best[1])
-        over = max(over, best[0])
+        x0, _y0, tw, _th = t["rect"]
+        widest = max(widest, tw)
+        over = max(over, max(0.0, -x0) + max(0.0, (x0 + tw) - w))
     return widest, over
 
 
-def scroll_subjects_into_frame(s: Session, apps: list[str]) -> None:
-    """Pan the strip until `apps` are the windows in frame.
+def strip_order(s: Session) -> list[dict]:
+    """The active strip's groups, left to right, with the surfaces in
+    each and which one is focused — read off the tree, which is where
+    the order lives.
+
+    `painted_tiles` gives on-screen rects, and a group scrolled off the
+    end still has one; what it cannot give is *which group comes after
+    which*, and that is what a strip walk needs.
+    """
+    tree = s.tree()
+    out: list[dict] = []
+    for ws in tree["workspaces"]:
+        if ws["id"] != tree["active"]:
+            continue
+        for strip in ws.get("strips", []):
+            sid = str(strip.get("id"))
+            active = (tree.get("active_group") or {}).get(sid)
+            for group in strip.get("window_groups", []):
+                surfaces = []
+                for t in group.get("tabs", []):
+                    tile = t.get("tile") or {}
+                    foreign = (tile.get("Foreign")
+                               if isinstance(tile, dict) else None)
+                    if foreign and foreign.get("surface_id") is not None:
+                        surfaces.append(int(foreign["surface_id"]))
+                out.append({"id": group.get("id"), "strip": sid,
+                            "surfaces": surfaces,
+                            "active": group.get("id") == active})
+    return out
+
+
+def group_index_of(s: Session, subject,
+                   order: list[dict] | None = None) -> int | None:
+    """Where along the strip the group holding `subject` sits."""
+    order = strip_order(s) if order is None else order
+    if isinstance(subject, dict):
+        subject = subject.get("surface_id")
+    if isinstance(subject, int):
+        return next((i for i, g in enumerate(order)
+                     if int(subject) in g["surfaces"]), None)
+    wanted = {t["surface_id"] for t in tiles_for(s, subject)}
+    return next((i for i, g in enumerate(order)
+                 if wanted & set(g["surfaces"])), None)
+
+
+#: How many neighbours a strip walk steps past before giving up. A strip
+#: with more groups than this is not a strip this film composes.
+MAX_STRIP_STEPS = 8
+
+
+def jump_to_group(s: Session, subject) -> bool:
+    """Walk the strip's focus along to the group holding `subject`.
+
+    Alt+Shift+wheel, one notch per group — the compositor's own
+    navigation gesture (`client_input.rs`, Niri's `focus-column-right`),
+    which selects the neighbouring window and lets the per-tick
+    reconciler slide the strip to it. So the pan is eased and reads as
+    navigation rather than as a cut.
+
+    This replaces aiming a click at the target's tab pill, which cannot
+    do the job on a strip longer than the screen: a pill is drawn at its
+    tile's *current* position, and the whole reason to scroll to a group
+    is that it is not on screen — so the click landed on the backdrop or
+    on some other group's pill and the strip stayed where it was.
+    Measured: a word processor two groups along came back 541px past the
+    right edge after a 'focus' that had aimed outside the frame.
+
+    Reads the strip back between notches rather than firing a computed
+    number of them, because a jump stops at the ends of the strip and a
+    walk that assumed otherwise would drift.
+    """
+    order = strip_order(s)
+    want = group_index_of(s, subject, order)
+    if want is None:
+        return False
+    for _ in range(MAX_STRIP_STEPS):
+        here = next((i for i, g in enumerate(order) if g["active"]), None)
+        if here is None or here == want:
+            break
+        s.modifiers(alt=True, shift=True)
+        s.scroll(0.0, -1.0 if want > here else 1.0)
+        s.modifiers()
+        s.settle(0.45)
+        order = strip_order(s)
+        moved = next((i for i, g in enumerate(order) if g["active"]), None)
+        if moved == here:
+            # The walk is not moving — the end of the strip, or a jump
+            # that did not take. Said rather than spun on.
+            note(f"{s.name}: the strip did not step past group {here}, so "
+                 f"{subject_name(subject)} is as close as it gets")
+            break
+        want = group_index_of(s, subject, order)
+        if want is None:
+            return False
+    order = strip_order(s)
+    return next((i for i, g in enumerate(order) if g["active"]), None) == want
+
+
+def scroll_subjects_into_frame(s: Session, subjects: list) -> None:
+    """Pan the strip until `subjects` are the windows in frame.
 
     Right subject first, then left, and that order is the whole trick.
-    Focusing a group scrolls it *minimally* into view — a group off the
-    right edge is brought to rest against the right edge, a group off
-    the left to rest against the left. So focusing the rightmost subject
-    guarantees it is in frame wherever it started, and then focusing the
+    Bringing a group up scrolls it *minimally* into view — a group off
+    the right edge comes to rest against the right edge, a group off the
+    left to rest against the left. So going to the rightmost subject
+    guarantees it is in frame wherever it started, and then going to the
     leftmost either does nothing (already whole, which is the answer) or
     brings it flush to the left edge, which at the film's share leaves
     exactly enough room for the one beside it.
 
-    Doing it the other way round frames the wrong pair: focus the left
+    Doing it the other way round frames the wrong pair: go to the left
     subject while it is off to the right and it comes to rest against
     the *right* edge, and what a viewer then sees beside it is its left
     neighbour rather than the window the beat is about.
     """
-    for app in reversed(apps):
-        if tiles_for(s, app):
-            focus_app_group(s, app)
+    order = strip_order(s)
+    placed = [(group_index_of(s, sub, order), sub) for sub in subjects]
+    placed = sorted(((i, sub) for i, sub in placed if i is not None),
+                    key=lambda pair: pair[0])
+    for _i, sub in reversed(placed):
+        jump_to_group(s, sub)
 
 
-def frame_windows(s: Session, apps: list[str],
+def frame_windows(s: Session, subjects: list,
                   viewport: tuple[int, int] | None = None) -> bool:
     """Put the windows this beat is about in frame, and say whether it
     worked.
+
+    A subject is an app id or a window — see `tiles_for`.
 
     Two separate things go wrong, and each has to be checked rather than
     performed and assumed.
@@ -2666,67 +2818,81 @@ def frame_windows(s: Session, apps: list[str],
     the film share, so the visible jump it risks only happens where the
     alternative is a window hanging off the side of the picture.
 
-    The second is the strip's scroll offset, which `scroll_subjects_into_frame`
-    owns.
+    The second is the strip's scroll offset, which
+    `scroll_subjects_into_frame` owns.
 
     Then it is measured, and narrowed and re-framed until it holds or
     the attempts run out.
 
-    **The claim is about `apps`, not about everything on screen**, and
-    that narrowing is the point rather than a softening. The film's strip
-    carries four applications and the screen holds two, so "every window
-    is wholly on screen" stopped being a thing that could be true — a
-    check that reports the other two as faults every time reports nothing
-    at all. What a beat can still be held to is that the windows it is
-    about are whole, unobscured and side by side, and this refuses when
-    they are not: a beat naming two apps still fails if either is off the
-    edge, behind the other, or not on screen at all.
+    **The claim is about `subjects`, not about everything on screen**,
+    and that narrowing is the point rather than a softening. The film's
+    strip carries four applications and the screen holds two, so "every
+    window is wholly on screen" stopped being a thing that could be true
+    — a check that reports the other two as faults every time reports
+    nothing at all. What a beat can still be held to is that the windows
+    it is about are whole, unobscured and side by side, and this refuses
+    when they are not: a beat naming two windows still fails if either is
+    off the edge, behind the other, or not on screen at all.
     """
-    apps = list(dict.fromkeys(apps))
     groups = max(1, len(s.groups_here()))
     s.set_group_width(FILM_GROUP_SHARE)
-    scroll_subjects_into_frame(s, apps)
+    scroll_subjects_into_frame(s, subjects)
     s.settle(0.6)
     if not viewport:
         return True
     share = FILM_GROUP_SHARE
-    named = ", ".join(a.rsplit(".", 1)[-1] for a in apps)
-    wrong = (subjects_off_screen(s, apps, viewport)
-             + subjects_overlapping(s, apps))
+    named = ", ".join(subject_name(sub) for sub in subjects)
+
+    def wrong_now() -> list[str]:
+        return (subjects_off_screen(s, subjects, viewport)
+                + subjects_overlapping(s, subjects, viewport))
+
+    wrong = wrong_now()
     if not wrong:
         note(f"{s.name}: {named} in frame together, whole and side by "
              f"side, out of {groups} group(s) at {share} permille")
         return True
 
+    # A subject with no window at all is the one fault narrowing cannot
+    # touch, and chasing it makes things worse: the loop below reads an
+    # overflow off the subjects it *can* see, shrinks every group towards
+    # it, and reports a share it never actually applied. That is how a
+    # missing image editor came back as "cannot be filmed at 157
+    # permille" when nothing had been set below 500.
+    missing = [w for w in wrong if "no window on screen is it" in w]
+    if missing:
+        gap(f"{s.name}: {named} cannot be filmed together - "
+            + "; ".join(wrong))
+        return False
+
     # Narrowed and re-framed until it holds or the attempts run out. The
     # step is measured rather than guessed: the overflow is known in
     # pixels, so the share that would have fitted is arithmetic on the
     # widest subject. A floor of `WIDTH_NARROW_PERMILLE` stops this
-    # shrinking windows into unreadability to satisfy a frame — below
+    # shrinking windows into unreadability to satisfy a frame - below
     # that the honest answer is that the shot does not fit, and the beat
     # should say so rather than film something too small to read.
     for _ in range(3):
-        widest, over = subject_overflow(s, apps, viewport)
+        widest, over = subject_overflow(s, subjects, viewport)
         if over <= 0.0:
             # Overlapping rather than off-screen: narrowing cannot help,
             # because the groups already fit and are simply stacked.
             break
         step = max(10, int(share * (over / widest)) + 5)
-        share = share - step
-        if share < NARROW_SHARE_FLOOR:
+        if share - step < NARROW_SHARE_FLOOR:
             break
+        share -= step
         s.set_group_width(share)
-        scroll_subjects_into_frame(s, apps)
+        scroll_subjects_into_frame(s, subjects)
         s.settle(0.6)
-        wrong = (subjects_off_screen(s, apps, viewport)
-                 + subjects_overlapping(s, apps))
+        wrong = wrong_now()
         if not wrong:
             note(f"{s.name}: {named} in frame together at {share} "
-                 f"permille — narrowed from {FILM_GROUP_SHARE} to fit")
+                 f"permille - narrowed from {FILM_GROUP_SHARE} to fit")
             return True
 
     gap(f"{s.name}: {named} cannot be filmed together at {share} permille "
-        f"per group — " + "; ".join(wrong))
+        f"per group - " + "; ".join(wrong))
     return False
 
 
@@ -2829,46 +2995,56 @@ def pixels_moved(before: str | None, after: str | None) -> int | None:
 
 def focus_app_group(s: Session, app_id: str,
                     prefer: dict | None = None) -> bool:
-    """Scroll the strip to the group holding `app_id`, and say whether it
+    """Bring the strip to the group holding `app_id`, and say whether it
     worked.
 
-    `frame_windows` frames a whole shot; this picks one *subject* out
-    of it and pans to it. The
-    last shot of the film is about one window — the document two other
-    participants have been writing into — and an even share of the strip
-    with the file manager scrolled up in front of it is a shot of the
-    wrong thing. It has been exactly that: a payoff frame showing an
-    empty folder listing, under a caption about a document.
+    `frame_windows` frames a whole shot; this picks one *subject* out of
+    it and pans to it. The last shot of the film is about one window —
+    the document two other participants have been writing into — and an
+    even share of the strip with the file manager scrolled up in front
+    of it is a shot of the wrong thing. It has been exactly that: a
+    payoff frame showing an empty folder listing, under a caption about
+    a document.
 
-    Aimed at the tab pill rather than into the window's body: a click
-    in the body reaches the client and selects whatever is under it,
-    and a file row highlighted by the camera is the camera making the
-    picture rather than the demo.
+    Through `jump_to_group` rather than by clicking the target's tab
+    pill. A pill is drawn wherever its tile currently is, so aiming at
+    one only works while the group is already on screen — which is the
+    case this exists to fix. See `jump_to_group`.
+
+    The pill still gets clicked afterwards, and only then: once the
+    group is up, selecting the right *tab* inside it is a click on a
+    pill that is now where the compositor says it is. That matters from
+    the moment two applications share a bar.
     """
-    laid = painted_tiles(s)
-    tiles = [t for sid, t in sorted(laid.items()) if t["app_id"] == app_id]
-    if not tiles:
-        note(f"{s.name}: nothing on screen is {app_id}, so the strip is "
-             f"left where it is")
-        return False
+    subject = app_id
     # By the end of the film two windows on this screen announce the same
     # app id — the session's own, and the peer's, replicated in. They are
     # showing the same document, so either would do; `prefer` names the
     # one the beat has been talking about, so the shot is of the window
     # the audience watched arrive.
     want = (prefer or {}).get("surface_id")
-    chosen = next((laid[int(want)] for _ in (0,)
-                   if want is not None and int(want) in laid
-                   and laid[int(want)]["app_id"] == app_id), tiles[0])
-    x, y, w, _h = chosen["rect"]
-    py = y - 18.0
-    if py < TOPBAR_H:
-        # One window filling the strip wears no pill, and 18px above it is
-        # the workspace switcher. Already the only thing on screen, so
-        # there is nothing to scroll to anyway.
-        return True
-    s.click_at(max(4.0, x + min(90.0, w / 2.0)), py)
-    s.settle(0.8)
+    if want is not None and tiles_for(s, int(want)):
+        subject = int(want)
+    if not tiles_for(s, subject):
+        note(f"{s.name}: nothing on screen is {app_id}, so the strip is "
+             f"left where it is")
+        return False
+    jump_to_group(s, subject)
+    s.settle(0.5)
+    # And the tab, if the group it landed on holds more than one. The
+    # jump selects a window, so this is usually already done; it is not
+    # when the beat wants a particular tab of a group that was already
+    # focused on another.
+    tile = tiles_for(s, subject)
+    if tile:
+        x, y, w, _h = tile[0]["rect"]
+        py = y - 18.0
+        # One window filling the strip wears no pill, and 18px above it
+        # is the workspace switcher. A gesture meant to frame a window
+        # must never be able to change which workspace is on camera.
+        if py >= TOPBAR_H and x >= 0.0:
+            s.click_at(max(4.0, x + min(90.0, w / 2.0)), py)
+            s.settle(0.5)
     note(f"{s.name}: brought {app_id} up in the strip for the shot")
     return True
 
@@ -5195,10 +5371,9 @@ def beat_eight(quinten: Session, files: dict | None, wp: dict | None,
         # thing that can be false: the window the photograph comes out of
         # and the window it goes into, both wholly on screen, neither
         # behind the other.
-        clipped = (subjects_off_screen(quinten, [FILES_APP, WORD_PROCESSOR],
-                                       VIEWPORT)
-                   + subjects_overlapping(quinten,
-                                          [FILES_APP, WORD_PROCESSOR]))
+        ends = [FILES_APP, WORD_PROCESSOR]
+        clipped = (subjects_off_screen(quinten, ends, VIEWPORT)
+                   + subjects_overlapping(quinten, ends, VIEWPORT))
         claim("both ends of the drag are wholly on screen, side by side",
               clipped, [])
         if clipped:
@@ -5531,20 +5706,19 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
     banner("the strip: four applications, and two of them in one window")
     cut("quinten")
 
-    on_strip = [t["app_id"] for t in
-                sorted(painted_tiles(quinten).values(),
-                       key=lambda t: t["rect"][0])]
-    note(f"the strip carries {len(quinten.groups_here())} window group(s): "
-         f"{', '.join(a.rsplit('.', 1)[-1] for a in dict.fromkeys(on_strip))}")
+    note(f"the strip carries {len(strip_order(quinten))} window group(s), "
+         f"{len(extras) + 2} applications")
 
     editor = extras.get(IMAGE_EDITOR)
-    chat = extras.get(CHAT_APP)
 
     # The far end first, so the pan below runs right to left and ends on
     # the pair the tabbing happens to. Whichever of the two extras is
-    # actually there — an app another hand is still making usable may
-    # not be — with the chat preferred because it is the rightmost.
-    far = [a for a in (IMAGE_EDITOR, CHAT_APP) if a in extras]
+    # actually there — an app another hand is still making usable may not
+    # be — and each named by the window its launch handed back rather
+    # than by its app id, because the image editor and the chat both
+    # announce themselves to wayland as `app` and an id that names two
+    # different programs names neither.
+    far = [extras[a] for a in STRIP_EXTRAS if a in extras]
     if len(far) >= 2:
         step("two of the four are in frame; the other two are past the edges")
         if frame_windows(quinten, far, VIEWPORT):
@@ -5553,8 +5727,8 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
             quinten.snapshot(os.path.join(shots, "10-strip-right.png"))
             read_hold(1.0)
     elif far:
-        note(f"only {far[0]} of the extra applications opened, so the "
-             f"strip cannot show a pair at its far end")
+        note("only one of the extra applications opened, so the strip "
+             "cannot show a pair at its far end")
 
     if editor is None:
         gap("the image editor did not open, so there is no second "
@@ -5570,7 +5744,7 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
     # The pair the merge happens to, both whole before anything moves —
     # a window sliding into a tab bar that is off the edge of the screen
     # is a window disappearing.
-    if not frame_windows(quinten, [WORD_PROCESSOR, IMAGE_EDITOR], VIEWPORT):
+    if not frame_windows(quinten, [wp, editor], VIEWPORT):
         gap("the word processor and the image editor are not in frame "
             "together, so the merge would happen off camera")
         return

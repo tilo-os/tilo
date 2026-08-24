@@ -1048,7 +1048,7 @@ def main() -> int:
         # scrolls, so anything else the person driving this happens to
         # have open is off the edges on purpose and is not a fault.
         clipped = (yc.subjects_off_screen(session, subjects, viewport)
-                   + yc.subjects_overlapping(session, subjects))
+                   + yc.subjects_overlapping(session, subjects, viewport))
         print("  both windows in frame  "
               + ("yes" if not clipped else "NO — " + "; ".join(clipped)))
 
