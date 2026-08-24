@@ -1686,6 +1686,31 @@ async fn drive_shovel(
                     });
                 }
 
+                // subscribeActions(): typed actions other apps in this room
+                // published. Opened at join for the same reason the content
+                // stream is — an app that only subscribed once it wanted
+                // something would miss everything said before it looked.
+                if let Ok(acts) = ch.subscribe_actions().await {
+                    let itx = inbound_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        loop {
+                            let Ok(evt) = acts.read().await else {
+                                break;
+                            };
+                            if itx
+                                .send(CollabEvent::ActionArrived {
+                                    type_id: evt.type_id,
+                                    payload: evt.payload,
+                                    from_user_id: evt.from_user_id,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    });
+                }
+
                 // subscribeContext(): forward roster / permission snapshots.
                 if let Ok(ctx_stream) = ch.subscribe_context().await {
                     let itx = inbound_tx.clone();
@@ -1868,6 +1893,29 @@ async fn drive_shovel(
                     );
                 }
             }
+            // A typed action for whichever app in the room owns the document
+            // it belongs to. The one send verb here that is not this app's own
+            // document bytes.
+            CollabRequest::SendAction { type_id, payload } => {
+                let Some(ch) = channel.as_ref() else {
+                    tracing::warn!(
+                        %type_id, bytes = payload.len(),
+                        "collab: an action was composed before this app joined a \
+                         channel; nobody in the room will receive it",
+                    );
+                    continue;
+                };
+                if let Err(e) = ch.send_action(&type_id, &payload).await {
+                    // Loud. This frame carries an instruction somebody wrote
+                    // and watched disappear, and a send that fails silently is
+                    // indistinguishable from one that worked.
+                    tracing::error!(
+                        %type_id, bytes = payload.len(), error = ?e,
+                        "collab: putting an action in the room failed; whoever \
+                         wrote it will see no sign that it did not arrive",
+                    );
+                }
+            }
             // Not carried on this transport, and not silently: an app that
             // asked for one has a caller waiting on a window that is never
             // going to appear. The schema `runtime-collab` speaks is about
@@ -1973,6 +2021,13 @@ async fn drive_relay(
                             hash = %hash,
                             "collab: this relay session cannot fetch document content; \
                              the image using it stays a placeholder",
+                        );
+                    }
+                    CollabRequest::SendAction { type_id, payload } => {
+                        tracing::warn!(
+                            %type_id, bytes = payload.len(),
+                            "collab: this relay session carries documents and \
+                             presence, not actions; nothing was put in the room",
                         );
                     }
                     CollabRequest::OpenApp { app_id } => {
@@ -2328,6 +2383,17 @@ pub mod broker {
                 // Nothing here holds a store to answer from; the offer above
                 // is what moves content on this transport.
                 CollabRequest::WantBlob { .. } => continue,
+                // Fanned to the other peers verbatim, which is what a room
+                // does with one: an action published is an action arriving for
+                // everybody else, and each of them decides whether its own
+                // registry knows the type.
+                CollabRequest::SendAction { type_id, payload } => {
+                    CollabEvent::ActionArrived {
+                        type_id,
+                        payload,
+                        from_user_id: String::new(),
+                    }
+                }
                 // The in-process relay is a loopback between two documents.
                 // It hosts nothing, so there is nothing here to open — and
                 // fabricating a refusal would teach a caller that this relay
