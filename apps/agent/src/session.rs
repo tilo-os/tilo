@@ -972,16 +972,40 @@ impl Session {
             // mistaken for it. The id is the room's; the agent only supplies
             // a name, exactly as a peer does.
             Some(CollabEvent::Context { collaborators, .. }) => {
-                for c in collaborators {
-                    if c.is_agent && c.name.eq_ignore_ascii_case(&self.cfg.name) {
-                        if self.me_from_room.as_deref() != Some(c.id.as_str()) {
-                            tracing::info!(
-                                me = %c.id, name = %c.name,
-                                "the room named this agent; mentions of it can now be matched"
-                            );
-                        }
-                        self.me_from_room = Some(c.id);
-                        break;
+                // Matched on the name it was admitted under, preferring a row
+                // the room has marked as an agent.
+                //
+                // Preferring, not requiring, because on this socket the mark
+                // is not carried: the broker's JSON roster announcement sets
+                // `is_agent: false` unconditionally and says so in a comment —
+                // the label map it announces from records what a peer is
+                // *called*, not what it is. So a `false` here means "this
+                // transport does not carry kind", which is a different fact
+                // from "this is a person", and reading it as the second would
+                // make the agent unable to recognise itself at all.
+                //
+                // The residual risk is a person admitted under the agent's own
+                // display name, who would then be taken for it. That is not
+                // fixable from this side: the fix is the broker recording kind
+                // beside name in `roster_announcement`, which its own comment
+                // already names as the thing to do. Until then this prefers a
+                // marked row when the room does supply one, so it is exact
+                // wherever the mark exists and merely usable where it does not.
+                let named: Vec<_> = collaborators
+                    .into_iter()
+                    .filter(|c| c.name.eq_ignore_ascii_case(&self.cfg.name))
+                    .collect();
+                let me = named
+                    .iter()
+                    .find(|c| c.is_agent)
+                    .or_else(|| named.first());
+                if let Some(c) = me {
+                    if self.me_from_room.as_deref() != Some(c.id.as_str()) {
+                        tracing::info!(
+                            me = %c.id, name = %c.name, marked = c.is_agent,
+                            "the room named this agent; mentions of it can now be matched"
+                        );
+                        self.me_from_room = Some(c.id.clone());
                     }
                 }
             }
