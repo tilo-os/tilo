@@ -39,6 +39,28 @@ impl HostApplicationsProvider {
     /// can score against a known list without depending on what
     /// happens to be installed.
     fn apps(&self) -> Vec<HostApp> {
+        // The screenshot harness photographs a machine that is not the
+        // viewer's, and this is the one search source that cannot be
+        // aimed somewhere else. `XDG_DATA_DIRS` also carries the Vulkan
+        // loader's ICD manifests, so staging it makes wgpu report no
+        // adapter and the compositor cannot draw at all — measured, and
+        // recorded in `scripts/demo-home.py` — and the scanner appends
+        // the system Flatpak directory regardless of the environment.
+        //
+        // So the provider stands down instead of being redirected. A
+        // frame then shows no Host Apps group, which is what a qOS
+        // install with no host applications shows. The alternative is
+        // what the palette actually rendered: the operator's own
+        // installed applications, named, in a shot meant to demonstrate
+        // search — a game and an office suite identify whose machine it
+        // is as surely as a home directory does.
+        //
+        // Deliberately narrow. Only the palette's rows are suppressed;
+        // `host_apps::app_for_window_id` still reads the real scan, so a
+        // foreign toplevel in a placement shot keeps the name on its card.
+        if std::env::var_os("QOS_SHOTS_NO_HOST_APPS").is_some_and(|v| !v.is_empty()) {
+            return Vec::new();
+        }
         host_apps::host_apps()
     }
 

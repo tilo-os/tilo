@@ -1391,6 +1391,16 @@ pub fn stage_demo_home() {
         // SAFETY: as above — still single-threaded here.
         unsafe { std::env::set_var("QOS_USER_ID", DEMO_USER) };
     }
+    // The fourth door, and the only one that cannot be closed by aiming
+    // the harness at a different directory: the palette's host-app rows
+    // come from a scan of installed `.desktop` files, which pinning
+    // `XDG_DATA_DIRS` would break rendering to redirect and would not
+    // fully redirect anyway. A palette shot was listing the operator's
+    // own applications by name. See `HostApplicationsProvider::apps`.
+    if !std::env::var_os("QOS_SHOTS_NO_HOST_APPS").is_some_and(|v| !v.is_empty()) {
+        // SAFETY: as above — still single-threaded here.
+        unsafe { std::env::set_var("QOS_SHOTS_NO_HOST_APPS", "1") };
+    }
 }
 
 /// Write the demo tree. Mirrors the demo rig's `stage_home` layout: the
@@ -1960,15 +1970,20 @@ mod tests {
         let bytes = harbour_png();
         let decoder = png::Decoder::new(std::io::Cursor::new(&bytes));
         let mut reader = decoder.read_info().expect("harbour.png must decode");
-        let mut buf = vec![0; reader.output_buffer_size()];
+        let mut buf = vec![
+            0;
+            reader
+                .output_buffer_size()
+                .expect("a bounded output buffer for a 512x320 image")
+        ];
         let info = reader.next_frame(&mut buf).expect("a full frame");
         assert_eq!((info.width, info.height), (512, 320));
 
         // A flat fill would decode fine and read as broken software. The
         // image has a sky, a horizon and a sun, so it must span a wide
         // range of values rather than a handful.
-        let distinct: std::collections::HashSet<&[u8]> =
-            buf[..info.buffer_size()].chunks(3).collect();
+        let pixels = (info.width as usize) * (info.height as usize) * 3;
+        let distinct: std::collections::HashSet<&[u8]> = buf[..pixels].chunks(3).collect();
         assert!(
             distinct.len() > 500,
             "the photograph is nearly uniform ({} distinct colours) — it \
