@@ -2102,6 +2102,78 @@ mod string_id_wrapper_tests {
         );
     }
 
+    /// The same frame, handed to two surfaces, is placeable by one of
+    /// them.
+    ///
+    /// This is the fan-out property stated at the layer that decides
+    /// it. The broker delivers presence to every app in a room; each
+    /// app asks the same question of the same carried fact and only
+    /// the surface the coordinates were measured in answers yes. No
+    /// app has to know what the others hold, and nothing anywhere
+    /// removes a second dot — a second one is never made.
+    #[test]
+    fn one_content_pointer_reaches_two_surfaces_and_one_places_it() {
+        let frame = PresenceKey::surface_pointer("dev.qos.word-processor");
+
+        let mut word_processor = PresenceCtx::empty();
+        word_processor.set_surface_id("dev.qos.word-processor");
+        let mut file_manager = PresenceCtx::empty();
+        file_manager.set_surface_id("dev.qos.files");
+
+        for ctx in [&mut word_processor, &mut file_manager] {
+            ctx.apply_remote_presence(
+                "peer@77".into(),
+                frame.clone(),
+                crate::collaboration::PresencePayload::Pointer { x: 214.0, y: 34.0 },
+            );
+        }
+
+        let drawn = |ctx: &PresenceCtx| {
+            ctx.remote_cursors
+                .iter()
+                .filter(|c| c.painted_by_window())
+                .count()
+        };
+        assert_eq!(
+            drawn(&word_processor),
+            1,
+            "the surface those pixels were measured in draws them",
+        );
+        assert_eq!(
+            drawn(&file_manager),
+            0,
+            "the same offset into a file list is not the place a word              processor's (214, 34) describes",
+        );
+        assert_eq!(
+            file_manager.pointer_owner_for(&frame),
+            PointerOwner::OtherSurface,
+            "and it can say so from the frame alone",
+        );
+    }
+
+    /// A session that has not said which surface it draws places no
+    /// content pointer at all.
+    ///
+    /// Fail closed. The alternative is to place it anyway and be right
+    /// only when the guess happens to hold — and a pointer in the
+    /// wrong window looks exactly like a pointer in the right one, so
+    /// nothing would ever report the guess as wrong.
+    #[test]
+    fn a_session_that_has_not_named_its_surface_places_no_content_pointer() {
+        let mut ctx = PresenceCtx::empty();
+        let key = PresenceKey::surface_pointer("dev.qos.word-processor");
+        assert_eq!(ctx.pointer_owner_for(&key), PointerOwner::OtherSurface);
+        ctx.apply_remote_presence(
+            "peer@77".into(),
+            key,
+            crate::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
+        );
+        assert!(
+            ctx.remote_cursors.iter().all(|c| !c.painted_by_window()),
+            "an unnamed surface must not claim somebody else's coordinates",
+        );
+    }
+
     /// A peer that moves from the desktop transport onto an unscoped
     /// one (or back) changes hands rather than keeping whichever owner
     /// it was first seen with — otherwise a peer could end up owned by

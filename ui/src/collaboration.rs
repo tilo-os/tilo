@@ -2260,6 +2260,8 @@ mod tests {
         unsigned_snapshots: Vec<Vec<u8>>,
         unsigned_incrementals: Vec<Vec<u8>>,
         cursor_publishes: Vec<(f32, f32)>,
+        /// Keyed pointer publishes: the key bytes beside the position.
+        pointer_publishes: Vec<(Vec<u8>, f32, f32)>,
         caret_publishes: Vec<(Vec<u8>, u64)>,
         selection_publishes: Vec<(Vec<u8>, u64, u64)>,
         arrived: Vec<Vec<u8>>,
@@ -2285,6 +2287,7 @@ mod tests {
     #[derive(Clone)]
     enum SeedPayload {
         Cursor { x: f32, y: f32 },
+        Pointer { x: f32, y: f32 },
         Caret { pos: u64 },
         Selection { start: u64, end: u64 },
         Arrived,
@@ -2334,6 +2337,11 @@ mod tests {
                     b.set_x(x);
                     b.set_y(y);
                 }
+                SeedPayload::Pointer { x, y } => {
+                    let mut b = payload.init_pointer();
+                    b.set_x(x);
+                    b.set_y(y);
+                }
                 SeedPayload::Caret { pos } => {
                     payload.init_caret().set_pos(pos);
                 }
@@ -2368,6 +2376,21 @@ mod tests {
                 .unwrap()
                 .cursor_publishes
                 .push((r.get_x(), r.get_y()));
+            Promise::ok(())
+        }
+
+        fn publish_pointer(
+            self: Rc<Self>,
+            params: presence_handle::PublishPointerParams,
+            _results: presence_handle::PublishPointerResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(r) = params.get() else { return Promise::ok(()) };
+            let Ok(k) = r.get_key_bytes() else { return Promise::ok(()) };
+            self.captures
+                .lock()
+                .unwrap()
+                .pointer_publishes
+                .push((k.to_vec(), r.get_x(), r.get_y()));
             Promise::ok(())
         }
 
@@ -3198,6 +3221,17 @@ mod tests {
         assert_eq!(c.unsigned_incrementals, vec![b"delta".to_vec()]);
     }
 
+    /// Every presence variant reaches the SDK method that keeps its
+    /// key.
+    ///
+    /// A pointer used to be the exception: it went out through
+    /// `publish_cursor(x, y)`, which has nowhere to put one, and this
+    /// test asserted that as the contract — `cursor_publishes ==
+    /// [(1.5, 2.5)]` and nothing about the key. That is the defect
+    /// written down as an expectation, so it is asserted the other way
+    /// round now: a pointer publishes like a caret does, key and all.
+    /// A position with no space is a pair of numbers whose meaning the
+    /// receiver has to invent.
     #[test]
     fn presence_variants_map_to_correct_sdk_publishes() {
         let broker = FakeBroker {
@@ -3243,7 +3277,7 @@ mod tests {
             wait_until(
                 || {
                     let c = captures.lock().unwrap();
-                    c.cursor_publishes.len() == 1
+                    c.pointer_publishes.len() == 1
                         && c.caret_publishes.len() == 1
                         && c.selection_publishes.len() == 1
                         && c.arrived.len() == 1
@@ -3254,7 +3288,17 @@ mod tests {
             "every presence variant must reach the corresponding SDK method",
         );
         let c = captures.lock().unwrap();
-        assert_eq!(c.cursor_publishes, vec![(1.5, 2.5)]);
+        assert_eq!(
+            c.pointer_publishes,
+            vec![(expected_key_bytes.clone(), 1.5, 2.5)],
+            "a pointer carries the key its publisher chose, like every \
+             other keyed variant here",
+        );
+        assert!(
+            c.cursor_publishes.is_empty(),
+            "and does not go out through the keyless call, which would \
+             drop the space on the way",
+        );
         assert_eq!(c.caret_publishes, vec![(expected_key_bytes.clone(), 12)]);
         assert_eq!(
             c.selection_publishes,
@@ -3344,6 +3388,66 @@ mod tests {
         assert!((collabs[0].color[1] - 128.0 / 255.0).abs() < 1e-3);
         assert!(collabs[0].color[2].abs() < 1e-3);
         assert_eq!(perms, vec!["edit".to_owned(), "share".to_owned()]);
+    }
+
+    /// A keyed pointer arriving on the presence stream reaches the app
+    /// layer **with** its key.
+    ///
+    /// This is the hop the duplicate was made at. The broker wrote
+    /// correct key bytes onto the wire and this translation dropped
+    /// them again, handing the app a keyless `RemoteCursorMoved` — a
+    /// bare pair of numbers in no stated space. Every open window then
+    /// read them as its own content's, and one person came out once
+    /// per window.
+    #[test]
+    fn a_keyed_pointer_reaches_the_app_layer_with_its_space_intact() {
+        let key = PresenceKey::surface_pointer("dev.qos.word-processor");
+        let key_bytes = postcard::to_stdvec(&key).unwrap();
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![SeedPresence {
+                user_id: "peer-bob".to_owned(),
+                key_bytes,
+                payload: SeedPayload::Pointer { x: 214.0, y: 34.0 },
+            }],
+            context_backlog: vec![],
+            scrollback_response: None,
+            blob_backlog: vec![],
+        };
+        let (fd, _captures, _th) = stand_up_fake_broker(broker);
+        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
+        let events = drain_events(&mut mgr, Duration::from_secs(2));
+
+        let keyed: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                CollabEvent::RemotePresenceUpdate { key, payload, .. } => {
+                    Some((key.clone(), payload.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            keyed.len(),
+            1,
+            "the pointer must arrive once, as a keyed update — got {keyed:?}",
+        );
+        assert_eq!(
+            keyed[0].0, key,
+            "and under the space its publisher measured it in",
+        );
+        assert!(matches!(
+            keyed[0].1,
+            PresencePayload::Pointer { x, y } if x == 214.0 && y == 34.0
+        ));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, CollabEvent::RemoteCursorMoved { .. })),
+            "a keyed pointer must not also arrive as the keyless legacy \
+             event; that is the same position twice, once without its space",
+        );
     }
 
     #[test]
