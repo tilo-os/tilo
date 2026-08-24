@@ -465,8 +465,10 @@ mod tests {
         let attacker_pk_b64 = B64.encode(attacker.public().encode_protobuf());
         let expiry = now_unix_seconds() + 3600;
         let room_id = RoomId::new().to_string();
+        let invite_id = uuid::Uuid::new_v4().to_string();
         let payload = canonical_payload(
             1,
+            &invite_id,
             &room_id,
             &victim_peer_id,
             &attacker_pk_b64,
@@ -477,6 +479,7 @@ mod tests {
 
         let token = PeerInviteToken {
             workspace_id: 1,
+            invite_id,
             room_id,
             owner_peer_id: victim_peer_id,
             owner_public_key: attacker_pk_b64,
