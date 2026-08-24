@@ -160,3 +160,18 @@ Related: the state dump publishes `pointers` and `roster` and no
 carets (`shell/src/compositor/native.rs`), so a harness cannot assert
 the presence that is actually live while somebody writes — only the one
 that is not.
+
+## The invite card has a band of nothing in it
+
+The card now says what it should — a title, the person it is for, when it
+expires, the code, and a Copy button — and the explanatory sentences are
+gone. What is left is spacing: between the "Copied" line and the button
+row there is roughly fifty pixels of empty card, so it reads as
+unbalanced rather than composed.
+
+It matters more than a spacing nit usually would because this card is
+held longer than almost any other frame: it carries a code somebody has
+to read off the screen, so the eye is on it and has time to notice.
+
+Measured at 1920x1014 in `target/v13/shots/02b-copied.png`: card
+y≈390..625, "Copied" baseline y≈530, button row centred y≈588.
