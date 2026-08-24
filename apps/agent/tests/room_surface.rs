@@ -1451,13 +1451,23 @@ fn one_instruction_crops_in_one_app_and_places_the_result_in_the_other() {
     // is a change in the photo editor's document, a different CRDT, and no
     // undo in this one reaches it. Grouping the two is something above the
     // documents would have to record.
-    let agent_changes = qdoc::history::versions(&mut page_peer.doc)
-        .into_iter()
-        .filter(|v| v.actor_hex == hex::encode(AGENT.as_bytes()))
-        .count();
+    let versions = qdoc::history::versions(&mut page_peer.doc);
+    let mine: Vec<usize> = versions
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.actor_hex == hex::encode(AGENT.as_bytes()))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        !mine.is_empty(),
+        "the agent's work is not in this document's history at all"
+    );
+    let (first, last) = (mine[0], mine[mine.len() - 1]);
     assert_eq!(
-        agent_changes, 1,
-        "one step in this document should be one change to undo, not {agent_changes}"
+        last - first + 1,
+        mine.len(),
+        "the agent's changes are interleaved with somebody else's, so there is          no run of them to take back together: {mine:?} of {} versions",
+        versions.len()
     );
 }
 

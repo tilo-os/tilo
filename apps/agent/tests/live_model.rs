@@ -126,8 +126,14 @@ fn the_model_drafts_a_run_sheet_that_a_split_on_separators_could_not() {
     };
     println!("\n  why: {why}");
 
-    let Instruction::RunSheet(draft) = &d.instruction else {
-        panic!("expected a drafted run sheet, got {:?}", d.instruction);
+    assert_eq!(
+        d.plan.len(),
+        1,
+        "one thing was asked for, so one step: {:?}",
+        d.plan
+    );
+    let Instruction::RunSheet(draft) = &d.plan.steps[0].instruction else {
+        panic!("expected a drafted run sheet, got {:?}", d.plan);
     };
     println!("  headers: {:?}", draft.headers);
     for row in &draft.rows {
@@ -191,10 +197,17 @@ fn the_model_still_refuses_what_the_app_cannot_do() {
     let blocks = demo_blocks();
     let offers = surveyed(&blocks);
     let d = chooser().choose("email this to the venue and book a taxi", &blocks, &offers);
+    // Every step, not merely the first. A sentence naming two things it
+    // cannot do must not come back as one operation it can: the failure
+    // this guards against is the half-answer, and a plan is a place a half
+    // could hide.
     assert!(
-        matches!(d.instruction, Instruction::Unknown(_)),
+        d.plan
+            .steps
+            .iter()
+            .all(|s| matches!(s.instruction, Instruction::Unknown(_))),
         "expected a refusal, got {:?} ({})",
-        d.instruction,
+        d.plan,
         d.route.detail()
     );
 }
