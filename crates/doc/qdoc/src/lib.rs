@@ -25,7 +25,7 @@ pub use codecs::{
 pub use diff::{
     diff_snapshots, diff_workbooks, AttrChange, BlockDiff, BlockOp, CellChange, CellOp, DiffSummary, DocDiff, PropChange, RunOp, SheetChange, SheetDiff, SheetDiffSummary, SheetOp, TextRun,
 };
-pub use document::{DocError, Document, MarkSpan};
+pub use document::{author_runs, DocError, Document, MarkSpan};
 pub use format::{CodecError, Confidence, FormatProvider, ProviderTier, Registry};
 pub use history::VersionMeta;
 pub use model::{ordered_keys_scan_count, Containers, DocMut, DocRef, IdGen, NoteKind, Region};

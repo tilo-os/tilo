@@ -67,6 +67,35 @@ pub struct MarkSpan {
     pub value: MarkValue,
 }
 
+/// The authored runs `marks` records, as `(start, end, author)` in character
+/// offsets, merged where adjacent runs name the same author and ordered by
+/// position.
+///
+/// One reader for the durable half of authorship, so the renderer that tints a
+/// run and the test that asserts on it cannot drift. Adjacent spans are merged
+/// because a run typed in several sittings is one person's paragraph, not three
+/// — automerge splits a mark wherever a concurrent edit landed inside it, and
+/// drawing each fragment separately would put a name chip mid-sentence.
+pub fn author_runs(marks: &[MarkSpan]) -> Vec<(usize, usize, String)> {
+    let mut runs: Vec<(usize, usize, String)> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_AUTHOR && m.end > m.start)
+        .filter_map(|m| m.value.as_str().map(|a| (m.start, m.end, a.to_string())))
+        .filter(|(_, _, a)| !a.is_empty())
+        .collect();
+    runs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut merged: Vec<(usize, usize, String)> = Vec::with_capacity(runs.len());
+    for (start, end, author) in runs {
+        match merged.last_mut() {
+            Some(prev) if prev.2 == author && prev.1 >= start => {
+                prev.1 = prev.1.max(end);
+            }
+            _ => merged.push((start, end, author)),
+        }
+    }
+    merged
+}
+
 pub struct Document {
     pub(crate) doc: AutoCommit,
     #[allow(dead_code)]

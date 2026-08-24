@@ -168,6 +168,22 @@ pub const META_LANGUAGE: &str = "language"; // Str (under meta) — document def
 /// `fontSize`). Supports per-span spell-check locale and screen-reader language.
 pub const MARK_LANG: &str = "lang"; // Str — a per-run BCP-47 language override
 
+// Durable authorship. The inline `author` mark names who wrote a run of body
+// text, valued with that person's display name. It is the *durable* half of
+// authorship — "this paragraph is hers, that one is his", still true an hour
+// after both of them closed the document — and it is deliberately a mark rather
+// than a field on the block: authorship follows the characters, so it survives
+// somebody typing into the middle of a run, splitting a paragraph, or merging
+// two, the same way `lang` and `comment` do.
+//
+// Distinct from `CHANGE_AUTHOR`, which names the author of a *tracked change*
+// awaiting accept/reject. A tracked change is a proposal with a lifetime; this
+// is a fact about text that is already in the document.
+//
+// Absent means unattributed, which is the honest reading of text written before
+// anybody recorded an author — never "written by the person reading it".
+pub const MARK_AUTHOR: &str = "author"; // Str — the display name of whoever wrote the run
+
 // Document properties / metadata. A `props` sub-map under `meta` holding the
 // well-known document-level fields (title/author/…) as plain strings. Isolated
 // from other `meta` keys (page margins, stylesheet) and created lazily so
