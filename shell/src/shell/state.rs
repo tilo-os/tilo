@@ -6279,6 +6279,100 @@ impl WorkspaceTree {
         true
     }
 
+    /// Move `tab_id` out of whichever group holds it and onto the end of
+    /// `dest_group_id`'s tab list, dropping the source group when the
+    /// move empties it. Returns the source group's id, or `None` when
+    /// the tab or the destination is unknown, they are already the same
+    /// group, or the two sit on different strips.
+    ///
+    /// This is the persisted half of dragging a tab onto a *sibling
+    /// group's* bar — the gesture that puts two applications in one
+    /// window. [`Self::move_tab_across_strips`] is the other direction:
+    /// it always lands the tab in a brand-new group of its own, on
+    /// another strip, which is a split rather than a merge.
+    ///
+    /// Same-strip only, and refused rather than approximated otherwise.
+    /// A cross-strip merge is a different widget-side gesture with a
+    /// different broker (`dispatch_cross_strip_detaches`), and quietly
+    /// rewriting the tree for one the widgets did not perform would
+    /// leave the two disagreeing about where the window is.
+    pub fn move_tab_into_group(&mut self, tab_id: TabId, dest_group_id: u64) -> Option<u64> {
+        // Locate both ends first, and refuse before touching anything if
+        // either is missing. A merge that removes the tab and then finds
+        // no destination has destroyed a window.
+        let mut src: Option<(usize, usize, usize)> = None;
+        let mut dest: Option<(usize, usize, usize)> = None;
+        for (ws_idx, ws) in self.workspaces.iter().enumerate() {
+            for (strip_idx, strip) in ws.strips.iter().enumerate() {
+                for (g_idx, group) in strip.window_groups.iter().enumerate() {
+                    if group.tabs.iter().any(|t| t.id == tab_id) {
+                        src = Some((ws_idx, strip_idx, g_idx));
+                    }
+                    if group.id == dest_group_id {
+                        dest = Some((ws_idx, strip_idx, g_idx));
+                    }
+                }
+            }
+        }
+        let (s_ws, s_strip, s_g) = src?;
+        let (d_ws, d_strip, d_g) = dest?;
+        if (s_ws, s_strip) != (d_ws, d_strip) || s_g == d_g {
+            return None;
+        }
+        let src_group_id = self.workspaces[s_ws].strips[s_strip].window_groups[s_g].id;
+        let moved = {
+            let group = &mut self.workspaces[s_ws].strips[s_strip].window_groups[s_g];
+            let pos = group.tabs.iter().position(|t| t.id == tab_id)?;
+            let moved = group.tabs.remove(pos);
+            // A group whose active tab just left points at a tab that is
+            // no longer in its list, and the draw resolves content by
+            // that pointer — so the whole group would stop being drawn.
+            if group.active_tab == tab_id {
+                if let Some(first) = group.tabs.first() {
+                    group.active_tab = first.id;
+                }
+            }
+            moved
+        };
+        let source_emptied = self.workspaces[s_ws].strips[s_strip].window_groups[s_g]
+            .tabs
+            .is_empty();
+        {
+            let group = &mut self.workspaces[d_ws].strips[d_strip].window_groups[d_g];
+            group.tabs.push(moved);
+            // The arriving tab is the one the user is now looking at,
+            // which is what `WindowGroup::insert_detached_tab` does on
+            // the widget side. The two have to agree: the per-frame
+            // active-tab writeback only mirrors a widget-side active id
+            // that exists in this group's persisted list.
+            group.active_tab = tab_id;
+        }
+        let dest_tabs = self.workspaces[d_ws].strips[d_strip].window_groups[d_g]
+            .tabs
+            .clone();
+        let src_tabs = self.workspaces[s_ws].strips[s_strip].window_groups[s_g]
+            .tabs
+            .clone();
+        self.doc_rewrite_group_tabs(dest_group_id, &dest_tabs);
+        // Rewritten even when the list is now empty. There is no
+        // doc-side group removal, so an emptied group stays in the doc
+        // either way — and a group entry saying it holds no tabs is a
+        // truer thing for a peer to read than one still claiming the
+        // window that just moved.
+        self.doc_rewrite_group_tabs(src_group_id, &src_tabs);
+        if source_emptied {
+            self.workspaces[s_ws].strips[s_strip]
+                .window_groups
+                .remove(s_g);
+        }
+        // The window is in the destination group now, so that is what the
+        // strip is focused on — otherwise the pointer names a group that
+        // may not exist any more, and the palette's scope goes with it.
+        let strip_id = self.workspaces[d_ws].strips[d_strip].id;
+        self.active_group.insert(strip_id, dest_group_id);
+        Some(src_group_id)
+    }
+
     /// Move the tab at `from` to index `to` inside `group_id`'s tab list.
     ///
     /// This is the persisted half of an intra-group tab drag: the widget tree
@@ -9070,6 +9164,117 @@ mod active_group_tests {
             }
         }
         assert_eq!(doc_order, vec![11, 12, 10], "doc mirrors the new tab order");
+    }
+
+    /// Dragging a window onto a *sibling group's* tab bar is what puts
+    /// two applications in one window, and the tree has to carry it or
+    /// the two are back in separate groups after a restart — and, more
+    /// immediately, the per-frame active-tab writeback refuses to mirror
+    /// a widget-side active tab that the persisted group does not list,
+    /// so a widget-only merge leaves the strip drawing the group it just
+    /// emptied.
+    #[test]
+    #[serial_test::serial(next_id_statics)]
+    fn merging_a_tab_into_a_sibling_group_persists_and_prunes_the_source() {
+        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
+        let mk = |id: u64, name: &str| Tab {
+            id,
+            title: name.into(),
+            tile: TileContent::Stub {
+                kind: AppKind::Terminal,
+                label: name.into(),
+            },
+        };
+        {
+            let g = &mut tree.workspaces[0].strips[0].window_groups[0];
+            g.tabs = vec![mk(10, "A")];
+            g.active_tab = 10;
+        }
+        {
+            let g = &mut tree.workspaces[0].strips[0].window_groups[1];
+            g.tabs = vec![mk(20, "B")];
+            g.active_tab = 20;
+        }
+        tree.seed_doc_from_cache();
+
+        // Move B onto A's bar: one group with two tabs, B active.
+        assert_eq!(tree.move_tab_into_group(20, ids[0]), Some(ids[1]));
+        assert_eq!(group_order(&tree, strip_id), vec![ids[0]],
+                   "the emptied source group is pruned out of the strip");
+        let merged = &tree.workspaces[0].strips[0].window_groups[0];
+        assert_eq!(merged.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+                   vec![10, 20]);
+        assert_eq!(merged.active_tab, 20, "the arriving tab is the one shown");
+        assert_eq!(tree.active_group.get(&strip_id).copied(), Some(ids[0]));
+
+        // The doc carries the merged list, so a peer reads the same window.
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+        let (_, workspaces_id) = tree.doc.get(&ROOT, "workspaces").unwrap().unwrap();
+        let (_, ws0) = tree.doc.get(&workspaces_id, 0_usize).unwrap().unwrap();
+        let (_, strips_id) = tree.doc.get(&ws0, "strips").unwrap().unwrap();
+        let (_, strip0) = tree.doc.get(&strips_id, 0_usize).unwrap().unwrap();
+        let (_, groups_id) = tree.doc.get(&strip0, "window_groups").unwrap().unwrap();
+        let (_, g0) = tree.doc.get(&groups_id, 0_usize).unwrap().unwrap();
+        let (_, tabs_id) = tree.doc.get(&g0, "tabs").unwrap().unwrap();
+        let mut doc_order = Vec::new();
+        for i in 0..tree.doc.length(&tabs_id) {
+            let (_, t) = tree.doc.get(&tabs_id, i).unwrap().unwrap();
+            if let Some((Value::Scalar(s), _)) = tree.doc.get(&t, "id").unwrap() {
+                if let ScalarValue::Uint(id) = s.as_ref() {
+                    doc_order.push(*id);
+                }
+            }
+        }
+        assert_eq!(doc_order, vec![10, 20], "the doc mirrors the merged group");
+    }
+
+    #[test]
+    #[serial_test::serial(next_id_statics)]
+    fn merging_refuses_an_unknown_tab_the_same_group_or_another_strip() {
+        let (mut tree, _strip_id, ids) = tree_with_n_groups(2);
+        let mk = |id: u64| Tab {
+            id,
+            title: "T".into(),
+            tile: TileContent::Stub {
+                kind: AppKind::Terminal,
+                label: "T".into(),
+            },
+        };
+        tree.workspaces[0].strips[0].window_groups[0].tabs = vec![mk(10), mk(11)];
+        tree.workspaces[0].strips[0].window_groups[0].active_tab = 10;
+        tree.workspaces[0].strips[0].window_groups[1].tabs = vec![mk(20)];
+        tree.workspaces[0].strips[0].window_groups[1].active_tab = 20;
+
+        assert_eq!(tree.move_tab_into_group(999, ids[0]), None, "unknown tab");
+        assert_eq!(tree.move_tab_into_group(10, 4242), None, "unknown group");
+        assert_eq!(tree.move_tab_into_group(10, ids[0]), None, "same group");
+
+        // A second strip in the same workspace: a merge across strips is
+        // a different gesture and must be refused, not approximated.
+        let other = Strip {
+            id: StripId::new(),
+            name: "Second".into(),
+            window_groups: vec![WindowGroup {
+                id: 77,
+                tabs: vec![mk(30)],
+                active_tab: 30,
+                width: WindowWidth::Normal,
+                maximized: false,
+            }],
+        };
+        tree.workspaces[0].strips.push(other);
+        assert_eq!(tree.move_tab_into_group(10, 77), None, "across strips");
+
+        // Nothing moved on any refusal.
+        assert_eq!(
+            tree.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .iter()
+                .map(|t| t.id)
+                .collect::<Vec<_>>(),
+            vec![10, 11],
+        );
+        assert_eq!(tree.workspaces[0].strips[0].window_groups.len(), 2);
     }
 
     #[test]

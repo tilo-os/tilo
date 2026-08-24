@@ -1001,6 +1001,56 @@ fn execute_planned_action(
             tracing::info!("test_control: set {} group(s) to {permille}permille", touched.len());
             fb.with_chrome(|st| st.bump());
         }
+        PlannedAction::MergeTabIntoGroup {
+            surface_id,
+            into_surface_id,
+        } => {
+            // Surfaces in, tab and group ids out. A caller watching the
+            // strip through `foreign_frames` has surface ids and nothing
+            // else — the tab id a window was adopted into is not on that
+            // wire — so the translation belongs here, beside the tree
+            // that owns both vocabularies.
+            let resolved = {
+                let chrome = fb.chrome();
+                let tree = chrome.tree();
+                let tabs = crate::compositor::foreign::foreign_tabs(&tree);
+                let moving = tabs.iter().find(|t| t.surface_id == *surface_id);
+                let target = tabs.iter().find(|t| t.surface_id == *into_surface_id);
+                match (moving, target) {
+                    (Some(m), Some(t)) => crate::compositor::foreign::group_of_tab(&tree, t.tab_id)
+                        .map(|gid| (m.tab_id, gid))
+                        .ok_or_else(|| {
+                            format!("surface {into_surface_id} is in no window group")
+                        }),
+                    (None, _) => Err(format!("no window on screen is surface {surface_id}")),
+                    (_, None) => Err(format!(
+                        "no window on screen is surface {into_surface_id}"
+                    )),
+                }
+            };
+            match resolved {
+                Ok((tab_id, dest_gid)) => match fb.host_mut().merge_tab_into_group(tab_id, dest_gid)
+                {
+                    Ok(count) => {
+                        tracing::info!(
+                            "test_control: surface {surface_id} joined the group holding                              surface {into_surface_id}, which now has {count} tab(s)"
+                        );
+                    }
+                    Err(why) => {
+                        return Some(InvokeFailure {
+                            code: "merge_refused".into(),
+                            message: why,
+                        });
+                    }
+                },
+                Err(why) => {
+                    return Some(InvokeFailure {
+                        code: "unknown_surface".into(),
+                        message: why,
+                    });
+                }
+            }
+        }
         PlannedAction::MouseLeftButton { pressed } => {
             let event = WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
@@ -1229,6 +1279,7 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
         | PlannedAction::SetModifiers { .. }
         | PlannedAction::Snapshot { .. }
         | PlannedAction::SetGroupWidth { .. }
+        | PlannedAction::MergeTabIntoGroup { .. }
         | PlannedAction::InvokeAction { .. } => {}
     }
 }

@@ -1368,6 +1368,24 @@ pub fn foreign_tabs(tree: &WorkspaceTree) -> Vec<ForeignTab> {
     out
 }
 
+/// Which window group in the active workspace holds `tab_id`.
+///
+/// The inverse of the walk [`foreign_tabs`] does: that flattens the
+/// tree down to surfaces and loses which group each one was in, and a
+/// caller holding a surface id needs the group back to say what a
+/// window should be merged *into*.
+pub fn group_of_tab(tree: &WorkspaceTree, tab_id: u64) -> Option<u64> {
+    let ws = tree.active_workspace()?;
+    for strip in &ws.strips {
+        for group in &strip.window_groups {
+            if group.tabs.iter().any(|t| t.id == tab_id) {
+                return Some(group.id);
+            }
+        }
+    }
+    None
+}
+
 /// Whether `surface_id` is the active tab of its group in the active
 /// workspace — i.e. whether its pixels are on screen.
 pub fn is_visible_tab(tree: &WorkspaceTree, surface_id: SurfaceId) -> bool {
