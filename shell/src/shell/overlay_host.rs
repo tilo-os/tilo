@@ -11208,6 +11208,13 @@ impl ShellOverlayHost {
         theme: &Theme,
     ) {
         self.peer_sync_prompt_rects.clear();
+        // Seed and focus the field here too, not only on the event path.
+        // The card is opened by an action or a click, and the frame
+        // painted straight after that arrives before any further event
+        // does — so a composer that waited for one would appear with no
+        // caret and no focus ring, and only look focused once the user
+        // pressed something.
+        self.sync_invite_input();
         // Cleared before every early return below, so a frame that
         // paints no card cannot leave last frame's scrim behind for
         // something to read as still covering the screen.
