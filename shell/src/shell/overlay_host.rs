@@ -5326,6 +5326,14 @@ impl ShellOverlayHost {
     /// click-focus stamp and the file-drop router so both resolve a
     /// pointer coordinate to a window group through the exact same
     /// post-layout geometry (see [`pick_group_at`]).
+    /// Every laid-out window group, for a capture harness that needs to aim at
+    /// one. Same list the drop-target hit-test walks, so a harness and a drop
+    /// agree about where the windows are.
+    #[cfg(any(test, debug_assertions))]
+    pub fn group_hit_candidates_for_tests(&self) -> Vec<(StripId, GroupId, Rect)> {
+        self.group_hit_candidates()
+    }
+
     fn group_hit_candidates(&self) -> Vec<(StripId, GroupId, Rect)> {
         let mut candidates: Vec<(StripId, GroupId, Rect)> = Vec::new();
         for (&strip_id, &ptr) in &self.group_row_ptrs {
@@ -9514,6 +9522,20 @@ impl Widget for ShellOverlayHost {
         out.push(&self.palette);
         if let Some(s) = self.sidebar.as_ref() {
             out.push(s.as_ref());
+        }
+        // The compose surface, so a harness can find it by name.
+        //
+        // Read-only, and deliberately not in `children_mut`: events reach it
+        // through `RemarkHost::pump`, which decides what is the panel's and
+        // what belongs to the desktop underneath. Routing to it here as well
+        // would deliver every keystroke twice.
+        //
+        // This is the visible difference the move makes to anything driving the
+        // gesture. While an application drew the panel it was a client's
+        // widget, absent from this registry, and the only account of where it
+        // went was that application's own log line.
+        if let Some(compose) = self.remark.compose_widget() {
+            out.push(compose);
         }
         out
     }
