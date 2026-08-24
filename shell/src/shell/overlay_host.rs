@@ -16149,7 +16149,11 @@ mod palette_dispatch_tests {
                 "Loading…",
             ))
         };
-        crate::shell::catalogue::note_pending_notice("dev.qos.retirefixture", notice);
+        assert_eq!(
+            crate::shell::catalogue::note_pending_notice("dev.qos.retirefixture", notice),
+            None,
+            "this fixture's id is its own, so the open supersedes nothing"
+        );
 
         assert!(
             !h.retire_notices_for_opened_windows(),
@@ -16221,7 +16225,11 @@ mod palette_dispatch_tests {
                 "Loading…",
             ))
         };
-        crate::shell::catalogue::note_pending_notice("dev.qos.retirefixture", notice);
+        assert_eq!(
+            crate::shell::catalogue::note_pending_notice("dev.qos.fastpaintfixture", notice),
+            None,
+            "this fixture's id is its own, so the open supersedes nothing"
+        );
 
         const SURFACE: u64 = 918_274;
         let store = crate::compositor::foreign::store();
@@ -16232,7 +16240,7 @@ mod palette_dispatch_tests {
             crate::compositor::tab_binding::adopt_toplevel(
                 &mut tree,
                 SURFACE,
-                Some("dev.qos.retirefixture".to_string()),
+                Some("dev.qos.fastpaintfixture".to_string()),
             );
         }
         store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
@@ -16254,6 +16262,87 @@ mod palette_dispatch_tests {
         assert!(
             !chrome.borrow().notifications().iter().any(|n| n.id == notice),
             "once the app is on screen the indication has done its job"
+        );
+        store.forget(SURFACE);
+    }
+
+    /// Pressing Enter twice on the same row must not leave a "Loading…"
+    /// standing over the app that opened.
+    ///
+    /// Only the newest open of a package is tracked, so the notice a
+    /// second press displaces can no longer be retired by the window
+    /// arriving — the window settles the notice the list *names*, and
+    /// the displaced one is no longer named. It used to be dropped from
+    /// the list and nowhere else, so it sat on screen until its own
+    /// two-minute expiry: on a recording, an "Opening Chat / Loading…"
+    /// still up a minute later with Chat plainly open behind it.
+    ///
+    /// Asserts on the chrome's notification list, which is what the
+    /// toast stack is drawn from, rather than on the pending-notice
+    /// bookkeeping — the defect was precisely that the two disagreed.
+    #[test]
+    fn a_second_open_does_not_strand_the_first_ones_loading_notice() {
+        let (mut h, chrome) = host_with_chrome();
+        const PKG: &str = "dev.qos.doubleopenfixture";
+        let mut raise = || {
+            let mut st = chrome.borrow_mut();
+            st.push_notification_full(crate::shell::notification::Notification::new(
+                "Opening Ledger",
+                "Loading…",
+            ))
+        };
+
+        let first = raise();
+        assert_eq!(
+            crate::shell::catalogue::note_pending_notice(PKG, first),
+            None,
+            "precondition: nothing was pending for this package"
+        );
+
+        // The user presses Enter again while the first open is still in
+        // flight. This is the production sequence: raise the new notice,
+        // then hand the displaced one back so it can be taken down.
+        let second = raise();
+        let displaced = crate::shell::catalogue::note_pending_notice(PKG, second);
+        assert_eq!(
+            displaced,
+            Some(first),
+            "the notice the second open displaced has to be handed back"
+        );
+        if let Some(stale) = displaced {
+            chrome.borrow_mut().dismiss_notification(stale);
+        }
+        assert!(
+            !chrome.borrow().notifications().iter().any(|n| n.id == first),
+            "the displaced notice must leave the screen with the open it \
+             was describing, not linger until its own expiry"
+        );
+
+        // And the surviving one still settles the ordinary way, so the
+        // fix has not simply moved the stranding onto the newer notice.
+        const SURFACE: u64 = 918_275;
+        let store = crate::compositor::foreign::store();
+        store.forget(SURFACE);
+        {
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            crate::compositor::tab_binding::adopt_toplevel(
+                &mut tree,
+                SURFACE,
+                Some(PKG.to_string()),
+            );
+        }
+        let tile = vello::kurbo::Rect::new(0.0, 0.0, 120.0, 80.0);
+        store.publish_rgba(SURFACE, &vec![0; 120 * 80 * 4], 120, 80);
+        assert!(store.mark_presented(SURFACE, tile), "precondition: it presented");
+        assert!(
+            h.retire_notices_for_opened_windows(),
+            "the window arriving settles the open that is still live"
+        );
+        assert!(
+            chrome.borrow().notifications().is_empty(),
+            "both notices are accounted for: one displaced, one settled — \
+             nothing is left standing over the running app"
         );
         store.forget(SURFACE);
     }

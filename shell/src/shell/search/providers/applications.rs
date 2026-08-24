@@ -312,7 +312,14 @@ impl ApplicationsProvider {
                         st.bump();
                         id
                     };
-                    catalogue::note_pending_notice(&package_id, notice);
+                    if let Some(stale) = catalogue::note_pending_notice(&package_id, notice) {
+                        // Only the newest open is tracked, so the one
+                        // this replaced can no longer be retired by its
+                        // window arriving. Take it down here or it
+                        // outlives the wait it was describing.
+                        let mut st = chrome.borrow_mut();
+                        st.dismiss_notification(stale);
+                    }
                     catalogue::install_and_launch(
                         package_id.clone(),
                         display_name.clone(),
@@ -514,7 +521,15 @@ pub(crate) fn launch_installed_app(
         st.bump();
         id
     };
-    catalogue::note_pending_notice(package_id, notice);
+    if let Some(stale) = catalogue::note_pending_notice(package_id, notice) {
+        // A second Enter while the first open is still in flight. Only
+        // the newest is tracked, so the notice this replaced can no
+        // longer be retired by the window arriving — it has to come
+        // down here, or it outlives the wait it was describing and
+        // sits over the app that did open.
+        let mut st = chrome.borrow_mut();
+        st.dismiss_notification(stale);
+    }
     // Scoped so the borrow is released before the error branch below
     // takes a mutable one.
     let launched = {
