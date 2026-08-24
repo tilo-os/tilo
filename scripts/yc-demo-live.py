@@ -783,6 +783,18 @@ class Live:
                                     "write")
             yc.claim("the agent's session is admitted to the room as an editor",
                      "err" not in admitted, True)
+            # And admitted as what it is. The grant above names the
+            # *session*, which the sync path needs before this peer may
+            # take part at all, and names it a person because that is
+            # the only kind a session has. Membership under an agent
+            # principal is the separate statement, and it is the one
+            # this beat makes out loud — the room's capability list is
+            # where "this member is an agent" is recorded, and every
+            # surface that marks one reads it there.
+            as_agent = self.q.grant(yc.AGENT_SUBJECT, "workspace", "write")
+            yc.claim("and admitted to the room as an agent, not as a "
+                     "second person",
+                     "err" not in as_agent, True)
         self.agent_session_in = True
 
     def word_processor_is_open(self) -> bool:
