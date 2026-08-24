@@ -1193,6 +1193,18 @@ def main() -> int:
               "  cargo build --profile demo -p shell --bin shell --bin qos-control",
               file=sys.stderr)
         return 2
+    # The decoder the document claims are made with. Said here rather
+    # than discovered at the end, because a take without it is a take
+    # whose two best claims cannot be answered either way -- and, before
+    # the harness learned to tell "absent" from "unreadable", a take that
+    # reported the agent's finished run sheet as an empty page. Two
+    # minutes of filming to find that out is two minutes too many.
+    if yc.DOC_TEXT is None:
+        print("no qos-doc-text, so nothing could be asked of the documents "
+              "this films. Build it:\n"
+              "  cargo build --profile demo -p qdoc --bin qos-doc-text",
+              file=sys.stderr)
+        return 2
     if not args.dry_run and not os.environ.get("DISPLAY"):
         print("no DISPLAY. This take is a window you drive, which needs an X "
               "server (XWayland counts). Run it from a terminal on your "
