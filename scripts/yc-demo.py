@@ -4066,6 +4066,25 @@ def beat_five(quinten: Session, registry, shots: str) -> dict | None:
           offered is not None, True)
     if offered:
         note(f"row: {offered.get('title')!r} — {offered.get('subtitle')!r}")
+        # And that the row *says so*, which is the half this beat used to
+        # spend eleven seconds not showing.
+        #
+        # The capability was always real — the palette listed an app the
+        # machine did not have and activating it fetched one. The row was
+        # identical to a row for an app already here, so on film it was an
+        # ordinary app launch and a viewer had no way to tell. A beat that
+        # demonstrates something invisibly is a beat that costs its
+        # seconds and argues nothing.
+        badge = offered.get("badge")
+        claim("and the row says it is not on this machine",
+              bool(badge), True)
+        if badge:
+            note(f"the row carries {badge!r}, and its title is the fetch "
+                 f"verb rather than the ordinary open one")
+        else:
+            gap("the row for an app this machine does not have is "
+                "indistinguishable from one for an app it has, so this "
+                "beat shows a capability the audience cannot see")
     quinten.snapshot(os.path.join(shots, "04-palette-offer.png"))
 
     step("he presses Enter — fetch, verify, unpack, run")
