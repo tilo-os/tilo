@@ -248,8 +248,15 @@ fn provenance(record: &KnownRecord, here: Option<RoomId>, rooms: &[(RoomId, Stri
 }
 
 /// `~`-shortened path for the subtitle.
+///
+/// Resolved through `QOS_USER_HOME` first, for the same reason the files
+/// provider is: when a demo home is pinned, a record living under it has
+/// to abbreviate to `~/…` like any other. Reading the process's own home
+/// here would fail the `strip_prefix` and print the staging directory in
+/// full — putting the harness's own path on screen, which is the thing
+/// the pin exists to keep off camera.
 fn display_path(path: &std::path::Path) -> String {
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = ui::sysdirs::user_home_override().or_else(dirs::home_dir) {
         if let Ok(rest) = path.strip_prefix(&home) {
             return format!("~/{}", rest.display());
         }
