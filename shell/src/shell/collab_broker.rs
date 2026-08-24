@@ -2047,6 +2047,14 @@ fn spawn_inner(
                             else {
                                 continue;
                             };
+                            // What this host's apps can do anything
+                            // with. A frame refused here is refused
+                            // once, for every app at the same time —
+                            // as opposed to being handed to all of
+                            // them and sorted out afterwards by each.
+                            if !relays_to_local_apps(&key, &payload) {
+                                continue;
+                            }
                             // A peer saying it has arrived is a peer
                             // asking for a document it has none of.
                             // Note it, so the next whole document this
@@ -2357,6 +2365,43 @@ fn spawn_inner(
 /// holds, which is not a thing to do per pointer sample. `announced`
 /// remembers what has already been said, so the roster is published
 /// when the answer changes rather than on every frame.
+/// Whether a presence frame that arrived from another host is
+/// something this host's apps can place.
+///
+/// The cluster fan-out below hands one arriving frame to every app in
+/// the room. That is right for everything a room shares — a caret, a
+/// selection, an arrival — because those are positions in a
+/// *document*, and a document is the same document on both machines.
+///
+/// It is wrong for a pointer measured inside a window. Those are
+/// pixels in the sending machine's window, at its size, its scroll
+/// position and its scale, and there is no window here they describe.
+/// Handing them over anyway is what drew one person once per open
+/// window: every app took the numbers for its own and placed them at
+/// the same offset in its own content.
+///
+/// Where that person's pointer *is* arrives by the path that can say
+/// so: their compositor republishes the position in desktop
+/// coordinates (`shell::peer_presence`), and this host's compositor
+/// paints it, once, above every window. Nothing is lost by refusing
+/// the surface-space copy; a second answer to a question that already
+/// has one is the thing being removed.
+///
+/// Everything without a surface space still relays, including the
+/// keyless legacy dialects, whose pointers no compositor claims.
+pub(crate) fn relays_to_local_apps(
+    key: &ui::presence::PresenceKey,
+    payload: &ui::collaboration::PresencePayload,
+) -> bool {
+    if !matches!(payload, ui::collaboration::PresencePayload::Pointer { .. }) {
+        return true;
+    }
+    !matches!(
+        key.pointer_space(),
+        Some(ui::presence::PointerSpace::Surface { .. })
+    )
+}
+
 fn remote_participant_id(
     cluster_id: &str,
     peer: u64,
