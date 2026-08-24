@@ -1604,6 +1604,7 @@ fn catalogue_rest() -> Vec<Scenario> {
         window_open_at_next_seam_rightwards(),
         strip_scroll_across_apps(),
         strip_pan_curve(),
+        strip_reframe_curve(),
         narrow_groups_side_by_side(),
         tab_pill_reveal(),
         tab_pill_reveal_narrow(),
@@ -1908,6 +1909,61 @@ fn strip_pan_curve() -> Scenario {
             },
             Action::SamplePan {
                 prefix: "01-arrival",
+                at_ms: PAN_SAMPLES,
+            },
+        ],
+    }
+}
+
+/// The strip re-framing itself, with nobody having moved focus.
+///
+/// [`strip_pan_curve`] photographs the pan a window's *arrival* causes,
+/// and focus moves with the arrival — so what it shows is the
+/// focus-follow travel. This one takes focus out of it. Three windows
+/// are already open and one already has focus; then every window is
+/// given a larger share of the display, which moves every edge and
+/// leaves the offset chosen for the old widths framing nothing in
+/// particular.
+///
+/// Nothing else can move the view here: no window opened, no focus
+/// changed, no wheel turned. Whatever travel these frames show is the
+/// strip re-framing itself, which is the one motion a viewer has no
+/// event to attribute — and therefore the one that most has to be a
+/// motion rather than a cut.
+fn strip_reframe_curve() -> Scenario {
+    Scenario {
+        name: "strip_reframe_curve",
+        description: "The strip re-framing itself after the windows change width, held at six \
+                      points along its curve. No window opened and no focus moved.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            Action::Wait(2),
+            Action::OpenHostedWindow {
+                app: "Files",
+                title: "Files",
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            Action::SelectGroup(Some(1)),
+            Action::Wait(4),
+            Action::OpenHostedWindow {
+                app: "Terminal",
+                title: "Terminal",
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            // Focus lands, the strip settles, and everything stops.
+            Action::SelectGroup(Some(2)),
+            Action::Wait(PAN_SETTLE_FRAMES),
+            Action::Relayout,
+            Action::Snapshot("00-settled-three-across"),
+            // Every window widens. Focus does not move.
+            Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+            Action::SamplePan {
+                prefix: "01-reframe",
                 at_ms: PAN_SAMPLES,
             },
         ],
