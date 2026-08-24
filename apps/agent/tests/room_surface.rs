@@ -1388,6 +1388,10 @@ fn block_kinds(doc: &AutoCommit) -> Vec<String> {
 ///   original file: both put a picture on the page, and only one of them is
 ///   what was asked for.
 #[test]
+// Its second step carries content between two applications, so it records a
+// crossing in the session's process-wide ledger — the same one the tests
+// below read. They take turns rather than draining each other's.
+#[serial_test::serial]
 fn one_instruction_crops_in_one_app_and_places_the_result_in_the_other() {
     let files = tempfile::tempdir().expect("tempdir");
     let (path, w, h) = seed_photograph(files.path());
