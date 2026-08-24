@@ -192,3 +192,35 @@ scrollbar for content which does not exist.
 
 Worth deciding whether the strip-stack indicator should appear at all
 below overflow, and whether at rest it should be this loud when it does.
+
+## Nothing installs a tracing subscriber in the apps
+
+`ui` and every app on it call `tracing::warn!` and nothing collects it.
+There is no `tracing_subscriber` installed anywhere in the toolkit or in
+the apps, so every warning app code emits is discarded before it reaches
+a log.
+
+This is how a refusal stayed inaudible for a day. The app↔shell door
+answered two request kinds by warning and dropping them; the warning was
+the intended signal that something was unimplemented, and it went
+nowhere. The two `WARN` lines that do appear in an app's log come from
+the launcher, not from the app.
+
+Anything relying on `warn!` to surface a problem in app code is
+currently relying on nothing.
+
+## A proof that forced the transport it was proving
+
+`scripts/headless-examples/photograph-crosses-proof.py` sets
+`QUICK_COLLAB_SOCK` in the launched app's environment, which forces the
+app onto the legacy JSON collaboration backend. A real session uses the
+capnp descriptor; `native.rs` says so in as many words — "in a real
+session nothing dials it".
+
+So the script proved content crossing on the one transport that already
+worked, while the transport every real session uses dropped the request
+on the floor. It passed, repeatedly, against a defect that was total.
+
+Worth auditing the other `scripts/headless-examples/` proofs for the
+same shape: a harness that arranges the conditions under which the
+answer is guaranteed.
