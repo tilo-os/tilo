@@ -88,6 +88,9 @@ pub enum Icon {
     ArrowUp,
     ChevronRight,
     RotateCw,
+    RotateCcw,
+    Crop,
+    Save,
     Copy,
     Scissors,
     ClipboardPaste,
@@ -429,6 +432,26 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::RotateCw => vec![
             path_from_d("M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"),
             path_from_d("M21 3v5h-5"),
+        ],
+        // Rotate-ccw: the mirror of the above — anticlockwise arc + tick.
+        Icon::RotateCcw => vec![
+            path_from_d("M3 12a9 9 0 1 0 9-9c-2.52 0-4.93 1-6.74 2.74L3 8"),
+            path_from_d("M3 3v5h5"),
+        ],
+        // Crop: the two overlapping L-rules of a crop mark. From lucide's
+        // `crop.js`.
+        Icon::Crop => vec![
+            path_from_d("M6 2v14a2 2 0 0 0 2 2h14"),
+            path_from_d("M18 22V8a2 2 0 0 0-2-2H2"),
+        ],
+        // Save: the floppy outline — body with a clipped corner, the shutter
+        // above and the label below. From lucide's `save.js`.
+        Icon::Save => vec![
+            path_from_d(
+                "M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z",
+            ),
+            path_from_d("M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"),
+            path_from_d("M7 3v4a1 1 0 0 0 1 1h7"),
         ],
         // Copy: foreground sheet rect + background sheet outline.
         // Star: single five-point star outline. Transcribed from
@@ -1277,6 +1300,9 @@ mod tests {
             Icon::ArrowUp,
             Icon::ChevronRight,
             Icon::RotateCw,
+            Icon::RotateCcw,
+            Icon::Crop,
+            Icon::Save,
             Icon::Copy,
             Icon::Scissors,
             Icon::ClipboardPaste,
