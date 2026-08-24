@@ -175,6 +175,35 @@ fn an_empty_window_names_itself_legibly() {
     }
 }
 
+/// The top bar's own pills — clock band, workspace pill, tray — against the
+/// bar they sit on.
+///
+/// A selector's body is a lift, and a lift is a step away from whatever is
+/// underneath. These were lifted away from `surfaces.base` while the bar
+/// paints `surfaces.overlay`, which on the light palette is a different
+/// white: the clock pill came out `#ffffff` on `#ffffff`, 1.00:1, with a
+/// hairline as the only evidence a pill was there.
+#[test]
+fn the_bar_pills_have_a_body_on_the_bar() {
+    use ui::a11y::relative_luminance;
+    for (name, theme) in themes() {
+        let colors = &theme.tokens.colors;
+        let bar = colors.surfaces.overlay;
+        let tier = ui::chrome::selection_tier_on(
+            &theme,
+            ui::chrome::SelectionState::active(true),
+            bar,
+        );
+        let body = ui::tokens::colors::over(bar, tier.fill, tier.fill.components[3]);
+        let moved = (relative_luminance(body) - relative_luminance(bar)).abs();
+        assert!(
+            moved > 0.0,
+            "{name}: an active bar pill composites to the bar's own colour — \
+             the pill has no body, only its hairline",
+        );
+    }
+}
+
 /// A veneer has to move the surface it is laid on.
 ///
 /// `surface_white_5` was `white/5` in both the light and the dark palette.

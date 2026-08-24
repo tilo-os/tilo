@@ -308,7 +308,11 @@ pub struct TopBarChrome {
 /// shared selection tier derives its lift from the ground by luminance,
 /// so a Selector has a body on every theme.
 fn bar_selector_body(theme: &Theme, state: ui::chrome::SelectionState) -> ui::chrome::SelectionTier {
-    ui::chrome::selection_tier(theme, state)
+    // Anchored on the bar's own surface, not on `surfaces.base`. See
+    // [`ui::chrome::selection_tier_on`] — on the light palette those are two
+    // different whites, and the base-anchored lift painted the clock pill in
+    // exactly the bar's colour.
+    ui::chrome::selection_tier_on(theme, state, theme.tokens.colors.surfaces.overlay)
 }
 
 /// How much `danger` the tray pill carries when the battery is critical.
