@@ -961,8 +961,19 @@ def _the_owners_half(q, shots: str, instruction: str,
     agent_token = yc.invite_from_the_panel(q, "Claude", shots, "live-invite-2")
     yc.claim("a second invitation was minted, for the agent",
              bool(agent_token), True)
-    yc.claim("and it is a different invitation from xaver's",
-             bool(agent_token) and agent_token != token, True)
+    # Both, then distinct -- in that order, and never `a != b` on its own.
+    # Written as one comparison it passed while the first invitation had
+    # failed to mint at all: `token` was None, so "different from xaver's"
+    # was true of anything. The run reported two invitations, the room got
+    # one, and it was made out to the agent, which is why the agent turned
+    # up as the first collaborator. A check that cannot fail when its own
+    # premise is broken is the exact fault this file keeps finding in
+    # other people's tests.
+    yc.claim("both invitations exist",
+             bool(token) and bool(agent_token), True)
+    yc.claim("and they are two different invitations",
+             bool(token) and bool(agent_token) and agent_token != token,
+             True)
     yc.close_collaborators(q)
     stop.wait(1.0)
 
