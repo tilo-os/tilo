@@ -629,11 +629,13 @@ fn openable(
                      operations on this list.",
                     c.title
                 )),
-                // Inert on this descriptor: an open never becomes an
-                // `EncodedAction` and never reaches `dispatch_by`, because
-                // there is no replica for it to mutate. Named for what it
-                // would be if it did — the session hosting the room is the
-                // only place an application can start.
+                // Inert on this descriptor, but not because an open goes
+                // nowhere — it is dispatched, just not through the door.
+                // `Session::perform` recognises the address before the door
+                // sees it and asks the session over the socket instead, so
+                // nothing here is ever encoded or run against a replica.
+                // Named for where the work does land: the session hosting
+                // the room is the only place an application can start.
                 locus: qos_actions::ExecutionLocus::ServerPreferred,
                 input: qos_actions::InputSpec::None,
             },
