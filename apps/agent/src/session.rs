@@ -836,7 +836,10 @@ impl Session {
             );
             instruction = match surface::from_verbs(&summons.asked, &scoped) {
                 Ok((offer, argument)) => Instruction::Perform { id: offer.id(), argument },
-                Err(why) => Instruction::Unknown(format!("{} ({why:?})", summons.asked)),
+                // The floor's own words for why, which name operations the
+                // way a person would. `{why:?}` here would have put the
+                // debug form of an address list into a channel message.
+                Err(why) => Instruction::Unknown(plan::unmatched(&summons.asked, &why)),
             };
         }
         tracing::info!(
@@ -855,7 +858,12 @@ impl Session {
                 // message as dealt with, so an agent that worked silently
                 // would do the same work again after a restart.
                 if self.perform(&id, argument.as_deref(), &view, &to)? {
-                    let reply = format!("{}: done — {id}.", self.cfg.name);
+                    // Said in the app's words, not the address it was
+                    // dispatched by: this line is read by a person.
+                    let did = surface::label_of(&self.offers(&view), &id)
+                        .map(|l| l.to_lowercase())
+                        .unwrap_or_else(|| "that".to_string());
+                    let reply = format!("{}: done — {did}.", self.cfg.name);
                     self.reply(&to, &reply)?;
                 }
             }
@@ -995,8 +1003,14 @@ impl Session {
         to: &Answer,
     ) -> Result<bool> {
         let name = self.cfg.name.clone();
+        // The app's own words for this operation, for anything said out
+        // loud. Taken from the same fresh survey the dispatch resolves
+        // against, so the sentence and the action cannot disagree.
+        let known = self.offers(view);
+        let what = surface::label_of(&known, id).map(|l| l.to_lowercase());
         let Some(address) = surface::decode_address(id) else {
-            let reply = format!("{name}: {id:?} is not an address I can act on.");
+            tracing::warn!(%id, "refused: not an address");
+            let reply = format!("{name}: I couldn't work out what to act on there.");
             self.reply(to, &reply)?;
             return Ok(false);
         };
@@ -1005,10 +1019,10 @@ impl Session {
         // and now must stop the operation, and a gate that only runs when
         // the list is built is advisory.
         if !surface::permitted(&self.cfg.permissions, &address) {
-            let reply = format!(
-                "{name}: I don't have permission to {} here.",
-                address.action
-            );
+            let reply = match &what {
+                Some(w) => format!("{name}: I'm not allowed to {w} here."),
+                None => format!("{name}: I'm not allowed to do that here."),
+            };
             tracing::warn!(%id, "refused: no capability for this operation");
             self.reply(to, &reply)?;
             return Ok(false);
@@ -1040,9 +1054,10 @@ impl Session {
             held.map(|ed| ed.invoke(view, &address, argument, registry))
         };
         let Some(outcome) = outcome else {
-            let reply = format!(
-                "{name}: nothing from {namespace:?} is open in this room, so I can't act on it."
-            );
+            let reply = match &what {
+                Some(w) => format!("{name}: I can't {w} — that isn't open here."),
+                None => format!("{name}: that isn't open here, so I can't act on it."),
+            };
             tracing::warn!(%id, %namespace, "refused: that app's state is not here");
             self.reply(to, &reply)?;
             return Ok(false);
@@ -1339,25 +1354,17 @@ impl Session {
 
 /// What the agent could have been asked for, in the apps' own words.
 ///
-/// Capped, because a room can export a great many operations and a
-/// paragraph is not a catalogue; the count is what makes the truncation
-/// honest rather than a shrug.
+/// Labels, never addresses. This sentence goes into a document somebody is
+/// reading: `word-processor.document#insert-table` is how the agent
+/// dispatches, and printing it makes a working agent look broken. Two or
+/// three, because a person skims a refusal — six operations recited inline
+/// is a paragraph that teaches nothing.
 fn describe_offers(offers: &[Offer]) -> String {
-    if offers.is_empty() {
-        return "Nothing in this room is exporting anything I may act on.".to_string();
+    let words = surface::in_words(offers, 3);
+    if words.is_empty() {
+        return "Nothing open here is something I can act on.".to_string();
     }
-    let shown: Vec<String> = offers
-        .iter()
-        .take(6)
-        .map(|o| format!("{} ({})", o.descriptor.action_label, o.id()))
-        .collect();
-    let more = offers.len().saturating_sub(shown.len());
-    let mut s = format!("I can: {}", shown.join("; "));
-    if more > 0 {
-        s.push_str(&format!("; and {more} more"));
-    }
-    s.push('.');
-    s
+    format!("I can {words}.")
 }
 
 fn describe(action: &WordProcessorAction) -> String {

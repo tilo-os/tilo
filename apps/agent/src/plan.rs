@@ -317,15 +317,24 @@ impl Instruction {
 
 /// Why the floor could not answer, in the words the agent writes into the
 /// document.
-fn unmatched(rest: &str, why: &NoMatch) -> String {
+///
+/// The apps' own labels and nothing else. An address is how the agent
+/// dispatches; it is not something to say out loud to somebody reading the
+/// page, and a refusal reciting six of them reads as a broken machine even
+/// when the machine is working. The address goes in the log line beside this.
+pub fn unmatched(rest: &str, why: &NoMatch) -> String {
     match why {
         NoMatch::Nothing => rest.to_string(),
-        NoMatch::Ambiguous(ids) => format!(
-            "{rest} (that could mean any of {} — say which)",
-            ids.join(", ")
+        NoMatch::Ambiguous(labels) => format!(
+            "{rest} — that could mean {}. Which one?",
+            labels
+                .iter()
+                .map(|l| l.to_lowercase())
+                .collect::<Vec<_>>()
+                .join(" or ")
         ),
-        NoMatch::NeedsText(id) => {
-            format!("{rest} ({id} needs the text to use, in quotes)")
+        NoMatch::NeedsText(label) => {
+            format!("{rest} — {} needs the words to use, in quotes", label.to_lowercase())
         }
     }
 }
@@ -829,6 +838,59 @@ mod tests {
         )
     }
 
+    /// Nothing the agent writes into a document names an address.
+    ///
+    /// An address is how it dispatches: `word-processor.document#insert-table`
+    /// is an internal identifier, and a refusal that recites six of them in
+    /// parentheses reads as a broken machine to the person the document
+    /// belongs to. The separator is the tell, so that is what is asserted —
+    /// it catches every spelling of the mistake, not the one example somebody
+    /// thought of.
+    #[test]
+    fn a_refusal_names_operations_in_words_and_never_an_address() {
+        let offers = surveyed();
+        assert!(!offers.is_empty(), "nothing to refuse against");
+
+        let mut written = vec![
+            unmatched("juggle three plates", &NoMatch::Nothing),
+            unmatched("align it", &NoMatch::Ambiguous(vec![
+                "Align left".into(),
+                "Align centre".into(),
+            ])),
+            unmatched("rename it", &NoMatch::NeedsText("Rename".into())),
+            surface::in_words(&offers, 3),
+        ];
+        // And whatever the floor itself produces against a real survey, so
+        // this cannot pass on hand-written inputs alone.
+        for asked in ["align it", "juggle three plates", "rename it"] {
+            if let Instruction::Unknown(why) = Instruction::from_floor(asked, &offers) {
+                written.push(why);
+            }
+        }
+
+        for text in &written {
+            assert!(
+                !text.contains(surface::ADDRESS_SEP),
+                "an address reached prose a person reads: {text:?}"
+            );
+            for offer in &offers {
+                assert!(
+                    !text.contains(offer.address().resource.as_str()),
+                    "a resource id reached prose a person reads: {text:?}"
+                );
+            }
+        }
+
+        // It still says something: the alternatives are named, in the app's
+        // own words, so the refusal is useful rather than merely clean.
+        let ambiguous = unmatched(
+            "align it",
+            &NoMatch::Ambiguous(vec!["Align left".into(), "Align centre".into()]),
+        );
+        assert!(ambiguous.contains("align left"), "{ambiguous}");
+        assert!(ambiguous.contains("align centre"), "{ambiguous}");
+    }
+
     #[test]
     fn every_recipe_only_dispatches_actions_the_app_exports() {
         // A recipe is a composition, so its parts are named here — but they
@@ -1159,8 +1221,16 @@ mod tests {
             panic!("an ambiguous instruction must not resolve, got {many:?}");
         };
         assert!(
-            why.contains("say which"),
+            why.contains("Which one?"),
             "ambiguity must be reported as ambiguity: {why}"
+        );
+        assert!(
+            why.contains("align"),
+            "and it must name the alternatives, in the app's own words: {why}"
+        );
+        assert!(
+            !why.contains(surface::ADDRESS_SEP),
+            "in words, never as addresses: {why}"
         );
 
         // Nothing in the room carries any of these words.

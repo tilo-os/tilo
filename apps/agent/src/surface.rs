@@ -407,6 +407,45 @@ pub fn find<'a>(offers: &'a [Offer], id: &str) -> Option<&'a Offer> {
     offers.iter().find(|o| *o.address() == address)
 }
 
+/// The app's own words for the operation an id names.
+///
+/// What a refusal or a confirmation says out loud. `None` when the survey no
+/// longer carries it, and the caller then says something that names no
+/// operation at all rather than falling back to the address — an identifier in
+/// a sentence tells a reader nothing and makes a working agent look broken.
+pub fn label_of(offers: &[Offer], id: &str) -> Option<String> {
+    find(offers, id).map(|o| o.descriptor.action_label.clone())
+}
+
+/// A short, human list of what is on offer.
+///
+/// De-duplicated by label and capped: a folder of fifty files exports fifty
+/// `Rename`s, and a refusal that recites all of them is a paragraph a person
+/// skims and learns nothing from.
+pub fn in_words(offers: &[Offer], most: usize) -> String {
+    let mut names: Vec<&str> = Vec::new();
+    for o in offers {
+        let label = o.descriptor.action_label.as_str();
+        if !names.iter().any(|n| n.eq_ignore_ascii_case(label)) {
+            names.push(label);
+        }
+    }
+    if names.is_empty() {
+        return String::new();
+    }
+    let shown: Vec<String> = names.iter().take(most).map(|n| n.to_lowercase()).collect();
+    let rest = names.len().saturating_sub(shown.len());
+    let mut s = match shown.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, head)) => format!("{}, or {last}", head.join(", ")),
+        None => String::new(),
+    };
+    if rest > 0 {
+        s.push_str(&format!(", among {rest} other thing{}", if rest == 1 { "" } else { "s" }));
+    }
+    s
+}
+
 // ---------------------------------------------------------------------------
 // The deterministic floor
 // ---------------------------------------------------------------------------
@@ -499,15 +538,22 @@ fn score(offer: &Offer, words: &[String]) -> usize {
 }
 
 /// What the deterministic floor decided, when it could not decide.
+///
+/// Every string here is a **label** — the app's own words for an operation, the
+/// ones it would put in front of a person. Never an address. What the agent
+/// writes back goes into a document somebody is reading, and
+/// `word-processor.document#insert-table` is an internal identifier: it belongs
+/// in the log line next to the refusal, not in the sentence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NoMatch {
     /// Nothing the room exports carries a word of the instruction.
     Nothing,
     /// Several operations answer it equally well, and choosing between them
-    /// would be a guess.
+    /// would be a guess. Carries their labels.
     Ambiguous(Vec<String>),
     /// The operation collects text and the instruction quoted none, so there is
-    /// nothing to perform it with that the instruction actually said.
+    /// nothing to perform it with that the instruction actually said. Carries
+    /// its label.
     NeedsText(String),
 }
 
@@ -551,7 +597,10 @@ pub fn from_verbs<'a>(
     }
     if best.len() > 1 {
         return Err(NoMatch::Ambiguous(
-            best.iter().take(4).map(|o| o.id()).collect(),
+            best.iter()
+                .take(4)
+                .map(|o| o.descriptor.action_label.clone())
+                .collect(),
         ));
     }
     let chosen = best[0];
@@ -560,7 +609,7 @@ pub fn from_verbs<'a>(
     }
     match quoted_literal(rest) {
         Some(text) => Ok((chosen, Some(text))),
-        None => Err(NoMatch::NeedsText(chosen.id())),
+        None => Err(NoMatch::NeedsText(chosen.descriptor.action_label.clone())),
     }
 }
 

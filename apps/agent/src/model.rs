@@ -370,11 +370,19 @@ you draft the content it will be carried out with.
 
 Answer with exactly one id from the list you are given, or \"none\".
 
-\"none\" is the right answer whenever nothing in the list does what was asked. Never \
-stretch an entry to cover something it does not do — a wrong action is worse than \
-no action, because the person asked for something and would get something else. The \
-list describes what is open in the room at this moment and nothing else is \
-reachable, so an operation you would like to exist is \"none\".
+The list has two halves and the first is easy to skim past. **Editorial changes** \
+come first: each is several of the application's operations composed into one \
+change, over parts of the document worked out by reading it. When the request \
+describes one of those — restructuring a run of lines, drafting notes into a table, \
+giving a draft its headings — that is the entry to choose, and no single operation \
+in the second half will do the same job. Only then look at the individual \
+operations.
+
+\"none\" is the right answer whenever nothing in either half does what was asked. \
+Never stretch an entry to cover something it does not do — a wrong action is worse \
+than no action, because the person asked for something and would get something \
+else. But do not answer \"none\" for something an editorial change plainly covers: \
+that is a refusal to do work that was on the list.
 
 You never name a block, a position, a range to delete, or an action. The \
 application works those out from the document itself and carries out your choice \
@@ -398,15 +406,18 @@ Keep \"why\" to one short clause.";
 fn user_turn(rest: &str, blocks: &[Block], offers: &[Offer]) -> String {
     let mut s = String::new();
     s.push_str(
-        "Editorial changes I can make to a document, each of which is several \
-         operations applied to blocks I work out myself:\n\n",
+        "Editorial changes I can make to this document. Each is several \
+         operations composed into one change, over blocks I work out myself by \
+         reading the page — no single operation below does the same job. Prefer \
+         one of these when the request describes it:\n\n",
     );
     for r in plan::RECIPES {
         s.push_str(&format!("- {} — {}\n", r.id, r.summary));
     }
     s.push_str(
-        "\nOperations the applications in this room are exporting right now, \
-         each addressed by the application's own ids:\n\n",
+        "\nIndividual operations the applications in this room are exporting \
+         right now, each addressed by the application's own ids. One of these \
+         does exactly one thing to exactly one named resource:\n\n",
     );
     if offers.is_empty() {
         s.push_str("(nothing)\n");
