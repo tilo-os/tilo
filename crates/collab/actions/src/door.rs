@@ -62,7 +62,7 @@
 use crate::action::{EncodedAction, ExecutionLocus};
 use crate::executor::{dispatch_by, ActionTransport, Dispatched};
 use crate::registry::ActionRegistry;
-use crate::resource::{ActionInput, ActionSpec, Resource, KEY_SEP};
+use crate::resource::{ActionInput, ActionSpec, Collects, Resource, KEY_SEP};
 
 /// The stable address of one exported operation: which resource, and which of
 /// that resource's actions.
@@ -110,9 +110,14 @@ impl ActionAddress {
 pub enum InputSpec {
     /// Takes nothing. The majority.
     None,
-    /// Takes one free-text argument. `prompt` and `placeholder` are the app's
-    /// own words for it — the same ones the palette would show a person.
-    Text { prompt: String, placeholder: String },
+    /// Takes one text argument. `prompt` and `placeholder` are the app's own
+    /// words for it — the same ones the palette would show a person — and
+    /// `collects` says what kind of thing it names.
+    Text {
+        prompt: String,
+        placeholder: String,
+        collects: Collects,
+    },
 }
 
 impl InputSpec {
@@ -122,10 +127,12 @@ impl InputSpec {
             ActionInput::Prompted {
                 prompt,
                 placeholder,
+                collects,
                 ..
             } => InputSpec::Text {
                 prompt: prompt.clone(),
                 placeholder: placeholder.clone(),
+                collects: *collects,
             },
         }
     }
@@ -133,6 +140,21 @@ impl InputSpec {
     /// Whether an invocation must supply text.
     pub fn wants_text(&self) -> bool {
         matches!(self, InputSpec::Text { .. })
+    }
+
+    /// Whether the text it wants is the address of content rather than words.
+    ///
+    /// The question a caller has to ask before it can supply an argument at
+    /// all: words can be quoted out of the request, and a content hash cannot
+    /// — it has to have been produced by something.
+    pub fn wants_content(&self) -> bool {
+        matches!(
+            self,
+            InputSpec::Text {
+                collects: Collects::Content,
+                ..
+            }
+        )
     }
 }
 
