@@ -284,6 +284,10 @@ tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 # drops the live media engine — the conversation under test needs no camera, and
 # the default build would pull GStreamer/openh264/iroh into every shell test run.
 chat = { path = "../apps/chat", default-features = false }
+# Mints the remark in `tests/chat_message_crosses.rs`. The test's whole point is
+# that the encoder is somebody else's — a message built by hand here would prove
+# chat can read its own writing, not that it can read another app's.
+qos-reference = { path = "../crates/collab/reference" }
 wayland-client.workspace = true
 tokio-test = "0.4"
 # Canonical-bytes encoder for Phase 3 wire-format round-trip tests in
