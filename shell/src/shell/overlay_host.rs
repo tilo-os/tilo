@@ -7412,6 +7412,25 @@ impl Widget for ShellOverlayHost {
         // top-left below the topbar, toasts top-right), but routing
         // them in this order keeps the contract simple: click on a
         // toast = dismiss, no other widget runs for that press.
+        //
+        // Except where something is painted *over* the toast. `draw`
+        // lays the stack down before the overview, the workspace
+        // settings, quick settings, the collaborator dropdown, the
+        // room-activity sheet and the palette — every surface
+        // [`Self::cursor_over_open_overlay`] knows about — so while one
+        // of those is open the toast is not the thing under the pointer
+        // and the click is not its to take. Taking it anyway is how a
+        // press on the collaborator panel's **Invite** button quietly
+        // dismissed a launch toast instead: the panel is anchored to the
+        // same top-right corner the stack is, its buttons land inside
+        // the second card, and the press that should have opened the
+        // invite composer vanished. The person pressed Invite, nothing
+        // appeared, and the second press — with the toast now gone —
+        // worked, which is what made it look intermittent rather than
+        // like z-order and hit-order disagreeing.
+        let toast_is_topmost = !self
+            .last_cursor
+            .is_some_and(|p| self.cursor_over_open_overlay(p));
         if let (
             Some(stack),
             WindowEvent::MouseInput {
@@ -7421,7 +7440,7 @@ impl Widget for ShellOverlayHost {
             },
         ) = (self.notification_stack.as_mut(), event)
         {
-            if let Some(p) = self.last_cursor {
+            if toast_is_topmost && let Some(p) = self.last_cursor {
                 if stack.notify_click_at(p) {
                     *handled = true;
                     return;
@@ -11230,41 +11249,6 @@ impl ShellOverlayHost {
                 }
             })
             .collect()
-    }
-
-    /// The filter band inside the search card: multi-select kind chips
-    /// on the left, the mutually-exclusive scope switch on the right.
-    ///
-    /// One row, on the card's own content inset, so it lines up with the
-    /// query field above it and the result rows below it. The band it
-    /// paints into belongs to the palette
-    /// ([`ui::widget::command_palette::CommandPalette::filter_strip_rect`]),
-    /// which is why the alignment holds without the shell re-deriving
-    /// any insets.
-    /// Geometry of the peer-sync card — the token prompt and the
-    /// issued-invite readout share one surface, so one rect owns both
-    /// the paint and the hit-test.
-    fn peer_sync_rect(&self) -> Rect {
-        // Narrower than it was. The card used to be sized around a
-        // token that filled whatever width it was given; what it holds
-        // now is a name, a line of state and a fingerprint, and a
-        // surface three times wider than its content reads as one that
-        // failed to load rather than one that is finished.
-        let w = (self.rect.width() * 0.42).clamp(400.0, 520.0);
-        // Each face is as tall as what it has to say. The card used to
-        // be one fixed height because the token filled whatever it was
-        // given; with the token gone, a fixed height is mostly empty
-        // surface around three lines of text.
-        let h = if self.invite_composer_open() {
-            210.0_f64
-        } else if self.connect_prompt_open() {
-            220.0_f64
-        } else {
-            200.0_f64
-        };
-        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
-        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
-        Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
     }
 
     /// Should the peer-sync card be painted at all?
