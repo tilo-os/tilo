@@ -103,17 +103,18 @@ fn capnp_peer(capnp_sock: &PathBuf, room: &Uuid, app: &str) -> CollaborationMana
 }
 
 /// The broker the compositor binds, with both dialects served.
-fn broker(tag: &str) -> (PathBuf, PathBuf) {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
-    let base = std::env::temp_dir().join(format!("qos-listen-{tag}-{}-{stamp}", std::process::id()));
-    let json = base.with_extension("json.sock");
-    let capnp = base.with_extension("capnp.sock");
-    shell::shell::collab_broker::spawn_full(json.clone(), Some(capnp.clone()), None)
-        .expect("the broker binds");
-    (json, capnp)
+///
+/// The handle is returned rather than dropped, and that is not tidiness:
+/// dropping it signals the accept loops to quit and unlinks both sockets, so a
+/// harness that lets it go out of scope tears the broker down before the first
+/// peer connects and then reports the silence as the agent's fault.
+fn broker() -> (tempfile::TempDir, PathBuf, PathBuf, shell::shell::collab_broker::BrokerHandle) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let json = dir.path().join("collab-json.sock");
+    let capnp = dir.path().join("collab.sock");
+    let handle = shell::shell::collab_broker::spawn_full(json.clone(), Some(capnp.clone()), None)
+        .expect("the broker binds both sockets");
+    (dir, json, capnp, handle)
 }
 
 /// A room's conversation: one workspace, one channel, and the agent enrolled
@@ -248,17 +249,19 @@ fn drain(peer: &mut CollaborationManager, into: &mut AutoCommit) {
 /// The whole beat: stand the room up, let the agent run, and hand back what
 /// the chat peer ended up holding plus the agent itself.
 struct Room {
-    chat: CollaborationManager,
     chat_doc: AutoCommit,
     session: Session,
+    /// Held for the room's lifetime — see [`broker`].
+    _broker: shell::shell::collab_broker::BrokerHandle,
+    _dir: tempfile::TempDir,
 }
 
 impl Room {
     /// `conversation` is the channel as the chat app holds it; `document` is
     /// the page the word processor holds, when the test needs one.
-    fn open(tag: &str, conversation: AutoCommit, document: Option<AutoCommit>) -> Self {
+    fn open(conversation: AutoCommit, document: Option<AutoCommit>) -> Self {
         let _guard = env_lock();
-        let (json, capnp) = broker(tag);
+        let (dir, json, capnp, handle) = broker();
         let room = Uuid::new_v4();
 
         let mut chat = capnp_peer(&capnp, &room, "dev.qos.chat");
@@ -283,7 +286,7 @@ impl Room {
                 drain(m, d);
             }
         }
-        Self { chat, chat_doc, session }
+        Self { chat_doc, session, _broker: handle, _dir: dir }
     }
 
     /// The agent's replies in the channel, by the message each answers.
@@ -331,7 +334,7 @@ fn a_mention_of_the_agent_in_chat_is_noticed_and_acted_on() {
         Some(ResourceRef::whole("word_processor.section", &section, "Run sheet")),
     );
 
-    let room = Room::open("mention", chat, Some(doc));
+    let room = Room::open(chat, Some(doc));
     assert_eq!(
         room.acted_on().as_deref(),
         Some(section.as_str()),
@@ -352,7 +355,7 @@ fn a_message_that_does_not_mention_the_agent_is_not_acted_on() {
     // operation it could perform. Nothing addresses it.
     say(&mut chat, "m_chatter", ADA, "align centre the run sheet please", now());
 
-    let room = Room::open("unaddressed", chat, Some(doc));
+    let room = Room::open(chat, Some(doc));
     assert_eq!(
         room.acted_on(),
         None,
@@ -382,7 +385,7 @@ fn a_carried_resource_address_is_what_the_agent_acts_on() {
         Some(ResourceRef::whole("word_processor.section", &subject, "Budget")),
     );
 
-    let room = Room::open("carried", chat, Some(doc));
+    let room = Room::open(chat, Some(doc));
     assert_eq!(
         room.acted_on().as_deref(),
         Some(subject.as_str()),
@@ -418,7 +421,7 @@ fn an_instruction_written_in_the_document_is_still_carried_out() {
     let mut chat = conversation();
     say(&mut chat, "m_idle", ADA, "morning all", now());
 
-    let room = Room::open("document", chat, Some(doc));
+    let room = Room::open(chat, Some(doc));
     assert!(
         room.session.last_route().is_some(),
         "the agent decided something from the document, as it always has"
@@ -451,7 +454,7 @@ fn a_request_near_the_agents_last_action_borrows_its_subject() {
     // Names no target at all. Answerable only because the first just landed.
     mention(&mut chat, "m_again", "@Claude align centre", now(), None);
 
-    let room = Room::open("recent", chat, Some(doc));
+    let room = Room::open(chat, Some(doc));
     let follow_up = room
         .reply_to("m_again")
         .expect("the follow-up was answered at all");
@@ -469,7 +472,7 @@ fn a_request_near_the_agents_last_action_borrows_its_subject() {
     // The far side: the same words, with nothing recent to borrow from.
     let mut alone = conversation();
     mention(&mut alone, "m_again", "@Claude align centre", now(), None);
-    let probe = Room::open("recent-far", alone, Some(draft()));
+    let probe = Room::open(alone, Some(draft()));
     assert_eq!(
         probe.acted_on(),
         None,
@@ -527,7 +530,7 @@ fn the_same_message_is_not_acted_on_twice_across_a_restart() {
         Some(ResourceRef::whole("word_processor.section", &section, "Run sheet")),
     );
 
-    let first = Room::open("idem-1", chat, Some(doc.clone()));
+    let first = Room::open(chat, Some(doc.clone()));
     assert_eq!(first.acted_on().as_deref(), Some(section.as_str()), "acted once");
     let after = first.chat_doc.clone();
     assert_eq!(
@@ -539,7 +542,7 @@ fn the_same_message_is_not_acted_on_twice_across_a_restart() {
     // A wholly new agent process, handed the conversation as it now stands —
     // the agent's own reply included. This is what a restart looks like, and
     // an in-memory set of handled ids would answer "never seen it".
-    let second = Room::open("idem-2", after, Some(doc));
+    let second = Room::open(after, Some(doc));
     assert_eq!(
         second.acted_on(),
         None,
@@ -559,7 +562,7 @@ fn an_instruction_it_cannot_fulfil_is_refused_visibly() {
     let mut chat = conversation();
     mention(&mut chat, "m_no", "@Claude reticulate the splines", now(), None);
 
-    let room = Room::open("refusal", chat, Some(doc));
+    let room = Room::open(chat, Some(doc));
     assert_eq!(room.acted_on(), None, "nothing was performed");
     let said = room
         .reply_to("m_no")
