@@ -6361,19 +6361,36 @@ def main() -> int:
         ("QOS_LAUNCHER_BIN", "qos-launcher"),
     ) if (path := tool(name))}
 
-    # Every session's view of what is installed, composed from the
-    # machine's index. The word processor's entry is taken from the
-    # registry built out of *this* tree where there is one: the machine's
-    # payload is an older static binary, and a run against it would be
-    # filming a build that predates everything under test.
+    # Every session's view of what is installed: the machine's index,
+    # overlaid with the registry `scripts/demo-apps-live.sh` builds out
+    # of *this* tree. An id in both is taken from the live one, and an
+    # id only there is added — the image editor is only ever there,
+    # having never been installed onto this machine at all.
+    #
+    # The overlay is the whole reason that script exists. A machine
+    # payload is a static binary from whenever somebody last ran an
+    # installer, so a run against one films a build that predates
+    # everything under test, and does it silently. An app this film
+    # exercises rather than merely lists belongs in that script's `APPS`.
     entries = registry_entries(os.path.join(MACHINE_APPS, "registry.toml"))
     live = registry_entries(os.path.join(LIVE_APPS, "registry.toml"))
-    if WORD_PROCESSOR in live:
-        entries[WORD_PROCESSOR] = live[WORD_PROCESSOR]
-        print(f"word processor: {LIVE_APPS} (built from this tree)")
-    elif WORD_PROCESSOR in entries:
-        print(f"word processor: {MACHINE_APPS} — no registry at {LIVE_APPS}, "
-              f"so this films the machine's installed payload")
+    entries.update(live)
+    for app in sorted(live):
+        print(f"{app}: {LIVE_APPS} (built from this tree)")
+
+    # Where each of the film's own applications came from, before a
+    # frame is recorded. An app that is nobody's is worth knowing about
+    # now rather than as a launch that hands back None halfway through.
+    for app in sorted({FILES_APP, WORD_PROCESSOR, CHAT_APP, IMAGE_EDITOR}):
+        if app in live:
+            continue
+        if app in entries:
+            print(f"{app}: {MACHINE_APPS} — not built from this tree, "
+                  f"so this films the machine's installed payload")
+        else:
+            print(f"{app}: MISSING from both {LIVE_APPS} and "
+                  f"{MACHINE_APPS} — the beat that opens it will report "
+                  f"it as unopened")
 
     sessions = []
     for short, name in zip("qxa", ("quinten", "xaver", "Claude")):
