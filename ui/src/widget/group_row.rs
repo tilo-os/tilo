@@ -1265,6 +1265,57 @@ impl GroupRow {
         true
     }
 
+    /// Move `tab_id` off the group at `src` and onto the end of the tab
+    /// bar of the group at `dst`, dropping the source group when the
+    /// move leaves it with nothing in it. Returns the destination
+    /// group's id, or `None` when either index or the tab is unknown.
+    ///
+    /// [`Self::transfer_tab`] is the splice on its own and stops there:
+    /// it leaves an emptied source group standing, and it does not flag
+    /// the structural change. Both matter here. A group with no tabs
+    /// keeps its slot in the row and so keeps its share of the strip,
+    /// which puts an empty rectangle between two windows; and the row's
+    /// taffy nodes are built one per group, so a change to how many
+    /// there are has to reach the next `build_layout` or `apply_layout`
+    /// walks a stale `node_ids` and lays a group out into another
+    /// group's box. `split_tab_into_new_group` — the other half of the
+    /// same gesture, splitting a tab *out* rather than merging one in —
+    /// already does exactly this pair; this is the merge that was
+    /// missing beside it.
+    pub fn merge_tab_into_group(&mut self, src: usize, dst: usize, tab_id: u64) -> Option<u64> {
+        if src == dst || src >= self.groups.len() || dst >= self.groups.len() {
+            return None;
+        }
+        let target_idx = self.groups[dst].tab_count();
+        if !self.transfer_tab(src, dst, tab_id, target_idx) {
+            return None;
+        }
+        // Read before the prune below can shift `dst`'s index.
+        let dst_id = self.groups[dst].id;
+        if self.groups[src].tab_count() == 0 {
+            self.groups.remove(src);
+        }
+        self.structure_dirty = true;
+        Some(dst_id)
+    }
+
+    /// Which group in this row holds `tab_id`, by index.
+    ///
+    /// The row is the only place that knows: a caller holding a tab id
+    /// off the persisted tree cannot ask a `WindowGroup` without walking
+    /// every one of them itself, and the widget-side tab list is the one
+    /// that decides where the tab is actually drawn.
+    pub fn group_index_holding_tab(&self, tab_id: u64) -> Option<usize> {
+        self.groups
+            .iter()
+            .position(|g| g.tabs().iter().any(|t| t.id == tab_id))
+    }
+
+    /// Which group in this row has id `group_id`, by index.
+    pub fn group_index_by_id(&self, group_id: u64) -> Option<usize> {
+        self.groups.iter().position(|g| g.id == group_id)
+    }
+
     /// Classify a drag release point against the row's inter-group drop
     /// zones. Returns `Some(gap_idx)` if the release landed strictly
     /// between two groups (or before the first / after the last) while
@@ -2888,6 +2939,62 @@ mod tests {
         let mut row = GroupRow::new(vec![g0, g1]);
         // id 999 isn't in either group.
         assert!(!row.transfer_tab(0, 1, 999, 0));
+    }
+
+    #[test]
+    fn merging_a_lone_tab_appends_it_and_drops_the_emptied_group() {
+        let g0 = make_group(100, &[1, 2]);
+        // One tab, so the merge empties this group outright — the case
+        // that leaves a windowless rectangle holding a share of the
+        // strip if the source is not pruned.
+        let g1 = make_group(200, &[10]);
+        let mut row = GroupRow::new(vec![g0, g1]);
+
+        assert_eq!(row.merge_tab_into_group(1, 0, 10), Some(100));
+        assert_eq!(row.groups.len(), 1, "the emptied source group is gone");
+        let ids: Vec<u64> = row.groups[0].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec![1, 2, 10], "and its tab landed at the end");
+        assert_eq!(row.groups[0].active_tab_id(), 10);
+    }
+
+    #[test]
+    fn merging_one_of_several_tabs_leaves_the_source_group_standing() {
+        let g0 = make_group(100, &[1]);
+        let g1 = make_group(200, &[10, 11]);
+        let mut row = GroupRow::new(vec![g0, g1]);
+
+        assert_eq!(row.merge_tab_into_group(1, 0, 11), Some(100));
+        assert_eq!(row.groups.len(), 2);
+        let src: Vec<u64> = row.groups[1].tabs().iter().map(|t| t.id).collect();
+        let dst: Vec<u64> = row.groups[0].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(src, vec![10]);
+        assert_eq!(dst, vec![1, 11]);
+    }
+
+    #[test]
+    fn merging_refuses_an_unknown_tab_or_group() {
+        let g0 = make_group(100, &[1, 2]);
+        let g1 = make_group(200, &[10]);
+        let mut row = GroupRow::new(vec![g0, g1]);
+        assert_eq!(row.merge_tab_into_group(0, 1, 999), None);
+        assert_eq!(row.merge_tab_into_group(0, 0, 1), None, "same group");
+        assert_eq!(row.merge_tab_into_group(0, 7, 1), None, "no such group");
+        // Nothing moved on any of those refusals.
+        assert_eq!(row.groups.len(), 2);
+        assert_eq!(row.groups[0].tab_count(), 2);
+        assert_eq!(row.groups[1].tab_count(), 1);
+    }
+
+    #[test]
+    fn a_row_locates_the_group_holding_a_tab() {
+        let g0 = make_group(100, &[1, 2]);
+        let g1 = make_group(200, &[10]);
+        let row = GroupRow::new(vec![g0, g1]);
+        assert_eq!(row.group_index_holding_tab(2), Some(0));
+        assert_eq!(row.group_index_holding_tab(10), Some(1));
+        assert_eq!(row.group_index_holding_tab(999), None);
+        assert_eq!(row.group_index_by_id(200), Some(1));
+        assert_eq!(row.group_index_by_id(999), None);
     }
 
     #[test]
