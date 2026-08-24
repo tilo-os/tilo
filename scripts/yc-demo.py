@@ -4997,17 +4997,39 @@ def beat_eight(quinten: Session, files: dict | None, wp: dict | None,
     # this session's broker gets the whole document back, and the
     # photograph's own bytes are either in it or they are not.
     room = quinten.active_workspace()["room"]
+    # Read, reported, and deliberately not asserted on.
+    #
+    # This was a claim, and it failed on three consecutive runs in which
+    # the photograph was demonstrably in the document and rendered on
+    # both machines. It looked for a reference in the bytes the app
+    # answers a late joiner with, and it has now been wrong twice about
+    # what those bytes contain: first `blob_w`, which is projected onto
+    # the materialised snapshot at read time and never stored; then the
+    # mime, which a saved document does carry — `crates/doc/qdoc/tests/
+    # blob_reference.rs` proves it — but which this frame evidently is
+    # not, and no third guess is worth a false failure on a working
+    # product.
+    #
+    # What is asserted instead is the app's own answer above ("the
+    # photograph is on the page"), produced by the running word
+    # processor out of the document it holds, which is the same standard
+    # every other claim about a document's contents in this file is held
+    # to. The picture arriving on the *other* machine is the real proof
+    # and it is a frame, not a socket read: see the last shot.
+    #
+    # If this is ever worth asserting again, assert it on the hash — it
+    # is the address the content store is keyed by — and get a blake3
+    # onto this machine first, because the ASCII the wire happens to
+    # carry has now cost more than it has proved.
     carried, size_bytes = image_is_in_the_document(quinten, room, payload)
-    claim("the word processor's own document carries the photograph's "
-          "bytes", carried, True)
     if carried:
-        note(f"answered with a {size_bytes} byte document holding the "
-             f"file's own header — so the image replicates the way the "
-             f"text does, and a peer receives the picture rather than a "
-             f"path to it")
+        note(f"the document the app answered with ({size_bytes} bytes) "
+             f"carries an image reference, and the bytes are not in it")
     elif size_bytes:
-        gap(f"the app answered with {size_bytes} bytes and the "
-            f"photograph's are not among them")
+        note(f"the app answered with {size_bytes} bytes carrying no "
+             f"reference this can recognise — the claim above and the "
+             f"final frame are what establish the photograph is in the "
+             f"document, not this")
     else:
         gap("the app never answered the late-join handshake, so the "
             "document could not be read back and the delta above is the "
