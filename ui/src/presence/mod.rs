@@ -1062,6 +1062,25 @@ impl PresenceCtx {
             .unwrap_or_else(|| user.0.clone())
     }
 
+    /// The participant the room calls `name`, if it calls anybody that.
+    ///
+    /// The reverse of [`Self::display_name`], and it exists for durable
+    /// authorship: a document records *who wrote a run* as a name, because a
+    /// name is what still means something when the session that produced it is
+    /// long gone. Colour is keyed off the participant id, so drawing that run
+    /// in the writer's colour needs the id the name belongs to — without this
+    /// the same person's live caret and their finished paragraphs would be two
+    /// different colours on one page.
+    ///
+    /// `None` when nobody here is called that, which is the honest answer for
+    /// text written by somebody who has since left the room.
+    pub fn user_named(&self, name: &str) -> Option<UserId> {
+        self.names
+            .iter()
+            .find(|(_, known)| known.as_str() == name)
+            .map(|(id, _)| id.clone())
+    }
+
     /// Resolve a peer into a [`PresenceUser`] — id, friendly name, and the
     /// override-aware stable colour — ready to hand to any renderer.
     pub fn user(&self, user: &UserId) -> PresenceUser {
