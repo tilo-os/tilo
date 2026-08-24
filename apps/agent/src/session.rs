@@ -240,6 +240,15 @@ pub struct Session {
     /// mention picker in the room produces — addressed nobody, and looked
     /// exactly like being ignored.
     me_from_room: Option<String>,
+    /// Whether [`Self::me_from_room`] came from the row the room marked as
+    /// this participant, rather than from a guess at the display name.
+    ///
+    /// The two must not be allowed to overwrite each other. The broker
+    /// announces one member per event, so the marked row and a row for some
+    /// *other* member called the same thing arrive as separate events, in
+    /// whatever order the room says them -- and a name match landing second
+    /// would replace a certain answer with a guess.
+    me_is_marked: bool,
     /// How many answers the agent has actually put on the wire.
     ///
     /// Distinct from how many it composed: the gap between the two is an
@@ -623,6 +632,7 @@ impl Session {
             chooser,
             last_route: None,
             me_from_room: None,
+            me_is_marked: false,
             last_action: None,
             // Joining is itself the start of the room arriving: peers answer
             // the handshake with their documents, and until that has gone
@@ -973,35 +983,55 @@ impl Session {
             // a name, exactly as a peer does. The mark is the room's too — it
             // comes off the capability that admitted the member.
             Some(CollabEvent::Context { collaborators, .. }) => {
-                // Matched on the name it was admitted under **and** on the
-                // room having admitted that member as an agent. Both, because
-                // either alone identifies the wrong participant: the room may
-                // hold several agents, and it may hold a person called what
-                // this one is called.
+                // The row the room marked as this participant, and nothing
+                // else if there is one.
                 //
-                // Requiring the mark, not preferring it. Both transports carry
-                // kind now — the capnp context stream always did, and the
-                // broker's roster announcement reads it off the room's
-                // capability list rather than sending a flat `false` — so a
-                // `false` here is the room saying "a person", not a transport
-                // declining to answer. Falling back to an unmarked row was
-                // what made a person admitted under this agent's own display
-                // name into this agent, which is the inference the mark exists
-                // to retire.
-                //
-                // No match leaves `me_from_room` unset, and `me_in_chat` says
-                // so honestly: an agent the room has not admitted as one has
-                // no business claiming a mention.
-                let me = collaborators
-                    .into_iter()
-                    .find(|c| c.is_agent && c.name.eq_ignore_ascii_case(&self.cfg.name));
-                if let Some(c) = &me {
+                // A mention carries the id the *sending* machine resolved,
+                // and that id is `peer@<handle>` -- what the room addresses
+                // this machine by. It is not derivable here: a machine
+                // publishes presence to the room and never receives its own
+                // back, so until the broker announced this row, the only
+                // local identity available was a different string for the
+                // same participant. Which is exactly how a remark addressed
+                // to this agent read as addressed to nobody.
+                let marked = collaborators.iter().find(|c| c.is_self);
+                if let Some(c) = marked {
                     if self.me_from_room.as_deref() != Some(c.id.as_str()) {
                         tracing::info!(
-                            me = %c.id, name = %c.name, marked = c.is_agent,
-                            "the room named this agent; mentions of it can now be matched"
+                            me = %c.id, name = %c.name, agent = c.is_agent,
+                            "the room marked this participant; mentions of it \
+                             can now be matched"
                         );
                         self.me_from_room = Some(c.id.clone());
+                    }
+                    self.me_is_marked = true;
+                }
+                // Only while nothing has been marked. A room whose broker
+                // predates the mark still has to be answerable, and the name
+                // is all such a room offers -- but it is a guess, so it never
+                // displaces an answer the room actually gave.
+                //
+                // Matched on the name **and** on the room having admitted
+                // that member as an agent, because either alone identifies
+                // the wrong participant: a room may hold several agents, and
+                // it may hold a person called what this one is called.
+                //
+                // No match at all leaves `me_from_room` unset, and
+                // `me_in_chat` says so honestly rather than claiming a
+                // mention in a room that never admitted this agent.
+                if !self.me_is_marked {
+                    let named = collaborators
+                        .iter()
+                        .find(|c| c.is_agent && c.name.eq_ignore_ascii_case(&self.cfg.name));
+                    if let Some(c) = named {
+                        if self.me_from_room.as_deref() != Some(c.id.as_str()) {
+                            tracing::info!(
+                                me = %c.id, name = %c.name,
+                                "no room marked this participant; falling back \
+                                 to the agent admitted under this name"
+                            );
+                            self.me_from_room = Some(c.id.clone());
+                        }
                     }
                 }
             }

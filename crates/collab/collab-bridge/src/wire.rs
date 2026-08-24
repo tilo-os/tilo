@@ -121,6 +121,24 @@ pub struct Collaborator {
     /// roster that will not load.
     #[serde(default)]
     pub is_agent: bool,
+    /// Whether this row is the receiving machine's own participant.
+    ///
+    /// A roster is the room's list of its members, so "which of these is
+    /// me" is a fact about that list and belongs in it. Stated separately
+    /// it would be a second source of truth that can disagree with the
+    /// first.
+    ///
+    /// An application cannot work it out for itself. `id` is the address
+    /// *other* machines use for a participant, and a machine never
+    /// announces its own participant to its own applications -- so the
+    /// only local identity available was a different string for the same
+    /// person, and anything asking "am I the one addressed here" compared
+    /// two ids that were never going to match.
+    ///
+    /// Defaulted on the wire, so a peer that predates it reads as
+    /// somebody else -- which is what every row was before this existed.
+    #[serde(default)]
+    pub is_self: bool,
 }
 
 // ---- PresenceKey mirror -------------------------------------------------
