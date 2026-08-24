@@ -131,10 +131,31 @@ fn real_socket_fans_out_incremental_and_presence() {
                 // them like `Hello`.
                 CollabRequest::SignedSyncIncremental { .. }
                 | CollabRequest::FetchScrollback { .. }
-                | CollabRequest::WantBlob { .. }
-                // Addressed to a session with a desktop. This relay is neither.
-                | CollabRequest::OpenApp { .. }
-                | CollabRequest::CarriedContent { .. } => continue,
+                | CollabRequest::WantBlob { .. } => continue,
+                // Addressed to the session hosting a connection rather than to
+                // the room. This harness is two sockets and a forwarding loop.
+                // It hosts nothing, so it can neither open the application nor
+                // refuse on a session's behalf, and nothing this test sends
+                // produces one — so arriving here means the harness is being
+                // asked for something it does not implement. That is worth
+                // failing over rather than dropping: a frame quietly swallowed
+                // here would let a later test watch for the right absence and
+                // pass without the behaviour ever existing. The panic surfaces
+                // on the `broker.join()` below.
+                CollabRequest::OpenApp { app_id } => panic!(
+                    "broker received OpenApp({app_id:?}) from peer-{src_idx}: \
+                     this harness fans document and presence traffic between \
+                     two peers and hosts no desktop, so it cannot open an \
+                     application. A test that needs one must give the harness \
+                     an opener, the way the shell's broker takes an \
+                     `AppOpener` — not route the frame through here."
+                ),
+                CollabRequest::CarriedContent { from_app, into_app, .. } => panic!(
+                    "broker received CarriedContent({from_app:?} -> \
+                     {into_app:?}) from peer-{src_idx}: this harness hosts no \
+                     windows, so a crossing between two applications has \
+                     nowhere to be drawn."
+                ),
             };
 
             let bytes = match serde_json::to_vec(&event) {
