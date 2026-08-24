@@ -313,6 +313,11 @@ struct Collaborator {
   userId      @0 :Text;
   displayName @1 :Text;
   color       @2 :UInt32;
+  # Whether this member is an agent rather than a person. The room knows
+  # when it admits one; without carrying it here every consumer had to
+  # guess from the id, which is the inference marking exists to avoid.
+  # Additive, so a peer that predates it decodes as a person.
+  isAgent     @3 :Bool;
 }
 
 # A page of previously-validated signed ops returned by

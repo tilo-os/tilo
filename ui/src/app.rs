@@ -1712,7 +1712,7 @@ impl App {
                         })
                         .collect();
                     if !destinations.is_empty() {
-                        self.widget.set_remark_destinations(destinations);
+                        self.root_widget.set_remark_destinations(destinations);
                     }
                     for c in collaborators {
                         // The roster says who is here and what they are

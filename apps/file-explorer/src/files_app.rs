@@ -2902,6 +2902,17 @@ impl Widget for FileExplorerWidget {
     fn name(&self) -> &str {
         "FileExplorerWidget"
     }
+    /// Take the roster the host supplies as remark destinations.
+    ///
+    /// Delegates to the inherent method so the compose surface has a
+    /// single way to be told where a remark can go.
+    fn set_remark_destinations(
+        &mut self,
+        destinations: Vec<ui::widget::remark_compose::DestinationOption>,
+    ) {
+        Self::set_remark_destinations(self, destinations);
+    }
+
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }

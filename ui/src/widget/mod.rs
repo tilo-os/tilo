@@ -74,6 +74,25 @@ pub trait Widget {
     /// not addressable.
     fn test_rects(&self) -> Vec<(String, vello::kurbo::Rect)> { Vec::new() }
 
+    /// Take the room's roster as the places a remark can be sent.
+    ///
+    /// The host knows who is in the room; an app must not invent a roster,
+    /// so this is how the list reaches the compose surface. Apps that have
+    /// no such surface ignore it, which is why this defaults to doing
+    /// nothing rather than being required.
+    ///
+    /// Without it the gesture was unreachable outside a screenshot. Files,
+    /// Photos and the word processor each had the surface built, wired and
+    /// tested, and each was only ever given destinations by a `--shots`
+    /// scenario arm -- so in a running desktop the list was always empty,
+    /// `open_remark_for_selection` returned `false` on its first line, and
+    /// the feature existed exclusively in pictures of itself.
+    fn set_remark_destinations(
+        &mut self,
+        _destinations: Vec<crate::widget::remark_compose::DestinationOption>,
+    ) {
+    }
+
     fn get_rect(&self) -> vello::kurbo::Rect;
 
     /// Resolve the OS cursor shape this widget wants while the pointer
