@@ -2122,13 +2122,16 @@ impl Widget for ChatApp {
             type_id: type_id.to_string(),
             payload: payload.to_vec(),
         };
-        let Some(action) = registry.decode(&encoded) else {
-            tracing::warn!(
-                %type_id,
-                "chat: an action under chat's own type id did not decode; the \
-                 message it carried is lost"
-            );
-            return false;
+        let action = match registry.decode(&encoded) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!(
+                    %type_id, error = ?e,
+                    "chat: an action under chat's own type id did not decode; the \
+                     message it carried is lost"
+                );
+                return false;
+            }
         };
         if let Err(e) = action.apply(doc) {
             tracing::warn!(%type_id, error = ?e, "chat: applying a published action failed");
