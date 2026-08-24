@@ -2442,14 +2442,26 @@ mod tests {
     #[test]
     fn an_unredeemed_or_expired_invitation_leaves_the_others_alone() {
         let (tree, net, _cmds, room, ws) = inviting_host();
-        // Good the instant it is minted and not a second longer.
-        let expired = net.issue_invite_named(ws, 0, "Ghost").expect("mint");
+        let expired = net.issue_invite_named(ws, 3600, "Ghost").expect("mint");
         let never_redeemed = net.issue_invite_named(ws, 3600, "Mallory").expect("mint");
         let for_xaver = net.issue_invite_named(ws, 3600, "Xaver").expect("mint");
 
+        // Minted the way the other two were, then moved into the past.
+        // Running out is the passage of time and nothing else, and a
+        // test cannot wait an hour for it — nor mint something already
+        // spent, because reading the id back off a token is itself a
+        // validation that refuses an expired one.
+        let ghost_invitation = invitation_in(&expired);
+        net.pending_invites
+            .lock()
+            .unwrap()
+            .get_mut(&ghost_invitation)
+            .expect("the invitation was parked when it was minted")
+            .expires_unix_seconds = now_unix_seconds() - 1;
+
         // The one that ran out redeems nothing, even quoted correctly.
         let ghost = libp2p::PeerId::random();
-        net.name_invitee_on_arrival(&ghost, &room.to_string(), Some(&invitation_in(&expired)));
+        net.name_invitee_on_arrival(&ghost, &room.to_string(), Some(&ghost_invitation));
         assert_eq!(
             name_in(&tree, room, &ghost),
             None,
