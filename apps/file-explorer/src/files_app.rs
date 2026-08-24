@@ -1253,7 +1253,7 @@ impl FileExplorerWidget {
         self.structure_dirty = true;
     }
 
-    fn primary_path(&self) -> Option<PathBuf> {
+    pub(crate) fn primary_path(&self) -> Option<PathBuf> {
         let disp = self.displayed_entries();
         self.selection
             .primary()

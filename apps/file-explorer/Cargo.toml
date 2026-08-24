@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
+qos-reference = { path = "../../crates/collab/reference" }
 # The action model: the resource tree the explorer publishes and the one
 # document action it exports over its rename buffer.
 qos-actions = { path = "../../crates/collab/actions" }
