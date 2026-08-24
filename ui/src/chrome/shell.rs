@@ -1134,8 +1134,30 @@ pub const RIBBON_HIT_W: f64 = 32.0;
 const RIBBON_IDLE_ALPHA: u8 = 46;
 /// Weight of a hovered but unfocused segment.
 const RIBBON_HOVER_ALPHA: u8 = 96;
-/// Weight of the focused segment.
-const RIBBON_FOCUSED_ALPHA: u8 = 224;
+/// Weight of the focused segment at rest.
+///
+/// The ribbon is a status mark, not a highlight: it reports which strip
+/// the keyboard is aimed at, and it reports it continuously, for as long
+/// as the workspace holds more than one strip. A weight chosen for a
+/// control being manipulated is the wrong weight for something that is
+/// simply always there. At 224 against a near-black desktop the focused
+/// segment composites to roughly (226,226,227) on (20,20,21) — the
+/// brightest thing on the screen bar the top bar, which is a great deal
+/// of emphasis for a fact the user is not currently acting on.
+///
+/// It can afford to be quiet because colour is not carrying the signal
+/// alone: [`RIBBON_SEG_H_FOCUSED`] already makes the focused segment
+/// nearly twice the length of its neighbours, which is the cue that
+/// survives on every palette. So the resting weight drops to a mark that
+/// still reads clearly against the desktop, and the old near-white is
+/// kept for [`RIBBON_FOCUSED_HOVER_ALPHA`] — reached when the pointer is
+/// actually on the control.
+const RIBBON_FOCUSED_ALPHA: u8 = 150;
+/// Weight of the focused segment under the pointer.
+///
+/// The top of the ladder, and the only state that reaches it. Interacting
+/// with the ribbon is when maximum emphasis is worth spending.
+const RIBBON_FOCUSED_HOVER_ALPHA: u8 = 224;
 
 /// Body of one ribbon segment.
 ///
@@ -1159,20 +1181,38 @@ const RIBBON_FOCUSED_ALPHA: u8 = 224;
 /// and gives high-contrast what it actually wants — a bright mark on
 /// black.
 fn ribbon_fill(theme: &Theme, focused: bool, hover: bool) -> Color {
-    let alpha = if focused {
-        RIBBON_FOCUSED_ALPHA
-    } else if hover {
-        RIBBON_HOVER_ALPHA
-    } else {
-        RIBBON_IDLE_ALPHA
+    let alpha = match (focused, hover) {
+        (true, true) => RIBBON_FOCUSED_HOVER_ALPHA,
+        (true, false) => RIBBON_FOCUSED_ALPHA,
+        (false, true) => RIBBON_HOVER_ALPHA,
+        (false, false) => RIBBON_IDLE_ALPHA,
     };
     Colors::hairline_on(theme.tokens.colors.surfaces.base, alpha)
 }
 
 impl StripRibbon {
+    /// Whether the ribbon has anything to say.
+    ///
+    /// A ribbon over a single strip is a control with one position, and
+    /// a control that cannot be moved is not reporting a state — it is
+    /// decoration in the shape of a status mark. Clicking its one
+    /// segment focuses the strip that already has focus; there is no
+    /// second strip for it to distinguish this one from. On an otherwise
+    /// empty desktop that segment was the brightest thing on screen, and
+    /// what it indicated was nothing.
+    ///
+    /// So the ribbon appears exactly when the fact it carries exists: a
+    /// workspace holding more than one strip. Gating here rather than at
+    /// the call site keeps [`Self::segment_rect`], [`Self::hit`] and
+    /// [`Self::draw`] agreeing — the alternative, a caller that skips the
+    /// paint, leaves an invisible click target behind.
+    pub fn is_visible(&self) -> bool {
+        self.count > 1
+    }
+
     /// Total height the whole ribbon occupies.
     pub fn extent(&self) -> f64 {
-        if self.count == 0 {
+        if !self.is_visible() {
             return 0.0;
         }
         let focused = if self.focused < self.count { 1 } else { 0 };
@@ -1184,7 +1224,7 @@ impl StripRibbon {
 
     /// Rect of segment `i`, or `None` if out of range.
     pub fn segment_rect(&self, i: usize) -> Option<Rect> {
-        if i >= self.count {
+        if !self.is_visible() || i >= self.count {
             return None;
         }
         let x1 = self.content.x1 - RIBBON_MARGIN;
@@ -1226,7 +1266,7 @@ impl StripRibbon {
         hover: Option<usize>,
         alpha: f32,
     ) {
-        if self.count == 0 || alpha <= 0.0 {
+        if !self.is_visible() || alpha <= 0.0 {
             return;
         }
         for i in 0..self.count {
@@ -1397,12 +1437,142 @@ mod ribbon_tests {
         }
     }
 
-    /// A workspace with one strip still shows its ribbon: that single
-    /// segment is how the control is discovered at all.
+    /// Luminance contrast ratio between a ribbon fill and the ground it
+    /// is painted on, compositing the fill's alpha first. WCAG's ratio,
+    /// so the numbers below are the ones an accessibility check uses.
+    fn contrast_on(theme: &Theme, fill: Color) -> f64 {
+        use crate::a11y::relative_luminance;
+        let base = theme.tokens.colors.surfaces.base;
+        let a = fill.components[3];
+        let b = base.components;
+        let over = Color::new([
+            fill.components[0] * a + b[0] * (1.0 - a),
+            fill.components[1] * a + b[1] * (1.0 - a),
+            fill.components[2] * a + b[2] * (1.0 - a),
+            1.0,
+        ]);
+        let (l1, l2) = (relative_luminance(over), relative_luminance(base));
+        let (hi, lo) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    fn every_theme() -> Vec<(&'static str, Theme)> {
+        vec![
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high_contrast", Theme::high_contrast()),
+        ]
+    }
+
+    /// A workspace with one strip paints no ribbon at all.
+    ///
+    /// Asserted against the encoding the real `draw` emits rather than
+    /// against `segment_rect`, because what shipped was a *painted*
+    /// segment: on an empty desktop it composited to (228,228,228) over
+    /// a (19,19,20) ground — the brightest mark on the screen, reporting
+    /// a choice between strips that did not exist.
     #[test]
-    fn one_strip_still_draws_a_segment() {
+    fn a_lone_strip_paints_no_ribbon() {
+        for (name, theme) in every_theme() {
+            let mut scene = Scene::new();
+            ribbon(1, 0).draw(&mut scene, Affine::IDENTITY, &theme, None, 1.0);
+            assert_eq!(
+                scene.encoding().draw_tags.len(),
+                0,
+                "{name}: a workspace with one strip painted a ribbon, and there \
+                 is nothing for it to indicate"
+            );
+        }
+    }
+
+    /// And leaves no click target behind either.
+    ///
+    /// Gating only the paint would trade a visible mark that means
+    /// nothing for an invisible one that still swallows clicks, which is
+    /// worse: the pointer would change nothing at a spot carrying no
+    /// affordance at all.
+    #[test]
+    fn a_lone_strip_leaves_no_invisible_click_target() {
         let r = ribbon(1, 0);
-        assert!(r.segment_rect(0).is_some());
-        assert!(r.extent() > 0.0);
+        assert_eq!(r.segment_rect(0), None, "a lone strip still has segment geometry");
+        assert_eq!(r.extent(), 0.0, "a lone strip still claims vertical extent");
+        // Sweep the whole gutter the ribbon would have occupied.
+        let x = r.content.x1 - RIBBON_MARGIN - RIBBON_SEG_W / 2.0;
+        let mut y = r.content.y0;
+        while y < r.content.y1 {
+            assert_eq!(
+                r.hit(Point::new(x, y)),
+                None,
+                "a lone strip is still hittable at ({x}, {y})"
+            );
+            y += 4.0;
+        }
+    }
+
+    /// A real stack still gets a real ribbon: one segment per strip, all
+    /// inside the content, growing with the stack rather than reporting
+    /// a fixed default.
+    ///
+    /// The guard against "fixing" the empty-desktop mark by never
+    /// drawing the ribbon at all.
+    #[test]
+    fn a_stack_of_strips_paints_one_segment_for_every_strip() {
+        let theme = Theme::dark();
+        let mut previous = 0.0_f64;
+        for count in 2..=5usize {
+            let r = ribbon(count, 1);
+            let mut scene = Scene::new();
+            r.draw(&mut scene, Affine::IDENTITY, &theme, None, 1.0);
+            let painted = scene.encoding().draw_tags.len();
+            assert!(
+                painted >= count,
+                "{count} strips painted {painted} draw ops — under one per strip"
+            );
+            for i in 0..count {
+                let seg = r
+                    .segment_rect(i)
+                    .unwrap_or_else(|| panic!("{count} strips: segment {i} has no geometry"));
+                assert!(
+                    seg.y0 >= r.content.y0 && seg.y1 <= r.content.y1,
+                    "{count} strips: segment {i} at {seg:?} escapes the content"
+                );
+                assert!(
+                    seg.x1 <= r.content.x1,
+                    "{count} strips: segment {i} at {seg:?} runs past the right edge"
+                );
+            }
+            let extent = r.extent();
+            assert!(
+                extent > previous,
+                "{count} strips claim {extent}, no more than the {previous} of one fewer — \
+                 the ribbon is not measuring the real stack"
+            );
+            previous = extent;
+        }
+    }
+
+    /// At rest the focused segment is a status mark, not a highlight —
+    /// and the loudest weight is spent only under the pointer.
+    ///
+    /// It stays comfortably above WCAG's 3:1 for a non-text UI component
+    /// on every palette, so quieting it is a change of emphasis and not
+    /// of legibility. The length cue carries the rest: a focused segment
+    /// is nearly twice as long as its neighbours.
+    #[test]
+    fn the_focused_segment_is_quiet_at_rest_and_loudest_under_the_pointer() {
+        for (name, theme) in every_theme() {
+            let rest = contrast_on(&theme, ribbon_fill(&theme, true, false));
+            let touched = contrast_on(&theme, ribbon_fill(&theme, true, true));
+            assert!(
+                touched > rest,
+                "{name}: the focused segment at rest ({rest:.2}:1) is already as loud as \
+                 it gets under the pointer ({touched:.2}:1)"
+            );
+            assert!(
+                rest >= 3.0,
+                "{name}: the focused segment at rest is {rest:.2}:1, under the 3:1 a \
+                 non-text control needs to be seen"
+            );
+        }
     }
 }
