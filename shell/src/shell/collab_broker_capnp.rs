@@ -584,6 +584,26 @@ impl CapnpBrokerState {
         rx
     }
 
+    /// How many presence streams are open across every channel.
+    ///
+    /// Subscribing is the last thing an app does on its way in — the
+    /// SDK joins, subscribes ops, content and roster, and opens this
+    /// one last — so a caller that has watched this number rise knows
+    /// the connection it is waiting on is registered everywhere.
+    ///
+    /// It exists because "connected" and "subscribed" are two different
+    /// moments and only the first is reported to the app. Presence is
+    /// fanned out live and never replayed, so a frame published in
+    /// between the two is not late, it is *gone*; anything that wants
+    /// to publish to a session it just started has to be able to see
+    /// which moment it is at.
+    pub fn presence_subscriber_count(&self) -> usize {
+        self.channels
+            .lock()
+            .map(|m| m.values().map(|s| s.presence.len()).sum())
+            .unwrap_or(0)
+    }
+
     fn subscribe_cursors(
         &self,
         channel_id: &str,

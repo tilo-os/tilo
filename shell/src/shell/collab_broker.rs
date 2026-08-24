@@ -1545,6 +1545,22 @@ impl BrokerHandle {
             .unwrap_or(0)
     }
 
+    /// How many presence streams the capnp transport has registered.
+    ///
+    /// An app is told it is connected as soon as the socket is up, but
+    /// its subscriptions are opened afterwards, from another thread.
+    /// Presence is fanned out live and never replayed, so a frame
+    /// published into that gap reaches nobody and never will. This is
+    /// how a caller waits for the gap to close: start a session, watch
+    /// this rise, then publish. Zero when the capnp transport is not
+    /// bound.
+    pub fn capnp_presence_subscribers(&self) -> usize {
+        self.peers
+            .capnp_state()
+            .map(|s| s.presence_subscriber_count())
+            .unwrap_or(0)
+    }
+
     /// Fan a `CollabEvent` to the connected peers `route` addresses.
     /// The optional `except` skips a single peer id (used by the
     /// libp2p bridge: a remote update should reach every addressed
