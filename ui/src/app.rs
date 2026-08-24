@@ -1916,8 +1916,14 @@ impl App {
                     // destination, and which one depended on announcement
                     // order. Keyed by id, so a re-announcement relabels
                     // rather than duplicating.
+                    //
+                    // Except this machine's own participant. The roster
+                    // carries it so an app can find *itself* in the room's
+                    // list of who is in it; the list of people a remark
+                    // can be sent to is a different question, and the
+                    // person writing one is not a destination for it.
                     let mut changed = false;
-                    for c in &collaborators {
+                    for c in collaborators.iter().filter(|c| !c.is_self) {
                         let entry = (c.name.clone(), c.is_agent);
                         if self.remark_roster.get(&c.id) != Some(&entry) {
                             self.remark_roster.insert(c.id.clone(), entry);
