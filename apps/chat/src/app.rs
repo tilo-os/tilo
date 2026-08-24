@@ -1444,10 +1444,18 @@ impl ChatApp {
 
         if which == "mention-picker" {
             self.focus = Focus::Main;
-            self.composer_main.set_text("Handing the parser over to @S");
+            // The composer's text *is* the channel's draft in the shared
+            // document — `reload` fills the widget from it, and `sync` reloads
+            // once more after this seed runs. So a half-typed name has to be
+            // written where the draft lives; setting it on the widget alone was
+            // overwritten moments later, and the shot showed a blank composer
+            // with no picker while the gesture itself worked perfectly well.
+            const HALF_TYPED: &str = "Handing the parser over to @S";
+            ChatDoc::set_draft(doc, &channel, HALF_TYPED);
+            self.reload(doc);
+            self.composer_main.set_text(HALF_TYPED);
             let caret = self.composer_main.value().len();
             self.composer_main.set_cursor_pos(caret);
-            self.reload(doc);
             self.refresh_mention_picker();
         }
     }
