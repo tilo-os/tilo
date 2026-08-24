@@ -5433,7 +5433,7 @@ impl ShellOverlayHost {
         // which is the rarer half of the palette's life; unfiltered —
         // the state it opens in and the one a query is normally typed
         // in — the groups in hand are already the answer.
-        self.search_available_kinds = if self.active_kind_filter.is_empty() {
+        let available = if self.active_kind_filter.is_empty() {
             distinct_kinds(&groups)
         } else {
             let st = chrome.borrow();
@@ -5448,6 +5448,7 @@ impl ShellOverlayHost {
                 PALETTE_ROW_BUDGET,
             ))
         };
+        self.search_available_kinds = available;
 
         // Flatten the groups into palette rows. The kind travels as the
         // row's *section* and its *glyph*, not as a `[Files]` literal
@@ -16384,7 +16385,7 @@ mod palette_dispatch_tests {
     fn a_second_open_does_not_strand_the_first_ones_loading_notice() {
         let (mut h, chrome) = host_with_chrome();
         const PKG: &str = "dev.qos.doubleopenfixture";
-        let mut raise = || {
+        let raise = || {
             let mut st = chrome.borrow_mut();
             st.push_notification_full(crate::shell::notification::Notification::new(
                 "Opening Ledger",
