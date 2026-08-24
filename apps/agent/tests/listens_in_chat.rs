@@ -417,6 +417,56 @@ fn a_message_that_does_not_mention_the_agent_is_not_acted_on() {
     );
 }
 
+/// A compose box being typed into is not a message, however far it has got.
+///
+/// Worth pinning because a draft here is not private scratch space: the
+/// composer diff-splices every keystroke into a per-channel `Text` in the
+/// shared document (`ChatDoc::set_draft`), so half a sentence somebody is
+/// still writing genuinely does reach this agent's replica. What keeps it
+/// from being acted on is that a message does not exist until Send appends
+/// one — nothing in the agent's path reads a draft, and this is what says
+/// so out loud.
+///
+/// The text is the one that matters. An instruction sent from a compose
+/// panel opens `@Claude make …`, and `Claude: make ` — the same thirteen
+/// characters — is exactly what a document paragraph got answered at, with
+/// the word `make` quoted back as the whole request. On this path that
+/// cannot happen, and a change that made the agent read drafts "so it can
+/// see what is coming" would reintroduce it here. Then this fails.
+#[test]
+fn a_half_typed_compose_box_is_not_a_message() {
+    let doc = draft();
+    let mut chat = conversation();
+    // Typed, not sent: the state the composer is in between the person
+    // reaching for `m` and reaching for Send.
+    ChatDoc::set_draft(&mut chat, CHANNEL, "@Claude make ");
+    chat.commit();
+
+    let room = Room::open(chat, Some(doc));
+
+    // Non-vacuous: the half-written sentence really is in the document that
+    // crossed the broker to the agent. Without this the test could pass by
+    // the draft never having been shared at all, which would prove nothing
+    // about what the agent does with one.
+    assert_eq!(
+        ChatDoc::draft_text(&room.chat_doc, CHANNEL),
+        "@Claude make ",
+        "the draft must be in the shared document for this test to mean \
+         anything — a draft nobody shared cannot be misread"
+    );
+    assert_eq!(
+        room.acted_on(),
+        None,
+        "the agent acted on a sentence still being typed into a compose box"
+    );
+    assert!(
+        room.replies().is_empty(),
+        "and it must not answer one either — the person has not sent \
+         anything yet: {:?}",
+        room.replies()
+    );
+}
+
 /// 3. A carried address is the subject — asserted on the id, not the prose.
 #[test]
 fn a_carried_resource_address_is_what_the_agent_acts_on() {
