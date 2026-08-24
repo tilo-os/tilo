@@ -104,6 +104,30 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
                 CollabRequest::SignedSyncIncremental { .. }
                 | CollabRequest::FetchScrollback { .. }
                 | CollabRequest::WantBlob { .. } => continue,
+                // Addressed to a session, never to an audience. The real
+                // broker lifts `OpenApp` out of the fan-out and hands it to
+                // the desktop hosting that connection, refusing it outright
+                // when there is no desktop; relaying it would put a window on
+                // the other peer's screen because this one asked for it.
+                //
+                // This harness is two sockets and a forwarding loop. It hosts
+                // nothing, so it can neither open the application nor refuse
+                // on a session's behalf, and fanning it out is the one
+                // reading that is certainly wrong. Nothing the pump sends produces
+                // one, so arriving here means the harness is being asked for
+                // something it does not implement. That is worth failing
+                // over rather than dropping: a frame quietly swallowed here
+                // would let a later test watch for the right absence and
+                // pass without the behaviour ever existing. The panic
+                // surfaces on the `broker.join()` below.
+                CollabRequest::OpenApp { app_id } => panic!(
+                    "broker received OpenApp({app_id:?}) from peer-{src_idx}: \
+                     this harness fans document and presence traffic between \
+                     two peers and hosts no desktop, so it cannot open an \
+                     application. A test that needs one must give the harness \
+                     an opener, the way the shell's broker takes an \
+                     `AppOpener` — not route the frame through here."
+                ),
             };
             let Ok(bytes) = serde_json::to_vec(&event) else {
                 continue;
