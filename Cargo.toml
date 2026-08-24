@@ -565,6 +565,20 @@ codegen-units = 16
 [profile.demo.package.shell]
 debug-assertions = true
 
+# The toolkit needs the same, and for the same reason the compositor does.
+#
+# `shots` is built as part of `shell`, and it drives widgets through
+# helpers `ui` gates behind `#[cfg(any(test, debug_assertions))]` — the
+# pattern this codebase uses to keep test affordances out of release
+# builds. With assertions on for `shell` and off for `ui`, the scenario
+# code calls `bar_mut_for_tests` and the toolkit has compiled it away, so
+# `cargo build --profile demo -p shell` fails on the `shots` binary while
+# the compositor itself builds. That breaks rendering stills at the
+# profile the film is recorded in, which is the one profile whose stills
+# are worth anything.
+[profile.demo.package.ui]
+debug-assertions = true
+
 # Vendored winit fork. Upstream winit 0.30.13 only emits
 # `WindowEvent::PinchGesture` on macOS/iOS — its Wayland backend never binds
 # `zwp_pointer_gestures_v1`, so touchpad pinch-to-zoom is dead on Linux. The
