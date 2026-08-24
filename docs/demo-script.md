@@ -350,7 +350,7 @@ cargo build -p launcher --bin qos-launcher
 cargo build -p agent --bin qos-agent                # beat 9
 cargo build -p app-catalogue --bins --examples      # beat 5's registry
 cargo build -p qos-install --bin qos-install
-scripts/demo-apps-live.sh                           # the payload it serves
+scripts/demo-apps-live.sh                           # the app payloads it serves
 
 scripts/headless-examples/app-launch-proof.py                 # apps launch and paint
 scripts/headless-examples/app-collab-proof.py                 # what crosses between sessions
