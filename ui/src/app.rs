@@ -3395,7 +3395,22 @@ impl AppHandler {
         // vello 0.9's `create_surface` builds the blitter pipeline against
         // the format it chose; flipping to the sRGB suffix here would
         // panic on the format mismatch in the first blit.
+        //
+        // Guarded for the same reason the worker's reconfigures are (see
+        // `render_thread::configure_surface_checked`): this is the startup
+        // race the doc comment above describes, one call later. An
+        // application still opening when its compositor exits reaches here
+        // with a surface the driver has already lost, and `configure` — which
+        // returns no `Result` — would send that to wgpu's panicking default
+        // handler. Returning the reason instead lets the caller report it and
+        // close, which is what it already does for every other way this fails.
+        let configure_scope = device_handle
+            .device
+            .push_error_scope(vello::wgpu::ErrorFilter::Validation);
         surface.surface.configure(&device_handle.device, &surface.config);
+        if let Some(err) = pollster::block_on(configure_scope.pop()) {
+            return Err(format!("could not configure the drawing surface: {err}"));
+        }
         let renderer = Renderer::new(
             &device_handle.device,
             RendererOptions {
