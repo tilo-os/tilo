@@ -271,6 +271,19 @@ pub fn set_transport(t: Arc<dyn BlobTransport>) {
     }
 }
 
+/// Take the transport away again.
+///
+/// What a process does when its link to the rest of the system goes: the
+/// collaboration socket closed, or the app left the room. Content that is
+/// already here still reads; content that is not stops claiming to be on its
+/// way, because with nothing able to fetch it that is no longer true (see
+/// [`state`]).
+pub fn clear_transport() {
+    if let Ok(mut s) = transport_cell().write() {
+        *s = None;
+    }
+}
+
 /// The process-wide transport, if one has been installed.
 pub fn transport() -> Option<Arc<dyn BlobTransport>> {
     transport_cell().read().ok()?.clone()
@@ -306,6 +319,88 @@ fn may_ask(hash: &str) -> bool {
     }
 }
 
+/// Where a reference's content has got to.
+///
+/// A renderer that only knows "the bytes are not here" cannot tell a transfer
+/// in flight from one that is never going to arrive, and it draws the same
+/// grey box for both. That box is what a reader has to interpret, so the two
+/// cases have to be distinguishable before anything can be drawn honestly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlobState {
+    /// The content is here; [`get`] returns it.
+    Resolved,
+    /// Not here, and expected: this process has asked and the answer has had
+    /// less than [`GIVE_UP_AFTER`] to arrive. Normal on a slow link, and the
+    /// normal first state for a reference that has just crossed.
+    Pending,
+    /// Not here, and not coming — either nothing in this process can fetch it
+    /// (no transport, so a miss is permanent by construction), or it has been
+    /// asked for long enough that the honest answer is that nobody has it.
+    Unavailable,
+}
+
+/// How long a missing blob stays [`BlobState::Pending`] before this process
+/// stops calling it "arriving".
+///
+/// Sized against the layer that actually does the fetching: the shell asks the
+/// room, retries, and gives up after five asks — around 38 s in practice
+/// (`shell/src/network/blob_relay.rs`). Declaring failure sooner than that
+/// would call a picture lost while it was still being transferred; much later
+/// leaves a reader watching a box that says "arriving" about something that
+/// stopped arriving a minute ago.
+pub const GIVE_UP_AFTER: std::time::Duration = std::time::Duration::from_secs(45);
+
+static FIRST_WANTED: OnceLock<RwLock<BTreeMap<String, std::time::Instant>>> = OnceLock::new();
+
+/// When this process first went looking for `hash`, recording now if it never
+/// has. The clock for [`BlobState::Pending`] starts here rather than at the
+/// moment the reference arrived, because a document can hold a reference for a
+/// long time before anything draws it.
+fn first_wanted(hash: &str) -> std::time::Instant {
+    let cell = FIRST_WANTED.get_or_init(|| RwLock::new(BTreeMap::new()));
+    let now = std::time::Instant::now();
+    let Ok(mut m) = cell.write() else { return now };
+    if m.len() > 512 {
+        if let Some(k) = m.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) {
+            m.remove(&k);
+        }
+    }
+    *m.entry(hash.to_string()).or_insert(now)
+}
+
+/// Forget that `hash` was ever waited on, so a re-reference after it landed
+/// starts its clock fresh rather than inheriting an expired one.
+fn clear_wait(hash: &str) {
+    if let Some(cell) = FIRST_WANTED.get() {
+        if let Ok(mut m) = cell.write() {
+            m.remove(hash);
+        }
+    }
+}
+
+/// Whether the content behind `hash` is here, on its way, or not coming.
+///
+/// Reports; it does not ask. [`get`] is what asks, and a renderer calls that
+/// every frame anyway — a second request raised from a state query would just
+/// be the same flood arriving by another route.
+pub fn state(hash: &str) -> BlobState {
+    if store().has(hash) {
+        clear_wait(hash);
+        return BlobState::Resolved;
+    }
+    // No door out of this process. A miss is then permanent however long
+    // anyone waits, and saying "arriving" about it would be a lie that never
+    // resolves — which is the exact failure this state exists to end.
+    if transport().is_none() {
+        return BlobState::Unavailable;
+    }
+    if first_wanted(hash).elapsed() < GIVE_UP_AFTER {
+        BlobState::Pending
+    } else {
+        BlobState::Unavailable
+    }
+}
+
 /// Read a blob's bytes from the process-wide store.
 ///
 /// A miss asks the transport for the content and still returns `None`. That is
@@ -314,9 +409,13 @@ fn may_ask(hash: &str) -> bool {
 /// picture. A blocking fetch here would stall a compositor frame on a peer.
 pub fn get(hash: &str) -> Option<Vec<u8>> {
     if let Some(bytes) = store().get(hash) {
+        clear_wait(hash);
         return Some(bytes);
     }
     if let Some(t) = transport() {
+        // Start the clock on the first miss, so `state` can tell a transfer in
+        // flight from one nobody is going to answer.
+        let _ = first_wanted(hash);
         if may_ask(hash) {
             t.want(hash);
         }
