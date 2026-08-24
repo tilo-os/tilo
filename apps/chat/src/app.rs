@@ -2091,6 +2091,56 @@ impl Widget for ChatApp {
         }
     }
 
+    /// Apply an action another app in this room published, when it is one of
+    /// chat's.
+    ///
+    /// This is how a remark composed somewhere else becomes a message here.
+    /// The file manager cannot write this document — it has no replica of it
+    /// and no schema for it, and it should not have either — so it publishes
+    /// chat's own `SendMessage` action instead, and this decodes it through
+    /// chat's own registry and applies it through chat's own action. The
+    /// result is an ordinary message: same channel, same history, same
+    /// document as anything typed into the composer, which is the whole claim
+    /// a remark makes about itself.
+    ///
+    /// An action carrying another app's `type_id` decodes to `None` and is
+    /// declined. That is what makes it safe for the broker to hand every app
+    /// in the room every action: the registry is the only thing that decides
+    /// what this app owns, and it decides by being unable to read the rest.
+    fn apply_room_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        type_id: &str,
+        payload: &[u8],
+    ) -> bool {
+        if type_id != crate::actions::CHAT_ACTION_TYPE {
+            return false;
+        }
+        let mut registry = qos_actions::ActionRegistry::new();
+        crate::actions::register(&mut registry);
+        let encoded = qos_actions::EncodedAction {
+            type_id: type_id.to_string(),
+            payload: payload.to_vec(),
+        };
+        let Some(action) = registry.decode(&encoded) else {
+            tracing::warn!(
+                %type_id,
+                "chat: an action under chat's own type id did not decode; the \
+                 message it carried is lost"
+            );
+            return false;
+        };
+        if let Err(e) = action.apply(doc) {
+            tracing::warn!(%type_id, error = ?e, "chat: applying a published action failed");
+            return false;
+        }
+        // Reloaded from the document rather than pushed into the view: the
+        // message is in the CRDT now, and every other path that puts one there
+        // is read back the same way.
+        self.relayout = true;
+        true
+    }
+
     fn name(&self) -> &str {
         "ChatApp"
     }

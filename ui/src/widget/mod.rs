@@ -112,6 +112,30 @@ pub trait Widget {
         None
     }
 
+    /// Apply an action another app in this room published, if this app is the
+    /// one that owns it.
+    ///
+    /// The receiving half of the same idea [`take_remark`](Self::take_remark)
+    /// opens: an app can address a document it does not hold, by saying what
+    /// should happen rather than by writing the bytes. This is where that
+    /// request is answered — by the app that *does* hold the document, through
+    /// its own [`ActionRegistry`](qos_actions::ActionRegistry), which is the
+    /// only decoder that knows the type.
+    ///
+    /// Delivered to every app in the room, so the default is to decline: an
+    /// action carrying a `type_id` this app's registry does not know is
+    /// somebody else's, and dropping it is the correct answer rather than a
+    /// failure. Return `true` only when the document actually changed, so the
+    /// host knows to broadcast it.
+    fn apply_room_action(
+        &mut self,
+        _doc: &mut automerge::AutoCommit,
+        _type_id: &str,
+        _payload: &[u8],
+    ) -> bool {
+        false
+    }
+
     fn get_rect(&self) -> vello::kurbo::Rect;
 
     /// Resolve the OS cursor shape this widget wants while the pointer

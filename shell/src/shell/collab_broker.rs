@@ -1093,6 +1093,31 @@ fn translate(
         // this machine's store and the room. Nothing to fan locally: an app
         // that lacks content is not news to its neighbours.
         CollabRequest::WantBlob { .. } => TranslatedAction::Nothing,
+        // A typed action for whichever app in the room owns the document it
+        // belongs to. Cluster scope, because the point of the verb is to reach
+        // an app that is *not* the sender: narrowing to the sender's own route
+        // would deliver it to nobody but the sender.
+        //
+        // Fanned locally and not published to the room. An action is not
+        // shared state; it is a request that one app change a document it
+        // owns. That app applies it here, and the resulting document change
+        // crosses on the path that already carries document changes — whereas
+        // publishing the request itself would have every machine's copy of
+        // that app apply it independently, one instruction producing one edit
+        // per machine.
+        CollabRequest::SendAction { type_id, payload } => {
+            let Some(route) = src_route.map(CrdtRoute::to_cluster_scope) else {
+                return unrouted(src_id, "SendAction");
+            };
+            TranslatedAction::Fanout {
+                event: CollabEvent::ActionArrived {
+                    type_id,
+                    payload,
+                    from_user_id: src_user_id.to_string(),
+                },
+                route,
+            }
+        }
         // Intercepted before this, in the reader loop, because it is addressed
         // to this session rather than to an audience. Named here anyway so the
         // day something reaches translate with one it is a dropped frame with
