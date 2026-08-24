@@ -6392,6 +6392,29 @@ def main() -> int:
                   f"{MACHINE_APPS} — the beat that opens it will report "
                   f"it as unopened")
 
+    # A payload goes stale the same way the compositor does, and more
+    # quietly. `demo-apps-live.sh` copies a binary into the payload, so
+    # rebuilding the app afterwards leaves the registry serving the copy:
+    # the run is green, every assertion passes, and the window in the
+    # picture is the previous build. Nothing downstream can tell — a
+    # frame does not carry a build id — so it has to be refused here,
+    # the last place that knows both which payload will be served and
+    # what it was built from.
+    #
+    # The binary's own name gives the crate it came from, rather than a
+    # second copy of that script's table drifting against the first.
+    for app in sorted(live):
+        binaries = os.path.join(LIVE_APPS, "payloads", app, "bin")
+        for name in sorted(os.listdir(binaries) if os.path.isdir(binaries) else []):
+            src = os.path.join(REPO, "apps", name, "src")
+            if not os.path.isdir(src):
+                continue
+            if refuse_if_stale(os.path.join(binaries, name),
+                               [src, os.path.join(REPO, "ui", "src")],
+                               "scripts/demo-apps-live.sh",
+                               args.allow_stale_shell):
+                return 2
+
     sessions = []
     for short, name in zip("qxa", ("quinten", "xaver", "Claude")):
         run_dir = os.path.join(args.out, name)
