@@ -764,6 +764,20 @@ pub struct Collaborator {
     /// session — a persisted roster, or a test fixture.
     #[serde(default)]
     pub session: Option<u64>,
+    /// True when the room admitted this member as an agent.
+    ///
+    /// Carried rather than derived, and carried from one place: the
+    /// room's capability list, read by
+    /// [`WorkspaceTree::room_peer_labels`]. A surface that guessed
+    /// instead — from the name, or from the shape of the id — would be
+    /// the OS telling somebody a person is software, or the reverse, on
+    /// no evidence.
+    ///
+    /// `false` by default, so a roster built anywhere else reads as
+    /// people, which is what every such roster meant before this
+    /// existed.
+    #[serde(default)]
+    pub is_agent: bool,
 }
 
 impl Collaborator {
@@ -782,6 +796,7 @@ impl Collaborator {
             role_id: None,
             invited: false,
             session: None,
+            is_agent: false,
         }
     }
 
@@ -789,6 +804,16 @@ impl Collaborator {
     /// departure that names only that session can find their row.
     pub fn with_session(mut self, peer: u64) -> Self {
         self.session = Some(peer);
+        self
+    }
+
+    /// Mark this member as one the room admitted as an agent.
+    ///
+    /// Takes the answer rather than asserting it, so a caller that has
+    /// only the room's word for it passes the word through instead of
+    /// deciding on its own.
+    pub fn as_kind(mut self, is_agent: bool) -> Self {
+        self.is_agent = is_agent;
         self
     }
 
@@ -2452,8 +2477,18 @@ impl WorkspaceTree {
     ///
     /// A peer with no entry is simply absent, which is what leaves it
     /// labelled with its own handle rather than with somebody's name.
-    pub fn room_peer_labels(&self, room: RoomId) -> std::collections::BTreeMap<u64, String> {
-        let mut out = std::collections::BTreeMap::new();
+    ///
+    /// Each entry carries what the room admitted that member **as**, not
+    /// only what it calls them. The kind is read from the room's own
+    /// capability list via [`Workspace::agent_members`] — the list an
+    /// agent's whole authority is made of — so it is the same fact the
+    /// roster paints an agent row from, reaching every reader that has a
+    /// handle instead of stopping at the ones that can see the
+    /// workspace. Nothing about the name or the handle is consulted to
+    /// decide it: a person the room admitted as a person stays a person
+    /// whatever they are called.
+    pub fn room_peer_labels(&self, room: RoomId) -> crate::shell::peer_presence::PeerLabels {
+        let mut out = crate::shell::peer_presence::PeerLabels::new();
         // Room documents are not persisted -- they are re-projected from
         // the cache -- so a machine that has just restarted holds none
         // until something asks it to export. On a machine that governs
@@ -2471,13 +2506,33 @@ impl WorkspaceTree {
         } else {
             self.room_peer_names_in_doc(room)
         };
+        // Which of this room's members were admitted as agents, as the
+        // room's capability list has it. `agent_members` case-folds a
+        // principal at the moment it is granted (`agent.invite` writes
+        // `Subject::agent(name.to_lowercase())`), so the membership is
+        // asked for under the same folding rather than under whatever
+        // capitalisation the name happened to be written in.
+        //
+        // Absent workspace, empty list: a room this machine is not in
+        // records no membership here, and the honest answer to "was this
+        // one admitted as an agent" is then "nothing says so".
+        let agents: std::collections::BTreeSet<String> = self
+            .workspace_in_room(room)
+            .map(|ws| {
+                ws.agent_members()
+                    .into_iter()
+                    .map(|(a, _)| a.to_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default();
         for (peer, name) in named {
             let Ok(parsed) = peer.parse::<libp2p::PeerId>() else {
                 continue;
             };
+            let is_agent = agents.contains(&name.to_lowercase());
             out.insert(
                 crate::network::behaviour::peer_liveness_handle(&parsed),
-                name,
+                crate::shell::peer_presence::PeerLabel { name, is_agent },
             );
         }
         out
@@ -8091,7 +8146,7 @@ mod automerge_foundation_tests {
             "the name has to be in the room document, which is what replicates",
         );
         assert_eq!(
-            host.room_peer_labels(room).get(&handle_of(&xaver)).map(String::as_str),
+            host.room_peer_labels(room).get(&handle_of(&xaver)).map(|l| l.name.as_str()),
             Some("Xaver"),
             "and it has to be reachable from the handle a presence frame carries",
         );
@@ -8114,7 +8169,7 @@ mod automerge_foundation_tests {
         host.room_docs.clear();
 
         assert_eq!(
-            host.room_peer_labels(room).get(&handle_of(&xaver)).map(String::as_str),
+            host.room_peer_labels(room).get(&handle_of(&xaver)).map(|l| l.name.as_str()),
             Some("Xaver"),
             "the machine that governs the room is the one the document is \
              projected from, so its cache is the same authority",
@@ -8141,10 +8196,10 @@ mod automerge_foundation_tests {
 
         let labels = guest.room_peer_labels(room);
         assert!(
-            !labels.values().any(|n| n == "Somebody Else"),
+            !labels.values().any(|l| l.name == "Somebody Else"),
             "a guest must not show a name that is not in the room document",
         );
-        assert_eq!(labels.get(&handle_of(&xaver)).map(String::as_str), Some("Xaver"));
+        assert_eq!(labels.get(&handle_of(&xaver)).map(|l| l.name.as_str()), Some("Xaver"));
     }
 
     /// A peer nobody named is left as the id it arrived under. Not
@@ -8187,7 +8242,7 @@ mod automerge_foundation_tests {
             "a guest reads names out of the replicated room document",
         );
         assert_eq!(
-            guest.room_peer_labels(room).get(&handle_of(&xaver)).map(String::as_str),
+            guest.room_peer_labels(room).get(&handle_of(&xaver)).map(|l| l.name.as_str()),
             Some("Xaver"),
         );
     }

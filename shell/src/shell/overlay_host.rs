@@ -9954,7 +9954,13 @@ pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Ve
                 initial: roster_initial(&p.name),
                 label: p.name.clone(),
                 color: Color::from_rgb8(r, g, b),
-                is_agent: false,
+                // What the room admitted this member as, carried from
+                // the room's capability list by `room_peer_labels` and
+                // not decided here. It used to be a flat `false`, which
+                // said "person" about every member with a session —
+                // including an agent that had one — so the roster
+                // reported no agents in a room that had admitted one.
+                is_agent: p.is_agent,
                 // The role the room records, wherever the room records
                 // one: the entry the presence path carried, and failing
                 // that the room's own capability list, which is the
@@ -9978,6 +9984,22 @@ pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Ve
         .collect();
     if let Some(ws) = tree.active_workspace() {
         for (agent, role) in ws.agent_members() {
+            // Not twice. An agent with a session of its own is already
+            // one of the rows above — named by the room, marked by the
+            // same capability this loop reads — and adding the grant's
+            // own row beside it lists one participant as two, which is a
+            // room reporting an agent that is not there on top of the
+            // one that is.
+            //
+            // Matched on the row's label case-folded, because that is
+            // the key the grant was written under: `agent.invite` folds
+            // the name it is given into the principal.
+            if rows
+                .iter()
+                .any(|r| r.is_agent && r.label.to_lowercase() == agent)
+            {
+                continue;
+            }
             // The label is the principal itself. An agent has no display
             // name in the room document yet — when peers grow one, this
             // is the seam it arrives through, and until then showing the
