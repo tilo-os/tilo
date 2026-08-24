@@ -5094,6 +5094,13 @@ def beat_five(xaver: Session, agent: Session, host_ws: dict,
                 "even if something appeared on screen")
 
 
+#: Where the file view puts its rows, straight off the app's own
+#: constants (`views/file_view.rs:63`): a 30px column header, then rows
+#: of 34px. Used only to convert a press that landed on the *wrong* row
+#: into an aimed one — never to guess where a row is in the first place.
+LIST_ROW_H = 34.0
+
+
 def expected_listing(home: str) -> list[str]:
     """The order Files draws this directory in: folders first, then
     files, each case-insensitively by name.
