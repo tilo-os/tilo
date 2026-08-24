@@ -612,6 +612,58 @@ impl BrokerChannels {
 ///   fanout onto per-subscription mpsc queues held by the capnp
 ///   RPC layer. When the capnp listener is bound alongside the
 ///   legacy one, every event dispatched here reaches both.
+/// A participant asking this session to open an application.
+///
+/// Everything the session needs to decide, and nothing it should take on
+/// trust. The `app_id` is what was asked for; `room` and `who` are the
+/// broker's own answers about the connection that asked — resolved the same
+/// way every other frame's attribution is — because the question the session
+/// has to answer is not "should this app open" but "may *this participant*
+/// open it *in this room*", and a caller cannot be allowed to supply the
+/// second half of that.
+#[derive(Clone, Debug)]
+pub struct OpenAppRequest {
+    /// The application's package id, as the caller named it. Unvalidated: the
+    /// session resolves it, and an id that names nothing installed is a
+    /// refusal the caller is told about.
+    pub app_id: String,
+    /// The room the asking connection announced on its `Hello`. Empty when it
+    /// never announced one, which the session treats as a refusal — there is
+    /// no workspace whose capabilities could answer.
+    pub room: String,
+    /// Who asked, as the broker resolved them for every other frame.
+    ///
+    /// The room's own label for the connection where it has one. Right for
+    /// attribution and wrong for authorisation: it names the *machine* a
+    /// participant is connected through, which for a participant without a
+    /// window is not the participant.
+    pub who: String,
+    /// The name the connection announced on its `Hello`.
+    ///
+    /// The only thing on this socket that names the participant itself, and
+    /// **it is not authenticated** — the field is documented as informational
+    /// and nothing checks it. A session that decides on it is deciding on a
+    /// name anything with access to the socket could choose, so the
+    /// capabilities it looks up must be the workspace's own and the answer
+    /// must be no by default. It narrows a grant; it never makes one. See
+    /// `shell::shell::agent_opens`.
+    pub handle: Option<String>,
+    /// The connection to answer a refusal on. See
+    /// [`BrokerHandle::refuse_open`].
+    pub peer: u64,
+}
+
+/// What a session does when a participant asks it to open an application.
+///
+/// The broker holds the door and does not decide who comes through it: it
+/// knows sockets, rooms and names, and nothing about workspaces, capabilities
+/// or launchers. So the decision is the compositor's, taken on its own thread
+/// against its own state, and this is only how the question reaches it.
+///
+/// The sink runs on the reader thread that decoded the frame. Keep it short —
+/// hand the request to a queue and return.
+pub type AppOpener = Box<dyn Fn(OpenAppRequest) + Send + Sync>;
+
 pub struct PeerTable {
     peers: Mutex<Vec<Arc<Peer>>>,
     /// Monotonic id source. Shared with the capnp listener so a
@@ -624,6 +676,10 @@ pub struct PeerTable {
     /// Subscribers that live inside the shell process rather than on
     /// the far side of a socket. See [`RoomSubscription`].
     local_subs: Mutex<Vec<Arc<RoomSubscription>>>,
+    /// Where a `CollabRequest::OpenApp` goes. `None` in a session that
+    /// installed none — a broker with no desktop behind it — and a request
+    /// then gets the honest answer rather than silence.
+    app_opener: Mutex<Option<Arc<AppOpener>>>,
 }
 
 /// A subscriber inside the shell process, addressed by room.
@@ -682,6 +738,7 @@ impl PeerTable {
             peer_id_counter: AtomicU64::new(0),
             capnp: Mutex::new(None),
             local_subs: Mutex::new(Vec::new()),
+            app_opener: Mutex::new(None),
         }
     }
 
@@ -829,6 +886,11 @@ impl PeerTable {
     /// Also consults the capnp fanout sink (if attached) so a
     /// scrollback reply routed to a capnp-side requester still lands
     /// on their per-request reply channel.
+    /// The installed opener, if this session has one.
+    fn app_opener(&self) -> Option<Arc<AppOpener>> {
+        self.app_opener.lock().ok().and_then(|g| g.clone())
+    }
+
     fn send_to_peer(&self, peer_id: u64, event: &CollabEvent) -> bool {
         let bytes = match serde_json::to_vec(event) {
             Ok(b) => b,
@@ -1031,6 +1093,18 @@ fn translate(
         // this machine's store and the room. Nothing to fan locally: an app
         // that lacks content is not news to its neighbours.
         CollabRequest::WantBlob { .. } => TranslatedAction::Nothing,
+        // Intercepted before this, in the reader loop, because it is addressed
+        // to this session rather than to an audience. Named here anyway so the
+        // day something reaches translate with one it is a dropped frame with
+        // a reason beside it, not a wildcard swallowing it.
+        CollabRequest::OpenApp { ref app_id } => {
+            tracing::warn!(
+                src_id, %app_id,
+                "collab_broker: an OpenApp reached the fan-out; it has no \
+                 audience and was dropped"
+            );
+            TranslatedAction::Nothing
+        }
         CollabRequest::Presence { key, payload } => {
             // Chrome traffic: cluster scope. Every app in the cluster
             // is a legitimate audience for "who else is here", but a
@@ -1417,6 +1491,53 @@ fn reader_loop(
         // any point after that. `LocalIdentity` caches the room lookup
         // so this stays cheap at pointer rate.
         let src_user_id = identity.resolve(src_route.as_ref(), peer.announced_handle().as_deref());
+        // Opening an application never reaches `translate`, because it has no
+        // audience to be translated for. It is addressed to *this session*:
+        // relaying it would put a window on every peer's desktop because
+        // somebody else's participant needed one, which nobody asked for and
+        // no peer could refuse. So it leaves the fan-out here.
+        if let CollabRequest::OpenApp { app_id } = &req {
+            let room = src_route
+                .as_ref()
+                .map(|r| r.cluster_id.clone())
+                .unwrap_or_default();
+            let opener = table.app_opener();
+            match opener {
+                Some(open) => {
+                    tracing::info!(
+                        peer = peer.id, %app_id, %room, who = %src_user_id,
+                        "collab_broker: a participant asked this session to open \
+                         an application"
+                    );
+                    open(OpenAppRequest {
+                        app_id: app_id.clone(),
+                        room,
+                        who: src_user_id.clone(),
+                        handle: peer.announced_handle(),
+                        peer: peer.id,
+                    });
+                }
+                // No desktop behind this broker. Said rather than dropped:
+                // the caller is blocked on an answer, and "nothing here can
+                // open applications" is one, where silence is not.
+                None => {
+                    tracing::warn!(
+                        peer = peer.id, %app_id,
+                        "collab_broker: asked to open an application, but this \
+                         session has no desktop to open one in"
+                    );
+                    let _ = table.send_to_peer(
+                        peer.id,
+                        &CollabEvent::AppOpenRefused {
+                            app_id: app_id.clone(),
+                            why: "this session cannot open applications"
+                                .to_string(),
+                        },
+                    );
+                }
+            }
+            continue;
+        }
         match translate(peer.id, &src_user_id, src_route.as_ref(), req, &channels) {
             TranslatedAction::Nothing => {}
             TranslatedAction::Fanout { event, route } => {
@@ -1612,6 +1733,48 @@ impl BrokerHandle {
 
     pub fn channels(&self) -> Arc<Mutex<BrokerChannels>> {
         Arc::clone(&self.channels)
+    }
+
+    /// Install what this session does when a participant asks it to open an
+    /// application.
+    ///
+    /// Installed after the broker is bound rather than passed to `spawn`,
+    /// because the thing that answers — the desktop — is stood up around the
+    /// broker and not before it. Until one is installed every request is
+    /// refused with the reason, which is the right answer for a broker with no
+    /// desktop behind it (the two-peer tests, a headless relay) and a much
+    /// better one than accepting a request nothing will ever act on.
+    pub fn set_app_opener(&self, opener: AppOpener) {
+        if let Ok(mut guard) = self.peers.app_opener.lock() {
+            *guard = Some(Arc::new(opener));
+        }
+    }
+
+    /// Tell the connection that asked that its application will not be opened.
+    ///
+    /// Addressed to the one peer, never fanned: a refusal is an answer to a
+    /// question, and nobody else asked it. Called from the session's own
+    /// thread once it has consulted the workspace whose capabilities decide —
+    /// which is why this is a separate call rather than a return value from
+    /// [`Self::set_app_opener`]'s sink.
+    pub fn refuse_open(&self, peer: u64, app_id: &str, why: &str) {
+        let delivered = self.peers.send_to_peer(
+            peer,
+            &CollabEvent::AppOpenRefused {
+                app_id: app_id.to_string(),
+                why: why.to_string(),
+            },
+        );
+        if !delivered {
+            // Loud, because the caller is now waiting out a timeout for a
+            // question that has already been answered, and will report the
+            // wait rather than the reason.
+            tracing::warn!(
+                peer, %app_id,
+                "collab_broker: could not deliver the refusal; the caller will \
+                 see this as an app that never opened"
+            );
+        }
     }
 
     /// Convenience: install a populated [`ChannelState`] for one

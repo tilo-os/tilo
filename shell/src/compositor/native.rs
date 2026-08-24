@@ -2432,6 +2432,17 @@ pub fn run() -> ! {
     let collab_broker =
         spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.clone());
 
+    // A participant without a window can ask this session to open an
+    // application. The broker takes the question off the socket; the
+    // desktop answers it on the frame loop below, where the workspace
+    // whose capabilities decide is reachable. Installed even in a
+    // session with no peer sync — an agent on the local socket is a
+    // participant whether or not the room has anybody else in it.
+    let pending_opens = crate::shell::agent_opens::PendingOpens::new();
+    if let Some(broker) = collab_broker.as_ref() {
+        pending_opens.install(broker);
+    }
+
     // Read the session's own broker for pointer presence, and relay it
     // to the room's other hosts.
     //
@@ -3327,6 +3338,17 @@ pub fn run() -> ! {
         // PTY into its grid; without it a live app that produces output
         // asynchronously would sit frozen on its empty state. Returns true
         // when something actually changed, which is itself a paint reason.
+        // Answer whatever asked to be opened since the last frame. Here
+        // rather than on the broker's reader thread because the answer is
+        // the workspace's — its capabilities decide, and its launcher is
+        // what acts — and both live on this one.
+        if let Some(broker) = collab_broker.as_ref() {
+            crate::shell::agent_opens::pump(
+                &frame_builder.chrome_handle(),
+                broker,
+                &pending_opens,
+            );
+        }
         // Drain the network actor into the replica. Peer changes land
         // in the shared tree, so a room's new name or a capability the
         // owner just revoked is folded in before this frame's pump

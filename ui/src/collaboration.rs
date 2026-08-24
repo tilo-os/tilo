@@ -197,6 +197,33 @@ pub enum CollabRequest {
         /// blake3 hex of the content wanted.
         hash: String,
     },
+    /// "Open this application here."
+    ///
+    /// The one frame on this socket that is not about a document, and it is
+    /// here because of who asks it. A participant with a window opens an app
+    /// the way anybody does — the launcher, the palette, a click. A
+    /// participant without one holds a room, a name and a capability set, and
+    /// this connection is the only door it has. An agent that can act on
+    /// every app in the room but cannot reach one that is closed is limited
+    /// by an accident of what somebody happened to open, not by what it was
+    /// permitted to do.
+    ///
+    /// **Never fanned out.** It is addressed to the session hosting this
+    /// connection, not to the room. Relaying it would open a copy of the app
+    /// on every peer's desktop — windows appearing on other people's screens
+    /// because somebody else's agent needed something, which nobody asked for
+    /// and no peer is in a position to refuse.
+    ///
+    /// Asking is not being obeyed. The session decides, against its own
+    /// workspace's capabilities, and answers a refusal with
+    /// [`CollabEvent::AppOpenRefused`].
+    OpenApp {
+        /// The application's package id, as its manifest declares it —
+        /// `dev.qos.photos`. The same id the launcher resolves and the same
+        /// one an app announces on [`CollabRequest::Hello`], so "did it open"
+        /// and "did I ask for it" are the same name.
+        app_id: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -277,6 +304,26 @@ pub enum CollabEvent {
         /// The content itself.
         bytes: Vec<u8>,
     },
+    /// This session will not open an application that was asked for.
+    ///
+    /// Sent to the connection that asked, and only when the answer is no. A
+    /// yes needs no frame: the app joins the room and its state arrives, which
+    /// is both the answer and the thing the caller was waiting for. A second
+    /// message saying so would give the caller two things to believe and one
+    /// of them could be wrong.
+    ///
+    /// A refusal has no such evidence, and without this frame it is
+    /// indistinguishable from an application that is slow to start. The caller
+    /// waits out its patience and then reports that the app never came — a
+    /// claim about timing standing in for a claim about the request, which is
+    /// the failure this whole path exists to avoid.
+    AppOpenRefused {
+        /// The application that was asked for, echoed so a caller with more
+        /// than one request outstanding knows which was refused.
+        app_id: String,
+        /// Why, in the words of whoever refused it, for a person to read.
+        why: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -301,6 +348,20 @@ pub struct Collaborator {
     pub id: String,
     pub name: String,
     pub color: [f32; 3],
+    /// Whether this member is an agent rather than a person.
+    ///
+    /// The room already knows -- an agent is admitted as one, and
+    /// `RosterRow::is_agent` records it. This projection dropped it,
+    /// so anything downstream that needed to tell an agent from a
+    /// person had to read the id and hope, which is the inference the
+    /// marking exists to make unnecessary.
+    ///
+    /// Defaulted on the wire so an older peer that does not send the
+    /// field is read as "a person" rather than failing to decode.
+    /// A peer wrongly shown as a person is a smaller lie than a
+    /// roster that will not load.
+    #[serde(default)]
+    pub is_agent: bool,
 }
 
 /// Failure modes for [`CollaborationManager::send_signed_op`].
@@ -1750,6 +1811,18 @@ async fn drive_shovel(
                     );
                 }
             }
+            // Not carried on this transport, and not silently: an app that
+            // asked for one has a caller waiting on a window that is never
+            // going to appear. The schema `runtime-collab` speaks is about
+            // documents; opening an application is a session's own door, and
+            // the participants that need it reach it on the JSON socket.
+            CollabRequest::OpenApp { app_id } => {
+                tracing::warn!(
+                    %app_id,
+                    "collab: this transport cannot open applications; nothing \
+                     was asked of the session",
+                );
+            }
         }
     }
 }
@@ -1843,6 +1916,13 @@ async fn drive_relay(
                             hash = %hash,
                             "collab: this relay session cannot fetch document content; \
                              the image using it stays a placeholder",
+                        );
+                    }
+                    CollabRequest::OpenApp { app_id } => {
+                        tracing::warn!(
+                            %app_id,
+                            "collab: this relay session hosts no desktop, so it \
+                             cannot open an application",
                         );
                     }
                 }
@@ -2191,6 +2271,11 @@ pub mod broker {
                 // Nothing here holds a store to answer from; the offer above
                 // is what moves content on this transport.
                 CollabRequest::WantBlob { .. } => continue,
+                // The in-process relay is a loopback between two documents.
+                // It hosts nothing, so there is nothing here to open — and
+                // fabricating a refusal would teach a caller that this relay
+                // decides such things, which it does not.
+                CollabRequest::OpenApp { .. } => continue,
             };
 
             let Ok(bytes) = serde_json::to_vec(&event) else { continue };
