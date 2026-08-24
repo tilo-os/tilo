@@ -5644,11 +5644,14 @@ def tab_groups_here(s: Session) -> list[dict]:
                 tabs = []
                 for t in group.get("tabs", []):
                     tile = t.get("tile") or {}
-                    foreign = tile.get("Foreign") if isinstance(tile, dict) else None
+                    foreign = (tile.get("Foreign")
+                               if isinstance(tile, dict) else None)
+                    sid = (foreign or {}).get("surface_id")
                     tabs.append({
                         "id": t.get("id"),
                         "title": t.get("title") or "",
                         "app_id": (foreign or {}).get("app_id"),
+                        "surface_id": int(sid) if sid is not None else None,
                     })
                 out.append({"id": group.get("id"),
                             "active_tab": group.get("active_tab"),
@@ -5818,80 +5821,93 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
     note(f"one window, two tabs: {[t['title'] for t in merged['tabs']]}")
     # The claim the beat is for, and the one a viewer is being asked to
     # believe: those two pills are two *different applications*, not two
-    # documents inside one. Read off the tile each tab carries, which
-    # names the client that draws it — a title could say anything.
-    claim("and they are two different applications, not two documents "
-          "in one",
-          sorted({t["app_id"] for t in merged["tabs"] if t["app_id"]}),
-          sorted({WORD_PROCESSOR, IMAGE_EDITOR}))
+    # documents inside one.
+    #
+    # Asserted on the two **surfaces** rather than on the app id each
+    # client announces, because an announced app id is not an identity.
+    # The image editor calls itself `org.qos.app` — the toolkit's default,
+    # which every app that has not set one of its own answers with — so a
+    # name check here would have compared the word processor against a
+    # string shared by half the fleet. A surface id is the compositor's
+    # own handle on one wayland client, and these two are the windows
+    # this run watched two different launches open: one asked for by
+    # `dev.qos.word-processor`, one by `dev.qos.imager`.
+    note(f"the two clients announce themselves as "
+         f"{sorted({t['app_id'] for t in merged['tabs'] if t['app_id']})} — "
+         f"so which application each is comes from the launch that opened "
+         f"it, not from what it calls itself")
+    claim("and they are the two windows two different applications "
+          "opened, not two documents in one",
+          sorted(t["surface_id"] for t in merged["tabs"]),
+          sorted([int(wp["surface_id"]), int(editor["surface_id"])]))
     quinten.snapshot(os.path.join(shots, "12-tabbed.png"))
     read_hold(1.2)
 
     step("and the tabs switch between them")
 
-    def active_tab_app(s: Session, group_id) -> str | None:
-        """Which application the merged group is currently showing."""
+    def active_tab_surface(s: Session, group_id) -> int | None:
+        """Which window the merged group is currently showing."""
         group = next((g for g in tab_groups_here(s) if g["id"] == group_id),
                      None)
         if group is None:
             return None
-        return next((t["app_id"] for t in group["tabs"]
+        return next((t["surface_id"] for t in group["tabs"]
                      if t["id"] == group["active_tab"]), None)
 
-    def show_tab(app: str) -> bool:
-        """Bring `app`'s tab to the front of the merged group.
+    def show_tab(surface_id: int) -> None:
+        """Bring the tab holding `surface_id` to the front of the group.
 
         By the pill's own name in the registry first, so what happens is
         a click on the tab a viewer can see rather than on wherever the
-        layout happened to put one. A horizontal wheel is the fallback
-        and is not a lesser gesture — it is the OS's own "sideways is
-        the next window", the same `cycle_active_tab` the pill drives —
-        for the case where a tab's title is empty and there is no name
-        to click.
+        layout happened to put one. A horizontal wheel is the fallback,
+        and not a lesser gesture — it is the OS's own "sideways is the
+        next window", driving the same `cycle_active_tab` the pill does —
+        for the case where two tabs share a title and a name cannot pick
+        between them.
         """
-        title = next((t["title"] for t in merged["tabs"]
-                      if t["app_id"] == app and t["title"]), None)
-        for name in ([f"tab:{title}[{merged['id']}]", f"tab:{title}"]
-                     if title else []):
+        want = next((t for t in merged["tabs"]
+                     if t["surface_id"] == int(surface_id)), None)
+        title = (want or {}).get("title")
+        for name in ([f"tab:{title}[{merged['id']}]"] if title else []):
             if quinten.named_rect(name):
                 quinten.click_named(name)
                 quinten.settle(1.0)
-                return True
+                if active_tab_surface(quinten, merged["id"]) == int(surface_id):
+                    return
         for _ in range(len(merged["tabs"])):
             quinten.scroll(1.0, 0.0)
             quinten.settle(0.8)
-            if active_tab_app(quinten, merged["id"]) == app:
-                return True
-        return False
+            if active_tab_surface(quinten, merged["id"]) == int(surface_id):
+                return
 
     shown_before = screen_shot(
         quinten, os.path.join(shots, "12a-before-switch.png"))
-    was = active_tab_app(quinten, merged["id"])
-    show_tab(IMAGE_EDITOR)
-    # Asserted on what the window is showing, not on whether a click
-    # was delivered. "The pill was there and I pressed it" is a claim
-    # about the harness; the thing being demonstrated is that pressing
-    # it puts a different *application* in the frame.
+    show_tab(editor["surface_id"])
+    # Asserted on what the window is showing, not on whether a click was
+    # delivered. "The pill was there and I pressed it" is a claim about
+    # the harness; the thing being demonstrated is that pressing it puts
+    # the other application in the frame.
     claim("switching tab puts the other application in the window",
-          active_tab_app(quinten, merged["id"]), IMAGE_EDITOR)
+          active_tab_surface(quinten, merged["id"]),
+          int(editor["surface_id"]))
     shown_after = screen_shot(
         quinten, os.path.join(shots, "13-tab-switched.png"))
     moved = pixels_moved(shown_before, shown_after)
     if moved is not None:
-        # And on the screen, because the tree agreeing is not the same
-        # as the compositor drawing it.
+        # And on the screen, because the tree agreeing is not the same as
+        # the compositor drawing it.
         claim("and the screen changes with it",
               moved > SCREEN_MOVED_PX, True)
-        note(f"{moved} pixels differ between {was} and the image editor")
+        note(f"{moved} pixels differ between the two tabs")
     read_hold(1.2)
 
     # Left on the word processor, because the beat after this one is
     # about what is written in that document and a shot of an image
     # editor under a caption about a document is a shot of the wrong
     # thing.
-    show_tab(WORD_PROCESSOR)
+    show_tab(wp["surface_id"])
     claim("and back again, so the beat after this one is of the document",
-          active_tab_app(quinten, merged["id"]), WORD_PROCESSOR)
+          active_tab_surface(quinten, merged["id"]), int(wp["surface_id"]))
     claim("every one of those was a person's gesture",
           quinten.input_ops > before, True)
 
