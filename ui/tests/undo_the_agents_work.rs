@@ -713,3 +713,81 @@ fn entry_ids_are_stable_across_peers() {
     assert_eq!(here, there, "content addresses, so both peers agree");
 }
 
+
+// ---------------------------------------------------------------------------
+// Undoing from an identity alone — what an author chip beside the text has.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_author_chip_has_everything_it_needs_to_undo_that_author() {
+    // A chip reading "Claude" next to a line knows one thing: whose line it is.
+    // That is enough — `latest_run_by` turns an identity into the band, and the
+    // band is what gets inverted. No band has to have been named, and nothing
+    // has to have been recorded in advance.
+    let (mut report, _intro) = Report::started_by_a_person();
+    let before = report.body();
+    agent_writes_two_paragraphs(&mut report);
+
+    // Someone else works in between, so the agent's band is genuinely bounded
+    // rather than simply being "everything at the end".
+    report.edit_as(PERSON, 1_780_000_350, |dm| {
+        let id = dm.insert_block(None, "paragraph");
+        dm.splice_text(&id, 0, 0, "My own note.");
+        id
+    });
+
+    let run = latest_run_by(&mut report.doc, &actor_hex(AGENT)).expect("the chip's author");
+    report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
+    let out = revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+    qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
+
+    assert_eq!(out.covered, 2, "the band stopped at the agent's own changes");
+    assert!(out.is_complete(), "{:?}", out.kept);
+    let body = report.body();
+    assert!(
+        body.contains("My own note."),
+        "the work that came after is untouched: {body:?}"
+    );
+    assert!(body.contains(&before), "and what came before: {body:?}");
+    assert!(!body.contains("Revenue grew by a fifth."), "{body:?}");
+    assert!(!body.contains("Figure 1"), "{body:?}");
+}
+
+#[test]
+fn a_run_found_by_author_stops_at_somebody_elses_change() {
+    // The band must never swallow a collaborator's work just because it sits
+    // between two of the agent's changes.
+    let (mut report, _intro) = Report::started_by_a_person();
+    report.edit_as(AGENT, 1_780_000_200, |dm| {
+        let id = dm.insert_block(None, "paragraph");
+        dm.splice_text(&id, 0, 0, "An early agent line.");
+        id
+    });
+    report.edit_as(PERSON, 1_780_000_250, |dm| {
+        let id = dm.insert_block(None, "paragraph");
+        dm.splice_text(&id, 0, 0, "Her line in between.");
+        id
+    });
+    report.edit_as(AGENT, 1_780_000_300, |dm| {
+        let id = dm.insert_block(None, "paragraph");
+        dm.splice_text(&id, 0, 0, "A later agent line.");
+        id
+    });
+
+    let run = latest_run_by(&mut report.doc, &actor_hex(AGENT)).expect("agent");
+    report.doc.set_actor(ActorId::from(PERSON.as_bytes()));
+    let out = revert_run(&mut report.doc, &run, Some(&actor_hex(AGENT)), &directory()).expect("run");
+    qdoc::history::commit_stamped_at(&mut report.doc, 1_780_000_400);
+
+    assert_eq!(
+        out.covered, 1,
+        "the run is the most recent contiguous band, not everything the agent ever did"
+    );
+    let body = report.body();
+    assert!(body.contains("Her line in between."), "{body:?}");
+    assert!(
+        body.contains("An early agent line."),
+        "the earlier band is a separate thing and was left alone: {body:?}"
+    );
+    assert!(!body.contains("A later agent line."), "{body:?}");
+}

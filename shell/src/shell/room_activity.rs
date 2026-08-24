@@ -198,6 +198,9 @@ pub struct RoomActivityPane {
     /// event dispatch and drained immediately after — the callback is an
     /// `FnMut` owned by the widget and cannot reach back into this struct.
     revert_intent: Rc<Cell<Option<HistoryEntryId>>>,
+    /// A band the user asked to take out — distinct from `revert_intent`, which
+    /// is a point in time to roll back to.
+    undo_intent: Rc<RefCell<Option<ui::BandUndoRequest>>>,
     /// Band the user named. Same handshake as the revert intent; the payload is
     /// not `Copy`, so this is a `RefCell`.
     name_intent: Rc<RefCell<Option<GroupNameRequest>>>,
@@ -250,12 +253,15 @@ impl RoomActivityPane {
     pub fn new() -> Self {
         let revert_intent = Rc::new(Cell::new(None));
         let name_intent: Rc<RefCell<Option<GroupNameRequest>>> = Rc::new(RefCell::new(None));
+        let undo_intent: Rc<RefCell<Option<ui::BandUndoRequest>>> = Rc::new(RefCell::new(None));
         let ri = Rc::clone(&revert_intent);
         let ni = Rc::clone(&name_intent);
+        let ui_ = Rc::clone(&undo_intent);
         Self {
             timeline: {
                 let mut t = ActivityTimeline::new()
                     .on_revert(move |id| ri.set(Some(*id)))
+                    .on_undo_band(move |req| *ui_.borrow_mut() = Some(req.clone()))
                     .on_name_group(move |req| *ni.borrow_mut() = Some(req.clone()));
                 // The sheet is the surface; the timeline sits on it.
                 t.set_draws_own_surface(false);
@@ -266,6 +272,7 @@ impl RoomActivityPane {
             // document describes, so that is what its rows are tagged with.
             source: HistorySource::new().with_artifact_kind(ArtifactKind::Cluster),
             revert_intent,
+            undo_intent,
             name_intent,
             named: Vec::new(),
             last_heads: Vec::new(),
@@ -815,6 +822,13 @@ impl RoomActivityPane {
                 out.reverted = true;
             }
         }
+        let undo_req = self.undo_intent.borrow_mut().take();
+        if let Some(req) = undo_req {
+            out.handled = true;
+            if self.undo_band(tree, &req).is_some_and(|o| o.wrote) {
+                out.reverted = true;
+            }
+        }
         let name_req = self.name_intent.borrow_mut().take();
         if let Some(req) = name_req {
             out.handled = true;
@@ -823,6 +837,44 @@ impl RoomActivityPane {
             }
         }
         out
+    }
+
+    /// Take a band of the room's changes back out, leaving everything after it
+    /// standing.
+    ///
+    /// The difference from [`Self::revert_to`] is the whole reason both exist.
+    /// A restore rolls the document back to a moment and discards what came
+    /// after; an undo inverts *only this band* and keeps the rest. When a band
+    /// is one participant's work — an agent's, usually — the second is what
+    /// "undo what it just did" means, and the first would quietly throw away
+    /// everybody else's afternoon.
+    ///
+    /// The revert is scoped to the band's own author, so a later change by
+    /// somebody else that touched the same thing holds its part back rather
+    /// than being overwritten. Returns the outcome so a caller can say what was
+    /// kept; `None` when the band names no change in this document.
+    pub fn undo_band(
+        &mut self,
+        tree: &mut WorkspaceTree,
+        req: &ui::BandUndoRequest,
+    ) -> Option<ui::RevertOutcome> {
+        let run = ui::ChangeRun::new(req.start, req.end);
+        // Grouping splits on a change of author, so the band's first change is
+        // authored by the band's author. Reading the actor off it is exact,
+        // where `HistoryAuthor` only carries a display name and an eight-character
+        // prefix — neither of which `revert_run` can match on.
+        let by = band_author_actor(&mut tree.doc, &req.start);
+        let outcome = ui::revert_run(&mut tree.doc, &run, by.as_deref(), self.source.authors()).ok()?;
+        if !outcome.wrote {
+            // Nothing was written, so there is no transaction to commit and
+            // nothing for the cache to catch up with.
+            return Some(outcome);
+        }
+        tree.commit_room_change();
+        tree.resync_cache_from_doc();
+        self.last_heads.clear();
+        self.refresh(tree);
+        Some(outcome)
     }
 
     /// Write (or remove) a name over a run of the room's changes.
@@ -1360,6 +1412,15 @@ fn join_titles(titles: &[String]) -> String {
 // =====================================================================
 // Tests
 // =====================================================================
+
+/// The actor that authored the change `id` names, or `None` when this document
+/// has no such change.
+fn band_author_actor(doc: &mut automerge::AutoCommit, id: &HistoryEntryId) -> Option<String> {
+    qdoc::history::versions(doc)
+        .into_iter()
+        .find(|v| ui::history_source::entry_id_from_hash(&v.change_hash) == *id)
+        .map(|v| v.actor_hex)
+}
 
 #[cfg(test)]
 mod tests {

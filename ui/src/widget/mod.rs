@@ -919,7 +919,7 @@ pub use history::{
     HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay,
     format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
 };
-pub use activity_timeline::ActivityTimeline;
+pub use activity_timeline::{ActivityTimeline, BandUndoRequest};
 pub use history_scrubber::HistoryScrubber;
 // The op/artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
 // caller can build one without naming the collab-types crate directly.
