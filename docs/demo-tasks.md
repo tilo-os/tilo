@@ -258,8 +258,14 @@ the claim is "the document was written into", and it was, with this:
       minted for the agent's session under its own name, or a name that
       a bearer token does not hand to the first arrival and then forget.
 
-      **Not verified by looking** -- reading the chip needs a full
-      three-session run, and this is being worked separately.
+      Fixed in `9ac8c9b5e`, independently and from the same reading:
+      the agent's session is now invited in its own right instead of
+      redeeming xaver's token, so the room has a name to give it. That
+      is also the better shot -- a member admitted the way a person is,
+      in the same capability list and marked as an agent.
+
+      **Still not verified by looking**: reading the chip needs a full
+      three-session run, and none has been recorded since.
 
 ### The one that was actually on the frame
 
