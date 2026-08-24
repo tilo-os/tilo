@@ -63,5 +63,18 @@ fn tile_content_app_holds_app_widget() {
     }
     // Ensure TileHost accepts an AppWidget-bearing TileContent.
     let host = TileHost::new(TileContent::App(Box::new(DummyApp)));
-    assert_eq!(host.kind_string(), "App");
+    // A hosted app is asked what it is called, and answers. This used to
+    // assert the constant "App" — every live app in a tab strip named
+    // identically, and named nothing, while the placeholders beside them
+    // carried real names.
+    assert_eq!(
+        host.kind_string(),
+        DummyApp.app_title(),
+        "a tile hosting an app reports that app's name",
+    );
+    assert_ne!(
+        host.kind_string(),
+        "App",
+        "and not the placeholder that stood in for every app at once",
+    );
 }

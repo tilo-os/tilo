@@ -1386,7 +1386,14 @@ impl AppWidget for ForeignSurfaceWidget {
         AppKind::Settings
     }
     fn app_title(&self) -> &str {
-        &self.app_id
+        // The app's name, not its address. This handed back the raw
+        // wayland app-id — `dev.qos.chat` — while
+        // [`Self::display_name`] sitting directly above it already
+        // resolves that to "Chat" through the manifest (and humanises it
+        // when no manifest names it). Anything asking a tile what it is
+        // called got the reverse-DNS id, which is a thing the system
+        // dispatches on and not a thing to say to a person.
+        self.display_name()
     }
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("󰖯")
@@ -2239,6 +2246,30 @@ mod tests {
             t.title, "Late",
             "a tab wears a name, not the last segment of an app id"
         );
+    }
+
+    /// The window itself has to answer with the same name its tab does.
+    ///
+    /// The tab title was fixed once already; the widget standing for the
+    /// surface kept handing back the raw wayland app-id from
+    /// `app_title()`, so anything that asked the tile what it was called
+    /// — rather than reading the tab's stored title — got
+    /// `dev.qos.chat`, an address the user never chose. The resolution
+    /// was one method away the whole time.
+    #[test]
+    fn a_foreign_window_answers_with_its_name_not_its_app_id() {
+        let w = ForeignSurfaceWidget::new(3, "dev.qos.chat".into());
+        assert_eq!(
+            w.app_title(),
+            "Chat",
+            "a window says what it is called, not how it is addressed",
+        );
+
+        // A dotted id with a multi-word tail humanises the same way the
+        // package registry does, so an app reaches one name by either
+        // route.
+        let w = ForeignSurfaceWidget::new(4, "dev.qos.word-processor".into());
+        assert_eq!(w.app_title(), "Word Processor");
     }
 
     #[test]
