@@ -2187,7 +2187,13 @@ fn an_instruction_that_crosses_nothing_reports_no_crossing() {
         &room,
         WORD_PROCESSOR,
         "quinten",
-        page("Sound check", Some("Scribe: insert table")),
+        // Centring a named heading, and not "insert table": the word
+        // "table" names a composition before it names an exported action, so
+        // that instruction is answered by the recipe vocabulary and never
+        // reaches a dispatch at all — which would make this test pass
+        // without ever exercising the path it is about. Centring goes
+        // through `perform`, with an argument that is not content.
+        page("Sound check", Some("Scribe: centre the Sound check")),
         |d| qdoc::model::open(d, &automerge::ROOT).is_ok(),
     );
 
@@ -2195,9 +2201,14 @@ fn an_instruction_that_crosses_nothing_reports_no_crossing() {
         agent_cfg(&room, granting(&["word-processor"]), None),
         &mut [&mut page_peer],
         Duration::from_secs(20),
-        |peers| blocks(&peers[0].doc).iter().any(|b| b.kind == "cell"),
+        |peers| attr_of(&peers[0].doc, "heading", "align").is_some(),
     );
-    assert!(done, "the table never arrived, so this proves nothing about crossings");
+    let text: Vec<String> = blocks(&page_peer.doc).iter().map(|b| b.text.clone()).collect();
+    assert!(
+        done,
+        "the heading was never centred, so no operation was dispatched and \
+         this proves nothing about crossings; the page reads {text:?}"
+    );
 
     assert!(
         shell::shell::action_flight::take_pending().is_empty(),
