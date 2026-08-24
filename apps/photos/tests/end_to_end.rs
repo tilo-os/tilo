@@ -189,18 +189,28 @@ fn a_loaded_photograph_produces_a_non_empty_scene() {
     let (path, _) = staged(dir.path(), 300, 200);
     let mut hz = Harness::new(1000.0, 700.0);
 
-    let empty = hz.frame();
-    let empty_images = empty.encoding().n_open_clips;
-    let empty_paths = empty.encoding().n_paths;
+    let images = |scene: &Scene| {
+        scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == vello_encoding::DrawTag::IMAGE)
+            .count()
+    };
 
+    // With nothing open the scene is chrome and an empty state — no image.
+    let empty = hz.frame();
+    assert_eq!(images(&empty), 0, "an empty app drew an image from somewhere");
+
+    // Path count is deliberately not the metric: the empty state is an icon
+    // plus two runs of text, so opening a photograph *reduces* the path count
+    // while adding the one draw that matters.
     hz.app.open_path(&mut hz.state.doc, &path);
     let loaded = hz.frame();
-    let _ = empty_images;
-    assert!(
-        loaded.encoding().n_paths > empty_paths,
-        "loading a photograph added nothing to the scene: {} paths before, {} after",
-        empty_paths,
-        loaded.encoding().n_paths
+    assert_eq!(
+        images(&loaded),
+        1,
+        "the photograph was not drawn into the scene"
     );
 }
 
@@ -245,21 +255,42 @@ fn rotating_changes_the_exported_pixels() {
     assert_eq!((after.w, after.h), (200, 300), "the axes did not swap");
     assert_ne!(after.bytes, before.bytes, "the buffer is unchanged");
 
-    // The sun sits left-of-centre and high in the pattern. After one turn
-    // clockwise it must be high on the *right*. Sample both corners rather
-    // than trusting the dimensions.
-    let sample = |img: &Rgba, fx: f64, fy: f64| {
-        img.pixel(
-            ((img.w as f64 - 1.0) * fx) as u32,
-            ((img.h as f64 - 1.0) * fy) as u32,
-        )
-        .unwrap()
+    // One clockwise turn sends source (sx, sy) to destination
+    // (sh - 1 - sy, sx). Assert that exact mapping on a spread of pixels
+    // rather than sampling by fraction: the two buffers have different aspect
+    // ratios, so the same fraction lands on different pixels of a smooth
+    // gradient and would compare near-equal colours that are not the same
+    // pixel at all.
+    let (sw, sh) = (before.w, before.h);
+    let mut checked = 0;
+    for (sx, sy) in [(0, 0), (sw - 1, 0), (0, sh - 1), (sw - 1, sh - 1), (37, 61)] {
+        let want = before.pixel(sx, sy).unwrap();
+        let got = after.pixel(sh - 1 - sy, sx).unwrap();
+        assert_eq!(
+            got, want,
+            "source ({sx}, {sy}) did not land at ({}, {sx}) after a clockwise turn",
+            sh - 1 - sy
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 5);
+
+    // And the sun, which sits left-of-centre and high, must now be high on the
+    // right — a coarse check that the turn went clockwise rather than the
+    // other way, which the corner mapping alone would not catch if both the
+    // rotation and this expectation were mirrored together.
+    let brightness = |img: &Rgba, fx: f64, fy: f64| {
+        let p = img
+            .pixel(
+                ((img.w as f64 - 1.0) * fx) as u32,
+                ((img.h as f64 - 1.0) * fy) as u32,
+            )
+            .unwrap();
+        p[0] as u32 + p[1] as u32 + p[2] as u32
     };
-    // The original's top-left region becomes the rotated image's top-right.
-    assert_eq!(
-        sample(&before, 0.02, 0.02),
-        sample(&after, 0.98, 0.02),
-        "the corner did not travel the way a clockwise turn sends it"
+    assert!(
+        brightness(&after, 0.72, 0.28) > brightness(&after, 0.28, 0.72),
+        "the sun is not where a clockwise turn puts it"
     );
 }
 
@@ -391,11 +422,28 @@ impl ClipboardBackend for RecordingClipboard {
 }
 
 /// Copy must put the *edited* pixels on the clipboard — the bytes the user is
-/// looking at, not the file that was opened.
+/// looking at, not the file that was opened — and must refuse when there is
+/// nothing open.
+///
+/// Both halves live in one test deliberately: the clipboard backend is
+/// process-global and the harness runs tests in parallel threads, so two tests
+/// each installing their own recorder would race over which one the copy path
+/// resolves to.
 #[test]
 fn copy_puts_the_edited_pixels_on_the_clipboard() {
     let recorder = Arc::new(RecordingClipboard::default());
     install_clipboard_backend(recorder.clone());
+
+    // Nothing open: the copy is refused and nothing is offered.
+    {
+        let mut empty = Harness::new(900.0, 600.0);
+        empty.frame();
+        assert!(!empty.app.copy_to_clipboard(), "copied with nothing open");
+        assert!(
+            recorder.image.lock().unwrap().is_none(),
+            "a refused copy still offered something"
+        );
+    }
 
     let dir = tempfile::tempdir().unwrap();
     let (path, original) = staged(dir.path(), 400, 300);
@@ -429,19 +477,6 @@ fn copy_puts_the_edited_pixels_on_the_clipboard() {
         got.0 * got.1 * 4,
         "the buffer does not match its declared size"
     );
-}
-
-/// With nothing open there is nothing to copy, and the app must say so rather
-/// than offering an empty buffer.
-#[test]
-fn copy_with_nothing_open_is_refused() {
-    let recorder = Arc::new(RecordingClipboard::default());
-    install_clipboard_backend(recorder.clone());
-
-    let mut hz = Harness::new(900.0, 600.0);
-    hz.frame();
-    assert!(!hz.app.copy_to_clipboard());
-    assert!(recorder.image.lock().unwrap().is_none());
 }
 
 /// Save must write a real PNG that decodes back to exactly what was shown.
@@ -552,4 +587,75 @@ fn nothing_open_publishes_nothing_and_still_draws() {
         "the empty state drew nothing at all"
     );
     assert!(!hz.app.has_image());
+}
+
+// ---------------------------------------------------------------------------
+// 5. Contrast, measured rather than eyeballed.
+// ---------------------------------------------------------------------------
+
+
+/// Every colour this app chooses for itself, measured in every theme it can be
+/// rendered under.
+///
+/// Only the pairs *this crate* picks are checked: the status line's text, and
+/// the boundary that separates the toolbar and the status bar from the canvas.
+/// The buttons and the empty state draw themselves from the toolkit and are
+/// the toolkit's contract, not this app's.
+///
+/// Measured as of writing:
+///
+/// ```text
+///                  text/base   text/raised   raised/base   border/base
+///   Dark              15.30        13.89          1.10          1.29
+///   Light             15.35        17.05          1.11          1.21
+///   High Contrast     21.00        21.00          1.00         21.00
+/// ```
+///
+/// Two different floors, because they are two different requirements.
+///
+/// Text carries the 4.5:1 body floor and clears it by a wide margin in all
+/// three palettes.
+///
+/// The chrome boundary does *not* carry the 3.0:1 non-text floor: that floor
+/// governs controls and meaningful state, not a decorative division between a
+/// toolbar and the content under it, and the house palette deliberately draws
+/// such divisions as hairlines — 1.29:1 in dark, 1.21:1 in light. Holding this
+/// app to 3.0 there would put it out of step with every other app in the fleet
+/// while fixing nothing a user could perceive as a defect.
+///
+/// What is asserted instead is that the boundary *exists*: whichever of the
+/// two carriers is doing the work in a given theme must be non-degenerate.
+/// That is the real bug this test was written after finding — under
+/// high-contrast, `surfaces.raised` and `surfaces.base` are both pure black,
+/// so a toolbar defined only by its plate had a separation of exactly 1.00:1
+/// and no edge whatsoever. The rule the app now draws carries it there at
+/// 21.00:1. A regression that removed the rule puts high-contrast back to 1.00
+/// and fails this.
+#[test]
+fn the_colours_this_app_chooses_are_legible_in_every_theme() {
+    use ui::a11y::contrast_ratio;
+
+    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+        let surface = theme.tokens.colors.surfaces.base;
+        let raised = theme.tokens.colors.surfaces.raised;
+
+        // Body text against both surfaces it can sit on: 4.5:1.
+        for (what, against) in [("the canvas", surface), ("the raised plate", raised)] {
+            let ratio = contrast_ratio(theme.text_primary, against);
+            assert!(
+                ratio >= 4.5,
+                "{}: the status line reads at {ratio:.2}:1 on {what}, below the 4.5 body floor",
+                theme.name
+            );
+        }
+
+        // The toolbar/canvas boundary must be carried by something.
+        let plate = contrast_ratio(raised, surface);
+        let rule = contrast_ratio(theme.border_standard, surface);
+        assert!(
+            plate.max(rule) >= 1.15,
+            "{}: nothing separates the toolbar from the canvas (plate {plate:.2}:1, rule {rule:.2}:1)",
+            theme.name
+        );
+    }
 }
