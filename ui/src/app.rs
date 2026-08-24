@@ -1694,6 +1694,26 @@ impl App {
             any = true;
             match event {
                 CollabEvent::Context { collaborators, .. } => {
+                    // The roster is also the list of places a remark can go.
+                    // The host knows who is here; an app must never invent a
+                    // roster, so this is the hand-off -- and until it existed
+                    // the compose surface had no destinations in a running
+                    // desktop, only in screenshots.
+                    let destinations: Vec<_> = collaborators
+                        .iter()
+                        .map(|c| {
+                            crate::widget::remark_compose::DestinationOption::localised(
+                                qos_reference::Destination::participant(
+                                    c.id.clone(),
+                                    c.name.clone(),
+                                    c.is_agent,
+                                ),
+                            )
+                        })
+                        .collect();
+                    if !destinations.is_empty() {
+                        self.widget.set_remark_destinations(destinations);
+                    }
                     for c in collaborators {
                         // The roster says who is here and what they are
                         // called. It does **not** say where their
@@ -1809,6 +1829,13 @@ impl App {
                         eprintln!("[app] recv BlobArrived {hash} ({}B)", bytes.len());
                     }
                     self.layout_dirty = true;
+                }
+                // An app never asks a session to open another app — the
+                // participants that do have no window of their own. Named
+                // rather than swept into a wildcard so that a transport
+                // delivering one here is a compile error the day it happens.
+                CollabEvent::AppOpenRefused { app_id, why } => {
+                    tracing::debug!(%app_id, %why, "collab: not ours to answer");
                 }
             }
         }

@@ -15,7 +15,7 @@ use word_processor::actions::{self as wp, RegionKind, WordProcessorAction};
 use crate::apply::Editor;
 use crate::listen::{self, LastAction, Summons};
 use crate::model::{Chooser, Decision, Route};
-use crate::plan::{self, Block, Instruction};
+use crate::plan::{self, Block, Instruction, Plan};
 use crate::surface::{self, AppContract, Offer, View};
 use crate::wire::Link;
 
@@ -160,6 +160,40 @@ pub struct Session {
     /// last seen there, and when that text stopped changing. `None` when
     /// nothing is ripening, which is also what keeps the loop quiet.
     pending: Option<(String, String, Instant)>,
+    /// Which block each other participant's caret was last seen in.
+    ///
+    /// A timer asks whether the text has stopped moving, which is a proxy
+    /// for the question that actually matters -- whether the person is
+    /// still writing this line. Presence answers that one directly, and
+    /// it does not get slower because the machine is busy.
+    ///
+    /// Not used the obvious way round. A caret sitting in the block is
+    /// true of somebody mid-sentence *and* of somebody who has finished
+    /// and is looking at what they wrote, so it cannot be what forbids
+    /// acting -- a person who never presses Enter would then never be
+    /// answered at all, which is worse than the fault this fixes. What a
+    /// caret is unambiguous about is the *other* direction: once it moves
+    /// out of the block, that block is finished. Enter is the usual way
+    /// that happens, and it is how both demo scripts end an instruction.
+    ///
+    /// Keyed by the participant id the broker stamps on presence, holding
+    /// the block id from [`block_key`]. An entry disappears when that
+    /// participant publishes [`PresencePayload::Left`].
+    carets: BTreeMap<String, String>,
+    /// Every block a caret has ever been seen in.
+    ///
+    /// What turns "nobody is in this line" into "somebody has been in this
+    /// line and left", which are the two halves of [`Written::Unknown`] and
+    /// [`Written::Committed`] and mean opposite things. Without it a writer
+    /// who publishes no caret at all — a script, a peer on an older build —
+    /// is indistinguishable from one who just finished, and every line they
+    /// touch would be read the instant it appeared.
+    ///
+    /// It also survives the one frame that would otherwise lose the fact:
+    /// [`PresencePayload::Left`] says a participant is gone and not where
+    /// they went, so the block they were in is remembered here rather than
+    /// inferred from an entry that has just been dropped.
+    visited: HashSet<String>,
     /// Decides which exported action answers an instruction.
     chooser: Chooser,
     /// When the agent last asked the room for the document. It asks again
@@ -202,6 +236,47 @@ pub struct Session {
     /// refused did not touch anything, so nothing about it should become the
     /// implied subject of the next request.
     last_action: Option<LastAction>,
+    /// When something last arrived from the room.
+    ///
+    /// A room arrives one document at a time, and there is no moment at
+    /// which it announces that it is complete. So "nothing here does what
+    /// was asked" is a claim about a snapshot, and the snapshot the agent
+    /// happens to hold a quarter of a second after joining is not the room.
+    last_arrival: Instant,
+    /// An addressed line whose refusal is being held back, and when the
+    /// holding began. `None` when nothing is being held.
+    ///
+    /// The line is deliberately *not* marked handled while it sits here: a
+    /// request the agent has decided not to answer yet is a request it has
+    /// not answered, and consuming it would make the wait permanent.
+    ///
+    /// The instant is what makes the wait mean something. Holding a refusal
+    /// back is only useful if the agent does something with the time, and
+    /// what it does is ask the room again — so the clock starts at the ask,
+    /// and the refusal is only said once *that* has gone unanswered.
+    withheld: Option<(String, Instant)>,
+    /// A session's answer to an [`CollabRequest::OpenApp`] it would not carry
+    /// out: the application, and why.
+    ///
+    /// Held rather than acted on where it arrives, because it arrives in the
+    /// middle of absorbing the room and the only place it means anything is
+    /// the step that asked. Cleared before each ask, so a refusal from an
+    /// earlier one can never answer a later one.
+    refused_open: Option<(String, String)>,
+    /// Whether the last turn carried something out.
+    ///
+    /// The agent answers one request per turn, deliberately: a run that fans
+    /// out over everything outstanding is a run nobody can follow. But a turn
+    /// otherwise begins only when something *arrives*, and after acting there
+    /// is nothing left to arrive — the agent has just written the last change
+    /// in the room and is waiting to be woken by an event it is itself the
+    /// cause of.
+    ///
+    /// So having acted is a reason to look again. It is self-limiting: the
+    /// turn that finds nothing more to do sets this false and the loop goes
+    /// quiet, which is why "one per turn" survives intact and "the second
+    /// request in a conversation" stops depending on somebody else typing.
+    acted: bool,
 }
 
 /// Whether this instruction is one of the document compositions — the ones
@@ -216,6 +291,58 @@ fn is_recipe(i: &Instruction) -> bool {
     )
 }
 
+/// What running a plan came to.
+///
+/// Only two answers matter to a caller: everything asked for was done, or
+/// something was said instead. Both count as having dealt with the request —
+/// the distinction is whether there is anything left to add.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ran {
+    /// Every step was carried out.
+    All,
+    /// An answer was written instead: a refusal, whole or partial.
+    Said,
+}
+
+/// What a refusal says when some of the request already happened.
+///
+/// The whole reason this is composed rather than written at the point of
+/// failure: "I couldn't do that" is a true sentence and a misleading one when
+/// the document in front of the reader has already changed. They need to know
+/// which half stands, and they need it in the same breath — a person who reads
+/// only "I couldn't" and then finds an edit will not trust the next answer
+/// either.
+///
+/// Nothing is undone to make the sentence simpler. Reverting a change the
+/// agent made in somebody else's document, unasked, is a bigger decision than
+/// the one that failed, and it would take with it whatever anybody else typed
+/// in between.
+fn refusal(name: &str, done: &[String], step: Option<&str>, why: &str) -> String {
+    // Nothing happened, so there is nothing to distinguish: the sentence is
+    // the same one a request that only ever asked for one thing gets.
+    if done.is_empty() {
+        return format!("{name}: {why}.");
+    }
+    let could_not = match step {
+        Some(label) => format!("Then {label} — I couldn't: {why}"),
+        None => format!("Then I couldn't go on: {why}"),
+    };
+    format!(
+        "{name}: {} — done. {could_not}. What is done stands; the rest did not \
+         happen.",
+        in_sentence(done)
+    )
+}
+
+/// A list of things, in the words a person would join them with.
+fn in_sentence(items: &[String]) -> String {
+    match items.split_last() {
+        None => "nothing".to_string(),
+        Some((last, [])) => last.clone(),
+        Some((last, head)) => format!("{}, then {last}", head.join(", then ")),
+    }
+}
+
 /// The agent's clock, in the epoch seconds a chat message is timestamped in.
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -227,9 +354,54 @@ fn now_secs() -> i64 {
 /// How often the agent asks again while it is still empty-handed.
 const REASK_EVERY: Duration = Duration::from_millis(750);
 
+/// How long an application the agent asked this session to open has to turn
+/// up in the room before the agent says it did not.
+///
+/// It bounds a wait that has a much better reason than most: the agent is not
+/// wondering whether an app is here, it has just asked for one, and something
+/// is starting a process on its behalf. So this is not the patience a survey
+/// needs — it is the length of a cold start, and it is long enough for one on
+/// a machine that is busy. Shorter would produce the worst answer available:
+/// an agent that gave up on a window that then opened.
+///
+/// It is bounded at all because the alternative is a run that hangs on an app
+/// that will never come, reported to whoever asked as silence. The refusal
+/// written when it expires names the application and the wait, so a person
+/// reading it knows which of the two happened.
+const OPENING: Duration = Duration::from_secs(30);
+
+/// How often the agent asks the room for its documents while an application
+/// it opened is starting.
+///
+/// An app that has just come up announces itself and then waits to be asked;
+/// nobody volunteers a whole document. Paced rather than continuous because
+/// the answer is a full snapshot per app in the room, and asking at the rate
+/// this loop turns would ask a hundred times for one arrival.
+const ASK_WHILE_OPENING: Duration = Duration::from_millis(400);
+
 /// The slowest the agent falls back to once it holds a page but has
 /// still found nothing in the room addressed to it.
 const REASK_CEILING: Duration = Duration::from_secs(8);
+
+/// How long the room must have been quiet before "nothing here does that" is
+/// something the agent may say.
+///
+/// A refusal is a claim about the room, and the room arrives one document at
+/// a time with nothing marking the end. An agent that answers the instant it
+/// cannot match is answering about whatever happened to have landed — which
+/// is how a request naming the file manager came out as "I can't do that
+/// here" from an agent that was holding only the page, and would have been
+/// holding the folder a fifth of a second later.
+///
+/// So the shape is the same as [`Config::settle`], and for the same reason: a
+/// line is read once it stops changing, and a refusal is said once the room
+/// stops arriving. It is not the same duration and not the same setting,
+/// because they are answers to different questions — one is about how fast
+/// somebody types, this one is about how fast a room comes up.
+///
+/// It costs nothing when the agent *can* answer: a request that resolves is
+/// carried out immediately, and only a refusal waits.
+const QUIET_BEFORE_REFUSING: Duration = Duration::from_millis(600);
 
 /// Ask the room for the document: peers already in it answer an `Arrived`
 /// with their full state. Safe to repeat — a second copy of a document the
@@ -242,6 +414,126 @@ fn ask_for_document(link: &mut Link) -> Result<()> {
         },
         payload: PresencePayload::Arrived,
     })
+}
+
+/// How long a line somebody is demonstrably still writing may go without
+/// changing before it is read anyway.
+///
+/// The backstop, not the mechanism. It exists for one case: a person who
+/// types an instruction, leaves the caret sitting in it, and never commits
+/// the line. They have to be answered eventually, so this bounds the wait
+/// — and because only a line nobody has finished ever reaches it, it is
+/// off the path an ordinary instruction takes. One that ends the way
+/// instructions end, with Enter, is acted on the moment the caret leaves
+/// and waits for nothing at all.
+///
+/// Long, therefore, on purpose. What it has to outlast is not the gaps
+/// inside typing — the film types at about a seventh of a second a
+/// character, so those are nowhere near [`Config::settle`] — but a
+/// delivery stall on a machine with three builds running, which is what
+/// beat the settle window and produced the refusal this replaces.
+const STILL_WRITING_GRACE: Duration = Duration::from_secs(4);
+
+/// Which block a presence frame is about, for the frames that are about a
+/// block at all.
+///
+/// The inverse of [`block_key`], and deliberately written next to it: the
+/// word processor publishes a caret under exactly this shape
+/// (`block_presence_key`, in its widget), so a key without it is presence
+/// about something else — a pointer, a viewport, a page — and says nothing
+/// about who is writing what.
+fn block_of(key: &PresenceKey) -> Option<&str> {
+    match key {
+        PresenceKey::Widget { path } => match path.as_slice() {
+            [PathSegment::Field(kind), PathSegment::Field(id)] if kind == "wp_block" => {
+                Some(id.as_str())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether an addressed line has been written, or is still being written.
+///
+/// The question the settle timer was standing in for. A timer can only ask
+/// whether the text has stopped moving, and a line stops moving for two
+/// unrelated reasons: the writer finished, or the writer paused and the
+/// delta carrying their next word has not arrived yet. Under load the
+/// second is ordinary, and answering it is what wrote a refusal over the
+/// top of a sentence still being typed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Written {
+    /// The writer left the block. Enter breaking the paragraph, a click
+    /// elsewhere, an arrow out of it — whatever they did, this line is what
+    /// they meant to leave behind, so there is nothing left to wait for.
+    Committed,
+    /// Somebody is demonstrably still in the middle of this line: their
+    /// caret is in it, or it breaks off mid-construction. Either way the
+    /// sentence in front of the agent is not the one being asked.
+    StillWriting,
+    /// Nothing says either way. No caret has ever been seen here, and the
+    /// line reads as whole. Its having stopped is all there is to go on, so
+    /// that is what decides — the behaviour a scripted writer has always
+    /// had, unchanged.
+    Unknown,
+}
+
+/// The rule behind [`Written`], from the three facts it turns on: whether a
+/// caret is in the block now, whether one ever was, and what the line says
+/// about itself.
+///
+/// Split out from [`Session::written`] so the whole truth table can be read
+/// — and tested — without a room, a broker and a document to stand it up in.
+/// The session calls exactly this; there is no second copy of the rule.
+fn written_from(
+    someone_is_here: bool,
+    ever_visited: bool,
+    behind_a_writer: bool,
+    line: &str,
+) -> Written {
+    if someone_is_here {
+        return Written::StillWriting;
+    }
+    // A caret that has left settles it outright, and it outranks everything
+    // below: the writer moved on, so what is there is what they meant,
+    // whatever shape it is left in.
+    //
+    // Except when this replica is provably behind the person who left. The
+    // toolkit publishes a caret while dispatching the keystroke and the text
+    // on the idle tick after it (`broadcast_focus_presence` against
+    // `broadcast_doc_delta` in `ui::app`), so under load a burst of keys can
+    // put a caret on the wire ahead of the words it moved over. Acting then
+    // would answer a sentence missing its last word — the same fault as
+    // before, arrived at from the opposite direction.
+    //
+    // What gives it away is where the caret went: a block this replica has
+    // never heard of cannot have reached it yet, so its author is ahead of
+    // us and their leaving proves nothing yet. Waiting costs only as long as
+    // the delta that creates that block, which had to arrive regardless.
+    if ever_visited {
+        return if behind_a_writer {
+            Written::StillWriting
+        } else {
+            Written::Committed
+        };
+    }
+    // Nobody's caret has ever been here, so all that is left is what the line
+    // says about itself. One thing it can say for certain: a line ending in a
+    // space is not a finished sentence. That space is the gap before the next
+    // word — it is precisely what `Claude: make ` is, and reading it as a
+    // request is how the agent came to answer the word `make` while `this a
+    // run sheet` was still on its way.
+    //
+    // Not a guess about grammar, and not a claim to recognise a finished
+    // sentence: it recognises one specific thing that is never the end of
+    // one. A person who has finished typing an instruction has not left a
+    // space hanging off it — and the rare one who has is still answered, by
+    // [`STILL_WRITING_GRACE`].
+    if line != line.trim_end() {
+        return Written::StillWriting;
+    }
+    Written::Unknown
 }
 
 /// How the word processor keys a caret: the block's own presence key.
@@ -309,9 +601,18 @@ impl Session {
             registry: surface::registry(),
             handled: HashSet::new(),
             pending: None,
+            carets: BTreeMap::new(),
+            visited: HashSet::new(),
             chooser,
             last_route: None,
             last_action: None,
+            // Joining is itself the start of the room arriving: peers answer
+            // the handshake with their documents, and until that has gone
+            // quiet the agent has not seen the room.
+            last_arrival: Instant::now(),
+            withheld: None,
+            refused_open: None,
+            acted: false,
             answers_sent: 0,
             asked_at: Instant::now(),
             reask_every: REASK_EVERY,
@@ -367,6 +668,78 @@ impl Session {
     /// them. A caller that can see this can tell waiting from refusing.
     pub fn apps(&self) -> Vec<&'static str> {
         self.held().iter().map(|(c, _)| c.namespace).collect()
+    }
+
+    /// The applications the agent could have brought into this room, if it
+    /// had been given leave to.
+    ///
+    /// Said out loud in a refusal, and that is a deliberate exception to the
+    /// rule the rest of the surface follows. An operation the agent may not
+    /// perform is *absent* — never listed and never mentioned — because the
+    /// audience for a list of operations includes a model choosing from it,
+    /// and because what an app exports is worth not leaking.
+    ///
+    /// A refusal is a different audience: the person who asked. "I can't do
+    /// that here" is true and useless when the reason is a missing grant — it
+    /// sends them looking for a better sentence instead of for the permission
+    /// — and this desktop's whole position on agents is that the grant is the
+    /// interesting part. Nothing is leaked by saying it either: applications
+    /// are not secret, the agent is describing its own capability set to its
+    /// own principal, and *what those applications can do* stays exactly as
+    /// invisible as before.
+    fn not_permitted_to_open(&self) -> Vec<&'static str> {
+        surface::CONTRACTS
+            .iter()
+            .filter(|c| !self.holds(c.namespace))
+            .filter(|c| {
+                !surface::permitted(
+                    &self.cfg.permissions,
+                    &surface::open_address(c.namespace),
+                )
+            })
+            .map(|c| c.title)
+            .collect()
+    }
+
+    /// That list, narrowed to the applications `asked` actually named, as a
+    /// clause to hang off the end of a refusal.
+    ///
+    /// Narrowed, because the unnarrowed version is noise: a request that has
+    /// nothing to do with applications would be answered with a list of every
+    /// one the agent may not open, on every refusal. What earns a mention is
+    /// the request having named it — matched on the app's own title the same
+    /// way [`surface::from_verbs`] matches an operation's own label, so this
+    /// says "you asked for the photo editor" rather than guessing at what
+    /// somebody might have meant.
+    ///
+    /// Empty when the request named none, which is the common case and reads
+    /// exactly as it did before.
+    fn could_have_opened(&self, asked: &str) -> String {
+        let said = asked.to_lowercase();
+        let named: Vec<&'static str> = self
+            .not_permitted_to_open()
+            .into_iter()
+            .filter(|title| {
+                // Every significant word of the app's name, so "photo editor"
+                // is named by "open the photo editor" and not by "photograph".
+                title
+                    .split_whitespace()
+                    .filter(|w| w.chars().count() >= 4)
+                    .all(|w| said.contains(w))
+            })
+            .collect();
+        match named.split_last() {
+            None => String::new(),
+            Some((last, [])) => format!(
+                " {last} isn't open here and I haven't been given leave to \
+                 open it."
+            ),
+            Some((last, head)) => format!(
+                " {} and {last} aren't open here and I haven't been given \
+                 leave to open them.",
+                head.join(", "),
+            ),
+        }
     }
 
     /// Whether the agent is holding the state of the app `namespace` names.
@@ -491,32 +864,18 @@ impl Session {
         Ok(acted)
     }
 
-    /// One turn: absorb whatever the room sent, then act if the document
-    /// asks. Returns whether an instruction was carried out.
-    fn step(&mut self, wait: Duration) -> Result<bool> {
+    /// Take whatever the room sent, and fold it into what the agent holds.
+    ///
+    /// Separated from [`Self::step`] because absorbing and acting are not the
+    /// same turn. A step that has just dispatched an *open* has to keep
+    /// listening while the app it asked for starts — that app's state arrives
+    /// on this socket like everything else — and it has to do that without
+    /// re-entering the half of a turn that reads instructions, or the room
+    /// would be answered twice from inside answering it once.
+    ///
+    /// Returns whether the agent's replicas moved.
+    fn absorb_next(&mut self, wait: Duration) -> Result<bool> {
         let mut changed = false;
-        // Ask again until something in this room is addressed to us.
-        //
-        // Holding a document is not the same as holding the page that
-        // asks for something. The app that answers first may have been
-        // opening its file when the agent arrived, or — as in the demo —
-        // be holding a replica missing a change it will never be sent,
-        // so its page ends above the instruction. Nobody sends a whole
-        // document unprompted, so asking again is the only thing in this
-        // loop that can change the answer.
-        if !self.addressed_seen && self.asked_at.elapsed() >= self.reask_every {
-            ask_for_document(&mut self.link)?;
-            self.asked_at = Instant::now();
-            self.reask_every = if self.editor.is_some() {
-                (self.reask_every * 2).min(REASK_CEILING)
-            } else {
-                REASK_EVERY
-            };
-            tracing::debug!(
-                every_ms = self.reask_every.as_millis() as u64,
-                "asked the room for the document again"
-            );
-        }
         match self.link.recv(wait)? {
             Some(CollabEvent::CRDTUpdate { data }) => {
                 changed = self.absorb_snapshot(&data)?;
@@ -552,16 +911,101 @@ impl Session {
                     tracing::debug!(%user_id, "sent our document to a new participant");
                 }
             }
+            // Where everyone else is writing. Kept because it answers the
+            // question a settle timer can only guess at — see [`Written`].
+            //
+            // Only frames keyed to a block count. A pointer or a viewport
+            // says where somebody is looking, which is not the same as
+            // where they are typing, and reading one as a caret would move
+            // a writer out of their own sentence.
+            Some(CollabEvent::RemotePresenceUpdate { user_id, key, payload })
+                // Never the agent's own. It puts a caret on the very line
+                // it is reading, to make the wait legible, and taking that
+                // back as evidence would have it conclude that somebody is
+                // still writing the sentence it is holding — waiting on
+                // itself, on every instruction. The compositor's broker
+                // does not echo a sender its own frames; the toolkit's
+                // in-process relay does, and both have to be safe here.
+                if user_id != self.cfg.name =>
+            {
+                match payload {
+                    PresencePayload::Caret { .. }
+                    | PresencePayload::Selection { .. }
+                    | PresencePayload::Typing { .. } => {
+                        if let Some(block) = block_of(&key) {
+                            self.visited.insert(block.to_string());
+                            self.carets.insert(user_id, block.to_string());
+                        }
+                    }
+                    // Gone from wherever they were. Recorded as an absence
+                    // rather than ignored: a writer who left is a line
+                    // finished, which is the whole point of watching.
+                    PresencePayload::Left => {
+                        self.carets.remove(&user_id);
+                    }
+                    _ => {}
+                }
+            }
+            // Not news for the room and not a change to anything: the
+            // answer to a request this agent made, kept for the step that
+            // made it. See [`Self::open_app`].
+            Some(CollabEvent::AppOpenRefused { app_id, why }) => {
+                self.refused_open = Some((app_id, why));
+            }
             Some(_) | None => {}
         }
+        if changed {
+            self.last_arrival = Instant::now();
+        }
+        Ok(changed)
+    }
+
+    /// One turn: absorb whatever the room sent, then act if the document
+    /// asks. Returns whether an instruction was carried out.
+    fn step(&mut self, wait: Duration) -> Result<bool> {
+        // Ask again until something in this room is addressed to us — and
+        // again while something addressed to us is one the agent cannot yet
+        // answer.
+        //
+        // Holding a document is not the same as holding the page that
+        // asks for something. The app that answers first may have been
+        // opening its file when the agent arrived, or — as in the demo —
+        // be holding a replica missing a change it will never be sent,
+        // so its page ends above the instruction. Nobody sends a whole
+        // document unprompted, so asking again is the only thing in this
+        // loop that can change the answer.
+        //
+        // The second half of that condition is what makes waiting on a room
+        // that is still arriving anything other than waiting: an instruction
+        // naming an app whose state has not come would otherwise sit out its
+        // patience against a room nobody has asked anything of, and then be
+        // refused for exactly the reason it was refused before.
+        if (!self.addressed_seen || self.withheld.is_some())
+            && self.asked_at.elapsed() >= self.reask_every
+        {
+            ask_for_document(&mut self.link)?;
+            self.asked_at = Instant::now();
+            self.reask_every = if self.editor.is_some() {
+                (self.reask_every * 2).min(REASK_CEILING)
+            } else {
+                REASK_EVERY
+            };
+            tracing::debug!(
+                every_ms = self.reask_every.as_millis() as u64,
+                "asked the room for the document again"
+            );
+        }
+        let changed = self.absorb_next(wait)?;
         // A line stops changing precisely by nothing further arriving, so
-        // waiting for the next delta to re-read it would wait forever.
-        // While one is ripening the turn runs anyway; `recv` has already
-        // bounded how often that is.
-        if !changed && self.pending.is_none() {
+        // waiting for the next delta to re-read it would wait forever. The
+        // same is true of a room going quiet, which is what a withheld
+        // refusal is waiting on. While either is ripening the turn runs
+        // anyway; `recv` has already bounded how often that is.
+        if !changed && self.pending.is_none() && self.withheld.is_none() && !self.acted {
             return Ok(false);
         }
-        self.act()
+        self.acted = self.act()?;
+        Ok(self.acted)
     }
 
     /// Record — and say, when it changes — whether the replica can see
@@ -641,7 +1085,7 @@ impl Session {
                     }
                     None => {
                         let ed =
-                            Editor::from_snapshot_for(contract, data, &self.cfg.name)?;
+                            Editor::peer_from_snapshot(contract, data, &self.cfg.name)?;
                         self.peers.insert(contract.namespace, ed);
                         tracing::info!(
                             app = contract.namespace,
@@ -841,8 +1285,7 @@ impl Session {
             self.reply(&to, &reply)?;
             return Ok(true);
         }
-        let Decision { mut instruction, route } =
-            self.chooser.choose(&summons.asked, &[], &scoped);
+        let Decision { mut plan, route } = self.chooser.choose(&summons.asked, &[], &scoped);
         // A recipe rewrites the run of blocks around the line that asked for
         // it, so it only means anything when the request *is* a line in the
         // document. A request that carried its own subject has already said
@@ -853,68 +1296,70 @@ impl Session {
         // So when the subject is known, decide again from that subject's own
         // operations. Nothing is widened: the candidates are the same scoped
         // set, and an answer that still does not fit is refused below.
-        if summons.subject.resource().is_some() && is_recipe(&instruction) {
+        if summons.subject.resource().is_some() && plan.steps.iter().any(|s| is_recipe(&s.instruction))
+        {
             tracing::debug!(
                 asked = %summons.asked,
                 "a recipe cannot answer a request that named its own subject; \
                  deciding again from that subject's operations"
             );
-            instruction = match surface::from_verbs(&summons.asked, &scoped) {
-                Ok((offer, argument)) => Instruction::Perform { id: offer.id(), argument },
-                // The floor's own words for why, which name operations the
-                // way a person would. `{why:?}` here would have put the
-                // debug form of an address list into a channel message.
-                Err(why) => Instruction::Unknown(plan::unmatched(&summons.asked, &why)),
-            };
+            plan = Plan::from_operations(&summons.asked, &scoped);
         }
         tracing::info!(
             message = %summons.message,
             decided_by = route.label(),
             live = route.is_live(),
-            ?instruction,
+            steps = plan.len(),
+            ?plan,
             "{}",
             route.detail()
         );
         self.last_route = Some(route);
-        match instruction {
-            Instruction::Perform { id, argument } => {
-                // A refusal answers for itself; a success has to be said out
-                // loud too. Not politeness: this reply is what records the
-                // message as dealt with, so an agent that worked silently
-                // would do the same work again after a restart.
-                if self.perform(&id, argument.as_deref(), &view, &to)? {
-                    // Said in the app's words, not the address it was
-                    // dispatched by: this line is read by a person.
-                    let did = surface::label_of(&self.offers(&view), &id)
-                        .map(|l| l.to_lowercase())
-                        .unwrap_or_else(|| "that".to_string());
-                    let reply = format!("{}: done — {did}.", self.cfg.name);
-                    self.reply(&to, &reply)?;
-                }
-            }
-            // The recipes rewrite a run of blocks around the line that asked
-            // for them, and a message is not in the document those blocks are
-            // in. Saying so is the honest answer; picking a place in the page
-            // to apply it would be the agent choosing what to rewrite.
-            Instruction::Table | Instruction::Caption | Instruction::Heading
-            | Instruction::RunSheet(_) => {
-                let reply = format!(
-                    "{}: that one rewrites the text around the line that asks \
-                     for it, so ask me for it in the document itself.",
-                    self.cfg.name
-                );
-                self.reply(&to, &reply)?;
-            }
-            Instruction::Unknown(what) => {
-                let reply = format!(
-                    "{}: I can't \"{what}\" here. {}",
-                    self.cfg.name,
-                    describe_offers(&scoped)
-                );
-                self.reply(&to, &reply)?;
-            }
+        // A message is not a line in a document, so there is no place in a
+        // page for a composition to act on — `run_plan` says so rather than
+        // choosing one. Everything else takes exactly the path a request
+        // written into the document takes.
+        let single = !plan.is_sequence();
+        let only = match plan.steps.first().map(|s| &s.instruction) {
+            Some(Instruction::Perform { id, .. }) if single => Some(id.clone()),
+            _ => None,
+        };
+        let ran = self.run_plan(plan, None, &to, &scoped)?;
+        // A refusal answers for itself; a success has to be said out loud too.
+        // Not politeness: this reply is what records the message as dealt
+        // with, so an agent that worked silently would do the same work again
+        // after a restart. A sequence has already said so in `run_plan`.
+        if let (Some(id), Ran::All) = (only, ran) {
+            // Said in the app's words, not the address it was dispatched
+            // by: this line is read by a person.
+            let did = surface::label_of(&self.offers(&view), &id)
+                .map(|l| l.to_lowercase())
+                .unwrap_or_else(|| "that".to_string());
+            let reply = format!("{}: done — {did}.", self.cfg.name);
+            self.reply(&to, &reply)?;
         }
         Ok(true)
+    }
+
+    /// Whether `block`, reading `line`, has been written or is still being
+    /// written. See [`Written`].
+    ///
+    /// Two kinds of evidence, and the order between them is the whole rule.
+    /// A caret that has left settles it outright — the writer moved on, so
+    /// whatever is there is what they meant, whatever it looks like. Only
+    /// when nobody has committed does the *shape* of the line get a say.
+    fn written(&self, block: &str, line: &str, page: &[Block]) -> Written {
+        written_from(
+            self.carets.values().any(|b| b == block),
+            self.visited.contains(block),
+            // Somebody's caret is in a block this replica does not have, so
+            // their document is ahead of ours and nothing they have done is
+            // safe to read as finished yet.
+            self.carets
+                .values()
+                .any(|b| !page.iter().any(|blk| &blk.id == b)),
+            line,
+        )
     }
 
     /// Look for an instruction written into the document and carry it out.
@@ -960,11 +1405,52 @@ impl Session {
                 now
             }
         };
-        if settled_at.elapsed() < self.cfg.settle {
+        // And whether it has stopped moving is a proxy for whether anyone is
+        // still writing it, which is the thing actually being asked. Where
+        // the room answers that outright, the timer does not get a vote.
+        let written = self.written(&ins_id, &blocks[at].text, &blocks);
+        let wait_for = match written {
+            // Nothing to wait for: the writer has left this line behind.
+            // This is the ordinary path — an instruction ends with Enter,
+            // which breaks the paragraph and takes the caret with it — and
+            // it is *faster* than waiting out the settle window, which is
+            // what used to happen to every instruction including the
+            // finished ones.
+            Written::Committed => Duration::ZERO,
+            // Somebody is mid-sentence. The timer is now only a backstop
+            // against a line nobody ever finishes.
+            Written::StillWriting => STILL_WRITING_GRACE,
+            // Nothing said either way; the line stopping is the only
+            // evidence there is, exactly as before.
+            Written::Unknown => self.cfg.settle,
+        };
+        if settled_at.elapsed() < wait_for {
+            tracing::trace!(
+                block = %ins_id,
+                ?written,
+                waited_ms = settled_at.elapsed().as_millis() as u64,
+                "not yet a finished request"
+            );
             return Ok(false);
         }
-        self.pending = None;
-        self.handled.insert(ins_id.clone());
+        // `pending` is deliberately still set here. It is cleared where the
+        // instruction is consumed, so a turn that decides not to answer yet
+        // does not make the line look freshly typed and start it ripening
+        // again from nothing.
+        //
+        // A request already found unanswerable is not decided again until the
+        // room has both stopped arriving and had its chance to answer the ask
+        // that the holding sent. Deciding costs a call, and re-deciding every
+        // turn against a surface that has not moved would spend a dozen of
+        // them to reach the same answer.
+        if let Some((held, since)) = self.withheld.as_ref() {
+            if held == &ins_id
+                && (self.last_arrival.elapsed() < QUIET_BEFORE_REFUSING
+                    || since.elapsed() < QUIET_BEFORE_REFUSING)
+            {
+                return Ok(false);
+            }
+        }
 
         // Put the caret on the line before deciding what it asks for.
         //
@@ -996,44 +1482,69 @@ impl Session {
             "surveyed the room"
         );
 
-        let Decision { instruction, route } = self.chooser.choose(&asked, &blocks, &offers);
+        let Decision { plan, route } = self.chooser.choose(&asked, &blocks, &offers);
         tracing::info!(
             block = %ins_id,
             asked = %asked,
             decided_by = route.label(),
             live = route.is_live(),
-            ?instruction,
+            steps = plan.len(),
+            ?plan,
             "{}",
             route.detail()
         );
         self.last_route = Some(route);
 
-        match instruction {
-            Instruction::Perform { id, argument } => {
-                let to = Answer::Block {
-                    id: blocks[at].id.clone(),
-                    chars: blocks[at].text.chars().count(),
-                };
-                let _ = self.perform(&id, argument.as_deref(), &view, &to)?;
-            }
-            Instruction::Table => self.make_table(&blocks, at)?,
-            Instruction::Caption => self.caption_image(&blocks, at)?,
-            Instruction::Heading => self.make_heading(&blocks, at)?,
-            Instruction::RunSheet(draft) => self.write_run_sheet(&blocks, at, &draft)?,
-            Instruction::Unknown(what) => {
-                // Say what could have been asked for instead of naming a
-                // fixed vocabulary, because there is no longer a fixed
-                // vocabulary to name - and an agent that answers "I can do
-                // these four things" while holding a hundred addresses is
-                // wrong about itself.
-                let reply = format!(
-                    "{}: I can't \"{what}\" here. {}",
-                    self.cfg.name,
-                    describe_offers(&offers)
+        // Nothing here answers it — but "here" is a room that may still be
+        // arriving, and a refusal is a claim about the room. So it is held
+        // back until the room has been quiet, and the agent keeps asking
+        // meanwhile. Nothing is consumed: if the missing app never comes, the
+        // very same refusal is written a moment later, naming the same cause.
+        //
+        // The alternative is what this replaces, and it was not a race the
+        // agent lost occasionally: it was the agent answering a question
+        // about a room it had not finished being shown. An instruction naming
+        // the file manager, read while only the page had landed, refuses —
+        // and with `--once` that refusal is the whole run.
+        if let Some(part) = plan.unanswered() {
+            let waited = matches!(self.withheld.as_ref(), Some((h, since))
+                if h == &ins_id && since.elapsed() >= QUIET_BEFORE_REFUSING);
+            if !waited {
+                tracing::debug!(
+                    block = %ins_id,
+                    part = %part,
+                    apps = self.held().len(),
+                    "nothing here answers that yet — asking the room again \
+                     rather than refusing"
                 );
-                self.reply_at(&blocks, at, &reply)?;
+                // The ask is the whole point of waiting, and it goes out
+                // *now* rather than on the next tick of the re-ask cadence.
+                // That cadence backs off to seconds once a page is held, so
+                // leaving it to schedule this meant the patience expired
+                // before the agent had asked anybody anything — a wait that
+                // reached the same answer for the same reason, slower.
+                ask_for_document(&mut self.link)?;
+                self.asked_at = Instant::now();
+                self.reask_every = REASK_EVERY;
+                self.withheld = Some((ins_id.clone(), Instant::now()));
+                return Ok(false);
             }
+            tracing::info!(
+                block = %ins_id,
+                part = %part,
+                apps = self.held().len(),
+                "asked the room again and nothing more came; refusing now"
+            );
         }
+        self.withheld = None;
+        self.pending = None;
+        self.handled.insert(ins_id.clone());
+
+        let to = Answer::Block {
+            id: blocks[at].id.clone(),
+            chars: blocks[at].text.chars().count(),
+        };
+        self.run_plan(plan, Some(at), &to, &offers)?;
         Ok(true)
     }
 
@@ -1050,14 +1561,17 @@ impl Session {
     ///
     /// Every refusal is written into the document. A run that could not do
     /// what it was asked must not be indistinguishable from one that did.
+    /// The refusal is returned rather than written, and that is what makes a
+    /// sequence sayable. What else has to be said alongside "I could not do
+    /// this" depends on what the caller already did — a first step that
+    /// stands, a second that did not happen — and only the caller knows that.
     fn perform(
         &mut self,
         id: &str,
         argument: Option<&str>,
         view: &View,
-        to: &Answer,
-    ) -> Result<bool> {
-        let name = self.cfg.name.clone();
+        caret: Option<&str>,
+    ) -> Result<Result<(), String>> {
         // The app's own words for this operation, for anything said out
         // loud. Taken from the same fresh survey the dispatch resolves
         // against, so the sentence and the action cannot disagree.
@@ -1065,22 +1579,30 @@ impl Session {
         let what = surface::label_of(&known, id).map(|l| l.to_lowercase());
         let Some(address) = surface::decode_address(id) else {
             tracing::warn!(%id, "refused: not an address");
-            let reply = format!("{name}: I couldn't work out what to act on there.");
-            self.reply(to, &reply)?;
-            return Ok(false);
+            return Ok(Err("I couldn't work out what to act on there".to_string()));
         };
         // Asked again, at dispatch. The survey filtered on it too, but a
         // survey is a snapshot: a capability that lapsed between the offer
         // and now must stop the operation, and a gate that only runs when
         // the list is built is advisory.
         if !surface::permitted(&self.cfg.permissions, &address) {
-            let reply = match &what {
-                Some(w) => format!("{name}: I'm not allowed to {w} here."),
-                None => format!("{name}: I'm not allowed to do that here."),
-            };
             tracing::warn!(%id, "refused: no capability for this operation");
-            self.reply(to, &reply)?;
-            return Ok(false);
+            return Ok(Err(match &what {
+                Some(w) => format!("I'm not allowed to {w} here"),
+                None => "I'm not allowed to do that here".to_string(),
+            }));
+        }
+        // Opening is dispatched from here rather than through the door,
+        // because there is no replica for the door to resolve against: the app
+        // this names is not in the room, which is the entire reason it was
+        // chosen. Everything up to this line is identical to every other
+        // operation — the same fresh survey, the same address, the same
+        // capability question asked in the same place — and that is the claim
+        // being made. Opening an application is an operation like any other;
+        // what differs is only where it lands.
+        if let Some(app) = surface::opens(&address) {
+            let app = app.to_string();
+            return self.open_app(&app, what.as_deref());
         }
         let namespace = surface::app_of(&address.resource).to_string();
         // The caret goes on the line that asked, so the room can see which
@@ -1088,7 +1610,7 @@ impl Session {
         // app's state entirely. A request made in a channel has no line to
         // put it on, and inventing one would put the agent's caret somewhere
         // nobody asked it to be.
-        if let Some(focus) = to.caret().map(str::to_string) {
+        if let Some(focus) = caret.map(str::to_string) {
             self.show_caret(&focus)?;
         }
 
@@ -1109,13 +1631,11 @@ impl Session {
             held.map(|ed| ed.invoke(view, &address, argument, registry))
         };
         let Some(outcome) = outcome else {
-            let reply = match &what {
-                Some(w) => format!("{name}: I can't {w} — that isn't open here."),
-                None => format!("{name}: that isn't open here, so I can't act on it."),
-            };
             tracing::warn!(%id, %namespace, "refused: that app's state is not here");
-            self.reply(to, &reply)?;
-            return Ok(false);
+            return Ok(Err(match &what {
+                Some(w) => format!("I can't {w} — that isn't open here"),
+                None => "that isn't open here, so I can't act on it".to_string(),
+            }));
         };
         match outcome {
             Ok(Some(delta)) => {
@@ -1132,14 +1652,320 @@ impl Session {
                 tracing::warn!(%id, "the operation changed nothing");
             }
             Err(e) => {
-                let reply = format!("{name}: I couldn't do that - {e}.");
                 tracing::warn!(%id, code = e.code(), "refused: {e}");
-                self.reply(to, &reply)?;
-                return Ok(false);
+                return Ok(Err(format!("I couldn't do that - {e}")));
             }
         }
         std::thread::sleep(self.cfg.pace);
-        Ok(true)
+        Ok(Ok(()))
+    }
+
+    /// Ask this session to open an application, and wait for it to arrive.
+    ///
+    /// **Opened means its state is in the room.** Not that a frame was sent,
+    /// and not that a process started. The step after this one names the app's
+    /// own operations, and those exist only once its resource tree is here to
+    /// be surveyed — so an open that returned at the moment of asking would
+    /// hand the next step a room that does not contain what it was promised,
+    /// and the sequence would refuse for a reason that was about timing.
+    ///
+    /// That is the same failure `act_in_chat` already declines to make when it
+    /// leaves a summons unconsumed rather than answer a question about an app
+    /// whose state has not landed. This is the stronger form of it: that path
+    /// waits because it cannot tell "not here yet" from "not here", and this
+    /// one waits because it just asked for the app itself.
+    ///
+    /// Three ways out, and each says something different:
+    ///
+    /// * the app's state arrives — done, and the survey the next step takes
+    ///   has its operations in it;
+    /// * the session refuses — said in the session's own words, because the
+    ///   reason is the session's (see [`CollabEvent::AppOpenRefused`]);
+    /// * [`OPENING`] passes — said as what it is, a wait that ran out, naming
+    ///   the application and the length of it.
+    fn open_app(&mut self, namespace: &str, what: Option<&str>) -> Result<Result<(), String>> {
+        let Some(contract) = surface::for_namespace(namespace) else {
+            // Unreachable through an offer, which is built from the contracts.
+            // Reachable from an address a model composed, which is exactly the
+            // input this whole path treats as untrusted.
+            tracing::warn!(%namespace, "refused: no application by that name");
+            return Ok(Err(
+                "I don't know an application by that name".to_string()
+            ));
+        };
+        // Already here. Not an error, and deliberately not a second window:
+        // what was asked for is that the app be open, and it is. The survey
+        // stops offering this the moment its state lands, so the only way to
+        // reach this line is a plan made before it did — which is precisely
+        // the race that would otherwise put two copies of an app on somebody's
+        // screen.
+        if self.holds(namespace) {
+            tracing::info!(app = %contract.app_id, "already open in this room");
+            return Ok(Ok(()));
+        }
+        // A refusal to an earlier ask must never answer this one.
+        self.refused_open = None;
+        self.link.send(&CollabRequest::OpenApp {
+            app_id: contract.app_id.to_string(),
+        })?;
+        tracing::info!(
+            app = %contract.app_id,
+            "asked this session to open an application, and waiting for it"
+        );
+        let started = Instant::now();
+        let mut asked = Instant::now() - ASK_WHILE_OPENING;
+        while started.elapsed() < OPENING {
+            self.absorb_next(Duration::from_millis(50))?;
+            if let Some((app, why)) = self.refused_open.take() {
+                // Only this one. A refusal naming something else belongs to
+                // nobody here and must not end this step.
+                if app != contract.app_id {
+                    continue;
+                }
+                tracing::warn!(app = %app, "this session refused to open it: {why}");
+                return Ok(Err(match what {
+                    Some(w) => format!("I can't {w} — {why}"),
+                    None => format!("I can't open {} — {why}", contract.title),
+                }));
+            }
+            if self.holds(namespace) {
+                tracing::info!(
+                    app = %contract.app_id,
+                    waited_ms = started.elapsed().as_millis() as u64,
+                    "it opened, and its state is here"
+                );
+                std::thread::sleep(self.cfg.pace);
+                return Ok(Ok(()));
+            }
+            // An app that has just started announces itself and then waits to
+            // be asked. Nobody sends a whole document unprompted, so this is
+            // the only thing in the loop that can change the answer — the same
+            // reason `step` asks again while it is empty-handed.
+            if asked.elapsed() >= ASK_WHILE_OPENING {
+                ask_for_document(&mut self.link)?;
+                asked = Instant::now();
+            }
+        }
+        tracing::warn!(
+            app = %contract.app_id,
+            "asked for it and nothing arrived within {}s",
+            OPENING.as_secs()
+        );
+        Ok(Err(format!(
+            "I asked to open {} and nothing came back within {}s, so I stopped \
+             rather than carry on as though it had opened",
+            contract.title,
+            OPENING.as_secs(),
+        )))
+    }
+
+    /// What the app `namespace` names now denotes, as something another
+    /// operation could be handed.
+    ///
+    /// Asked of the app's own contract, after the step that changed it. A
+    /// step that produced nothing transferable answers `None`, and a step
+    /// bound to it is then refused rather than performed with something
+    /// invented.
+    fn product(&self, namespace: &str, view: &View) -> Option<surface::Product> {
+        let (contract, doc) = self
+            .held()
+            .into_iter()
+            .find(|(c, _)| c.namespace == namespace)?;
+        (contract.product)(view, doc)
+    }
+
+    /// Carry out an instruction's steps, in order, and stop where it cannot.
+    ///
+    /// Three rules, and each is there because its opposite is a way of
+    /// misleading somebody about their own document:
+    ///
+    /// * **A sequence that cannot be finished is not started.** Every step is
+    ///   resolved before the first is dispatched, and a part of the request
+    ///   the room cannot answer refuses the whole thing while the document is
+    ///   still untouched. Working through the steps and stopping at the one
+    ///   that was never going to work leaves changes nobody asked for on their
+    ///   own.
+    /// * **A step that fails mid-sequence names what did happen.** Once the
+    ///   first change has landed it cannot be taken back by refusing — undoing
+    ///   somebody else's document is not the agent's to decide — so the answer
+    ///   says both halves: what stands, and what did not happen.
+    /// * **Every step is checked again at dispatch.** The survey is retaken
+    ///   between steps, because the first step changed a document and what the
+    ///   room exports is a function of what its documents say.
+    ///
+    /// `scope` is the survey the request was decided against, and is used only
+    /// for the sentence that lists what could have been asked for instead — a
+    /// request that named its own subject must not be answered with a list of
+    /// everything else in the room.
+    fn run_plan(
+        &mut self,
+        plan: Plan,
+        at: Option<usize>,
+        to: &Answer,
+        scope: &[Offer],
+    ) -> Result<Ran> {
+        let name = self.cfg.name.clone();
+        // Nothing is dispatched yet, so a part that answers to nothing costs
+        // only a sentence. Said before the loop and not inside it.
+        if plan.is_sequence() {
+            if let Some(part) = plan.unanswered() {
+                let reply = format!(
+                    "{name}: I can't \"{part}\", so I haven't done any of it. {}",
+                    describe_offers(scope)
+                );
+                tracing::warn!(%part, steps = plan.len(), "refused a sequence whole");
+                self.reply(to, &reply)?;
+                return Ok(Ran::Said);
+            }
+        }
+        let sequence = plan.is_sequence();
+        // What the last step left behind, and what the room's own words for
+        // the steps already carried out are. Both exist only for the sentence
+        // at the end and for binding the next argument; neither is a decision.
+        let mut carried: Option<surface::Product> = None;
+        let mut done: Vec<String> = Vec::new();
+
+        let total = plan.steps.len();
+        for (n, step) in plan.steps.into_iter().enumerate() {
+            // Said out loud, per step, because a sequence is the one thing the
+            // agent does that a person cannot see the whole of in one place:
+            // the work crosses applications, and what ties two windows
+            // changing to one instruction is the boundary between the steps.
+            // Anything drawing that crossing — a hand-off, a picture
+            // travelling from one window to the other — needs to know where
+            // one step ended and the next began, and guessing it from the
+            // document deltas would be reconstructing what is known here.
+            tracing::info!(step = n + 1, of = total, ?step, "step begins");
+            // Retaken per step: the step before this one changed a document,
+            // and every app builds its resource tree out of what its document
+            // says. An address resolved against the survey the plan was made
+            // from would be resolved against a page that no longer exists.
+            let focus = to.caret().map(str::to_string);
+            let view = self.view(focus.clone(), 0);
+            let offers = self.offers(&view);
+
+            match step.instruction {
+                Instruction::Perform { id, argument } => {
+                    let label = surface::label_of(&offers, &id).map(|l| l.to_lowercase());
+                    // The binding. An operation that collects content is
+                    // handed what the previous step actually produced, and
+                    // nothing else is ever put there: not a value from the
+                    // request, not one from a model, and not a second reading
+                    // of the other app's document.
+                    let bound;
+                    let argument = if step.carries {
+                        let Some(product) = carried.as_ref() else {
+                            let reply = refusal(
+                                &name,
+                                &done,
+                                label.as_deref(),
+                                "nothing before it produced anything I could place",
+                            );
+                            tracing::warn!(%id, "refused: the step it carries from produced nothing");
+                            self.reply(to, &reply)?;
+                            return Ok(Ran::Said);
+                        };
+                        bound = product.argument().to_string();
+                        Some(bound.as_str())
+                    } else {
+                        argument.as_deref()
+                    };
+                    match self.perform(&id, argument, &view, focus.as_deref())? {
+                        Err(why) => {
+                            let reply = refusal(&name, &done, label.as_deref(), &why);
+                            self.reply(to, &reply)?;
+                            return Ok(Ran::Said);
+                        }
+                        Ok(()) => {
+                            done.push(
+                                label.unwrap_or_else(|| "what you asked for".to_string()),
+                            );
+                            // Only ever from the app this step touched: what
+                            // is carried forward is the outcome of the step,
+                            // not the state of whichever app happens to hold
+                            // something transferable.
+                            let namespace = surface::decode_address(&id)
+                                .map(|a| surface::app_of(&a.resource).to_string());
+                            carried = namespace
+                                .clone()
+                                .and_then(|ns| self.product(&ns, &self.view(focus.clone(), 0)));
+                            tracing::info!(
+                                step = n + 1,
+                                of = total,
+                                app = ?namespace,
+                                produced = carried.is_some(),
+                                "step ends"
+                            );
+                        }
+                    }
+                }
+                // Say what could have been asked for instead of naming a fixed
+                // vocabulary, because there is no longer a fixed vocabulary to
+                // name — an agent that answers "I can do these four things"
+                // while holding a hundred addresses is wrong about itself.
+                Instruction::Unknown(what) => {
+                    let reply = format!(
+                        "{name}: I can't \"{what}\" here. {}{}",
+                        describe_offers(scope),
+                        self.could_have_opened(&what),
+                    );
+                    self.reply(to, &reply)?;
+                    return Ok(Ran::Said);
+                }
+                // A composition is defined relative to the line that asked for
+                // it, so the page is re-read here rather than carried in: an
+                // earlier step may have moved everything under it. A request
+                // made in a channel is not a line in a document at all, and
+                // saying so beats picking a place in the page to rewrite.
+                other => {
+                    let Some((blocks, at)) = self.page_at(at) else {
+                        let reply = format!(
+                            "{name}: that one rewrites the text around the line that asks \
+                             for it, so ask me for it in the document itself."
+                        );
+                        self.reply(to, &reply)?;
+                        return Ok(Ran::Said);
+                    };
+                    match other {
+                        Instruction::Table => self.make_table(&blocks, at)?,
+                        Instruction::Caption => self.caption_image(&blocks, at)?,
+                        Instruction::Heading => self.make_heading(&blocks, at)?,
+                        Instruction::RunSheet(draft) => {
+                            self.write_run_sheet(&blocks, at, &draft)?
+                        }
+                        Instruction::Perform { .. } | Instruction::Unknown(_) => {
+                            unreachable!("matched above")
+                        }
+                    }
+                    done.push("that".to_string());
+                    // A composition rewrites text; it leaves nothing another
+                    // operation could be handed, and saying so explicitly is
+                    // what stops a later step being given the step before
+                    // last's result as though it were this one's.
+                    carried = None;
+                }
+            }
+        }
+        // Only a sequence says so out loud. A single operation is its own
+        // answer — the change is on the page — and writing "done" over the
+        // line that asked would be noise. Several changes across several
+        // applications are nowhere visible together, so there is nothing to
+        // read unless it is said.
+        if sequence {
+            let reply = format!("{name}: done — {}.", in_sentence(&done));
+            self.reply(to, &reply)?;
+        }
+        Ok(Ran::All)
+    }
+
+    /// The document and the index of the line that asked, read again now.
+    fn page_at(&self, at: Option<usize>) -> Option<(Vec<Block>, usize)> {
+        let at = at?;
+        let blocks = plan::blocks(&self.editor.as_ref()?.snapshot().ok()?);
+        if at >= blocks.len() {
+            return None;
+        }
+        Some((blocks, at))
     }
 
     /// Answer wherever the request came from.
@@ -1200,15 +2026,6 @@ impl Session {
         Ok(())
     }
 
-    /// Answer in the document, over the line that asked.
-    fn reply_at(&mut self, blocks: &[Block], at: usize, reply: &str) -> Result<()> {
-        let ins = &blocks[at];
-        let n = ins.text.chars().count();
-        self.edit(
-            &ins.id,
-            wp::splice_text_action(RegionKind::Body, &ins.id, 0, n, reply),
-        )
-    }
 
     /// Put the agent's caret on a block, so the room can see it working.
     fn show_caret(&mut self, block: &str) -> Result<()> {
@@ -1431,4 +2248,63 @@ fn describe(action: &WordProcessorAction) -> String {
         WordProcessorAction::SetParagraphStyle { kind, .. } => format!("set style {kind}"),
         other => format!("{other:?}"),
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Written, block_key, block_of, written_from};
+
+    /// The rule the settle window used to stand in for, case by case.
+    ///
+    /// A table because the cases are what matter, and each one is a different
+    /// person: somebody mid-sentence, somebody who pressed Enter, somebody
+    /// who typed the whole thing before the agent ever arrived.
+    #[test]
+    fn who_is_still_writing_this_line() {
+        let whole = "Claude: make this a run sheet";
+        // Their caret is in it. Whatever the text looks like, they are here.
+        assert_eq!(written_from(true, true, false, whole), Written::StillWriting);
+        // They left it. That is the commit, and it outranks every other
+        // signal — including a trailing space, which is now merely how they
+        // happened to leave it.
+        assert_eq!(written_from(false, true, false, whole), Written::Committed);
+        assert_eq!(
+            written_from(false, true, false, "Claude: make "),
+            Written::Committed
+        );
+        // They left it, but they are somewhere this replica has not caught
+        // up to. Their caret outran their text, so their leaving says
+        // nothing yet.
+        assert_eq!(written_from(false, true, true, whole), Written::StillWriting);
+        // No caret has ever been here — a script, or a peer that publishes
+        // none. A whole-looking line is judged exactly as it always was.
+        assert_eq!(written_from(false, false, false, whole), Written::Unknown);
+        // The one the live run produced: thirteen characters ending in the
+        // space before the next word. Nobody has to be watching for that to
+        // be unfinished.
+        assert_eq!(
+            written_from(false, false, false, "Claude: make "),
+            Written::StillWriting
+        );
+        assert_eq!("Claude: make ".len(), 13, "the signature of the fault");
+    }
+
+    /// A block caret key round-trips. The two halves are separate functions
+    /// — the agent writes one, the word processor writes the other — and a
+    /// drift between them would be silent: the agent would simply never see
+    /// anybody typing, and fall back to the timer for ever.
+    #[test]
+    fn a_block_caret_key_round_trips() {
+        assert_eq!(block_of(&block_key("b7")), Some("b7"));
+        // Presence about something that is not a block says nothing about
+        // who is writing, and must not be read as a caret.
+        assert_eq!(
+            block_of(&PresenceKey::Workspace {
+                id: "word-processor".into()
+            }),
+            None
+        );
+    }
+
+    use ui::presence::PresenceKey;
 }

@@ -538,6 +538,17 @@ impl CapnpBrokerState {
                     "capnp fanout: handed arrived content to the apps subscribed for it",
                 );
             }
+            // Never fanned. It answers one participant's question about one
+            // request, and it is delivered to that connection by
+            // `PeerTable::send_to_peer`. Reaching a fan-out at all would mean
+            // an answer had been broadcast to apps that asked nothing.
+            CollabEvent::AppOpenRefused { app_id, .. } => {
+                tracing::warn!(
+                    %app_id,
+                    "capnp fanout: a refusal to open an application has no \
+                     audience and was dropped",
+                );
+            }
         }
     }
 

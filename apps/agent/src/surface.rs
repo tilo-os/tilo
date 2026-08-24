@@ -91,6 +91,35 @@ pub fn app_of(resource_id: &str) -> &str {
         .unwrap_or(resource_id)
 }
 
+/// The action id an application exports so that it can be opened.
+pub const OPEN_ACTION: &str = "open";
+
+/// The tail of the resource id an application has *as an application* rather
+/// than as a document.
+pub const APP_RESOURCE: &str = "app";
+
+/// The stable kind tag on that resource. One tag across every app, because
+/// what it names is the same thing in each of them.
+pub const APPLICATION_KIND: &str = "applications.app";
+
+/// The address that opens the app `namespace` names.
+///
+/// Inside the app's own namespace on purpose, so [`app_of`] answers it exactly
+/// as it answers every other address and one vocabulary covers both questions
+/// a capability can be asked about an application.
+pub fn open_address(namespace: &str) -> ActionAddress {
+    ActionAddress::new(format!("{namespace}.{APP_RESOURCE}"), OPEN_ACTION)
+}
+
+/// The app `address` would open, or `None` when it opens nothing.
+pub fn opens(address: &ActionAddress) -> Option<&str> {
+    if address.action != OPEN_ACTION {
+        return None;
+    }
+    let (namespace, tail) = address.resource.split_once('.')?;
+    (tail == APP_RESOURCE).then_some(namespace)
+}
+
 /// Where the agent is looking.
 ///
 /// Its own view state, and the only thing it contributes to a resource tree.
@@ -122,6 +151,15 @@ pub struct View {
 pub struct AppContract {
     /// What a launched copy of this app announces to the broker.
     pub app_id: &'static str,
+    /// What this app is called, in the words a sentence about it would use.
+    ///
+    /// The one field here that exists to be *said* rather than matched. It is
+    /// the app's own name — the noun phrase that reads correctly in "I'm not
+    /// allowed to open the photo editor here" — and it is written down for
+    /// the same reason [`Self::app_id`] is: an app that is not open in the
+    /// room has published nothing to be asked, so there is nowhere else to
+    /// get it from at the moment it is needed.
+    pub title: &'static str,
     /// The namespace its resource ids start with. Also the app name the
     /// capability question is phrased about.
     pub namespace: &'static str,
@@ -137,6 +175,74 @@ pub struct AppContract {
     /// The app's own decoders, so the door can prove what it would run before
     /// running it.
     pub register: fn(&mut ActionRegistry),
+    /// What this app's document currently *denotes*, as something another
+    /// app's operation could be handed — or `None` for an app whose subject is
+    /// not transferable.
+    ///
+    /// The app's own reading, for the same reason [`Self::resources`] is: only
+    /// the photo editor knows that a crop rectangle and a path add up to a
+    /// photograph, and an agent that worked that out for itself would be
+    /// publishing its own idea of the result under the app's name.
+    pub product: fn(&View, &AutoCommit) -> Option<Product>,
+}
+
+/// What one operation left behind for the next one.
+///
+/// The reason this exists rather than the second operation looking at the
+/// document again: "put *it* under Sound check" names the thing the crop
+/// produced, and a step that went back to the photo editor's document to
+/// work out what that was would be re-deriving what it *hopes* happened.
+/// Carrying the result forward means the second operation is handed the
+/// first one's actual outcome, or nothing at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Product {
+    /// Bytes, in this machine's blob store, addressed by their content hash.
+    ///
+    /// The hash is the whole of what travels: a document referencing it
+    /// carries the descriptor (`mime`/`len`/`w`/`h`) and a peer fetches the
+    /// bytes when it wants them, so a photograph never becomes a change too
+    /// large to cross the wire.
+    Content { hash: String },
+}
+
+impl Product {
+    /// The one-string form an operation that collects content is invoked with.
+    pub fn argument(&self) -> &str {
+        match self {
+            Product::Content { hash } => hash,
+        }
+    }
+}
+
+/// Nothing an app's document denotes can be handed to another operation.
+fn nothing(_view: &View, _doc: &AutoCommit) -> Option<Product> {
+    None
+}
+
+/// The photograph as its edits leave it: the file the document names, cropped
+/// and turned the way the document says, encoded as a PNG and put in this
+/// machine's blob store.
+///
+/// The app's own decode and its own render — the crop is stored in the
+/// original's coordinates, so "the cropped photograph" is a well-defined
+/// value at any moment rather than a file somebody has to save first.
+fn photos_product(_view: &View, doc: &AutoCommit) -> Option<Product> {
+    let image = photos::doc::PhotosDoc::image(doc)?;
+    let edits = photos::doc::PhotosDoc::edits(doc);
+    let bytes = std::fs::read(&image.path)
+        .map_err(|e| tracing::warn!(path = %image.path, "cannot read the photograph: {e}"))
+        .ok()?;
+    let decoded = photos::pixels::decode(&bytes)?;
+    let rendered = photos::pixels::render(&decoded, edits.crop, edits.rotate_quarters);
+    let png = photos::pixels::encode_png(&rendered)?;
+    Some(Product::Content {
+        hash: qdoc::blobstore::put(&png),
+    })
+}
+
+fn photos_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
+    use qos_actions::ResourceProvider;
+    photos::actions::PhotosResources.resources(doc)
 }
 
 fn word_processor_resources(view: &View, doc: &AutoCommit) -> Vec<Resource> {
@@ -235,10 +341,16 @@ fn chat_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
 
 /// Every app the agent can speak to.
 ///
-/// Three, deliberately of different shapes: one whose subject is a rich-text
-/// document, one whose subject is a host filesystem, and one whose subject is
-/// a conversation. Neither is special-cased anywhere below — everything past
-/// this point works from the tree.
+/// Four, deliberately of different shapes: one whose subject is a rich-text
+/// document, one whose subject is a host filesystem, one whose subject is a
+/// conversation, and one whose subject is a photograph. None is special-cased
+/// anywhere below — everything past this point works from the tree.
+///
+/// The photo editor is the one that makes an instruction naming two apps
+/// worth having. Its operations change a photograph, and what a photograph is
+/// *for* is being put somewhere else; every other app in this list can be
+/// asked to do something to what it holds, and only this one produces
+/// something another app can be handed.
 ///
 /// Chat earns its place twice over. It is somewhere the agent can be asked to
 /// do something, like the other two — and it is the place people are already
@@ -249,26 +361,51 @@ fn chat_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
 pub static CONTRACTS: &[AppContract] = &[
     AppContract {
         app_id: "dev.qos.word-processor",
+        title: "the word processor",
         namespace: "word-processor",
         recognises: |doc| qdoc::model::open(doc, &automerge::ROOT).is_ok(),
         resources: word_processor_resources,
         register: word_processor::actions::register,
+        product: nothing,
     },
     AppContract {
         app_id: "dev.qos.file-explorer",
+        title: "the file manager",
         namespace: "files",
         recognises: file_explorer::actions::is_explorer_document,
         resources: file_explorer_resources,
         register: file_explorer::actions::register,
+        product: nothing,
     },
     AppContract {
         app_id: "dev.qos.chat",
+        title: "the conversation",
         namespace: "chat",
         recognises: chat::actions::is_chat_document,
         resources: chat_resources,
         register: chat::actions::register,
+        product: nothing,
+    },
+    AppContract {
+        app_id: "dev.qos.photos",
+        title: "the photo editor",
+        namespace: "photos",
+        recognises: photos_document,
+        resources: photos_resources,
+        register: photos::actions::register,
+        product: photos_product,
     },
 ];
+
+/// Whether a document is the photo editor's — asked of its own schema.
+///
+/// `is_empty` is the app's own test for "never written to", so its negation is
+/// "this app has written here". A document it has never touched is not claimed,
+/// which is what keeps a freshly seeded replica of some other app from being
+/// attributed to it.
+fn photos_document(doc: &AutoCommit) -> bool {
+    !photos::doc::PhotosDoc::is_empty(doc)
+}
 
 /// The contract for a document, or `None` when nothing in the room's apps
 /// claims it.
@@ -326,14 +463,35 @@ impl Offer {
         self.descriptor.input.wants_text()
     }
 
+    /// Whether the text it wants is the address of content some other
+    /// operation produced, rather than words the instruction can quote.
+    ///
+    /// The distinction the agent needs before it can supply an argument at
+    /// all. There is nowhere honest to get a content hash from an instruction:
+    /// nobody writes one down, and inventing one would name bytes that do not
+    /// exist. So an operation that wants content can only be performed as a
+    /// step *after* something that produced some.
+    pub fn wants_content(&self) -> bool {
+        self.descriptor.input.wants_content()
+    }
+
     /// One line, in the app's own words: what this does and what it does it to.
     pub fn summary(&self) -> String {
         let mut s = format!(
             "{} — on {} ({})",
             self.descriptor.action_label, self.descriptor.resource_label, self.descriptor.resource_kind
         );
-        if let qos_actions::InputSpec::Text { prompt, .. } = &self.descriptor.input {
-            s.push_str(&format!("; takes text: {prompt}"));
+        if let qos_actions::InputSpec::Text { prompt, collects, .. } = &self.descriptor.input {
+            match collects {
+                qos_actions::Collects::Words => s.push_str(&format!("; takes text: {prompt}")),
+                // Said differently on purpose. A reader that is offered this
+                // alongside a rename would otherwise conclude it can be
+                // performed by saying something, and there is nothing anybody
+                // can say that names content.
+                qos_actions::Collects::Content => s.push_str(&format!(
+                    "; takes what an earlier step produced, not words: {prompt}"
+                )),
+            }
         }
         if let Some(d) = &self.descriptor.description {
             s.push_str(&format!(". {d}"));
@@ -348,6 +506,29 @@ impl Offer {
 /// namespace: a room grants edit rights per app, so folding every app's
 /// operations under one name would make a grant in one of them a grant in all.
 pub fn scope_for(address: &ActionAddress) -> PermissionScope {
+    // Opening an application is not an operation on its content, so it is not
+    // asked about as one. `ResourceRef::App` names the application itself —
+    // the same resource the shell's own launch gate names
+    // (`shell::shell::search::visibility::required_capability`, which resolves
+    // a launch to `CapResource::App(package)` and `Verb::Write`) — and that is
+    // what keeps the two grants distinguishable:
+    //
+    // * `Scope::Action { app, action }` authorises one operation inside an app
+    //   that is *already running*, and confers no ability to start one. An
+    //   agent handed a photograph to crop cannot spawn a process with it.
+    // * `Scope::App(app)` authorises this application: both its operations and
+    //   opening it. "May open **this** application."
+    // * `Scope::Workspace` authorises any of them. "May open applications."
+    //
+    // Three different sentences in the one permission model, rather than one
+    // sentence with a footnote — and the verb stays `Write` throughout,
+    // because a window appearing in the room is a change to the room.
+    if let Some(app) = opens(address) {
+        return PermissionScope {
+            resource: ResourceRef::App(app.to_string()),
+            op: Verb::Write,
+        };
+    }
     PermissionScope {
         resource: ResourceRef::Action {
             app: app_of(&address.resource).to_string(),
@@ -398,7 +579,59 @@ pub fn offers(
             });
         }
     }
+    out.extend(openable(held, perms));
     out
+}
+
+/// The applications this room does not have open, as the operations that
+/// would open them.
+///
+/// Two things bound the set, and both are the point rather than a limitation.
+///
+/// It is the **contracts the agent speaks**, because an app it cannot read
+/// afterwards is one it could start and then have nothing to say about — an
+/// agent that opened something and went quiet is worse than one that said it
+/// could not.
+///
+/// And it is the apps that are **not already here**. A held app needs no
+/// opening; offering it anyway invites a second window over the first, and
+/// invites a request to be answered by opening the thing it is about. So the
+/// set empties itself as the room fills, and the moment an app arrives its own
+/// operations replace the one that asked for it.
+fn openable(
+    held: &[(&'static AppContract, &AutoCommit)],
+    perms: &PermissionContext,
+) -> Vec<Offer> {
+    CONTRACTS
+        .iter()
+        .filter(|c| !held.iter().any(|(h, _)| h.namespace == c.namespace))
+        .map(|c| Offer {
+            app: c.namespace,
+            descriptor: ActionDescriptor {
+                address: open_address(c.namespace),
+                resource_kind: APPLICATION_KIND.to_string(),
+                resource_label: c.title.to_string(),
+                action_label: format!("open {}", c.title),
+                description: Some(format!(
+                    "{} is not open in this room, so none of what it can do is \
+                     here to be named yet. Opening it is what puts its own \
+                     operations on this list.",
+                    c.title
+                )),
+                // Inert on this descriptor: an open never becomes an
+                // `EncodedAction` and never reaches `dispatch_by`, because
+                // there is no replica for it to mutate. Named for what it
+                // would be if it did — the session hosting the room is the
+                // only place an application can start.
+                locus: qos_actions::ExecutionLocus::ServerPreferred,
+                input: qos_actions::InputSpec::None,
+            },
+        })
+        // The same gate every other operation passes, asked in the same place.
+        // Denied means absent here too: an agent that may not open the photo
+        // editor is never shown opening it as something it could choose.
+        .filter(|o: &Offer| permitted(perms, o.address()))
+        .collect()
 }
 
 /// Find the offer an id names, in a freshly taken survey.
@@ -604,7 +837,13 @@ pub fn from_verbs<'a>(
         ));
     }
     let chosen = best[0];
-    if !chosen.wants_text() {
+    // An operation that collects *content* collects a content hash, and there
+    // is no content hash anywhere in a sentence — nobody writes one down and
+    // inventing one would name bytes that do not exist. So it is not asked for
+    // here. Either an earlier step produced content and the caller binds it
+    // (see `plan::Step`), or the operation is refused at dispatch for having
+    // nothing to place.
+    if !chosen.wants_text() || chosen.wants_content() {
         return Ok((chosen, None));
     }
     match quoted_literal(rest) {
@@ -647,5 +886,160 @@ mod tests {
         assert_eq!(quoted_literal("don't rename anything"), None);
         // An unterminated quote has quoted nothing.
         assert_eq!(quoted_literal(r#"rename it to "launch.md"#), None);
+    }
+
+    // -- opening an application ------------------------------------------
+
+    use ui::permissions::{Actor, CapOverride, Scope, Subject};
+
+    fn granting(caps: Vec<CapOverride>) -> PermissionContext {
+        PermissionContext::from_capabilities(Actor::agent("Claude"), caps)
+    }
+
+    fn grant(scope: Scope) -> CapOverride {
+        CapOverride::grant(Subject::agent("Claude"), scope, Verb::Write).with_id("t")
+    }
+
+    /// An open is asked about as the application, not as an operation inside
+    /// it — which is what makes the three grants a room can write about it
+    /// say three different things.
+    ///
+    /// Asserted through `permitted`, the same call the survey and the dispatch
+    /// both make, against the capability model's own `decide`. A table written
+    /// here would prove nothing about the model.
+    #[test]
+    fn the_grants_that_open_an_application_and_the_one_that_does_not() {
+        let open = open_address("photos");
+        let crop = ActionAddress::new("photos.image", "crop");
+
+        assert_eq!(
+            scope_for(&open).resource,
+            ResourceRef::App("photos".to_string()),
+            "opening is asked about as the application itself"
+        );
+        assert_eq!(
+            scope_for(&crop).resource,
+            ResourceRef::Action {
+                app: "photos".to_string(),
+                action: "crop".to_string(),
+            },
+            "and an operation is still asked about as an operation"
+        );
+
+        // Holding nothing opens nothing. An agent carries no role, so there
+        // is no base authority underneath these.
+        let none = granting(Vec::new());
+        assert!(!permitted(&none, &open));
+
+        // "May do one thing inside an application that is already running."
+        // Emphatically not leave to start it: an agent handed a photograph to
+        // crop must not be able to spawn a process with it.
+        let one_action = granting(vec![grant(Scope::Action {
+            app: "photos".to_string(),
+            action: "crop".to_string(),
+        })]);
+        assert!(permitted(&one_action, &crop));
+        assert!(
+            !permitted(&one_action, &open),
+            "leave to perform one operation in an app must not be leave to \
+             start the app"
+        );
+
+        // "May open *this* application."
+        let this_app = granting(vec![grant(Scope::App("photos".to_string()))]);
+        assert!(permitted(&this_app, &open));
+        assert!(
+            !permitted(&this_app, &open_address("files")),
+            "a grant naming one application must not open the catalogue"
+        );
+
+        // "May open applications."
+        let any = granting(vec![grant(Scope::Workspace)]);
+        assert!(permitted(&any, &open));
+        assert!(permitted(&any, &open_address("files")));
+    }
+
+    /// The set of applications offered as openable is exactly the ones this
+    /// room does not have — so it empties itself as the room fills, and an app
+    /// that is here is never offered as something to open.
+    ///
+    /// The second half is what stops a second window landing on top of the
+    /// first: an agent that still offered to open what is already open would
+    /// answer the next request about that app by opening a copy of it.
+    #[test]
+    fn only_the_apps_this_room_is_missing_are_offered_as_openable() {
+        let perms = granting(vec![grant(Scope::Workspace)]);
+        let view = View::default();
+
+        let empty = openable(&[], &perms);
+        let missing: Vec<&str> = empty.iter().map(|o| o.app).collect();
+        assert_eq!(
+            missing,
+            CONTRACTS.iter().map(|c| c.namespace).collect::<Vec<_>>(),
+            "an empty room is missing every app the agent speaks"
+        );
+        assert!(
+            empty.iter().all(|o| !o.wants_text()),
+            "opening an application takes no argument; there is nothing \
+             anybody could say that would change which app it is"
+        );
+
+        // Now hold one of them. Any document the contract recognises will do —
+        // what is being asserted is the bookkeeping, not the schema.
+        let photos = CONTRACTS
+            .iter()
+            .find(|c| c.namespace == "photos")
+            .expect("the photo editor's contract");
+        let mut doc = automerge::AutoCommit::new();
+        ::photos::doc::PhotosDoc::seed(&mut doc);
+        doc.commit();
+        assert!(
+            (photos.recognises)(&doc),
+            "the fixture has to be a document the contract claims, or this \
+             test proves nothing"
+        );
+        let held: Vec<(&'static AppContract, &automerge::AutoCommit)> = vec![(photos, &doc)];
+
+        let now = openable(&held, &perms);
+        assert!(
+            !now.iter().any(|o| o.app == "photos"),
+            "an app whose state is in the room must stop being offered as \
+             something to open"
+        );
+        assert_eq!(
+            now.len(),
+            empty.len() - 1,
+            "and nothing else may change: {:?}",
+            now.iter().map(Offer::id).collect::<Vec<_>>()
+        );
+
+        // The full survey carries both halves: what the held app exports, and
+        // what is still missing.
+        let all = offers(&held, &view, &perms);
+        assert!(
+            all.iter().any(|o| opens(o.address()).is_some()),
+            "the survey has to carry the openable apps, or nothing can choose \
+             to open one"
+        );
+    }
+
+    /// No app's own resource tree may publish an address that reads as an
+    /// open, or opening would be indistinguishable from something an app
+    /// exports and the capability question would be asked about the wrong
+    /// thing.
+    #[test]
+    fn no_app_publishes_an_address_that_reads_as_an_open() {
+        let view = View::default();
+        for contract in CONTRACTS {
+            let doc = automerge::AutoCommit::new();
+            for descriptor in qos_actions::door::survey(&tree(contract, &view, &doc)) {
+                assert!(
+                    opens(&descriptor.address).is_none(),
+                    "{} publishes {:?}, which reads as an open",
+                    contract.namespace,
+                    descriptor.address,
+                );
+            }
+        }
     }
 }
