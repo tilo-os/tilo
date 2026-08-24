@@ -1,0 +1,36 @@
+[package]
+name = "photos"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "photos"
+path = "src/lib.rs"
+
+[[bin]]
+name = "photos"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../../ui" }
+# The open photograph is published as a Resource whose edits are ActionSpecs,
+# so the shell's palette and an out-of-process caller drive the same operations
+# the toolbar buttons do.
+qos-actions = { path = "../../crates/collab/actions" }
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+anyhow.workspace = true
+# Decode whatever the chooser hands back; encode what Save and the clipboard
+# export. Default features are off workspace-wide, so name the formats.
+image = { workspace = true, features = ["jpeg", "png", "webp"] }
+png.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
