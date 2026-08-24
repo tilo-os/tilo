@@ -3003,12 +3003,20 @@ impl ShellOverlayHost {
     /// structure-dirty check so a promotion/restore triggers the rebuild that
     /// applies it.
     pub fn sync_fullscreen_from_chrome(&mut self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        // Before anything reads the slot: let go of a group that no longer
+        // exists. An application that dies while expanded takes its group
+        // with it and leaves the slot behind, and the slot is what keeps the
+        // top bar and the sidebar wheel hidden — so until it is released
+        // there is nothing on screen to get out with. This runs ahead of the
+        // `group_row_ptrs` check because a frame with no rows is exactly the
+        // frame after the last window went away.
+        chrome.borrow_mut().release_maximized_group_if_gone();
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
         // Either route promotes a group to the whole output: a client that
         // asked for `xdg_toplevel.set_fullscreen`, or a group the user expanded
         // with the tab's Expand chip. The client request wins if both are set.

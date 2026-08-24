@@ -64,7 +64,7 @@
 
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -918,9 +918,7 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
             let _ = std::thread::Builder::new()
                 .name("qos-app-stdout".to_string())
                 .spawn(move || {
-                    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                        eprintln!("[app {tag}] {line}");
-                    }
+                    relay_lines(stdout, |line| ui::diag!("[app {tag}] {line}"));
                 });
         }
 
@@ -928,13 +926,14 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
         // notification.
         let mut tail: VecDeque<String> = VecDeque::with_capacity(STDERR_TAIL_LINES);
         if let Some(stderr) = child.stderr.take() {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                eprintln!("[app {}] {line}", app.package_id);
+            let tag = app.package_id.clone();
+            relay_lines(stderr, |line| {
+                ui::diag!("[app {tag}] {line}");
                 if tail.len() == STDERR_TAIL_LINES {
                     tail.pop_front();
                 }
                 tail.push_back(line);
-            }
+            });
         }
 
         let status = child.wait();
@@ -962,6 +961,42 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
                 detail: format!("could not start launch thread: {e}"),
             },
         });
+    }
+}
+
+/// Relay every line `source` produces until it truly ends, handing each to
+/// `sink`.
+///
+/// The reading end of this pipe is the application's stderr. Dropping it
+/// while the application is alive is not a quiet loss of logging: the
+/// application's next write fails, and a failed write to stderr is fatal to
+/// the process making it. So this reads to real end-of-file and nothing
+/// short of it.
+///
+/// That rules out the two ways the previous `lines().map_while(Result::ok)`
+/// could stop early. It stopped on any error, and the error it was most
+/// likely to see was invalid UTF-8: several processes share one pipe, a
+/// write past `PIPE_BUF` is not atomic, and two of them interleaving can
+/// tear a multi-byte character in half. Reading bytes and decoding each
+/// line lossily means there is no decode step left to fail. A genuine I/O
+/// error still ends the relay, because at that point the descriptor is not
+/// going to yield anything more.
+fn relay_lines(source: impl Read, mut sink: impl FnMut(String)) {
+    let mut reader = BufReader::new(source);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) => break, // the writing end closed: the app is done
+            Ok(_) => {
+                while matches!(buf.last(), Some(b'\n' | b'\r')) {
+                    buf.pop();
+                }
+                sink(String::from_utf8_lossy(&buf).into_owned());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
     }
 }
 
@@ -1189,6 +1224,67 @@ pub fn wayland_socket_display() -> OsString {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// A byte the relay cannot decode must not end the relay.
+    ///
+    /// The reading end of this pipe is an application's stderr. When the
+    /// relay stops, that end is dropped, and the application's next write
+    /// to stderr fails — which kills it. So a torn multi-byte character in
+    /// the middle of the stream has to cost the one line it damaged, not
+    /// every line after it and the application too.
+    #[test]
+    fn a_line_the_relay_cannot_decode_does_not_end_the_relay() {
+        let (reader, mut writer) = std::io::pipe().expect("pipe");
+        std::thread::spawn(move || {
+            writer.write_all(b"before\n").unwrap();
+            // A lone continuation byte: what a write split across the
+            // middle of a multi-byte character leaves behind.
+            writer.write_all(b"torn \xe2\x86 here\n").unwrap();
+            writer.write_all(b"after\n").unwrap();
+        });
+
+        let mut seen = Vec::new();
+        relay_lines(reader, |line| seen.push(line));
+
+        assert_eq!(
+            seen.len(),
+            3,
+            "every line must arrive, undecodable one included: {seen:?}"
+        );
+        assert_eq!(seen[0], "before");
+        assert_eq!(
+            seen[2], "after",
+            "the line after the undecodable one is the one that used to be lost"
+        );
+    }
+
+    /// The relay ends when, and only when, the writing end closes.
+    #[test]
+    fn the_relay_ends_at_end_of_file() {
+        let (reader, mut writer) = std::io::pipe().expect("pipe");
+        std::thread::spawn(move || {
+            writer.write_all(b"one\ntwo\n").unwrap();
+            drop(writer);
+        });
+
+        let mut seen = Vec::new();
+        relay_lines(reader, |line| seen.push(line));
+        assert_eq!(seen, vec!["one".to_string(), "two".to_string()]);
+    }
+
+    /// A final line with no newline is still relayed.
+    #[test]
+    fn a_last_line_without_a_newline_is_still_relayed() {
+        let (reader, mut writer) = std::io::pipe().expect("pipe");
+        std::thread::spawn(move || {
+            writer.write_all(b"trailing").unwrap();
+            drop(writer);
+        });
+
+        let mut seen = Vec::new();
+        relay_lines(reader, |line| seen.push(line));
+        assert_eq!(seen, vec!["trailing".to_string()]);
+    }
 
     #[test]
     fn dev_build_lets_the_environment_name_the_launcher() {
