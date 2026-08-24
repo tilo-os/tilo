@@ -209,10 +209,7 @@ pub enum SegmentedStyle {
 /// retained draw and [`segment_colors`] resolve through here so the strip and
 /// its immediate-mode face cannot disagree.
 pub fn selected_segment_ink(theme: &Theme) -> Color {
-    theme
-        .tokens
-        .colors
-        .ink_on_any(&[theme.accent_primary], Color::WHITE, ON_FILL_MIN_CONTRAST)
+    theme.tokens.colors.on_accent(ON_FILL_MIN_CONTRAST)
 }
 
 /// The label of an *unselected* segment — the quiet tier.

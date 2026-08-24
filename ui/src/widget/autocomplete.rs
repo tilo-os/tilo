@@ -522,9 +522,18 @@ impl Widget for Autocomplete {
                     &RoundedRect::from_rect(row, tokens.radii.sm as f64),
                 );
             }
-            let text_color = if armed { Color::WHITE } else { tokens.colors.text_primary };
+            let on_accent = tokens.colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
+            let text_color = if armed { on_accent } else { tokens.colors.text_primary };
+            // The detail column is the quieter tier. Softening it used to be
+            // done by dropping the white to 80% alpha, which on a bright
+            // accent takes an already-marginal label below anything legible.
+            // Soften toward the fill instead, then hold it to the floor.
             let dim_color = if armed {
-                Color::from_rgba8(255, 255, 255, 0xcc)
+                tokens.colors.ink_on_any(
+                    &[accent],
+                    crate::tokens::colors::over(accent, on_accent, 0.8),
+                    crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                )
             } else {
                 tokens.colors.text_dim
             };
@@ -536,7 +545,7 @@ impl Widget for Autocomplete {
                     transform,
                     Rect::new(x, iy, x + ICON_PX, iy + ICON_PX),
                     icon,
-                    if armed { Color::WHITE } else { tokens.colors.text_dim },
+                    if armed { on_accent } else { tokens.colors.text_dim },
                     LUCIDE_DEFAULT_STROKE_PX,
                 );
                 x += ICON_PX + 10.0;

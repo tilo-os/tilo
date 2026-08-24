@@ -382,7 +382,7 @@ impl Widget for DatePicker {
             // selected / in-view-month / out-of-view-month.
             let day_str = date.day().to_string();
             let color = if is_selected {
-                Color::WHITE
+                tokens.colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
             } else if is_in_view_month {
                 text_color
             } else {

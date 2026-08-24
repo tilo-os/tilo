@@ -662,6 +662,19 @@ impl Colors {
         target
     }
 
+    /// The ink for anything drawn *on* the accent-primary fill — a selected
+    /// row, a highlighted menu item, a chosen day in a calendar.
+    ///
+    /// The accent is the one fill that shows up under a label all over the
+    /// product, and every widget that used it reached for the same literal
+    /// white. That is right on a dark accent and wrong on a bright one, and
+    /// which of the two a palette ships is not something a widget can know.
+    /// Asking here means the answer is the same everywhere it is asked, so a
+    /// selected row and a primary button do not disagree inside one frame.
+    pub fn on_accent(&self, min_ratio: f64) -> Color {
+        self.ink_on_any(&[self.accent[ACCENT_PRIMARY_IDX]], Color::WHITE, min_ratio)
+    }
+
     /// An [`AccentChip`] resolved for `ground`, with its label clearing
     /// `min_ratio` against the pill's own body.
     ///
