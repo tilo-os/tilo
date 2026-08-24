@@ -1933,7 +1933,16 @@ impl App {
                     if changed {
                         self.publish_remark_destinations();
                     }
-                    for c in collaborators {
+                    // Presence is what this app knows about *other*
+                    // participants -- their carets, their pointers, the
+                    // names drawn beside them. The row a machine now sends
+                    // about its own participant is not that, and letting it
+                    // in would put the local user in every list built from
+                    // this store, including chat's `@` picker. It is
+                    // deliberately new information going to exactly one
+                    // reader: an app asking which participant it is, off
+                    // the event itself.
+                    for c in collaborators.into_iter().filter(|c| !c.is_self) {
                         // The roster says who is here and what they are
                         // called. It does **not** say where their
                         // pointer is, so it does not make one: a
