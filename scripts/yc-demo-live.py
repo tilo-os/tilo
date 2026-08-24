@@ -685,8 +685,9 @@ class Live:
         code = self.agent_proc.returncode
         self.agent_done_at = time.time()
         if code == 0:
-            yc.claim("the agent carried out an instruction written to it "
+            yc.claim("the agent answered an instruction written to it "
                      "in the document", self.agent_applied, True)
+            self.read_back_what_it_wrote()
         else:
             tail = ""
             try:
@@ -697,6 +698,55 @@ class Live:
             yc.gap(f"qos-agent exited {code} — {tail.strip()[-200:]}")
         self.say(f"Claude has finished (exit {code}); giving the network "
                  f"{SYNC_GRACE_S:.0f}s before looking at xaver's screen")
+
+    def read_back_what_it_wrote(self) -> None:
+        """Ask the document what is in it, rather than the log what happened.
+
+        The claim above is the one that has been passing while the frame
+        showed the opposite, and the reason is worth stating where it can
+        be seen: it comes off `applied .*` in the agent's log, and a
+        refusal is applied too. It is one `SpliceText` writing a sentence
+        over the instruction, logged in exactly the same words as the
+        table. So "the agent carried out an instruction" was true of a
+        refusal, true of a wall of jargon, and true of the best sentence
+        in the film, and a sweep reporting that every claim held told
+        nobody which of the three had been recorded.
+
+        This asks the app instead, over the same protocol the scripted
+        half's readback uses, and asserts on the two things that tell
+        them apart: the run sheet's own content is on the page, and no
+        refusal is. Both, because either alone can mislead -- a page can
+        carry the notes it always carried while the agent refused beside
+        them, and an agent that wrote nothing at all refuses nothing.
+        """
+        reader = None
+        try:
+            reader = yc.DocumentReader(self.q.collab_json_sock, str(self.room),
+                                       record=None)
+            doc, carried = reader.await_document(yc.AGENT_BULLET_PROOF, 20.0)
+        except OSError as e:
+            yc.gap(f"the document could not be read back ({e}), so what is "
+                   f"on the page was not established")
+            return
+        finally:
+            if reader is not None:
+                reader.close()
+        if doc is None:
+            yc.gap("no app answered with the document, so what is on the "
+                   "page was not established")
+            return
+        yc.claim("and the page carries the run sheet's own content",
+                 carried, True)
+        # An address is how the agent dispatches; a refusal quoting one is
+        # the frame this looks for. Searched as raw bytes because that is
+        # what the snapshot is, and both spellings of the fault are the
+        # same substring.
+        refused = b"I can't" in doc
+        yc.claim("and it is not a refusal", refused, False)
+        if refused:
+            yc.gap("the agent answered in the document, and what it wrote "
+                   "was that it could not do what was asked -- which is "
+                   "honest, and is not the beat")
 
     # -- the loop ----------------------------------------------------
 
