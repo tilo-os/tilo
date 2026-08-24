@@ -164,6 +164,17 @@ impl FilesProvider {
         }
     }
 
+    /// The directory this provider searches, and the only one it can
+    /// return results from.
+    ///
+    /// Exposed so a caller can assert on it: "which home is the palette
+    /// pointed at" is a question the screenshot harness and the demo rig
+    /// both need a straight answer to, and inferring it from a query's
+    /// results only works once the background walk has finished.
+    pub fn root(&self) -> &Path {
+        &self.home
+    }
+
     /// Force a re-walk of the home directory. Idempotent; safe to call
     /// from any thread. The palette's refresh doesn't call this — a
     /// future settings toggle / inotify hook will.
