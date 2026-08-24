@@ -239,6 +239,12 @@ pub struct ClientInput {
     /// per [`JUMP_PX_PER_DETENT`] of travel while a clicky wheel fires
     /// one per detent. See [`WheelJumpAccum`].
     jump_wheel: WheelJumpAccum,
+    /// Travel accumulated by the sideways window-switch flick.
+    ///
+    /// Its own, not shared with `jump_wheel`: that one resets whenever the
+    /// sign changes, so an Alt+wheel and a sideways flick would each throw
+    /// away the other's partial travel and both would feel unreliable.
+    sideways_wheel: WheelJumpAccum,
 }
 
 /// Resolve where an Alt+Shift wheel jump of `steps` windows lands. A
@@ -1062,6 +1068,14 @@ pub fn evdev_button(button: MouseButton) -> Option<u32> {
 /// positive, so both components are negated. Discrete wheels also carry a
 /// `v120` step count (120 units = one notch) that clients use for
 /// stepped scrolling.
+/// How much sideways travel makes one window-switch detent.
+///
+/// `dx` above is already normalised to line-equivalents — a clicky wheel
+/// reports whole lines, and pixel deltas are divided by 40 to match. So one
+/// line of travel is one window, which is what a notch of a tilt wheel
+/// produces and roughly what a deliberate two-finger flick produces too.
+const JUMP_PX_PER_DETENT_X: f64 = 1.0;
+
 pub fn axis_values(delta: MouseScrollDelta) -> ((f64, f64), Option<(i32, i32)>) {
     match delta {
         MouseScrollDelta::LineDelta(h, v) => (
@@ -2001,10 +2015,34 @@ pub fn route_input(
                 };
                 let sideways = dx.abs() > 0.5 && dx.abs() > dy.abs() * 2.0;
                 let with_super = mods.super_key() && dy.abs() > 0.5;
+                // One window per detent, not one per event.
+                //
+                // A single flick of a wheel arrives as a burst of events,
+                // and stepping on each of them walked several windows at
+                // once — the gesture worked and was unusable. The same
+                // accumulator the Alt+wheel jump uses fires on whole
+                // detents and keeps the remainder, so a clicky wheel moves
+                // exactly one window per notch and a trackpad has to travel
+                // a notch's worth before anything moves.
+                //
+                // Rightward travel moves to the window on the LEFT, which
+                // is the direction a scrollbar moves under the same push
+                // and what anyone not coming from macOS expects. This is
+                // the reverse of what shipped an hour ago.
                 let step = if sideways {
-                    Some(if dx > 0.0 { 1 } else { -1 })
+                    let detents = -dx / JUMP_PX_PER_DETENT_X;
+                    let whole = state
+                        .client_input
+                        .sideways_wheel
+                        .push(detents, Instant::now());
+                    (whole != 0).then_some(whole.signum())
                 } else if with_super {
-                    Some(if dy > 0.0 { 1 } else { -1 })
+                    let detents = -dy / JUMP_PX_PER_DETENT_X;
+                    let whole = state
+                        .client_input
+                        .sideways_wheel
+                        .push(detents, Instant::now());
+                    (whole != 0).then_some(whole.signum())
                 } else {
                     None
                 };
