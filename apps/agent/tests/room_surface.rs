@@ -248,6 +248,30 @@ fn page_with_bullets(instruction: &str) -> AutoCommit {
     doc
 }
 
+/// A page carrying only the line that asks — no heading, no structure.
+///
+/// The shape a document is actually in during the beat this exists for: it
+/// was opened a moment ago, nobody has written in it, and applications start
+/// empty. `page` seeds a heading, which is why every test built on it missed
+/// that placing a picture was exported *only* under one.
+fn page_without_a_heading(instruction: &str) -> AutoCommit {
+    let mut doc = AutoCommit::new();
+    doc.set_actor(automerge::ActorId::from("quinten".as_bytes()));
+    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    {
+        let mut dm = qdoc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
+        let p = dm.insert_block(None, "paragraph");
+        dm.splice_text(&p, 0, 0, instruction);
+    }
+    doc.commit();
+    doc
+}
+
 fn page(heading: &str, instruction: Option<&str>) -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("quinten".as_bytes()));
@@ -1364,6 +1388,10 @@ fn block_kinds(doc: &AutoCommit) -> Vec<String> {
 ///   original file: both put a picture on the page, and only one of them is
 ///   what was asked for.
 #[test]
+// Its second step carries content between two applications, so it records a
+// crossing in the session's process-wide ledger — the same one the tests
+// below read. They take turns rather than draining each other's.
+#[serial_test::serial]
 fn one_instruction_crops_in_one_app_and_places_the_result_in_the_other() {
     let files = tempfile::tempdir().expect("tempdir");
     let (path, w, h) = seed_photograph(files.path());
@@ -2020,5 +2048,171 @@ fn a_broker_with_no_desktop_says_so_rather_than_going_quiet() {
         said.contains("cannot open applications"),
         "and it must repeat the session's own reason rather than substitute a \
          timeout for it: {said:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What the room is shown of work nobody can watch being done
+// ---------------------------------------------------------------------------
+
+/// **The agent's work becomes something on screen.**
+///
+/// Everything else about the two-step is already asserted: the crop lands in
+/// the photo editor's document, the cropped result lands in the word
+/// processor's, attributed to the agent. All of it is *state*. A person
+/// sitting in front of the machine sees a picture appear in a document with
+/// nothing in between, and has to be told what happened.
+///
+/// The session draws a crossing when it can tell that content moved from one
+/// application into another — and for its own applications it can, because
+/// the bytes leave a sandbox through the collaboration socket on a route
+/// naming the app that sent them. The agent produces no such offer: it asks
+/// the photo editor's own code for its product and hands the value to the
+/// word processor's action, both inside itself, and what reaches the session
+/// is two document deltas that look unrelated.
+///
+/// So it says so, and this asserts that the session heard it — over the
+/// broker the compositor actually binds, from the agent's own dispatch, with
+/// nothing in this test calling the recording function itself.
+///
+/// The document deliberately has **no heading**. That is the state a document
+/// is in when it has just been opened, and until placing a picture was
+/// exported by the document itself there was nowhere in such a document for
+/// one to go — so this asserts the crossing and the thing that makes the
+/// crossing reachable in the same run.
+#[test]
+#[serial_test::serial]
+fn the_agent_s_hand_off_between_two_applications_is_reported_to_the_session() {
+    // The ledger is process-wide, the way the compositor reads it. Anything a
+    // neighbouring test left behind would otherwise be read as this one's.
+    let _ = shell::shell::action_flight::take_pending();
+
+    let files = tempfile::tempdir().expect("tempdir");
+    let (path, w, h) = seed_photograph(files.path());
+
+    let room = room();
+    let mut page_peer = Peer::new(
+        &room,
+        WORD_PROCESSOR,
+        "quinten",
+        page_without_a_heading(
+            r#"Scribe: crop the photograph to "0.25,0.25,0.5,0.5" and place image in the document"#,
+        ),
+        |d| qdoc::model::open(d, &automerge::ROOT).is_ok(),
+    );
+    let mut photo_peer = Peer::new(&room, PHOTO_EDITOR, "mira", photo_doc(&path, w, h), |d| {
+        !photos::doc::PhotosDoc::is_empty(d)
+    });
+
+    let done = run_room(
+        agent_cfg(&room, granting(&["word-processor", "photos"]), None),
+        &mut [&mut page_peer, &mut photo_peer],
+        Duration::from_secs(30),
+        |peers| placed_image(&peers[0].doc).is_some(),
+    );
+    let text: Vec<String> = blocks(&page_peer.doc).iter().map(|b| b.text.clone()).collect();
+    assert!(
+        done,
+        "no image reached a document with no heading in it, so there was no \
+         hand-off to report; the page reads {text:?}"
+    );
+    let (placed, _, _) = placed_image(&page_peer.doc).expect("checked above");
+
+    // The session's own record, drained the way the compositor drains it on
+    // the next frame it was going to draw anyway.
+    let pending = shell::shell::action_flight::take_pending();
+    let flight = pending
+        .iter()
+        .find(|f| f.hash == placed)
+        .unwrap_or_else(|| {
+            panic!(
+                "the picture reached the page and the session was told nothing \
+                 about where it came from, so nothing would be drawn. Recorded: {:?}",
+                pending
+            )
+        });
+
+    // Both ends, and the right way round. A crossing that named the word
+    // processor at both ends would draw an object leaving the window it was
+    // arriving at.
+    assert_eq!(
+        flight.from_app, "dev.qos.photos",
+        "the object has to leave the application that produced it",
+    );
+    assert_eq!(
+        flight.to_app, "dev.qos.word-processor",
+        "and arrive at the one whose action was addressed",
+    );
+
+    // Who did it is the session's answer, not the agent's claim: the broker
+    // resolves it for this connection exactly as it does for the presence
+    // that names the agent's caret, which is what makes the crossing the same
+    // colour as the participant a viewer can already see working.
+    assert_eq!(
+        flight.actor, AGENT,
+        "the crossing is attributed to the participant the session resolved \
+         for this connection",
+    );
+
+    // Deliberately *not* asserted here: that the bytes behind the crossing
+    // reached this session. The agent, the broker and both peers are one
+    // process sharing one blob store, so the content is in it because the
+    // agent put it there — a check would pass with the offer removed
+    // entirely, which makes it a check of nothing. What the offer is for, and
+    // where it can honestly be proven, is two stores and two machines; see
+    // `shell/tests/document_content_crosses.rs` for that shape.
+
+    // Nothing draws twice. A drain is the compositor taking the record, and a
+    // record that survived it would replay the motion on the next frame.
+    assert!(
+        shell::shell::action_flight::take_pending().is_empty(),
+        "a drained crossing must not come back",
+    );
+}
+
+/// The same dispatch, where nothing crossed an application boundary.
+///
+/// An operation given content the step before it did not produce has no
+/// hand-off to report, and reporting one anyway would put a picture on
+/// somebody's screen travelling between two windows for work that happened
+/// inside one of them. Asserted on the same path as the test above, so the
+/// two differ only in whether a crossing really occurred.
+#[test]
+#[serial_test::serial]
+fn an_instruction_that_crosses_nothing_reports_no_crossing() {
+    let _ = shell::shell::action_flight::take_pending();
+
+    let room = room();
+    let mut page_peer = Peer::new(
+        &room,
+        WORD_PROCESSOR,
+        "quinten",
+        // Centring a named heading, and not "insert table": the word
+        // "table" names a composition before it names an exported action, so
+        // that instruction is answered by the recipe vocabulary and never
+        // reaches a dispatch at all — which would make this test pass
+        // without ever exercising the path it is about. Centring goes
+        // through `perform`, with an argument that is not content.
+        page("Sound check", Some("Scribe: centre the Sound check")),
+        |d| qdoc::model::open(d, &automerge::ROOT).is_ok(),
+    );
+
+    let done = run_room(
+        agent_cfg(&room, granting(&["word-processor"]), None),
+        &mut [&mut page_peer],
+        Duration::from_secs(20),
+        |peers| attr_of(&peers[0].doc, "heading", "align").is_some(),
+    );
+    let text: Vec<String> = blocks(&page_peer.doc).iter().map(|b| b.text.clone()).collect();
+    assert!(
+        done,
+        "the heading was never centred, so no operation was dispatched and \
+         this proves nothing about crossings; the page reads {text:?}"
+    );
+
+    assert!(
+        shell::shell::action_flight::take_pending().is_empty(),
+        "an operation that took nothing out of another application must leave \
+         no crossing to draw",
     );
 }
