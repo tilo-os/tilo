@@ -1393,7 +1393,7 @@ impl App {
         // scope (teardown / headless) announces nothing.
         if let Some(k) = key {
             if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                eprintln!(
+                crate::diag!(
                     "[app] set scope; collab connected={}; broadcasting Arrived",
                     self.collab_manager.is_connected()
                 );
@@ -1527,7 +1527,7 @@ impl App {
         let delta = self.state.save_incremental();
         if !delta.is_empty() {
             if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                eprintln!("[app] broadcast doc delta {}B", delta.len());
+                crate::diag!("[app] broadcast doc delta {}B", delta.len());
             }
             self.collab_manager
                 .send(crate::collaboration::CollabRequest::SyncIncremental { data: delta });
@@ -1779,7 +1779,7 @@ impl App {
                     // MERGE incoming full state rather than replacing the
                     // doc — a replace clobbers our own concurrent edits.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!("[app] recv CRDTUpdate {}B", data.len());
+                        crate::diag!("[app] recv CRDTUpdate {}B", data.len());
                     }
                     if let Ok(mut incoming) = State::load(&data) {
                         let _ = self.state.doc.merge(&mut incoming.doc);
@@ -1797,7 +1797,7 @@ impl App {
                     // from a debug run — the two ends looked identical whether
                     // the delta was dropped in transit or applied silently.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!("[app] recv CRDTIncremental {}B", data.len());
+                        crate::diag!("[app] recv CRDTIncremental {}B", data.len());
                     }
                     if self.apply_remote_delta(&data) {
                         self.presence_ctx.note_remote_text_edit(Instant::now());
@@ -1815,7 +1815,7 @@ impl App {
                     // decryption between extraction and apply; the envelope
                     // metadata stays cleartext.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!(
+                        crate::diag!(
                             "[app] recv SignedCRDTIncremental from {} ({}B payload)",
                             "<peer>",
                             envelope.payload.len()
@@ -1836,7 +1836,7 @@ impl App {
                     // `exhausted` flag separately; the toolkit's
                     // default surface is just to apply.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!("[app] recv ScrollbackBatch ({} ops)", ops.len());
+                        crate::diag!("[app] recv ScrollbackBatch ({} ops)", ops.len());
                     }
                     for envelope in ops {
                         let _ = self.state.load_incremental(&envelope.payload);
@@ -1854,7 +1854,7 @@ impl App {
                     // a repaint the picture would not appear until the next
                     // keystroke.
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!("[app] recv BlobArrived {hash} ({}B)", bytes.len());
+                        crate::diag!("[app] recv BlobArrived {hash} ({}B)", bytes.len());
                     }
                     self.layout_dirty = true;
                 }
@@ -2043,7 +2043,7 @@ impl App {
             RemotePresenceEffect::PeerArrived => {
                 let data = self.state.save();
                 if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                    eprintln!("[app] recv Arrived; replying full state {}B", data.len());
+                    crate::diag!("[app] recv Arrived; replying full state {}B", data.len());
                 }
                 self.collab_manager
                     .send(crate::collaboration::CollabRequest::SyncCRDT { data });
@@ -2830,7 +2830,7 @@ impl App {
             Some(id) => {
                 self.collab_manager = CollaborationManager::for_record(&id);
                 if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                    eprintln!(
+                    crate::diag!(
                         "[app] checked out record {}; collab connected={}",
                         id.as_str(),
                         self.collab_manager.is_connected()
@@ -2952,7 +2952,25 @@ impl App {
             a11y_adapter: None,
             a11y_proxy,
         };
-        event_loop.run_app(&mut handler).unwrap();
+        // The event loop ending with a code is not this application
+        // failing. When the compositor goes away — the session ended, the
+        // shell exited, the socket was closed — winit notices the dropped
+        // Wayland connection, stops the loop, and reports the dropped
+        // connection's `errno` as an exit code. It has no way to say "the
+        // display went away" more precisely than that, and says so.
+        //
+        // By the time it returns here the shutdown has already happened:
+        // winit dispatches `LoopExiting` first, so `exiting` has flushed the
+        // autosave and joined the render thread. Unwrapping turned that
+        // finished, orderly shutdown into a panic on the way out the door —
+        // and under the release and demo profiles' `panic = "abort"`, into
+        // SIGABRT and a core dump, for every application on screen, every
+        // time the compositor exited.
+        //
+        // So: say what happened, and leave quietly.
+        if let Err(e) = event_loop.run_app(&mut handler) {
+            crate::diag!("qos: the display connection ended ({e}); shutting down");
+        }
     }
 }
 
@@ -3971,7 +3989,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     // `shape=0us hit=N miss=0` — every label reused.
                     let (shape_hits, shape_misses, shape_ns) =
                         app.text_renderer.take_shape_stats();
-                    eprintln!(
+                    crate::diag!(
                         "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
                         t_send_us,
                         if t_relayout_branch { "Y" } else { "n" },
