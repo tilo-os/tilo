@@ -64,7 +64,7 @@
 
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -886,11 +886,48 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
             cmd.env(k, v);
         }
         // The app is not a terminal job: it gets no stdin, and its
-        // output is relayed (not inherited) so we can quote it back in a
+        // output goes somewhere we can read so we can quote it back in a
         // failure notification.
+        //
+        // That somewhere is a FILE, not a pipe, and the difference is the
+        // whole point. A pipe's reading end lives in this process, so it
+        // dies when this process does — and an application whose stdout or
+        // stderr is a pipe with no reader is one `println!` away from
+        // death, because the standard library answers a failed write with
+        // a panic and the release profile answers a panic with `SIGABRT`.
+        // Every application on screen died that way each time a session
+        // ended.
+        //
+        // A regular file cannot break. It does not care whether anyone is
+        // reading, it outlives this process, and no library the
+        // application happens to link can be made fatal by it. That last
+        // part is what a pipe could never give: the print that killed
+        // these applications was not in our code, and auditing every
+        // dependency for `println!` is not a thing anyone can finish.
         cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
+        let log = open_app_log(&app.package_id);
+        match &log {
+            Some((_, file)) => match file.try_clone() {
+                Ok(err_half) => {
+                    cmd.stdout(Stdio::from(err_half));
+                    match file.try_clone() {
+                        Ok(out_half) => cmd.stderr(Stdio::from(out_half)),
+                        Err(_) => cmd.stderr(Stdio::null()),
+                    };
+                }
+                Err(_) => {
+                    cmd.stdout(Stdio::null());
+                    cmd.stderr(Stdio::null());
+                }
+            },
+            // No writable place for a log. Discarding output is worse than
+            // relaying it and better than handing the application a pipe
+            // that can kill it.
+            None => {
+                cmd.stdout(Stdio::null());
+                cmd.stderr(Stdio::null());
+            }
+        }
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -911,23 +948,31 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
             kind: LaunchEventKind::Started { pid: child.id() },
         });
 
-        // Relay stdout on its own thread so a chatty app can't fill the
-        // pipe and wedge the process while we're reading stderr.
-        if let Some(stdout) = child.stdout.take() {
-            let tag = app.package_id.clone();
-            let _ = std::thread::Builder::new()
-                .name("qos-app-stdout".to_string())
-                .spawn(move || {
-                    relay_lines(stdout, |line| ui::diag!("[app {tag}] {line}"));
-                });
-        }
-
-        // stderr is both echoed and kept (last N lines) for the failure
-        // notification.
+        // Follow the log while the app runs, so its output still reaches
+        // this session's own log as it happens rather than only at the
+        // end, and keep the last N lines for the failure notification.
         let mut tail: VecDeque<String> = VecDeque::with_capacity(STDERR_TAIL_LINES);
-        if let Some(stderr) = child.stderr.take() {
-            let tag = app.package_id.clone();
-            relay_lines(stderr, |line| {
+        let mut follower = log.as_ref().and_then(|(path, _)| LogFollower::open(path));
+        let tag = app.package_id.clone();
+        let status = loop {
+            if let Some(f) = follower.as_mut() {
+                f.drain(|line| {
+                    ui::diag!("[app {tag}] {line}");
+                    if tail.len() == STDERR_TAIL_LINES {
+                        tail.pop_front();
+                    }
+                    tail.push_back(line);
+                });
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) => std::thread::sleep(LOG_POLL),
+                Err(e) => break Err(e),
+            }
+        };
+        // Whatever the app wrote between the last poll and its exit.
+        if let Some(f) = follower.as_mut() {
+            f.drain(|line| {
                 ui::diag!("[app {tag}] {line}");
                 if tail.len() == STDERR_TAIL_LINES {
                     tail.pop_front();
@@ -935,8 +980,9 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
                 tail.push_back(line);
             });
         }
-
-        let status = child.wait();
+        if let Some((path, _)) = &log {
+            let _ = std::fs::remove_file(path);
+        }
         let kind = match status {
             Ok(status) if status.success() => LaunchEventKind::Exited,
             Ok(status) => LaunchEventKind::Failed {
@@ -964,38 +1010,78 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
     }
 }
 
-/// Relay every line `source` produces until it truly ends, handing each to
-/// `sink`.
+/// How often the launch thread looks for new output while the app runs.
+const LOG_POLL: Duration = Duration::from_millis(60);
+
+/// Create the file an application's stdout and stderr are pointed at.
 ///
-/// The reading end of this pipe is the application's stderr. Dropping it
-/// while the application is alive is not a quiet loss of logging: the
-/// application's next write fails, and a failed write to stderr is fatal to
-/// the process making it. So this reads to real end-of-file and nothing
-/// short of it.
+/// Returns its path and an open handle, or `None` when there is nowhere
+/// writable to put it. The name carries the package id and the pid so two
+/// launches of the same app cannot write over each other.
 ///
-/// That rules out the two ways the previous `lines().map_while(Result::ok)`
-/// could stop early. It stopped on any error, and the error it was most
-/// likely to see was invalid UTF-8: several processes share one pipe, a
-/// write past `PIPE_BUF` is not atomic, and two of them interleaving can
-/// tear a multi-byte character in half. Reading bytes and decoding each
-/// line lossily means there is no decode step left to fail. A genuine I/O
-/// error still ends the relay, because at that point the descriptor is not
-/// going to yield anything more.
-fn relay_lines(source: impl Read, mut sink: impl FnMut(String)) {
-    let mut reader = BufReader::new(source);
-    let mut buf: Vec<u8> = Vec::new();
-    loop {
-        buf.clear();
-        match reader.read_until(b'\n', &mut buf) {
-            Ok(0) => break, // the writing end closed: the app is done
-            Ok(_) => {
-                while matches!(buf.last(), Some(b'\n' | b'\r')) {
-                    buf.pop();
-                }
-                sink(String::from_utf8_lossy(&buf).into_owned());
+/// The file is unlinked once the app exits — it exists to be followed while
+/// the app runs, not to accumulate.
+fn open_app_log(package_id: &str) -> Option<(PathBuf, std::fs::File)> {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("qos-app-logs");
+    std::fs::create_dir_all(&dir).ok()?;
+    // A package id is dotted and otherwise tame, but it arrives from a
+    // manifest, so keep it to characters that cannot leave the directory.
+    let safe: String = package_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+        .collect();
+    let path = dir.join(format!("{safe}.{}.log", std::process::id()));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .ok()?;
+    Some((path, file))
+}
+
+/// Reads an application's log file as it grows.
+///
+/// A separate handle from the one the child writes through, with its own
+/// offset, so following the file never disturbs the app's own position.
+struct LogFollower {
+    file: std::fs::File,
+    partial: Vec<u8>,
+}
+
+impl LogFollower {
+    fn open(path: &Path) -> Option<Self> {
+        std::fs::File::open(path).ok().map(|file| Self { file, partial: Vec::new() })
+    }
+
+    /// Hand `sink` every complete line written since the last call.
+    ///
+    /// A trailing fragment is held back until its newline arrives, so a
+    /// line caught mid-write is reported once and whole rather than twice
+    /// in halves. Decoding is lossy: the file is bytes, several processes
+    /// may be appending to it, and a torn multi-byte character must cost
+    /// the character rather than the rest of the log.
+    fn drain(&mut self, mut sink: impl FnMut(String)) {
+        let mut buf = [0u8; 8192];
+        loop {
+            match self.file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => self.partial.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
             }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break,
+        }
+        while let Some(nl) = self.partial.iter().position(|&b| b == b'\n') {
+            let mut line: Vec<u8> = self.partial.drain(..=nl).collect();
+            line.pop();
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            sink(String::from_utf8_lossy(&line).into_owned());
         }
     }
 }
@@ -1225,32 +1311,38 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// A byte the relay cannot decode must not end the relay.
-    ///
-    /// The reading end of this pipe is an application's stderr. When the
-    /// relay stops, that end is dropped, and the application's next write
-    /// to stderr fails — which kills it. So a torn multi-byte character in
-    /// the middle of the stream has to cost the one line it damaged, not
-    /// every line after it and the application too.
-    #[test]
-    fn a_line_the_relay_cannot_decode_does_not_end_the_relay() {
-        let (reader, mut writer) = std::io::pipe().expect("pipe");
-        std::thread::spawn(move || {
-            writer.write_all(b"before\n").unwrap();
-            // A lone continuation byte: what a write split across the
-            // middle of a multi-byte character leaves behind.
-            writer.write_all(b"torn \xe2\x86 here\n").unwrap();
-            writer.write_all(b"after\n").unwrap();
-        });
-
+    /// Write `bytes` to a scratch file and read back every line the
+    /// follower produces from it, the way the launch thread does.
+    fn followed(chunks: &[&[u8]]) -> Vec<String> {
+        let dir = tempfile::tempdir().expect("scratch dir");
+        let path = dir.path().join("app.log");
+        let mut file = std::fs::File::create(&path).expect("create log");
+        let mut follower = LogFollower::open(&path).expect("follow log");
         let mut seen = Vec::new();
-        relay_lines(reader, |line| seen.push(line));
+        for chunk in chunks {
+            file.write_all(chunk).expect("write log");
+            file.flush().expect("flush log");
+            follower.drain(|line| seen.push(line));
+        }
+        seen
+    }
 
-        assert_eq!(
-            seen.len(),
-            3,
-            "every line must arrive, undecodable one included: {seen:?}"
-        );
+    /// A byte the follower cannot decode must not end the follow.
+    ///
+    /// This file is where an application's stdout and stderr land, and the
+    /// launch thread reads it while the application runs. The previous
+    /// relay used `lines().map_while(Result::ok)`, which stopped at the
+    /// first error — and the error it was most likely to meet is invalid
+    /// UTF-8, because several processes append to this one destination and
+    /// a write past `PIPE_BUF` is not atomic, so two of them interleaving
+    /// tears a multi-byte character in half. One torn character must cost
+    /// the character, not every line after it.
+    #[test]
+    fn a_line_that_cannot_be_decoded_does_not_end_the_follow() {
+        // A lone continuation byte: what a write split across the middle
+        // of a multi-byte character leaves behind.
+        let seen = followed(&[b"before\ntorn \xe2\x86 here\nafter\n"]);
+        assert_eq!(seen.len(), 3, "every line must arrive, undecodable one included: {seen:?}");
         assert_eq!(seen[0], "before");
         assert_eq!(
             seen[2], "after",
@@ -1258,32 +1350,26 @@ mod tests {
         );
     }
 
-    /// The relay ends when, and only when, the writing end closes.
+    /// Lines arrive as they are written, not only at the end.
     #[test]
-    fn the_relay_ends_at_end_of_file() {
-        let (reader, mut writer) = std::io::pipe().expect("pipe");
-        std::thread::spawn(move || {
-            writer.write_all(b"one\ntwo\n").unwrap();
-            drop(writer);
-        });
-
-        let mut seen = Vec::new();
-        relay_lines(reader, |line| seen.push(line));
+    fn lines_arrive_as_the_application_writes_them() {
+        let seen = followed(&[b"one\n", b"two\n"]);
         assert_eq!(seen, vec!["one".to_string(), "two".to_string()]);
     }
 
-    /// A final line with no newline is still relayed.
+    /// A line caught mid-write is held back until its newline arrives, so
+    /// it is reported once and whole rather than twice in halves.
     #[test]
-    fn a_last_line_without_a_newline_is_still_relayed() {
-        let (reader, mut writer) = std::io::pipe().expect("pipe");
-        std::thread::spawn(move || {
-            writer.write_all(b"trailing").unwrap();
-            drop(writer);
-        });
+    fn a_half_written_line_waits_for_its_newline() {
+        let seen = followed(&[b"half", b" a line\n"]);
+        assert_eq!(seen, vec!["half a line".to_string()]);
+    }
 
-        let mut seen = Vec::new();
-        relay_lines(reader, |line| seen.push(line));
-        assert_eq!(seen, vec!["trailing".to_string()]);
+    /// Carriage returns are trimmed with the newline.
+    #[test]
+    fn a_carriage_return_does_not_survive_into_the_line() {
+        let seen = followed(&[b"windows\r\n"]);
+        assert_eq!(seen, vec!["windows".to_string()]);
     }
 
     #[test]
