@@ -488,9 +488,24 @@ impl TileHost {
         }
         self.announced = Some(live);
     }
+    /// What this tile is called.
+    ///
+    /// A live app answers with its own name. It used to answer "App" —
+    /// the one occupant that genuinely knows what it is was the only one
+    /// that would not say, while a placeholder standing in for an app
+    /// that does not exist yet answered "Browser" or "Files". The name
+    /// was never missing: [`AppWidget::app_title`] has always been on the
+    /// trait, and every hosted app implements it.
+    ///
+    /// Deliberately not routed through [`AppKind`]: that vocabulary is
+    /// five values wide — Terminal, Files, Editor, Browser, Settings —
+    /// and this OS ships some forty apps, so most of them have no variant
+    /// to be named by and are only carrying the nearest one for the sake
+    /// of a tab glyph. Asking the app is the only answer that scales past
+    /// the fifth app.
     pub fn kind_string(&self) -> String {
         match &self.content {
-            TileContent::App(_) => "App".into(),
+            TileContent::App(w) => w.app_title().into(),
             TileContent::Stub { kind, .. } => kind.as_str().into(),
             TileContent::Notice { title, .. } => title.clone(),
         }
