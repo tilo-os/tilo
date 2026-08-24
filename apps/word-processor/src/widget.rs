@@ -157,9 +157,10 @@ struct ChromeColors {
     on_accent: Color,
     /// Scrollbar thumb tone.
     scrollbar: Color,
-    /// The paper sheet, derived from the theme's lightest surface when it is
-    /// genuinely light, else [`PAPER_DEFAULT`]. Always a light tone so the
-    /// dark-authored document ink stays readable.
+    /// The paper sheet: [`PAPER_DEFAULT`] in every palette, because it is
+    /// the ground the document's own ink was authored against rather than a
+    /// surface the chrome owns. See [`ChromeColors::for_theme`] for what it
+    /// used to be derived from and why that broke high contrast.
     paper: Color,
     /// How far the paper sheet is lifted off the desk behind it.
     paper_elevation: ui::tokens::Shadow,
