@@ -235,6 +235,14 @@ class WindowedSession(yc.Session):
             for var in ("DISPLAY", "XAUTHORITY"):
                 if os.environ.get(var):
                     env[var] = os.environ[var]
+            # The parent's `start` pins the language and hands the result
+            # down as `env`, so the common path arrives here already
+            # pinned. The `or os.environ` above is the one that does not:
+            # a caller that spawns through this wrapper without an env
+            # would take the operator's, and this is the session that has
+            # a window — the only one the camera sees. Re-pinning is a
+            # no-op on the pinned path and the whole guard on the other.
+            yc.pin_locale(env)
             env["WINIT_UNIX_BACKEND"] = "x11"
             env.pop("WAYLAND_DISPLAY", None)
             if self.bus_address:

@@ -710,6 +710,13 @@ class Live:
         self.agent_proc = subprocess.Popen(
             argv, stdout=open(self.agent_log, "w"),
             stderr=subprocess.STDOUT, cwd=REPO,
+            # The one process in this file that is spawned outside
+            # `Session.start`, so it is the one the session's own pin
+            # does not reach: without this it inherits the operator's
+            # environment wholesale. It writes into the document that is
+            # on camera, and it links the word processor — whose
+            # catalogue it would resolve in the operator's language.
+            env=yc.pin_locale(dict(os.environ)),
             preexec_fn=yc.die_with_parent(enabled=not yc.KEEP_SESSIONS))
         if not yc.KEEP_SESSIONS:
             yc.track(self.agent_proc)
