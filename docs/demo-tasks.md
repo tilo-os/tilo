@@ -34,7 +34,12 @@ on the real path · `[!]` landed but unverified, or regressed.
 
 - [x] **Peer pointer duplicated per window** — the key was discarded at
       the capnp door and re-synthesised; position now carries the space
-      it was measured in. Awaiting glyph counts from a real recording.
+      it was measured in. **Verified on a real recording**: one glyph at
+      40s, one at 50s having moved, none at 60s on the owner's own
+      screen. Before the fix, two at identical y, 810px apart while
+      their tiles were 812px apart. That the glyph *moves* is what
+      proves it is tracking a pointer rather than being a duplicate that
+      happens to be single.
 - [x] **Invite composer hand-rolled** — rebuilt on the shared text
       input and buttons; both explanatory sentences removed.
 - [!] **Invite button missing from the collaborators panel** —
