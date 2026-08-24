@@ -5662,6 +5662,18 @@ def open_the_rest_of_the_strip(quinten: Session) -> dict[str, dict]:
     """
     opened: dict[str, dict] = {}
     for app in STRIP_EXTRAS:
+        # The far end of the strip, before each launch. A new group is
+        # inserted *immediately right of whatever has focus*
+        # (`tab_binding.rs`), not appended — so the strip's order is
+        # decided by what is focused when each window arrives rather
+        # than by the order of these calls. The beat before this one
+        # leaves Files focused, which put both extras between Files and
+        # the word processor: the two windows that then had to be framed
+        # together were three groups apart, and the one the beat was
+        # about came back 788px past the right edge.
+        order = strip_order(quinten)
+        if order and order[-1]["surfaces"]:
+            jump_to_group(quinten, order[-1]["surfaces"][0])
         quinten.place_next_window(app)
         painted = quinten.launch(app, search=STRIP_SEARCH.get(app))
         if painted is None:
@@ -5706,10 +5718,22 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
     banner("the strip: four applications, and two of them in one window")
     cut("quinten")
 
-    note(f"the strip carries {len(strip_order(quinten))} window group(s), "
+    order = strip_order(quinten)
+    note(f"the strip carries {len(order)} window group(s), "
          f"{len(extras) + 2} applications")
 
     editor = extras.get(IMAGE_EDITOR)
+    # Only neighbours are ever in frame together on a strip, so the two
+    # windows the merge happens between have to be side by side for it to
+    # be watchable. Said here rather than left to be inferred from a
+    # framing that refuses two steps later.
+    if editor is not None and wp is not None:
+        a = group_index_of(quinten, wp, order)
+        b = group_index_of(quinten, editor, order)
+        if a is not None and b is not None and abs(a - b) != 1:
+            note(f"the word processor is group {a} and the image editor "
+                 f"group {b}, so they are not neighbours and cannot share "
+                 f"a frame")
 
     # The far end first, so the pan below runs right to left and ends on
     # the pair the tabbing happens to. Whichever of the two extras is
