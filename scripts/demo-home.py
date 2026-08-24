@@ -132,8 +132,16 @@ def stage(root: Path | None = None, *, fresh: bool = True) -> dict[str, str]:
     #
     # Net: staging fixes the file leak completely - a "~" search drops from
     # the operator's whole home directory to this corpus - and does not
-    # hide installed host applications. Choose demo queries that do not
-    # match host app names, or film on a machine without them.
+    # hide installed host applications.
+    #
+    # There is now a third option besides choosing demo queries that miss
+    # host app names or filming on a machine without them: set
+    # QOS_SHOTS_NO_HOST_APPS=1 and the palette's host-app provider stands
+    # down, leaving the group empty rather than redirected
+    # (HostApplicationsProvider::apps). The screenshot harness sets it;
+    # this rig deliberately does not, because what belongs on camera in a
+    # live demo is a decision for whoever is filming. Set it in the
+    # environment if the answer is no.
 
 
 def main() -> int:
