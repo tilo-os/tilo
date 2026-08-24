@@ -201,6 +201,114 @@ fn what_is_typed_reaches_the_message_and_enter_sends_it() {
     );
 }
 
+/// The panel takes the keyboard, and the file view stops having it.
+///
+/// Reported from a live session: right-click, type, and the letters reach
+/// *Files* — selecting rows by type-ahead — while the panel sits there
+/// looking like it has focus. The panel always asked for focus on open
+/// (`RemarkCompose::open_for` sets it); what was missing is that no event ever
+/// reached the panel, so the app underneath went on consuming keys beneath an
+/// overlay that looked modal and was not.
+///
+/// Asserted on the app's own state rather than on a focus flag, because the
+/// symptom was the app *acting*: a selection that moves while somebody is
+/// writing a sentence is the thing a person sees.
+#[test]
+fn the_panel_takes_the_keyboard_and_the_file_view_stops_acting_on_it() {
+    let dir = staged();
+    let (mut h, at) = selected(dir.path(), 2);
+    let selection_before = h.w.selected_indices();
+    let path_before = h.w.current_path();
+
+    right_press(&mut h, at);
+    assert!(h.w.remark_is_open());
+
+    // Letters that the file view would otherwise treat as type-ahead — `a`
+    // and `z` both name rows in this directory.
+    type_str(&mut h, "az make square");
+
+    assert_eq!(
+        h.w.selected_indices(),
+        selection_before,
+        "typing into the compose moved the file view's selection, so the keys \
+         reached the application behind the panel"
+    );
+    assert_eq!(h.w.current_path(), path_before, "typing navigated the file view");
+    assert!(
+        h.w.remark_text().contains("az make square"),
+        "the keys did not reach the message; the field holds {:?}",
+        h.w.remark_text()
+    );
+}
+
+/// Dismissing the menu takes an empty panel with it.
+///
+/// They open on one gesture. A panel left standing over a menu that has gone
+/// is an overlay attached to nothing — reported from a live session, where
+/// closing the menu left the compose behind.
+#[test]
+fn dismissing_the_menu_dismisses_an_unwritten_panel() {
+    let dir = staged();
+    let (mut h, at) = selected(dir.path(), 2);
+
+    right_press(&mut h, at);
+    assert!(h.w.remark_is_open());
+    assert!(h.w.context_menu_is_open());
+
+    // A click well away from both, which is how a menu is dismissed.
+    h.move_cursor(Point::new(20.0, 700.0));
+    h.press();
+    h.release();
+    // Level-triggered, so it settles on the next event the app sees.
+    h.move_cursor(Point::new(21.0, 700.0));
+
+    assert!(!h.w.context_menu_is_open(), "the click did not dismiss the menu");
+    assert!(
+        !h.w.remark_is_open(),
+        "the menu went and the compose panel was left standing over nothing"
+    );
+}
+
+/// A half-written sentence is not thrown away by a click aimed at something
+/// else. This is the case the old always-independent rule was protecting, and
+/// it is the only one that keeps the panel open.
+#[test]
+fn dismissing_the_menu_keeps_a_written_panel() {
+    let dir = staged();
+    let (mut h, at) = selected(dir.path(), 2);
+
+    right_press(&mut h, at);
+    type_str(&mut h, "half a thought");
+
+    h.move_cursor(Point::new(20.0, 700.0));
+    h.press();
+    h.release();
+    h.move_cursor(Point::new(21.0, 700.0));
+
+    assert!(
+        h.w.remark_is_open(),
+        "a sentence somebody was in the middle of writing was discarded by a \
+         click aimed at the menu"
+    );
+    assert!(h.w.remark_text().contains("half a thought"));
+}
+
+/// Escape closes both. The menu is part of the gesture the panel belongs to,
+/// so it must not be the visible remnant of something dismissed.
+#[test]
+fn escape_closes_the_panel_and_the_menu_together() {
+    let dir = staged();
+    let (mut h, at) = selected(dir.path(), 2);
+
+    right_press(&mut h, at);
+    assert!(h.w.remark_is_open() && h.w.context_menu_is_open());
+
+    press_key(&mut h, Key::Named(NamedKey::Escape), None);
+
+    assert!(!h.w.remark_is_open(), "Escape left the compose panel open");
+    assert!(!h.w.context_menu_is_open(), "Escape left the menu standing alone");
+}
+
 /// Escape leaves without sending. A composer that could only be escaped by
 /// sending would make every abandoned sentence a message.
 #[test]

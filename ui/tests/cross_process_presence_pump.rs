@@ -98,12 +98,16 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
                 CollabRequest::OfferBlob { hash, bytes } => {
                     CollabEvent::BlobArrived { hash, bytes }
                 }
-                // Signed-op sync, scrollback fetch and content requests
-                // aren't part of this presence-pump scenario — swallow them
-                // like `Hello`.
+                // Signed-op sync, scrollback fetch, content requests and
+                // published actions are not part of this presence-pump
+                // scenario — swallow them like `Hello`. Opening an
+                // application is addressed to a session rather than to an
+                // audience, and this relay hosts no desktop to address.
                 CollabRequest::SignedSyncIncremental { .. }
                 | CollabRequest::FetchScrollback { .. }
-                | CollabRequest::WantBlob { .. } => continue,
+                | CollabRequest::WantBlob { .. }
+                | CollabRequest::SendAction { .. }
+                | CollabRequest::OpenApp { .. } => continue,
             };
             let Ok(bytes) = serde_json::to_vec(&event) else {
                 continue;
