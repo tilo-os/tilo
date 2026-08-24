@@ -3678,6 +3678,147 @@ impl ShellOverlayHost {
     /// the last-scrolled id (rather than scrolling every frame) is what lets
     /// the user freely wheel away from the focused group without the strip
     /// yanking it back — only a genuine focus change re-centres it.
+    /// Which window group hosts `app`, if one on the active workspace does.
+    ///
+    /// `app` arrives spelled two ways. A window was adopted under its package
+    /// id (`dev.qos.word-processor`); an action's resource id carries the
+    /// namespace the app publishes its resources under (`word-processor`).
+    /// They name the same application, and neither side should have to learn
+    /// the other's vocabulary for a crossing to find its endpoints — so the
+    /// last dot-separated segment is what has to agree.
+    fn group_hosting_app(ws: &crate::shell::state::Workspace, app: &str) -> Option<(StripId, GroupId)> {
+        fn tail(s: &str) -> &str {
+            s.rsplit('.').next().unwrap_or(s)
+        }
+        let same = |a: &str| {
+            a.eq_ignore_ascii_case(app) || tail(a).eq_ignore_ascii_case(tail(app))
+        };
+        for strip in &ws.strips {
+            for group in &strip.window_groups {
+                for tab in &group.tabs {
+                    let hosts = match &tab.tile {
+                        crate::shell::state::TileContent::Foreign { app_id, .. } => same(app_id),
+                        _ => false,
+                    };
+                    if hosts {
+                        return Some((strip.id, group.id));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Where on screen an object leaving or arriving at `group` should be
+    /// drawn, this frame.
+    ///
+    /// Derived from the group's position on the strip's own canvas rather
+    /// than from its laid-out rect, because a group that is scrolled out of
+    /// view has no usable rect and is exactly the case that matters: the
+    /// destination is often off the edge when the action lands, and the
+    /// object has to be travelling toward where it really is while the strip
+    /// pans to reveal it. `canvas_x - scroll_x` is the same transform the row
+    /// paints its groups through, so the object stays locked to the window
+    /// for every frame of the pan.
+    fn group_anchor(&self, strip: StripId, group: GroupId) -> Option<Point> {
+        let &ptr = self.group_row_ptrs.get(&strip)?;
+        // SAFETY: see field doc on `group_row_ptrs`.
+        let row: &GroupRow = unsafe { &*ptr };
+        let (x0, x1) = row
+            .group_canvas_spans()
+            .into_iter()
+            .find(|(id, _, _)| *id == group)
+            .map(|(_, a, b)| (a, b))?;
+        let rect = row.get_rect();
+        if rect.width() <= 0.0 {
+            return None;
+        }
+        Some(Point::new(
+            rect.x0 + (x0 + x1) / 2.0 - row.scroll_x(),
+            rect.center().y,
+        ))
+    }
+
+    /// Turn what the door recorded into crossings, and pan to where each one
+    /// is going.
+    ///
+    /// The pan is part of the gesture rather than a separate courtesy. An
+    /// object arriving at a window that is off the edge of the screen is not
+    /// something anybody can watch, and a strip that jumped somewhere with no
+    /// visible cause would be worse than not moving at all. Revealing the
+    /// destination as the object travels to it is one movement with one
+    /// explanation: the desktop turns to look at where the thing is going.
+    fn pump_action_flights(&mut self) {
+        let now = Instant::now();
+        crate::shell::action_flight::retire(now);
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let reveal = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            let Some(ws) = tree.active_workspace() else {
+                return;
+            };
+            crate::shell::action_flight::promote(
+                |app| Self::group_hosting_app(ws, app),
+                |hash| qdoc::blobstore::store().get(hash),
+            )
+        };
+        for (strip, group) in reveal {
+            if let Some(&ptr) = self.group_row_ptrs.get(&strip) {
+                // SAFETY: see field doc on `group_row_ptrs`.
+                let row: &mut GroupRow = unsafe { &mut *ptr };
+                if row.group_is_laid_out(group) {
+                    row.scroll_group_into_view_animated(group, now);
+                    // The pan is a focus change like any other, so the
+                    // follow-the-active-group reconciler must not undo it on
+                    // the next frame by panning back to where focus still is.
+                    self.last_scrolled_active_group.insert(strip, group);
+                }
+            }
+        }
+    }
+
+    /// Paint every crossing in flight, above the applications it is crossing
+    /// between.
+    fn draw_action_flights(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let now = Instant::now();
+        crate::shell::action_flight::with_live(|flights| {
+            for f in flights {
+                let Some(t) = f.flight.progress(now) else {
+                    continue;
+                };
+                let (Some(from), Some(to)) = (
+                    self.group_anchor(f.from.0, f.from.1),
+                    self.group_anchor(f.to.0, f.to.1),
+                ) else {
+                    continue;
+                };
+                ui::presence::draw_action_flight(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                    &f.flight.actor,
+                    &f.name,
+                    f.content.as_ref(),
+                    from,
+                    to,
+                    t,
+                );
+            }
+        });
+    }
+
     fn scroll_active_group_into_view(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -6393,6 +6534,7 @@ impl Widget for ShellOverlayHost {
         // Runs after `harvest_active_tab_writeback` so a focus change made
         // this frame is already reflected in `active_group`.
         self.scroll_active_group_into_view();
+        self.pump_action_flights();
         // Cross-strip tab drag-drop (#151): drain any `GroupRow` that
         // published a cross-strip detach during this frame's events and
         // splice the dragged tab into whichever strip's row contains the
@@ -6734,6 +6876,9 @@ impl Widget for ShellOverlayHost {
         self.content
             .draw(scene, transform, text_renderer, theme, presence);
         self.draw_real_peers(scene, transform, text_renderer, theme, presence);
+        // An agent's crossing sits with the rest of presence: above the
+        // applications, below every overlay a person opened themselves.
+        self.draw_action_flights(scene, transform, text_renderer, theme, presence);
 
         // Floating sidebar wheel: above the desktop content, below every
         // overlay — including the scrims. It used to paint after the
@@ -9098,7 +9243,10 @@ impl Widget for ShellOverlayHost {
         // animation duration has fully elapsed, so at rest this returns
         // false and the app event loop can go idle.
         let now = Instant::now();
-        let qs_in_flight = self.qs_transition.is_animating(now);
+        // An object crossing between two applications must keep the frames
+        // coming for its whole duration, or it renders as a jump.
+        let flight_in_flight = crate::shell::action_flight::any_live();
+        let qs_in_flight = flight_in_flight || self.qs_transition.is_animating(now);
         let ws_settings_in_flight = self.ws_settings_transition.is_animating(now);
         let palette_in_flight = self.palette_transition.is_animating(now);
         let room_activity_in_flight = self.room_activity_transition.is_animating(now);

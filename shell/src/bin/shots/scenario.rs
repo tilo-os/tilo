@@ -270,6 +270,35 @@ pub enum Action {
     /// A capture of windows moving needs more than one of them on
     /// screen, and the default width is the whole display.
     SetWindowWidths(u16),
+    /// Record a crossing between two applications, the way the door
+    /// records one when an agent performs an action that carries content
+    /// out of one window and into another.
+    ///
+    /// The real trigger is an agent invoking an action whose argument is a
+    /// content hash, which a `--shots` render has no agent and no room to
+    /// carry — so the motion that matters most would be the one thing a
+    /// capture could never show. This puts real bytes in the blob store and
+    /// calls the same two functions the production path calls, so
+    /// everything downstream — resolving each application to its window,
+    /// panning the strip, drawing the object — is the code that runs live.
+    SeedActionFlight {
+        /// The application the content came from, and the one whose action
+        /// was addressed. Both are matched against the strip's real windows.
+        from_app: &'static str,
+        to_app: &'static str,
+    },
+    /// Sample a crossing at fixed points along its curve, capturing each as
+    /// `prefix-<ms>`.
+    ///
+    /// One offscreen frame costs far more wall time than the crossing
+    /// lasts, so stepping frames only ever catches an object that has not
+    /// left and one that has already arrived — the two moments that prove
+    /// least. This holds the production curve at a chosen millisecond
+    /// instead, the same escape `SampleMakeSpace` gives the strip's slide.
+    SampleActionFlight {
+        prefix: &'static str,
+        at_ms: &'static [u64],
+    },
     SwitchWorkspace(usize),
     SetWsSettings(WsTab),
     PushQsLevel(QsLevel),
@@ -702,6 +731,35 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                     eprintln!(
                         "scenario: no make-space slide in flight to sample at {ms} ms"
                     );
+                }
+                driver.relayout();
+                let name: &'static str =
+                    Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
+                sink.capture(driver, name);
+            }
+        }
+        Action::SeedActionFlight { from_app, to_app } => {
+            let png = flight_test_content();
+            let hash = qdoc::blobstore::put(&png);
+            shell::shell::action_flight::note_offer(&hash, from_app);
+            if !shell::shell::action_flight::note_flight("claude", &hash, to_app) {
+                eprintln!(
+                    "scenario: nothing recorded - {from_app} never offered the \
+                     content, or it is the same application as {to_app}"
+                );
+            }
+            // `update` is what promotes a record into a crossing: it is the
+            // pass that can ask where each application's window is, and the
+            // one that starts the pan toward the destination.
+            driver.step_frames(1);
+            driver.relayout();
+        }
+        Action::SampleActionFlight { prefix, at_ms } => {
+            for ms in at_ms.iter() {
+                if !shell::shell::action_flight::hold_at(
+                    std::time::Duration::from_millis(*ms),
+                ) {
+                    eprintln!("scenario: no crossing in flight to sample at {ms} ms");
                 }
                 driver.relayout();
                 let name: &'static str =
@@ -1159,7 +1217,91 @@ fn escape_json_str(s: &str) -> String {
 
 /// Static list of all built-in scenarios. The CLI's `--list-scenarios`
 /// dumps these; `--scenario NAME` looks NAME up here.
+/// Encoded bytes for the object a seeded crossing carries.
+///
+/// Generated rather than shipped as a file, so a capture is deterministic
+/// offline. Deliberately **not** symmetric: a horizon two-fifths down and a
+/// sun left of centre give the image an unambiguous up, left and right, so a
+/// frame sampled mid-flight proves the object is being drawn the right way
+/// round and at the right size — which a flat colour or a centred blob would
+/// not. A photograph is what really crosses here, and the one property that
+/// has to survive the trip is being recognisable.
+fn flight_test_content() -> Vec<u8> {
+    const W: u32 = 480;
+    const H: u32 = 320;
+    let mut rgba = Vec::with_capacity((W * H * 4) as usize);
+    for y in 0..H {
+        for x in 0..W {
+            let fx = x as f32 / W as f32;
+            let fy = y as f32 / H as f32;
+            let horizon = 0.42;
+            let (r, g, b) = if fy < horizon {
+                let t = fy / horizon;
+                (
+                    (32.0 + 150.0 * t) as u8,
+                    (86.0 + 110.0 * t) as u8,
+                    (168.0 + 60.0 * t) as u8,
+                )
+            } else {
+                let t = (fy - horizon) / (1.0 - horizon);
+                (
+                    (18.0 + 40.0 * t) as u8,
+                    (58.0 + 62.0 * t) as u8,
+                    (112.0 - 40.0 * t) as u8,
+                )
+            };
+            let dx = fx - 0.26;
+            let dy = fy - 0.22;
+            let sun = (dx * dx + dy * dy * 2.25).sqrt();
+            let (r, g, b) = if sun < 0.10 { (255, 224, 152) } else { (r, g, b) };
+            rgba.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, W, H);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut writer = enc.write_header().expect("png header");
+        writer.write_image_data(&rgba).expect("png body");
+    }
+    out
+}
 pub fn catalogue() -> Vec<Scenario> {
+
+    // Two applications side by side and an object carried from one into
+    // the other, sampled across the whole crossing. This is the shape the
+    // film turns on, so it is captured as a sequence rather than a still:
+    // a single frame cannot show that the object is in flight, and in
+    // flight is the only interesting thing about it.
+    let mut out: Vec<Scenario> = Vec::new();
+    out.push(Scenario {
+        name: "action-flight",
+        description: "an object an agent moved, crossing from the window it \
+                      came from into the one its action placed it in",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::OpenWindow { app_id: "dev.qos.photos", surface_id: 9101 },
+            Action::OpenWindow { app_id: "dev.qos.word-processor", surface_id: 9102 },
+            Action::SetWindowWidths(440),
+            Action::Wait(6),
+            Action::Relayout,
+            Action::Snapshot("action-flight-before"),
+            Action::SeedActionFlight {
+                from_app: "dev.qos.photos",
+                to_app: "word-processor",
+            },
+            Action::SampleActionFlight {
+                prefix: "action-flight",
+                at_ms: &[0, 90, 180, 270, 360, 450, 540, 630],
+            },
+        ],
+    });
+    out.extend(catalogue_rest());
+    return out;
+}
+
+fn catalogue_rest() -> Vec<Scenario> {
     vec![
         palette_typing(),
         palette_close_anim(),
