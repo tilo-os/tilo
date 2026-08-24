@@ -7390,6 +7390,21 @@ impl WordProcessorWidget {
         let label = ellipsise_to(text_renderer, label, size, chip_rect.width() - pad_x * 2.0);
         let chip = vello::kurbo::RoundedRect::from_rect(chip_rect, 3.0);
         scene.fill(Fill::NonZero, ctf, peer, None, &chip);
+        // An edge in the same ink as the label. The palette is chosen so peers
+        // can be told apart by hue, which leaves several of its entries within
+        // a fifth of a stop of white paper — measured, this pill's own fill
+        // reaches 1.21:1 against the page it sits on, so the participant whose
+        // colour it is would be marked by nothing a low-vision or colour-blind
+        // reader could find. `contrast_ink` is picked *against the fill*, so it
+        // is dark whenever the fill is pale and light whenever it is not: the
+        // pair always leaves one of the two carrying the outline.
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            ctf,
+            ui::presence::contrast_ink(peer),
+            None,
+            &chip,
+        );
         // The label ink is chosen against the peer's own colour rather than
         // fixed to white. The palette spans a 16:1 luminance range so that
         // peers can be told apart, and white sits below 2:1 on eleven of its
