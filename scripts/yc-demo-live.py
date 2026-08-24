@@ -827,13 +827,17 @@ def _the_owners_half(q, shots: str, instruction: str,
         return
     # Framing is a nicety and is not what any of this is proving, so a
     # helper that throws costs a tidy strip rather than the take. It has
-    # thrown: `frame_both_windows` reports a strip it could not frame
-    # using a name that no longer exists in that function, so the only
-    # run that reaches its unhappy path dies of a `NameError` inside a
-    # diagnostic. Live, that path is reached by a person who happened to
-    # open a third window.
+    # thrown, twice and for different reasons — once from a name that no
+    # longer existed inside its own diagnostic, once from this call site
+    # not keeping up with the helper's signature — so the guard stays.
+    # Live, its unhappy path is reached by a person who happened to open
+    # a third window.
+    #
+    # The two windows this half of the run is about, named: the strip
+    # scrolls, so a beat says which windows it needs in frame rather
+    # than asking for all of them.
     try:
-        yc.frame_both_windows(q, yc.VIEWPORT)
+        yc.frame_windows(q, [yc.FILES_APP, yc.WORD_PROCESSOR], yc.VIEWPORT)
     except Exception as exc:  # noqa: BLE001
         yc.gap(f"the two windows could not be framed ({type(exc).__name__}: "
                f"{exc}); the strip is left where it is")
