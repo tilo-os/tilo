@@ -1,0 +1,18 @@
+[package]
+name = "qos-reference"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "qos_reference"
+path = "src/lib.rs"
+
+# Saying something ABOUT a thing: a durable, machine-readable reference to one
+# resource, plus the remark that carries it and the destination it is delivered
+# to. Pure state layer — no `ui`, no `winit`, no render deps — so the toolkit,
+# any app, and an out-of-process agent can all build on it. See `src/lib.rs`.
+
+[dependencies]
+qos-actions = { path = "../actions" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
