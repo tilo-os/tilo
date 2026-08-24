@@ -86,6 +86,10 @@ pub struct Compose {
     /// The menu rect, still in the asking window's own coordinates. Converted
     /// by the host, which is what knows where that window is.
     pub beside: vello::kurbo::Rect,
+    /// The connection that asked, so it can be told when the panel goes. It
+    /// has a context menu standing beside a panel it cannot see, and it will
+    /// never see the key that ends it — the session holds the keyboard.
+    pub peer: u64,
 }
 
 /// Decode everything that arrived since the last frame.
@@ -111,6 +115,7 @@ pub fn take_requests(pending: &PendingComposes) -> Vec<Compose> {
         out.push(Compose {
             reference,
             beside: vello::kurbo::Rect::new(x, y, x + w, y + h),
+            peer: req.peer,
         });
     }
     out

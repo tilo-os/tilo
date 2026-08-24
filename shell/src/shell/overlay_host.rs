@@ -425,6 +425,21 @@ pub struct ShellOverlayHost {
     /// thread. Same shape as [`Self::take_peer_sync_actions`], and for the same
     /// reason — the widget layer keeps knowing nothing about transports.
     remark_outbox: Vec<qos_reference::Remark>,
+    /// Whether the panel was open on the previous pass.
+    ///
+    /// The edge is what matters, not the level: the application that asked has
+    /// a context menu standing beside a panel it cannot see, and it has to be
+    /// told the moment that panel goes — once, on the frame it closed.
+    remark_was_open: bool,
+    /// The connection that asked for the open panel, when it came over a
+    /// socket. `None` for an application hosted in this tree, which is told
+    /// directly. Cleared when the panel closes, so a stale peer cannot be sent
+    /// a dismissal for somebody else's panel.
+    remark_peer: Option<u64>,
+    /// A connection owed a "your panel has gone", waiting for the compositor
+    /// to send it. Same queue-not-call reason as [`Self::remark_outbox`]: this
+    /// widget holds no broker.
+    remark_dismissals: Vec<u64>,
     /// Last `chrome.revision` value observed by
     /// [`Self::resync_strips_from_tree`]. The chrome bumps its
     /// revision counter on every structural mutation (workspace
@@ -1533,6 +1548,9 @@ impl ShellOverlayHost {
             remark: ui::widget::RemarkHost::new(),
             remark_neighbour: Rect::ZERO,
             remark_outbox: Vec::new(),
+            remark_was_open: false,
+            remark_peer: None,
+            remark_dismissals: Vec::new(),
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
             deferred_tile_swaps: std::collections::HashSet::new(),
@@ -4486,6 +4504,20 @@ impl ShellOverlayHost {
     ///
     /// [`delegate_remark_surface`]: ui::widget::Widget::delegate_remark_surface
     pub fn pump_remark_requests(&mut self) -> bool {
+        // A panel that was up and is not any more. The application that asked
+        // still has its context menu open beside where the panel was, and
+        // cannot have seen the Escape or the Send that closed it — the shell
+        // held the keyboard. Told once, on the edge.
+        let dismissed = self.remark_was_open && !self.remark.is_open();
+        self.remark_was_open = self.remark.is_open();
+        if dismissed {
+            // The socket case. An application in its own process is told the
+            // same thing as one hosted here, by the only route there is to it.
+            if let Some(peer) = self.remark_peer.take() {
+                self.remark_dismissals.push(peer);
+            }
+        }
+
         let mut opened: Option<(qos_reference::ResourceRef, Rect, Point)> = None;
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
@@ -4502,13 +4534,16 @@ impl ShellOverlayHost {
                     continue;
                 };
                 app.delegate_remark_surface();
+                if dismissed {
+                    app.dismiss_remark_chrome();
+                }
                 if let Some(req) = app.take_remark_request() {
                     opened = Some((req.reference, req.beside, origin));
                 }
             }
         }
         let Some((reference, beside, origin)) = opened else {
-            return false;
+            return dismissed;
         };
         self.open_remark(reference, beside, origin)
     }
@@ -4605,6 +4640,19 @@ impl ShellOverlayHost {
     pub fn close_remark(&mut self) {
         self.remark.close();
         self.remark_neighbour = Rect::ZERO;
+    }
+
+    /// Name the connection that asked for the panel now open.
+    ///
+    /// Only for a request that arrived over a socket. An application hosted in
+    /// this tree is reached directly and needs no id.
+    pub fn set_remark_peer(&mut self, peer: u64) {
+        self.remark_peer = Some(peer);
+    }
+
+    /// Collect the connections owed a "your panel has gone".
+    pub fn take_remark_dismissals(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.remark_dismissals)
     }
 
     /// Collect finished remarks for the compositor to put in the room.

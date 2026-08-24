@@ -461,6 +461,18 @@ pub enum CollabEvent {
         /// Why, in the words of whoever refused it, for a person to read.
         why: String,
     },
+    /// The compose surface this connection asked for has gone.
+    ///
+    /// Sent to the one connection that asked, never fanned: it is an answer,
+    /// and nobody else's application has chrome standing beside that panel.
+    ///
+    /// It carries nothing because there is nothing to say. The application
+    /// already knows what it asked about; what it cannot know is *when* the
+    /// panel went, because the session held the keyboard while it was up and
+    /// the Escape or the Send that closed it never reached the app. Without
+    /// this the context menu the same gesture opened is left standing beside
+    /// nothing — the visible remnant of something already dismissed.
+    RemarkSurfaceClosed,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

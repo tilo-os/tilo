@@ -2050,6 +2050,14 @@ impl App {
                 CollabEvent::AppOpenRefused { app_id, why } => {
                     tracing::debug!(%app_id, %why, "collab: not ours to answer");
                 }
+                // The panel this app asked for has gone. Put away the chrome
+                // it opened beside — the two went up on one gesture, and the
+                // app cannot have seen the key that ended it, because the
+                // session held the keyboard for as long as the panel was up.
+                CollabEvent::RemarkSurfaceClosed => {
+                    self.root_widget.dismiss_remark_chrome();
+                    self.structure_dirty = true;
+                }
             }
         }
         any

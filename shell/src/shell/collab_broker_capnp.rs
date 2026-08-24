@@ -610,6 +610,16 @@ impl CapnpBrokerState {
                      audience and was dropped",
                 );
             }
+            // Addressed to the one connection whose panel it was, like the
+            // refusal above. A fan-out is not how it reaches that connection,
+            // and delivering it to the room would put away a context menu in
+            // every application that happened to have one open.
+            CollabEvent::RemarkSurfaceClosed => {
+                tracing::warn!(
+                    "capnp fanout: a compose surface closing has no audience and \
+                     was dropped; it is an answer to one connection"
+                );
+            }
         }
     }
 

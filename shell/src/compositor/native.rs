@@ -3366,9 +3366,17 @@ pub fn run() -> ! {
                 let origin = frame_builder.host().focused_app_origin();
                 match origin {
                     Some(origin) => {
-                        frame_builder
+                        let peer = req.peer;
+                        if frame_builder
                             .host_mut()
-                            .open_remark(req.reference, req.beside, origin);
+                            .open_remark(req.reference, req.beside, origin)
+                        {
+                            // Remembered so the application can be told when
+                            // the panel goes. It has a context menu open
+                            // beside a panel it cannot see and will never see
+                            // the key that ends it.
+                            frame_builder.host_mut().set_remark_peer(peer);
+                        }
                     }
                     // Nothing focused hosts a window, so there is nothing to
                     // sit beside. Said rather than placed at a guess: a panel
@@ -3386,6 +3394,9 @@ pub fn run() -> ! {
                 broker,
                 written,
             );
+            for peer in frame_builder.host_mut().take_remark_dismissals() {
+                broker.remark_surface_closed(peer);
+            }
         }
         // Drain the network actor into the replica. Peer changes land
         // in the shared tree, so a room's new name or a capability the

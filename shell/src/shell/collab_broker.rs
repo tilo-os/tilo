@@ -1921,6 +1921,37 @@ impl BrokerHandle {
         }
     }
 
+    /// Tell the connection that asked that its compose surface has gone.
+    ///
+    /// Addressed to the one peer, never fanned: it is an answer, and nobody
+    /// else's application has a menu standing beside that panel.
+    ///
+    /// **Only the JSON transport carries this today.** Per-peer delivery is a
+    /// thing that dialect has and the Cap'n Proto one does not — every capnp
+    /// verb is either a call's own return or a room-wide stream, and this is
+    /// neither. A sandboxed application dials capnp, so for those the panel
+    /// closes and the context menu it opened beside is left standing until the
+    /// next click puts it away. Visible, and smaller than the defect this
+    /// whole path removes; closing it needs a session-addressed stream on the
+    /// capnp contract, which is a door that does not exist yet.
+    pub fn remark_surface_closed(&self, peer: u64) {
+        let delivered = self
+            .peers
+            .send_to_peer(peer, &CollabEvent::RemarkSurfaceClosed);
+        if !delivered {
+            // Two different reasons, and the log must not pick one: the
+            // application may have gone, or it may be perfectly alive on a
+            // transport with nowhere to put this. Naming a cause it cannot
+            // distinguish is how a known gap gets read as a stale connection.
+            tracing::debug!(
+                peer,
+                "collab_broker: the compose surface closed and the connection \
+                 that asked was not told; it has either gone or is on a \
+                 transport with no per-peer delivery"
+            );
+        }
+    }
+
     /// Install the sink for "draw me somewhere to say something about this".
     ///
     /// The counterpart to [`Self::set_app_opener`]. A broker with no desktop
