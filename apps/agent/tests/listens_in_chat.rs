@@ -290,7 +290,7 @@ impl Room {
         let mut session = agent(&json, room);
         // The budget is generous because the peer's snapshot has to cross the
         // broker before there is anything to read at all.
-        for _ in 0..120 {
+        for _ in 0..260 {
             let _ = session
                 .run_until(Instant::now() + Duration::from_millis(60))
                 .expect("the agent's turn");
@@ -333,6 +333,12 @@ fn now() -> i64 {
 // ---------------------------------------------------------------------------
 
 /// 1. An `@mention` reaches the agent, and it acts.
+///
+/// The heading is called "Run sheet" on purpose. `Recipe::from_keywords`
+/// matches that substring anywhere in the request, so this wording used to
+/// come back as "ask me for a table in the document" — a word in the prose
+/// colliding with a recipe's keyword and overriding an address the author had
+/// explicitly attached. It stays as the pin for that.
 #[test]
 fn a_mention_of_the_agent_in_chat_is_noticed_and_acted_on() {
     let doc = draft();
@@ -351,7 +357,10 @@ fn a_mention_of_the_agent_in_chat_is_noticed_and_acted_on() {
     assert_eq!(
         room.acted_on().as_deref(),
         Some(section.as_str()),
-        "a mention in chat must reach the agent and be carried out"
+        "a mention in chat must reach the agent and be carried out. \
+         Holding: {:?}; replies: {:?}",
+        room.session.apps(),
+        room.replies()
     );
     assert!(
         room.reply_to("m_ask").is_some(),
