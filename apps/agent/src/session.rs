@@ -102,6 +102,22 @@ pub struct Config {
     /// performs nothing. It holds no role — an agent is not a person — so
     /// everything it can do is something a person explicitly granted.
     pub permissions: PermissionContext,
+    /// How long an addressed line must stop changing before it is read as
+    /// a request.
+    ///
+    /// A person writing `Claude: make this a run sheet` types a colon
+    /// several seconds before they type the request, and the agent is
+    /// handed a delta per keystroke. Without this it reads the line the
+    /// instant the colon lands, finds nothing after the name, and answers
+    /// `I can't "" here` -- over the top of a sentence still being written,
+    /// which then carries on arriving after the reply. Worse, the line is
+    /// marked handled by that reading, so the instruction the person
+    /// finishes typing is never looked at again.
+    ///
+    /// So a line is a request only once it has stopped moving. Long enough
+    /// to outlast the pauses inside real typing, short enough that nobody
+    /// waits on it.
+    pub settle: Duration,
     /// How long to wait for the room to produce something addressed to
     /// this agent before giving up and saying what it did see.
     ///
@@ -140,6 +156,10 @@ pub struct Session {
     /// Instruction blocks already acted on, so a slow peer re-sending the
     /// same state does not make the agent do the work twice.
     handled: HashSet<String>,
+    /// The addressed line the agent is watching settle: its block, the text
+    /// last seen there, and when that text stopped changing. `None` when
+    /// nothing is ripening, which is also what keeps the loop quiet.
+    pending: Option<(String, String, Instant)>,
     /// Decides which exported action answers an instruction.
     chooser: Chooser,
     /// When the agent last asked the room for the document. It asks again
@@ -288,6 +308,7 @@ impl Session {
             peers: BTreeMap::new(),
             registry: surface::registry(),
             handled: HashSet::new(),
+            pending: None,
             chooser,
             last_route: None,
             last_action: None,
@@ -533,7 +554,11 @@ impl Session {
             }
             Some(_) | None => {}
         }
-        if !changed {
+        // A line stops changing precisely by nothing further arriving, so
+        // waiting for the next delta to re-read it would wait forever.
+        // While one is ripening the turn runs anyway; `recv` has already
+        // bounded how often that is.
+        if !changed && self.pending.is_none() {
             return Ok(false);
         }
         self.act()
@@ -903,12 +928,42 @@ impl Session {
         let Some((at, asked)) = plan::find_addressed(&blocks, &self.cfg.name) else {
             return Ok(false);
         };
-        // Something in this room is for us; stop knocking on doors.
+        // Something in this room is for us; stop knocking on doors. True
+        // of a line still being typed as much as a finished one -- being
+        // named is being addressed, whatever comes after the colon.
         self.addressed_seen = true;
         let ins_id = blocks[at].id.clone();
         if self.handled.contains(&ins_id) {
             return Ok(false);
         }
+        // A name and a colon with nothing after it is not a request. It is
+        // what every request looks like on its way to being typed, and
+        // answering it would put an `I can't ""` over the top of a
+        // sentence the person is still writing.
+        //
+        // Nothing is consumed here: the block stays unhandled, so the
+        // instruction they go on to finish is still there to be read.
+        if asked.trim().is_empty() {
+            self.pending = None;
+            return Ok(false);
+        }
+        // And a line that is still moving is still being written. Watched
+        // by its whole text rather than by the part after the name, so a
+        // trailing word or a correction counts as movement.
+        let line = blocks[at].text.clone();
+        let settled_at = match self.pending.as_ref() {
+            Some((id, seen, since)) if *id == ins_id && *seen == line => *since,
+            _ => {
+                let now = Instant::now();
+                tracing::debug!(block = %ins_id, "an addressed line is still being written");
+                self.pending = Some((ins_id.clone(), line, now));
+                now
+            }
+        };
+        if settled_at.elapsed() < self.cfg.settle {
+            return Ok(false);
+        }
+        self.pending = None;
         self.handled.insert(ins_id.clone());
 
         // Put the caret on the line before deciding what it asks for.

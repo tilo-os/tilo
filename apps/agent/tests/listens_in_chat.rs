@@ -228,6 +228,9 @@ fn agent(json: &PathBuf, room: Uuid) -> Session {
         once: false,
         model: false,
         model_timeout: Duration::from_millis(1),
+        // The instruction is in the page before the agent connects, so
+        // there is no half-typed line here to wait out.
+        settle: Duration::ZERO,
         await_document: Duration::ZERO,
         directory: None,
         permissions: PermissionContext::from_capabilities(Actor::agent(AGENT_NAME), caps),

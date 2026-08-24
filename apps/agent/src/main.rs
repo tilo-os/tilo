@@ -77,6 +77,18 @@ struct Cli {
     /// cheap; being on the wrong side of it during a demonstration is not.
     #[arg(long, default_value_t = 30_000)]
     model_timeout_ms: u64,
+    /// How long an addressed line must stop changing before it is read as
+    /// a request.
+    ///
+    /// A person types the colon several seconds before the request, and
+    /// the agent is handed a delta per keystroke — so without a pause here
+    /// it answers the half-typed line and then ignores the finished one.
+    /// The default outlasts the pauses inside real typing and is still
+    /// short enough that nobody watching notices it. `0` reads a line the
+    /// moment it arrives, which is right only where the instruction was
+    /// written before the agent started.
+    #[arg(long, default_value_t = 800)]
+    settle_ms: u64,
     /// How long to wait for the room to produce something addressed to
     /// this agent before giving up and saying what it did see — nobody
     /// answered, the page that answered is missing history it was built
@@ -131,6 +143,7 @@ fn main() -> anyhow::Result<()> {
         once: cli.once,
         model: !cli.no_model,
         model_timeout: Duration::from_millis(cli.model_timeout_ms),
+        settle: Duration::from_millis(cli.settle_ms),
         await_document: Duration::from_millis(cli.await_document_ms),
         directory: cli.directory,
         permissions,

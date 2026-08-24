@@ -155,6 +155,9 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
         model_timeout: Duration::from_secs(1),
         // `run_until` bounds this test; the wait-for-a-document deadline
         // belongs to `run`, and is exercised on its own below.
+        // The instruction is in the page before the agent connects, so
+        // there is no half-typed line here to wait out.
+        settle: Duration::ZERO,
         await_document: Duration::ZERO,
         directory: None,
         permissions: granted("Scribe"),
@@ -341,6 +344,9 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
         once: true,
         model: false,
         model_timeout: Duration::from_secs(1),
+        // The instruction is in the page before the agent connects, so
+        // there is no half-typed line here to wait out.
+        settle: Duration::ZERO,
         await_document: Duration::ZERO,
         directory: None,
         permissions: granted("Scribe"),
@@ -493,6 +499,9 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
         once: true,
         model: false,
         model_timeout: Duration::from_secs(1),
+        // The instruction is in the page before the agent connects, so
+        // there is no half-typed line here to wait out.
+        settle: Duration::ZERO,
         await_document: Duration::from_millis(1500),
         directory: None,
         permissions: granted("Scribe"),
@@ -710,6 +719,9 @@ fn a_page_missing_an_ancestor_is_not_mistaken_for_the_whole_page() {
         once: true,
         model: false,
         model_timeout: Duration::from_secs(1),
+        // The instruction is in the page before the agent connects, so
+        // there is no half-typed line here to wait out.
+        settle: Duration::ZERO,
         await_document: Duration::from_secs(3),
         directory: None,
         permissions: granted("Scribe"),
@@ -840,6 +852,9 @@ fn it_keeps_asking_until_something_is_addressed_to_it() {
         once: true,
         model: false,
         model_timeout: Duration::from_secs(1),
+        // The instruction is in the page before the agent connects, so
+        // there is no half-typed line here to wait out.
+        settle: Duration::ZERO,
         await_document: Duration::ZERO,
         directory: None,
         permissions: granted("Scribe"),
