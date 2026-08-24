@@ -11687,7 +11687,12 @@ impl ShellOverlayHost {
         let chip_text_size = (tokens.typography.scale.xs).max(10.0);
         let idle_fill = colors.surface_white_5;
         let active_fill = colors.accent[5];
-        let active_text = colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
+        // These chips are drawn at the bottom of the type scale, where no
+        // pixel of a lowercase word reaches full coverage: an ink measured at
+        // the 4.5:1 body floor lands a whole tier under it once anti-aliased,
+        // which is how a chip resolved entirely from the theme still read at
+        // 2.4:1 on screen. Ask for the headroom that spends.
+        let active_text = colors.on_accent(ui::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST);
         let idle_text = colors.text_dim;
         let control_h = Self::FILTER_CONTROL_HEIGHT_PX;
 
