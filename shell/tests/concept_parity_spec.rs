@@ -2042,9 +2042,10 @@ fn two_peers_arriving_off_the_wire_paint_two_avatars_on_the_bar() {
     // beside a caret editing a document this same room governs. So the
     // bar below proves the name came from the room, not from the wire.
     let room_says = |_: &str| {
+        use shell::shell::peer_presence::PeerLabel;
         std::collections::BTreeMap::from([
-            (0x11u64, "bob".to_string()),
-            (0x22u64, "dana".to_string()),
+            (0x11u64, PeerLabel::person("bob")),
+            (0x22u64, PeerLabel::person("dana")),
         ])
     };
     let this_room = |_: &str| true;

@@ -601,9 +601,58 @@ fn handles_seen_in(presence: &PresenceCtx, room: &str) -> std::collections::BTre
     out
 }
 
+/// What a room says about one of the peers in it.
+///
+/// A name and a kind together, because they are one statement made by
+/// one authority: the room records what it calls a member beside what
+/// it admitted them as. Split apart, a reader holding the name has no
+/// way to ask the second question, and every path that needs an answer
+/// ends up guessing from the string — which is how a person can be
+/// taken for an agent by being called one.
+///
+/// A named struct rather than a widened tuple. The value is read on
+/// several paths and `label.1` says nothing about which of a member's
+/// facts it is, while `label.is_agent` says it at each use; a further
+/// fact about a member lands as a field rather than as a third
+/// anonymous slot.
+///
+/// [`Default`] is the "the room has said nothing" answer — no name, and
+/// a person — which is already what a peer nobody named is shown as.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PeerLabel {
+    /// What the room calls this peer, set by whoever invited them.
+    pub name: String,
+    /// True when the room's own capability list admitted this member as
+    /// an agent rather than as a person.
+    ///
+    /// Never inferred from the name or from the handle: it is read off
+    /// the membership grant, so it stays false for a person however they
+    /// are called — the shipped agent's own name included.
+    pub is_agent: bool,
+}
+
+impl PeerLabel {
+    /// A member the room named and admitted as a person.
+    pub fn person(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            is_agent: false,
+        }
+    }
+
+    /// A member the room named and admitted as an agent.
+    pub fn agent(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            is_agent: true,
+        }
+    }
+}
+
 /// What a room calls the peers in it, keyed by the handle presence
-/// frames identify their sender by.
-pub type PeerLabels = std::collections::BTreeMap<u64, String>;
+/// frames identify their sender by, and what it admitted each of them
+/// as.
+pub type PeerLabels = std::collections::BTreeMap<u64, PeerLabel>;
 
 /// Fold inbound presence into `presence`, returning whether anything
 /// landed. Split out from [`PeerPresence::pump`] so the fold can be
@@ -683,10 +732,10 @@ pub fn fold_inbound(
                     &resolved.as_ref().expect("just set").1
                 }
             };
-            if let Some(name) = known.get(&entry.peer) {
+            if let Some(label) = known.get(&entry.peer) {
                 presence.set_display_name(
                     ui::permissions::UserId(user.clone()),
-                    name.clone(),
+                    label.name.clone(),
                 );
             }
         }
@@ -776,9 +825,28 @@ pub fn room_roster(
             // a peer that is named later does not change colour in
             // front of the people watching it.
             let id = format!("peer@{handle}");
-            let name = labels.get(&handle).cloned().unwrap_or_else(|| id.clone());
-            let role = ws.role_of(&name);
-            let who = crate::shell::state::Collaborator::new(id, name);
+            let label = labels.get(&handle).cloned();
+            let name = label
+                .as_ref()
+                .map(|l| l.name.clone())
+                .unwrap_or_else(|| id.clone());
+            // What the room admitted them as, carried from the room's
+            // capability list rather than decided here. A peer the room
+            // has said nothing about is a person, which is the same
+            // answer the row has always given.
+            let is_agent = label.as_ref().is_some_and(|l| l.is_agent);
+            // The role comes off the grant that admitted them, and an
+            // agent's grant is a different subject from a person's. Read
+            // through the person lookup only, an agent with a session of
+            // its own showed no role at all — the one member whose whole
+            // authority *is* a capability, with nothing on screen saying
+            // what the capability was.
+            let role = if is_agent {
+                ws.role_of_agent(&name.to_lowercase())
+            } else {
+                ws.role_of(&name)
+            };
+            let who = crate::shell::state::Collaborator::new(id, name).as_kind(is_agent);
             let who = match role {
                 Some(role) => who.with_role(crate::shell::state::role_label(role)),
                 None => who,
@@ -938,9 +1006,13 @@ mod tests {
         true
     }
 
-    /// The room's names, as its authority wrote them.
+    /// The room's names, as its authority wrote them. People — an agent
+    /// is admitted by a capability, which these fixtures do not write.
     fn named(pairs: &[(u64, &str)]) -> impl Fn(&str) -> PeerLabels + use<> {
-        let map: PeerLabels = pairs.iter().map(|(h, n)| (*h, (*n).to_string())).collect();
+        let map: PeerLabels = pairs
+            .iter()
+            .map(|(h, n)| (*h, PeerLabel::person(*n)))
+            .collect();
         move |_room: &str| map.clone()
     }
 
