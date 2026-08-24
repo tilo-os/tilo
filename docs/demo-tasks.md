@@ -64,6 +64,26 @@ on the real path · `[!]` landed but unverified, or regressed.
 - [x] **Boot bumper** — cut from existing footage, 3.2s, pillarboxed
       to 1920x1080, joined ahead of the demo at exactly 100.000s.
 
+## Verified open, awaiting confirmation
+
+- **Four peer-pointer tests have never executed.** The fix is proven on
+  film (glyph counts, above) and its `ui` unit tests pass 104/104, but
+  `shell/src/shell/peer_pointer_tests.rs` has been blocked from running
+  by a succession of other agents' transient compile breakage. Proven by
+  frames is better than proven by tests alone, but this wants both.
+
+## Found in a sweep, since cleared
+
+Seen in frames of a rehearsal against 04:01 binaries; **all three are
+gone on current HEAD**, confirmed by a full run in which every claim
+held. Kept as a record of what a sweep catches that a log does not.
+
+- Stray bordered boxes between paragraphs, with the opening prose drawn
+  inside one of them.
+- The agent's refusal quoting an empty string: `I can't "" yet`, while
+  the instruction plainly said what it wanted.
+- `peer@131` in the page margin -- the unresolved-name fallback.
+
 ## Found in a sweep, to verify against current HEAD
 
 Seen in frames of a rehearsal recorded against 04:01 binaries, so each
