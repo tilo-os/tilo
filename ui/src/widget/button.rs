@@ -6,6 +6,7 @@ use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::permissions::PermissionScope;
 use crate::i18n;
@@ -282,25 +283,28 @@ pub fn face_colors(
             (bg, Some(theme.tokens.colors.border_standard), theme.tokens.colors.text_primary)
         }
         ButtonStyle::Primary => {
-            let bg = if interact.hovered || interact.pressed {
-                theme.accent_hover
-            } else {
-                theme.accent_primary
-            };
-            (bg, None, Color::WHITE)
+            let rest = theme.accent_primary;
+            let active = theme.accent_hover;
+            let bg = if interact.hovered || interact.pressed { active } else { rest };
+            // White is the label this style wants, and on a dark enough accent
+            // it is what comes back. On a bright one it does not survive its
+            // own fill, so the ink walks out of white far enough to be read —
+            // once, over both fills, so it does not change under the pointer.
+            let fg = theme.tokens.colors.ink_on_any(&[rest, active], Color::WHITE, ON_FILL_MIN_CONTRAST);
+            (bg, None, fg)
         }
         ButtonStyle::Danger => {
             use crate::color_compat::ColorCompat;
             let d = theme.tokens.colors.semantic.danger;
             // Solid danger at rest; lifted ~15% toward white on hover/press so
             // the destructive action gives feedback without a second token.
-            let bg = if interact.hovered || interact.pressed {
-                let mix = |a: u8| (a as f32 * 0.85 + 255.0 * 0.15).round() as u8;
-                Color::from_rgba8(mix(d.r()), mix(d.g()), mix(d.b()), d.a())
-            } else {
-                d
-            };
-            (bg, None, Color::WHITE)
+            let lift = |a: u8| (a as f32 * 0.85 + 255.0 * 0.15).round() as u8;
+            let active = Color::from_rgba8(lift(d.r()), lift(d.g()), lift(d.b()), d.a());
+            let bg = if interact.hovered || interact.pressed { active } else { d };
+            // The lift toward white is exactly what costs the white label its
+            // contrast, so the ink is resolved against the lifted fill too.
+            let fg = theme.tokens.colors.ink_on_any(&[d, active], Color::WHITE, ON_FILL_MIN_CONTRAST);
+            (bg, None, fg)
         }
         ButtonStyle::Ghost => {
             // Transparent + borderless at rest; a themed surface tint only

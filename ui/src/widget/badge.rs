@@ -96,7 +96,9 @@ impl Badge {
     /// with a caller-supplied background `tint`. Use for category / status
     /// chips ("DRAFT", "Rust", "online") where the colour carries meaning,
     /// as opposed to [`Badge::text`] which uses the notification-red
-    /// default. The label renders in `Color::WHITE` on the tint.
+    /// default. The label is derived from white against that tint, so a
+    /// pale caller-supplied tint gets dark ink instead of an unreadable
+    /// one.
     pub fn pill(label: impl Into<String>, tint: Color) -> Self {
         Self {
             content: BadgeContent::Text(label.into()),
@@ -244,7 +246,11 @@ impl Widget for Badge {
                         &mut cached,
                         &label,
                         text_size,
-                        Color::WHITE,
+                        theme.tokens.colors.ink_on_any(
+                            &[bg],
+                            Color::WHITE,
+                            crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+                        ),
                         transform * Affine::translate((tx, ty)),
                         None,
                     );
