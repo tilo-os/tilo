@@ -575,7 +575,10 @@ impl Build<'_> {
     fn resource_action(&mut self, node_id: &SemanticId, spec: &ActionSpec) -> SemanticAction {
         let kind = match &spec.input {
             ActionInput::Immediate(enc) => SemanticActionKind::App(enc.clone()),
-            ActionInput::Prompted { prompt, placeholder, build } => {
+            // `collects` says whether the argument is words or the hash of
+            // bytes this machine holds. Named and ignored rather than `..`
+            // so a future field still stops the compiler here.
+            ActionInput::Prompted { prompt, placeholder, build, collects: _ } => {
                 self.prompted
                     .insert((node_id.clone(), spec.id.clone()), build.clone());
                 SemanticActionKind::AppPrompted {
