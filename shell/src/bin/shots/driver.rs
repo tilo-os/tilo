@@ -657,6 +657,59 @@ impl ShellDriver {
                 });
                 self.fb.host_mut().force_ws_settings_settled();
             }
+            // Who is in this room, with both kinds of member in it. The
+            // panel had no offscreen scene at all, which is why two
+            // defects in it — a role that landed under the member it
+            // described, and an agent that painted as a person — could
+            // only be seen by running the whole shell.
+            "collaborators" => {
+                use shell::shell::state::{CapOverride, Subject, Verb};
+                let handle = self.chrome_handle();
+                let owner = handle.borrow().local_user_id.clone();
+                {
+                    let st = handle.borrow();
+                    let mut tree = st.tree_mut();
+                    tree.adopt_ownerless_workspaces(&owner);
+                    let ws_id = tree.active;
+                    let room = ws_id.raw().to_string();
+                    // A person, admitted by the room's own capability
+                    // list — which is where the role beside their name
+                    // is read from.
+                    tree.grant_in_workspace(
+                        ws_id,
+                        &owner,
+                        CapOverride::membership(
+                            Subject::person("xaver"),
+                            room.clone(),
+                            Verb::Write,
+                        ),
+                    );
+                    // And an agent, admitted the same way. Nothing else
+                    // distinguishes it in the data; everything that
+                    // distinguishes it on screen comes off that.
+                    tree.grant_in_workspace(
+                        ws_id,
+                        &owner,
+                        CapOverride::membership(
+                            Subject::agent("Claude"),
+                            room,
+                            Verb::Write,
+                        ),
+                    );
+                    if let Some(ws) = tree.active_workspace_mut() {
+                        ws.collaborators
+                            .push(shell::shell::state::Collaborator::new("xaver", "xaver"));
+                    }
+                }
+                self.with_chrome(|st| {
+                    // The Invite / Join band is drawn only for a session
+                    // that may actually invite, and the panel's height
+                    // depends on it — so a scene without it is not the
+                    // panel a user sees.
+                    st.peer_sync_enabled = true;
+                    st.overlays.collaborators = true;
+                });
+            }
             "room-activity" => {
                 // Drive the room through the *production* mirrors first, so
                 // the pane has a history to show that the shell actually
@@ -997,6 +1050,7 @@ impl ShellDriver {
         "room-activity",
         "room-activity-all",
         "room-activity-named",
+        "collaborators",
     ];
 
     /// Resolve a "named" UI target (button, pill, tab) to its on-screen

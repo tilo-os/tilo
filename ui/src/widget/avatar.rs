@@ -35,6 +35,14 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::Widget;
 
+/// Corner radius of the agent chip, as a fraction of its side. See
+/// [`Avatar::draw_agent_at`].
+const AGENT_CHIP_RADIUS_RATIO: f64 = 0.32;
+
+/// How far the agent glyph is inset from the chip edge, as a fraction
+/// of the chip's side.
+const AGENT_CHIP_GLYPH_INSET_RATIO: f64 = 0.17;
+
 /// Circular profile chip — see module docs.
 pub struct Avatar {
     image: Option<peniko::ImageData>,
@@ -200,6 +208,61 @@ impl Avatar {
             transform * Affine::translate((tx, ty)),
             None,
             TextWeight::Semibold,
+        );
+    }
+
+    /// The chip for a member that is **not a person** — an agent the
+    /// room admitted by capability.
+    ///
+    /// Same slot, same size, same identity colour as
+    /// [`Avatar::draw_at`], because an agent is a full member of the
+    /// room and a chip that shrank or greyed would be saying otherwise.
+    /// Two things change, and both are deliberate:
+    ///
+    /// - **The silhouette.** A rounded square where a person has a
+    ///   circle. Shape is the only property of a 22 px chip that
+    ///   survives being glanced at rather than read, and telling a
+    ///   person from an agent is exactly the judgement a reader must
+    ///   not have to make by inference.
+    /// - **The mark.** [`crate::icons::Icon::Bot`] in place of a
+    ///   monogram. An agent's initial is the first letter of a
+    ///   principal id and means nothing to a reader; the glyph names
+    ///   what it is.
+    ///
+    /// The ink is [`Avatar::initial_ink`], so the mark stays legible on
+    /// a light identity colour for the same reason a monogram does.
+    ///
+    /// This lives here rather than in the surface that needed it first
+    /// so every list of members paints an agent the same way.
+    pub fn draw_agent_at(
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        color: Color,
+        _theme: &Theme,
+    ) {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        let size = rect.width().min(rect.height());
+        // 0.32 of the side: rounded enough to sit beside a circle as a
+        // sibling rather than a foreign shape, square enough that the
+        // corners still read at 22 px.
+        let chip = vello::kurbo::RoundedRect::from_rect(rect, size * AGENT_CHIP_RADIUS_RATIO);
+        scene.fill(Fill::NonZero, transform, color, None, &chip);
+        // Inset so the glyph clears the corners; lucide art is drawn to
+        // the edge of its own viewBox.
+        let glyph = rect.inset(-size * AGENT_CHIP_GLYPH_INSET_RATIO);
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            glyph,
+            crate::icons::Icon::Bot,
+            Self::initial_ink(color),
+            // Heavier than the lucide default: the glyph is being drawn
+            // at roughly half the size icons are usually asked for, and
+            // a 1.5 px stroke there is a grey smear rather than a bot.
+            (size / 11.0).max(1.5),
         );
     }
 
