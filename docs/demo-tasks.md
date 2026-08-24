@@ -77,6 +77,10 @@ on the real path · `[!]` landed but unverified, or regressed.
 - [~] **Second invitation loses its name** — pending names were one
       slot rather than one per outstanding invitation, so a second
       invite overwrote the first and the redeemer became `peer@<n>`.
+      Storage is now a map keyed by invite id, but a name is still
+      **spent by the first peer to redeem** — see the agent's chip
+      under "Open, on the payoff frame", which is the same fault seen
+      from the other end.
 - [~] **Typing before clicking is discarded** — the word processor has
       no caret in the body on open, so the first thing anyone does with
       it silently does nothing.
@@ -233,15 +237,29 @@ the claim is "the document was written into", and it was, with this:
 - [!] **The agent's own chip reads `peer@764`** while `xaver` beside it
       resolves. `2e5ef06ef` is a real fix for a real fault -- a peer can
       no longer write its own name -- but it is **not this one**, and it
-      removes the only mechanism that was accidentally covering it.
-      Names are keyed per peer already (`room_peer_names` is a map, not
-      a slot), so what is left is *which* redemption records a name:
-      xaver and the agent's session redeem **the same token**
-      (`yc-demo-live.py::bring_the_agent_session_in`), and the second
-      redeemer of one invitation is exactly the open "second invitation
-      loses its name" defect. The two are one defect, and it should be
-      tracked once. Not verified by looking -- reading the chip needs a
-      full three-session run.
+      takes away the only thing that was accidentally covering it.
+
+      The mechanism is read off the code rather than guessed, and it is
+      not the one written under "second invitation loses its name"
+      above. Storage is already per peer *and* per invitation:
+      `room_peer_names` is a map, and so is
+      `ShellNetwork::pending_invites`, keyed by invite id. The fault is
+      that **a name is spent by whoever redeems first**.
+      `name_invitee_on_arrival` looks the arriving peer's quoted
+      invitation up, names them, and then `pending.remove(invite)` --
+      and in the demo xaver and the agent's session redeem **the same
+      token** (`yc-demo-live.py::bring_the_agent_session_in` says so:
+      "The same token: it is a bearer credential for one room"). xaver
+      arrives first and takes the name; the agent arrives second, finds
+      nothing pending, and stays a number. Which is exactly the frame:
+      one chip resolved, the one beside it `peer@<n>`.
+
+      So the fix is not more slots. It is either a second invitation
+      minted for the agent's session under its own name, or a name that
+      a bearer token does not hand to the first arrival and then forget.
+
+      **Not verified by looking** -- reading the chip needs a full
+      three-session run, and this is being worked separately.
 
 ### The one that was actually on the frame
 
