@@ -3346,6 +3346,83 @@ impl ShellOverlayHost {
         false
     }
 
+    /// Move the tab `tab_id` onto the tab bar of the group `dest_gid`,
+    /// the way dragging a window's pill onto a sibling group's bar does.
+    /// Returns the destination group's tab count.
+    ///
+    /// This is the gesture that puts two *different applications* in one
+    /// window — tabbing here is a frame primitive the compositor owns
+    /// rather than something an application does inside itself, so a
+    /// word processor and an image editor can share a bar. It has been
+    /// reachable only by dragging a pill, which is a pointer path a
+    /// caller has to stage exactly right and cannot check afterwards.
+    ///
+    /// Both halves have to move together, and in this order. The widget
+    /// tree owns the `TileHost` that actually draws the window, so
+    /// rewriting the persisted tree alone moves nothing on screen — the
+    /// same reason [`Self::set_group_widths`] goes to the widget first.
+    /// And the persisted tree has to follow, because the per-frame
+    /// active-tab writeback refuses to mirror a widget-side active tab
+    /// that the persisted group does not list: a widget-only merge would
+    /// leave the tree pointing at the group the merge just emptied.
+    pub fn merge_tab_into_group(&mut self, tab_id: u64, dest_gid: GroupId) -> Result<usize, String> {
+        let Some(chrome) = self.chrome.clone() else {
+            return Err("no chrome is attached to this host".into());
+        };
+        // The tree first, and refused there before anything is moved on
+        // screen: it is the half that knows about strips, so it is the
+        // half that can tell a merge from a cross-strip drag.
+        let source_gid = {
+            let st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            tree.move_tab_into_group(tab_id, dest_gid)
+        };
+        let Some(source_gid) = source_gid else {
+            return Err(format!(
+                "no group on one strip holds both tab {tab_id} and group {dest_gid}"
+            ));
+        };
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            let (Some(src), Some(dst)) = (
+                row.group_index_holding_tab(tab_id),
+                row.group_index_by_id(dest_gid),
+            ) else {
+                continue;
+            };
+            if row.merge_tab_into_group(src, dst, tab_id).is_none() {
+                return Err(format!("the strip refused to move tab {tab_id}"));
+            }
+            let count = row
+                .group_index_by_id(dest_gid)
+                .map(|i| row.groups[i].tab_count())
+                .unwrap_or(0);
+            // No `bump()`, for the same reason `close_tab_in_group`
+            // does not: a revision bump makes the strip resync rebuild
+            // this row, and a rebuild mid-merge would tear down the very
+            // `TileHost` that was just handed to the other group. The
+            // tree write above already set the strip's active group to
+            // `dest_gid`, so the per-frame `scroll_active_group_into_view`
+            // pans to the merged window on its own.
+            tracing::info!(
+                "tab {tab_id} left group {source_gid} for group {dest_gid}, \
+                 which now holds {count} tab(s)"
+            );
+            return Ok(count);
+        }
+        // The tree has moved and no laid-out row could follow it — a
+        // strip that has not had a layout pass since the groups
+        // appeared. Bumping hands the widget side back to the strip
+        // resync, which rebuilds the row from the tree that is now
+        // correct, rather than leaving the two disagreeing.
+        chrome.borrow_mut().bump();
+        Err(format!(
+            "the tree moved tab {tab_id} into group {dest_gid}, but no \
+             laid-out strip held both; the strip will resync"
+        ))
+    }
+
     fn harvest_pending_width_changes(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -5097,11 +5174,12 @@ impl ShellOverlayHost {
     /// describe what the app has open now, and an app's tree changes with
     /// every edit (a new heading is a new addressable section).
     ///
-    /// The focused tab specifically: a session checks out one record at a
-    /// time, so `doc` *is* that app's document and it is the only one this
-    /// can honestly offer to both read and write. Backgrounded tabs are
-    /// parked and are not offered rather than being offered against the
-    /// wrong document.
+    /// The focused tab specifically, read against **its own** document.
+    /// A tile redirects its app onto its bound record, so `doc` — the
+    /// document this frame carries — is not what the app reads; surveying
+    /// against it would describe an empty document belonging to nobody.
+    /// `doc` is used only for a tile with no record of its own, which is
+    /// the same fallback [`TileHost::sync`] makes.
     ///
     /// Read-only by construction: every reference taken here is shared and
     /// [`Widget::resources`](ui::widget::Widget::resources) takes `&self`
@@ -5114,7 +5192,7 @@ impl ShellOverlayHost {
     ) {
         let caller = chrome.local_user_id.clone();
         let Some(active) = chrome.active_tab_id() else {
-            self.app_surfaces.publish(caller.as_str(), Vec::new());
+            self.app_surfaces.publish(caller.as_str(), Vec::new(), None);
             return;
         };
         for &row_ptr in self.group_row_ptrs.values() {
@@ -5134,7 +5212,15 @@ impl ShellOverlayHost {
                 let ui::widget::TileContent::App(app) = host.content() else {
                     continue;
                 };
-                self.app_surfaces.publish(caller.as_str(), app.resources(doc));
+                let binding = host.record_binding();
+                let resources = match &binding {
+                    Some((store, id)) => store
+                        .read(id, |d| app.resources(d))
+                        .unwrap_or_else(|| app.resources(doc)),
+                    None => app.resources(doc),
+                };
+                self.app_surfaces
+                    .publish(caller.as_str(), resources, binding);
                 return;
             }
         }
@@ -5142,7 +5228,7 @@ impl ShellOverlayHost {
         // Publishing an empty tree rather than leaving the last one in
         // place is the difference between "this app exports nothing" and
         // "here is a stale address that resolves to somebody else's tab".
-        self.app_surfaces.publish(caller.as_str(), Vec::new());
+        self.app_surfaces.publish(caller.as_str(), Vec::new(), None);
     }
 
     pub fn action_catalog(
@@ -14154,6 +14240,344 @@ mod palette_dispatch_tests {
             chrome.borrow().peer_sync_connect_input.as_deref(),
             Some("abc")
         );
+    }
+
+    /// A character key with no shaped text, the way this module's own
+    /// harness delivers one and the way a synthesised event stream can.
+    fn char_key(c: &str) -> WindowEvent {
+        key_event(Key::Character(c.into()))
+    }
+
+    /// Open the composer on a host with a screen, and paint it once so
+    /// the field and the action row have the rects a pointer resolves
+    /// against.
+    fn composer_host() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
+        let (mut h, chrome) = host_with_chrome();
+        h.rect = TEST_VIEWPORT;
+        h.set_peer_sync_bridge(std::rc::Rc::new(|req| match req {
+            PeerSyncRequest::IssueInviteFor(name) => Ok(format!("token-for-{name}")),
+            PeerSyncRequest::IssueInvite => Ok("token-for-nobody".to_string()),
+            PeerSyncRequest::AcceptInvite(_) => Err("not here".to_string()),
+        }));
+        chrome
+            .borrow_mut()
+            .push_peer_sync_request(PeerSyncAction::PromptInvite);
+        h.pump_peer_sync();
+        draw_peer_sync_face(&mut h, &Theme::dark());
+        (h, chrome)
+    }
+
+    /// **The test that proves the swap.**
+    ///
+    /// Every assertion here is something a `String` that key events push
+    /// and pop cannot do. A hand-rolled field has one position — the end
+    /// — and two operations — append and truncate. So: put the caret
+    /// back inside the text and type there; select the whole field and
+    /// type over it; paste at the caret. Hand-roll the field again and
+    /// every one of these appends instead.
+    #[test]
+    #[serial_test::serial(clipboard)]
+    fn the_composer_field_edits_like_a_text_field_not_a_buffer() {
+        let (mut h, chrome) = composer_host();
+        let none = Modifiers::default();
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+
+        for c in ["X", "a", "v", "e", "r"] {
+            h.handle_peer_sync_event(&char_key(c), &none);
+        }
+        assert_eq!(
+            chrome.borrow().peer_sync_invite_name.as_deref(),
+            Some("Xaver"),
+            "typing still reaches the chrome, which is what mints the invite",
+        );
+
+        // Home puts the caret at the start. A push/pop buffer has no
+        // caret to put anywhere.
+        h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Home)), &none);
+        h.handle_peer_sync_event(&char_key("Q"), &none);
+        assert_eq!(
+            chrome.borrow().peer_sync_invite_name.as_deref(),
+            Some("QXaver"),
+            "a character typed at the start of the field lands at the start",
+        );
+
+        // End puts it back at the end.
+        h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::End)), &none);
+        h.handle_peer_sync_event(&char_key("s"), &none);
+        assert_eq!(
+            chrome.borrow().peer_sync_invite_name.as_deref(),
+            Some("QXavers"),
+        );
+
+        // Select-all, then type: the selection is replaced rather than
+        // appended to. The single clearest thing a hand-rolled field
+        // cannot do.
+        h.handle_peer_sync_event(&char_key("a"), &ctrl);
+        h.handle_peer_sync_event(&char_key("A"), &none);
+        assert_eq!(
+            chrome.borrow().peer_sync_invite_name.as_deref(),
+            Some("A"),
+            "typing over a select-all replaces the field",
+        );
+
+        // And the clipboard splices at the caret rather than being
+        // swallowed by the card, which is what Ctrl+V did on this face:
+        // it reached for a token that does not exist yet.
+        ui::text_selection::clipboard_copy("da");
+        h.handle_peer_sync_event(&char_key("v"), &ctrl);
+        assert_eq!(
+            chrome.borrow().peer_sync_invite_name.as_deref(),
+            Some("Ada"),
+            "Ctrl+V pastes into the name field",
+        );
+    }
+
+    /// Enter submits and Escape cancels, both driven through the event
+    /// path the compositor delivers on.
+    #[test]
+    #[serial_test::serial(clipboard)]
+    fn enter_submits_the_composer_and_escape_abandons_it() {
+        let (mut h, chrome) = composer_host();
+        let none = Modifiers::default();
+        for c in ["A", "d", "a"] {
+            h.handle_peer_sync_event(&char_key(c), &none);
+        }
+        assert!(
+            h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Enter)), &none),
+            "Enter belongs to the composer",
+        );
+        assert_eq!(
+            chrome.borrow().peer_sync_invite_token.as_deref(),
+            Some("token-for-Ada"),
+            "Enter minted the invite for the typed name",
+        );
+
+        // Escape leaves nothing behind.
+        let (mut h, chrome) = composer_host();
+        for c in ["A", "d", "a"] {
+            h.handle_peer_sync_event(&char_key(c), &none);
+        }
+        assert!(
+            h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Escape)), &none),
+            "Escape belongs to the card",
+        );
+        assert!(
+            chrome.borrow().peer_sync_invite_name.is_none(),
+            "Escape closed the composer",
+        );
+        assert!(
+            chrome.borrow().peer_sync_invite_token.is_none(),
+            "and minted nothing on the way out",
+        );
+    }
+
+    /// The card opens on the field, and the field says so — to the
+    /// person looking at it, through the focus ring `TextInput` paints
+    /// only when focused, and to a screen reader.
+    #[test]
+    fn the_composer_opens_with_the_field_focused_and_ringed() {
+        let (h, _chrome) = composer_host();
+        assert!(
+            h.invite_name_input.is_focused(),
+            "the card asks one question; the field it is asked in is where \
+             the keyboard has to be",
+        );
+
+        let node = h
+            .invite_name_input
+            .accessibility()
+            .expect("the field is in the a11y tree");
+        assert_eq!(
+            node.role,
+            ui::a11y::Role::TextInput,
+            "announced as a text field",
+        );
+        assert!(node.state.focused, "and as the focused one");
+        assert!(node.state.focusable, "and as one focus can be moved to");
+        assert_eq!(
+            node.name.as_deref(),
+            Some(crate::shell::i18n::t("invite-composer-label").as_str()),
+            "with the question as its name — the label beside it is \
+             separate chrome a reader cannot associate on its own",
+        );
+
+        // The ring is painted, not merely recorded: the same field drawn
+        // unfocused encodes a different scene.
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        let field = Rect::new(0.0, 0.0, 300.0, INVITE_FIELD_H);
+        let mut draw = |focused: bool, tr: &mut TextRenderer| {
+            let mut input = new_invite_name_input();
+            input.set_focus(focused);
+            input.apply_layout_external(field);
+            let mut scene = Scene::new();
+            input.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                tr,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            scene.encoding().draw_data.clone()
+        };
+        assert_ne!(
+            draw(true, &mut tr),
+            draw(false, &mut tr),
+            "a focused field must look different from an unfocused one",
+        );
+    }
+
+    /// Tab walks the card: field, then the actions left to right, then
+    /// the close control, then back to the field.
+    ///
+    /// A modal owns the keyboard while it is up. One that focuses its
+    /// field and offers no way out of it by keyboard is one a pointerless
+    /// user is stuck in.
+    #[test]
+    fn tab_walks_the_composer_and_wraps() {
+        let (mut h, _chrome) = composer_host();
+        let none = Modifiers::default();
+        let tab = || key_event(Key::Named(NamedKey::Tab));
+
+        assert_eq!(h.peer_sync_focus, PeerSyncFocus::Field, "opens on the field");
+        h.handle_peer_sync_event(&tab(), &none);
+        assert_eq!(h.peer_sync_focus, PeerSyncFocus::Action(0), "then Cancel");
+        assert!(
+            !h.invite_name_input.is_focused(),
+            "and the field gave the keyboard up",
+        );
+        h.handle_peer_sync_event(&tab(), &none);
+        assert_eq!(
+            h.peer_sync_focus,
+            PeerSyncFocus::Action(1),
+            "then the primary action",
+        );
+        h.handle_peer_sync_event(&tab(), &none);
+        assert_eq!(h.peer_sync_focus, PeerSyncFocus::Close, "then the way out");
+        h.handle_peer_sync_event(&tab(), &none);
+        assert_eq!(
+            h.peer_sync_focus,
+            PeerSyncFocus::Field,
+            "and wraps to the field",
+        );
+        assert!(
+            h.invite_name_input.is_focused(),
+            "which takes the keyboard back",
+        );
+
+        // Shift+Tab walks the other way.
+        let shift = Modifiers::from(ModifiersState::SHIFT);
+        h.handle_peer_sync_event(&tab(), &shift);
+        assert_eq!(
+            h.peer_sync_focus,
+            PeerSyncFocus::Close,
+            "backwards wraps too",
+        );
+    }
+
+    /// A focused button is one Enter fires — the same mint, through the
+    /// same `submit_invite_composer`, that Enter in the field performs.
+    #[test]
+    #[serial_test::serial(clipboard)]
+    fn enter_on_a_focused_action_fires_it() {
+        let (mut h, chrome) = composer_host();
+        let none = Modifiers::default();
+        for c in ["A", "d", "a"] {
+            h.handle_peer_sync_event(&char_key(c), &none);
+        }
+        // Tab twice: past Cancel, onto Create invite.
+        h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Tab)), &none);
+        h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Tab)), &none);
+        assert_eq!(h.peer_sync_focus, PeerSyncFocus::Action(1));
+        assert!(h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Enter)), &none));
+        assert_eq!(
+            chrome.borrow().peer_sync_invite_token.as_deref(),
+            Some("token-for-Ada"),
+        );
+    }
+
+    /// Minting is unchanged: the same typed name produces the same
+    /// request, the same token, and the same record of who it is for.
+    ///
+    /// The field was rebuilt underneath this. The contract on the other
+    /// side of it was not supposed to move at all.
+    #[test]
+    #[serial_test::serial(clipboard)]
+    fn the_same_name_still_mints_the_same_token() {
+        let asked: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+        let seen = asked.clone();
+        let (mut h, chrome) = host_with_chrome();
+        h.rect = TEST_VIEWPORT;
+        h.set_peer_sync_bridge(std::rc::Rc::new(move |req| match req {
+            PeerSyncRequest::IssueInviteFor(name) => {
+                seen.borrow_mut().push(name.clone());
+                Ok(format!("token-for-{name}"))
+            }
+            PeerSyncRequest::IssueInvite => Ok("token-for-nobody".to_string()),
+            PeerSyncRequest::AcceptInvite(_) => Err("not here".to_string()),
+        }));
+
+        for _ in 0..2 {
+            chrome
+                .borrow_mut()
+                .push_peer_sync_request(PeerSyncAction::PromptInvite);
+            h.pump_peer_sync();
+            draw_peer_sync_face(&mut h, &Theme::dark());
+            let none = Modifiers::default();
+            for c in ["X", "a", "v", "e", "r"] {
+                h.handle_peer_sync_event(&char_key(c), &none);
+            }
+            h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Enter)), &none);
+            assert_eq!(
+                chrome.borrow().peer_sync_invite_token.as_deref(),
+                Some("token-for-Xaver"),
+            );
+            assert_eq!(
+                chrome.borrow().peer_sync_invite_for.as_deref(),
+                Some("Xaver"),
+            );
+            assert_eq!(
+                ui::text_selection::clipboard_paste().as_deref(),
+                Some("token-for-Xaver"),
+                "one gesture, one outcome: the token is on the clipboard",
+            );
+        }
+        assert_eq!(
+            *asked.borrow(),
+            vec!["Xaver".to_string(), "Xaver".to_string()],
+            "the same typed name reached the bridge both times, untouched",
+        );
+
+        // A composer opened after a mint starts empty rather than
+        // showing the last person's name back.
+        chrome
+            .borrow_mut()
+            .push_peer_sync_request(PeerSyncAction::PromptInvite);
+        h.pump_peer_sync();
+        draw_peer_sync_face(&mut h, &Theme::dark());
+        assert_eq!(
+            h.invite_name_input.value(),
+            "",
+            "a fresh field for a fresh question",
+        );
+    }
+
+    /// A click in the field takes focus off whichever button had it.
+    #[test]
+    fn clicking_the_field_focuses_it() {
+        let (mut h, _chrome) = composer_host();
+        let none = Modifiers::default();
+        h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Tab)), &none);
+        assert_eq!(h.peer_sync_focus, PeerSyncFocus::Action(0));
+
+        assert!(
+            h.invite_field_rect.area() > 0.0,
+            "the field was painted somewhere",
+        );
+        h.last_cursor = Some(h.invite_field_rect.center());
+        assert!(h.handle_peer_sync_event(&left_press(), &none));
+        assert_eq!(h.peer_sync_focus, PeerSyncFocus::Field);
+        assert!(h.invite_name_input.is_focused());
     }
 
     /// Every face of the card offers its gesture as a button too, for

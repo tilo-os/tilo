@@ -218,6 +218,18 @@ pub enum Command {
     /// has no other way to compose that scene. Drives the same
     /// `WindowWidth::Fraction` + doc mirror a width drag does.
     SetGroupWidth { permille: u16 },
+    /// Move the window drawing `surface_id` onto the tab bar of the
+    /// group already drawing `into_surface_id`, so the two share one
+    /// window with a tab each.
+    ///
+    /// Tabbing here is a frame primitive the compositor owns rather
+    /// than something an application does inside itself, so the pair
+    /// can be two entirely different applications. The only way to
+    /// compose that until now was to drag a tab pill onto another
+    /// group's bar — a pointer path a harness has to stage exactly
+    /// right, over two clients, and cannot check afterwards. Drives the
+    /// same `GroupRow` splice the drag commits.
+    MergeTabIntoGroup { surface_id: u64, into_surface_id: u64 },
     /// Press or release the left pointer button at the current position.
     PointerButton { pressed: bool },
     /// Copy `text` from **in-process chrome**, through the same
@@ -614,6 +626,11 @@ pub enum PlannedAction {
     /// permille. Applied against the widget tree because that is where
     /// the laid-out width lives.
     SetGroupWidth { permille: u16 },
+    /// Move the tab drawing `surface_id` onto the bar of the group
+    /// drawing `into_surface_id`. Planned rather than executed in
+    /// `dispatch_command` because it mutates both the widget tree and
+    /// the persisted one, and dispatch only holds them immutably.
+    MergeTabIntoGroup { surface_id: u64, into_surface_id: u64 },
     /// Run one already-validated action against the live CRDT.
     ///
     /// Carried as a planned action rather than executed inside
@@ -1066,6 +1083,16 @@ pub fn dispatch_command<S: ControlState>(
             Response::Ok { frame: 0 },
             vec![PlannedAction::SetGroupWidth {
                 permille: *permille,
+            }],
+        ),
+        Command::MergeTabIntoGroup {
+            surface_id,
+            into_surface_id,
+        } => (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::MergeTabIntoGroup {
+                surface_id: *surface_id,
+                into_surface_id: *into_surface_id,
             }],
         ),
         Command::PointerButton { pressed } => (
