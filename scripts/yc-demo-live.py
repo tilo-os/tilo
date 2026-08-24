@@ -40,6 +40,31 @@ dependency is named.
 
 Budget: boot bumper ~3.2s (cut, exists) + ~75s driven. Hard cap 1:40.
 
+MEASURED, from a full three-session take on 2026-08-24. The per-scene
+budgets below were written without measuring, and two of them are fiction:
+
+    0-15s    minting two invitations
+    15-22s   xaver crosses the room
+    22-37s   xaver pastes the code and joins
+    37-40s   the agent admitted
+    40-62s   the word processor opens, the owner types
+    62-90s   Claude waits for its line, then works
+    90-106s  the edit crossing, and the excursion
+                                    -> 106.6s, 6.6s over the cap
+
+Two findings worth acting on rather than re-budgeting around.
+
+Scene 1 costs 40s against 15s planned. Two invitations and two
+redemptions are more real gesture than 15s holds, and spending over half
+the budget on setup is where a demo loses the room.
+
+Claude's 28s is model latency and will not shrink. It is dead air unless
+something else is on screen, which is what "the owner keeps typing
+throughout" is for -- but in this take the typing finished at 62s and
+Claude worked from 62 to 90, so the overlap the plan claims did not
+happen. Interleaving those is worth more than any second trimmed from a
+hold, because it removes a wait rather than shortening one.
+
     BEAT 0  the machine boots                                   ~3.2s
         Not recorded here. `target/bumper/qos-boot-bumper.mp4`,
         concatenated in front. Console, greeter, filled form, cut
