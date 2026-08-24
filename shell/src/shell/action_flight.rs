@@ -38,6 +38,122 @@
 
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
+
+use ui::permissions::UserId;
+use ui::presence::ActionFlight;
+
+use crate::shell::state::{GroupId, StripId};
+
+/// A crossing the compositor has resolved to two windows and is drawing.
+///
+/// The endpoints are *groups*, not points. Which pixels a group occupies
+/// changes every frame the strip pans — and revealing the destination is
+/// often part of the same gesture — so the object is anchored to the windows
+/// and its coordinates re-derived, rather than the reverse.
+pub struct LiveFlight {
+    pub flight: ActionFlight,
+    /// What to call the participant, for the chip riding the object.
+    pub name: String,
+    pub from: (StripId, GroupId),
+    pub to: (StripId, GroupId),
+    /// The payload decoded, when this machine holds the bytes. Decoded once
+    /// here rather than per frame: a photograph re-decoded sixty times a
+    /// second would cost more than everything else this draws.
+    pub content: Option<vello::peniko::ImageData>,
+}
+
+static LIVE: OnceLock<Mutex<Vec<LiveFlight>>> = OnceLock::new();
+
+fn live() -> &'static Mutex<Vec<LiveFlight>> {
+    LIVE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Turn everything the door recorded into crossings the compositor can draw,
+/// resolving each end's application to the window group hosting it.
+///
+/// `locate` is the caller's answer to "which group is this application in",
+/// which only the compositor can give. Returns the destination groups, so the
+/// caller can bring them into view: a crossing that lands off the edge of the
+/// screen is not one anybody can watch.
+///
+/// A flight whose *either* end cannot be located is dropped rather than
+/// approximated. The cases that reach here are real — the source window was
+/// closed between the action and the frame, the destination is on another
+/// workspace, the app belongs to a peer and has no window on this machine —
+/// and each of them means there is no honest picture to draw. Nothing is
+/// better than a wrong one.
+pub fn promote(
+    mut locate: impl FnMut(&str) -> Option<(StripId, GroupId)>,
+    content_for: impl Fn(&str) -> Option<Vec<u8>>,
+) -> Vec<(StripId, GroupId)> {
+    let pending = take_pending();
+    if pending.is_empty() {
+        return Vec::new();
+    }
+    let mut reveal = Vec::new();
+    let Ok(mut l) = live().lock() else {
+        return reveal;
+    };
+    for p in pending {
+        let (Some(from), Some(to)) = (locate(&p.from_app), locate(&p.to_app)) else {
+            continue;
+        };
+        let content = content_for(&p.hash).and_then(|b| ui::image_store::decode_image(&b));
+        reveal.push(to);
+        l.push(LiveFlight {
+            flight: ActionFlight::new(UserId(p.actor.clone()), p.hash),
+            name: p.actor,
+            from,
+            to,
+            content,
+        });
+    }
+    reveal
+}
+
+/// Drop the crossings that have finished.
+pub fn retire(now: Instant) {
+    if let Ok(mut l) = live().lock() {
+        l.retain(|f| f.flight.progress(now).is_some());
+    }
+}
+
+/// Whether anything is crossing, so the caller keeps asking for frames.
+pub fn any_live() -> bool {
+    live().lock().map(|l| !l.is_empty()).unwrap_or(false)
+}
+
+/// Read the crossings in flight. Borrowed rather than cloned — a decoded
+/// photograph per frame per flight is not worth copying.
+pub fn with_live<R>(f: impl FnOnce(&[LiveFlight]) -> R) -> R {
+    match live().lock() {
+        Ok(l) => f(&l),
+        Err(_) => f(&[]),
+    }
+}
+
+/// Hold every crossing at a fixed point along its curve.
+///
+/// One offscreen frame costs far more wall time than the crossing lasts, so
+/// stepping frames only ever catches an object that has not left and one that
+/// has already arrived — the two moments that prove least. This backdates the
+/// start so the production draw renders the curve at a chosen millisecond,
+/// which is the same escape the strip's make-space slide and the wheel's
+/// settle already offer, for the same reason.
+pub fn hold_at(elapsed: std::time::Duration) -> bool {
+    let Ok(mut l) = live().lock() else {
+        return false;
+    };
+    if l.is_empty() {
+        return false;
+    }
+    let now = Instant::now();
+    for f in l.iter_mut() {
+        f.flight.started = now.checked_sub(elapsed).unwrap_or(now);
+    }
+    true
+}
 
 /// How many recent offers to remember.
 ///
