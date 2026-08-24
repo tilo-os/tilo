@@ -4730,7 +4730,12 @@ def beat_two(quinten: Session, shots: str) -> dict[str, dict]:
     # exactly as designed, and the beat's own subject half out of frame
     # while it does. An even share puts all three in the picture that
     # claims all three are there.
-    frame_windows(quinten, list(opened), VIEWPORT)
+    #
+    # Framed by the windows `launch` handed back rather than by app id.
+    # A surface id is the compositor's own handle on one client and is
+    # never ambiguous; an app id is what a client announced, and this
+    # beat has just opened three of them at once.
+    frame_windows(quinten, list(opened.values()), VIEWPORT)
     read_hold()
     quinten.snapshot(os.path.join(shots, "02-three-applications.png"))
     claim("three applications, one workspace, opened one way",
