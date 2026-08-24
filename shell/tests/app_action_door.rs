@@ -26,7 +26,7 @@ use std::sync::Arc;
 use automerge::{AutoCommit, ReadDoc, ROOT};
 use parking_lot::RwLock;
 
-use shell::shell::chrome_state::{Chrome, ChromeState};
+use shell::shell::chrome_state::Chrome;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::search::action_api::{ActionCatalog, ArgValue, ResourceRef};
 use shell::shell::search::providers::app_resources;
