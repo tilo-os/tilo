@@ -25,6 +25,7 @@ photos-open-failed = That file is not an image this app can read
 photos-crop-noop = Zoom in first — cropping to the whole photograph would change nothing
 photos-empty-title = No photograph open
 photos-empty-body = Open an image to view and adjust it.
+photos-remark-sent = Sent to { $to }
 "#;
 
 /// Register the bundle. Idempotent, and safe to call from both the live binary
@@ -37,10 +38,38 @@ pub fn install() {
 /// Look up `key`. Registers the bundle on first use so a unit test that
 /// constructs a widget directly still gets real text rather than a raw key.
 pub fn tr(key: &str) -> String {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(install);
+    ensure();
     ui::i18n::I18nManager::lookup(key, None)
+}
+
+/// Look up `key`, interpolating `args`.
+///
+/// A message that names something — where a remark went — is assembled by
+/// `fluent` from the whole sentence rather than by concatenating a fragment
+/// onto a value here, because word order is not the same in every language.
+pub fn tr_args(key: &str, args: &[(&str, String)]) -> String {
+    ensure();
+    let args: Vec<(&str, ui::i18n::ArgValue)> = args
+        .iter()
+        .map(|(k, v)| (*k, ui::i18n::ArgValue::Text(v.clone())))
+        .collect();
+    ui::i18n::I18nManager::format(key, &args)
+}
+
+/// Install the bundle once **per thread**.
+///
+/// The guard has to be thread-local because what it guards is: `I18nManager`
+/// keeps its bundles in a `thread_local!`, so a process-wide `Once` fires on
+/// whichever thread happens to be first and leaves every other thread looking
+/// up an empty manager — which returns the key itself, so `photos-remark-sent`
+/// reaches the status line instead of the sentence.
+fn ensure() {
+    thread_local! {
+        static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if !DONE.with(|d| d.replace(true)) {
+        install();
+    }
 }
 
 #[cfg(test)]
@@ -71,6 +100,7 @@ mod tests {
             "photos-crop-noop",
             "photos-empty-title",
             "photos-empty-body",
+            "photos-remark-sent",
         ] {
             let got = tr(key);
             assert_ne!(got, key, "`{key}` is not in the bundle");

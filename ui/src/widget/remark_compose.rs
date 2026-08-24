@@ -77,9 +77,16 @@ const PANEL_W: f64 = 392.0;
 const PAD: f64 = 12.0;
 const GAP: f64 = 8.0;
 /// Gap between the context menu and the panel placed beside it.
-const BESIDE_GAP: f64 = 8.0;
-/// Smallest gap kept between the panel and the edge of the window.
-const EDGE_MARGIN: f64 = 12.0;
+///
+/// Public because [`RemarkCompose::place_beside`]'s right-then-below-then-left
+/// rule is not the only defensible one — an app whose subject is a picture
+/// rather than a run of text has a different side to keep clear — and a host
+/// that computes its own anchor must space the panel the way every other one
+/// does rather than guess at a number that then drifts.
+pub const BESIDE_GAP: f64 = 8.0;
+/// Smallest gap kept between the panel and the edge of the window. Public for
+/// the same reason as [`BESIDE_GAP`].
+pub const EDGE_MARGIN: f64 = 12.0;
 /// Height of the band the reference chip is painted into.
 const CHIP_BAND: f64 = 30.0;
 const CHIP_H: f64 = 24.0;

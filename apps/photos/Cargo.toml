@@ -17,6 +17,9 @@ ui = { path = "../../ui" }
 # so the shell's palette and an out-of-process caller drive the same operations
 # the toolbar buttons do.
 qos-actions = { path = "../../crates/collab/actions" }
+# "Select anything and say something about it": the open photograph mints a
+# durable address, so a message carries the picture rather than describing it.
+qos-reference = { path = "../../crates/collab/reference" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
