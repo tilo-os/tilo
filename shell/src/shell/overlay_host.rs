@@ -17139,6 +17139,65 @@ mod tests {
         st.tree_mut().adopt_ownerless_workspaces(&user);
     }
 
+    /// The way in is offered when there is nobody in the room yet.
+    ///
+    /// An empty roster is the state a fresh session starts in, and the
+    /// state in which "invite somebody" is the *only* thing the panel is
+    /// good for — a panel that lists nobody and offers no way to change
+    /// that is a dead end at exactly the moment it matters most. It is
+    /// also the state that a check written against a populated roster
+    /// would never visit, which is how a missing button here survives a
+    /// green suite.
+    ///
+    /// Both controls are asserted, because they are painted from one
+    /// pair of rects in one loop: an assertion on only one of them would
+    /// pass while the other was `Rect::ZERO` and unclickable.
+    #[test]
+    fn the_collaborators_panel_offers_a_way_in_on_an_empty_roster() {
+        let mut h = build_harness();
+        adopt_rooms(&h);
+        h.chrome.borrow_mut().peer_sync_enabled = true;
+        h.chrome.borrow_mut().overlays.collaborators = true;
+        paint(&mut h);
+
+        // The premise: nobody is in the room. If a fixture ever seeds a
+        // collaborator here this test stops asking its question, so say
+        // so rather than passing for the wrong reason.
+        let roster = h.host.collaborator_row_layouts(
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+        );
+        assert!(
+            roster.len() <= 1,
+            "this test is about an empty room; the fixture has {} people in \
+             it and is asking a different question",
+            roster.len(),
+        );
+
+        let (invite, join) = h.host.collaborators_action_rects_for_tests();
+        assert!(
+            invite.area() > 0.0,
+            "an empty room painted no Invite button, so the one act the \
+             panel exists for cannot be reached from it",
+        );
+        assert!(
+            join.area() > 0.0,
+            "and no Join button, which is the same gesture from the other \
+             side",
+        );
+
+        // Addressable under the name a driven session clicks. The rect
+        // being non-zero is what keeps it in `register_chrome_rects`,
+        // and a name that does not resolve is a control that is not
+        // there as far as anything driving the shell is concerned.
+        let panel = h.host.collaborators_rect();
+        assert!(
+            panel.contains(invite.center()),
+            "Invite is inside the panel it is painted on",
+        );
+        assert!(invite.x1 <= join.x0, "the two do not overlap");
+    }
+
     /// The dropdown's subject is who is in this room, and the two acts
     /// that change the answer are adding somebody and joining somebody
     /// else's room. Before this it offered neither: it listed people and

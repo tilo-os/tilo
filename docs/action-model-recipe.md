@@ -183,12 +183,76 @@ directly and exports no resources — those are the migration targets, and each
 now wires up by embedding `ui::ActionHost` (see "Wiring existing UI" above)
 rather than copy-pasting a `perform_action` + `DiscardTransport`.
 
+## Being reachable from outside: the door
+
+Everything above is in-process. The **door** (`qos_actions::door`) is how a
+participant that is not the app — an agent, another person's session, a script —
+enumerates what an app has open and performs one of its operations. There is no
+second action API: the shell serves an app's published tree into the same
+registry its own chrome actions come from, so `actions_enumerate` /
+`actions_invoke` (`docs/agent-action-api.md`) reach an app's operations exactly
+as they reach the shell's, under the same capability gate, and the Ctrl+K palette
+finds them by typing.
+
+An app is reachable through it when it does four things. Three of them it does
+anyway to have a palette at all:
+
+1. **Publish a resource tree.** Implement `qos_actions::ResourceProvider` and
+   delegate `Widget::resources` to it:
+
+   ```rust
+   fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+       <Self as qos_actions::ResourceProvider>::resources(self, doc)
+   }
+   ```
+
+   Publish what is *open*, not what exists: the document you are showing and the
+   things in it. Resources nest, and children are enumerated from the live
+   document so the tree changes as the document does.
+
+2. **Namespace the ids.** A resource id starts with the app's own name —
+   `word-processor.document`, `files.entry:/var/workspace/plan.md`. The capability
+   gate reads the app out of that namespace, which is what lets a room grant
+   someone edit rights in one app and not another. Ids must be stable and derived
+   from the thing, never from a position on screen or an index into a list: a
+   caller with no display works from ids and labels alone.
+
+3. **Export actions with real labels.** Each `ActionSpec` needs an id stable
+   within its resource and a label a person would recognise, because a caller
+   that cannot see the screen has only those to choose from.
+   `ActionSpec::prompted` declares an action that collects one text argument; the
+   door advertises that on the descriptor, so the argument is never guessed.
+
+4. **Register the action type.** Expose `pub fn register(&mut ActionRegistry)`
+   registering every action type under its `type_id`. The door decodes through
+   that registry before running anything, so an action whose type the app never
+   registered is refused rather than applied on trust — the same decoder a
+   replaying peer would use is the one that reconstructs it here.
+
+The shell registers the in-process apps' types when it builds its search
+registry (`ShellOverlayHost::new`); an app added there needs a line in that list.
+
+Two things the app does *not* do. It does not decide who may act — the shell
+resolves the caller against the workspace's capability model before an address is
+ever offered, so an operation the caller may not perform is absent from
+enumeration rather than shown-and-refused. And it does not attribute the edit:
+the door hands the caller's actor to the executor, so a change made this way
+commits under *that participant* and appears in history like something they
+typed.
+
+An app whose effects are external does not have to fake a document to take part.
+The file explorer publishes its open directory and the entries in it, and creating
+a folder or moving a file stays an ordinary filesystem call under the session's
+own control — what the door gives it is a way for someone else to see what is
+open and name a thing in it. Publish the resources; keep the external step where
+it belongs.
+
 ## Where the model does not reach yet: text editing
 
-An app's *content* is not addressable the way the shell's surface is. There is
-no externally reachable "insert this text at the caret" — `ActionHost`
-dispatches in-process — so anything driving an app from outside has to place a
-caret by coordinate and send keystrokes.
+An app's *content* is not addressable the way the shell's surface is. A caller
+can now reach an app's exported operations, but "insert this text at the caret"
+is not one of them in most apps, so anything driving an app from outside still
+has to place a caret by coordinate and send keystrokes.
 
 That is the intended direction of travel, not a permanent shape: **text editing
 should become paragraph- (sub-resource-) addressed actions**, so that changing a

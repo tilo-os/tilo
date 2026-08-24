@@ -18,9 +18,10 @@
 //!
 //! ## Which app
 //!
-//! The focused one. A session checks out one record at a time — the live
-//! document *is* the focused tab's document — so that is the app whose tree
-//! can be both read and written honestly. This is the same scoping
+//! The focused one, read against its **own** document: a hosted tab is
+//! redirected onto its record, so the document a frame carries is not the
+//! one the app reads, and a survey taken against that one would describe an
+//! empty document belonging to nobody. This is the same scoping
 //! [`SearchScope::ActiveApp`](crate::shell::chrome_state::SearchScope) and
 //! `ui::App`'s own resource collection already use: the resources of the
 //! thing in front of you. A caller that wants a different app's surface
@@ -40,8 +41,8 @@
 //!
 //! ## Enumeration cannot act
 //!
-//! [`refresh`](AppSurfaces::refresh) walks the widget tree through shared
-//! references and calls `resources(&self, doc)`, which takes `&self` and
+//! The host's refresh walks the widget tree through shared references and
+//! calls `resources(&self, doc)`, which takes `&self` and
 //! `&AutoCommit`. Reading the surface therefore cannot mutate a widget or
 //! the document — not by discipline but because no `&mut` is available to
 //! it. What a survey returns is inert data, and the invoke callback is
@@ -174,19 +175,25 @@ impl AppSurfaces {
         f: impl FnOnce(&mut automerge::AutoCommit, &[Resource], &str) -> R,
     ) -> R {
         let inner = self.0.borrow();
-        match &inner.document {
-            Some((store, id)) => {
-                match store.with(id, |doc| f(doc, &inner.resources, &inner.caller)) {
-                    Some(r) => r,
-                    // The record went away between publish and invoke. Fall
-                    // back rather than silently acting on the wrong
-                    // document: the action then finds nothing to act on and
-                    // says so, which is the honest answer.
-                    None => f(fallback, &inner.resources, &inner.caller),
-                }
+        // Held in an `Option` so the fallback can still run it: the store
+        // only calls the closure when the record is there, and a closure
+        // that was never called has not been consumed.
+        let mut f = Some(f);
+        if let Some((store, id)) = &inner.document {
+            let mut out = None;
+            store.with(id, |doc| {
+                let run = f.take().expect("the closure runs at most once");
+                out = Some(run(doc, &inner.resources, &inner.caller));
+            });
+            if let Some(r) = out {
+                return r;
             }
-            None => f(fallback, &inner.resources, &inner.caller),
         }
+        // No record, or it went away between publish and invoke. Falling
+        // back is better than acting on the wrong document: the action
+        // then finds nothing to act on and says so.
+        let run = f.take().expect("the closure runs at most once");
+        run(fallback, &inner.resources, &inner.caller)
     }
 }
 
