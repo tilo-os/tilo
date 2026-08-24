@@ -122,8 +122,27 @@ echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}' | 
 # Type a string (one press+release per character):
 echo '{"op":"type","text":"hello"}' | nc -U $QOS_TEST_CONTROL
 
-# Capture a PNG of the current state:
+# Capture a PNG of the current state. The reply comes back once the file
+# is written:
 echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U $QOS_TEST_CONTROL
+
+# Capturing many frames in a row — a recording — wants `defer`. The reply
+# then comes back as soon as the pixels have been read off the GPU, and
+# the PNG is encoded and written on other threads.
+#
+# It matters because encoding is most of a snapshot: measured at
+# 1920x1014 on an idle machine, ~6.5 ms goes on render + readback and
+# ~24.8 ms on the PNG, and without `defer` every millisecond of that is
+# compositor event loop that cannot serve input, protocol traffic or your
+# next command. Deferring takes the loop's share of a capture from ~31 ms
+# to ~10 ms, which is the difference between filming at ~12 frames a
+# second and filming at ~30.
+#
+# The bargain is that the file is not there yet when the reply arrives.
+# `drain_snapshots` is the barrier: it returns once every deferred frame
+# has been written. Call it before anything reads the directory.
+echo '{"op":"snapshot","path":"/tmp/f0000.png","defer":true}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"drain_snapshots"}' | nc -U $QOS_TEST_CONTROL
 
 # Get the live workspace tree + chrome state as JSON:
 echo '{"op":"state_dump"}' | nc -U $QOS_TEST_CONTROL
@@ -162,8 +181,8 @@ Successful query (list_targets):
   {"targets":[{"name":"add_workspace","rect":[1234,56,32,32]}, ...]}
 
 Successful action (click_*, drag, key, type, modifiers, snapshot,
-                   pointer_move, pointer_button, clipboard_copy,
-                   place_next_window):
+                   drain_snapshots, pointer_move, pointer_button,
+                   clipboard_copy, place_next_window):
   {"ok":{"frame":0}}
 
 Clipboard read (clipboard_paste):
