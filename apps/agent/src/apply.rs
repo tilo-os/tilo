@@ -511,8 +511,11 @@ mod tests {
         fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
             use automerge::transaction::Transactable;
             doc.put(&ROOT, "note", ScalarValue::Str("written".into()))?;
-            // The read that closes the transaction.
-            let _ = doc.get(&ROOT, "note")?;
+            // The read that closes the transaction. `length` is the one a
+            // real writer reaches for — chat asks a list its length between
+            // two inserts — and it is the one `AutoCommit` answers by
+            // committing what is open.
+            let _ = doc.length(&ROOT);
             Ok(())
         }
         fn locus(&self) -> ExecutionLocus {
