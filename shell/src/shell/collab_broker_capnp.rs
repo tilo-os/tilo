@@ -610,6 +610,16 @@ impl CapnpBrokerState {
                      audience and was dropped",
                 );
             }
+            // Addressed to the one connection whose panel it was, like the
+            // refusal above. A fan-out is not how it reaches that connection,
+            // and delivering it to the room would put away a context menu in
+            // every application that happened to have one open.
+            CollabEvent::RemarkSurfaceClosed => {
+                tracing::warn!(
+                    "capnp fanout: a compose surface closing has no audience and \
+                     was dropped; it is an answer to one connection"
+                );
+            }
         }
     }
 
@@ -1096,6 +1106,66 @@ impl channel_handle::Server for CapnpChannelHandle {
                     peer_id,
                     &route,
                 );
+            }
+            Ok(())
+        })
+    }
+
+    fn compose_remark(
+        self: Rc<Self>,
+        params: channel_handle::ComposeRemarkParams,
+        _results: channel_handle::ComposeRemarkResults,
+    ) -> Promise<(), capnp::Error> {
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        let room = self.route().cluster_id.clone();
+        Promise::from_future(async move {
+            let p = params.get()?;
+            let reference = p.get_reference()?.to_str()?.to_owned();
+            let beside = (
+                p.get_x() as f64,
+                p.get_y() as f64,
+                p.get_w() as f64,
+                p.get_h() as f64,
+            );
+            // Handed to the session, not fanned to the room. This asks the
+            // compositor on the far end of this socket to draw a panel; the
+            // room has no interest in it and no way to refuse it. The remark
+            // written into that panel *is* fanned out, as an ordinary action,
+            // once there is one.
+            let composer = state
+                .peer_table
+                .upgrade()
+                .and_then(|t| t.remark_composer());
+            match composer {
+                Some(compose) => {
+                    tracing::info!(
+                        peer = peer_id, %room,
+                        "collab_broker: an application asked this session to draw \
+                         a compose surface"
+                    );
+                    compose(crate::shell::collab_broker::ComposeRemarkRequest {
+                        reference,
+                        beside,
+                        room,
+                        // The capnp handle carries no announced handle, so the
+                        // session's own attribution for this connection is what
+                        // names the asker elsewhere. Left empty rather than
+                        // guessed: nothing downstream authorises on it — the
+                        // panel's destinations are the *room's* roster, read by
+                        // the compositor — and a fabricated name here would be
+                        // the one field on this path that lied.
+                        who: String::new(),
+                        peer: peer_id,
+                    });
+                }
+                None => {
+                    tracing::warn!(
+                        peer = peer_id,
+                        "collab_broker: asked to draw a compose surface, but this \
+                         session has no desktop to draw one on"
+                    );
+                }
             }
             Ok(())
         })

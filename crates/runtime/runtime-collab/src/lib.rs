@@ -236,6 +236,35 @@ impl ChannelHandle {
         Ok(())
     }
 
+    /// Ask this session to open the "say something about this" surface.
+    ///
+    /// Addressed to the compositor on the far end of this socket, not to the
+    /// room. It supplies the address of the object being talked about and the
+    /// rect of the chrome to sit beside, **in this window's own coordinates** —
+    /// the session converts, because only the session knows where this window
+    /// sits on a desktop and what is next to it.
+    ///
+    /// The panel cannot be drawn here. It opens beside the app's context menu,
+    /// and beside a menu near a window's edge is outside the window; a Wayland
+    /// client has no way to paint there.
+    pub async fn compose_remark(
+        &self,
+        reference: &str,
+        beside: (f64, f64, f64, f64),
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.compose_remark_request();
+        {
+            let mut b = req.get();
+            b.set_reference(reference);
+            b.set_x(beside.0 as f32);
+            b.set_y(beside.1 as f32);
+            b.set_w(beside.2 as f32);
+            b.set_h(beside.3 as f32);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Open a server-pulled stream of actions other apps published into this
     /// room.
     pub async fn subscribe_actions(&self) -> Result<ActionStream, NotAvailable> {

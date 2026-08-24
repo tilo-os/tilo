@@ -391,6 +391,55 @@ pub struct ShellOverlayHost {
     /// [`Self::with_chrome`] runs — the stack needs a chrome handle
     /// to read notifications from.
     notification_stack: Option<NotificationStack>,
+    /// The "say something about this" surface.
+    ///
+    /// Somebody right-clicks an object in an application and writes a sentence
+    /// about it, and the panel to write in opens *beside* that application's
+    /// ordinary context menu. Beside a menu near a window's edge is outside the
+    /// window, and a Wayland client cannot paint outside its own surface — so
+    /// for as long as the application drew this, it was sliced off mid-word
+    /// with the next application visible past the cut. On a strip of tiled
+    /// windows that is most of the time.
+    ///
+    /// So the compositor draws it, which is also what this project's own rule
+    /// about chrome already required: a surface that reads the room's roster
+    /// and carries a resource address *between* applications belongs on the
+    /// room's side of the boundary, next to the window decorations the
+    /// compositor already owns.
+    ///
+    /// The type is [`ui::widget::RemarkHost`] unchanged — deliberately
+    /// process-agnostic `ui::Widget` machinery, and this tree is built out of
+    /// `ui::Widget`s.
+    remark: ui::widget::RemarkHost,
+    /// The chrome the open panel was placed beside, in **shell** coordinates.
+    ///
+    /// The asking application reports its context menu in its own coordinates;
+    /// this is that rect once it has been put on the desktop. Kept so a click
+    /// on the menu is not read as a click away from the panel, and zeroed when
+    /// nothing is open so a stale rect cannot answer for a menu that has gone.
+    remark_neighbour: Rect,
+    /// Finished remarks waiting for the compositor to put in the room.
+    ///
+    /// A queue rather than a call because this widget holds no broker: the
+    /// handle lives one level up, in the compositor that owns the runtime
+    /// thread. Same shape as [`Self::take_peer_sync_actions`], and for the same
+    /// reason — the widget layer keeps knowing nothing about transports.
+    remark_outbox: Vec<qos_reference::Remark>,
+    /// Whether the panel was open on the previous pass.
+    ///
+    /// The edge is what matters, not the level: the application that asked has
+    /// a context menu standing beside a panel it cannot see, and it has to be
+    /// told the moment that panel goes — once, on the frame it closed.
+    remark_was_open: bool,
+    /// The connection that asked for the open panel, when it came over a
+    /// socket. `None` for an application hosted in this tree, which is told
+    /// directly. Cleared when the panel closes, so a stale peer cannot be sent
+    /// a dismissal for somebody else's panel.
+    remark_peer: Option<u64>,
+    /// A connection owed a "your panel has gone", waiting for the compositor
+    /// to send it. Same queue-not-call reason as [`Self::remark_outbox`]: this
+    /// widget holds no broker.
+    remark_dismissals: Vec<u64>,
     /// Last `chrome.revision` value observed by
     /// [`Self::resync_strips_from_tree`]. The chrome bumps its
     /// revision counter on every structural mutation (workspace
@@ -1496,6 +1545,12 @@ impl ShellOverlayHost {
             peer_sync_scrim_rect: Rect::ZERO,
             peer_sync_body_end: 0.0,
             notification_stack: None,
+            remark: ui::widget::RemarkHost::new(),
+            remark_neighbour: Rect::ZERO,
+            remark_outbox: Vec::new(),
+            remark_was_open: false,
+            remark_peer: None,
+            remark_dismissals: Vec::new(),
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
             deferred_tile_swaps: std::collections::HashSet::new(),
@@ -4506,6 +4561,231 @@ impl ShellOverlayHost {
         dirty
     }
 
+    /// Hand the compose surface to this compositor, and collect what the
+    /// applications inside it ask for.
+    ///
+    /// The in-process half of the seam. An application running in its own
+    /// process asks over the collaboration socket; one hosted as a tile in this
+    /// tree asks through the same [`ui::Widget`] method, and this is what
+    /// drains it. Both arrive at [`Self::open_remark`], so there is one
+    /// placement rule and one panel rather than one per way in.
+    ///
+    /// [`delegate_remark_surface`] is called every pass rather than once at
+    /// mount: tiles are swapped, tabs open and a widget that arrived after some
+    /// one-time setup would silently keep drawing its own clipped panel. It is
+    /// idempotent, so saying it again costs a bool.
+    ///
+    /// Returns `true` if a surface was opened, so the caller can redraw.
+    ///
+    /// [`delegate_remark_surface`]: ui::widget::Widget::delegate_remark_surface
+    pub fn pump_remark_requests(&mut self) -> bool {
+        // A panel that was up and is not any more. The application that asked
+        // still has its context menu open beside where the panel was, and
+        // cannot have seen the Escape or the Send that closed it — the shell
+        // held the keyboard. Told once, on the edge.
+        let dismissed = self.remark_was_open && !self.remark.is_open();
+        self.remark_was_open = self.remark.is_open();
+        if dismissed {
+            // The socket case. An application in its own process is told the
+            // same thing as one hosted here, by the only route there is to it.
+            if let Some(peer) = self.remark_peer.take() {
+                self.remark_dismissals.push(peer);
+            }
+        }
+
+        let mut opened: Option<(qos_reference::ResourceRef, Rect, Point)> = None;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in row.groups.iter_mut() {
+                let Some(host) = g.active_host_mut() else {
+                    continue;
+                };
+                // The tile's own rect is where this application's content
+                // starts on the desktop, which is exactly the offset its
+                // menu rect has to be moved by.
+                let origin = host.get_rect().origin();
+                let ui::widget::TileContent::App(app) = host.content_mut() else {
+                    continue;
+                };
+                app.delegate_remark_surface();
+                if dismissed {
+                    app.dismiss_remark_chrome();
+                }
+                if let Some(req) = app.take_remark_request() {
+                    opened = Some((req.reference, req.beside, origin));
+                }
+            }
+        }
+        let Some((reference, beside, origin)) = opened else {
+            return dismissed;
+        };
+        self.open_remark(reference, beside, origin)
+    }
+
+    /// Where the focused application's content starts on the desktop.
+    ///
+    /// The offset a rect reported in that application's own coordinates has to
+    /// be moved by. Used for a request that arrived over a socket, where the
+    /// asking window is the one the person was just interacting with — the
+    /// gesture is a right-click, so the window it came from is the focused one
+    /// by construction.
+    ///
+    /// `None` when the focused tab hosts no window at all, in which case
+    /// nothing sensible can be placed and nothing is.
+    pub fn focused_app_origin(&self) -> Option<Point> {
+        let chrome = self.chrome.as_ref()?;
+        let active = chrome.borrow().active_tab_id()?;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            for group in row.groups.iter() {
+                if group.active_tab_id() != active {
+                    continue;
+                }
+                if let Some(host) = group.active_host() {
+                    return Some(host.get_rect().origin());
+                }
+            }
+        }
+        None
+    }
+
+    /// Whether the compose surface is up.
+    ///
+    /// Public for the same reason [`Self::palette_visible`] is: the client
+    /// input filter reads it to decide whether a keystroke belongs to the shell
+    /// or to the focused Wayland client. The panel is a text field that just
+    /// appeared under somebody's hands, so while it is open every key is its —
+    /// a sentence contains `k` and `/`, which the chrome underneath would
+    /// otherwise read as chords.
+    pub fn remark_is_open(&self) -> bool {
+        self.remark.is_open()
+    }
+
+    /// The panel's rect, as laid out. Zero-area while it is closed.
+    pub fn remark_rect(&self) -> Rect {
+        self.remark.rect()
+    }
+
+    /// Open the surface for `reference`, beside a rect the asking application
+    /// gave in **its own** coordinates.
+    ///
+    /// `app_origin` is where that application's content starts on the desktop,
+    /// so `beside + app_origin` is the menu's real position. The application
+    /// cannot do that sum: it does not know where its window is, which display
+    /// it is on, or what is next to it — which is the whole reason this surface
+    /// moved out of it.
+    ///
+    /// Returns `false`, having opened nothing, when there is nowhere to send.
+    /// A compose box whose selector is empty is a box that cannot send, and
+    /// offering one is worse than not offering it.
+    pub fn open_remark(
+        &mut self,
+        reference: qos_reference::ResourceRef,
+        beside: Rect,
+        app_origin: Point,
+    ) -> bool {
+        let neighbour = beside + vello::kurbo::Vec2::new(app_origin.x, app_origin.y);
+        self.remark.set_destinations(self.remark_destinations());
+        // The whole display, not the asking window. This single argument is
+        // the defect being fixed: the application clamped into its own rect,
+        // which on a strip of tiled windows is narrower than the panel, so
+        // there was no position inside it that was not cut off.
+        let bounds = self.output_bounds_at(neighbour.x0);
+        if !self.remark.open_reference_beside(reference, neighbour, bounds) {
+            return false;
+        }
+        self.remark_neighbour = neighbour;
+        let panel = self.remark.rect();
+        tracing::info!(
+            about = %self
+                .remark
+                .reference()
+                .map(|r| r.resource_id().as_str().to_string())
+                .unwrap_or_default(),
+            beside = ?(neighbour.x0, neighbour.y0, neighbour.width(), neighbour.height()),
+            at = ?(panel.x0, panel.y0, panel.width(), panel.height()),
+            "shell: compose surface opened above the windows"
+        );
+        true
+    }
+
+    /// Close the panel and forget what it was beside.
+    pub fn close_remark(&mut self) {
+        self.remark.close();
+        self.remark_neighbour = Rect::ZERO;
+    }
+
+    /// Name the connection that asked for the panel now open.
+    ///
+    /// Only for a request that arrived over a socket. An application hosted in
+    /// this tree is reached directly and needs no id.
+    pub fn set_remark_peer(&mut self, peer: u64) {
+        self.remark_peer = Some(peer);
+    }
+
+    /// Collect the connections owed a "your panel has gone".
+    pub fn take_remark_dismissals(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.remark_dismissals)
+    }
+
+    /// Collect finished remarks for the compositor to put in the room.
+    ///
+    /// Drained rather than sent from here because this widget holds no broker
+    /// handle — see the field doc on [`Self::remark_outbox`].
+    pub fn take_remarks(&mut self) -> Vec<qos_reference::Remark> {
+        std::mem::take(&mut self.remark_outbox)
+    }
+
+    /// The display `x` falls on, as a rect to keep the panel inside.
+    ///
+    /// `self.rect` is the bounding box of every display, so on a two-monitor
+    /// session clamping to it would let a panel straddle the seam — half on
+    /// each screen, which is worse than the window edge it was clipped at.
+    /// Falls back to `self.rect` when no output claims the point, which is the
+    /// single-display case and every headless one.
+    fn output_bounds_at(&self, x: f64) -> Rect {
+        for o in self.output_geometry() {
+            if x >= o.x && x < o.x + o.width {
+                return Rect::new(o.x, self.rect.y0, o.x + o.width, self.rect.y0 + o.height);
+            }
+        }
+        self.rect
+    }
+
+    /// Where a remark may go: the room, then everybody in it.
+    ///
+    /// Built here rather than handed in by an application, because an
+    /// application must never invent a roster — and, now that the compositor
+    /// draws the panel, never even sees one. This is the same list the
+    /// collaborators dropdown is drawn from, so the destinations offered and
+    /// the people shown are the same people.
+    ///
+    /// The order is the meaning. The room comes first, so the surface opens on
+    /// the option everybody can read and privacy is something a person chooses
+    /// rather than something they land in. It is also the only destination a
+    /// remark can currently be *encoded* to — a participant destination is
+    /// private and chat's `SendMessage` has no private delivery, so
+    /// `Remark::to_chat_action` refuses one rather than widening it to the
+    /// channel. The private lines stay, and stay refused, until something
+    /// exists to carry them.
+    fn remark_destinations(&self) -> Vec<ui::widget::DestinationOption> {
+        let mut out = vec![ui::widget::remark_compose::room_destination()];
+        let Some(chrome) = self.chrome.as_ref() else {
+            return out;
+        };
+        let rows = collaborator_roster_rows(&chrome.borrow().tree());
+        out.extend(rows.iter().map(|r| {
+            ui::widget::DestinationOption::localised(qos_reference::Destination::participant(
+                r.id.clone(),
+                r.label.clone(),
+                r.is_agent,
+            ))
+        }));
+        out
+    }
+
     /// Where the dialog for `caller` may browse.
     ///
     /// Read off the live workspace, not off a default: the roots are
@@ -5197,6 +5477,14 @@ impl ShellOverlayHost {
     /// click-focus stamp and the file-drop router so both resolve a
     /// pointer coordinate to a window group through the exact same
     /// post-layout geometry (see [`pick_group_at`]).
+    /// Every laid-out window group, for a capture harness that needs to aim at
+    /// one. Same list the drop-target hit-test walks, so a harness and a drop
+    /// agree about where the windows are.
+    #[cfg(any(test, debug_assertions))]
+    pub fn group_hit_candidates_for_tests(&self) -> Vec<(StripId, GroupId, Rect)> {
+        self.group_hit_candidates()
+    }
+
     fn group_hit_candidates(&self) -> Vec<(StripId, GroupId, Rect)> {
         let mut candidates: Vec<(StripId, GroupId, Rect)> = Vec::new();
         for (&strip_id, &ptr) in &self.group_row_ptrs {
@@ -6484,6 +6772,7 @@ impl ShellOverlayHost {
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
             || (f.room_activity && self.room_activity.rect().contains(p))
+            || (self.remark.is_open() && self.remark.rect().contains(p))
     }
 }
 
@@ -6676,6 +6965,11 @@ impl Widget for ShellOverlayHost {
         // and drains entries when the user clicks an action button.
         // Idempotent — runs every frame regardless of queue state.
         self.pump_permission_prompt();
+        // Applications hosted in this tree asking for the compose surface.
+        // Every frame, for the same reason the prompt pump is: a rule applied
+        // at one of the several places a tile can change is a rule that holds
+        // most of the time.
+        let remark_dirty = self.pump_remark_requests();
         // App launches report back from their worker threads. Draining
         // here is what turns "the sandbox refused to start" into
         // something the user can see; the frame thread only ever takes
@@ -6704,7 +6998,14 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow().tree_mut().commit_room_change();
         }
-        a || b || c || d || launch_dirty || chrome_dirty || portal_dirty || picker_dirty
+        a || b
+            || c
+            || d
+            || launch_dirty
+            || chrome_dirty
+            || portal_dirty
+            || picker_dirty
+            || remark_dirty
     }
 
     fn build_layout(
@@ -7037,6 +7338,24 @@ impl Widget for ShellOverlayHost {
             stack.set_viewport(viewport);
             stack.draw(scene, transform, text_renderer, theme, presence);
         }
+
+        // The "say something about this" surface, above the windows.
+        //
+        // This is the point of the whole arrangement. It is painted after the
+        // desktop content, so it sits over whichever application is next to
+        // the one somebody right-clicked in — which is where "beside the menu"
+        // lands whenever that menu is near a window's edge, and on a strip of
+        // tiled windows that is most of the time.
+        //
+        // Below the modals deliberately. A file dialog or a permission prompt
+        // is something the system is *asking*, and an unfinished sentence must
+        // not cover the question it is waiting on.
+        //
+        // The panel reads every colour from `theme`, like the rest of this
+        // tree: it is drawn by the compositor now, so a hard-coded palette here
+        // would be the OS disagreeing with itself.
+        self.remark
+            .draw(scene, transform, text_renderer, theme, presence);
 
         // The rooms panel. It rises 20 px and settles from 0.97, over a
         // scrim whose own strength follows the openness — so the desk
@@ -7489,6 +7808,58 @@ impl Widget for ShellOverlayHost {
             }
             *handled = true;
             return;
+        }
+
+        // The compose surface, while it is up, owns the keyboard.
+        //
+        // It is a text field that just appeared under somebody's hands, and a
+        // keystroke meant for the sentence must never land in the desktop
+        // instead — a remark contains `k` and `/`, which the chrome underneath
+        // reads as chords. The same argument the file dialog above makes, for
+        // the same reason.
+        //
+        // The pointer stays shared, which is the difference from a modal: a
+        // press on the panel is the panel's, a press on the menu it opened
+        // beside still works that menu, and a press anywhere else puts an
+        // *empty* panel away the way clicking off any composer does. A panel
+        // with words in it stays — it is no longer part of the menu's gesture,
+        // it is an unsent sentence, and a click aimed at something else must
+        // not throw it away.
+        //
+        // Placed before the peer-sync card because it is the surface most
+        // recently summoned by a deliberate gesture; anything the shell had up
+        // beforehand had its chance at the keyboard already.
+        if self.remark.is_open() {
+            let pointer = self.last_cursor.unwrap_or(Point::ZERO);
+            let neighbour = (self.remark_neighbour.area() > 0.0).then_some(self.remark_neighbour);
+            let consumed = self.remark.pump(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                pointer,
+                neighbour,
+            );
+            // Whatever the panel finished, take it now: the compositor drains
+            // this outbox and puts it in the room. Read on every event rather
+            // than only on a consumed one, so a send can never be stranded by
+            // the branch the event happened to take.
+            if let Some(remark) = self.remark.take_remark() {
+                self.remark_outbox.push(remark);
+            }
+            if !self.remark.is_open() {
+                // Escape inside the panel closed it. The menu it opened beside
+                // belongs to the same gesture, so the asking application is
+                // told to put that away too rather than leaving it standing as
+                // the visible remnant of something dismissed.
+                self.remark_neighbour = Rect::ZERO;
+            }
+            if consumed {
+                *handled = true;
+                return;
+            }
         }
 
         // Peer-sync card. Runs before every other overlay because while
@@ -9308,6 +9679,20 @@ impl Widget for ShellOverlayHost {
         out.push(&self.palette);
         if let Some(s) = self.sidebar.as_ref() {
             out.push(s.as_ref());
+        }
+        // The compose surface, so a harness can find it by name.
+        //
+        // Read-only, and deliberately not in `children_mut`: events reach it
+        // through `RemarkHost::pump`, which decides what is the panel's and
+        // what belongs to the desktop underneath. Routing to it here as well
+        // would deliver every keystroke twice.
+        //
+        // This is the visible difference the move makes to anything driving the
+        // gesture. While an application drew the panel it was a client's
+        // widget, absent from this registry, and the only account of where it
+        // went was that application's own log line.
+        if let Some(compose) = self.remark.compose_widget() {
+            out.push(compose);
         }
         out
     }

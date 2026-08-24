@@ -80,6 +80,34 @@ use crate::widget::remark_compose::{
     BESIDE_GAP, DestinationOption, RemarkCompose, placeholder_text, send_label,
 };
 
+/// An app asking for the compose surface, rather than drawing one.
+///
+/// The whole of what crosses from an application to the compositor when
+/// somebody says "say something about this": **which object**, and **what to
+/// sit beside**. Nothing about how the panel looks, who is in the room, or
+/// where on a screen it should end up — those are the compositor's answers,
+/// and an app supplying them would be supplying answers it does not have.
+///
+/// The address is the point. `reference` is the object's own id, resolved by
+/// the app that owns it, so a sentence composed about it still means the same
+/// thing on another machine and in a session opened tomorrow. A description of
+/// where it sat on somebody's screen would not.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemarkRequest {
+    /// The address of the thing being talked about.
+    pub reference: ResourceRef,
+    /// The chrome to sit beside — normally the context menu the same gesture
+    /// opened — **in the app's own coordinate space**.
+    ///
+    /// The app reports where its own menu is and stops there. Turning that
+    /// into a place on a desktop needs to know where this window sits, which
+    /// display it is on, and what is next to it; the app knows none of the
+    /// three. That asymmetry is the whole reason this surface moved. "Beside
+    /// the menu" is a position on the desktop, and an app can only ever name
+    /// one inside itself.
+    pub beside: Rect,
+}
+
 /// The compose surface and everything an app needs to run it.
 #[derive(Default)]
 pub struct RemarkHost {
@@ -101,6 +129,16 @@ pub struct RemarkHost {
     /// to send — a message that looks delivered and was never delivered, which
     /// is the worst failure this surface has.
     fresh: bool,
+    /// Whether something outside this process draws the panel.
+    ///
+    /// Set by the host when the application is running under a compositor that
+    /// draws this surface itself. Opening then produces a [`RemarkRequest`] and
+    /// no panel of this app's own: two panels for one gesture — one clipped at
+    /// the window edge and one not — is worse than either.
+    delegated: bool,
+    /// A request waiting to be collected by
+    /// [`Widget::take_remark_request`](crate::widget::Widget::take_remark_request).
+    asked: Option<RemarkRequest>,
 }
 
 impl RemarkHost {
@@ -111,6 +149,51 @@ impl RemarkHost {
     /// Take the room's roster as the places a remark can be sent.
     pub fn set_destinations(&mut self, destinations: Vec<DestinationOption>) {
         self.destinations = destinations;
+    }
+
+    /// Hand the surface to whatever is drawing this app's chrome.
+    ///
+    /// From here on the gesture produces a [`RemarkRequest`] and nothing is
+    /// drawn in this process. Called by the host when the application is
+    /// running under a compositor that hosts the panel — which is the only
+    /// arrangement in which "beside the menu" can be honoured, because beside
+    /// a menu near a window's edge is outside the window.
+    ///
+    /// It also settles the destinations question. A delegated app is never
+    /// given a roster and never needs one: whoever draws the panel fills its
+    /// selector from the room it already holds. So [`has_destinations`] stops
+    /// being the gate on the gesture — see [`can_open`].
+    ///
+    /// [`has_destinations`]: Self::has_destinations
+    /// [`can_open`]: Self::can_open
+    pub fn delegate(&mut self) {
+        self.delegated = true;
+    }
+
+    /// Whether the panel is drawn somewhere other than this process.
+    pub fn is_delegated(&self) -> bool {
+        self.delegated
+    }
+
+    /// Whether the gesture can go anywhere at all.
+    ///
+    /// Two different questions with one answer, because they are the same
+    /// question asked of the two homes this surface has: an app that draws the
+    /// panel itself needs somewhere to send, and an app that asks for one needs
+    /// something to ask. Apps call this rather than
+    /// [`has_destinations`](Self::has_destinations) so a delegated app is not
+    /// gated on a roster it is deliberately never given.
+    pub fn can_open(&self) -> bool {
+        self.delegated || !self.destinations.is_empty()
+    }
+
+    /// Collect a request to open the surface, once.
+    ///
+    /// The counterpart to [`take_remark`](Self::take_remark) on the way *in*:
+    /// that one carries a finished sentence out of an app that composed it,
+    /// this one carries a question out of an app that cannot.
+    pub fn take_request(&mut self) -> Option<RemarkRequest> {
+        self.asked.take()
     }
 
     /// Whether the room has told this app anywhere to send yet.
@@ -151,6 +234,17 @@ impl RemarkHost {
         neighbour: Rect,
         bounds: Rect,
     ) -> bool {
+        if self.delegated {
+            // Asked for, not drawn. `bounds` is dropped on purpose: it is this
+            // window's rect, and the panel is about to be placed on a desktop
+            // this window is only one tile of. Clamping into the app's own
+            // bounds here is exactly the defect being moved away from.
+            self.asked = Some(RemarkRequest {
+                reference,
+                beside: neighbour,
+            });
+            return true;
+        }
         if self.destinations.is_empty() {
             return false;
         }
@@ -203,6 +297,23 @@ impl RemarkHost {
     /// The panel's rect, as laid out. Zero-area while it is closed.
     pub fn rect(&self) -> Rect {
         self.compose.get_rect()
+    }
+
+    /// The panel itself, while it is open, so a host can put it in the tree it
+    /// publishes to a test harness.
+    ///
+    /// The panel is not a node of anybody's layout tree — it is anchored in
+    /// window coordinates and laid out in a tree of its own — so without this
+    /// it is invisible to a registry walk, and a harness driving the gesture
+    /// has to aim at a pixel. It carries `test_id` `remark_compose`; the point
+    /// of the compositor drawing it is that the name now resolves.
+    ///
+    /// Read-only on purpose. Events reach the panel through [`Self::pump`],
+    /// which decides what is the panel's and what belongs to the app
+    /// underneath; a host that also routed to it as an ordinary child would
+    /// deliver every keystroke twice.
+    pub fn compose_widget(&self) -> Option<&dyn Widget> {
+        self.compose.is_open().then(|| &self.compose as &dyn Widget)
     }
 
     /// What the open panel is about.
