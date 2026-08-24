@@ -326,6 +326,42 @@ pub struct ShellOverlayHost {
     /// when the prompt is not painted, so a click cannot reach a button
     /// that is not on screen.
     peer_sync_prompt_rects: Vec<(PeerSyncPromptButton, Rect)>,
+    /// The window's scale factor, cached from the last event that
+    /// carried one. Overlay chrome that hands an event to a retained
+    /// widget has to pass it, and the overlay routers themselves take
+    /// only `(event, modifiers)`.
+    scale_factor: f64,
+    /// Where [`Self::draw_peer_sync`] put the name field, so a click
+    /// can be routed into it and a test can address it. `Rect::ZERO`
+    /// on every face that has no field.
+    invite_field_rect: Rect,
+    /// The invite composer's name field.
+    ///
+    /// A real [`ui::widget::TextInput`], not an `Option<String>` pushed
+    /// and popped on raw key events. What that buys is not tidiness: it
+    /// is selection, the clipboard chords, caret movement by character
+    /// and by word, Home/End, IME commits, the focus ring, and a text
+    /// field in the accessibility tree with a name on it. Every one of
+    /// those was absent from the hand-rolled field, and none of them is
+    /// something a person notices is missing until they reach for it.
+    ///
+    /// The typed text is mirrored into
+    /// [`Chrome::peer_sync_invite_name`] after every event the field
+    /// takes, because that field is what the rest of the shell —
+    /// `submit_invite_composer`, the state dump, the headless harness —
+    /// reads as "who is being invited". The widget owns the editing; the
+    /// chrome stays the source of truth for the answer.
+    invite_name_input: ui::widget::TextInput,
+    /// Whether the composer was open on the last pass, so the field can
+    /// be seeded and focused exactly once when the card opens rather
+    /// than re-seeded (and the caret yanked to the end) every frame.
+    invite_input_open: bool,
+    /// Which control of the peer-sync card holds keyboard focus.
+    peer_sync_focus: PeerSyncFocus,
+    /// The card action the pointer is over, this frame.
+    peer_sync_hover: Option<PeerSyncPromptButton>,
+    /// The card action the pointer is held down on, this frame.
+    peer_sync_press: Option<PeerSyncPromptButton>,
     /// The card rect the last frame actually drew.
     ///
     /// Hit-testing reads this rather than recomputing the geometry: the
@@ -506,6 +542,40 @@ pub enum PeerSyncRequest {
     AcceptInvite(String),
 }
 
+/// Where keyboard focus sits inside the peer-sync card.
+///
+/// The card is modal: while it is up it owns the keyboard, so it also
+/// owns a focus order. Tab walks field → actions, left to right → the
+/// close control, and wraps. Without one, a keyboard user could reach
+/// the field and nothing else, and the buttons had no state to draw a
+/// focus ring from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PeerSyncFocus {
+    /// The text field, when the face showing has one.
+    Field,
+    /// An action button, by index into the card's action row.
+    Action(usize),
+    /// The title row's close control.
+    Close,
+}
+
+/// The composer's name field, built the way the card wants it.
+///
+/// A free function rather than an inline literal so the construction is
+/// in one place: the shots harness and the tests build hosts through
+/// different paths and must get the same field.
+fn new_invite_name_input() -> ui::widget::TextInput {
+    ui::widget::TextInput::local()
+        .with_id("invite_name")
+        .with_placeholder(&crate::shell::i18n::t("invite-composer-placeholder"))
+        // The card opens with this field focused, so a placeholder that
+        // cleared on focus would never be seen at all — the surface would
+        // appear already showing an empty box and a caret.
+        .with_placeholder_while_focused(true)
+        .with_accessible_name(&crate::shell::i18n::t("invite-composer-label"))
+        .with_enter_submits(true)
+}
+
 /// A button on the peer-sync card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerSyncPromptButton {
@@ -543,6 +613,14 @@ pub enum PeerSyncPromptButton {
 /// three times wider than its content reads as one that failed to load
 /// rather than one that is finished.
 const PEER_SYNC_CARD_WIDTH: f64 = 520.0;
+
+/// Height of the composer's name field.
+///
+/// 40 px, which is the row height `TextInput::build_layout` gives itself
+/// when taffy lays it out. The card positions the field by hand, so the
+/// number has to be stated somewhere; stating the toolkit's own is what
+/// keeps a field on a modal the same size as a field in a form.
+const INVITE_FIELD_H: f64 = 40.0;
 
 /// Total duration of the desktop ↔ overview crossfade. The concept wraps
 /// the two views in `AnimatePresence mode="wait"` with `duration: 0.2`
@@ -1368,6 +1446,13 @@ impl ShellOverlayHost {
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
             peer_sync_prompt_rects: Vec::new(),
+            scale_factor: 1.0,
+            invite_field_rect: Rect::ZERO,
+            invite_name_input: new_invite_name_input(),
+            invite_input_open: false,
+            peer_sync_focus: PeerSyncFocus::Field,
+            peer_sync_hover: None,
+            peer_sync_press: None,
             peer_sync_card_rect: Rect::ZERO,
             peer_sync_scrim_rect: Rect::ZERO,
             peer_sync_body_end: 0.0,
@@ -2054,6 +2139,19 @@ impl ShellOverlayHost {
         // user was trying to paste over.
         let mods = modifiers.state();
         let chord = mods.control_key() || mods.super_key();
+        // Seed and focus the field the frame the composer opens, and let
+        // it go when the card moves on.
+        self.sync_invite_input();
+        // The composer's field owns the keyboard while it is focused —
+        // including the clipboard chords, which on a text field mean
+        // "copy/cut/paste the selection", not "copy the token the card
+        // is not currently holding".
+        if composer_open && self.route_to_invite_field(event, modifiers) {
+            return true;
+        }
+        if composer_open && self.handle_composer_focus_key(event, modifiers) {
+            return true;
+        }
         match event {
             WindowEvent::KeyboardInput {
                 event:
@@ -2088,23 +2186,14 @@ impl ShellOverlayHost {
                         }
                         return true;
                     }
-                    Key::Named(NamedKey::Enter) if composer_open => {
-                        self.submit_invite_composer();
-                        return true;
-                    }
                     Key::Named(NamedKey::Enter) if prompt_open => {
                         self.submit_connect_prompt();
                         return true;
                     }
-                    Key::Named(NamedKey::Backspace) if prompt_open || composer_open => {
+                    Key::Named(NamedKey::Backspace) if prompt_open => {
                         if let Some(chrome) = self.chrome.clone() {
                             let mut st = chrome.borrow_mut();
-                            let field = if prompt_open {
-                                st.peer_sync_connect_input.as_mut()
-                            } else {
-                                st.peer_sync_invite_name.as_mut()
-                            };
-                            if let Some(buf) = field {
+                            if let Some(buf) = st.peer_sync_connect_input.as_mut() {
                                 buf.pop();
                             }
                             st.bump();
@@ -2113,29 +2202,11 @@ impl ShellOverlayHost {
                     }
                     // `!chord` so a modified key the card has no meaning
                     // for is swallowed rather than typed into the token.
-                    Key::Character(s) if (prompt_open || composer_open) && !chord => {
+                    Key::Character(s) if prompt_open && !chord => {
                         if let Some(chrome) = self.chrome.clone() {
                             let mut st = chrome.borrow_mut();
-                            let field = if prompt_open {
-                                st.peer_sync_connect_input.as_mut()
-                            } else {
-                                st.peer_sync_invite_name.as_mut()
-                            };
-                            if let Some(buf) = field {
+                            if let Some(buf) = st.peer_sync_connect_input.as_mut() {
                                 buf.push_str(s.as_str());
-                            }
-                            st.bump();
-                        }
-                        return true;
-                    }
-                    // A name has spaces in it. `Key::Character` never
-                    // carries one, so without this the composer could
-                    // only be told a single word.
-                    Key::Named(NamedKey::Space) if composer_open && !chord => {
-                        if let Some(chrome) = self.chrome.clone() {
-                            let mut st = chrome.borrow_mut();
-                            if let Some(buf) = st.peer_sync_invite_name.as_mut() {
-                                buf.push(' ');
                             }
                             st.bump();
                         }
@@ -2157,8 +2228,18 @@ impl ShellOverlayHost {
                 let Some(p) = self.last_cursor else {
                     return false;
                 };
+                // A click in the field is a click in the field: it moves
+                // the caret, starts a selection drag, and takes focus off
+                // whichever button had it.
+                if composer_open && self.invite_field_rect.contains(p) {
+                    self.peer_sync_focus = PeerSyncFocus::Field;
+                    self.invite_name_input.set_focus(true);
+                    self.route_to_invite_field(event, modifiers);
+                    return true;
+                }
                 for (which, rect) in self.peer_sync_prompt_rects.clone() {
                     if rect.area() > 0.0 && rect.contains(p) {
+                        self.peer_sync_press = Some(which);
                         match which {
                             PeerSyncPromptButton::CreateInvite => self.submit_invite_composer(),
                             PeerSyncPromptButton::Join => self.submit_connect_prompt(),
@@ -2184,9 +2265,199 @@ impl ShellOverlayHost {
                 }
                 true
             }
-            WindowEvent::CursorMoved { .. }
-            | WindowEvent::MouseWheel { .. }
-            | WindowEvent::MouseInput { .. } => true,
+            WindowEvent::CursorMoved { .. } => {
+                // Track which action the pointer is over so the row can
+                // paint a hover state, and hand the move to the field so
+                // a selection drag keeps extending and the pointer turns
+                // into an I-beam over it.
+                self.peer_sync_hover = self.last_cursor.and_then(|p| {
+                    self.peer_sync_prompt_rects
+                        .iter()
+                        .find(|(_, r)| r.area() > 0.0 && r.contains(p))
+                        .map(|(which, _)| *which)
+                });
+                if composer_open {
+                    self.route_to_invite_field(event, modifiers);
+                }
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                ..
+            } => {
+                self.peer_sync_press = None;
+                if composer_open {
+                    self.route_to_invite_field(event, modifiers);
+                }
+                true
+            }
+            WindowEvent::MouseWheel { .. } | WindowEvent::MouseInput { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Seed, focus and retire the composer's field as the card opens and
+    /// closes.
+    ///
+    /// Seeding happens exactly once per opening. Re-seeding every frame
+    /// would drag the caret back to the end of the text on every
+    /// keystroke and throw away any selection — which is the class of
+    /// bug that makes a real text field feel like a hand-rolled one.
+    fn sync_invite_input(&mut self) {
+        let open = self.invite_composer_open();
+        if open == self.invite_input_open {
+            return;
+        }
+        self.invite_input_open = open;
+        if open {
+            let seed = self
+                .chrome
+                .as_ref()
+                .and_then(|c| c.borrow().peer_sync_invite_name.clone())
+                .unwrap_or_default();
+            self.invite_name_input.set_text(&seed);
+            self.invite_name_input.set_cursor_pos(seed.len());
+            // The card opens on the field: the question it asks is the
+            // only thing on it, so anything else to focus first would be
+            // a step between the user and the answer.
+            self.invite_name_input.set_focus(true);
+            self.peer_sync_focus = PeerSyncFocus::Field;
+            self.peer_sync_hover = None;
+            self.peer_sync_press = None;
+        } else {
+            self.invite_name_input.set_text("");
+            self.invite_name_input.set_focus(false);
+        }
+    }
+
+    /// Offer one event to the composer's field, and mirror what it did
+    /// back into the chrome.
+    ///
+    /// The widget owns the text while the card is up; `peer_sync_invite_name`
+    /// stays the answer the rest of the shell reads, so it is rewritten
+    /// after every event the field took. Returns whether the field
+    /// consumed the event.
+    fn route_to_invite_field(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &winit::event::Modifiers,
+    ) -> bool {
+        if !self.invite_name_input.is_focused()
+            && matches!(event, WindowEvent::KeyboardInput { .. })
+        {
+            return false;
+        }
+        let took = self
+            .invite_name_input
+            .handle_event_local(event, self.scale_factor, modifiers);
+        // Enter is a submit, not a character: the field reports it and
+        // the card acts on it, so the one implementation of minting is
+        // still `submit_invite_composer`.
+        let submitted = self.invite_name_input.take_submit();
+        if took {
+            let typed = self.invite_name_input.value().to_string();
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                if st.peer_sync_invite_name.as_deref() != Some(typed.as_str()) {
+                    st.peer_sync_invite_name = Some(typed);
+                    st.bump();
+                }
+            }
+        }
+        if submitted {
+            self.submit_invite_composer();
+            return true;
+        }
+        took
+    }
+
+    /// Tab, Enter and Space over the composer's focus ring.
+    ///
+    /// Tab walks field → actions, left to right → close, and wraps;
+    /// Shift+Tab walks back. Enter and Space fire whichever control is
+    /// focused. Returns whether the key was consumed.
+    fn handle_composer_focus_key(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &winit::event::Modifiers,
+    ) -> bool {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        // One stop per action, plus the field and the close control.
+        let action_count = self.peer_sync_prompt_rects
+            .iter()
+            .filter(|(which, _)| *which != PeerSyncPromptButton::Close)
+            .count();
+        match logical_key {
+            Key::Named(NamedKey::Tab) => {
+                let stops = action_count + 2;
+                let at = match self.peer_sync_focus {
+                    PeerSyncFocus::Field => 0,
+                    PeerSyncFocus::Action(i) => i + 1,
+                    PeerSyncFocus::Close => stops - 1,
+                };
+                let next = if modifiers.state().shift_key() {
+                    (at + stops - 1) % stops
+                } else {
+                    (at + 1) % stops
+                };
+                self.peer_sync_focus = if next == 0 {
+                    PeerSyncFocus::Field
+                } else if next == stops - 1 {
+                    PeerSyncFocus::Close
+                } else {
+                    PeerSyncFocus::Action(next - 1)
+                };
+                // Only the field takes keys; a focused button takes
+                // Enter/Space, which is handled below.
+                self.invite_name_input
+                    .set_focus(self.peer_sync_focus == PeerSyncFocus::Field);
+                if let Some(chrome) = self.chrome.clone() {
+                    chrome.borrow_mut().bump();
+                }
+                true
+            }
+            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                match self.peer_sync_focus {
+                    // The field is focused: its own Enter already
+                    // submitted through `route_to_invite_field`, and
+                    // Space is a character. Not ours.
+                    PeerSyncFocus::Field => false,
+                    PeerSyncFocus::Close => {
+                        self.dismiss_peer_sync_card();
+                        true
+                    }
+                    PeerSyncFocus::Action(i) => {
+                        let which = self
+                            .peer_sync_prompt_rects
+                            .iter()
+                            .filter(|(w, _)| *w != PeerSyncPromptButton::Close)
+                            .nth(i)
+                            .map(|(w, _)| *w);
+                        match which {
+                            Some(PeerSyncPromptButton::CreateInvite) => {
+                                self.submit_invite_composer();
+                                true
+                            }
+                            Some(PeerSyncPromptButton::Cancel) => {
+                                self.dismiss_peer_sync_card();
+                                true
+                            }
+                            _ => false,
+                        }
+                    }
+                }
+            }
             _ => false,
         }
     }
@@ -6678,6 +6949,7 @@ impl Widget for ShellOverlayHost {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        self.scale_factor = scale_factor;
         // Track cursor position so we can hit-test overlay clicks in the
         // absence of position data on MouseInput.
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -10788,8 +11060,9 @@ impl ShellOverlayHost {
         let body_size = (tokens.typography.scale.xs).max(10.0);
         let name_size = (tokens.typography.scale.sm).max(12.0);
 
+        let composer_title = crate::shell::i18n::t("invite-composer-title");
         let title = if invite_name.is_some() {
-            "Invite someone"
+            composer_title.as_str()
         } else if input.is_some() {
             "Join a workspace"
         } else {
@@ -10802,27 +11075,40 @@ impl ShellOverlayHost {
         //
         // Given left-to-right, so the last entry is the one at the right
         // edge — which is where the primary action goes.
-        let buttons: &[(&str, PeerSyncPromptButton)] = if invite_name.is_some() {
-            &[
-                ("Cancel", PeerSyncPromptButton::Cancel),
-                ("Create invite", PeerSyncPromptButton::CreateInvite),
+        let cancel_label = crate::shell::i18n::t("invite-composer-cancel");
+        let create_label = crate::shell::i18n::t("invite-composer-create");
+        let buttons: Vec<(&str, PeerSyncPromptButton)> = if invite_name.is_some() {
+            vec![
+                (cancel_label.as_str(), PeerSyncPromptButton::Cancel),
+                (create_label.as_str(), PeerSyncPromptButton::CreateInvite),
             ]
         } else if input.is_some() {
-            &[
+            vec![
                 ("Paste", PeerSyncPromptButton::PasteToken),
-                ("Cancel", PeerSyncPromptButton::Cancel),
+                (cancel_label.as_str(), PeerSyncPromptButton::Cancel),
                 ("Join", PeerSyncPromptButton::Join),
             ]
         } else {
-            &[("Copy", PeerSyncPromptButton::CopyToken)]
+            vec![("Copy", PeerSyncPromptButton::CopyToken)]
         };
+        // Every action carries its own live interaction state, so the
+        // row reacts the way every other button in the system does.
+        // `ModalFrame` paints these through `Button::paint`; leaving them
+        // at their defaults is what made the card's buttons look like
+        // buttons and behave like painted rectangles.
         let actions: Vec<ModalAction<'_>> = buttons
             .iter()
-            .map(|(label, which)| match which {
-                PeerSyncPromptButton::Join
-                | PeerSyncPromptButton::CopyToken
-                | PeerSyncPromptButton::CreateInvite => ModalAction::primary(label),
-                _ => ModalAction::secondary(label),
+            .enumerate()
+            .map(|(i, (label, which))| {
+                let base = match which {
+                    PeerSyncPromptButton::Join
+                    | PeerSyncPromptButton::CopyToken
+                    | PeerSyncPromptButton::CreateInvite => ModalAction::primary(label),
+                    _ => ModalAction::secondary(label),
+                };
+                base.hovered(self.peer_sync_hover == Some(*which))
+                    .pressed(self.peer_sync_press == Some(*which))
+                    .focused(self.peer_sync_focus == PeerSyncFocus::Action(i))
             })
             .collect();
 
@@ -10842,6 +11128,8 @@ impl ShellOverlayHost {
         let spec = ModalSpec::new(title)
             .actions(&actions)
             .body_height(body_h)
+            .close_hovered(self.peer_sync_hover == Some(PeerSyncPromptButton::Close))
+            .close_focused(self.peer_sync_focus == PeerSyncFocus::Close)
             .max_width(PEER_SYNC_CARD_WIDTH);
         let layout = ModalFrame::layout(self.rect, &spec, text_renderer, theme);
         self.peer_sync_card_rect = layout.card;
@@ -10856,90 +11144,44 @@ impl ShellOverlayHost {
         let mut y = layout.body.y0;
         let avail = layout.body.width();
 
-        if let Some(typed) = invite_name.as_deref() {
+        if invite_name.is_some() {
             // --- Asking who ------------------------------------------
             //
             // The question comes before the token, because an invite
             // minted without an answer to it is an invite the room can
             // never attach a name to: the host is left reading a peer
             // id off its own roster once the guest arrives.
+            //
+            // The label names the field for a sighted reader; the same
+            // words are the field's accessible name, so a reader that
+            // announces the input announces the question with it.
             text_renderer.draw_text(
                 scene,
-                "Who are you inviting?",
+                &crate::shell::i18n::t("invite-composer-label"),
                 body_size,
-                colors.text_dim,
+                ModalFrame::ink(theme).1,
                 transform * Affine::translate((rect.x0 + pad, y)),
                 None,
             );
             y += body_size as f64 + 8.0;
 
-            let field_h = 38.0_f64;
-            let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + field_h);
-            // The on-card tint rather than a white wash, for the reason
-            // spelled out in `draw_invite_code`: 5 % white is a field on
-            // a dark card and nothing at all on a light one.
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.on_card().tint,
-                None,
-                &RoundedRect::from_rect(field, tokens.radii.sm as f64),
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                colors.accent[5],
-                None,
-                &RoundedRect::from_rect(field, tokens.radii.sm as f64),
-            );
-            let shown = text_renderer.elide_to_width(typed, name_size, (avail - 40.0) as f32);
-            let (tw, th) = text_renderer.measure(&shown, name_size, None);
-            let ty = (field.y0 + field.y1) / 2.0 - th as f64 / 2.0;
-            if typed.is_empty() {
-                text_renderer.draw_text(
-                    scene,
-                    "Their name",
-                    name_size,
-                    colors.text_dim,
-                    transform * Affine::translate((field.x0 + 12.0, ty)),
-                    None,
-                );
-            } else {
-                text_renderer.draw_text(
-                    scene,
-                    &shown,
-                    name_size,
-                    colors.text_primary,
-                    transform * Affine::translate((field.x0 + 12.0, ty)),
-                    None,
-                );
-            }
-            // A caret, so the field reads as one that is taking keys
-            // rather than one waiting to be clicked into.
-            let caret_x = field.x0 + 12.0 + if typed.is_empty() { 0.0 } else { tw as f64 + 2.0 };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.accent[5],
-                None,
-                &Rect::new(caret_x, field.y0 + 9.0, caret_x + 1.5, field.y1 - 9.0),
-            );
-            y = field.y1 + 12.0;
-
-            let note = text_renderer.elide_to_width(
-                "The room will call them this, beside their cursor.",
-                body_size,
-                avail as f32,
-            );
-            text_renderer.draw_text(
+            // The field is a `TextInput`. It draws its own fill, border,
+            // focus ring, selection, placeholder and caret — all of them
+            // from the theme it is handed, and all of them the same as
+            // every other field in the system. The card supplies only
+            // the box.
+            let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + INVITE_FIELD_H);
+            self.invite_name_input.set_font_size(name_size);
+            self.invite_name_input.apply_layout_external(field);
+            self.invite_name_input.draw(
                 scene,
-                &note,
-                body_size,
-                colors.text_dim,
-                transform * Affine::translate((rect.x0 + pad, y)),
-                None,
+                transform,
+                text_renderer,
+                theme,
+                &PresenceCtx::default(),
             );
-            y += body_size as f64 + 10.0;
+            self.invite_field_rect = field;
+            y = field.y1 + 12.0;
         } else if let Some(token) = token.as_deref() {
             // --- The invite, made ------------------------------------
             let parsed = parse_invite(token);
@@ -11106,8 +11348,8 @@ impl ShellOverlayHost {
         };
 
         let mut h = if invite_name.is_some() {
-            // label, field, gap, note
-            body_size as f64 + 8.0 + 38.0 + 12.0 + body_size as f64 + 10.0
+            // label, gap, field, gap
+            body_size as f64 + 8.0 + INVITE_FIELD_H + 12.0
         } else if let Some(token) = token {
             let mut h = person_row;
             if parse_invite(token).is_some() {

@@ -195,6 +195,22 @@ pub struct TextInput {
     /// Empty string (the default) disables the placeholder entirely, so
     /// existing callers are unaffected.
     placeholder: String,
+    /// The name a screen reader announces for this field. A text input
+    /// with no name is announced as "edit" and nothing else — the label
+    /// beside it is a separate widget the reader has no way to associate.
+    /// Falls back to the placeholder, which is at least the words the
+    /// sighted user is reading in the same box.
+    accessible_name: Option<String>,
+    /// Keep the placeholder painted while the field is focused and still
+    /// empty, instead of clearing it the moment focus lands.
+    ///
+    /// Off by default, which is the form-field behaviour: a field the
+    /// user has clicked into is a field they are about to type in, and
+    /// the hint has done its job. It is turned on for a field that is
+    /// focused *before* the user has looked at it — an autofocused modal
+    /// field, whose hint would otherwise vanish in the same frame the
+    /// surface appeared, leaving an empty box and a caret.
+    placeholder_while_focused: bool,
     /// When true the text is shaped + drawn in the system monospace face.
     /// Both the per-char measurement (`char_x_positions`) and the draw call
     /// switch to `Family::Monospace`, so the caret/selection stay aligned.
@@ -331,6 +347,8 @@ impl TextInput {
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
             placeholder: String::new(),
+            accessible_name: None,
+            placeholder_while_focused: false,
             mono: false,
             family: None,
             multiline: false,
@@ -1501,11 +1519,108 @@ impl TextInput {
         &self.placeholder
     }
 
+    /// Feed one window event into a field whose host lays it out itself.
+    ///
+    /// [`Widget::handle_event`] is shaped for a taffy-hosted tree: it
+    /// asks for a document, a focus target and a node id. An
+    /// immediate-mode surface -- the compositor's own overlay chrome --
+    /// has none of the three, and a caller there would otherwise stand
+    /// up a scratch `AutoCommit` and a one-leaf `TaffyTree` on every
+    /// keystroke purely to satisfy the parameter list. That ceremony is
+    /// exactly the friction that gets a field hand-rolled instead, so it
+    /// lives here once.
+    ///
+    /// Pair with [`Self::apply_layout_external`] for the rect and
+    /// [`Widget::set_focus`] for focus. Returns whether the field
+    /// consumed the event. **Local-mode only** ([`Self::local`]): a
+    /// CRDT-bound field has a real document to splice into and must go
+    /// through the trait method so its edits reach collaborators.
+    pub fn handle_event_local(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+    ) -> bool {
+        debug_assert!(
+            !self.crdt_bound,
+            "handle_event_local drops CRDT splices on the floor; a bound \
+             field must route through Widget::handle_event",
+        );
+        // A local field never reads or writes either of these; they exist
+        // only to fill the trait signature. Kept per-thread so a
+        // keystroke does not allocate a document and a layout tree.
+        thread_local! {
+            static SCRATCH: std::cell::RefCell<(AutoCommit, TaffyTree<()>, NodeId)> = {
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let node = taffy.new_leaf(Style::default()).expect("leaf node");
+                std::cell::RefCell::new((AutoCommit::new(), taffy, node))
+            };
+        }
+        SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+            let (doc, taffy, node) = &mut *scratch;
+            let mut handled = false;
+            let mut focus_target = None;
+            let node = *node;
+            self.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                doc,
+                &automerge::ROOT,
+                &mut handled,
+                &mut focus_target,
+                node,
+                taffy,
+            );
+            handled
+        })
+    }
+
+    /// Builder-style: the name a screen reader announces for this field.
+    ///
+    /// Set it whenever the field's label is a separate piece of chrome —
+    /// which is every form field in the system, because the label is
+    /// drawn by the surface, not by the input.
+    pub fn with_accessible_name(mut self, name: &str) -> Self {
+        self.accessible_name = Some(name.to_string());
+        self
+    }
+
+    /// Mutate [`Self::with_accessible_name`] after construction.
+    pub fn set_accessible_name(&mut self, name: Option<&str>) {
+        self.accessible_name = name.map(|n| n.to_string());
+    }
+
+    /// What a reader announces for this field: the explicit accessible
+    /// name, else the placeholder, else nothing.
+    pub fn spoken_name(&self) -> Option<String> {
+        self.accessible_name
+            .clone()
+            .or_else(|| (!self.placeholder.is_empty()).then(|| self.placeholder.clone()))
+    }
+
+    /// Builder-style: keep the placeholder visible while the field is
+    /// focused and empty. For a field that is focused as soon as its
+    /// surface opens, where clearing the hint on focus means the hint is
+    /// never seen at all.
+    pub fn with_placeholder_while_focused(mut self, on: bool) -> Self {
+        self.placeholder_while_focused = on;
+        self
+    }
+
+    /// Mutate [`Self::with_placeholder_while_focused`] after construction.
+    pub fn set_placeholder_while_focused(&mut self, on: bool) {
+        self.placeholder_while_focused = on;
+    }
+
     /// Whether the placeholder hint should be painted this frame — true
     /// only when a non-empty placeholder is set and the input is both
     /// empty and unfocused (native form-field semantics).
     pub fn shows_placeholder(&self) -> bool {
-        !self.placeholder.is_empty() && self.text.is_empty() && !self.is_focused
+        !self.placeholder.is_empty()
+            && self.text.is_empty()
+            && (!self.is_focused || self.placeholder_while_focused)
     }
 
     /// Whether glyphs are masked this frame — true for a secret field that is
@@ -2532,9 +2647,25 @@ impl Widget for TextInput {
                         }
                     }
                     _ => {
-                        if let Some(t) = text {
-                            if !t.as_str().chars().all(|c| c.is_control()) {
-                                self.insert_str(t.as_str(), state, obj_id_opt.as_ref());
+                        // `KeyEvent::text` is the shaped result and wins
+                        // whenever the platform produced one. It is not
+                        // always produced: a synthesised event (a test
+                        // harness, the headless control socket, a remote
+                        // input bridge) carries the logical key and
+                        // nothing else, and a field that only reads
+                        // `text` silently takes no input from any of
+                        // them — which reads as a dead field rather than
+                        // as an unshaped keystroke.
+                        let typed = match text {
+                            Some(t) => Some(t.as_str()),
+                            None => match logical_key {
+                                Key::Character(c) => Some(c.as_str()),
+                                _ => None,
+                            },
+                        };
+                        if let Some(t) = typed {
+                            if !t.chars().all(|c| c.is_control()) {
+                                self.insert_str(t, state, obj_id_opt.as_ref());
                                 *handled = true;
                             }
                         }
@@ -2604,6 +2735,7 @@ impl Widget for TextInput {
         let value = (!self.secret).then(|| self.text.clone());
         Some(
             AccessNode::new(Role::TextInput)
+                .with_optional_name(self.spoken_name())
                 .with_optional_value(value)
                 .with_state(AccessState {
                     focusable: self.is_focusable(),

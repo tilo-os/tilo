@@ -32,3 +32,14 @@ notice-open-failed = Couldn't open { $app }
 ## is a tag next to a name, not a sentence, and it sits beside the
 ## role tag on the same rows.
 roster-kind-agent = agent
+
+## The workspace-invite card. The composer asks one question, and the
+## field's own hint carries what the name is for — the card used to
+## spell that out in a sentence underneath, which is one more line to
+## read and says nothing the field cannot.
+invite-composer-title = Invite someone
+invite-composer-label = Who are you inviting?
+invite-composer-placeholder = Their name in this room
+invite-composer-cancel = Cancel
+invite-composer-create = Create invite
+invite-composer-empty = Say who this invite is for
