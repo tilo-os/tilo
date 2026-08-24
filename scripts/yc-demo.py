@@ -3557,7 +3557,14 @@ def say_something_about(session: Session, log: "LogTail", tile: tuple,
     # Enter in the field is a send affordance beside the button, and the
     # widget drains both into one place, so they cannot mean different
     # things. It is also what a person does after typing a line.
-    session.key("Return")
+    #
+    # `Enter`, not `Return`: the control socket's key vocabulary is the
+    # named-key set (`test_control.rs`: "Enter", "Escape", "Tab",
+    # "ArrowLeft"…), and an unknown name is a `parse_error` rather than
+    # a keystroke that does nothing. This said `Return` and had never
+    # once run — the compose surface had never opened far enough for
+    # the line to be reached.
+    session.key("Enter")
     session.settle(0.8)
 
     sent = log.remark_sent(log.read() + log.text)
