@@ -77,6 +77,9 @@ pub mod window_actions;
 pub mod workspace_drop;
 pub mod workspace_settings;
 
+#[cfg(test)]
+mod peer_pointer_tests;
+
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
 use ui::widget::{
     AppKind as UiKind, AppWidget, Column, Container, GroupRow, Stack, StripView, TabDescriptor,
