@@ -805,7 +805,15 @@ class Live:
         try:
             reader = yc.DocumentReader(self.q.collab_json_sock, str(self.room),
                                        record=None)
-            doc, carried = reader.await_document(yc.AGENT_BULLET_PROOF, 20.0)
+            # In a *cell*, not merely on the page. The phrase looked for
+            # is one of the bullets the agent was asked to replace, so
+            # the loose test is answered by the agent's own input: it
+            # passed on a run where the agent refused outright and built
+            # no table, because the bullet saying it was still sitting
+            # there untouched.
+            doc, carried = reader.await_document(
+                yc.AGENT_BULLET_PROOF, 20.0,
+                predicate=yc.carries_text_in_a_table)
         except OSError as e:
             yc.gap(f"the document could not be read back ({e}), so what is "
                    f"on the page was not established")
@@ -821,7 +829,7 @@ class Live:
             yc.gap("no app answered with the document, so what is on the "
                    "page was not established")
             return
-        yc.claim("and the page carries the run sheet's own content",
+        yc.claim("and the run sheet's own content is in the table's cells",
                  carried, True)
         # An address is how the agent dispatches; a refusal quoting one is
         # the frame this looks for.

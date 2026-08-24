@@ -3578,8 +3578,14 @@ class DocumentReader:
                     out.append(bytes(payload))
         return out
 
-    def await_document(self, needle: str, timeout: float):
+    def await_document(self, needle: str, timeout: float, predicate=None):
         """Wait for a document frame, preferring one that carries `needle`.
+
+        `predicate(blob, needle)` decides what "carries" means, and
+        defaults to [`carries_text`]. It is the *poll* condition as well
+        as the answer, deliberately: checking a stricter thing afterwards
+        on whatever the loose one stopped at would report the strict
+        answer about a snapshot taken before the change landed.
 
         Returns `(document_bytes, carries_needle)`, or `(None, False)` if
         no app ever answered. Keeps waiting after the first snapshot
@@ -3591,6 +3597,7 @@ class DocumentReader:
         reply with, so a harness that cannot look never reports an
         absence it did not observe.
         """
+        carries = predicate or carries_text
         deadline = time.time() + timeout
         newest: bytes | None = None
         seen: set[int] = set()          # blobs already searched, by id
@@ -3612,7 +3619,7 @@ class DocumentReader:
                 if key in seen:
                     continue
                 seen.add(key)
-                if carries_text(blob, needle):
+                if carries(blob, needle):
                     return blob, True
             time.sleep(0.5)
         return newest, False
@@ -3662,6 +3669,61 @@ def carries_text(blob: bytes, needle: str) -> bool:
     # ordinary answer for a per-keystroke delta and not a failure to
     # look, so it stays a plain no-match.
     return done.returncode == 0
+
+
+def document_strings(blob: bytes) -> list[tuple[str, str]]:
+    """Every string an Automerge document holds, as `(path, text)`.
+
+    The dump form of [`carries_text`], for the assertions that need to
+    know *where* a phrase sits rather than only that it is somewhere.
+    Raises [`CannotDecode`] on the same terms; a blob that is not a
+    document (a per-keystroke delta) is simply empty.
+    """
+    if not DOC_TEXT:
+        raise CannotDecode(
+            "qos-doc-text is not built, so a document's contents cannot be "
+            "read (cargo build --profile demo -p qdoc --bin qos-doc-text)")
+    try:
+        done = subprocess.run([DOC_TEXT, "-"], input=blob,
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, timeout=20)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise CannotDecode(f"qos-doc-text could not be run: {e}") from e
+    if done.returncode != 0:
+        return []
+    out = []
+    for line in done.stdout.decode("utf-8", "replace").splitlines():
+        path, _, text = line.partition("\t")
+        if path:
+            out.append((path, text))
+    return out
+
+
+def carries_text_in_a_table(blob: bytes, needle: str) -> bool:
+    """Whether `needle` is in one of the document's **table cells**.
+
+    The stricter form of [`carries_text`], and it exists because the
+    looser one cannot tell the beat from its own input. The film asks
+    the agent to turn a run of bullets into a run sheet, and the phrase
+    it then looks for is one of the bullets' own words — so the claim
+    "the page carries the run sheet's content" was answered `True` by
+    the bullets the agent was asked to replace. It passed on a run where
+    the agent refused, wrote a sentence over the instruction and built
+    no table at all: the bullets were still there, and one of them said
+    the phrase.
+
+    A cell is the thing only the table has. The word processor writes
+    each one as a block with `kind` `cell` (`InsertTable` in
+    `apps/word-processor/src/actions.rs`), so a phrase sitting under one
+    of those was written into a table by somebody, and a phrase sitting
+    in a bullet was not.
+    """
+    found = document_strings(blob)
+    cells = {p.rsplit(".", 1)[0] for p, t in found
+             if p.endswith(".kind") and t == "cell"}
+    return any(p.endswith(".text") and p.rsplit(".", 1)[0] in cells
+               and needle in t
+               for p, t in found)
 
 
 def carries_bytes(blob: bytes, needle: bytes) -> bool:
