@@ -112,6 +112,30 @@ pub trait Widget {
         None
     }
 
+    /// Tell this app that its chrome is drawn by a compositor, so the compose
+    /// surface is asked for rather than painted.
+    ///
+    /// The panel opens *beside* an app's context menu, and beside a menu near
+    /// a window's edge is outside the window — which a Wayland client cannot
+    /// paint into. On a strip of tiled windows that is most of the time, so an
+    /// app drawing its own panel has it sliced off mid-word with the next
+    /// application visible past the cut.
+    ///
+    /// After this call the gesture produces a
+    /// [`RemarkRequest`](crate::widget::RemarkRequest) — an address and the
+    /// rect to sit beside — and nothing is drawn here. An app not running under
+    /// such a compositor is never told, keeps its own panel, and keeps working.
+    fn delegate_remark_surface(&mut self) {}
+
+    /// Collect a request to open the compose surface, once.
+    ///
+    /// The way out for the gesture in an app that has been told not to draw it.
+    /// Drained by the host, which forwards it to the session that does — see
+    /// [`delegate_remark_surface`](Self::delegate_remark_surface).
+    fn take_remark_request(&mut self) -> Option<crate::widget::RemarkRequest> {
+        None
+    }
+
     /// Apply an action another app in this room published, if this app is the
     /// one that owns it.
     ///
@@ -835,7 +859,7 @@ pub mod color_picker;     pub use color_picker::ColorPicker;
 pub mod popover_widget;   pub use popover_widget::PopoverWidget;
 pub mod popover;          pub use popover::Popover;
 pub mod remark_compose;   pub use remark_compose::{DestinationOption, RemarkCompose};
-pub mod remark_host;      pub use remark_host::RemarkHost;
+pub mod remark_host;      pub use remark_host::{RemarkHost, RemarkRequest};
 pub mod modal_dialog;     pub use modal_dialog::ModalDialog;
 pub mod modal_frame;      pub use modal_frame::{ModalAction, ModalEmphasis, ModalFrame, ModalHit, ModalLayout, ModalSpec};
 pub mod modal_prompt;     pub use modal_prompt::PromptBody;

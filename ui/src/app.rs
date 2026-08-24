@@ -654,6 +654,24 @@ impl App {
         // value the outbound pointer is scoped with, from the same
         // function, so the two spellings cannot drift.
         app.presence_ctx.set_surface_id(crate::local_surface_id());
+        // Under a qOS session, the compositor draws the "say something about
+        // this" surface and this process only asks for it.
+        //
+        // The gesture opens a panel *beside* the app's context menu, and beside
+        // a menu near a window's edge is outside the window — which no Wayland
+        // client can paint into. On a strip of tiled windows that is most of
+        // the time, so an app drawing its own panel has it cut off mid-word
+        // with the next application visible past the slice.
+        //
+        // The signal is the launcher's own: `QOS_SVC_COLLAB_FD` is set by
+        // `qos-launcher` and by nothing else, so its presence means precisely
+        // "a qOS session started this process and is drawing its chrome". An
+        // app run from a shell, a `--shots` render and every test keep the
+        // panel they have always had, because none of them has a compositor to
+        // hand it to.
+        if crate::collaboration::launched_by_a_session() {
+            app.root_widget.delegate_remark_surface();
+        }
         app
     }
 
@@ -1761,6 +1779,46 @@ impl App {
     /// `Undeliverable` had no consumer anywhere in the tree, which is how a
     /// destination that could not be encoded went unnoticed for as long as it
     /// did.
+    /// Forward a request for the compose surface to the session that draws it.
+    ///
+    /// The inbound half of the move away from app-drawn chrome, and the
+    /// shortest path in this file: the app has already decided *what* the
+    /// gesture was about, so nothing here interprets it. What crosses is the
+    /// object's address and the rect to sit beside, and the session answers the
+    /// three questions the app cannot — where that rect is on a desktop, who is
+    /// in the room, and what a panel looks like.
+    ///
+    /// Returns `true` if a request was forwarded, so the caller can redraw.
+    pub fn pump_remark_requests(&mut self) -> bool {
+        let Some(request) = self.root_widget.take_remark_request() else {
+            return false;
+        };
+        let Ok(reference) = serde_json::to_string(&request.reference) else {
+            // Nothing can be done with an address that will not encode, and
+            // the person is looking at a right-click that opened a menu and
+            // no compose box. Said out loud rather than dropped.
+            tracing::error!(
+                target: "ui::remark",
+                about = %request.reference.resource_id().as_str(),
+                "an address could not be encoded, so no compose surface was asked for",
+            );
+            return false;
+        };
+        let beside = request.beside;
+        tracing::info!(
+            target: "ui::remark",
+            about = %request.reference.resource_id().as_str(),
+            at = ?(beside.x0, beside.y0, beside.width(), beside.height()),
+            "asking the session for a compose surface",
+        );
+        self.collab_manager
+            .send(crate::collaboration::CollabRequest::ComposeRemark {
+                reference,
+                beside: (beside.x0, beside.y0, beside.width(), beside.height()),
+            });
+        true
+    }
+
     pub fn pump_remarks(&mut self) -> bool {
         let Some(remark) = self.root_widget.take_remark() else {
             return false;
