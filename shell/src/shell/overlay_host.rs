@@ -5328,6 +5328,16 @@ impl ShellOverlayHost {
         self.palette.query()
     }
 
+    /// How many results the last refresh left in the palette.
+    ///
+    /// The harness could already assert that a synthetic `Type("h")`
+    /// landed in the input, and did — while the list under it read `No
+    /// results for "h"`. Asserting the query without asserting the
+    /// answer is how that reached a recording.
+    pub fn palette_result_count(&self) -> usize {
+        self.search_results.len()
+    }
+
     /// Force-set the command-palette query buffer. Lets the `shots`
     /// driver seed a query without round-tripping through synthetic
     /// keyboard events when the palette is closed (when it's open,
@@ -9945,6 +9955,44 @@ fn panel_surface(theme: &Theme, alpha: f32) -> Color {
     ui::chrome::shell::panel_ground(theme).with_alpha_factor(alpha)
 }
 
+/// How much `danger` the quick-settings Power tile carries over the panel.
+///
+/// Named because two things have to agree on it: the tile's fill, and the
+/// ground the glyph is measured against. They drifted apart the moment the
+/// number was written twice.
+pub(crate) const POWER_TILE_WASH: f32 = 0.20;
+
+/// Colour of the Power glyph on the quick-settings panel.
+///
+/// Derived against the body [`POWER_TILE_WASH`] leaves on the panel rather
+/// than against the `danger` token that body is mixed from, because that is
+/// the colour the screen holds under the glyph. A shape, so it answers to
+/// [`NON_TEXT_MIN_CONTRAST`](ui::tokens::colors::NON_TEXT_MIN_CONTRAST).
+pub(crate) fn power_tile_glyph(theme: &Theme) -> Color {
+    let colors = &theme.tokens.colors;
+    let body = ui::tokens::colors::over(
+        ui::chrome::shell::panel_ground(theme),
+        colors.semantic.danger,
+        POWER_TILE_WASH,
+    );
+    colors.ink_on(
+        body,
+        colors.semantic.danger,
+        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+    )
+}
+
+/// The opaque colour the quick-settings Power tile leaves on the screen.
+/// The ground [`power_tile_glyph`] is measured against; exposed so a test
+/// measures the same composite the glyph was derived from.
+pub(crate) fn power_tile_body(theme: &Theme) -> Color {
+    ui::tokens::colors::over(
+        ui::chrome::shell::panel_ground(theme),
+        theme.tokens.colors.semantic.danger,
+        POWER_TILE_WASH,
+    )
+}
+
 /// Pick the [`crate::shell::search::SearchProvider`] that owns the
 /// currently focused tab, if any. Used to seed the `active_provider_id`
 /// arg to [`crate::shell::search::SearchRegistry::query`] when the
@@ -11852,7 +11900,7 @@ impl ShellOverlayHost {
             // expose its r/g/b signature in the encoded scene so the
             // concept-parity spec test detects the red Power glyph.
             let bg = if i == 2 {
-                colors.semantic.danger.with_alpha_factor(0.20)
+                colors.semantic.danger.with_alpha_factor(POWER_TILE_WASH)
             } else {
                 white_10
             };
@@ -11863,7 +11911,14 @@ impl ShellOverlayHost {
             // lucide `Camera` and `Power` paths (added 2026-05-07 to
             // close the audit-doc placeholder-ring follow-up).
             let glyph_color = if i == 2 {
-                colors.semantic.danger
+                // The glyph used to be the very `danger` the tile is washed
+                // with, so it sat on a fifth of itself and could not clear a
+                // floor at any wash strength — measured 2.90:1 dark, 3.27
+                // light, 3.59 high-contrast, against a 3:1 floor for a shape.
+                // The wash stays, because it is what makes the tile read as
+                // destructive; the glyph is derived against the body that
+                // wash actually leaves on the panel.
+                power_tile_glyph(theme)
             } else {
                 colors.text_primary
             };

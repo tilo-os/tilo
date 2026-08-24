@@ -2385,16 +2385,23 @@ fn workspace_switch() -> Scenario {
 mod tests {
     use super::*;
 
-    /// Counter sink for assertions: records each `(name, query)` pair
-    /// without writing any files. Lets the unit test verify the
+    /// Counter sink for assertions: records each `(name, query, result
+    /// count)` without writing any files. Lets the unit test verify the
     /// scenario engine actually invokes the sink in order.
+    ///
+    /// The result count is recorded at snapshot time because that is the
+    /// only moment it means anything: the palette is refreshed as the
+    /// scenario types, and a later step closes it.
     struct CountingSink {
-        seen: Vec<(String, String)>,
+        seen: Vec<(String, String, usize)>,
     }
     impl SnapshotSink for CountingSink {
         fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
-            self.seen
-                .push((name.to_string(), driver.palette_query().to_string()));
+            self.seen.push((
+                name.to_string(),
+                driver.palette_query().to_string(),
+                driver.host().palette_result_count(),
+            ));
         }
     }
 
@@ -2408,16 +2415,64 @@ mod tests {
         let typed = sink
             .seen
             .iter()
-            .find(|(n, _)| n == "03-palette-typed-h")
+            .find(|(n, _, _)| n == "03-palette-typed-h")
             .expect("scenario should snapshot 03-palette-typed-h");
         assert_eq!(
             typed.1, "h",
             "after Type(\"h\") with palette open, the query should be 'h'"
         );
+        // The half this test used to leave out. It asserted the letter
+        // reached the input and stopped there, so it passed for the whole
+        // time the list under that input read `No results for "h"` —
+        // Ctrl+K seeds the focused app's scope, and on the empty
+        // workspace this scenario opens in, that app has nothing.
+        // Something has to answer a single letter, or search is broken.
+        assert!(
+            typed.2 > 0,
+            "Ctrl+K then 'h' returned nothing. A person who sees `No \
+             results for \"h\"` concludes search is broken, and on this \
+             workspace Super+K answers the same letter."
+        );
         // Final state: palette closed.
         assert!(
             !d.host().palette_visible(),
             "Esc should close the palette by the end of the scenario"
+        );
+    }
+
+    /// The scenario is named for a sheet it never opened.
+    ///
+    /// `room activity` is a chrome action, and Ctrl+K's seeded scope
+    /// admits only the focused app's own provider — so the query matched
+    /// nothing, Enter had no row to activate, and `03-room-activity-open`
+    /// was a picture of a palette reading `No results for "room
+    /// activity"`. The scenario ran green throughout: nothing in it
+    /// looked at whether the thing in its own name had happened.
+    #[test]
+    fn scenario_room_activity_opens_the_sheet_it_is_named_for() {
+        let mut d = ShellDriver::new((1600, 900));
+        let mut sink = CountingSink { seen: Vec::new() };
+        let scenario = room_activity_from_palette();
+        run(&mut d, &scenario, &mut sink);
+
+        let result = sink
+            .seen
+            .iter()
+            .find(|(n, _, _)| n == "02-palette-result")
+            .expect("scenario should snapshot 02-palette-result");
+        assert_eq!(result.1, "room activity");
+        assert!(
+            result.2 > 0,
+            "typing 'room activity' into Ctrl+K matched nothing, so there \
+             is no row for the Enter that follows to activate"
+        );
+
+        let mut open = false;
+        d.with_chrome(|st| open = st.overlays.room_activity);
+        assert!(
+            open,
+            "Enter on the 'room activity' result must open the sheet — \
+             that is the whole of what this scenario photographs"
         );
     }
 
