@@ -139,11 +139,12 @@ wrote, not the picture.
 
 - [x] Stray bordered boxes between paragraphs. Genuinely fixed; the
       document now renders prose then bullets, in order.
-- [ ] **The agent's refusal quotes an empty string** -- `I can't ""
-      yet. I can: table, caption, heading.` The instruction plainly said
-      "make this a run sheet", so the text exists and does not reach the
-      message. Two separate faults: the empty `what`, and the reply
-      landing on the same block as the instruction rather than its own.
+- [x] **The agent's refusal quotes an empty string** -- `I can't ""
+      yet.` Both halves are one fault and both are fixed: the
+      instruction really was empty when it was read, because the line
+      was still being typed, and the reply appeared to share the
+      instruction's block because the rest of the keystrokes arrived
+      after it. See "The one that was actually on the frame" below.
 - [ ] **`peer@143` and `peer@728` in the page margin** -- the
       unresolved-name fallback, twice, on the page rather than in the
       roster.
@@ -209,22 +210,95 @@ the claim is "the document was written into", and it was, with this:
 > (word-processor.document#insert-table); Insert page break
 > (word-processor.document#insert-page-break); Align left (...); ...
 
-- [ ] **Raw action addresses written into human prose.** Six internal
-      identifiers, parenthesised, in a document two people are reading.
-      An address is how the agent dispatches; it is not something to say
-      out loud. Dispatched.
-- [ ] **"make this a run sheet" is refused, and it used to work.** It
-      produced a real table plus a note about an inconsistency in the
-      content -- the best moment in the film. `RECIPES` still exist for
-      exactly this, so something stops the recipe being offered on the
-      document path. Dispatched.
-- [ ] **The agent's own chip reads `peer@764`** while `xaver` beside it
-      resolves. Being worked separately.
+- [x] **Raw action addresses written into human prose.** Cleared, and
+      checked by looking rather than by reading the fix. Refusals now
+      name operations in the app's own words, two or three of them, and
+      the address goes to the log line beside it (`fa3134e9c`). Every
+      way of not answering carries labels: `NoMatch` holds them,
+      `plan::unmatched` lowercases them, `describe_offers` caps the list
+      at three. **Verified on the real path**: `no_addresses_written`
+      fails if `#` or a resource id reaches any block, and it runs inside
+      four passing `room_surface` tests, two of which exist to provoke a
+      refusal.
+- [x] **"make this a run sheet" is refused, and it used to work.** The
+      cause was not the recipe. `Recipe::from_keywords` has known
+      `run sheet` since `d6f677aac`, and
+      `an_editorial_change_is_still_answered_on_the_document_path` now
+      passes end to end over the broker the compositor binds: the
+      bullets become a table carrying their own text, with no refusal.
+      What actually produced the frame was **the line being read while
+      it was still being typed** -- see below. The frame that recited
+      six addresses was a *stale* agent besides; the binaries it was
+      recorded against predate both fixes.
+- [!] **The agent's own chip reads `peer@764`** while `xaver` beside it
+      resolves. `2e5ef06ef` is a real fix for a real fault -- a peer can
+      no longer write its own name -- but it is **not this one**, and it
+      removes the only mechanism that was accidentally covering it.
+      Names are keyed per peer already (`room_peer_names` is a map, not
+      a slot), so what is left is *which* redemption records a name:
+      xaver and the agent's session redeem **the same token**
+      (`yc-demo-live.py::bring_the_agent_session_in`), and the second
+      redeemer of one invitation is exactly the open "second invitation
+      loses its name" defect. The two are one defect, and it should be
+      tracked once. Not verified by looking -- reading the chip needs a
+      full three-session run.
+
+### The one that was actually on the frame
+
+- [x] **A line still being typed was read as a request.** `Claude:` is a
+      complete address with nothing asked after it, and it exists for as
+      long as it takes to reach for the next key. The agent is handed a
+      delta per keystroke and re-read the page on every one, so it
+      answered that -- which is where `I can't ""` came from. The empty
+      quotation was never a formatting fault: the instruction really was
+      empty at the moment it was read, and the reply landed on the
+      instruction's own block because the remaining keystrokes carried on
+      arriving after it.
+
+      The second half is worse because it is silent. Reading the line
+      also marked it handled, so the request the person finished typing
+      was **never looked at again** -- a run that produced the empty
+      refusal and nothing else looks, in a log, exactly like a run that
+      had nothing to do.
+
+      This is why the scripted film rendered correctly against the same
+      binaries that failed live: `yc-demo.py` types the instruction,
+      settles, snapshots, and only then starts the agent. `yc-demo-live.py`
+      starts the agent first and lets a person type, which is the
+      arrangement that gets filmed.
+
+      Fixed: an addressed line becomes a request only once it has stopped
+      moving, nothing is consumed before then, and an address with
+      nothing after it is not a request at all. Proven by a test that
+      types the instruction one character at a time, with a pause after
+      the colon, across the broker both transports share.
 
 The lesson, again and at cost: a claim proves the assertion somebody
 wrote. "The document was written into" is true of a refusal, of a wall
 of jargon, and of the best sentence in the film. Only the frame tells
 them apart.
+
+And this time the mechanism is known rather than guessed at. The live
+rig's claim came off `applied .*` in the agent's log -- and a refusal is
+applied too, as one `SpliceText`, logged in the same words as the table.
+The scripted rig's came off `qos-agent` exiting 0, which a refusal also
+does. Neither could ever have failed on any of these three. The live
+rig now asks the document instead: the run sheet's content is on the
+page, and no refusal is.
+
+### Verified red, and not by me
+
+- **`a_discovered_operation_reaches_the_file_explorer_too` fails.** The
+  rename never reaches the explorer's shared buffer. Inherited untested
+  and failing at this commit; the settle window above is provably a
+  no-op for it (the page is seeded whole, so the instruction is neither
+  empty nor moving). Cause not established.
+- **Four agent test targets had stopped building**, one of them for the
+  same reason `2e5ef06ef` exists: `ChatDoc::seed_starter` lost the
+  arguments that let a peer name itself. Fixed by having the *room* name
+  the participant, which is load-bearing rather than cosmetic --
+  `me_in_chat` resolves the agent's own id by matching that name. A
+  `--lib` run compiles none of these.
 
 ## Standing hazards, learned the expensive way
 
