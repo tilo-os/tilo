@@ -8,6 +8,7 @@
 //! [`SearchProvider`]: crate::shell::search::SearchProvider
 
 pub mod actions;
+pub mod app_resources;
 pub mod applications;
 pub mod editor;
 pub mod files;
@@ -17,6 +18,7 @@ pub mod records;
 pub mod text_app;
 
 pub use actions::ActionsProvider;
+pub use app_resources::{AppResourcesProvider, AppSurfaces};
 pub use applications::ApplicationsProvider;
 pub use editor::EditorProvider;
 pub use files::FilesProvider;
