@@ -5840,7 +5840,7 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
     # string shared by half the fleet. A surface id is the compositor's
     # own handle on one wayland client, and these two are the windows
     # this run watched two different launches open: one asked for by
-    # `dev.qos.word-processor`, one by `dev.qos.imager`.
+    # `dev.qos.word-processor`, one by `dev.qos.photos`.
     note(f"the two clients announce themselves as "
          f"{sorted({t['app_id'] for t in merged['tabs'] if t['app_id']})} — "
          f"so which application each is comes from the launch that opened "
