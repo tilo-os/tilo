@@ -509,7 +509,6 @@ fn a_remark_from_another_app_crosses_and_keeps_its_address() {
 
     // Chat's own door, not a private one: the registry the app registers at
     // startup, keyed by the type id `qos-reference` wrote.
-    use qos_actions::Action as _;
     let mut registry = qos_actions::ActionRegistry::new();
     chat::actions::register(&mut registry);
     registry
