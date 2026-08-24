@@ -42,9 +42,12 @@ on the real path · `[!]` landed but unverified, or regressed.
       happens to be single.
 - [x] **Invite composer hand-rolled** — rebuilt on the shared text
       input and buttons; both explanatory sentences removed.
-- [!] **Invite button missing from the collaborators panel** —
-      regression from the composer rebuild. `Join` survives, `Invite`
-      does not. Found by driving the real path, not by any unit test.
+- [x] **Invite button missing from the collaborators panel** —
+      regression from the composer rebuild, fixed. Verified on the real
+      path: `Invite at [1652,154,118,28], Join beside it`. It broke no
+      unit test and was found only by driving the path a person takes;
+      the top-bar affordance kept working throughout, which is why a
+      spot check would have passed.
 - [~] **Second invitation loses its name** — pending names were one
       slot rather than one per outstanding invitation, so a second
       invite overwrote the first and the redeemer became `peer@<n>`.
@@ -56,7 +59,8 @@ on the real path · `[!]` landed but unverified, or regressed.
 - [x] **Clicks moved no pointer** — a scripted click now travels to
       what it clicks, so the film stops looking like it operates itself.
 - [x] **Six seconds before the first app** — the opening hold was in
-      front of the launch, not the launch itself.
+      front of the launch, not the launch itself. Now measured at 1.4s
+      from asked-for to on-screen.
 - [x] **Boot bumper** — cut from existing footage, 3.2s, pillarboxed
       to 1920x1080, joined ahead of the demo at exactly 100.000s.
 
