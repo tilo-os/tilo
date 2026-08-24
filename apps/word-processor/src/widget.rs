@@ -1880,8 +1880,16 @@ pub struct WordProcessorWidget {
     /// Active guide drag (the side being dragged), if any.
     guide_drag: Option<GuideDrag>,
     /// Whether the horizontal ruler band is shown (toggled via the toolbar
-    /// "Ruler" button + the View bottom-bar chip). Default ON — it is the primary
-    /// surface for margin / indent / tab-stop editing.
+    /// "Ruler" button + the View bottom-bar chip).
+    ///
+    /// **Default OFF.** It is the surface for margin / indent / tab-stop
+    /// editing, which is deliberate layout work — something you go to
+    /// when you want it, not something you read while typing. Held open
+    /// by default it was a third band of chrome stacked above the page,
+    /// under a toolbar that had already wrapped to two rows, on a
+    /// document with four lines in it. The toggle is on the toolbar and
+    /// lights when it is on, so turning it back on costs one click and
+    /// says so.
     ruler_on: bool,
     /// The ruler band's rect in screen space, cached each frame for hit-testing.
     ruler_rect: Rect,
@@ -1892,8 +1900,21 @@ pub struct WordProcessorWidget {
     page_rect: Rect,
     /// The bottom layout bar's clickable chips: `(mode, rect)`.
     layout_chips: Vec<(LayoutMode, Rect)>,
-    /// Whether the contextual styles panel is shown (dismissable via the toolbar
-    /// "Styles" toggle).
+    /// Whether the contextual styles panel is shown (toggled via the
+    /// toolbar "Styles" button).
+    ///
+    /// **Default OFF.** It is an inspector — align, line spacing, six
+    /// paragraph styles, font, weight, six colour swatches, size,
+    /// spacing, indent — and an inspector is a place you go when you
+    /// have something to inspect. Open by default it took a fixed slice
+    /// of the window's width away from the page permanently, and did it
+    /// at the moment the document has the least in it: a new document
+    /// opened with a full-height wall of controls beside four lines of
+    /// text, every one of them acting on a selection that did not exist
+    /// yet.
+    ///
+    /// A word processor should open on the document. The toggle is on
+    /// the toolbar and lights when the panel is up.
     styles_panel_open: bool,
     /// The styles panel rect in screen space, cached each frame for hit-testing.
     panel_rect: Rect,
@@ -2141,14 +2162,12 @@ impl WordProcessorWidget {
             margins: Edges::uniform(72.0),
             layout_mode: LayoutMode::None,
             guide_drag: None,
-            ruler_on: true,
+            ruler_on: false,
             ruler_rect: Rect::ZERO,
             ruler_drag: None,
             page_rect: Rect::ZERO,
             layout_chips: Vec::new(),
-            // Default the panel open: it is the primary surface for the
-            // component-instance style model. Dismissable via the toolbar toggle.
-            styles_panel_open: true,
+            styles_panel_open: false,
             panel_rect: Rect::ZERO,
             panel_hits: Vec::new(),
             editing_field: None,
@@ -9631,9 +9650,12 @@ mod tests {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "A paragraph");
+        // The inspector is opened the way a user opens it. It is not on
+        // by default — see `styles_panel_open` — but everything below is
+        // about what it does once it is up.
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
         pipeline_draw(&mut wp, &mut state, 1000, 700);
 
-        // The panel is open by default and renders clickable targets.
         assert!(wp.styles_panel_open);
         assert!(!wp.panel_hits.is_empty(), "panel rendered clickable targets");
         assert_eq!(wp.focused_style_key().as_deref(), Some("body"));
@@ -9703,12 +9725,18 @@ mod tests {
     }
 
     #[test]
-    fn styles_panel_toggles_off() {
+    fn styles_panel_toggles_both_ways() {
         let mut state = ui::State::new();
         let mut wp = WordProcessorWidget::new();
-        assert!(wp.styles_panel_open, "panel defaults open");
+        assert!(
+            !wp.styles_panel_open,
+            "the inspector is somewhere you go, not a wall a new document \
+             opens beside"
+        );
         wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
-        assert!(!wp.styles_panel_open, "toolbar toggle dismisses the panel");
+        assert!(wp.styles_panel_open, "the toolbar toggle summons the panel");
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
+        assert!(!wp.styles_panel_open, "and dismisses it again");
     }
 
     // ---- toolbar ⇄ panel reorganization: paragraph controls belong to the
@@ -12212,10 +12240,14 @@ mod tests {
         // narrow end, and is where the panel currently wins.
         for (w, h) in [(1400_u32, 900_u32), (960, 800), (640, 700), (426, 700)] {
             let (mut state, mut wp) = bound();
+            // Opened deliberately: the panel no longer starts open, and
+            // this claim is about what it must not do to the canvas
+            // *while* it is up.
+            wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
             pipeline_draw(&mut wp, &mut state, w, h);
             assert!(
                 wp.styles_panel_open,
-                "precondition: the default-open panel is the one under test",
+                "precondition: the panel under test is up",
             );
             assert!(
                 !wp.outline_open,
@@ -12392,15 +12424,24 @@ mod tests {
         );
     }
 
-    /// The ruler is on by default and toggles off/on via the toolbar action.
+    /// A document opens on the document, and the ruler toggles both ways
+    /// from the toolbar.
+    ///
+    /// The ruler is the margin / indent / tab-stop surface — deliberate
+    /// layout work — so it is not a band a new document wears above the
+    /// page before anyone has asked for one.
     #[test]
-    fn ruler_defaults_on_and_toggles() {
+    fn ruler_defaults_off_and_toggles_both_ways() {
         let (mut state, mut wp) = bound();
-        assert!(wp.ruler_on, "ruler defaults ON (discoverable)");
+        assert!(
+            !wp.ruler_on,
+            "a fresh document opens on the page, not on a band of layout \
+             instruments above it"
+        );
         wp.apply_tool(&mut state.doc, ToolAction::ToggleRuler);
-        assert!(!wp.ruler_on, "toolbar toggle hides the ruler");
+        assert!(wp.ruler_on, "the toolbar toggle brings it up");
         wp.apply_tool(&mut state.doc, ToolAction::ToggleRuler);
-        assert!(wp.ruler_on, "toggles back on");
+        assert!(!wp.ruler_on, "and puts it away again");
     }
 
     /// The ruler computes correct marker x-positions from the margins + the caret
