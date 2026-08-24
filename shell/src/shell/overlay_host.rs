@@ -9166,7 +9166,36 @@ impl Widget for ShellOverlayHost {
                 if dx.abs() > 0.5 {
                     if let Some(chrome) = &self.chrome {
                         let dir = if dx > 0.0 { 1 } else { -1 };
-                        if chrome.borrow_mut().cycle_active_tab(dir) {
+                        // Between windows first, then between the tabs of
+                        // one.
+                        //
+                        // `cycle_active_tab` alone rotates within a single
+                        // group. Windows opened side by side are one group
+                        // each holding one tab, so it had nothing to turn
+                        // and said so — leaving the gesture dead in exactly
+                        // the places a person reaches for when they want to
+                        // move *between* windows: above them, below them,
+                        // and over the bare desktop.
+                        //
+                        // The group walk is tried first and the tab cycle
+                        // kept behind it, because for windows actually
+                        // gathered into a tab group, turning those tabs is
+                        // what a sideways flick should do.
+                        let target = {
+                            let ch = chrome.borrow();
+                            let tree = ch.tree();
+                            crate::compositor::client_input::step_active_window(
+                                &tree, dir,
+                            )
+                        };
+                        let stepped = if let Some((strip, group, tab)) = target {
+                            let ws = chrome.borrow().tree().active;
+                            chrome.borrow_mut().focus_tab(ws, strip, group, tab);
+                            true
+                        } else {
+                            false
+                        };
+                        if stepped || chrome.borrow_mut().cycle_active_tab(dir) {
                             *handled = true;
                         }
                     }

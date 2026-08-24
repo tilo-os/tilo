@@ -202,11 +202,32 @@ pub fn pump(relay: &mut MemoryRelay) {
             CollabRequest::Hello { .. } => {
                 // no fan-out in tests
             }
-            // Both are addressed to the session hosting the connection rather
-            // than to an audience, and this relay hosts nothing: there is no
-            // desktop here to open an application in, and no windows for a
-            // crossing between two of them to be drawn between.
-            CollabRequest::OpenApp { .. } | CollabRequest::CarriedContent { .. } => {}
+            // Addressed to the session hosting a connection rather than to the
+            // room, so the real broker takes it out of the fan-out and hands it
+            // to a desktop, refusing it when there is none. This relay is a map
+            // of inboxes in one process: it hosts nothing, so it can neither
+            // open the application nor refuse on a session's behalf, and fanning
+            // it out would hand every other peer a request meant for one of them.
+            //
+            // No test here sends one. Arriving means the harness is being asked
+            // for something it does not implement, and `pump` runs on the test
+            // thread, so saying so fails that test by name — where a frame left
+            // to vanish would let a later assertion pass for the wrong reason.
+            CollabRequest::OpenApp { app_id } => panic!(
+                "MemoryRelay::pump got OpenApp({app_id:?}) from {from}: this \
+                 relay fans document and presence traffic between in-process \
+                 peers and hosts no desktop, so it cannot open an application. \
+                 A test that needs one must give the harness an opener, the way \
+                 the shell's broker takes an `AppOpener`."
+            ),
+            // Same reading, and the same reason to say it out loud: a report
+            // that content crossed between two applications is addressed to
+            // the session that draws them, and this one draws nothing.
+            CollabRequest::CarriedContent { from_app, into_app, .. } => panic!(
+                "MemoryRelay::pump got CarriedContent({from_app:?} -> \
+                 {into_app:?}) from {from}: this relay hosts no windows, so a \
+                 crossing between two applications has nowhere to be drawn."
+            ),
         }
     }
 }
