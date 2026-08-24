@@ -1007,7 +1007,8 @@ impl ChatApp {
         y: f64,
         max_w: f32,
     ) {
-        let c = &theme.tokens.colors;
+        let ground = theme.tokens.colors.surfaces.base;
+        let (fill, edge, ink) = reference_chip_colors(theme, ground);
         let body = reference_chip_label(r);
         // A reference to part of a resource says so. A remark about three lines
         // of a document is not a remark about the document, and a chip that
@@ -1019,12 +1020,12 @@ impl ChatApp {
         let pad = 10.0;
         let avail = (max_w as f64 - pad * 2.0 - 4.0).max(0.0);
         let s = format!("{prefix}{body}");
-        let s = truncate_to(tr, &s, 11.5, avail);
-        let (tw, _) = tr.measure(&s, 11.5, None);
+        let s = truncate_to(tr, &s, REF_CHIP_SIZE, avail);
+        let (tw, _) = tr.measure(&s, REF_CHIP_SIZE, None);
         let pill = Rect::new(x, y, x + tw as f64 + pad * 2.0, y + 20.0);
-        fill_round(scene, tf, pill, 10.0, c.accent[5].with_alpha_factor(0.16));
-        stroke_round(scene, tf, pill, 10.0, c.accent[5].with_alpha_factor(0.55), 1.0);
-        label(scene, tr, tf, &s, 11.5, c.accent[7], pill.x0 + pad, pill.center().y - 8.0);
+        fill_round(scene, tf, pill, 10.0, fill);
+        stroke_round(scene, tf, pill, 10.0, edge, 1.0);
+        label(scene, tr, tf, &s, REF_CHIP_SIZE, ink, pill.x0 + pad, pill.center().y - 8.0);
     }
 
     pub(crate) fn draw_attachment(
@@ -1653,6 +1654,57 @@ fn file_chip_meta(name: &str, size: u64) -> String {
     }
 }
 
+/// Type size for the reference chip's label.
+const REF_CHIP_SIZE: f32 = 11.5;
+
+/// How much of the surface the chip's wash keeps. Mostly ground: the chip is
+/// context, and a solid accent block above every remark would shout over the
+/// sentence it is there to introduce.
+const REF_CHIP_FILL_MIX: f64 = 0.86;
+/// The chip's edge starts far closer to the accent than its wash does — the
+/// edge is what makes the pill a pill, so it is the part that must survive.
+const REF_CHIP_EDGE_MIX: f64 = 0.45;
+
+/// Contrast floors for the chip, measured rather than eyeballed: AA for its
+/// label against its own wash, and the non-text floor for the edge that draws
+/// the pill against the surface behind it.
+pub(crate) const REF_CHIP_TEXT_CONTRAST: f64 = 4.5;
+pub(crate) const REF_CHIP_EDGE_CONTRAST: f64 = 3.0;
+
+/// The wash, edge and ink a reference chip is painted in on `ground`.
+///
+/// Measured for the same reason the mention run is. The first version of this
+/// chip was a translucent accent wash with accent ink on top, which looked
+/// right on the dark theme and arrived on the light one as grey-blue text on
+/// pale blue — a chip you could see but not read. A colour picked to mean
+/// "accent" is not a colour picked to be read on whatever ground the theme
+/// happens to put behind it.
+///
+/// The two halves are floored against different things on purpose: the label
+/// has to clear AA against the wash it sits on, while the *edge* is what has to
+/// clear the non-text floor against the surface, because the edge is what makes
+/// the pill legible as a container. Flooring the wash itself would turn a quiet
+/// piece of context into a solid accent block.
+pub(crate) fn reference_chip_colors(theme: &Theme, ground: Color) -> (Color, Color, Color) {
+    let accent = theme.tokens.colors.accent[5];
+    let fill = mix(accent, ground, REF_CHIP_FILL_MIX);
+    let edge = band_at_least(
+        mix(accent, ground, REF_CHIP_EDGE_MIX),
+        accent,
+        ground,
+        REF_CHIP_EDGE_CONTRAST,
+    );
+    // Ink starts from body ink and is pushed away from the wash: text in the
+    // wash's own hue on the wash is the combination that cannot be rescued.
+    let ink = legible_on(
+        theme.tokens.colors.text_primary,
+        fill,
+        REF_CHIP_TEXT_CONTRAST,
+        theme.tokens.colors.text_primary,
+    );
+    (fill, edge, ink)
+}
+
 /// The wording on the chip of a message written *about* something.
 ///
 /// Shows [`ResourceRef::label`](qos_reference::ResourceRef::label) — the
@@ -1677,8 +1729,9 @@ fn reference_chip_label(r: &qos_reference::ResourceRef) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        body_spans, file_chip_meta, human_size, mention_colors, reference_chip_label,
-        MENTION_BAND_CONTRAST, MENTION_TEXT_CONTRAST,
+        body_spans, file_chip_meta, human_size, mention_colors, reference_chip_colors,
+        reference_chip_label, MENTION_BAND_CONTRAST, MENTION_TEXT_CONTRAST,
+        REF_CHIP_EDGE_CONTRAST, REF_CHIP_TEXT_CONTRAST,
     };
     use crate::app::ChatApp;
     use ui::theme::Theme;
@@ -1703,6 +1756,43 @@ mod tests {
         );
         // It still tells the user the real, useful facts: type + size.
         assert_eq!(meta, "MD · 18.5 KB", "chip meta should be type + size only");
+    }
+
+    /// The chip has to be readable on every ground this app ships on.
+    ///
+    /// Regression: the first version painted accent ink on a translucent accent
+    /// wash. On the dark theme that read cleanly; on the light theme it arrived
+    /// as grey-blue on pale blue — visible, but not readable. Contrast is
+    /// measured here rather than judged from one screenshot, because one
+    /// screenshot is exactly how that shipped.
+    #[test]
+    fn the_reference_chip_is_readable_on_every_ground() {
+        use ui::a11y::contrast_ratio;
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = theme.tokens.colors.surfaces.base;
+            let (fill, edge, ink) = reference_chip_colors(&theme, ground);
+
+            let text = contrast_ratio(ink, fill);
+            assert!(
+                text >= REF_CHIP_TEXT_CONTRAST,
+                "{}: the chip's label is {text:.2}:1 on its own wash",
+                theme.name
+            );
+            let rim = contrast_ratio(edge, ground);
+            assert!(
+                rim >= REF_CHIP_EDGE_CONTRAST,
+                "{}: the chip's edge is {rim:.2}:1 on the surface — a pill \
+                 nobody can make out is not a container",
+                theme.name
+            );
+            // The figures behind the claim, on the record rather than asserted
+            // and forgotten.
+            println!(
+                "reference chip — {}: label {text:.2}:1 (floor {REF_CHIP_TEXT_CONTRAST}), \
+                 edge {rim:.2}:1 (floor {REF_CHIP_EDGE_CONTRAST})",
+                theme.name
+            );
+        }
     }
 
     /// The chip shows the author's app's own wording and never the address.

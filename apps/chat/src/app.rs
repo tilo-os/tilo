@@ -1433,8 +1433,7 @@ impl ChatApp {
             let encoded = remark
                 .to_chat_action("m_remark", "u_sora", crate::doc::NOW)
                 .expect("a remark addressed to a channel is deliverable");
-            use qos_actions::Action as _;
-            let mut registry = qos_actions::ActionRegistry::new();
+                    let mut registry = qos_actions::ActionRegistry::new();
             crate::actions::register(&mut registry);
             registry
                 .decode(&encoded)
