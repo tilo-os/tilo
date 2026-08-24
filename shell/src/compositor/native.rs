@@ -2443,6 +2443,16 @@ pub fn run() -> ! {
         pending_opens.install(broker);
     }
 
+    // An application asking for the "say something about this" surface. Same
+    // arrangement as the opens above, and for the same reason: the broker takes
+    // the question off the socket, and the frame loop answers it, because where
+    // that window sits and who is in the room are things only the thread that
+    // draws can say.
+    let pending_composes = crate::shell::remark_surface::PendingComposes::new();
+    if let Some(broker) = collab_broker.as_ref() {
+        pending_composes.install(broker);
+    }
+
     // Read the session's own broker for pointer presence, and relay it
     // to the room's other hosts.
     //
@@ -3347,6 +3357,34 @@ pub fn run() -> ! {
                 &frame_builder.chrome_handle(),
                 broker,
                 &pending_opens,
+            );
+            // Draw whatever asked for a compose surface, then put whatever was
+            // written into one in the room. Both here rather than on the
+            // reader thread: the first needs to know where the asking window
+            // is, and the second needs the roster and the room.
+            for req in crate::shell::remark_surface::take_requests(&pending_composes) {
+                let origin = frame_builder.host().focused_app_origin();
+                match origin {
+                    Some(origin) => {
+                        frame_builder
+                            .host_mut()
+                            .open_remark(req.reference, req.beside, origin);
+                    }
+                    // Nothing focused hosts a window, so there is nothing to
+                    // sit beside. Said rather than placed at a guess: a panel
+                    // in an arbitrary corner is worse than none, because it
+                    // reads as belonging to whatever it happens to land on.
+                    None => tracing::warn!(
+                        "an application asked for a compose surface, but no \
+                         focused window could be found to place it against",
+                    ),
+                }
+            }
+            let written = frame_builder.host_mut().take_remarks();
+            crate::shell::remark_surface::deliver(
+                &frame_builder.chrome_handle(),
+                broker,
+                written,
             );
         }
         // Drain the network actor into the replica. Peer changes land
