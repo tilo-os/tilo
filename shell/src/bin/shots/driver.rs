@@ -170,6 +170,29 @@ impl ShellDriver {
         });
     }
 
+    /// Synthesise a secondary (right-button) click at `p`.
+    ///
+    /// The same three-step shape as [`Self::click_at`], because the gesture
+    /// this exists for depends on the order: a hosted application reads the
+    /// pointer from the `CursorMoved` that precedes the press, and a press
+    /// synthesised without one lands wherever the pointer was last left.
+    pub fn secondary_click_at(&mut self, p: Point) {
+        self.dispatch(WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(p.x, p.y),
+        });
+        self.dispatch(WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Right,
+        });
+        self.dispatch(WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Right,
+        });
+    }
+
     /// Synthesise a `MouseWheel` event at the cursor's current position
     /// (the host's wheel handlers gate on `last_cursor`, which is the
     /// last `CursorMoved` value the driver dispatched). `dx`/`dy` are

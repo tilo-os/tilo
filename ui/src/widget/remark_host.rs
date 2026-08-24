@@ -299,6 +299,23 @@ impl RemarkHost {
         self.compose.get_rect()
     }
 
+    /// The panel itself, while it is open, so a host can put it in the tree it
+    /// publishes to a test harness.
+    ///
+    /// The panel is not a node of anybody's layout tree — it is anchored in
+    /// window coordinates and laid out in a tree of its own — so without this
+    /// it is invisible to a registry walk, and a harness driving the gesture
+    /// has to aim at a pixel. It carries `test_id` `remark_compose`; the point
+    /// of the compositor drawing it is that the name now resolves.
+    ///
+    /// Read-only on purpose. Events reach the panel through [`Self::pump`],
+    /// which decides what is the panel's and what belongs to the app
+    /// underneath; a host that also routed to it as an ordinary child would
+    /// deliver every keystroke twice.
+    pub fn compose_widget(&self) -> Option<&dyn Widget> {
+        self.compose.is_open().then(|| &self.compose as &dyn Widget)
+    }
+
     /// What the open panel is about.
     pub fn reference(&self) -> Option<&ResourceRef> {
         self.compose.reference()
