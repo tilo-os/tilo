@@ -60,6 +60,27 @@ on the real path · `[!]` landed but unverified, or regressed.
 - [x] **Boot bumper** — cut from existing footage, 3.2s, pillarboxed
       to 1920x1080, joined ahead of the demo at exactly 100.000s.
 
+## Found in a sweep, to verify against current HEAD
+
+Seen in frames of a rehearsal recorded against 04:01 binaries, so each
+may already be fixed by work that landed since. Verify before fixing --
+inventing a fix for a defect that is gone is its own waste.
+
+- **Stray bordered boxes between paragraphs**, with the opening prose
+  drawn inside one of them, low and to the right instead of first.
+  Dispatched. Not the image placeholder -- that is gated on a non-empty
+  hash. Note the scripted film against the *same* binaries rendered
+  correctly, so it may be specific to the path the live script takes.
+- **The agent's refusal was malformed**: `I can't "" yet` -- an empty
+  quoted string where the instruction text should be, while the
+  instruction plainly said "make this a run sheet". The refusal also
+  appears to have landed on the same block as the instruction rather
+  than its own. The refusal path has since been rewritten around
+  discovered offers, so check whether either survives.
+- **`peer@131` in the page margin** -- the unresolved-name fallback,
+  which is the second-invitation defect showing up on the page rather
+  than in the roster. Already dispatched.
+
 ## Standing hazards, learned the expensive way
 
 - **Legacy transport hides defects.** Three separate total defects have
