@@ -215,6 +215,21 @@ pub fn selected_segment_ink(theme: &Theme) -> Color {
         .ink_on_any(&[theme.accent_primary], Color::WHITE, ON_FILL_MIN_CONTRAST)
 }
 
+/// The label of an *unselected* segment — the quiet tier.
+///
+/// Quiet is a rank, not a licence to be unreadable, and the hover surface is
+/// where the dim tier is at risk: `bg_hover` sits close enough to it that the
+/// label all but dissolves the moment the pointer arrives. Resolved across
+/// both the resting ground and the hover surface at once so the tab does not
+/// change colour under the pointer.
+pub fn unselected_segment_ink(theme: &Theme) -> Color {
+    theme.tokens.colors.ink_on_any(
+        &[theme.tokens.colors.surfaces.base, theme.bg_hover],
+        theme.tokens.colors.text_dim,
+        ON_FILL_MIN_CONTRAST,
+    )
+}
+
 pub fn segment_colors(
     theme: &Theme,
     style: SegmentedStyle,
@@ -234,15 +249,19 @@ pub fn segment_colors(
             if selected {
                 (Some(theme.accent_primary), selected_segment_ink(theme))
             } else if hovered {
-                (Some(theme.bg_hover), colors.text_dim)
+                (Some(theme.bg_hover), unselected_segment_ink(theme))
             } else {
-                (None, colors.text_dim)
+                (None, unselected_segment_ink(theme))
             }
         }
         SegmentedStyle::Underline => {
             // No fill; the selected tab's label lifts to the primary colour,
             // the accent underline (drawn in `paint`) carries the selection.
-            let fg = if selected || hovered { colors.text_primary } else { colors.text_dim };
+            let fg = if selected || hovered {
+                colors.text_primary
+            } else {
+                unselected_segment_ink(theme)
+            };
             (None, fg)
         }
     }
@@ -883,11 +902,18 @@ mod tests {
     }
 
     #[test]
-    fn segment_colors_solid_selected_is_accent_white() {
+    fn segment_colors_solid_selected_is_accent_and_readable() {
+        use crate::a11y::contrast_ratio;
         let theme = Theme::dark();
         let (fill, fg) = segment_colors(&theme, SegmentedStyle::Solid, true, false);
         assert_eq!(fill, Some(theme.accent_primary));
-        assert_eq!(fg, Color::WHITE);
+        // Was pinned to white. The property the strip needs is that the
+        // selected label can be read on the accent it is painted on.
+        let r = contrast_ratio(fg, fill.unwrap());
+        assert!(
+            r >= ON_FILL_MIN_CONTRAST,
+            "selected segment label is {r:.2}:1 on the accent",
+        );
         let (ufill, ufg) = segment_colors(&theme, SegmentedStyle::Solid, false, false);
         assert_eq!(ufill, Some(theme.tokens.colors.surfaces.raised), "unselected solid is a raised fill");
         assert_eq!(ufg, theme.tokens.colors.text_primary);
@@ -899,14 +925,28 @@ mod tests {
         // Unselected + not hovered → no fill at all (transparent pill).
         let (fill, fg) = segment_colors(&theme, SegmentedStyle::Pill, false, false);
         assert_eq!(fill, None, "an idle unselected pill paints no background");
-        assert_eq!(fg, theme.tokens.colors.text_dim, "inactive tab label is dimmed");
-        // Hover gives it the shared hover surface.
-        let (hfill, _) = segment_colors(&theme, SegmentedStyle::Pill, false, true);
+        // Dimmed, but still legible on the surface hover paints under it.
+        use crate::a11y::contrast_ratio;
+        let base = theme.tokens.colors.surfaces.base;
+        assert!(
+            contrast_ratio(fg, base) < contrast_ratio(theme.tokens.colors.text_primary, base),
+            "inactive tab label must stay quieter than the selected tier",
+        );
+        assert!(contrast_ratio(fg, theme.bg_hover) >= ON_FILL_MIN_CONTRAST);
+        // Hover gives it the shared hover surface, and does not repaint the
+        // label — a tab that changes colour under the pointer reads as a bug.
+        let (hfill, hfg) = segment_colors(&theme, SegmentedStyle::Pill, false, true);
         assert_eq!(hfill, Some(theme.bg_hover));
-        // Selected pill is the accent + white, same as solid.
+        assert_eq!(hfg, fg, "the inactive label holds its colour on hover");
+        // Selected pill is the accent + the derived label, same as solid.
         let (sfill, sfg) = segment_colors(&theme, SegmentedStyle::Pill, true, false);
         assert_eq!(sfill, Some(theme.accent_primary));
-        assert_eq!(sfg, Color::WHITE);
+        assert_eq!(
+            sfg,
+            segment_colors(&theme, SegmentedStyle::Solid, true, false).1,
+            "pill and solid resolve the selected label the same way",
+        );
+        assert!(crate::a11y::contrast_ratio(sfg, sfill.unwrap()) >= ON_FILL_MIN_CONTRAST);
     }
 
     #[test]
