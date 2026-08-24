@@ -21,6 +21,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::icons::{self, Icon};
+use crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -1510,9 +1511,16 @@ impl CommandPalette {
         let (start, end) = self.painted_window();
         let mut y = self.list_top_y();
 
-        for row in &self.rows[start..end] {
+        for (offset, row) in self.rows[start..end].iter().enumerate() {
             match row {
                 VisualRow::Header { label, total } => {
+                    // The rows this header actually has under it, which
+                    // is what decides whether its count says anything
+                    // the footer has not already said.
+                    let shown_here = self.rows[start + offset + 1..]
+                        .iter()
+                        .take_while(|r| matches!(r, VisualRow::Entry(_)))
+                        .count();
                     let hy = y + (HEADER_HEIGHT - header_size as f64) / 2.0 + 2.0;
                     let upper = label.to_uppercase();
                     text_renderer.draw_text(
@@ -1523,19 +1531,25 @@ impl CommandPalette {
                         transform * Affine::translate((x0 + 12.0, hy)),
                         None,
                     );
-                    // Right-aligned count. A capped section says how
-                    // much it is holding back instead of silently
-                    // truncating.
-                    let count = total.to_string();
-                    let (cw, _) = text_renderer.measure(&count, header_size, None);
-                    text_renderer.draw_text(
-                        scene,
-                        &count,
-                        header_size,
-                        colors.text_dim,
-                        transform * Affine::translate((x1 - 12.0 - cw as f64, hy)),
-                        None,
-                    );
+                    // A capped section says how much it is holding back.
+                    // Only a capped one: when the section is showing
+                    // everything it has, this figure is the footer's
+                    // "N results" over again, and it arrived as a bare
+                    // right-aligned digit with nothing naming it — the
+                    // same fact stated twice, once unreadably. So it is
+                    // painted when it carries something the footer does
+                    // not, and it says what it counts when it is.
+                    if let Some(caption) = Self::header_caption(*total, shown_here) {
+                        let (cw, _) = text_renderer.measure(&caption, header_size, None);
+                        text_renderer.draw_text(
+                            scene,
+                            &caption,
+                            header_size,
+                            colors.text_dim,
+                            transform * Affine::translate((x1 - 12.0 - cw as f64, hy)),
+                            None,
+                        );
+                    }
                     y += HEADER_HEIGHT;
                 }
                 VisualRow::Entry(entry_i) => {
@@ -1559,6 +1573,36 @@ impl CommandPalette {
         }
     }
 
+    /// The opaque colour a row's own content is painted on.
+    ///
+    /// A selected row is not the card it sits in — it is the card plus
+    /// an accent wash — and ink chosen against the card reads a tier
+    /// lower there. Resolving it here means the paint and anything that
+    /// checks the paint are answering from one place, rather than a
+    /// check agreeing with a second copy of the arithmetic.
+    pub(crate) fn row_ground(colors: &crate::tokens::Colors, selected: bool) -> Color {
+        if selected {
+            crate::tokens::colors::over(colors.surfaces.raised, colors.accent[5], SELECTION_WASH)
+        } else {
+            colors.surfaces.raised
+        }
+    }
+
+    /// What a section header prints on its right, if anything.
+    ///
+    /// `None` whenever the section is showing everything it has: the
+    /// footer already counts those rows, in words, a few pixels below.
+    /// A second copy of the same number — right-aligned, unlabelled, at
+    /// header size — is not a count, it is a stray digit.
+    ///
+    /// `Some` only when rows were held back, which the footer cannot
+    /// say because it counts the whole result set rather than this
+    /// section's share of it. Then it names both figures, so the number
+    /// that appears is the one the user cannot otherwise get.
+    pub(crate) fn header_caption(total: usize, shown: usize) -> Option<String> {
+        (total > shown).then(|| format!("{shown} of {total}"))
+    }
+
     /// One result row: selection body, leading kind glyph, title, and a
     /// dimmed subtitle or right-aligned keybinding.
     #[allow(clippy::too_many_arguments)]
@@ -1575,6 +1619,21 @@ impl CommandPalette {
         desc_size: f32,
     ) {
         let colors = &theme.tokens.colors;
+        // What this row's text and chips will actually be painted on.
+        // A selected row is not the card it sits in — it is the card
+        // plus an accent wash — and ink chosen against the card reads a
+        // tier lower there. Resolve the composite once, and measure
+        // everything on the row against it rather than against the
+        // panel colour the palette started from.
+        let row_ground = Self::row_ground(colors, selected);
+        // The second line is the smallest text the palette draws, and on
+        // a selected row it was the dim tier fighting an accent wash it
+        // was never measured against. Ask for the tone the theme
+        // authored and take the nearest legible step from it, so the
+        // subtitle stays a subtitle rather than being promoted to the
+        // title's weight to survive.
+        let subtitle_ink =
+            colors.ink_on(row_ground, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST);
         if selected {
             // Selection has to survive a glance across a dense list. A
             // near-invisible grey wash did not: it read as a rendering
@@ -1584,7 +1643,7 @@ impl CommandPalette {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                colors.accent[5].with_alpha_factor(0.22),
+                colors.accent[5].with_alpha_factor(SELECTION_WASH),
                 None,
                 &shape,
             );
@@ -1654,18 +1713,37 @@ impl CommandPalette {
             let chip_shape = RoundedRect::from_rect(chip, 5.0);
             // A badge is tinted with the accent, a keybinding is not.
             // The tint is what makes it findable in a list without
-            // giving it a banner; the alpha keeps it quieter than the
-            // selection, which still has to be the loudest thing on
-            // screen. Both come from the theme, so high contrast gets
-            // its own separation rather than this one washed out.
+            // giving it a banner, and it stays quieter than the
+            // selection, which is still the loudest thing on screen.
+            //
+            // What the badge does *not* do is take its label straight
+            // from the accent token. Painted that way it was accent ink
+            // on an accent wash on an accent selection — one hue three
+            // times over, and the row's only statement that the app is
+            // not on this machine was the least readable mark in the
+            // frame. The chip is resolved against the ground it lands
+            // on instead, at the floor that suits the size it is drawn
+            // at, so the pill keeps the accent and the label stops
+            // sharing it. Both grounds go through the same derivation,
+            // so a selected row does not need a second set of values.
             let (fill, border, ink) = if is_badge {
-                (
-                    colors.accent[5].with_alpha_factor(0.18),
-                    colors.accent[5].with_alpha_factor(0.55),
-                    colors.accent[5],
-                )
+                let chip = colors.accent_chip_on(row_ground, ON_CARD_SMALL_TEXT_CONTRAST);
+                (chip.fill, chip.border, chip.ink)
             } else {
-                (colors.surface_white_5, colors.border_white_10, colors.text_dim)
+                // A keybinding chip's wash is faint enough that its body
+                // is within a shade of the row, but it is still a body:
+                // resolve it too rather than measuring the label against
+                // the row it does not quite sit on.
+                let kb_fill = crate::tokens::colors::over(
+                    row_ground,
+                    Color::WHITE,
+                    KEYBINDING_CHIP_WASH,
+                );
+                (
+                    colors.surface_white_5,
+                    colors.border_white_10,
+                    colors.ink_on(kb_fill, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST),
+                )
             };
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -1729,7 +1807,7 @@ impl CommandPalette {
                     scene,
                     &sub,
                     desc_size,
-                    colors.text_dim,
+                    subtitle_ink,
                     transform
                         * Affine::translate((text_x, ly + label_size as f64 + 3.0)),
                     None,
@@ -1883,6 +1961,12 @@ const PADDING: f64 = 8.0;
 const FILTER_STRIP_HEIGHT: f64 = 36.0;
 /// Slim hint band at the bottom of the card.
 const FOOTER_HEIGHT: f64 = 28.0;
+/// How much accent a selected row's body carries over the card.
+/// Named because the same figure has to be composited to know what any
+/// ink on that row is really being measured against.
+const SELECTION_WASH: f32 = 0.22;
+/// The white wash under a keybinding chip, matching `surface_white_5`.
+const KEYBINDING_CHIP_WASH: f32 = 13.0 / 255.0;
 
 impl Widget for CommandPalette {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
@@ -2335,6 +2419,8 @@ impl CommandPalette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::a11y::contrast_ratio;
+    use crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
     use taffy::TaffyTree;
     use winit::event::Modifiers;
     use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
@@ -2430,6 +2516,150 @@ mod tests {
         assert_ne!(
             seen[0], seen[2],
             "high contrast must not paint the badge identically to dark"
+        );
+    }
+
+    /// Every theme the palette is graded in, each with both grounds a
+    /// row's content can land on. A single-theme check is how a chip
+    /// derived against one palette ships unreadable on the other two,
+    /// and a single-ground check is how it ships unreadable on exactly
+    /// the row the user has selected.
+    fn grounds() -> Vec<(&'static str, Theme, bool)> {
+        let mut out = Vec::new();
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high contrast", Theme::high_contrast()),
+        ] {
+            out.push((name, theme.clone(), false));
+            out.push((name, theme, true));
+        }
+        out
+    }
+
+    /// The badge's label has to be readable on the badge, which is the
+    /// point of the badge existing: it is the row's whole statement
+    /// that the app is not on this machine.
+    ///
+    /// Both grounds, because the chip's body is a wash — over a
+    /// selected row it composites to something else entirely, and the
+    /// version of this that measured the accent token against the accent
+    /// token would have passed while the screen showed 2.4:1.
+    #[test]
+    fn the_badge_label_clears_aa_against_the_badge_it_sits_in() {
+        for (name, theme, selected) in grounds() {
+            let colors = &theme.tokens.colors;
+            let ground = CommandPalette::row_ground(colors, selected);
+            let chip = colors.accent_chip_on(ground, ON_CARD_SMALL_TEXT_CONTRAST);
+            let r = contrast_ratio(chip.ink, chip.fill);
+            assert!(
+                r >= 4.5,
+                "{name} (selected={selected}): badge label {:?} on badge body \
+                 {:?} is {r:.2}:1, under AA",
+                chip.ink,
+                chip.fill
+            );
+        }
+    }
+
+    /// And with headroom above the line, not on it. The chip is drawn
+    /// at the bottom of the type scale, where anti-aliasing spends
+    /// contrast the measurement of a flat colour does not see — an ink
+    /// resolved at exactly 4.5 lands under it on screen.
+    #[test]
+    fn the_badge_label_is_derived_with_small_text_headroom() {
+        for (name, theme, selected) in grounds() {
+            let colors = &theme.tokens.colors;
+            let ground = CommandPalette::row_ground(colors, selected);
+            let chip = colors.accent_chip_on(ground, ON_CARD_SMALL_TEXT_CONTRAST);
+            let r = contrast_ratio(chip.ink, chip.fill);
+            assert!(
+                r >= ON_CARD_SMALL_TEXT_CONTRAST,
+                "{name} (selected={selected}): badge label is {r:.2}:1, which \
+                 clears AA but leaves nothing for the anti-aliasing"
+            );
+        }
+    }
+
+    /// A pill whose body is within a shade of the row it sits on is
+    /// only a pill because of its edge, so the edge has to clear the
+    /// non-text floor against the row — not against the body, which is
+    /// the measurement that lets an invisible outline pass.
+    #[test]
+    fn the_badge_edge_clears_the_non_text_floor_against_the_row() {
+        for (name, theme, selected) in grounds() {
+            let colors = &theme.tokens.colors;
+            let ground = CommandPalette::row_ground(colors, selected);
+            let chip = colors.accent_chip_on(ground, ON_CARD_SMALL_TEXT_CONTRAST);
+            let r = contrast_ratio(chip.border, ground);
+            assert!(
+                r >= NON_TEXT_MIN_CONTRAST,
+                "{name} (selected={selected}): badge edge {:?} on row {:?} is \
+                 {r:.2}:1, under the non-text floor",
+                chip.border,
+                ground
+            );
+        }
+    }
+
+    /// The badge stays an accent badge. Deriving a legible label is not
+    /// licence to paint a grey chip — the tint is what makes the marker
+    /// findable in a list at a glance, and a derivation that discarded
+    /// it would pass every contrast check here while losing the thing
+    /// the contrast was for.
+    #[test]
+    fn the_badge_keeps_the_accent_it_is_derived_from() {
+        for (name, theme, selected) in grounds() {
+            let colors = &theme.tokens.colors;
+            let ground = CommandPalette::row_ground(colors, selected);
+            let chip = colors.accent_chip_on(ground, ON_CARD_SMALL_TEXT_CONTRAST);
+            assert_ne!(
+                chip.fill, ground,
+                "{name} (selected={selected}): the badge body has to be a step \
+                 off the row, not the row"
+            );
+            assert_eq!(
+                chip.border,
+                colors.accent[5],
+                "{name} (selected={selected}): the accent already clears the \
+                 non-text floor on this ground, so the edge should be it"
+            );
+        }
+    }
+
+    /// The subtitle is the other small text on the row, and on a
+    /// selected row it was the theme's dim tier measured against a card
+    /// it was no longer sitting on.
+    #[test]
+    fn the_subtitle_clears_aa_on_both_row_grounds() {
+        for (name, theme, selected) in grounds() {
+            let colors = &theme.tokens.colors;
+            let ground = CommandPalette::row_ground(colors, selected);
+            let ink = colors.ink_on(ground, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST);
+            let r = contrast_ratio(ink, ground);
+            assert!(
+                r >= 4.5,
+                "{name} (selected={selected}): subtitle {ink:?} on row {ground:?} \
+                 is {r:.2}:1, under AA"
+            );
+        }
+    }
+
+    /// A section header's count says something only when the section is
+    /// holding rows back. Otherwise it is the footer's own number, in
+    /// digits, with nothing naming it.
+    #[test]
+    fn an_uncapped_section_header_prints_no_count() {
+        assert_eq!(CommandPalette::header_caption(1, 1), None);
+        assert_eq!(CommandPalette::header_caption(5, 5), None);
+    }
+
+    /// And when it does say something, it says what it is counting.
+    #[test]
+    fn a_capped_section_header_names_both_figures() {
+        assert_eq!(
+            CommandPalette::header_caption(40, 7).as_deref(),
+            Some("7 of 40")
         );
     }
 
