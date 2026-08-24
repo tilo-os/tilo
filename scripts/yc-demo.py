@@ -3903,6 +3903,16 @@ def type_into_the_document(s: Session, wp: dict | None, text: str) -> bool:
     the compositor's widget registry and there is no name to aim at.
     Its *tile* has one, which is as close as the shell can get: click
     into the middle of the page, then type.
+
+    The click is belt and braces now rather than a workaround. It was
+    added because typing without it put nothing in the document, and
+    that was read as the app opening with its caret outside the body —
+    which is not what was wrong: the app opens with the caret at the
+    start of the body, draws it there, and takes keystrokes with
+    nothing clicked (`apps/word-processor/tests/opens_ready_to_type.rs`
+    and the framebuffer reading beside it in `widget.rs`). What the
+    click also does is settle which window the seat is pointed at, and
+    that is worth keeping in a scripted run.
     """
     surface = (wp or {}).get("surface_id")
     stem = f"foreign-surface-{surface}"
@@ -5765,7 +5775,7 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
             off = [a.rsplit(".", 1)[-1] for a in (FILES_APP, WORD_PROCESSOR)]
             note(f"{', '.join(off)} are on the same strip, scrolled off it")
             quinten.snapshot(os.path.join(shots, "10-strip-right.png"))
-            read_hold(1.0)
+            read_hold(0.5)
     elif far:
         note("only one of the extra applications opened, so the strip "
              "cannot show a pair at its far end")
@@ -5789,7 +5799,6 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
             "together, so the merge would happen off camera")
         return
     quinten.snapshot(os.path.join(shots, "11-strip-pair.png"))
-    read_hold(0.8)
 
     before_groups = len(tab_groups_here(quinten))
     before = quinten.input_ops
@@ -5802,7 +5811,7 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
         gap("the strip refused to merge the two windows — "
             + json.dumps(resp["err"])[:160])
         return
-    quinten.settle(1.2)
+    quinten.settle(0.7)
 
     # Read off the tree, which is where a tab group actually is. A shot
     # of a bar with two pills in it would be a picture of the answer, not
@@ -5841,7 +5850,7 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
           sorted(t["surface_id"] for t in merged["tabs"]),
           sorted([int(wp["surface_id"]), int(editor["surface_id"])]))
     quinten.snapshot(os.path.join(shots, "12-tabbed.png"))
-    read_hold(1.2)
+    read_hold(1.0)
 
     step("and the tabs switch between them")
 
@@ -5871,12 +5880,12 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
         for name in ([f"tab:{title}[{merged['id']}]"] if title else []):
             if quinten.named_rect(name):
                 quinten.click_named(name)
-                quinten.settle(1.0)
+                quinten.settle(0.7)
                 if active_tab_surface(quinten, merged["id"]) == int(surface_id):
                     return
         for _ in range(len(merged["tabs"])):
             quinten.scroll(1.0, 0.0)
-            quinten.settle(0.8)
+            quinten.settle(0.6)
             if active_tab_surface(quinten, merged["id"]) == int(surface_id):
                 return
 
@@ -5899,7 +5908,7 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
         claim("and the screen changes with it",
               moved > SCREEN_MOVED_PX, True)
         note(f"{moved} pixels differ between the two tabs")
-    read_hold(1.2)
+    read_hold(1.0)
 
     # Left on the word processor, because the beat after this one is
     # about what is written in that document and a shot of an image
