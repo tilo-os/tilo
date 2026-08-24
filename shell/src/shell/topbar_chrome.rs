@@ -366,11 +366,43 @@ pub(crate) fn battery_gauge_hue(
     } else {
         colors.text_dim
     };
-    colors.ink_on(
-        tray_pill_body(theme, critical),
-        tone,
-        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
-    )
+    let body = tray_pill_body(theme, critical);
+    let mut floor = ui::tokens::colors::NON_TEXT_MIN_CONTRAST;
+    if critical {
+        // Clearing the floor is not enough here. Critical is the one state a
+        // person must not miss, and it is also the state that tints the pill
+        // `danger` — so a `danger` gauge derived only up to the 3:1 floor
+        // stopped at 3.07:1 while the merely *low* gauge sat at 6.10:1 on
+        // the untinted pill. Passing the floor and still being the quietest
+        // thing in the tray is the same failure the numbers were meant to
+        // catch, one tier up. Ask critical for at least what low gets, so
+        // urgency and legibility cannot point in opposite directions.
+        //
+        // The hue this walks to may be lighter than the `danger` token. That
+        // is the right trade: the pill underneath already carries the red, so
+        // the gauge's job is to be *read* against it, not to repeat it.
+        floor = floor.max(gauge_ratio(theme, false, true, false));
+    }
+    colors.ink_on(body, tone, floor)
+}
+
+/// Contrast the gauge achieves in a given state, against the pill it is drawn
+/// on. Split out so [`battery_gauge_hue`] can hold critical to what the low
+/// state manages without recursing into its own floor.
+fn gauge_ratio(theme: &Theme, critical: bool, low: bool, charging: bool) -> f64 {
+    let colors = &theme.tokens.colors;
+    let tone = if critical {
+        colors.semantic.danger
+    } else if low {
+        colors.semantic.warning
+    } else if charging {
+        colors.semantic.success
+    } else {
+        colors.text_dim
+    };
+    let body = tray_pill_body(theme, critical);
+    let hue = colors.ink_on(body, tone, ui::tokens::colors::NON_TEXT_MIN_CONTRAST);
+    ui::a11y::contrast_ratio(hue, body)
 }
 
 impl TopBarChrome {
