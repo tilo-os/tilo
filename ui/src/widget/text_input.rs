@@ -3278,6 +3278,166 @@ mod tests {
         assert!(!plain.shows_placeholder(), "no placeholder set → never shows");
     }
 
+    /// A surface that focuses its field the moment it opens can ask for
+    /// the placeholder to survive that focus.
+    ///
+    /// Without the opt-in the hint is correct and useless: it is cleared
+    /// in the same frame the surface appears, so the only person who
+    /// ever sees it is one who tabbed away and back.
+    #[test]
+    fn a_placeholder_can_be_asked_to_survive_focus() {
+        let mut ti = TextInput::local()
+            .with_placeholder("Their name in this room")
+            .with_placeholder_while_focused(true);
+        ti.set_focus(true);
+        assert!(
+            ti.shows_placeholder(),
+            "an autofocused empty field must still show its hint",
+        );
+
+        // It is still a placeholder, not a label: typing clears it.
+        ti.set_text("Xaver");
+        assert!(!ti.shows_placeholder(), "text hides the placeholder");
+
+        // And the opt-in is opt-in: the default is unchanged.
+        let mut plain = TextInput::local().with_placeholder("Their name in this room");
+        plain.set_focus(true);
+        assert!(
+            !plain.shows_placeholder(),
+            "the default must keep clearing the hint on focus",
+        );
+    }
+
+    /// The hint survives focus in the paint too, not only in the
+    /// predicate — the predicate is what `draw` consults, and a test
+    /// that only asked the predicate would pass on a draw path that
+    /// ignored it.
+    #[test]
+    fn a_surviving_placeholder_is_actually_painted() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = crate::presence::PresenceCtx::empty();
+        let mut ti = TextInput::local()
+            .with_placeholder("Their name in this room")
+            .with_placeholder_while_focused(true);
+        ti.set_focus(true);
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
+        let mut scene = Scene::new();
+        Widget::draw(&mut ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        assert!(
+            !scene.encoding().resources.glyph_runs.is_empty(),
+            "an autofocused field asked to keep its hint must paint it",
+        );
+    }
+
+    /// A keystroke that arrives with a logical key and no shaped text
+    /// still types.
+    ///
+    /// `KeyEvent::text` is the platform's shaped result and wins when
+    /// there is one. There is not always one: a synthesised event — a
+    /// test harness, the headless control socket, a remote input bridge
+    /// — carries the logical key alone, and a field that read only
+    /// `text` took no input from any of them. That reads as a dead
+    /// field, which is indistinguishable from a broken one.
+    #[test]
+    fn a_keystroke_with_no_shaped_text_still_types() {
+        let mut ti = TextInput::local();
+        ti.set_focus(true);
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
+
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new("q"));
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        let event = WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        };
+
+        assert!(
+            ti.handle_event_local(&event, 1.0, &Modifiers::default()),
+            "an unshaped character must be consumed",
+        );
+        assert_eq!(ti.value(), "q", "and must reach the buffer");
+    }
+
+    /// A field carries a name into the accessibility tree.
+    ///
+    /// The label sits beside the field as separate chrome, and a reader
+    /// has no way to associate the two. Without a name the field is
+    /// announced as "edit" and nothing else — the question it is asking
+    /// is on screen and not in the tree.
+    #[test]
+    fn a_field_announces_the_name_it_was_given() {
+        let named = TextInput::local()
+            .with_placeholder("Their name in this room")
+            .with_accessible_name("Who are you inviting?");
+        let node = named.accessibility().expect("a text input has an a11y node");
+        assert_eq!(node.role, crate::a11y::Role::TextInput);
+        assert_eq!(
+            node.name.as_deref(),
+            Some("Who are you inviting?"),
+            "the explicit name wins",
+        );
+
+        // No explicit name: the placeholder is at least the words the
+        // sighted user is reading in the same box.
+        let hinted = TextInput::local().with_placeholder("Search\u{2026}");
+        assert_eq!(
+            hinted.accessibility().and_then(|n| n.name).as_deref(),
+            Some("Search\u{2026}"),
+            "the placeholder is the fallback name",
+        );
+
+        // Neither: no name rather than an invented one.
+        assert!(TextInput::local().accessibility().and_then(|n| n.name).is_none());
+    }
+
+    /// `handle_event_local` is the whole editing model, not a typing
+    /// shim: the affordances a hand-rolled field cannot have have to
+    /// come through it.
+    #[test]
+    #[serial_test::serial(clipboard)]
+    fn a_locally_driven_field_selects_pastes_and_moves_its_caret() {
+        let mut ti = TextInput::local();
+        ti.set_focus(true);
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        let none = Modifiers::default();
+        let ctrl = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+
+        for c in ["X", "a", "v", "e", "r"] {
+            ti.handle_event_local(&char_key_event(c), 1.0, &none);
+        }
+        assert_eq!(ti.value(), "Xaver");
+
+        // Home / End move the caret inside the text rather than only to
+        // its end, which is the one place a push/pop buffer can put it.
+        ti.handle_event_local(&named_key_event(NamedKey::Home), 1.0, &none);
+        assert_eq!(ti.cursor_pos(), 0, "Home goes to the start");
+        ti.handle_event_local(&named_key_event(NamedKey::End), 1.0, &none);
+        assert_eq!(ti.cursor_pos(), 5, "End goes to the end");
+
+        // Select-all then type replaces the selection.
+        ti.handle_event_local(&char_key_event("a"), 1.0, &ctrl);
+        assert_eq!(
+            ti.selection_range_public(),
+            Some((0, 5)),
+            "Ctrl+A selects the whole field",
+        );
+        ti.handle_event_local(&char_key_event("Q"), 1.0, &none);
+        assert_eq!(ti.value(), "Q", "typing over a selection replaces it");
+
+        // And the clipboard round-trips.
+        crate::text_selection::clipboard_copy("Ada");
+        ti.handle_event_local(&char_key_event("v"), 1.0, &ctrl);
+        assert_eq!(ti.value(), "QAda", "Ctrl+V pastes at the caret");
+    }
+
     /// The placeholder draw path emits a glyph run when (and only when) it
     /// should be visible — proves the dim hint actually paints.
     #[test]

@@ -652,6 +652,86 @@ mod tests {
         }
     }
 
+    /// A modal action reacts. Hover, press and focus reach the paint.
+    ///
+    /// The row has always gone through `Button::paint`, so the states
+    /// existed on the face and were simply never handed over — every
+    /// modal button in the system was a real button frozen at rest. A
+    /// focused one in particular has to draw the ring, because a modal
+    /// takes the keyboard and a keyboard user needs to see where they
+    /// are in it.
+    #[test]
+    fn an_action_shows_hover_press_and_focus() {
+        let theme = Theme::dark();
+
+        let paint = |a: ModalAction<'_>| {
+            let actions = [a];
+            let spec = ModalSpec::new("Invite someone")
+                .actions(&actions)
+                .body_height(80.0);
+            let mut tr = TextRenderer::new();
+            let layout = ModalFrame::layout(VIEWPORT, &spec, &mut tr, &theme);
+            let mut scene = Scene::new();
+            ModalFrame::paint_actions(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &layout,
+                &spec,
+            );
+            scene.encoding().draw_data.clone()
+        };
+
+        let rest = paint(ModalAction::secondary("Cancel"));
+        for (what, face) in [
+            ("hover", ModalAction::secondary("Cancel").hovered(true)),
+            ("press", ModalAction::secondary("Cancel").pressed(true)),
+            ("focus", ModalAction::secondary("Cancel").focused(true)),
+        ] {
+            assert_ne!(
+                paint(face),
+                rest,
+                "a {what}ed action paints the same as one at rest — the \
+                 state never reached the face",
+            );
+        }
+
+        // A disabled action stays inert: hover on something that cannot
+        // be clicked is a lie about what will happen.
+        assert_eq!(
+            paint(ModalAction::secondary("Cancel").enabled(false).hovered(true)),
+            paint(ModalAction::secondary("Cancel").enabled(false)),
+            "a disabled action must not react to the pointer",
+        );
+    }
+
+    /// The close control reacts too. It is the visible way out of a
+    /// modal, and one that does not respond to the pointer reads as
+    /// decoration.
+    #[test]
+    fn the_close_control_shows_hover_and_focus() {
+        let theme = Theme::light();
+        let paint = |spec: &ModalSpec<'_>| {
+            let mut tr = TextRenderer::new();
+            let layout = ModalFrame::layout(VIEWPORT, spec, &mut tr, &theme);
+            let mut scene = Scene::new();
+            ModalFrame::paint_backdrop(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &layout,
+                spec,
+            );
+            scene.encoding().draw_data.clone()
+        };
+        let base = ModalSpec::new("Invite someone").body_height(80.0);
+        let rest = paint(&base);
+        assert_ne!(paint(&base.clone().close_hovered(true)), rest, "hover");
+        assert_ne!(paint(&base.clone().close_focused(true)), rest, "focus");
+    }
+
     /// The title never runs under the close control.
     #[test]
     fn the_title_band_stops_before_the_close_control() {
