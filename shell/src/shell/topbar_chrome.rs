@@ -160,6 +160,23 @@ struct CacheFingerprint {
     status_key: StatusKey,
 }
 
+/// One dot in the centre band's carousel indicator: the disc that gets
+/// painted, and the region that selects it when clicked.
+///
+/// The two travel together deliberately. They were computed separately —
+/// the disc from [`TopBarChrome::DOT_ACTIVE_RADIUS`], the slot from a
+/// differently-derived centre — and disagreed about both where each dot
+/// was and how much room it had.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CenterDot {
+    /// Centre of the painted disc.
+    pub center: Point,
+    /// Radius the disc is painted at.
+    pub radius: f64,
+    /// Region that selects this dot when clicked.
+    pub slot: Rect,
+}
+
 /// The three pieces the centre band's calendar strip paints, given the
 /// current local time: weekday, date, and the note that fills the slot
 /// an event would occupy.
@@ -684,6 +701,75 @@ impl TopBarChrome {
     pub fn inactive_dot_radius(&self) -> f64 {
         Self::DOT_INACTIVE_RADIUS
     }
+
+    /// Clear space kept between the centre band's rim and the dot column.
+    const DOT_COLUMN_MARGIN: f64 = 1.0;
+
+    /// Lay the centre-band dot column out inside `band`.
+    ///
+    /// Painting and hit-testing both read this, so the two cannot drift —
+    /// which is what had gone wrong. The column was sized as
+    /// `3 * DOT_BASE_SIZE + 2 * gap`, and stepped by `DOT_BASE_SIZE + gap`,
+    /// both of which treat [`Self::DOT_BASE_SIZE`] as a diameter when its
+    /// own doc comment calls it a radius and the paint uses it as one. So
+    /// 17 px were reserved for three discs that are painted 9.6 px and 6 px
+    /// across, on a 7 px pitch narrower than the active disc by itself: the
+    /// active dot ran 0.8 px into its neighbour and the two fused into a
+    /// single blob, the column's ink sat ~1 px above the band's centre line
+    /// while its slot claimed to be centred, and the one visible gap left
+    /// was the one between the two dots that were *both* small.
+    ///
+    /// Here the sizes come from the radii the discs are actually painted
+    /// at, the two gaps are equal edge-to-edge (so what the eye compares
+    /// matches even though one disc is larger), and the leftover height is
+    /// split so the column centres on the band.
+    fn center_dot_layout(band: Rect, bar: Rect, active: usize) -> [CenterDot; 3] {
+        let radius_of =
+            |i: usize| if i == active { Self::DOT_ACTIVE_RADIUS } else { Self::DOT_INACTIVE_RADIUS };
+        let ink: f64 = (0..3).map(|i| radius_of(i) * 2.0).sum();
+        // Whatever the band has spare once the discs are placed, shared
+        // between the two gaps. Deriving it rather than fixing it is what
+        // keeps the column inside the pill if either the band height or the
+        // radii are changed later.
+        let gap = ((band.height() - Self::DOT_COLUMN_MARGIN * 2.0 - ink) / 2.0).max(1.0);
+        let column_h = ink + gap * 2.0;
+        let mut edge = band.center().y - column_h / 2.0;
+
+        let mut centers = [0.0_f64; 3];
+        let mut radii = [0.0_f64; 3];
+        for i in 0..3 {
+            let r = radius_of(i);
+            radii[i] = r;
+            centers[i] = edge + r;
+            edge += r * 2.0 + gap;
+        }
+
+        // Slots tile the strip from the bar's top edge to its bottom, split
+        // at the midpoint of each gap. They were 20 px squares centred on
+        // each dot, which on the real pitch overlapped two-deep — and since
+        // the hit test takes the first slot that contains the point, dot 0
+        // was swallowing most of dot 1's ink and dot 1 most of dot 2's.
+        let boundary = |a: usize, b: usize| (centers[a] + radii[a] + centers[b] - radii[b]) / 2.0;
+        let cuts = [boundary(0, 1), boundary(1, 2)];
+        let x0 = Self::dot_column_x(band) - Self::DOT_SLOT_HALF_W;
+        let x1 = Self::dot_column_x(band) + Self::DOT_SLOT_HALF_W;
+        let edges = [bar.y0, cuts[0], cuts[1], bar.y1];
+
+        std::array::from_fn(|i| CenterDot {
+            center: Point::new(Self::dot_column_x(band), centers[i]),
+            radius: radii[i],
+            slot: Rect::new(x0, edges[i], x1, edges[i + 1]),
+        })
+    }
+
+    /// Horizontal centre of the dot column, inset from the band's left rim.
+    fn dot_column_x(band: Rect) -> f64 {
+        band.x0 + 12.0
+    }
+
+    /// Half-width of a dot's click slot. The band's own content starts at
+    /// `dot_column_x + 24`, so this stays clear of it.
+    const DOT_SLOT_HALF_W: f64 = 10.0;
 
     /// Which lucide glyph is used for the top-bar overview button.
     /// Pinned so the gap-#5 icon swap survives later refactors — if a
@@ -1240,37 +1326,29 @@ impl Widget for TopBarChrome {
         }
 
         // Three-dot indicator on the left of the band (vertical stack).
-        let dot_x = band.x0 + 12.0;
-        let dot_size = Self::DOT_BASE_SIZE;
-        let dot_gap = 4.0_f64;
-        let dot_col_h = 3.0 * dot_size + 2.0 * dot_gap;
-        let dot_top = center_y - dot_col_h / 2.0;
-        for i in 0..3 {
-            let cy = dot_top + i as f64 * (dot_size + dot_gap) + dot_size / 2.0;
+        // Geometry — discs and click slots alike — comes from
+        // [`Self::center_dot_layout`], so what is painted and what is
+        // clickable are the same arithmetic rather than two guesses at it.
+        let dots = Self::center_dot_layout(band, self.rect, self.center_widget.index());
+        for (i, dot) in dots.iter().enumerate() {
             let active = self.center_widget.index() == i;
             // Active dot is scaled up 1.6× and painted in the saturated
             // indigo accent (`accent[5]` = indigo-500 in the token ramp).
             // Inactive dots use `neutral[7]` (slate-300) so they sit clearly
             // above `text_dim` (slate-400) but still read below
             // `text_primary` — this is the contrast bump from gap #8.
-            let r = if active {
-                Self::DOT_ACTIVE_RADIUS
-            } else {
-                Self::DOT_INACTIVE_RADIUS
-            };
             let color = if active {
                 colors.accent[5]
             } else {
                 colors.neutral[7]
             };
-            // Store dot hit region (generous 10 px square for clickability).
-            self.center_dot_rects[i] = Rect::new(dot_x - 10.0, cy - 10.0, dot_x + 10.0, cy + 10.0);
-            let c = vello::kurbo::Circle::new(Point::new(dot_x, cy), r);
+            self.center_dot_rects[i] = dot.slot;
+            let c = vello::kurbo::Circle::new(dot.center, dot.radius);
             scene.fill(Fill::NonZero, transform, color, None, &c);
         }
 
         // Widget content fills the band to the right of the dots.
-        let content_x0 = dot_x + 24.0;
+        let content_x0 = Self::dot_column_x(band) + 24.0;
         let content_x1 = band.x1 - 12.0;
         let content_cx = (content_x0 + content_x1) / 2.0;
         match self.center_widget {
@@ -2190,6 +2268,105 @@ mod tests {
             (chrome.active_dot_radius() - TopBarChrome::DOT_BASE_SIZE * 1.6).abs() < f64::EPSILON,
             "active dot radius should be 1.6× the base size",
         );
+    }
+
+    /// The discs the centre band paints must fit the column that is laid
+    /// out for them.
+    ///
+    /// This pins the painted geometry against the laid-out geometry rather
+    /// than against a constant, because the bug was precisely that the two
+    /// disagreed: the column was sized and stepped as though
+    /// `DOT_BASE_SIZE` were a diameter while the discs were painted with it
+    /// as a radius. Every assertion below held trivially on the old
+    /// arithmetic if you only looked at the constants — you had to compare
+    /// a disc's extent with its neighbour's to see it.
+    #[test]
+    fn center_dots_fit_the_column_they_are_laid_out_in() {
+        // The real band: 360×28 centred in a full-width 40 px bar.
+        let bar = Rect::new(0.0, 0.0, 1600.0, TOPBAR_HEIGHT_PX as f64);
+        let band = Rect::new(620.0, 6.0, 980.0, 34.0);
+
+        for active in 0..3 {
+            let dots = TopBarChrome::center_dot_layout(band, bar, active);
+
+            // The scaled-up disc is the one the carousel says is current.
+            for (i, dot) in dots.iter().enumerate() {
+                let want = if i == active {
+                    TopBarChrome::DOT_ACTIVE_RADIUS
+                } else {
+                    TopBarChrome::DOT_INACTIVE_RADIUS
+                };
+                assert!(
+                    (dot.radius - want).abs() < 1e-9,
+                    "active={active} dot {i}: radius {} should be {want}",
+                    dot.radius,
+                );
+            }
+
+            // No disc may touch its neighbour. The old pitch was 7 px with
+            // a 9.6 px active disc, so dot 0 and dot 1 fused into one blob.
+            for i in 0..2 {
+                let lower = dots[i].center.y + dots[i].radius;
+                let upper = dots[i + 1].center.y - dots[i + 1].radius;
+                assert!(
+                    upper > lower,
+                    "active={active}: dot {i} ends at {lower} but dot {} starts at {upper} \
+                     — the discs overlap",
+                    i + 1,
+                );
+            }
+
+            // The two gaps the eye compares must match.
+            let gap = |i: usize| {
+                (dots[i + 1].center.y - dots[i + 1].radius) - (dots[i].center.y + dots[i].radius)
+            };
+            assert!(
+                (gap(0) - gap(1)).abs() < 1e-9,
+                "active={active}: gaps {} and {} should be equal",
+                gap(0),
+                gap(1),
+            );
+
+            // The whole column must sit inside the band, and centred on it.
+            let top = dots[0].center.y - dots[0].radius;
+            let bottom = dots[2].center.y + dots[2].radius;
+            assert!(
+                top >= band.y0 && bottom <= band.y1,
+                "active={active}: column {top}..{bottom} escapes the band \
+                 {}..{}",
+                band.y0,
+                band.y1,
+            );
+            assert!(
+                ((top + bottom) / 2.0 - band.center().y).abs() < 1e-9,
+                "active={active}: column centre {} should be the band's {}",
+                (top + bottom) / 2.0,
+                band.center().y,
+            );
+
+            // Every disc must be inside the slot that selects it, and no
+            // two slots may overlap — the slots used to be 20 px squares on
+            // an 8 px pitch, and the first-match-wins hit test handed dot
+            // 0 most of dot 1's ink.
+            for (i, dot) in dots.iter().enumerate() {
+                assert!(
+                    dot.slot.y0 <= dot.center.y - dot.radius
+                        && dot.slot.y1 >= dot.center.y + dot.radius,
+                    "active={active}: dot {i}'s disc is not inside its own click slot",
+                );
+                assert!(
+                    dot.slot.contains(dot.center),
+                    "active={active}: clicking dot {i}'s centre must select dot {i}",
+                );
+            }
+            for i in 0..2 {
+                assert!(
+                    dots[i].slot.y1 <= dots[i + 1].slot.y0,
+                    "active={active}: slot {i} overlaps slot {}",
+                    i + 1,
+                );
+            }
+        }
     }
 
     /// The SystemMonitor strip must tell its three metrics apart by
