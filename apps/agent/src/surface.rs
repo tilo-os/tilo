@@ -191,11 +191,61 @@ fn file_explorer_resources(view: &View, doc: &AutoCommit) -> Vec<Resource> {
     )
 }
 
+/// The room as chat publishes it, seen by a participant with no window open.
+///
+/// Every channel of the first workspace, and no active one. A live chat client
+/// fills `active_channel` in from what is on screen; the agent has no screen,
+/// and claiming one channel is "open" would be inventing view state rather
+/// than reporting it. What it needs from the tree is the room's channels — the
+/// message-level resources belong to whoever is actually looking at them.
+fn chat_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
+    let Some(ws) = chat::doc::ChatDoc::list_workspaces(doc).into_iter().next() else {
+        return Vec::new();
+    };
+    let channels = chat::doc::ChatDoc::list_channels(doc)
+        .into_iter()
+        .filter(|c| c.workspace == ws.id)
+        .map(|c| chat::actions::ChannelResource {
+            id: c.id,
+            name: c.name,
+            kind: c.kind,
+            archived: c.archived,
+        })
+        .collect();
+    chat::actions::provide_resources(
+        &chat::actions::ChatResourceCtx {
+            me: String::new(),
+            workspace_id: ws.id,
+            workspace_name: ws.name,
+            channels,
+            active_channel: String::new(),
+            messages: Vec::new(),
+            participants: chat::doc::ChatDoc::list_users(doc)
+                .into_iter()
+                .map(|u| chat::mention::Participant {
+                    id: u.id,
+                    name: u.name,
+                    is_agent: u.is_agent,
+                })
+                .collect(),
+        },
+        doc,
+    )
+}
+
 /// Every app the agent can speak to.
 ///
-/// Two, deliberately of different shapes: one whose subject is a rich-text
-/// document and one whose subject is a host filesystem. Neither is special-cased
-/// anywhere below — everything past this point works from the tree.
+/// Three, deliberately of different shapes: one whose subject is a rich-text
+/// document, one whose subject is a host filesystem, and one whose subject is
+/// a conversation. Neither is special-cased anywhere below — everything past
+/// this point works from the tree.
+///
+/// Chat earns its place twice over. It is somewhere the agent can be asked to
+/// do something, like the other two — and it is the place people are already
+/// talking, which is what makes [`crate::listen`] possible at all: an agent
+/// that holds the room's conversation can be spoken to where the conversation
+/// is, instead of only in the one document somebody remembered to type its
+/// name into.
 pub static CONTRACTS: &[AppContract] = &[
     AppContract {
         app_id: "dev.qos.word-processor",
@@ -210,6 +260,13 @@ pub static CONTRACTS: &[AppContract] = &[
         recognises: file_explorer::actions::is_explorer_document,
         resources: file_explorer_resources,
         register: file_explorer::actions::register,
+    },
+    AppContract {
+        app_id: "dev.qos.chat",
+        namespace: "chat",
+        recognises: chat::actions::is_chat_document,
+        resources: chat_resources,
+        register: chat::actions::register,
     },
 ];
 

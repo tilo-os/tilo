@@ -13,10 +13,44 @@ use uuid::Uuid;
 use word_processor::actions::{self as wp, RegionKind, WordProcessorAction};
 
 use crate::apply::Editor;
+use crate::listen::{self, LastAction, Summons};
 use crate::model::{Chooser, Decision, Route};
 use crate::plan::{self, Block, Instruction};
 use crate::surface::{self, AppContract, Offer, View};
 use crate::wire::Link;
+
+/// Where an answer goes.
+///
+/// The agent answers wherever it was spoken to, and both places are
+/// answerable: over the paragraph that asked, or as a reply in the channel
+/// the message came from. Naming this rather than threading a
+/// `(blocks, index)` pair through every refusal is what let the chat path
+/// reuse the dispatch path whole — the checks an operation has to pass are
+/// the same checks whether the request arrived in a document or a channel,
+/// and having one copy of them is the point.
+#[derive(Clone, Debug)]
+enum Answer {
+    /// Rewrite the paragraph that asked, in the word-processor document.
+    Block { id: String, chars: usize },
+    /// Post a threaded reply under the message that asked.
+    ///
+    /// The reply is also the record that the message has been dealt with —
+    /// see [`crate::listen::answered`] — so this is not decoration that can
+    /// be skipped when there is nothing interesting to say.
+    Message { channel: String, parent: String },
+}
+
+impl Answer {
+    /// The block the agent's caret goes on while it works, when the request
+    /// came from a document. A request from a channel has no caret: there is
+    /// no text position in a conversation for one to mean anything at.
+    fn caret(&self) -> Option<&str> {
+        match self {
+            Answer::Block { id, .. } => Some(id.as_str()),
+            Answer::Message { .. } => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -135,6 +169,22 @@ pub struct Session {
     /// How the last instruction was decided. The record that keeps a run on
     /// the fallback from being indistinguishable from a live one afterwards.
     last_route: Option<Route>,
+    /// What the agent last acted on, and when.
+    ///
+    /// The one piece of state proximity needs: it is what lets "do that
+    /// again" mean something for a short while and nothing afterwards. Set
+    /// only when an operation actually succeeded — an attempt that was
+    /// refused did not touch anything, so nothing about it should become the
+    /// implied subject of the next request.
+    last_action: Option<LastAction>,
+}
+
+/// The agent's clock, in the epoch seconds a chat message is timestamped in.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default()
 }
 
 /// How often the agent asks again while it is still empty-handed.
@@ -223,11 +273,21 @@ impl Session {
             handled: HashSet::new(),
             chooser,
             last_route: None,
+            last_action: None,
             asked_at: Instant::now(),
             reask_every: REASK_EVERY,
             addressed_seen: false,
             missing_ancestors: 0,
         })
+    }
+
+    /// What the agent last acted on, and when.
+    ///
+    /// The resource half of the address that actually reached dispatch — so a
+    /// caller checking after the fact can tell *which thing* was operated on,
+    /// rather than inferring it from whatever the reply happens to say.
+    pub fn last_action(&self) -> Option<&LastAction> {
+        self.last_action.as_ref()
     }
 
     /// How the last instruction was decided, for a test or an operator
@@ -579,8 +639,178 @@ impl Session {
         Ok(false)
     }
 
-    /// Look for an instruction and carry it out.
+    /// Look for something addressed to the agent and carry it out.
+    ///
+    /// Two places, in that order. The document is first because an
+    /// instruction written into a page is unambiguous about which page it
+    /// means, and because it is what the agent has always answered. The
+    /// conversation is second and is the one people actually reach for.
+    ///
+    /// One instruction per turn either way: a run that fans out over
+    /// everything outstanding is a run nobody can follow, and the ordering
+    /// people expect is the order they said things in.
     fn act(&mut self) -> Result<bool> {
+        if self.act_in_document()? {
+            return Ok(true);
+        }
+        self.act_in_chat()
+    }
+
+    /// The agent's own participant id, as the room's roster gives it.
+    ///
+    /// A mention carries the id the room resolved at send, so "am I the one
+    /// mentioned" is only answerable against that same roster. Matching on
+    /// the display name here is not a second guess at who was meant — it is
+    /// how the agent finds *itself* in a list it did not write, and the id it
+    /// finds is then the only thing compared.
+    ///
+    /// Empty when the room has no agent by this name, which is the honest
+    /// answer: nobody can have mentioned a participant the room does not
+    /// have, and [`listen::addressed`] treats an empty id as matching
+    /// nothing rather than as matching everything.
+    fn me_in_chat(&self) -> String {
+        self.peers
+            .get("chat")
+            .map(|ed| chat::doc::ChatDoc::list_users(&ed.doc))
+            .unwrap_or_default()
+            .into_iter()
+            .find(|u| u.is_agent && u.name.eq_ignore_ascii_case(&self.cfg.name))
+            .map(|u| u.id)
+            .unwrap_or_default()
+    }
+
+    /// Every message in the room's conversation, across all its channels.
+    fn conversation(&self) -> Vec<chat::model::Message> {
+        let Some(ed) = self.peers.get("chat") else {
+            return Vec::new();
+        };
+        chat::doc::ChatDoc::list_channels(&ed.doc)
+            .into_iter()
+            .flat_map(|c| chat::doc::ChatDoc::list_messages(&ed.doc, &c.id))
+            .collect()
+    }
+
+    /// Look for something said to the agent in the room's conversation.
+    ///
+    /// The bar for acting is unchanged from the document path: something has
+    /// to be **addressed** to the agent — mentioned, or named. Being near its
+    /// work is not an address and never becomes one; what nearness buys is
+    /// the *subject* of a request that did not state one, and only for as
+    /// long as [`listen::RECENCY_SECS`].
+    fn act_in_chat(&mut self) -> Result<bool> {
+        if !self.peers.contains_key("chat") {
+            return Ok(false);
+        }
+        let messages = self.conversation();
+        let me = self.me_in_chat();
+        // What the room already has an answer to, read out of the room. The
+        // in-memory set is only a same-turn guard on top of it — it is the
+        // document that has to be right after a restart.
+        let mut done = listen::answered(&messages, &me);
+        done.extend(self.handled.iter().cloned());
+        let Some(summons) = listen::next_summons(
+            &messages,
+            &me,
+            &self.cfg.name,
+            self.last_action.as_ref(),
+            now_secs(),
+            &done,
+        ) else {
+            return Ok(false);
+        };
+        self.addressed_seen = true;
+        self.handled.insert(summons.message.clone());
+        tracing::info!(
+            message = %summons.message,
+            channel = %summons.channel,
+            from = %summons.author,
+            addressed_by = summons.address.label(),
+            subject = summons.subject.label(),
+            about = ?summons.subject.resource(),
+            asked = %summons.asked,
+            "spoken to in the room"
+        );
+        self.carry_out(summons)
+    }
+
+    /// Decide what a summons asks for and do it, answering in its channel.
+    fn carry_out(&mut self, summons: Summons) -> Result<bool> {
+        let view = self.view(None, 0);
+        let offers = self.offers(&view);
+        // The subject narrows *what may be chosen*, never what the choice
+        // then means. An address the message carried is the resource the
+        // agent may act on, so only that resource's operations are offered —
+        // which is how "crop this" reaches the right square without anyone
+        // parsing "this", and how a request about one thing cannot come out
+        // as an operation on another.
+        let scoped: Vec<Offer> = match summons.subject.resource() {
+            Some(resource) => offers
+                .iter()
+                .filter(|o| o.address().resource == resource)
+                .cloned()
+                .collect(),
+            None => offers.clone(),
+        };
+        let to = Answer::Message {
+            channel: summons.channel.clone(),
+            parent: summons.message.clone(),
+        };
+        // A subject that exports nothing the agent may perform is refused
+        // outright rather than widened back to the room. Falling back to
+        // every offer here would answer a request about one resource with an
+        // operation on whichever other one happened to match the words.
+        if scoped.is_empty() && summons.subject.resource().is_some() {
+            let what = summons.subject.resource().unwrap_or_default();
+            let reply = format!(
+                "{}: I can't act on {what:?} — nothing in this room exports \
+                 anything I may do to it.",
+                self.cfg.name
+            );
+            tracing::warn!(%what, "refused: the subject exports nothing available");
+            self.reply(&to, &reply)?;
+            return Ok(true);
+        }
+        let Decision { instruction, route } = self.chooser.choose(&summons.asked, &[], &scoped);
+        tracing::info!(
+            message = %summons.message,
+            decided_by = route.label(),
+            live = route.is_live(),
+            ?instruction,
+            "{}",
+            route.detail()
+        );
+        self.last_route = Some(route);
+        match instruction {
+            Instruction::Perform { id, argument } => {
+                self.perform(&id, argument.as_deref(), &view, &to)?;
+            }
+            // The recipes rewrite a run of blocks around the line that asked
+            // for them, and a message is not in the document those blocks are
+            // in. Saying so is the honest answer; picking a place in the page
+            // to apply it would be the agent choosing what to rewrite.
+            Instruction::Table | Instruction::Caption | Instruction::Heading
+            | Instruction::RunSheet(_) => {
+                let reply = format!(
+                    "{}: that one rewrites the text around the line that asks \
+                     for it, so ask me for it in the document itself.",
+                    self.cfg.name
+                );
+                self.reply(&to, &reply)?;
+            }
+            Instruction::Unknown(what) => {
+                let reply = format!(
+                    "{}: I can't \"{what}\" here. {}",
+                    self.cfg.name,
+                    describe_offers(&scoped)
+                );
+                self.reply(&to, &reply)?;
+            }
+        }
+        Ok(true)
+    }
+
+    /// Look for an instruction written into the document and carry it out.
+    fn act_in_document(&mut self) -> Result<bool> {
         let Some(ed) = self.editor.as_ref() else {
             return Ok(false);
         };
@@ -642,7 +872,11 @@ impl Session {
 
         match instruction {
             Instruction::Perform { id, argument } => {
-                self.perform(&id, argument.as_deref(), &view, &blocks, at)?
+                let to = Answer::Block {
+                    id: blocks[at].id.clone(),
+                    chars: blocks[at].text.chars().count(),
+                };
+                self.perform(&id, argument.as_deref(), &view, &to)?
             }
             Instruction::Table => self.make_table(&blocks, at)?,
             Instruction::Caption => self.caption_image(&blocks, at)?,
@@ -683,13 +917,12 @@ impl Session {
         id: &str,
         argument: Option<&str>,
         view: &View,
-        blocks: &[Block],
-        at: usize,
+        to: &Answer,
     ) -> Result<()> {
         let name = self.cfg.name.clone();
         let Some(address) = surface::decode_address(id) else {
             let reply = format!("{name}: {id:?} is not an address I can act on.");
-            return self.reply_at(blocks, at, &reply);
+            return self.reply(to, &reply);
         };
         // Asked again, at dispatch. The survey filtered on it too, but a
         // survey is a snapshot: a capability that lapsed between the offer
@@ -701,14 +934,17 @@ impl Session {
                 address.action
             );
             tracing::warn!(%id, "refused: no capability for this operation");
-            return self.reply_at(blocks, at, &reply);
+            return self.reply(to, &reply);
         }
         let namespace = surface::app_of(&address.resource).to_string();
         // The caret goes on the line that asked, so the room can see which
         // participant is working even for an operation that touches another
-        // app's state entirely.
-        let focus = blocks[at].id.clone();
-        self.show_caret(&focus)?;
+        // app's state entirely. A request made in a channel has no line to
+        // put it on, and inventing one would put the agent's caret somewhere
+        // nobody asked it to be.
+        if let Some(focus) = to.caret().map(str::to_string) {
+            self.show_caret(&focus)?;
+        }
 
         let outcome = {
             let registry = &self.registry;
@@ -720,11 +956,17 @@ impl Session {
                 "{name}: nothing from {namespace:?} is open in this room, so I can't act on it."
             );
             tracing::warn!(%id, %namespace, "refused: that app's state is not here");
-            return self.reply_at(blocks, at, &reply);
+            return self.reply(to, &reply);
         };
         match outcome {
             Ok(Some(delta)) => {
                 self.link.send(&CollabRequest::SyncIncremental { data: delta })?;
+                // Only now — the operation went through and this resource is
+                // what the agent is demonstrably working on. Recording it
+                // before the outcome is known would make a refusal set the
+                // subject of the next request to something never touched.
+                self.last_action =
+                    Some(LastAction::new(address.resource.clone(), now_secs()));
                 tracing::info!(%id, "performed an operation the room exports");
             }
             Ok(None) => {
@@ -733,8 +975,56 @@ impl Session {
             Err(e) => {
                 let reply = format!("{name}: I couldn't do that - {e}.");
                 tracing::warn!(%id, code = e.code(), "refused: {e}");
-                return self.reply_at(blocks, at, &reply);
+                return self.reply(to, &reply);
             }
+        }
+        std::thread::sleep(self.cfg.pace);
+        Ok(())
+    }
+
+    /// Answer wherever the request came from.
+    ///
+    /// Every path that declines routes through here, and that is deliberate:
+    /// silence and refusal look identical from outside, and the whole reason
+    /// this agent writes its refusals down is that a person who asked it for
+    /// something must be able to tell which one happened.
+    fn reply(&mut self, to: &Answer, text: &str) -> Result<()> {
+        match to {
+            Answer::Block { id, chars } => self.edit(
+                id,
+                wp::splice_text_action(RegionKind::Body, id, 0, *chars, text),
+            ),
+            Answer::Message { channel, parent } => self.say(channel, Some(parent), text),
+        }
+    }
+
+    /// Post a message into a channel, as the agent.
+    ///
+    /// Threaded under `parent` when there is one, which is what makes the
+    /// answer findable next to the question *and* what records the question
+    /// as dealt with: [`crate::listen::answered`] reads exactly these back.
+    /// So an agent that has replied cannot be made to act on the same message
+    /// again by a restart, a reload, or a peer re-sending the channel.
+    fn say(&mut self, channel: &str, parent: Option<&str>, text: &str) -> Result<()> {
+        let me = self.me_in_chat();
+        let action = chat::actions::send_message_action(
+            channel,
+            &format!("m_{}", Uuid::new_v4().simple()),
+            &me,
+            now_secs(),
+            text,
+            parent.map(str::to_string),
+            None,
+            Vec::new(),
+        );
+        let delta = self
+            .peers
+            .get_mut("chat")
+            .context("no conversation in this room to answer in")?
+            .apply_foreign(&action)?;
+        if let Some(data) = delta {
+            self.link.send(&CollabRequest::SyncIncremental { data })?;
+            tracing::info!(%channel, ?parent, "answered in the room");
         }
         std::thread::sleep(self.cfg.pace);
         Ok(())

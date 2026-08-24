@@ -38,7 +38,7 @@
 //! order. A malformed payload is a **no-op**, never an error, so a bad replay
 //! can't wedge a peer.
 
-use automerge::AutoCommit;
+use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
@@ -81,6 +81,19 @@ pub enum ChatAction {
         /// a frame from a release that predates mentions still decodes.
         #[serde(default)]
         mentions: Vec<crate::mention::Mention>,
+        /// The address of the thing this message is about, when it was
+        /// written by selecting something rather than typed from scratch.
+        ///
+        /// Part of the payload for the same reason `mentions` is: it is
+        /// resolved once, by the app that owns the selection, and replaying
+        /// it elsewhere must not depend on that app being open there.
+        /// `#[serde(default)]` so a frame from a release that predates
+        /// references still decodes — and so a payload minted by
+        /// `qos_reference::Remark::to_chat_action`, which has been writing
+        /// this field all along, now lands in the document instead of being
+        /// dropped at apply.
+        #[serde(default)]
+        reference: Option<qos_reference::ResourceRef>,
     },
     /// Replace a message's body, archiving the prior text into its edit history
     /// and flagging it edited. `ts` (the edit time) is minted at authoring.
@@ -151,6 +164,7 @@ impl Action for ChatAction {
                 parent,
                 attachment,
                 mentions,
+                reference,
             } => {
                 ChatDoc::push_message_with_id(
                     doc,
@@ -163,6 +177,7 @@ impl Action for ChatAction {
                         parent: parent.clone(),
                         attachment: attachment.clone(),
                         mentions: mentions.clone(),
+                        reference: reference.clone(),
                         ..Default::default()
                     },
                 );
@@ -275,6 +290,41 @@ pub fn send_message_action(
         parent,
         attachment,
         mentions,
+        reference: None,
+    }
+}
+
+/// The same message, said *about* something.
+///
+/// A separate builder rather than a ninth argument: an ordinary message has
+/// nothing to point at, and making every caller pass `None` to say so would
+/// spread the exception across code that has no opinion about it.
+pub fn about(action: ChatAction, reference: qos_reference::ResourceRef) -> ChatAction {
+    match action {
+        ChatAction::SendMessage {
+            channel,
+            id,
+            author,
+            ts,
+            text,
+            parent,
+            attachment,
+            mentions,
+            ..
+        } => ChatAction::SendMessage {
+            channel,
+            id,
+            author,
+            ts,
+            text,
+            parent,
+            attachment,
+            mentions,
+            reference: Some(reference),
+        },
+        // Nothing else carries a subject; handing one over is a caller's
+        // mistake, and silently dropping it would hide it.
+        other => other,
     }
 }
 
@@ -405,6 +455,24 @@ pub struct ChatResourceCtx {
 
 fn immediate_spec(id: &str, label: &str, action: &ChatAction) -> ActionSpec {
     ActionSpec::immediate(id, label, CHAT_ACTION_TYPE, action).expect("encode chat action")
+}
+
+/// Whether `doc` is a workspace this app authored.
+///
+/// A room carries every app's state and none of it is labelled, so a
+/// participant holding several documents — an agent, a search index — has to
+/// be able to tell which belongs to which app. Chat's answer is the shape only
+/// it writes at the root: a map of channels, or a map of messages keyed by
+/// channel. Either alone is enough, because a workspace with channels and no
+/// messages yet is still chat's, and so is one restored from a store that
+/// holds only history.
+///
+/// Asked of the app rather than pattern-matched from outside, so the two
+/// cannot drift apart the way a copied schema check would.
+pub fn is_chat_document(doc: &AutoCommit) -> bool {
+    ["channels", "messages"]
+        .iter()
+        .any(|k| matches!(doc.get(&ROOT, k), Ok(Some((Value::Object(ObjType::Map), _)))))
 }
 
 /// A channel's palette label: `#name` for text, a speaker glyph for voice.
