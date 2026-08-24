@@ -554,6 +554,31 @@ class Live:
 
     # -- the things that fire ----------------------------------------
 
+    def wait_for_his_screen(self, budget: float = 12.0) -> None:
+        """Hold until the room's applications have reached xaver.
+
+        Asks his own session what it is showing rather than assuming the
+        replication is done: a window group on his side is evidence the
+        workspace crossed, and it is the thing the excursion is for.
+        """
+        if self.x is None:
+            return
+        due = time.time() + budget
+        seen = 0
+        while time.time() < due and not self.stop.is_set():
+            try:
+                groups = yc.tab_groups_here(self.x)
+            except Exception:  # noqa: BLE001
+                groups = []
+            seen = sum(len(g.get("tabs", [])) for g in groups)
+            if seen:
+                self.say(f"his screen has {seen} window(s) from the room")
+                return
+            self.waiting = "the room's windows reaching xaver's screen"
+            self.stop.wait(0.5)
+        yc.gap(f"xaver's screen still showed nothing after {budget:.0f}s, "
+               f"so the cut to it is of an empty desktop")
+
     def look_for_the_invitation(self) -> None:
         """Whether he has minted one yet.
 
@@ -616,6 +641,17 @@ class Live:
         if self.xaver_in:
             yc.claim("and his session holds the room the token named",
                      self.x.active_workspace()["room"], self.room)
+            # Not before his screen has something on it.
+            #
+            # The excursion exists to show that the room reached him, and
+            # a cut taken the instant he joins shows an empty desktop --
+            # which argues the opposite. The applications are opened
+            # before anybody is invited now, so what this waits for is
+            # them arriving on *his* machine, which is the claim: the
+            # workspace is the shared thing, so joining it brings what is
+            # in it. Bounded, because a cut to a bare screen is a poor
+            # shot and a stalled take is no shot at all.
+            self.wait_for_his_screen()
             self.visit_xaver("he is in the room now", None)
 
     def bring_the_agent_session_in(self) -> None:
@@ -987,10 +1023,57 @@ def _the_owners_half(q, shots: str, instruction: str,
         return
     print("\n  [ --self-test: driving the owner's half ]", flush=True)
 
-    files = q.launch(yc.FILES_APP, search="files")
-    yc.claim("Files opened", files is not None, True)
-    stop.wait(1.0)
+    # The applications first, then the people. That is the order somebody
+    # actually sets a workspace up in, and the earlier cut had it backwards:
+    # one application, then two invitations into a room with nothing in it,
+    # then everything else arriving at 39s with no explanation of why.
+    #
+    # Each one opened the way a person opens it -- the key, the box, a few
+    # letters, the row. Opening by address is a window appearing out of
+    # nothing, and a viewer has to be told what happened; the search shows
+    # it, and shows that the desktop has one way in rather than a menu per
+    # application. Which route an app took used to depend on whether it
+    # happened to be in the catalogue an empty query builds, so half the
+    # film explained itself and half did not, for a reason nothing on
+    # screen conveyed.
+    #
+    # Chat, Files, the word processor: the order they would be reached for,
+    # conversation first because that is where the work is agreed.
+    chat = q.launch(yc.CHAT_APP, search="chat", via="palette")
+    yc.claim("chat opened", chat is not None, True)
+    stop.wait(0.6)
 
+    files = q.launch(yc.FILES_APP, search="files", via="palette")
+    yc.claim("Files opened", files is not None, True)
+    stop.wait(0.6)
+
+    # Its own group, or the placement rule tabs it in behind what is
+    # already there and the strip has one window where the scene wants two.
+    q.place_next_window(yc.WORD_PROCESSOR)
+    wp = q.launch(yc.WORD_PROCESSOR, search="word", via="palette")
+    yc.claim("the word processor opened", wp is not None, True)
+    if wp is None:
+        return
+    stop.wait(0.6)
+
+    # The photograph's application, so the picture somebody judges later is
+    # already here rather than arriving in the middle of the scene about it.
+    photos = q.launch(yc.IMAGE_EDITOR,
+                      search=yc.STRIP_SEARCH.get(yc.IMAGE_EDITOR, "photos"),
+                      via="palette")
+    yc.claim("the image editor opened", photos is not None, True)
+    stop.wait(0.6)
+
+    # Framing is a nicety and is not what any of this is proving, so a
+    # helper that throws costs a tidy strip rather than the take.
+    try:
+        yc.frame_windows(q, [yc.FILES_APP, yc.WORD_PROCESSOR], yc.VIEWPORT)
+    except Exception as exc:  # noqa: BLE001
+        yc.gap(f"the two windows could not be framed ({type(exc).__name__}: "
+               f"{exc}); the strip is left where it is")
+    stop.wait(0.8)
+
+    # Now the people, into a workspace that already has something in it.
     yc.show_collaborators(q)
     token = yc.invite_from_the_panel(q, "xaver", shots, "live-invite")
     yc.claim("an invitation was minted from the panel", bool(token), True)
@@ -1017,69 +1100,27 @@ def _the_owners_half(q, shots: str, instruction: str,
              bool(token) and bool(agent_token) and agent_token != token,
              True)
     yc.close_collaborators(q)
-    stop.wait(1.0)
-
-    # Its own group, or the placement rule tabs it in behind Files and
-    # there is one window on screen where the scene wants two.
-    q.place_next_window(yc.WORD_PROCESSOR)
-    wp = q.launch(yc.WORD_PROCESSOR, search="word")
-    yc.claim("the word processor opened", wp is not None, True)
-    if wp is None:
-        return
-    # Framing is a nicety and is not what any of this is proving, so a
-    # helper that throws costs a tidy strip rather than the take. It has
-    # thrown, twice and for different reasons — once from a name that no
-    # longer existed inside its own diagnostic, once from this call site
-    # not keeping up with the helper's signature — so the guard stays.
-    # Live, its unhappy path is reached by a person who happened to open
-    # a third window.
-    #
-    # The two windows this half of the run is about, named: the strip
-    # scrolls, so a beat says which windows it needs in frame rather
-    # than asking for all of them.
-    try:
-        yc.frame_windows(q, [yc.FILES_APP, yc.WORD_PROCESSOR], yc.VIEWPORT)
-    except Exception as exc:  # noqa: BLE001
-        yc.gap(f"the two windows could not be framed ({type(exc).__name__}: "
-               f"{exc}); the strip is left where it is")
-    stop.wait(1.0)
+    stop.wait(0.8)
 
     # Four applications, two in frame, and two of them made one window.
     #
-    # This rig drove two apps and called it the film. Two apps in a strip
-    # is a tiling window manager, and an agent answering inside the one
-    # document it was already in is a worse version of an assistant every
-    # word processor now ships. Neither argues the thing this desktop can
-    # do that others cannot, and a take without this scene invites exactly
-    # that comparison — which it loses.
-    #
-    # What earns its seconds is the tab bar holding *different
+    # What earns its seconds here is the tab bar holding *different
     # applications*. A tab everywhere else belongs to its app, because the
-    # app draws it; here it is a frame primitive the compositor owns, so
-    # Files and a document and a photograph and a conversation sit on one
-    # bar. That is the one gesture in the film a viewer cannot mistake for
-    # a browser.
-    #
-    # `beat_strip` and `open_the_rest_of_the_strip` are the scripted
-    # film's, driven here rather than reimplemented: the claim rests on
-    # reading each tab's `app_id` off its tile, and there is no reason for
-    # two spellings of that.
+    # app draws it; here it is a frame primitive the compositor owns, so a
+    # file manager and a document and a photograph sit on one bar. That is
+    # the one gesture in the film a viewer cannot mistake for a browser.
     extras: dict[str, dict] = {}
-    try:
-        extras = yc.open_the_rest_of_the_strip(q)
-    except Exception as exc:  # noqa: BLE001
-        yc.gap(f"the rest of the strip did not open "
-               f"({type(exc).__name__}: {exc}); the tabbing scene is "
-               f"skipped and the film is two applications short")
+    if photos is not None:
+        extras[yc.IMAGE_EDITOR] = photos
+    if chat is not None:
+        extras[yc.CHAT_APP] = chat
     if extras:
         try:
             yc.beat_strip(q, extras, wp, shots)
         except Exception as exc:  # noqa: BLE001
-            # Framing and panning are niceties; the claim is not. Losing
-            # the shot costs the scene, not the take.
             yc.gap(f"the strip scene did not complete "
                    f"({type(exc).__name__}: {exc})")
-    stop.wait(1.0)
+    stop.wait(0.8)
 
     # A run of real list items, a line of prose that disagrees with them,
     # and then the instruction — in that order, because the agent

@@ -1150,7 +1150,8 @@ class Session:
     # -- launching ---------------------------------------------------
 
     def launch(self, app_id: str, timeout: float = LAUNCH_TIMEOUT_S,
-               search: str | None = None) -> dict | None:
+               search: str | None = None,
+               via: str | None = None) -> dict | None:
         """Start an app by its id and wait for it to present a frame.
 
         The surfaces that already existed are excluded, because every app
@@ -1174,10 +1175,25 @@ class Session:
         of none — and the route taken is printed, because "opened by
         address" and "opened by typing its name" are different claims and
         only one of them was true.
+
+        `via="palette"` takes that second route deliberately rather than
+        as a fallback. On camera the two are not equivalent: opening by
+        address is a window appearing out of nothing, and a viewer has to
+        be told what happened. The search — the key, the box, a few
+        letters, the row — *shows* it, and shows that the desktop has one
+        way in rather than an app menu per app. Which route an app took
+        was previously decided by whether it happened to be in the
+        catalogue an empty query builds, so half the film explained
+        itself and half did not, for a reason nothing on screen conveyed.
         """
         before = {f.get("surface_id") for f in self.foreign_frames()}
-        resp = call(self.sock, {"op": "actions_invoke",
-                                "provider": APPLICATIONS, "id": app_id})
+        if via == "palette" and search is not None:
+            note(f"{self.name}: opening {app_id} the way a person does — "
+                 f"the palette, searching {search!r}")
+            resp = {"err": {"code": "unknown_action"}}
+        else:
+            resp = call(self.sock, {"op": "actions_invoke",
+                                    "provider": APPLICATIONS, "id": app_id})
         if "err" in resp:
             code = (resp["err"] or {}).get("code")
             if code != "unknown_action" or search is None:
