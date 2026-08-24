@@ -763,9 +763,18 @@ class Live:
 
             yc.claim("the agent may not write to the word processor yet",
                      may_write(), False)
-            granted = self.q.grant(yc.AGENT_SUBJECT, yc.AGENT_SCOPE, "write")
-            yc.claim("quinten's grant of write on that one app was accepted",
-                     "err" not in granted, True)
+            # One grant per application it is given leave to work in. The
+            # film needs two -- it is told to square a photograph and put it
+            # in the open document -- and naming them separately is the
+            # claim: an agent handed a photograph cannot thereby start
+            # anything it likes, because a grant names an app, not the room.
+            refused = [scope for scope in yc.AGENT_SCOPES
+                       if "err" in self.q.grant(yc.AGENT_SUBJECT, scope,
+                                                "write")]
+            yc.claim(f"quinten's grants of write on {len(yc.AGENT_SCOPES)} "
+                     f"named apps were accepted", not refused, True)
+            if refused:
+                yc.gap(f"the room refused: {', '.join(refused)}")
             yc.claim("and now it may — the same question, the same gate",
                      bool(yc.wait_for(may_write, timeout=yc.SYNC_TIMEOUT_S)),
                      True)
