@@ -149,6 +149,11 @@ pub enum Icon {
     Delete,
     /// Return / Enter key glyph (a down-then-left corner arrow).
     CornerDownLeft,
+    /// An automated participant — lucide `bot`: a boxed face with an
+    /// antenna and two side stubs. The one picture this OS uses for
+    /// "this member is not a person", so every surface that lists
+    /// members can say so the same way.
+    Bot,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -704,6 +709,19 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M20 4v7a4 4 0 0 1-4 4H4"),
             path_from_d("M9 10 4 15l5 5"),
         ],
+        // Bot: antenna, head, the two side stubs, and the two eyes.
+        // Transcribed from lucide `bot` rather than simplified — the
+        // silhouette is what carries at avatar size, and a hand-drawn
+        // approximation would drift from the same glyph drawn larger
+        // elsewhere.
+        Icon::Bot => vec![
+            path_from_d("M12 8V4H8"),
+            rect_path(4.0, 8.0, 16.0, 12.0, 2.0),
+            path_from_d("M2 14h2"),
+            path_from_d("M20 14h2"),
+            path_from_d("M15 13v2"),
+            path_from_d("M9 13v2"),
+        ],
     }
 }
 
@@ -1100,6 +1118,7 @@ mod tests {
             Icon::ArrowBigUp,
             Icon::Delete,
             Icon::CornerDownLeft,
+            Icon::Bot,
         ] {
             let sub = icon_subpaths(icon);
             assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
@@ -1152,6 +1171,11 @@ mod tests {
         assert_eq!(icon_subpaths(Icon::ArrowBigUp).len(), 1, "arrow-big-up = 1 closed arrow");
         assert_eq!(icon_subpaths(Icon::Delete).len(), 3, "delete = tag body + 2 ✕ strokes");
         assert_eq!(icon_subpaths(Icon::CornerDownLeft).len(), 2, "corner-down-left = hook + head");
+        assert_eq!(
+            icon_subpaths(Icon::Bot).len(),
+            6,
+            "bot = antenna + head + 2 stubs + 2 eyes"
+        );
     }
 
     /// The mail glyph set must transcribe into non-empty subpaths so the

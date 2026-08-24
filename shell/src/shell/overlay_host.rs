@@ -5124,6 +5124,36 @@ impl ShellOverlayHost {
         (invite, join)
     }
 
+    /// The geometry [`Self::draw_collaborators`] paints each roster row
+    /// from — the same call, with the same arguments, so a test reads
+    /// the rects the pixels land in rather than a second opinion about
+    /// where they should be.
+    pub(crate) fn collaborator_row_layouts(
+        &self,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Vec<RosterRowLayout> {
+        let rect = self.collaborators_rect();
+        let rows: Vec<RosterRow> = self
+            .chrome
+            .as_ref()
+            .map(|c| collaborator_roster_rows(&c.borrow().tree()))
+            .unwrap_or_default();
+        let unavailable = self
+            .chrome
+            .as_ref()
+            .is_some_and(|c| c.borrow().collab_unavailable.is_some());
+        let list_top = if unavailable {
+            rect.y0 + 48.0 + COLLAB_WARNING_H
+        } else {
+            rect.y0 + 48.0
+        };
+        rows.iter()
+            .enumerate()
+            .map(|(i, row)| roster_row_layout(rect, list_top, i, row, text_renderer, theme))
+            .collect()
+    }
+
     /// Rect of the "Room activity" row at the foot of the collaborator
     /// dropdown, mirroring what `draw_collaborators` paints.
     fn collaborators_activity_row_rect(&self) -> Rect {
@@ -8823,6 +8853,159 @@ pub struct RosterRow {
     pub invited: bool,
 }
 
+/// Vertical pitch of one collaborators row, and the side of the avatar
+/// chip that sits in it. The chip is centred in the pitch's upper part;
+/// [`ROSTER_ROW_BAND_TOP`] is the offset that puts it there.
+const ROSTER_ROW_PITCH: f64 = 36.0;
+const ROSTER_AVATAR_SIDE: f64 = 22.0;
+const ROSTER_ROW_BAND_TOP: f64 = 3.0;
+
+/// Gap between the left cluster (chip, name, kind tag) and the role at
+/// the right edge, and between the name and the kind tag.
+const ROSTER_CLUSTER_GAP: f64 = 12.0;
+const ROSTER_TAG_GAP: f64 = 6.0;
+
+/// Where one roster row's parts go.
+///
+/// Computed once and painted from, so the rect a test measures is the
+/// rect the pixel lands in. The role used to be positioned by a literal
+/// `+ 21.0` inside the paint loop, which put it below the chip it
+/// belonged to — far enough that it read as a stray word rather than as
+/// a property of the member above it, and nothing could observe that
+/// but a screenshot.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RosterRowLayout {
+    /// The band this row occupies — the height a reader perceives as
+    /// "this member's line", not the pitch to the next one. Every other
+    /// rect here is inside it, which is the invariant that keeps the
+    /// role attached to its own member.
+    pub band: Rect,
+    /// The identity chip.
+    pub avatar: Rect,
+    /// The name, already elided to whatever the row had left over.
+    pub name: Rect,
+    /// The name as it will actually be painted — elided if it had to
+    /// be, so the measured rect and the drawn glyphs agree.
+    pub name_text: String,
+    /// The word that says this member is not a person. `None` for a
+    /// person, and also for an agent whose own name is already the
+    /// word — the chip still marks those.
+    pub kind_tag: Option<Rect>,
+    pub kind_tag_text: Option<String>,
+    /// What this member may do here, right-aligned; or, for somebody
+    /// named who has not arrived, that they have not.
+    pub role: Option<Rect>,
+    pub role_text: Option<String>,
+}
+
+/// Text of a row's kind tag, or `None` when the row needs none.
+///
+/// A person needs none. An agent named `agent` needs none either: the
+/// chip has already said what it is, and "agent  agent" reads as a
+/// rendering fault rather than as emphasis.
+fn roster_kind_tag(row: &RosterRow) -> Option<String> {
+    if !row.is_agent || row.label.eq_ignore_ascii_case("agent") {
+        return None;
+    }
+    Some(crate::shell::i18n::t("roster-kind-agent"))
+}
+
+/// What a row says on its right-hand edge: `invited` for somebody who
+/// has been named and has not come, otherwise the role the room
+/// records for them.
+///
+/// "invited" wins when both could be said. A role is what somebody may
+/// do once they are here, and leading with it for somebody who is not
+/// here yet answers a question nobody asked ahead of the one they did.
+fn roster_role_text(row: &RosterRow) -> Option<String> {
+    if row.invited {
+        Some(INVITED_TAG.to_string())
+    } else {
+        row.role.clone()
+    }
+}
+
+/// Lay one roster row out inside `card`.
+///
+/// The name is elided to what is left after the role has taken its
+/// right-hand slot, so a long principal id pushes its own name into an
+/// ellipsis rather than running under the role.
+fn roster_row_layout(
+    card: Rect,
+    list_top: f64,
+    index: usize,
+    row: &RosterRow,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) -> RosterRowLayout {
+    let scale = &theme.tokens.typography.scale;
+    let row_y = list_top + index as f64 * ROSTER_ROW_PITCH;
+    let band = Rect::new(
+        card.x0 + 16.0,
+        row_y + ROSTER_ROW_BAND_TOP,
+        card.x1 - 16.0,
+        row_y + ROSTER_ROW_BAND_TOP + ROSTER_AVATAR_SIDE,
+    );
+    let mid = band.center().y;
+    let avatar = Rect::new(band.x0, band.y0, band.x0 + ROSTER_AVATAR_SIDE, band.y1);
+
+    // Right edge first: the role owns its slot, and the name gets what
+    // is left. The other order is how a long name overprints a role.
+    let role_text = roster_role_text(row);
+    let role = role_text.as_ref().map(|text| {
+        let (w, h) = text_renderer.measure(text, scale.xs, None);
+        Rect::new(
+            band.x1 - w as f64,
+            mid - h as f64 / 2.0,
+            band.x1,
+            mid + h as f64 / 2.0,
+        )
+    });
+    let left_limit = role
+        .map(|r| r.x0 - ROSTER_CLUSTER_GAP)
+        .unwrap_or(band.x1);
+
+    let name_x = card.x0 + 44.0;
+    let tag = roster_kind_tag(row).map(|text| {
+        let (w, h) = text_renderer.measure(&text, scale.xs, None);
+        (text, w as f64, h as f64)
+    });
+    let tag_budget = tag
+        .as_ref()
+        .map(|(_, w, _)| w + ROSTER_TAG_GAP)
+        .unwrap_or(0.0);
+    let name_budget = (left_limit - name_x - tag_budget).max(0.0);
+    let elided = text_renderer.elide_to_width(&row.label, scale.sm, name_budget as f32);
+    let (nw, nh) = text_renderer.measure(&elided, scale.sm, None);
+    let name = Rect::new(
+        name_x,
+        mid - nh as f64 / 2.0,
+        name_x + nw as f64,
+        mid + nh as f64 / 2.0,
+    );
+    let (kind_tag, kind_tag_text) = match tag {
+        Some((text, w, h)) => {
+            let x0 = name.x1 + ROSTER_TAG_GAP;
+            (
+                Some(Rect::new(x0, mid - h / 2.0, x0 + w, mid + h / 2.0)),
+                Some(text),
+            )
+        }
+        None => (None, None),
+    };
+
+    RosterRowLayout {
+        band,
+        avatar,
+        name,
+        name_text: elided,
+        kind_tag,
+        kind_tag_text,
+        role,
+        role_text,
+    }
+}
+
 /// The rows the collaborators dropdown shows: the peers this session
 /// knows about, then the agents the active room has admitted.
 ///
@@ -8859,6 +9042,7 @@ pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Ve
     // otherwise land on it, so a peer's row avatar matches their cursor
     // and their top-bar chip, and two people never share a colour.
     let colors = crate::shell::state::roster_colors(roster);
+    let active = tree.active_workspace();
     let mut rows: Vec<RosterRow> = roster
         .iter()
         .map(|p| {
@@ -8871,7 +9055,23 @@ pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Ve
                 label: p.name.clone(),
                 color: Color::from_rgb8(r, g, b),
                 is_agent: false,
-                role: p.role_id.clone(),
+                // The role the room records, wherever the room records
+                // one: the entry the presence path carried, and failing
+                // that the room's own capability list, which is the
+                // same list an agent's role is read off and the same
+                // list membership itself lives in. Asking it is not
+                // inventing a default — a person the room grants
+                // nothing still gets no role.
+                //
+                // Reading only the carried field is why one member of a
+                // two-member room could show a role while the other
+                // showed none, with nothing about either of them to
+                // explain the difference.
+                role: p.role_id.clone().or_else(|| {
+                    active
+                        .and_then(|ws| ws.role_of(&p.id))
+                        .map(|r| crate::shell::state::role_label(r).to_string())
+                }),
                 invited: p.invited,
             }
         })
@@ -12057,33 +12257,26 @@ impl ShellOverlayHost {
             return;
         }
 
-        let list_top = if unavailable.is_some() {
-            rect.y0 + 48.0 + COLLAB_WARNING_H
-        } else {
-            rect.y0 + 48.0
-        };
-        for (i, row) in rows.iter().enumerate() {
-            let row_y = list_top + i as f64 * 36.0;
-            let center = Point::new(rect.x0 + 16.0 + 12.0, row_y + 14.0);
-            // Row avatar = shared `ui::Avatar` chip (r = 11) in that
-            // identity's own colour, matching the top-bar stack and the
-            // overview.
-            let avatar_rect =
-                Rect::new(center.x - 11.0, center.y - 11.0, center.x + 11.0, center.y + 11.0);
-            // Same chip, same place, same order, whichever state the
-            // row is in — so what a viewer sees when somebody joins is
-            // one row filling in, not a list reshuffling.
+        // One source for where the row's parts go, shared with the
+        // accessor a test reads, so the two cannot drift apart.
+        let layouts = self.collaborator_row_layouts(text_renderer, theme);
+        for (row, layout) in rows.iter().zip(layouts.iter()) {
+            // Same slot, same size, same order, whichever kind of member
+            // the row holds and whichever state it is in — so what a
+            // viewer sees when somebody joins is one row filling in, not
+            // a list reshuffling.
             //
             // An invitation is drawn as an *empty seat*: the unfilled,
             // dashed ring the top bar already uses to mean "nobody here
             // yet". Reusing that idiom rather than inventing one is the
             // point — and a filled chip merely faded would not have
             // worked anyway, because `Avatar::draw_at` paints its
-            // monogram `Color::WHITE` at full strength, so a dimmed
-            // disc under a bright letter reads as a rendering fault
-            // rather than a state.
+            // monogram at full strength, so a dimmed disc under a
+            // bright letter reads as a rendering fault rather than a
+            // state.
+            let center = layout.avatar.center();
             if row.invited {
-                let seat = vello::kurbo::Circle::new(center, 11.0);
+                let seat = vello::kurbo::Circle::new(center, ROSTER_AVATAR_SIDE / 2.0);
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
                     transform,
@@ -12095,7 +12288,7 @@ impl ShellOverlayHost {
                 // named person, which is exactly what distinguishes
                 // this from the top bar's "invite anybody" chip.
                 let initial = row.initial.to_string();
-                let size = 22.0_f32 * 0.4;
+                let size = ROSTER_AVATAR_SIDE as f32 * 0.4;
                 let (iw, ih) = text_renderer.measure_weighted(
                     &initial,
                     size,
@@ -12115,11 +12308,24 @@ impl ShellOverlayHost {
                     None,
                     TextWeight::Semibold,
                 );
+            } else if row.is_agent {
+                // The chip is the whole point: a reader scanning this
+                // list sees which members are people without reading a
+                // word of it. The tag below says the same thing in
+                // words for a reader who does read, and the two cannot
+                // disagree because both come off `RosterRow::is_agent`.
+                ui::widget::Avatar::draw_agent_at(
+                    scene,
+                    transform,
+                    layout.avatar,
+                    row.color,
+                    theme,
+                );
             } else {
                 ui::widget::Avatar::draw_at(
                     scene,
                     transform,
-                    avatar_rect,
+                    layout.avatar,
                     &row.initial.to_string(),
                     row.color,
                     theme,
@@ -12128,64 +12334,45 @@ impl ShellOverlayHost {
             }
             text_renderer.draw_text(
                 scene,
-                &row.label,
+                &layout.name_text,
                 tokens.typography.scale.sm,
                 if row.invited {
                     colors.text_dim
                 } else {
                     colors.text_primary
                 },
-                transform * Affine::translate((rect.x0 + 44.0, row_y + 7.0)),
+                transform * Affine::translate((layout.name.x0, layout.name.y0)),
                 None,
             );
-            // The tag is what keeps the shared list honest. Without it
-            // this dropdown says a name is in the room and lets the
-            // reader supply "person", which is the one thing it must
-            // never do on the reader's behalf.
-            //
-            // Suppressed only when the label already carries the word,
-            // as the agent this OS ships does: "agent  agent" reads as
-            // a rendering fault, and the honesty the tag exists for is
-            // already served by the name itself.
-            if row.is_agent && !row.label.eq_ignore_ascii_case("agent") {
+            // The word beside the name, for the reader who reads rather
+            // than glances. Without it this dropdown would be relying
+            // on a picture alone to carry the one distinction it must
+            // never let a reader infer.
+            if let (Some(tag_rect), Some(tag_text)) =
+                (layout.kind_tag, layout.kind_tag_text.as_ref())
+            {
                 text_renderer.draw_text(
                     scene,
-                    "agent",
+                    tag_text,
                     tokens.typography.scale.xs,
                     colors.text_dim,
-                    transform * Affine::translate((rect.x1 - 56.0, row_y + 9.0)),
+                    transform * Affine::translate((tag_rect.x0, tag_rect.y0)),
                     None,
                 );
             }
-            // The sub-line: what they may do here, or — for somebody
-            // who has been named and has not come — that they have not
-            // come. Right-aligned under the name rather than beside the
-            // agent tag above, so an agent shows both what it is and
-            // what it holds without the two colliding in the same 56 px.
-            //
-            // "invited" wins over the role when both could be said. A
-            // role is what somebody may do once they are here, and
-            // leading with it for somebody who is not here yet answers
-            // a question nobody asked ahead of the one they did.
-            let sub = if row.invited {
-                Some(INVITED_TAG.to_string())
-            } else {
-                row.role.clone()
-            };
-            if let Some(sub) = sub {
-                let (rw, _) = text_renderer.measure_weighted(
-                    &sub,
-                    tokens.typography.scale.xs,
-                    None,
-                    TextWeight::Regular,
-                );
+            // What they may do here — on their own line, centred against
+            // their own chip. It used to be dropped 21 px below the row
+            // origin, which put it in the gap under the member it
+            // described and read as a stray word belonging to nobody.
+            if let (Some(role_rect), Some(role_text)) =
+                (layout.role, layout.role_text.as_ref())
+            {
                 text_renderer.draw_text(
                     scene,
-                    &sub,
+                    role_text,
                     tokens.typography.scale.xs,
                     colors.text_dim,
-                    transform
-                        * Affine::translate((rect.x1 - 16.0 - rw as f64, row_y + 21.0)),
+                    transform * Affine::translate((role_rect.x0, role_rect.y0)),
                     None,
                 );
             }
@@ -17726,6 +17913,284 @@ mod roster_rows {
             Some("commenter"),
             "an agent's row must show the verb its membership grant carries, \
              which is the whole of what revoking it takes back: {rows:?}",
+        );
+    }
+
+    /// The rule this panel follows: a member shows the role the *room*
+    /// records for them, wherever the room records one.
+    ///
+    /// The room records it in two places and both count — the entry the
+    /// presence path carries on a `Collaborator`, and the capability
+    /// list membership itself lives in. Reading only the first is why a
+    /// two-member room could show a role beside one name and nothing
+    /// beside the other, with nothing about either of them to account
+    /// for the difference; a reader can only take that as "this one has
+    /// no role", which was not true.
+    #[test]
+    fn a_role_granted_in_the_room_shows_even_when_the_roster_entry_is_bare() {
+        let mut tree = tree_with_room();
+        tree.collaborators.push(Collaborator::new("xaver", "Xaver"));
+        {
+            let ws = tree.active_workspace_mut().expect("fixture has a room");
+            let room = ws.id.raw().to_string();
+            ws.grant_as(
+                &"quinten".to_string(),
+                CapOverride::membership(
+                    Subject::person("xaver"),
+                    room.clone(),
+                    Verb::Write,
+                ),
+            )
+            .expect("the owner may admit a person");
+            ws.grant_as(
+                &"quinten".to_string(),
+                CapOverride::membership(Subject::agent("scribe"), room, Verb::Comment),
+            )
+            .expect("the owner may admit an agent");
+        }
+
+        let rows = collaborator_roster_rows(&tree);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(
+            rows[0].role.as_deref(),
+            Some("editor"),
+            "a person the room granted write to must say so, whether or not \
+             the presence path happened to carry the role too: {rows:?}",
+        );
+        assert_eq!(
+            rows[1].role.as_deref(),
+            Some("commenter"),
+            "and an agent says the verb on the grant that admitted it: {rows:?}",
+        );
+    }
+}
+
+/// Where the collaborators dropdown puts a row's parts, and what it
+/// paints into them.
+///
+/// Both defects these cover were invisible to every assertion the panel
+/// had: the role landed in the gap *below* the member it described, and
+/// an agent painted the same chip as a person. Neither is observable
+/// from the row data — only from the geometry and the scene.
+#[cfg(test)]
+mod roster_row_paint {
+    use super::{RosterRowLayout, ShellOverlayHost};
+    use crate::shell::build_nirios_overlay_host_with_chrome;
+    use crate::shell::state::{
+        CapOverride, Collaborator, Subject, Verb, Workspace, WorkspaceId, WorkspaceTree,
+    };
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use vello::Scene;
+    use vello::kurbo::{Affine, Rect};
+
+    /// A room with an owner, and nobody else in it yet.
+    fn room() -> WorkspaceTree {
+        let mut tree = WorkspaceTree::default();
+        let id = WorkspaceId::new();
+        let mut ws = Workspace::test_default(id, "Demo");
+        ws.set_owner("quinten");
+        tree.workspaces.push(ws);
+        tree.active = id;
+        tree
+    }
+
+    fn admit_agent(tree: &mut WorkspaceTree, agent: &str, verb: Verb) {
+        let ws = tree.active_workspace_mut().expect("fixture has a room");
+        let room = ws.id.raw().to_string();
+        ws.grant_as(
+            &"quinten".to_string(),
+            CapOverride::membership(Subject::agent(agent), room, verb),
+        )
+        .expect("the owner may admit an agent");
+    }
+
+    fn host_for(tree: &WorkspaceTree) -> ShellOverlayHost {
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(tree);
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host
+    }
+
+    fn layouts(tree: &WorkspaceTree) -> Vec<RosterRowLayout> {
+        let host = host_for(tree);
+        let mut tr = TextRenderer::new();
+        host.collaborator_row_layouts(&mut tr, &Theme::dark())
+    }
+
+    /// Draw tags the roster paints — the real `draw_collaborators`, not
+    /// a stand-in, so what is counted is what would be on screen.
+    fn roster_draw_ops(tree: &WorkspaceTree) -> usize {
+        let mut host = host_for(tree);
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        host.draw_collaborators(&mut scene, Affine::IDENTITY, &mut tr, &Theme::dark());
+        scene.encoding().draw_tags.len()
+    }
+
+    /// A person and an agent, side by side, must not paint the same
+    /// chip — and the marker must be on the agent alone.
+    ///
+    /// The flag was already carried on the row and already correct. It
+    /// simply was not drawn as anything a reader could see without
+    /// reading, which left a list where "which of these is a person"
+    /// had to be guessed.
+    #[test]
+    fn only_the_agent_row_is_marked_as_one() {
+        let mut tree = room();
+        tree.collaborators.push(Collaborator::new("xaver", "Xaver"));
+        admit_agent(&mut tree, "scribe", Verb::Write);
+
+        let rows = layouts(&tree);
+        assert_eq!(rows.len(), 2, "a person and an agent: {rows:?}");
+        assert!(
+            rows[0].kind_tag.is_none(),
+            "a person must carry no agent marker: {rows:?}",
+        );
+        let tag = rows[1]
+            .kind_tag
+            .expect("the agent row must be marked as an agent");
+        assert!(tag.area() > 0.0, "an empty marker rect marks nothing");
+        let named = rows[1]
+            .kind_tag_text
+            .as_deref()
+            .expect("the marker must name what it marks, not only draw it");
+        assert_eq!(
+            named,
+            crate::shell::i18n::t("roster-kind-agent"),
+            "and name it in the reader's own language rather than in a \
+             literal compiled into the paint",
+        );
+        assert!(
+            !named.is_empty() && named != "roster-kind-agent",
+            "a marker showing its own translation key names nothing: {named:?}",
+        );
+        assert!(
+            rows[1].band.contains(tag.center()),
+            "the marker belongs to its own member's row: {rows:?}",
+        );
+    }
+
+    /// The marker is a picture, not only a word.
+    ///
+    /// Two rooms identical but for the kind of the member in them must
+    /// not paint the same scene — and the agent's must carry strictly
+    /// more, because its chip is a glyph where a person's is a letter.
+    /// Somebody scanning the list sees the difference without reading.
+    #[test]
+    fn an_agent_chip_paints_differently_from_a_persons() {
+        // Deliberately identical in everything a row can differ in but
+        // kind: same name, same monogram, same role, same slot. What is
+        // left over in the scene is the marker and nothing else, which
+        // is the only way to count it rather than count a side effect.
+        let mut person = room();
+        person
+            .collaborators
+            .push(Collaborator::new("scribe", "scribe").with_role("editor"));
+
+        let mut agent = room();
+        admit_agent(&mut agent, "scribe", Verb::Write);
+
+        let person_rows = super::collaborator_roster_rows(&person);
+        let agent_rows = super::collaborator_roster_rows(&agent);
+        assert_eq!(
+            (person_rows.len(), agent_rows.len()),
+            (1, 1),
+            "one member each side, or this is not comparing chips",
+        );
+        assert_eq!(
+            (
+                person_rows[0].label.as_str(),
+                person_rows[0].initial,
+                person_rows[0].role.as_deref(),
+            ),
+            (
+                agent_rows[0].label.as_str(),
+                agent_rows[0].initial,
+                agent_rows[0].role.as_deref(),
+            ),
+            "the two rows must differ in nothing but kind",
+        );
+
+        let person_ops = roster_draw_ops(&person);
+        let agent_ops = roster_draw_ops(&agent);
+        assert!(
+            agent_ops > person_ops,
+            "an agent row that paints no more than a person's is a person \
+             row wearing another name: agent {agent_ops} vs person \
+             {person_ops}",
+        );
+    }
+
+    /// The role sits on its own member's row.
+    ///
+    /// It used to be dropped 21 px below the row origin, which is below
+    /// the chip it described and inside the gap to the next member — so
+    /// `editor` read as a stray fragment belonging to nobody. This is
+    /// the guard against it drifting back onto a line of its own.
+    #[test]
+    fn a_role_sits_on_its_own_members_row() {
+        let mut tree = room();
+        tree.collaborators
+            .push(Collaborator::new("xaver", "Xaver").with_role("editor"));
+        admit_agent(&mut tree, "scribe", Verb::Comment);
+
+        let rows = layouts(&tree);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        for row in &rows {
+            let role = row
+                .role
+                .unwrap_or_else(|| panic!("both members hold a role here: {rows:?}"));
+            assert!(
+                role.y0 >= row.band.y0 && role.y1 <= row.band.y1,
+                "the role must sit inside its own member's row — role \
+                 {role:?} against band {:?}",
+                row.band,
+            );
+            assert!(
+                (role.center().y - row.avatar.center().y).abs() <= 1.0,
+                "and centred against that member's chip, not floating \
+                 above or below it: role {role:?}, chip {:?}",
+                row.avatar,
+            );
+            assert!(
+                role.x0 > row.name.x1,
+                "the role is the row's right-hand slot and must never \
+                 overlap the name it belongs to: {rows:?}",
+            );
+        }
+        assert!(
+            rows[0].band.y1 <= rows[1].band.y0,
+            "and one member's row must not reach into the next: {rows:?}",
+        );
+    }
+
+    /// A name too long for the row loses its own tail rather than
+    /// running under the role.
+    ///
+    /// An agent's label is a raw principal id, which has no length
+    /// anybody chose, so this is the ordinary case rather than an
+    /// exotic one.
+    #[test]
+    fn a_long_name_is_elided_rather_than_run_under_the_role() {
+        let mut tree = room();
+        admit_agent(
+            &mut tree,
+            "scribe-with-an-extremely-long-principal-identifier",
+            Verb::Write,
+        );
+
+        let rows = layouts(&tree);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let row = &rows[0];
+        let role = row.role.expect("a granted agent holds a role");
+        assert!(
+            row.name.x1 <= role.x0,
+            "an elided name must stop short of the role: {rows:?}",
+        );
+        assert!(
+            row.name_text.ends_with('\u{2026}'),
+            "a name that did not fit must show that it was cut: {:?}",
+            row.name_text,
         );
     }
 }

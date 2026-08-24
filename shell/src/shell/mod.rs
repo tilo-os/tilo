@@ -37,6 +37,7 @@ pub mod hdr_display;
 pub mod hdr_tonemap;
 pub mod identity_provisioning;
 pub mod host_apps;
+pub mod i18n;
 pub mod launcher;
 pub mod media_keys;
 pub mod mpris;
