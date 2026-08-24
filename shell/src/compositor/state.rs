@@ -1657,12 +1657,40 @@ impl XdgShellHandler for State {
         &mut self.xdg_shell_state
     }
 
+    /// A client has created an `xdg_toplevel`. Adopt it into the active
+    /// workspace's tab tree, and **do not configure it yet**.
+    ///
+    /// A window here is a tab, so its size is its tab's size, and nobody
+    /// knows that yet at this point. This runs on
+    /// `xdg_surface.get_toplevel` — before the client has said what it is
+    /// (`set_app_id` is a later request on the object being created here)
+    /// and before the strip has laid a single pixel of the tab out. A
+    /// configure sent from here can therefore only carry no size at all,
+    /// which in xdg-shell means "you choose". The client chooses, commits
+    /// a first buffer at a size the strip never asked for, draws a
+    /// complete frame at it, and is corrected a frame later — every app
+    /// opening at the wrong size and then snapping to the right one, in
+    /// front of whoever is watching.
+    ///
+    /// So the handshake is finished one pass later instead, by
+    /// [`crate::compositor::foreign::flush_configures`], which runs after
+    /// the layout that gives this tab its rect and puts that rect into
+    /// the first configure the client ever receives.
+    ///
+    /// Deferring rather than predicting the geometry is also what makes
+    /// the answer the *settled* size rather than a guess that is stale on
+    /// arrival: by the time the configure goes out, the strip has already
+    /// re-laid itself out with this window in it.
+    ///
+    /// The wait is bounded. A toplevel whose tab is never laid out — one
+    /// collapsed under a maximized sibling, say — is configured anyway
+    /// once the grace in `flush_configures` runs out, because a client
+    /// that has had no configure cannot map at all.
+    ///
+    /// The `app_id` may be unset at this point; `adopt_toplevel` falls
+    /// back to a synthetic `anon-<id>` placeholder, and
+    /// [`Self::app_id_changed`] rewrites it once the client provides one.
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        // Phase 6 Task 6.1 — adopt the freshly-committed toplevel into
-        // the active workspace's tab tree. The `app_id` may be unset at
-        // this point; `adopt_toplevel` falls back to a synthetic
-        // `anon-<id>` placeholder, and a future Task 6.2 step (re-adopt
-        // on `set_app_id`) rewrites it once the client provides one.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
@@ -1679,10 +1707,11 @@ impl XdgShellHandler for State {
         self.client_input
             .register_toplevel(surface_id, surface.wl_surface().clone(), app_id);
 
-        // Send a default configure so the client can map. Phase 4 will pick a
-        // real size/position from the cluster layout; Phase 2 just needs the
-        // handshake to complete.
-        surface.send_configure();
+        // Start the clock the deferred initial configure is bounded
+        // against. Adoption is the moment the window was asked for, so it
+        // is the moment from which "the strip has not laid this out yet"
+        // becomes a wait worth giving up on.
+        crate::compositor::foreign::store().note_adopted(surface_id as SurfaceId);
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
@@ -1874,18 +1903,34 @@ impl XdgDecorationHandler for State {
 }
 
 impl State {
-    /// Put `ServerSide` in the toplevel's pending state and send it.
+    /// Put `ServerSide` in the toplevel's pending state, and send it if
+    /// the client has already had its opening configure.
     ///
-    /// Smithay only puts a decoration configure on the wire when the
-    /// mode changed or the initial one has not been sent, so calling
-    /// this on every request costs one event per real change and nothing
-    /// per repeat.
+    /// Smithay only puts a decoration configure on the wire when the mode
+    /// changed or the initial one has not been sent, so calling this on
+    /// every request costs one event per real change and nothing per
+    /// repeat.
+    ///
+    /// Before the opening configure, the answer is staged and *not* sent.
+    /// A toolkit negotiates decorations during the same round trip in
+    /// which it creates the toplevel, so this runs while the tab is still
+    /// being laid out — and a configure put on the wire then would be the
+    /// client's *first*, carrying the decoration mode and no size, which
+    /// is precisely the "you pick your own size" event
+    /// [`XdgShellHandler::new_toplevel`] stopped sending. Staging loses
+    /// nothing: the mode stays pending, and smithay writes it into the
+    /// first configure that does go out because it has not been sent yet.
+    /// The client learns the compositor decorates and the size it should
+    /// render at in one event, which is one fewer than it used to get and
+    /// the only one it can draw from.
     fn decorate(toplevel: &ToplevelSurface) {
         use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(Mode::ServerSide);
         });
-        toplevel.send_configure();
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_configure();
+        }
     }
 }
 

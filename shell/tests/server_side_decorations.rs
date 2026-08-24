@@ -175,6 +175,29 @@ impl Harness {
         }
     }
 
+    /// One shell frame, as the run loop runs it: lay every known
+    /// toplevel's tab out at `tile`, then send the configures that
+    /// follow from it.
+    ///
+    /// The compositor no longer answers a toplevel the instant it is
+    /// created — an answer sent then can only carry a decoration mode and
+    /// **no size**, which tells the client to pick its own and is exactly
+    /// the event that made every app open at the wrong size. The mode is
+    /// staged instead and rides out on the first configure that does have
+    /// a size, which is the one this pass sends. So a test that wants to
+    /// see what the client is told has to run the pass that tells it.
+    fn lay_out_and_configure(&mut self, tile: vello::kurbo::Rect) {
+        use shell::compositor::foreign;
+        for toplevel in self.state.xdg_shell_state.toplevel_surfaces().to_vec() {
+            let id = shell::compositor::state::surface_id(toplevel.wl_surface());
+            // What `ForeignSurfaceWidget::apply_layout` publishes once the
+            // strip has given the tab a rect.
+            foreign::store().note_placement(id, tile);
+        }
+        foreign::flush_configures(&mut self.state);
+        self.pump();
+    }
+
     fn bind<I: Proxy + 'static>(&self, interface: &str, version: u32) -> Option<I>
     where
         Client: Dispatch<I, ()>,
@@ -237,6 +260,9 @@ fn negotiate(
         decoration.set_mode(mode);
         h.pump();
     }
+    // The answer is staged until the strip has a size to send with it.
+    // Run the frame that produces one.
+    h.lay_out_and_configure(vello::kurbo::Rect::new(0.0, 0.0, 900.0, 700.0));
 
     let out = modes.lock().expect("modes").clone();
     (names, out)

@@ -72,6 +72,7 @@ use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer as _, Fourcc, Modifier};
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -766,6 +767,38 @@ impl ForeignFrameStore {
         guard.get(&id).and_then(|e| e.last_error.clone())
     }
 
+    /// Open this surface's entry at the moment its toplevel is adopted,
+    /// so [`ForeignEntry::first_seen`] dates from the window being asked
+    /// for rather than from its first buffer.
+    ///
+    /// Both waits this store bounds — the opening configure in
+    /// [`flush_configures`] and the presentation grace in
+    /// [`Self::mark_presented`] — run from that instant, and a client
+    /// that has been given no configure has no reason to commit a buffer
+    /// to open the entry itself. Without this call the clock on the
+    /// opening configure would start when the client answered it.
+    pub fn note_adopted(&self, id: SurfaceId) {
+        self.with_entry(id, |e| {
+            // Opening the entry is the whole effect; `first_seen` is
+            // stamped by `ForeignEntry::new`. Re-adoption of a surface
+            // already known must not restart either clock.
+            let _ = &e.first_seen;
+        });
+    }
+
+    /// Whether this surface has waited longer than
+    /// [`OPENING_CONFIGURE_GRACE`] since it was adopted.
+    ///
+    /// Read only by [`flush_configures`], to decide when to stop waiting
+    /// for a laid-out tab and configure the client anyway. A surface with
+    /// no entry has not been adopted and is not waiting on anything.
+    pub fn opening_wait_expired(&self, id: SurfaceId) -> bool {
+        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .get(&id)
+            .is_some_and(|e| e.first_seen.elapsed() >= OPENING_CONFIGURE_GRACE)
+    }
+
     /// Record the tab rectangle the surface is currently laid out into,
     /// in physical pixels. Called from the widget's `apply_layout` — the
     /// widget tree is the authority on where a tab lives, so it publishes
@@ -925,6 +958,30 @@ pub(crate) const OPENING_DELAY: Duration = Duration::from_millis(250);
 /// seconds is past every launch observed and still short enough that an
 /// app which is never going to paint stops being a hole in the strip.
 const PRESENT_GRACE: Duration = Duration::from_secs(10);
+
+/// How long a newly adopted toplevel may go without its tab being laid
+/// out before the compositor configures it anyway.
+///
+/// The ordinary case does not spend this: the tab is spliced into the
+/// tree as the toplevel is adopted, the next layout pass gives it a rect,
+/// and [`flush_configures`] answers the client on the following frame —
+/// one frame, not a quarter of a second.
+///
+/// What this bounds is the case where no rect ever arrives, which is not
+/// hypothetical: a tab collapsed under a maximized sibling, or one in a
+/// workspace that is not on screen, is laid out to nothing and publishes
+/// no placement. A client that has never been configured cannot map, so
+/// waiting on that rect for ever would be a window that never opens at
+/// all — strictly worse than the wrong-sized frame this whole path exists
+/// to prevent. Long enough that a busy frame or two cannot trip it,
+/// short enough that a window nobody laid out still opens promptly.
+///
+/// The grace can always be reached: adopting a toplevel bumps the chrome
+/// revision, which forces the very next paint, and the run loop's
+/// one-second keepalive paints an idle desktop regardless. So this is
+/// bounded by the clock and not by whether anything else happens to
+/// happen.
+const OPENING_CONFIGURE_GRACE: Duration = Duration::from_millis(250);
 
 /// Whether a `w`x`h` buffer is this client's answer to the tab it was
 /// configured into, rather than the size it picked before being asked.
@@ -1503,9 +1560,20 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
 /// with the compositor's current display scale, which is the same value
 /// pushed to clients through `wp_fractional_scale_v1` on commit.
 ///
+/// This is also where a toplevel gets its **opening** configure, and that
+/// is the point of running it here rather than at `get_toplevel`. A tab's
+/// size is a fact about the strip, and the strip does not know it until it
+/// has laid the tab out; a configure sent any earlier carries no size,
+/// which tells the client to choose one, which is how an app came to draw
+/// a whole frame at a size the strip never asked for before being
+/// corrected. Sending the opening configure from the pass that runs
+/// *after* layout means the first size a client is ever given is the size
+/// its tab actually has.
+///
 /// Returns the number of configures sent — used by the wiring test.
 pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let scale = state.scale;
+    let fallback = opening_fallback_size(state);
     // `toplevel_surfaces` borrows the shell state; the configure calls
     // below don't touch `State`, so a cheap clone of the handles releases
     // the borrow for the loop.
@@ -1513,23 +1581,82 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let mut sent = 0;
     for toplevel in toplevels {
         let id = crate::compositor::state::surface_id(toplevel.wl_surface());
-        let Some((w, h)) = store().take_pending_configure(id, scale) else {
+        if let Some((w, h)) = store().take_pending_configure(id, scale) {
+            configure_to(&toplevel, w, h);
+            sent += 1;
+            tracing::debug!(
+                target: "shell::compositor::foreign",
+                surface_id = id,
+                width = w,
+                height = h,
+                "configured foreign toplevel to its tab size"
+            );
             continue;
-        };
-        toplevel.with_pending_state(|pending| {
-            pending.size = Some((w, h).into());
-        });
-        toplevel.send_configure();
+        }
+        // No laid-out size. For a toplevel that has already been
+        // configured that is the ordinary case — an unchanged layout must
+        // not re-configure the client every frame. For one that has never
+        // been configured it means the tab has not been laid out yet, and
+        // waiting is right only for as long as the rect might still be
+        // coming: a client with no configure at all cannot map, so it
+        // cannot be left waiting for ever.
+        if toplevel.is_initial_configure_sent() || !store().opening_wait_expired(id) {
+            continue;
+        }
+        let (w, h) = fallback;
+        configure_to(&toplevel, w, h);
         sent += 1;
-        tracing::debug!(
+        tracing::warn!(
             target: "shell::compositor::foreign",
             surface_id = id,
             width = w,
             height = h,
-            "configured foreign toplevel to its tab size"
+            grace_ms = OPENING_CONFIGURE_GRACE.as_millis() as u64,
+            "no tab rect for an opening toplevel; configuring it to the \
+             strip's full tile so it can map at all",
         );
     }
     sent
+}
+
+/// Put `size` in the toplevel's pending state and send it.
+///
+/// The pending state is what smithay writes into the configure, so the
+/// size has to be staged before the send rather than passed to it — and
+/// staging it also means any other pending change the client is owed
+/// (the decoration mode, notably) rides out in the same event.
+fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32) {
+    toplevel.with_pending_state(|pending| {
+        pending.size = Some((w, h).into());
+    });
+    toplevel.send_configure();
+}
+
+/// The size to configure an opening toplevel to when its tab was never
+/// laid out, in surface-local (logical) pixels.
+///
+/// An approximation of the tile a full-width window gets: the output,
+/// less the chrome around a strip — the top bar above it, the tab bar
+/// over the tile, and the wheel disc's slot beside it. It is not the
+/// answer the layout would have given, because the layout declined to
+/// give one; it is a size the window can honestly render at, close enough
+/// to its eventual tile that the correction when a rect does arrive is
+/// small, and far better than the client's own idea of how big it is.
+fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) {
+    let scale = if state.scale.is_finite() && state.scale > 0.0 {
+        state.scale
+    } else {
+        1.0
+    };
+    let (out_w, out_h) = state.output_size;
+    let logical = |px: f64| ((px / scale).round() as i32).max(1);
+    let chrome_w = crate::shell::sidebar_wheel_chrome::SIDEBAR_WIDTH_PX as f64;
+    let chrome_h =
+        crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX as f64 + ui::widget::tabs::TAB_BAR_HEIGHT;
+    (
+        logical((out_w as f64 - chrome_w).max(1.0)),
+        logical((out_h as f64 - chrome_h).max(1.0)),
+    )
 }
 
 /// Release the frame throttle for foreign surfaces that are actually on
