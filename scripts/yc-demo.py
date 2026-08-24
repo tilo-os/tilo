@@ -1670,7 +1670,14 @@ class Recorder:
 
     def __init__(self, sessions: list[Session], directory: str,
                  interval: float, dwell: float = 0.0,
-                 cut_dwell: float = 0.0, max_hold: float = 0.0) -> None:
+                 cut_dwell: float = 0.0, max_hold: float = 0.0,
+                 narrate: str | None = None) -> None:
+        # PulseAudio/PipeWire source to record the spoken narration from,
+        # or None for a silent take. `"default"` follows the desktop's own
+        # sound settings, so changing headset before a take needs nothing
+        # here.
+        self.narrate = narrate
+        self._audio: subprocess.Popen | None = None
         self.sessions = sessions
         self.by_name = {s.name: s for s in sessions}
         self.dir = directory
@@ -1715,6 +1722,7 @@ class Recorder:
         os.makedirs(os.path.join(self.dir, "frames"), exist_ok=True)
         self._live = self._wanted = self.by_name[first]
         self.started_at = time.time()
+        self._start_narration()
         self._thread = threading.Thread(target=self._capture, name="capture",
                                         daemon=True)
         self._thread.start()
@@ -1935,6 +1943,45 @@ class Recorder:
             self._thread.join(timeout=30)
             self._thread = None
         self.stopped_at = time.time()
+        self._stop_narration()
+
+    # -- narration ---------------------------------------------------
+    #
+    # Recorded by the rig rather than alongside it, so there is nothing to
+    # line up afterwards. The microphone opens on the same statement that
+    # starts the frames and closes on the one that stops them, so the two
+    # tracks share a start and a length and the mux is a mux rather than
+    # an edit.
+    #
+    # The alternative -- a separate recorder started by hand -- means
+    # finding a sync point in a silent film, and the only sharp events in
+    # this one are a window appearing and a cut. Neither is a clap.
+
+    def _start_narration(self) -> None:
+        if not self.narrate:
+            return
+        wav = os.path.join(self.dir, "narration.wav")
+        # `default` follows whatever the desktop's sound settings say, so
+        # switching headsets before a take needs no argument here.
+        self._audio = subprocess.Popen(
+            ["ffmpeg", "-y", "-v", "error", "-f", "pulse",
+             "-i", self.narrate, "-ac", "1", "-ar", "48000", wav],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        print(f"  narration              recording from {self.narrate!r}")
+
+    def _stop_narration(self) -> None:
+        if not getattr(self, "_audio", None):
+            return
+        # `q` on stdin is ffmpeg's clean stop; it finalises the container.
+        # A killed ffmpeg leaves a wav with no length in its header, which
+        # some players read as empty.
+        try:
+            self._audio.terminate()
+            self._audio.wait(timeout=10)
+        except Exception:
+            self._audio.kill()
+        self._audio = None
 
     # -- what actually happened --------------------------------------
 
@@ -2219,12 +2266,22 @@ class Recorder:
         with open(os.path.join(self.dir, "filter.txt"), "w") as f:
             f.write(graph + "\n")
 
+        # The narration, if one was recorded. Both tracks began on the
+        # same statement, so they are aligned by construction and the
+        # audio simply rides along; `-shortest` trims whichever ran on
+        # after the other stopped.
+        wav = os.path.join(self.dir, "narration.wav")
+        has_audio = os.path.isfile(wav) and os.path.getsize(wav) > 1024
         cmd = ["ffmpeg", "-y", "-v", "error",
-               "-f", "concat", "-safe", "0", "-i", rel_track,
-               "-filter_complex", graph, "-map", "[v]",
-               "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-               "-pix_fmt", "yuv420p", "-r", str(fps),
-               "-movflags", "+faststart", os.path.abspath(out_path)]
+               "-f", "concat", "-safe", "0", "-i", rel_track]
+        if has_audio:
+            cmd += ["-i", "narration.wav"]
+        cmd += ["-filter_complex", graph, "-map", "[v]"]
+        if has_audio:
+            cmd += ["-map", "1:a", "-c:a", "aac", "-b:a", "160k", "-shortest"]
+        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "20",
+                "-pix_fmt", "yuv420p", "-r", str(fps),
+                "-movflags", "+faststart", os.path.abspath(out_path)]
         # Relative paths throughout the graph, run from the recording
         # directory: a run directory with a colon or a quote in its name
         # would otherwise be read as filter syntax.

@@ -1350,6 +1350,16 @@ def main() -> int:
     ap.add_argument("--fps", type=int, default=30, metavar="N",
                     help="container frame rate; the capture rate is whatever "
                          "the compositor sustained")
+    ap.add_argument("--narrate", nargs="?", const="default", default=None,
+                    metavar="SOURCE",
+                    help="record spoken narration into the take, from a "
+                         "PulseAudio/PipeWire source (default: whatever the "
+                         "desktop's sound settings select). The microphone "
+                         "opens on the same statement that starts the frames "
+                         "and closes on the one that stops them, so the two "
+                         "tracks share a start and a length and need no "
+                         "syncing afterwards. The boot bumper is prepended "
+                         "separately and stays silent.")
     ap.add_argument("--max-hold", type=float, default=1.2, metavar="S",
                     help="longest one unchanged frame is shown for, which "
                          "trims the stretches where you were thinking. Never "
@@ -1782,7 +1792,8 @@ def main() -> int:
             os.makedirs(record_dir, exist_ok=True)
             recorder = yc.Recorder(sessions, record_dir, interval=0.0,
                                    dwell=0.0, cut_dwell=1.0,
-                                   max_hold=args.max_hold)
+                                   max_hold=args.max_hold,
+                                   narrate=args.narrate)
             yc.RECORDER = recorder
             # The band's captions. Set on the shared module so the
             # composer draws them, and only for the two sessions that are
