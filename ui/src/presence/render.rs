@@ -187,9 +187,29 @@ impl PresenceCtx {
         user: &UserId,
         rects: &[Rect],
     ) {
+        self.draw_peer_authorship_at(scene, theme, Affine::IDENTITY, user, rects);
+    }
+
+    /// [`Self::draw_peer_authorship`] for a surface that draws through a
+    /// transform — a page laid out in its own content space, scrolled and
+    /// zoomed, rather than in scene coordinates.
+    ///
+    /// The band goes **under** the glyphs. Painted over them it is a wash that
+    /// drags ink and paper toward the same pigment together and collapses the
+    /// contrast between them; beneath them only the paper takes the colour, so
+    /// the text reads exactly as it did unmarked. That is also what a
+    /// highlighter physically is.
+    pub fn draw_peer_authorship_at(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        transform: Affine,
+        user: &UserId,
+        rects: &[Rect],
+    ) {
         let color = color_for(self, user, theme).with_alpha_factor(0.20);
         for r in rects {
-            scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, r);
+            scene.fill(Fill::NonZero, transform, color, None, r);
         }
     }
 
