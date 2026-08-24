@@ -223,3 +223,28 @@ and no way to see that it is one.
 
 Worth fixing with the same shape as the layout fix: gather by the
 `table` id the cells share, wherever they sit.
+
+## The agent merges every app's deltas into its live replica
+
+`Editor::merge_incremental` (`apps/agent/src/apply.rs`) applies a foreign
+delta straight into the live document, catching the error but not the
+damage. The agent joins with an empty app id **by design**, so the
+broker hands it every application's frames — meaning a delta belonging
+to another document is routinely tried against this one.
+
+The identical shape was just found and fixed in a test harness, where
+merging every frame in the room spoiled the replica for the next delta
+that did belong. That one is fixed by trying a delta on a copy and
+keeping it only if it took.
+
+Deliberately not fixed here, and the reason is worth keeping: the same
+guard in the agent means a per-frame document clone in a hot path. That
+is a real cost, traded against a fault nobody has yet observed in
+production. It wants its owner's judgement rather than an inference.
+
+Related, same file: `Editor::apply` (~line 240) still carries the
+`pending_ops()` guard that was removed from `apply_foreign` as unsound.
+`AutoCommit` commits when a read interleaves writes, so the guard can
+report nothing to do and skip the save. It is masked on this path only
+because the word processor's writer happens not to read after its last
+write — an accident of call order, not a property.
