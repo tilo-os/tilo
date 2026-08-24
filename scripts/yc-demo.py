@@ -2499,6 +2499,29 @@ class LogTail:
     #: app saying it composed a message and the toolkit saying it sent one are
     #: two claims, and only the second one means it left.
     ON_THE_WIRE = re.compile(r"sending a remark into the room\s+message=(\S+)")
+    #: The compositor, having been told that a participant carried content
+    #: from one application into another — the crossing beat 5 is *for*.
+    #:
+    #: Logged by `collab_broker` where it handles
+    #: `CollabRequest::CarriedContent`, in the session whose collaboration
+    #: socket the reporter connected to. `drawn` is the answer from
+    #: `action_flight::note_reported_flight`: true when the crossing was
+    #: queued to be painted on the next frame, false when it was declined —
+    #: content placed back into the app that produced it has not crossed an
+    #: application boundary, and drawing one for it would claim something
+    #: that did not happen.
+    #:
+    #: Read rather than inferred from the document, because they are
+    #: different claims. A document that gained an image says the work
+    #: landed; only this says a viewer saw it travel.
+    CARRIED = re.compile(
+        r"a participant reported carrying content between applications")
+    #: The fields on that line, which say *which* two applications and
+    #: whether it will be drawn. Written as a separate pattern because
+    #: `tracing` emits fields ahead of the message, so one expression
+    #: spanning both would depend on their order.
+    CARRIED_FIELDS = re.compile(
+        r"from_app=(\S+)\s+into_app=(\S+)\s+who=(\S+)\s+drawn=(true|false)")
 
     #: `tracing_subscriber::fmt::init()` colours its output whether or
     #: not the sink is a terminal, and the session's log is a file. So a
@@ -4449,12 +4472,35 @@ def agent_binary() -> str | None:
 
 
 def run_the_agent(agent: Session, room: str, shots: str,
+                  through: Session | None = None,
                   timeout: float = 120.0) -> bool | None:
     """Let the agent join the room and carry out one instruction.
 
-    It connects to its own session's broker, which is how its edits
-    reach the other two: the same libp2p republish every peer's edits
-    take.
+    It connects to a session's broker, which is how its edits reach the
+    others: the same libp2p republish every peer's edits take.
+
+    **Which** session is a decision about the film, not about the
+    protocol, and `through` is where it is made. Two of the things the
+    agent sends are addressed to the session hosting its connection
+    rather than to the room: opening an application, and reporting that
+    it carried content from one application into another. The second is
+    the crossing beat 5 exists to show — `collab_broker` hands it to
+    `action_flight`, which queues it to be drawn between the two
+    windows on *that* session's screen.
+
+    Connected to its own session, as it was, the crossing therefore
+    drew on the agent's desktop: the one screen this film never shows,
+    and the one the run asserts zero frames came from. Everything could
+    work end to end and a viewer would see nothing.
+
+    So it is pointed at the session the camera is on. That is a
+    workaround for a real gap and should be removed rather than kept:
+    the report is addressed to one session because it was built that
+    way, and qOS replicates a workspace's windows, so more than one
+    machine legitimately holds both windows and could draw it. Fanning
+    it to the room needs a new `CollabEvent`, peer-sync delivery and
+    cross-machine attribution; until that exists, this line decides who
+    sees it.
 
     It joins the **room** rather than one application, and that is what
     the film's instruction requires. One sentence covers two apps —
@@ -4511,7 +4557,7 @@ def run_the_agent(agent: Session, room: str, shots: str,
         proc = subprocess.Popen(
             [binary, "--workspace", str(room), "--name", "Claude",
              "--app", "", *grants,
-             "--socket", agent.collab_json_sock, "--once",
+             "--socket", (through or agent).collab_json_sock, "--once",
              "--pace-ms", "250"],
             stdout=log, stderr=subprocess.STDOUT, cwd=REPO,
             preexec_fn=die_with_parent(enabled=not KEEP_SESSIONS))
@@ -4839,8 +4885,12 @@ def beat_four(xaver: Session, shots: str) -> bool:
             "run at all.")
         return False
     frame_one_window(xaver, FILES_APP)
+    # Re-read *after* framing. `frame_one_window` moves and resizes the
+    # group, so a rect taken before it is the placement of a window that
+    # is no longer there — and every press below is aimed at a pixel,
+    # which is exactly the aiming that a stale rect gets wrong silently.
     tile = best_tile(xaver, FILES_APP, VIEWPORT) or tile
-    rect = (tile["x"], tile["y"], tile["w"], tile["h"])
+    rect = tuple(tile["rect"])
 
     log = LogTail(xaver.log_path)
     log.catch_up()
@@ -4876,12 +4926,18 @@ def beat_five(xaver: Session, agent: Session, host_ws: dict,
     room = host_ws["room"]
     baseline = agent.input_ops
 
+    # Watched on xaver's log because that is the session the agent is
+    # pointed at, and the crossing is reported to whichever session
+    # hosts the connection — see `run_the_agent`.
+    log = LogTail(xaver.log_path)
+    log.catch_up()
+
     before = set(xaver.tabs_here())
     step("Claude opens the image editor — a window nobody at this desk asked for")
     # The best seconds in the film when it works, and the worst two
     # minutes when it does not. Bounded accordingly.
     with patience(14.0):
-        ran = run_the_agent(agent, room, shots)
+        ran = run_the_agent(agent, room, shots, through=xaver)
     if ran is None:
         gap("qos-agent is not built, so nothing could act on the "
             "photograph (cargo build --profile demo -p agent --bin qos-agent)")
@@ -4909,10 +4965,44 @@ def beat_five(xaver: Session, agent: Session, host_ws: dict,
 
     step("and the picture crosses into the document")
     # The crossing is the beat: a smooth hand-off, not two windows
-    # independently changing. What it is asserted on is the document,
-    # not the screen — an image that appeared on screen and an image
-    # that is in the document are different claims, and only the second
-    # one replicates.
+    # independently changing. So it is asserted *as a crossing*, and
+    # not by reading the document.
+    #
+    # Those are different claims and the difference is the whole beat. A
+    # document that gained an image says the work landed; only this says
+    # a viewer saw it travel. Nothing in this rig used to check the
+    # second one at all, which is how the report came to be addressed to
+    # a session nobody films without anyone noticing — every claim held
+    # and the screen was blank.
+    #
+    # `drawn` is `action_flight::note_reported_flight`'s own answer: true
+    # when the crossing was queued to be painted on the next frame. A
+    # report it declined — content placed back into the app that produced
+    # it, which has not crossed an application boundary — comes back
+    # false, and false must not read as success here.
+    crossed = log.await_line(
+        "a participant reported carrying content between applications",
+        timeout=DOC_SYNC_TIMEOUT_S)
+    claim("a crossing between two applications was reported to the "
+          "session on camera", crossed, True)
+    if crossed:
+        fields = LogTail.CARRIED_FIELDS.findall(log.text)
+        if fields:
+            from_app, into_app, who, drawn = fields[-1]
+            note(f"{who} carried content from {from_app} into {into_app}")
+            claim("and the compositor accepted it as something to draw",
+                  drawn, "true")
+            claim("it crossed between two different applications, which is "
+                  "what makes it a crossing", from_app != into_app, True)
+        else:
+            gap("the crossing was reported but its fields could not be read, "
+                "so which two applications it was between is unknown")
+    else:
+        gap("no crossing was reported to the session being filmed. The "
+            "report is addressed to whichever session hosts the agent's "
+            "connection, so either the agent carried nothing between two "
+            "applications, or it was pointed somewhere else — see "
+            "`run_the_agent`, where that choice is made.")
     read_hold(READ_HOLD_S * 2.0)
     xaver.snapshot(os.path.join(shots, "05b-crossing.png"))
 
