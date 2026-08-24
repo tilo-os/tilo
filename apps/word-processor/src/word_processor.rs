@@ -1801,7 +1801,21 @@ impl WordProcessor {
     }
 
     /// Resolve the document model under `root` (initialising the schema if
-    /// absent), guarantee at least one block, and keep the caret on a real block.
+    /// absent), guarantee the body has a block, and seat the caret somewhere a
+    /// person can immediately type.
+    ///
+    /// Run at the top of every frame's `sync`, so it is also what decides where
+    /// the caret is when a document is *opened*: with nothing seated yet, it
+    /// lands at the start of the body via [`Self::move_doc_start`] — the same
+    /// mover Ctrl+Home uses — and the document is ready to be written in without
+    /// being clicked first.
+    ///
+    /// The check is against the **active region's** blocks, not the body's. It
+    /// used to compare a header or footer caret against the body's block list,
+    /// which never contains it (running heads live in their own container): a
+    /// caret placed in a running head by clicking into the band was dragged back
+    /// into the body by the very next frame, so the band could not be typed into
+    /// at all.
     pub fn bind(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.containers.is_none() {
             let c = qdoc::model::open(state, root).unwrap_or_else(|_| qdoc::model::init(state, root));
@@ -1814,21 +1828,35 @@ impl WordProcessor {
             self.seed_styles(state);
         }
         let containers = self.containers.clone().unwrap();
-        let blocks = qdoc::model::blocks_in_order(state, &containers);
-        if blocks.is_empty() {
+        // A document always has somewhere to write: an empty body gets its
+        // first paragraph here. Header and footer stay empty until something
+        // asks for them (`focus_region` mints their block on the way in).
+        if qdoc::model::blocks_in_order(state, &containers).is_empty() {
             if let Some(ids) = self.ids.as_mut() {
                 let mut dm = DocMut { doc: state, c: &containers, ids };
-                let id = dm.insert_block(None, "paragraph");
-                self.caret = Caret { block: id, offset: 0 };
+                dm.insert_block(None, "paragraph");
             }
-        } else if !blocks.contains(&self.caret.block) {
-            self.caret = Caret { block: blocks[0].clone(), offset: 0 };
-        } else {
-            // clamp offset to the (possibly remotely-shrunk) block length
+        }
+        let mut blocks = self.region_blocks_in_order(state);
+        if blocks.is_empty() {
+            // The running head being edited has lost its last block, so there
+            // is nothing there to type into and the body is the context again.
+            self.region = Region::Body;
+            blocks = self.region_blocks_in_order(state);
+        }
+        if blocks.contains(&self.caret.block) {
+            // Clamp the offset to the (possibly remotely-shrunk) block length.
             let len = self.block_len(state, &self.caret.block);
             if self.caret.offset > len {
                 self.caret.offset = len;
             }
+        } else {
+            // Nothing seated yet (a freshly opened document), or the block the
+            // caret was on has gone. Either way the first position of this
+            // region is the one to be at, and an anchor pointing into a block
+            // that no longer exists must not survive it.
+            self.move_doc_start(state);
+            self.selection_anchor = None;
         }
     }
 
