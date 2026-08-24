@@ -1002,6 +1002,43 @@ def _the_owners_half(q, shots: str, instruction: str,
                f"{exc}); the strip is left where it is")
     stop.wait(1.0)
 
+    # Four applications, two in frame, and two of them made one window.
+    #
+    # This rig drove two apps and called it the film. Two apps in a strip
+    # is a tiling window manager, and an agent answering inside the one
+    # document it was already in is a worse version of an assistant every
+    # word processor now ships. Neither argues the thing this desktop can
+    # do that others cannot, and a take without this scene invites exactly
+    # that comparison — which it loses.
+    #
+    # What earns its seconds is the tab bar holding *different
+    # applications*. A tab everywhere else belongs to its app, because the
+    # app draws it; here it is a frame primitive the compositor owns, so
+    # Files and a document and a photograph and a conversation sit on one
+    # bar. That is the one gesture in the film a viewer cannot mistake for
+    # a browser.
+    #
+    # `beat_strip` and `open_the_rest_of_the_strip` are the scripted
+    # film's, driven here rather than reimplemented: the claim rests on
+    # reading each tab's `app_id` off its tile, and there is no reason for
+    # two spellings of that.
+    extras: dict[str, dict] = {}
+    try:
+        extras = yc.open_the_rest_of_the_strip(q)
+    except Exception as exc:  # noqa: BLE001
+        yc.gap(f"the rest of the strip did not open "
+               f"({type(exc).__name__}: {exc}); the tabbing scene is "
+               f"skipped and the film is two applications short")
+    if extras:
+        try:
+            yc.beat_strip(q, extras, wp, shots)
+        except Exception as exc:  # noqa: BLE001
+            # Framing and panning are niceties; the claim is not. Losing
+            # the shot costs the scene, not the take.
+            yc.gap(f"the strip scene did not complete "
+                   f"({type(exc).__name__}: {exc})")
+    stop.wait(1.0)
+
     # A run of real list items, a line of prose that disagrees with them,
     # and then the instruction — in that order, because the agent
     # converts the bullets immediately above the paragraph addressed to
