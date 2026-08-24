@@ -163,6 +163,21 @@ struct ChromeColors {
     paper: Color,
     /// How far the paper sheet is lifted off the desk behind it.
     paper_elevation: ui::tokens::Shadow,
+    /// Fill of a box standing in for content that is not on the page yet — an
+    /// image whose bytes have not arrived. A tint of the paper, so it reads as
+    /// a reserved space on the sheet rather than a hole in it.
+    placeholder_fill: Color,
+    /// Its edge, and the track its progress indicator runs in.
+    placeholder_edge: Color,
+    /// The ink of the sentence inside it.
+    ///
+    /// Taken from [`ui::Theme::on_surface`] against `placeholder_fill` rather
+    /// than derived by darkening that fill, because a fixed darkening produces
+    /// roughly the same ratio whatever the palette — which left the
+    /// high-contrast preset reading *worse* than the light one on the one
+    /// sentence explaining why a picture was missing. The toolkit measures it
+    /// and guarantees WCAG AA; nothing here re-decides that.
+    placeholder_ink: Color,
 }
 
 impl ChromeColors {
@@ -176,6 +191,11 @@ impl ChromeColors {
         // document ink contrasts. `neutral[10]` is the lightest ramp slot.
         let lightest = c.neutral[10];
         let paper = if luminance(lightest) >= 0.85 { lightest } else { PAPER_DEFAULT };
+        // A whisper of a tint off the sheet: enough to read as a reserved
+        // box, not enough to look like a second surface. `on_card`'s own
+        // tint step, so a placeholder and a gutter strip sit at the same
+        // remove from the ground they are on.
+        let placeholder_fill = theme.on_surface(paper).tint;
         Self {
             canvas: c.surfaces.base,
             bar: c.surfaces.raised,
@@ -190,6 +210,11 @@ impl ChromeColors {
             scrollbar: c.neutral[4],
             paper,
             paper_elevation: theme.tokens.elevation.e3,
+            placeholder_fill,
+            placeholder_edge: ui::tokens::Colors::hairline_on(placeholder_fill, 0x38),
+            // Both tiers of this are measured against the fill above; the dim
+            // one is what a caption-weight label takes.
+            placeholder_ink: theme.on_surface(placeholder_fill).ink_dim,
         }
     }
 }
@@ -207,23 +232,6 @@ fn luminance(c: Color) -> f64 {
 /// translucent accent guide tint.
 fn with_alpha(base: Color, alpha: u8) -> Color {
     Color::from_rgba8(base.r(), base.g(), base.b(), alpha)
-}
-
-/// A step off the paper tone, for chrome drawn *on* the sheet (the box an image
-/// occupies before its content arrives, and its edge).
-///
-/// Derived rather than named, so the sheet and the things drawn on it stay one
-/// family whichever palette the OS is using: `ChromeColors::for_theme` picks
-/// the paper from the theme, and a fixed grey that reads well against one paper
-/// is a smudge against another.
-fn shade_paper(paper: Color, amount: f64) -> Color {
-    let k = (1.0 - amount.clamp(0.0, 1.0)) as f32;
-    Color::from_rgba8(
-        (paper.r() as f32 * k) as u8,
-        (paper.g() as f32 * k) as u8,
-        (paper.b() as f32 * k) as u8,
-        paper.a(),
-    )
 }
 
 /// Seconds since this process started drawing, for indicators whose motion is
@@ -5490,21 +5498,20 @@ impl Widget for WordProcessorWidget {
                     // so the placeholder follows the theme instead of pinning
                     // one grey that a light palette makes invisible and a dark
                     // one makes a hole.
-                    let paper = self.chrome.paper;
-                    let fill = shade_paper(paper, 0.055);
-                    let edge = shade_paper(paper, 0.14);
+                    let fill = self.chrome.placeholder_fill;
+                    let edge = self.chrome.placeholder_edge;
                     let rr = vello::kurbo::RoundedRect::from_rect(rect, 6.0);
                     scene.fill(Fill::NonZero, ctf, fill, None, &rr);
                     scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, edge, None, &rr);
-                    // A step darker than `PAPER_MUTED`, because this label sits
-                    // on the placeholder's own fill rather than on bare paper —
-                    // muted against the sheet is faint against a tint of it, and
-                    // the one thing this box must be is readable.
+                    // Measured against the fill it sits on, not against bare
+                    // paper: this sentence is the only explanation a reader gets
+                    // for a missing picture, so it has to clear AA on the box it
+                    // is inside rather than on the sheet beside it.
                     text_renderer.draw_text(
                         scene,
                         &msg,
                         14.0,
-                        shade_paper(paper, 0.58),
+                        self.chrome.placeholder_ink,
                         ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)),
                         None,
                     );
@@ -12556,6 +12563,67 @@ mod tests {
             t("canvas-image-missing"),
             "an image still on its way must not read as a broken one"
         );
+    }
+
+    /// The sentence inside a placeholder is readable, in every theme.
+    ///
+    /// It is the only explanation a reader gets for a picture that is not
+    /// there, so it is body text by function whatever its size, and WCAG AA
+    /// is the floor. It was below it: the tone came from darkening the box's
+    /// own fill by a fixed fraction, which yields about the same ratio
+    /// whatever the palette — 4.37:1 under high-contrast, 4.52:1 under light,
+    /// so the preset that exists to be legible was the least legible of the
+    /// three.
+    ///
+    /// Asserted on the palette the widget actually resolves for a frame, not
+    /// on a colour recomputed here — a test that re-derives the tone proves
+    /// its own arithmetic and nothing about what gets painted.
+    #[test]
+    fn the_placeholder_sentence_clears_aa_in_every_theme() {
+        use ui::a11y::contrast_ratio;
+        for (theme, name) in [
+            (Theme::light(), "light"),
+            (Theme::dark(), "dark"),
+            (Theme::high_contrast(), "high-contrast"),
+        ] {
+            let chrome = ChromeColors::for_theme(&theme);
+            let r = contrast_ratio(chrome.placeholder_ink, chrome.placeholder_fill);
+            assert!(
+                r >= 4.5,
+                "{name}: placeholder label reads at {r:.2}:1 on its own box (< AA)",
+            );
+            // The edge has to be visible too, or the reserved space has no
+            // boundary and reads as a gap in the page rather than a box.
+            let e = contrast_ratio(chrome.placeholder_edge, chrome.placeholder_fill);
+            assert!(
+                e >= 1.2,
+                "{name}: placeholder edge reads at {e:.2}:1 on its fill — invisible",
+            );
+        }
+    }
+
+    /// The high-contrast preset is the most legible of the three here, not the
+    /// least.
+    ///
+    /// A ratio floor alone would have been satisfied by the old derivation
+    /// nudged a shade darker, and would not have caught the thing that made it
+    /// wrong: it was not consulting the palette at all, so a preset authored
+    /// for legibility came out behind the ordinary one.
+    #[test]
+    fn the_high_contrast_placeholder_is_the_most_legible_one() {
+        use ui::a11y::contrast_ratio;
+        let ratio = |theme: &Theme| {
+            let c = ChromeColors::for_theme(theme);
+            contrast_ratio(c.placeholder_ink, c.placeholder_fill)
+        };
+        let hc = ratio(&Theme::high_contrast());
+        for (theme, name) in [(Theme::light(), "light"), (Theme::dark(), "dark")] {
+            let r = ratio(&theme);
+            assert!(
+                hc >= r,
+                "high-contrast reads at {hc:.2}:1 where {name} reads at {r:.2}:1",
+            );
+        }
     }
 
     /// A picture still on its way keeps the page redrawing, and stops when it
