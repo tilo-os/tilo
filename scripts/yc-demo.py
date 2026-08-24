@@ -3415,20 +3415,44 @@ def say_something_about(session: Session, log: "LogTail", tile: tuple,
     session.right_click_at(x, y)
     session.settle(0.8)
 
-    opened = log.compose_opened(log.read() + log.text)
-    if opened is None:
-        gap(f"{session.name}: right-clicking {file_name} opened no compose "
-            f"surface, so there was nowhere to say anything. Either nothing "
-            f"was selected, or the room has told this app nowhere to send.")
-        return False
-    about, (px, py, pw, ph) = opened
+    # Where the panel is, asked of whoever drew it.
+    #
+    # These two branches are the two homes this surface has had, and the
+    # order says which one is right. When the compositor draws it — which is
+    # what it must do, because a client cannot paint beside a window it is
+    # not inside — the panel is an ordinary named target and the harness
+    # reads its rect the way it reads any other piece of chrome. Until then
+    # it is a client's widget, invisible to the registry, and the only
+    # account of where it went is the app's own.
+    #
+    # Written as a fallback rather than replaced outright so the beat keeps
+    # running across the move, and so a run says which side of it it is on.
+    about = None
+    panel = session.named_rect("remark_compose")
+    if panel:
+        note("the compose surface is drawn by the shell, above the windows")
+        sx, sy, pw, ph = panel
+        opened = log.compose_opened(log.read() + log.text)
+        about = opened[0] if opened else None
+    else:
+        opened = log.compose_opened(log.read() + log.text)
+        if opened is None:
+            gap(f"{session.name}: right-clicking {file_name} opened no compose "
+                f"surface, so there was nowhere to say anything. Either "
+                f"nothing was selected, or the room has told this app nowhere "
+                f"to send.")
+            return False
+        about, (px, py, pw, ph) = opened
+        sx, sy = px + off_x, py + off_y
+        gap(f"{session.name}: the compose surface is being drawn by the "
+            f"application, so it is clipped at that window's edge and cannot "
+            f"appear beside a neighbouring one. It belongs to the shell.")
     if not about:
         gap(f"{session.name}: the compose surface opened about nothing — a "
             f"panel with no address behind it says nothing an agent could "
             f"act on.")
         return False
     note(f"the compose surface is about {about}")
-    sx, sy = px + off_x, py + off_y
     if shots:
         session.snapshot(os.path.join(shots, f"{tag or 'remark'}-open.png"))
 

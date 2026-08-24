@@ -24,10 +24,43 @@
 //!
 //! ## Who owns what
 //!
-//! The host owns the panel's *lifecycle*. The app still owns its own subject
-//! (it answers [`Referent`]), its own chrome (the context menu the panel sits
-//! beside) and its own feedback (the toast that says where the remark went).
-//! Nothing here draws anything the app did not ask it to draw.
+//! The host owns the panel's *lifecycle*. Whoever embeds this supplies the
+//! subject (something that answers [`Referent`]), the rect to sit beside, and
+//! the bounds to stay inside; nothing here draws anything it was not asked to.
+//!
+//! ## The host should be the compositor, not the app
+//!
+//! This type is embedded by three applications today and that is the wrong
+//! home for it. Two defects follow from it directly, and they are the same
+//! defect seen from two sides:
+//!
+//! * **It is clipped.** A Wayland client cannot draw outside its own surface,
+//!   so a panel an app paints stops at that app's window edge. "Beside" is the
+//!   entire design of this surface — [`BESIDE_GAP`], the right-then-below-then-
+//!   left rule in [`RemarkCompose::place_beside`] — and beside a context menu
+//!   near a window edge is *outside the window*. On a strip of tiled windows
+//!   that is most of the time, so the panel is sliced off mid-word with the
+//!   next application visible past the cut.
+//! * **It is inert unless every app remembers to route to it.** The panel is
+//!   not a node of the app's layout tree — it is anchored in window
+//!   coordinates and laid out in a tree of its own — so an app that draws it
+//!   without also pumping events at it gets a surface that paints perfectly
+//!   and cannot be focused, typed into, or clicked. That is not hypothetical:
+//!   it is exactly the state Files shipped in.
+//!
+//! Both dissolve if the compositor owns it. It is chrome by this project's own
+//! rule — the compositor draws window decorations, not the app — and a surface
+//! that reads the room's roster and carries a resource address *between*
+//! applications is chrome by the same reasoning. The compositor can draw above
+//! neighbouring windows, it already holds the roster, and it is on the room's
+//! side of the boundary, so a composed remark reaches the room without
+//! crossing back out through a client.
+//!
+//! The split that leaves is the honest one: the **app** supplies the subject
+//! and where its menu is, and the **compositor** draws it, places it, owns the
+//! keyboard, and sends it. This type is the compositor's half of that, and
+//! nothing in it assumes otherwise — it is `ui::Widget` machinery, and the
+//! shell's own tree is built out of `ui::Widget`s.
 
 use std::collections::HashMap;
 

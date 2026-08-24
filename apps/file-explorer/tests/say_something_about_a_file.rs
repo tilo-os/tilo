@@ -147,7 +147,11 @@ fn right_clicking_a_file_opens_a_compose_about_that_file() {
     assert_eq!(
         reference.resource_id().as_str(),
         address_of(&dir.path().join("harbour.png")),
-        "the surface must be about the file that was picked, by address"
+        "the surface must be about the file that was picked, by address. If the \
+         label below reads as a different file, the listing is not sorted the way \
+         this test assumes and the row index, not the gesture, is what is wrong: \
+         the surface is about {:?}",
+        reference.label
     );
     assert_eq!(reference.kind, file_explorer::reference::ENTRY_KIND);
     assert_eq!(
