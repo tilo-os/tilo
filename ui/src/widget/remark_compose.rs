@@ -68,6 +68,10 @@ use crate::widget::Widget;
 const PANEL_W: f64 = 340.0;
 const PAD: f64 = 12.0;
 const GAP: f64 = 8.0;
+/// Gap between the context menu and the panel placed beside it.
+const BESIDE_GAP: f64 = 8.0;
+/// Smallest gap kept between the panel and the edge of the window.
+const EDGE_MARGIN: f64 = 12.0;
 /// Height of the band the reference chip is painted into.
 const CHIP_BAND: f64 = 30.0;
 const CHIP_H: f64 = 24.0;
@@ -213,9 +217,15 @@ impl RemarkCompose {
         // an empty selector over a message that already has a destination would
         // be the exact ambiguity this control exists to remove.
         let shown = options.get(chosen).map(|o| o.label.clone()).unwrap_or_default();
+        // `with_selected`, not `with_placeholder`: the starting destination is a
+        // real choice the message will be delivered to, so it is shown as the
+        // control's value, in value ink. A placeholder would draw it dim — the
+        // rendering of "nothing chosen" — over a message that already has a
+        // destination, and put the only statement of where this is going below
+        // the contrast floor.
         self.selector = Dropdown::new(options.iter().map(|o| o.label.clone()).collect(), "")
             .with_id("remark_destination")
-            .with_placeholder(&shown);
+            .with_selected(&shown);
         self.default_index = chosen;
         self.options = options;
         self.input.set_text("");
@@ -228,6 +238,48 @@ impl RemarkCompose {
         self.anchor = anchor;
         self.open = true;
         self.sent = None;
+        // A compose box that opens unfocused is one you cannot type into: the
+        // gesture is "say something", and the keystroke after it must be the
+        // first word rather than a click hunting for the field.
+        self.input.set_focus(true);
+    }
+
+    /// Move an already-open panel to `anchor`, keeping everything typed.
+    ///
+    /// Placement is decided by the host — it is the only thing that knows the
+    /// window it has to fit inside — and it may only know the panel's height
+    /// after a layout pass, so re-anchoring must not be a re-open.
+    pub fn move_to(&mut self, anchor: Point) {
+        self.anchor = anchor;
+    }
+
+    /// Place the panel beside `menu`, kept inside `bounds`.
+    ///
+    /// To the right of the menu where there is room, flipped to its left where
+    /// there is not, and clamped so a right-click near an edge does not push
+    /// the panel off the window — which is the one place a floating surface
+    /// stops being usable at all. Vertical clamping needs the laid-out height,
+    /// so call this *after* a layout pass and lay out once more afterwards.
+    pub fn place_beside(&mut self, menu: Rect, bounds: Rect) {
+        let w = PANEL_W;
+        let h = self.rect.height();
+        let right = menu.x1 + BESIDE_GAP;
+        let left = menu.x0 - BESIDE_GAP - w;
+        let x = if right + w <= bounds.x1 - EDGE_MARGIN {
+            right
+        } else if left >= bounds.x0 + EDGE_MARGIN {
+            left
+        } else {
+            // Neither side fits: hug the right edge rather than overflow it.
+            (bounds.x1 - EDGE_MARGIN - w).max(bounds.x0 + EDGE_MARGIN)
+        };
+        // Top-aligned with the menu, lifted only as far as staying on screen
+        // needs — so the panel still reads as belonging to the click.
+        let y = menu
+            .y0
+            .min(bounds.y1 - EDGE_MARGIN - h)
+            .max(bounds.y0 + EDGE_MARGIN);
+        self.anchor = Point::new(x, y);
     }
 
     /// Open the surface for whatever `referent` currently has selected.
@@ -262,10 +314,20 @@ impl RemarkCompose {
     pub fn close(&mut self) {
         self.open = false;
         self.reference = None;
+        self.input.set_focus(false);
     }
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Whether the destination list is expanded.
+    ///
+    /// Its rows paint outside the panel's own rect, so a host that routes
+    /// clicks by "is this inside the panel" has to count them as inside — or
+    /// choosing a destination silently dismisses the panel instead.
+    pub fn destination_list_is_open(&self) -> bool {
+        self.selector.is_open()
     }
 
     /// What the remark is about, while open. This is what makes the chip
@@ -333,6 +395,7 @@ impl RemarkCompose {
         self.sent = Some(Remark::new(text, reference, destination));
         self.open = false;
         self.reference = None;
+        self.input.set_focus(false);
     }
 
     /// One-shot read of a finished remark.

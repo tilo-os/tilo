@@ -8,6 +8,11 @@
 //!   word-processor --shots OUT --size WxH [FILE]
 //!   word-processor --shots OUT --history [FILE]
 //!                                      ...with the version-history strip open
+//!   word-processor --shots OUT --scenario remark
+//!                                      ...mid-gesture: a phrase selected, the
+//!                                      context menu open, and the compose
+//!                                      surface beside it carrying that
+//!                                      paragraph's address
 //!
 //! Collaboration: launched from the shell, the compositor's broker is
 //! reached through the descriptor the launcher injects — nothing to
@@ -51,6 +56,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut shots: Option<String> = None;
     let mut file: Option<PathBuf> = None;
     let mut history = false;
+    let mut scenario: Option<String> = None;
     // Viewport for `--shots`. A shot is only worth as much as the window it is
     // taken in, and the narrow tiled windows where the page has to be fitted to
     // the canvas are exactly the ones the default does not cover.
@@ -77,6 +83,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 history = true;
                 i += 1;
             }
+            "--scenario" => {
+                scenario = args.get(i + 1).cloned();
+                i += 2;
+            }
             a if a.starts_with("--") => i += 1,
             a => {
                 file = Some(PathBuf::from(a));
@@ -94,7 +104,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         seed_revisions(&mut state, &mut wp);
         // Pin the floating status readout visible so the shot captures it.
         wp.arm_status_bubble_for_shots();
-        render_shot(state, Box::new(wp), size, Path::new(out))?;
+        render_shot(state, wp, size, Path::new(out), None)?;
         return Ok(());
     }
 
@@ -102,9 +112,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     // (which replaced the bottom strip) can be armed — pinned fully visible — for
     // the single headless frame, then render.
     if let Some(out) = shots.as_deref() {
-        let (state, mut wp) = build_concrete(file.as_deref())?;
-        wp.arm_status_bubble_for_shots();
-        render_shot(state, Box::new(wp), size, Path::new(out))?;
+        // "Say something about this": a phrase selected in a real document, the
+        // ordinary right-click menu, and the compose surface beside it carrying
+        // that paragraph's address. The destinations are demo values, seeded
+        // here and only here — the editor itself never invents a roster.
+        let demo = (scenario.as_deref() == Some("remark")).then(seed_remark_demo);
+        let (mut state, mut wp) = build_concrete(demo.as_deref().or(file.as_deref()))?;
+        if scenario.as_deref() == Some("remark") {
+            select_demo_phrase(&mut state, &mut wp);
+            wp.set_remark_destinations(vec![
+                ui::widget::DestinationOption::localised(qos_reference::Destination::channel(
+                    "c_run", "run-of-show",
+                )),
+                ui::widget::DestinationOption::localised(qos_reference::Destination::participant(
+                    "u_xaver", "Xaver", false,
+                )),
+                ui::widget::DestinationOption::localised(qos_reference::Destination::participant(
+                    "agent_claude", "Claude", true,
+                )),
+            ]);
+        } else {
+            wp.arm_status_bubble_for_shots();
+        }
+        render_shot(state, wp, size, Path::new(out), scenario.as_deref())?;
         return Ok(());
     }
 
@@ -276,8 +306,47 @@ fn build(file: Option<&Path>) -> Result<(State, Box<dyn Widget>), Box<dyn Error>
     }
 }
 
+/// The demo document the `remark` scenario says something about. Its second
+/// paragraph is the one selected; the phrase is located in it by search rather
+/// than by a hard-coded offset, so editing the prose cannot silently move the
+/// selection off the words it is meant to be about.
+const DEMO_PARAGRAPH: &str = "Sound check runs from four to five. The desk is locked after that, so anything the band wants changed has to be said before then.";
+const DEMO_PHRASE: &str = "The desk is locked after that";
+
+/// Write the demo document to a temp file and return its path, so the shot
+/// opens it through the same codec path a `.md` on disk takes.
+fn seed_remark_demo() -> PathBuf {
+    let path = std::env::temp_dir().join("qos-wp-remark-demo.md");
+    let doc = format!(
+        "# Run of show\n\nDoors at seven, the support act at half past, and the hall is ours until eleven.\n\n{DEMO_PARAGRAPH}\n\nTwo hundred and forty seats are sold; the balcony stays shut.\n"
+    );
+    let _ = std::fs::write(&path, doc);
+    path
+}
+
+/// Select [`DEMO_PHRASE`] inside the demo document's second paragraph, through
+/// the same caret movements a person's keyboard produces.
+fn select_demo_phrase(state: &mut State, wp: &mut WordProcessorWidget) {
+    let byte = DEMO_PARAGRAPH.find(DEMO_PHRASE).unwrap_or(0);
+    let start = DEMO_PARAGRAPH[..byte].chars().count();
+    let len = DEMO_PHRASE.chars().count();
+    let doc = &state.doc;
+    let m = wp.model_mut();
+    // Block 0 is the heading, 1 the opening paragraph, 2 the one selected.
+    m.move_to_block(doc, 2);
+    m.move_home();
+    m.clear_anchor();
+    for _ in 0..start {
+        m.move_right(doc);
+    }
+    m.set_anchor();
+    for _ in 0..len {
+        m.move_right(doc);
+    }
+}
+
 /// Render a single headless frame to `out` (mirrors the other apps' `--shots`).
-fn render_shot(mut state: State, mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) -> Result<(), Box<dyn Error>> {
+fn render_shot(mut state: State, mut widget: WordProcessorWidget, viewport: (u32, u32), out: &Path, scenario: Option<&str>) -> Result<(), Box<dyn Error>> {
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
     // theme-driven chrome can be proven across palettes; defaults to dark.
@@ -317,6 +386,17 @@ fn render_shot(mut state: State, mut widget: Box<dyn Widget>, viewport: (u32, u3
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
+
+    // A gesture aimed at the page needs the page shaped first: the laid-out
+    // geometry a click resolves a caret against is produced by drawing. Take a
+    // warm-up frame, the way a real session's first frame precedes its first
+    // click, then perform the gesture and photograph the result.
+    if scenario == Some("remark") {
+        let mut warm = Scene::new();
+        widget.draw_with_presence(&mut warm, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+        let at = widget.debug_selection_point();
+        widget.debug_right_click(&state.doc, at);
+    }
 
     let mut scene = Scene::new();
     widget.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);

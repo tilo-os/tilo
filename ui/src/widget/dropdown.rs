@@ -131,6 +131,26 @@ impl Dropdown {
         self
     }
 
+    /// Show `value` as the chosen option straight away, without a document
+    /// round-trip.
+    ///
+    /// The value a control *displays* and the value it *reports* must be the
+    /// same thing, so this sets the real selection rather than a placeholder.
+    /// A placeholder is drawn in dim ink and means "nothing chosen yet" — using
+    /// one to show a live default would both misstate the state and put the
+    /// only copy of it below the contrast floor.
+    pub fn with_selected(mut self, value: &str) -> Self {
+        self.select(value);
+        self
+    }
+
+    /// [`Self::with_selected`] after construction.
+    pub fn select(&mut self, value: &str) {
+        self.selected = value.to_string();
+        let filtered = self.filtered();
+        self.highlight = self.selected_pos(&filtered);
+    }
+
     /// Text shown (dimmed) when no value is selected yet.
     pub fn with_placeholder(mut self, placeholder: &str) -> Self {
         self.placeholder = placeholder.to_string();
@@ -286,6 +306,14 @@ impl Dropdown {
     /// Commit `value` into the CRDT `Text` at `value_path` (creating the
     /// object if needed) and mirror it locally.
     fn commit_value(&mut self, value: &str, state: &mut AutoCommit, root: &ObjId) {
+        // A dropdown with no value path is a *scratch* control: its value is
+        // presentation, not shared state. Keep it locally rather than inventing
+        // an empty-string key in the document — that key would sync to every
+        // peer, land in undo snapshots, and sit in the schema forever.
+        if self.value_path.is_empty() {
+            self.selected = value.to_string();
+            return;
+        }
         let obj = match state.get(root, self.value_path.as_str()) {
             Ok(Some((Value::Object(ObjType::Text), obj))) => Some(obj),
             _ => state.put_object(root, self.value_path.as_str(), ObjType::Text).ok(),
@@ -312,8 +340,13 @@ impl Dropdown {
 
 impl Widget for Dropdown {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(v) = Self::read_value(state, root, self.value_path.as_str()) {
-            self.selected = v;
+        // A scratch dropdown (no value path) has nothing to read back; its
+        // value lives only here. Reading would overwrite the shown choice with
+        // whatever an empty key resolves to.
+        if !self.value_path.is_empty() {
+            if let Some(v) = Self::read_value(state, root, self.value_path.as_str()) {
+                self.selected = v;
+            }
         }
         if self.align_highlight_on_sync {
             self.align_highlight_on_sync = false;
@@ -494,7 +527,11 @@ impl Widget for Dropdown {
                     );
                 }
                 let color = if vi == self.highlight {
-                    vello::peniko::Color::WHITE
+                    theme.tokens.colors.ink_on_any(
+                        &[theme.accent_primary],
+                        vello::peniko::Color::WHITE,
+                        crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                    )
                 } else {
                     theme.text_primary
                 };
