@@ -49,6 +49,34 @@ use crate::strings::tr;
 const BAR_H: f32 = 48.0;
 const PAD: f32 = 12.0;
 
+/// Button height. Deliberately shorter than the bar so the controls sit in
+/// the strip rather than filling it edge to edge.
+const BTN_H: f32 = 34.0;
+
+/// Per-character label width used to size a button in `build_layout`, which
+/// gets a [`Theme`] but no [`TextRenderer`]. The same 7.0 the shared
+/// [`ui::widget::Toolbar`] uses, so a Photos toolbar reads at the density of
+/// every other strip in the system. `toolbar_labels_fit_their_buttons` in
+/// `tests/end_to_end.rs` measures the real glyphs against it.
+const APPROX_CHAR_W: f32 = 7.0;
+
+/// Glyph box, and the gap to a label beside it. `Button::paint` derives the
+/// icon from the button height as `(h - 14).clamp(12, 22)`, which at
+/// [`BTN_H`] is exactly this.
+const ICON_W: f32 = BTN_H - 14.0;
+const ICON_GAP: f32 = 6.0;
+/// Padding either side of an icon-and-label cluster.
+const LABEL_PAD_X: f32 = 12.0;
+/// Gap between adjacent buttons.
+const BTN_GAP: f32 = 6.0;
+/// Horizontal room a group separator occupies, rule included.
+const SEP_W: f32 = 17.0;
+
+/// Breathing room between the photograph and the chrome above and below it.
+/// Without it a contain-fit image whose limiting axis is the height butts
+/// straight against the toolbar rule and looks wedged under it.
+const CANVAS_INSET: f32 = 10.0;
+
 /// One toolbar affordance. Buttons post their intent here rather than
 /// mutating the document from inside a closure, because the document is not
 /// reachable from a `FnMut()` — it arrives in `handle_event`.
@@ -61,6 +89,106 @@ enum Hit {
     Reset,
     Copy,
     Save,
+}
+
+/// How a toolbar item presents itself.
+///
+/// An [`Face::IconOnly`] button is not a mute one: the label rides along as
+/// the tooltip, which [`ui::widget::Button`] also adopts as the accessible
+/// name, so the glyph stays reachable by pointer-dwell and by screen reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Face {
+    /// Glyph and words together.
+    Labelled,
+    /// Glyph alone.
+    IconOnly,
+}
+
+/// A slot in the toolbar strip, in painting order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slot {
+    /// Index into [`PhotosApp::buttons`].
+    Item(usize),
+    /// A hairline dividing two groups.
+    Separator,
+    /// Greedy gap: soaks the leftover width so what follows sits hard right.
+    Spacer,
+}
+
+/// The toolbar, in order: what opens a file, what adjusts it, what gets the
+/// result out.
+///
+/// The four adjusters are glyph-only at every width. They are the operations
+/// whose icons are unambiguous, and spelling all seven out is what pushed the
+/// strip to a fixed 912 px — wider than a half-tiled window, which silently
+/// clipped Save off the right-hand edge.
+const TOOLBAR: &[(Hit, &str, Icon, Face)] = &[
+    (Hit::Open, "photos-open", Icon::Folder, Face::Labelled),
+    (Hit::RotateLeft, "photos-rotate-left", Icon::RotateCcw, Face::IconOnly),
+    (Hit::RotateRight, "photos-rotate-right", Icon::RotateCw, Face::IconOnly),
+    (Hit::CropToView, "photos-crop", Icon::Crop, Face::IconOnly),
+    (Hit::Reset, "photos-reset", Icon::Refresh, Face::IconOnly),
+    (Hit::Copy, "photos-copy", Icon::Copy, Face::Labelled),
+    (Hit::Save, "photos-save", Icon::Save, Face::Labelled),
+];
+
+/// The strip's shape: Open, a rule, the adjusters, then everything that gets
+/// the photograph out, pushed to the trailing edge.
+const SLOTS: &[Slot] = &[
+    Slot::Item(0),
+    Slot::Separator,
+    Slot::Item(1),
+    Slot::Item(2),
+    Slot::Item(3),
+    Slot::Item(4),
+    Slot::Spacer,
+    Slot::Item(5),
+    Slot::Item(6),
+];
+
+/// Width a button needs to show `face` with `label`.
+fn item_width(face: Face, label: &str) -> f32 {
+    match face {
+        Face::IconOnly => BTN_H,
+        Face::Labelled => {
+            let text = label.chars().count() as f32 * APPROX_CHAR_W;
+            (LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + text).max(BTN_H)
+        }
+    }
+}
+
+/// Width the whole strip needs, `faces` giving each item's presentation.
+///
+/// Exposed so a test can assert the strip fits a window rather than
+/// discovering it does not by finding Save missing from a screenshot.
+pub fn toolbar_width(faces: &[Face]) -> f32 {
+    let mut w = PAD * 2.0;
+    for (i, slot) in SLOTS.iter().enumerate() {
+        if i > 0 {
+            w += BTN_GAP;
+        }
+        w += match *slot {
+            Slot::Item(n) => item_width(faces[n], &tr(TOOLBAR[n].1)),
+            Slot::Separator => SEP_W,
+            Slot::Spacer => 0.0,
+        };
+    }
+    w
+}
+
+/// Each item's presentation at a given strip width.
+///
+/// The labelled items give up their words rather than the strip giving up an
+/// item: a control that has shrunk to its glyph is still reachable, one that
+/// has fallen off the edge is not.
+fn faces_for_width(width: f32) -> Vec<Face> {
+    let roomy: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
+    // Width 0 is the first frame, before a layout has happened. Assume room;
+    // the next frame corrects it with a real measurement.
+    if width <= 0.0 || toolbar_width(&roomy) <= width {
+        return roomy;
+    }
+    TOOLBAR.iter().map(|_| Face::IconOnly).collect()
 }
 
 /// The rendered image, and the inputs it was rendered from.
@@ -91,6 +219,11 @@ pub struct PhotosApp {
     toolbar_rect: Rect,
     canvas_rect: Rect,
     status_rect: Rect,
+    /// Where each group rule landed, filled in by `apply_layout` so `draw`
+    /// paints them without re-deriving the strip's geometry.
+    separator_rects: Vec<Rect>,
+    /// Presentation of each toolbar item at the width last laid out.
+    faces: Vec<Face>,
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
 }
@@ -104,22 +237,10 @@ impl Default for PhotosApp {
 impl PhotosApp {
     pub fn new() -> Self {
         let pending: Rc<Cell<Option<Hit>>> = Rc::new(Cell::new(None));
+        let faces: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
         let mut buttons = Vec::new();
-        for (hit, key, icon) in [
-            (Hit::Open, "photos-open", Icon::Folder),
-            (Hit::RotateLeft, "photos-rotate-left", Icon::RotateCcw),
-            (Hit::RotateRight, "photos-rotate-right", Icon::RotateCw),
-            (Hit::CropToView, "photos-crop", Icon::Crop),
-            (Hit::Reset, "photos-reset", Icon::Refresh),
-            (Hit::Copy, "photos-copy", Icon::Copy),
-            (Hit::Save, "photos-save", Icon::Save),
-        ] {
-            let label = tr(key);
-            let slot = pending.clone();
-            let button = Button::new(key, &label, None)
-                .with_icon(icon)
-                .on_click(move || slot.set(Some(hit)));
-            buttons.push((hit, button));
+        for ((hit, key, icon, _), face) in TOOLBAR.iter().zip(faces.iter()) {
+            buttons.push((*hit, build_button(*hit, key, *icon, *face, &pending)));
         }
         Self {
             original: None,
@@ -133,8 +254,34 @@ impl PhotosApp {
             toolbar_rect: Rect::ZERO,
             canvas_rect: Rect::ZERO,
             status_rect: Rect::ZERO,
+            separator_rects: Vec::new(),
+            faces,
             picker: None,
         }
+    }
+
+    /// Rebuild the strip for `width` if the room available has changed which
+    /// items can afford their labels.
+    ///
+    /// Rebuilding rather than relabelling in place because a `Button` owns its
+    /// label for its lifetime. The cost lands only on a resize that crosses
+    /// the threshold, and it carries the enabled state across so a rebuild
+    /// never re-enables a control the document says is unavailable.
+    fn refit_toolbar(&mut self, width: f32) {
+        let want = faces_for_width(width);
+        if want == self.faces {
+            return;
+        }
+        let enabled: Vec<bool> = self.buttons.iter().map(|(_, b)| b.is_enabled()).collect();
+        self.buttons.clear();
+        for (((hit, key, icon, _), face), was_enabled) in
+            TOOLBAR.iter().zip(want.iter()).zip(enabled.into_iter())
+        {
+            let mut button = build_button(*hit, key, *icon, *face, &self.pending);
+            button.set_enabled(was_enabled);
+            self.buttons.push((*hit, button));
+        }
+        self.faces = want;
     }
 
     /// Open `path` by writing it into `doc`. The bytes are read on the next
@@ -397,6 +544,32 @@ impl PhotosApp {
     }
 }
 
+/// Build one toolbar button in the presentation `face` asks for.
+///
+/// A glyph-only button keeps its words as the tooltip, which
+/// [`ui::widget::Button`] also adopts as its accessible name — so dropping the
+/// label costs the pointer user a hover and the screen-reader user nothing.
+fn build_button(
+    hit: Hit,
+    key: &str,
+    icon: Icon,
+    face: Face,
+    pending: &Rc<Cell<Option<Hit>>>,
+) -> Button {
+    let label = tr(key);
+    let slot = pending.clone();
+    let shown = match face {
+        Face::Labelled => label.as_str(),
+        Face::IconOnly => "",
+    };
+    Button::new(key, shown, None)
+        .with_icon(icon)
+        .with_size(item_width(face, &label), BTN_H)
+        .tooltip(label.clone())
+        .with_accessible_name(&label)
+        .on_click(move || slot.set(Some(hit)))
+}
+
 /// Wrap an RGBA buffer as the image type the scene draws.
 fn to_peniko(img: &Rgba) -> ImageData {
     ImageData {
@@ -428,9 +601,42 @@ impl Widget for PhotosApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Refit against the width the last layout produced. The first frame
+        // has no rect yet and lays out roomy; the frame after corrects it.
+        self.refit_toolbar(self.rect.width() as f32);
+
         let mut bar_children = Vec::new();
-        for (_, button) in &mut self.buttons {
-            bar_children.push(button.build_layout(taffy, theme, node_map));
+        for slot in SLOTS {
+            let node = match *slot {
+                Slot::Item(n) => {
+                    let (_, button) = &mut self.buttons[n];
+                    button.build_layout(taffy, theme, node_map)
+                }
+                Slot::Separator => taffy
+                    .new_leaf(Style {
+                        size: Size {
+                            width: Dimension::length(SEP_W),
+                            height: Dimension::length(BTN_H * 0.6),
+                        },
+                        flex_shrink: 0.0,
+                        ..Default::default()
+                    })
+                    .unwrap(),
+                // Soaks the residual width so the export group sits hard
+                // right instead of leaving a third of the strip bare.
+                Slot::Spacer => taffy
+                    .new_leaf(Style {
+                        size: Size {
+                            width: Dimension::length(0.0),
+                            height: Dimension::length(0.0),
+                        },
+                        flex_grow: 1.0,
+                        flex_shrink: 1.0,
+                        ..Default::default()
+                    })
+                    .unwrap(),
+            };
+            bar_children.push(node);
         }
         let bar = taffy
             .new_with_children(
@@ -442,7 +648,7 @@ impl Widget for PhotosApp {
                     flex_shrink: 0.0,
                     align_items: Some(AlignItems::Center),
                     gap: Size {
-                        width: LengthPercentage::length(8.0),
+                        width: LengthPercentage::length(BTN_GAP),
                         height: LengthPercentage::length(0.0),
                     },
                     padding: taffy::Rect {
@@ -490,16 +696,29 @@ impl Widget for PhotosApp {
                     flex_grow: 1.0,
                     flex_shrink: 1.0,
                     flex_basis: Dimension::length(0.0),
+                    margin: taffy::Rect {
+                        left: LengthPercentageAuto::length(0.0),
+                        right: LengthPercentageAuto::length(0.0),
+                        top: LengthPercentageAuto::length(CANVAS_INSET),
+                        bottom: LengthPercentageAuto::length(CANVAS_INSET),
+                    },
                     ..Default::default()
                 },
             )
             .unwrap();
 
+        // A status line with nothing to say takes no room. Reserving the band
+        // anyway leaves a rule and a strip of empty chrome under an empty
+        // state, which reads as a control that failed to draw.
         let status = taffy
             .new_leaf(Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(BAR_H * 0.6),
+                    height: Dimension::length(if self.status.is_empty() {
+                        0.0
+                    } else {
+                        BAR_H * 0.6
+                    }),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
@@ -541,8 +760,23 @@ impl Widget for PhotosApp {
         );
         let bar_origin = Point::new(x + bl.location.x as f64, y + bl.location.y as f64);
         let bar_children = taffy.children(bar).unwrap();
-        for ((_, button), &bn) in self.buttons.iter_mut().zip(bar_children.iter()) {
-            button.apply_layout(taffy, bn, bar_origin);
+        self.separator_rects.clear();
+        for (slot, &bn) in SLOTS.iter().zip(bar_children.iter()) {
+            match *slot {
+                Slot::Item(n) => {
+                    if let Some((_, button)) = self.buttons.get_mut(n) {
+                        button.apply_layout(taffy, bn, bar_origin);
+                    }
+                }
+                Slot::Separator => {
+                    let sl = taffy.layout(bn).unwrap();
+                    let sx = bar_origin.x + sl.location.x as f64 + sl.size.width as f64 / 2.0;
+                    let sy = bar_origin.y + sl.location.y as f64;
+                    self.separator_rects
+                        .push(Rect::new(sx, sy, sx + 1.0, sy + sl.size.height as f64));
+                }
+                Slot::Spacer => {}
+            }
         }
 
         if let Some(&canvas) = children.get(1) {
@@ -601,7 +835,13 @@ impl Widget for PhotosApp {
         // deliberately carries structure in borders rather than in fills — so
         // a toolbar defined only by its plate has no edge at all there. The
         // same rule above the status line, for the same reason.
-        for edge in [self.toolbar_rect.y1, self.status_rect.y0] {
+        // The status line's rule is drawn only when the line has something in
+        // it; an empty band would otherwise be fenced off as if it did.
+        let mut edges = vec![self.toolbar_rect.y1];
+        if !self.status.is_empty() {
+            edges.push(self.status_rect.y0);
+        }
+        for edge in edges {
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -609,6 +849,11 @@ impl Widget for PhotosApp {
                 None,
                 &Rect::new(self.rect.x0, edge - 1.0, self.rect.x1, edge),
             );
+        }
+
+        // Group rules: what opens a file, what adjusts it, what exports it.
+        for sep in &self.separator_rects {
+            scene.fill(Fill::NonZero, transform, theme.border_standard, None, sep);
         }
 
         for (_, button) in &mut self.buttons {
@@ -662,7 +907,11 @@ impl Widget for PhotosApp {
         let children = taffy.children(node_id).unwrap_or_default();
         if let Some(&bar) = children.first() {
             let bar_children = taffy.children(bar).unwrap_or_default();
-            for ((_, button), &bn) in self.buttons.iter_mut().zip(bar_children.iter()) {
+            for (slot, &bn) in SLOTS.iter().zip(bar_children.iter()) {
+                let Slot::Item(n) = *slot else { continue };
+                let Some((_, button)) = self.buttons.get_mut(n) else {
+                    continue;
+                };
                 button.handle_event(
                     event,
                     scale_factor,
