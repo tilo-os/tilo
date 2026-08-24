@@ -19393,6 +19393,120 @@ mod roster_rows {
         assert_eq!(rows[1].initial, 'S');
     }
 
+    /// The beat, on the pair the frame loop actually builds a roster
+    /// from: a person and an agent in one room, and the roster says
+    /// which is which without anybody having to read the names.
+    ///
+    /// The person is called **Claude** — the name this OS ships its own
+    /// agent under. That is the case that matters. Before the room said
+    /// what it had admitted a member as, the only way to find the agent
+    /// was to match on its display name, so a person carrying that name
+    /// *was* the agent as far as every reader was concerned. The mark
+    /// has to survive the collision the name cannot.
+    ///
+    /// Built through `room_peer_labels` and `room_roster` rather than by
+    /// pushing collaborators in by hand, because the fact under test is
+    /// whether the kind reaches the painted row from the room's own
+    /// capability list — and a fixture that writes the row itself proves
+    /// only that a struct can hold a boolean.
+    #[test]
+    fn a_person_called_claude_is_not_the_agent_the_room_admitted() {
+        use crate::shell::peer_presence::room_roster;
+        use crate::shell::state::{CapOverride, Subject, Verb};
+
+        // A peer id, and the handle a presence frame identifies it by.
+        let peer = |seed: u8| {
+            libp2p::identity::Keypair::ed25519_from_bytes([seed; 32])
+                .expect("32 bytes is a keypair")
+                .public()
+                .to_peer_id()
+                .to_base58()
+        };
+        let handle_of = |p: &str| {
+            crate::network::behaviour::peer_liveness_handle(
+                &p.parse::<libp2p::PeerId>().expect("a peer id"),
+            )
+        };
+
+        let mut tree = WorkspaceTree::default();
+        let ws_id = tree.append_empty_workspace("Design review");
+        let room = tree.room_of(ws_id).expect("a fresh workspace mints a room");
+        tree.adopt_ownerless_workspaces(&"quinten".to_string());
+
+        // The person. A human being, named by the room's authority, who
+        // happens to be called what the shipped agent is called.
+        let person = peer(9);
+        assert!(
+            tree.name_peer(room, &"quinten".to_string(), &person, "Claude"),
+            "the room's administrator may name a peer in it",
+        );
+
+        // The agent: a session the room named, and — the part that makes
+        // it an agent — a membership capability admitting it as one.
+        // Written the way `agent.invite` writes it, principal case-folded.
+        let agent = peer(41);
+        assert!(tree.name_peer(room, &"quinten".to_string(), &agent, "Scribe"));
+        assert!(
+            tree.grant_in_workspace(
+                ws_id,
+                &"quinten".to_string(),
+                CapOverride::membership(
+                    Subject::agent("scribe".to_string()),
+                    ws_id.raw().to_string(),
+                    Verb::Write,
+                )
+                .with_id("agent-member:scribe".to_string()),
+            )
+            .is_some(),
+            "the room's owner may admit an agent",
+        );
+
+        // The frame loop's own pair: what the room says about its peers,
+        // folded into the roster rows the chrome reads.
+        let arrived: std::collections::BTreeSet<u64> =
+            [handle_of(&person), handle_of(&agent)].into_iter().collect();
+        tree.collaborators = {
+            let labels = tree.room_peer_labels(room);
+            let ws = tree
+                .workspaces
+                .iter()
+                .find(|w| w.id == ws_id)
+                .expect("the workspace the grant was written in");
+            // A local handle neither peer holds: the roster drops the
+            // machine reading it, and here that is a third party.
+            room_roster(ws, &labels, &arrived, 0)
+        };
+
+        let rows = collaborator_roster_rows(&tree);
+        assert_eq!(
+            rows.len(),
+            2,
+            "two members were admitted, so two rows — an agent with a \
+             session of its own must not also be listed as its grant: {rows:?}",
+        );
+
+        let agents: Vec<&super::RosterRow> = rows.iter().filter(|r| r.is_agent).collect();
+        assert_eq!(
+            agents.len(),
+            1,
+            "exactly one of these two is an agent: {rows:?}",
+        );
+        assert_eq!(
+            agents[0].label, "Scribe",
+            "the marked row is the member the capability list admitted as \
+             an agent",
+        );
+
+        let claude = rows
+            .iter()
+            .find(|r| r.label == "Claude")
+            .expect("the person the room named is on the roster");
+        assert!(
+            !claude.is_agent,
+            "a person is not an agent for being called one: {claude:?}",
+        );
+    }
+
     /// A row says what its participant may do here, and where the room
     /// says nothing it says nothing.
     ///
