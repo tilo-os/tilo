@@ -383,6 +383,25 @@ impl Step {
 
     /// The step an already-validated instruction becomes, reading off the
     /// live surface whether its argument has to be carried.
+    /// Read a clause again, against a room that has changed since the plan
+    /// was made.
+    ///
+    /// A plan resolves every step up front, so a sequence that cannot be
+    /// finished is never started. That holds for every step whose app was
+    /// already in the room, and fails for one case: a step whose operation
+    /// exists *because of* an earlier step. "Open the photo editor and crop
+    /// this" names, in its second clause, an operation no survey could have
+    /// held while the first clause had not run.
+    ///
+    /// So an unresolved clause keeps its own words, and the dispatcher asks
+    /// again with the survey it retakes each step. Nothing is widened: the
+    /// question is the same one, the offers are whatever the room exports
+    /// now, and a clause that still answers to nothing comes back
+    /// [`Instruction::Unknown`] with the refusal it would have given anyway.
+    pub(crate) fn reconsider(clause: &str, offers: &[Offer]) -> Step {
+        Step::bound(Instruction::from_floor(clause, offers), offers)
+    }
+
     fn bound(instruction: Instruction, offers: &[Offer]) -> Step {
         let carries = match &instruction {
             Instruction::Perform { id, .. } => {
@@ -1440,6 +1459,75 @@ mod tests {
     /// belongs to. The separator is the tell, so that is what is asserted —
     /// it catches every spelling of the mistake, not the one example somebody
     /// thought of.
+    /// A clause the room could not answer, answered once the room changes.
+    ///
+    /// The case this exists for: "open the photo editor and crop this
+    /// square". At the moment the plan is made, the photo editor is not in
+    /// the room, so no survey contains a crop and the second clause resolves
+    /// to nothing. Resolving the whole plan up front is otherwise right — a
+    /// sequence that cannot be finished should not be started — but here it
+    /// refuses a step for the state of a room that the step before it exists
+    /// to change.
+    ///
+    /// Both halves are asserted, because only the pair is the claim. Against
+    /// the room as it was, the clause genuinely does not resolve; against the
+    /// room as it becomes, the same words resolve to the crop. A test that
+    /// checked only the second would pass just as well if `reconsider` were
+    /// resolving against something other than the offers it is handed.
+    #[test]
+    fn a_clause_resolves_once_the_app_that_exports_it_is_here() {
+        let before = vec![offer(
+            "word-processor",
+            "document:1",
+            "place-image",
+            "Place image",
+            Some(qos_actions::Collects::Content),
+        )];
+        let after = {
+            let mut o = before.clone();
+            o.push(offer("photos", "photo:1", "crop", "Crop", None));
+            o
+        };
+
+        let clause = "crop the photograph";
+
+        let unresolved = Step::reconsider(clause, &before);
+        assert!(
+            matches!(unresolved.instruction, Instruction::Unknown(_)),
+            "with no photo editor in the room the clause must not resolve, \
+             or the second half of this test proves nothing: got {:?}",
+            unresolved.instruction,
+        );
+
+        let resolved = Step::reconsider(clause, &after);
+        match resolved.instruction {
+            Instruction::Perform { id, .. } => {
+                let address = surface::decode_address(&id)
+                    .expect("a resolved step must carry a decodable address");
+                // The operation, not the app label: the claim is that these
+                // words now reach the crop the photo editor brought with it,
+                // and the word processor that was already here exports no
+                // such thing. Asserting the action is what distinguishes
+                // "resolved to the new app" from "resolved to anything at
+                // all".
+                assert_eq!(
+                    address.action, "crop",
+                    "the clause must resolve to the operation the arriving \
+                     app exports, not to one that was already here",
+                );
+                assert!(
+                    address.resource.starts_with("photo"),
+                    "and on that app's own resource: {}",
+                    address.resource,
+                );
+            }
+            other => panic!(
+                "once the photo editor exports a crop, the same words must \
+                 resolve to it: got {other:?}"
+            ),
+        }
+    }
+
     #[test]
     fn a_refusal_names_operations_in_words_and_never_an_address() {
         let offers = surveyed();
