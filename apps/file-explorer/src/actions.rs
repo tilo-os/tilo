@@ -79,6 +79,8 @@
 //! [`crate::fileops::rename`] touching the disk. The directory resource itself
 //! exports nothing, because new-folder and delete have no shared state to mutate.
 
+use std::path::PathBuf;
+
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
 
@@ -155,45 +157,90 @@ pub fn propose_rename_action(path: &str, name: &str) -> FileExplorerAction {
     }
 }
 
-impl ResourceProvider for crate::FileExplorerWidget {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let dir = self.current_path();
-        // A directory's own name, except at a root (`/`), which has none.
-        let label = dir
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| dir.display().to_string());
-        let mut root = Resource::new(
-            format!("files.directory:{}", dir.display()),
-            "files.directory",
-            label,
-        );
+/// Whether `doc` is a document this app authored.
+///
+/// A room carries every app's state and none of it is labelled, so a
+/// participant holding several documents has to be able to tell which one
+/// belongs to which app. The explorer's answer is the one thing it ever writes:
+/// the shared inline-rename buffer. Asking the app rather than pattern-matching
+/// on the schema from outside is what keeps the two from drifting apart.
+pub fn is_explorer_document(doc: &AutoCommit) -> bool {
+    matches!(
+        doc.get(&ROOT, RENAME_QUERY_PATH),
+        Ok(Some((Value::Object(ObjType::Text), _)))
+    )
+}
 
-        for entry in self.displayed_entries() {
-            let path = entry.path.display().to_string();
-            let kind = if entry.is_dir {
-                "files.directory"
-            } else {
-                "files.entry"
-            };
-            // The prompted build closure outlives this frame, so it captures an
-            // owned path rather than borrowing the entry.
-            let action_path = path.clone();
-            root = root.with_child(
-                Resource::new(format!("files.entry:{path}"), kind, entry.name.clone()).with_action(
-                    ActionSpec::prompted(
-                        "rename",
-                        "Rename",
-                        "New name",
-                        entry.name.clone(),
-                        ExecutionLocus::ClientLocal,
-                        move |text: &str| encode(&propose_rename_action(&action_path, text)),
-                    ),
+/// What the explorer has open, as anything reaching it has to name it: the
+/// directory being shown, and the entries in it.
+///
+/// Separated from the widget so the tree is a function of a *view* rather than
+/// of a running window. The explorer fills this in from its own navigation
+/// state; a participant that is not the app — an agent holding the room's
+/// documents, a script — fills it in from the directory it is looking at, and
+/// gets back the app's own ids, labels and actions rather than its own guess at
+/// them. Same shape every other app on the model uses
+/// (`docs/action-model-recipe.md`).
+#[derive(Debug, Clone)]
+pub struct FilesResourceCtx {
+    /// The directory whose contents the tree describes.
+    pub directory: PathBuf,
+    /// The entries in it, already filtered and sorted the way they are shown.
+    pub entries: Vec<crate::model::Entry>,
+}
+
+/// Build the resource tree for an open directory: the directory itself, and one
+/// child per entry addressed by its real path, each exporting the rename
+/// proposal.
+pub fn provide_resources(ctx: &FilesResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+    let dir = &ctx.directory;
+    // A directory's own name, except at a root (`/`), which has none.
+    let label = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dir.display().to_string());
+    let mut root = Resource::new(
+        format!("files.directory:{}", dir.display()),
+        "files.directory",
+        label,
+    );
+
+    for entry in &ctx.entries {
+        let path = entry.path.display().to_string();
+        let kind = if entry.is_dir {
+            "files.directory"
+        } else {
+            "files.entry"
+        };
+        // The prompted build closure outlives this frame, so it captures an
+        // owned path rather than borrowing the entry.
+        let action_path = path.clone();
+        root = root.with_child(
+            Resource::new(format!("files.entry:{path}"), kind, entry.name.clone()).with_action(
+                ActionSpec::prompted(
+                    "rename",
+                    "Rename",
+                    "New name",
+                    entry.name.clone(),
+                    ExecutionLocus::ClientLocal,
+                    move |text: &str| encode(&propose_rename_action(&action_path, text)),
                 ),
-            );
-        }
+            ),
+        );
+    }
 
-        vec![root]
+    vec![root]
+}
+
+impl ResourceProvider for crate::FileExplorerWidget {
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        provide_resources(
+            &FilesResourceCtx {
+                directory: self.current_path(),
+                entries: self.displayed_entries(),
+            },
+            doc,
+        )
     }
 }
 

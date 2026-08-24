@@ -2,18 +2,57 @@
 //! carrying them out.
 //!
 //! An instruction is a paragraph addressed to the agent by name —
-//! `Claude: turn the bullets into a table`. The vocabulary is small and
-//! scripted; the shape is what matters: the agent reads the same document
-//! everyone else does, and answers in it.
+//! `Claude: turn the bullets into a table`. The agent reads the same
+//! document everyone else does, and answers in it.
+//!
+//! ## What it may be asked for
+//!
+//! Two things, and the first of them is open-ended:
+//!
+//! * **Any operation the room's apps currently export.** These are not
+//!   written down anywhere. [`crate::surface`] asks each app for the
+//!   resource tree it is publishing and surveys it, so what the agent can
+//!   be asked for is whatever is open at that moment, in whichever app —
+//!   a section of a document, a file in a folder — addressed by the app's
+//!   own ids. This is [`Instruction::Perform`].
+//! * **A small set of document [`RECIPES`]**: several of the word
+//!   processor's operations composed into one editorial change, with the
+//!   choice of *which* blocks decided here from the document. No app
+//!   exports "turn the bullets above this line into a table" as a single
+//!   operation, and a composition is not something a survey can discover,
+//!   so these stay named. They are offered only when a word-processor
+//!   document is actually in the room.
+//!
+//! ## The gate
+//!
+//! Whatever chose — a model, or the deterministic floor — the answer is
+//! checked against the surface as it stands **at dispatch**, not as it
+//! stood when the offer was made. An id that names nothing now is
+//! [`Refused::NotExported`] and nothing is dispatched; it is never
+//! quietly turned into the nearest thing that does resolve.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
 use word_processor::actions::{self as wp, WordProcessorAction};
 
+use crate::surface::{self, NoMatch, Offer};
+
 /// What the agent was asked to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Instruction {
+    /// Perform one operation the room exports, named by its address.
+    ///
+    /// The address is the app's own `(resource, action)` pair and the
+    /// argument is the text that operation collects, when it collects any.
+    /// Neither is interpreted here: what this variant carries is a name,
+    /// and resolving it is done against the live surface at dispatch.
+    Perform {
+        /// `"<resource id>#<action id>"`.
+        id: String,
+        /// The text the operation collects, when it collects any.
+        argument: Option<String>,
+    },
     /// Turn the run of bullets above the instruction into a table.
     Table,
     /// Put a caption under the (first) image.
@@ -168,133 +207,187 @@ impl Instruction {
         Some(lower[prefix.len()..].trim().to_string())
     }
 
-    /// The keyword vocabulary: the decision the agent reaches on its own.
+    /// The deterministic floor: the decision the agent reaches on its own
+    /// when no model answered — no key, switched off, or a call that was
+    /// slow, failed, or answered outside what the room exports.
     ///
-    /// This is what runs when no model is available — no key, switched off,
-    /// or a call that was slow, failed, or answered outside the catalogue.
-    /// It is the floor the demo cannot drop below, not the intended path.
-    pub fn from_keywords(rest: &str) -> Instruction {
-        // "run sheet" reaches `Instruction::Table` here and `"runsheet"`
-        // through the model, and the difference between the two is the
-        // point rather than a wrinkle. The model drafts the rows and can
-        // say something about them; this turns the bullets above into a
-        // table and no more. Asking for a run sheet in as many words was
-        // previously `Unknown` on this path, so with no model reachable
-        // the agent's answer to the one instruction it is ever given was
-        // that it did not understand it — a floor the demo drops
-        // through, which is what this vocabulary exists to prevent.
-        if rest.contains("table") || rest.contains("run sheet") || rest.contains("runsheet") {
-            Instruction::Table
-        } else if rest.contains("caption") {
-            Instruction::Caption
-        } else if rest.contains("heading") || rest.contains("title") {
-            Instruction::Heading
-        } else {
-            Instruction::Unknown(rest.to_string())
+    /// A fixed keyword vocabulary was the floor while the agent could do
+    /// exactly four things. It cannot be one now: the set of operations is
+    /// whatever the room's apps happen to be publishing, and no list
+    /// written here could enumerate it. So the floor matches the
+    /// instruction's own words against the words the **apps** put on their
+    /// operations, and insists on a clear winner.
+    ///
+    /// The named [`RECIPES`] keep their keywords, because they are the one
+    /// part of the vocabulary that is still finite. They are tried first:
+    /// "turn the bullets into a table" means the composition, not the word
+    /// processor's bare `Insert table`.
+    ///
+    /// What this must never do is succeed quietly at something else. Every
+    /// way of not finding an answer returns [`Instruction::Unknown`] with
+    /// the reason in it, and the agent says so in the document.
+    pub fn from_floor(rest: &str, offers: &[Offer]) -> Instruction {
+        if let Some(recipe) = Recipe::from_keywords(rest) {
+            if recipe.available(offers) {
+                return recipe.instruction();
+            }
+        }
+        match surface::from_verbs(rest, offers) {
+            Ok((offer, argument)) => Instruction::Perform {
+                id: offer.id(),
+                argument,
+            },
+            Err(why) => Instruction::Unknown(unmatched(rest, &why)),
         }
     }
 
-    /// A catalogue id, validated against [`CATALOGUE`] — the gate every
-    /// answer from a model passes through before anything is dispatched.
+    /// An answered id, validated against what the room exports right now —
+    /// the gate every answer passes through before anything is dispatched.
     ///
     /// [`NOTHING_FITS`] is a legitimate answer, not a failure: it means no
-    /// exported action does what was asked, and the agent says so in the
-    /// document instead of guessing. Anything else outside the catalogue is
-    /// `None`, and the caller falls back rather than acting on it.
-    pub fn from_id(id: &str, rest: &str) -> Option<Instruction> {
-        Self::from_answer(id, rest, None).ok()
+    /// exported operation does what was asked, and the agent says so in the
+    /// document instead of guessing. Anything else that does not resolve is
+    /// [`Refused::NotExported`], and the caller falls back rather than
+    /// acting on it.
+    pub fn from_id(id: &str, rest: &str, offers: &[Offer]) -> Option<Instruction> {
+        Self::from_answer(id, rest, None, offers).ok()
     }
 
-    /// The full gate: a catalogue id, plus whatever content the model
-    /// drafted to go with it.
+    /// The full gate: an id, plus whatever content came with it, checked
+    /// against the surface as it stands.
     ///
     /// Both halves are checked here and nothing is dispatched until both
-    /// pass. The id must be one the app exports; the content must be
-    /// something the app can write. An entry that needs content and did
-    /// not get any is [`Refused::Unusable`] rather than silently doing the
-    /// deterministic thing instead — a run that quietly downgrades to the
-    /// keyword vocabulary while reporting success is the failure this
+    /// pass. The id must name something the room exports *now*; the content
+    /// must be something the app can write. An answer that needs content
+    /// and did not get any is [`Refused::Unusable`] rather than silently
+    /// doing the deterministic thing instead — a run that quietly
+    /// downgrades to the floor while reporting success is the failure this
     /// whole module exists to make visible.
+    ///
+    /// Passing a freshly taken survey is the caller's job, and it is what
+    /// makes this a dispatch-time check rather than a plan-time one: an
+    /// address that was valid when it was offered and is not valid now
+    /// fails here.
     pub fn from_answer(
         id: &str,
         rest: &str,
         table: Option<TableDraft>,
+        offers: &[Offer],
     ) -> Result<Instruction, Refused> {
         if id == NOTHING_FITS {
             return Ok(Instruction::Unknown(rest.to_string()));
         }
-        if !CATALOGUE.iter().any(|c| c.id == id) {
-            return Err(Refused::NotExported(id.to_string()));
-        }
-        match id {
-            "table" => Ok(Instruction::Table),
-            "caption" => Ok(Instruction::Caption),
-            "heading" => Ok(Instruction::Heading),
-            "runsheet" => {
-                let draft = table.ok_or_else(|| {
-                    Refused::Unusable("it came with no table to write".to_string())
-                })?;
-                draft.check().map_err(Refused::Unusable)?;
-                Ok(Instruction::RunSheet(draft))
+        if let Some(recipe) = Recipe::from_id(id) {
+            if !recipe.available(offers) {
+                return Err(Refused::NotExported(id.to_string()));
             }
-            // Unreachable while the catalogue and this match agree, and
-            // `every_catalogue_id_maps_to_an_instruction_and_nothing_else_does`
-            // is what keeps them agreeing.
-            _ => Err(Refused::NotExported(id.to_string())),
+            return recipe.with_content(table);
         }
+        let Some(offer) = surface::find(offers, id) else {
+            return Err(Refused::NotExported(id.to_string()));
+        };
+        // An operation that collects text needs text, and there is nowhere
+        // to get it from an answer that named only the operation. Refusing
+        // is the honest result: performing it with an empty string would
+        // write a blank where the caller asked for a value.
+        if offer.wants_text() {
+            let literal = surface::quoted_literal(rest).ok_or_else(|| {
+                Refused::Unusable(format!(
+                    "{} collects text and the instruction quoted none",
+                    offer.descriptor.action_label
+                ))
+            })?;
+            return Ok(Instruction::Perform {
+                id: offer.id(),
+                argument: Some(literal),
+            });
+        }
+        Ok(Instruction::Perform {
+            id: offer.id(),
+            argument: None,
+        })
     }
 
-    /// Parse `text` as an instruction to `name` using the keyword
-    /// vocabulary, or `None` when it is not addressed to the agent.
-    pub fn parse(text: &str, name: &str) -> Option<Instruction> {
-        Self::addressed(text, name).map(|rest| Self::from_keywords(&rest))
+    /// Parse `text` as an instruction to `name` using the deterministic
+    /// floor, or `None` when it is not addressed to the agent.
+    pub fn parse(text: &str, name: &str, offers: &[Offer]) -> Option<Instruction> {
+        Self::addressed(text, name).map(|rest| Self::from_floor(&rest, offers))
+    }
+}
+
+/// Why the floor could not answer, in the words the agent writes into the
+/// document.
+fn unmatched(rest: &str, why: &NoMatch) -> String {
+    match why {
+        NoMatch::Nothing => rest.to_string(),
+        NoMatch::Ambiguous(ids) => format!(
+            "{rest} (that could mean any of {} — say which)",
+            ids.join(", ")
+        ),
+        NoMatch::NeedsText(id) => {
+            format!("{rest} ({id} needs the text to use, in quotes)")
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
-// The catalogue: what the agent can be asked for, grounded in the actions the
-// word processor exports.
+// The recipes: compositions no single exported operation covers.
 // ---------------------------------------------------------------------------
 
-/// The answer that means "no exported action does what was asked".
+/// The answer that means "nothing the room exports does what was asked".
 pub const NOTHING_FITS: &str = "none";
 
-/// One thing the agent can do, and the exported actions it does it with.
+/// One editorial change made of several of the word processor's operations.
 ///
-/// `actions` names [`WordProcessorAction`] variants. Nothing here is taken on
-/// trust: [`dispatched`] builds those very actions with the word processor's
-/// own builders, and `the_catalogue_only_offers_actions_the_app_exports`
-/// checks the names against what the app's encoder puts on the wire. A
-/// renamed or withdrawn action breaks the build or the test, never the demo.
-pub struct Capability {
-    /// The id a model answers with, and the only thing it may answer.
+/// These are named rather than discovered, and the reason is worth being
+/// exact about. A survey enumerates operations; it cannot enumerate
+/// *compositions* of them, and it certainly cannot decide which blocks a
+/// composition should act on. "Turn the bullets above this line into a
+/// table" is a table insert, a splice per cell and a removal, over blocks
+/// chosen by reading the document — no app exports it as one operation and
+/// none should.
+///
+/// So the agent keeps them, and they sit **alongside** the surveyed surface
+/// rather than being the whole of what it can do. Nothing here is taken on
+/// trust either: [`dispatched`] builds the very actions each one performs
+/// with the word processor's own builders, and
+/// `every_recipe_only_dispatches_actions_the_app_exports` checks the names
+/// against what the app's encoder puts on the wire. A renamed or withdrawn
+/// action breaks the build or the test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Recipe {
+    /// The id an answer names it by.
     pub id: &'static str,
-    /// What it does, in the words the model is given.
+    /// What it does, in the words a model is given.
     pub summary: &'static str,
     /// The exported actions carrying it out dispatches.
     pub actions: &'static [&'static str],
+    /// Whether it needs content drafted for it before it can be carried out.
+    pub needs_table: bool,
 }
 
-/// Everything the agent can be asked for. The model chooses from this and
-/// nothing else; it never proposes a document mutation of its own.
-pub const CATALOGUE: &[Capability] = &[
-    Capability {
+/// The named compositions, all of them over a word-processor document.
+pub const RECIPES: &[Recipe] = &[
+    Recipe {
         id: "table",
         summary: "Turn the run of bullets immediately above the instruction into a table.",
         actions: &["InsertTable", "SpliceText", "RemoveBlocks"],
+        needs_table: false,
     },
-    Capability {
+    Recipe {
         id: "caption",
         summary: "Add a caption paragraph underneath the first image in the document.",
         actions: &["InsertParagraph", "RemoveBlocks"],
+        needs_table: false,
     },
-    Capability {
+    Recipe {
         id: "heading",
         summary: "Give a rough draft its structure: make the first line the document's \
                   title, and promote the section labels under it to headings.",
         actions: &["SetParagraphStyle", "RemoveBlocks"],
+        needs_table: false,
     },
-    Capability {
+    Recipe {
         id: "runsheet",
         summary: "Draft the notes above the instruction into a table yourself, and \
                   supply it in `table`. Choose the columns — as few as the facts \
@@ -309,10 +402,78 @@ pub const CATALOGUE: &[Capability] = &[
                   practice, say so in one line in `note` and leave the facts as \
                   they were — do not silently correct them.",
         actions: &["InsertTable", "SpliceText", "InsertParagraph", "RemoveBlocks"],
+        needs_table: true,
     },
 ];
 
-/// The actions a capability dispatches, built with the word processor's own
+/// The namespace whose documents the recipes act on. A recipe is only
+/// offered when this app is actually publishing something in the room.
+const RECIPE_APP: &str = "word-processor";
+
+impl Recipe {
+    /// The recipe an id names.
+    pub fn from_id(id: &str) -> Option<&'static Recipe> {
+        RECIPES.iter().find(|r| r.id == id)
+    }
+
+    /// The recipe the instruction's own words name, if any.
+    ///
+    /// The one part of the old keyword vocabulary that survives, because it
+    /// is the one part that is still a closed set. "run sheet" reaches
+    /// `table` here and `runsheet` through a model, and the difference is
+    /// the point rather than a wrinkle: the model drafts the rows and can
+    /// say something about them, this turns the bullets above into a table
+    /// and no more.
+    pub fn from_keywords(rest: &str) -> Option<&'static Recipe> {
+        let r = rest.to_lowercase();
+        let id = if r.contains("table") || r.contains("run sheet") || r.contains("runsheet") {
+            "table"
+        } else if r.contains("caption") {
+            "caption"
+        } else if r.contains("heading") || r.contains("title") {
+            "heading"
+        } else {
+            return None;
+        };
+        Self::from_id(id)
+    }
+
+    /// Whether the app these act on is publishing anything in the room.
+    ///
+    /// Grounded in the survey rather than assumed: with no word-processor
+    /// document reachable there is nothing for a recipe to edit, and
+    /// offering one would be offering an operation on a document that is
+    /// not there.
+    pub fn available(&self, offers: &[Offer]) -> bool {
+        offers.iter().any(|o| o.app == RECIPE_APP)
+    }
+
+    /// The instruction this recipe becomes when it needs no content.
+    pub fn instruction(&self) -> Instruction {
+        match self.id {
+            "caption" => Instruction::Caption,
+            "heading" => Instruction::Heading,
+            // `runsheet` never reaches here — `needs_table` sends it through
+            // `with_content` — and `table` is the remaining case.
+            _ => Instruction::Table,
+        }
+    }
+
+    /// The instruction this recipe becomes given the content that came with
+    /// it. A recipe that needs a table and got none is refused whole rather
+    /// than quietly doing the deterministic thing instead.
+    pub fn with_content(&self, table: Option<TableDraft>) -> Result<Instruction, Refused> {
+        if !self.needs_table {
+            return Ok(self.instruction());
+        }
+        let draft =
+            table.ok_or_else(|| Refused::Unusable("it came with no table to write".to_string()))?;
+        draft.check().map_err(Refused::Unusable)?;
+        Ok(Instruction::RunSheet(draft))
+    }
+}
+
+/// The actions a recipe dispatches, built with the word processor's own
 /// builders — the same calls [`crate::session`] makes to carry the work out.
 /// The arguments are placeholders; only the shape of the action matters.
 pub fn dispatched(id: &str) -> Vec<WordProcessorAction> {
@@ -354,11 +515,11 @@ pub fn exported_name(action: &WordProcessorAction) -> Option<String> {
     }
 }
 
-/// Every exported action the catalogue can reach, as the app names it.
+/// Every exported action the recipes reach, as the app names it.
 pub fn exported_actions() -> BTreeSet<String> {
-    CATALOGUE
+    RECIPES
         .iter()
-        .flat_map(|c| dispatched(c.id))
+        .flat_map(|r| dispatched(r.id))
         .filter_map(|a| exported_name(&a))
         .collect()
 }
@@ -399,10 +560,15 @@ pub fn find_addressed(blocks: &[Block], name: &str) -> Option<(usize, String)> {
     })
 }
 
-/// The first paragraph addressed to `name`, decided by the keyword
-/// vocabulary. The model-free path, kept for tests and for the fallback.
-pub fn find_instruction(blocks: &[Block], name: &str) -> Option<(usize, Instruction)> {
-    find_addressed(blocks, name).map(|(i, rest)| (i, Instruction::from_keywords(&rest)))
+/// The first paragraph addressed to `name`, decided by the deterministic
+/// floor against what the room currently exports. The model-free path, kept
+/// for tests and for the fallback.
+pub fn find_instruction(
+    blocks: &[Block],
+    name: &str,
+    offers: &[Offer],
+) -> Option<(usize, Instruction)> {
+    find_addressed(blocks, name).map(|(i, rest)| (i, Instruction::from_floor(&rest, offers)))
 }
 
 /// The run of bullets the instruction refers to: the consecutive

@@ -1,11 +1,13 @@
 //! One agent session: join the room, hold the replica, act on instructions.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use qos_actions::ActionRegistry;
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
+use ui::permissions::PermissionContext;
 use ui::presence::{PathSegment, PresenceKey};
 use uuid::Uuid;
 use word_processor::actions::{self as wp, RegionKind, WordProcessorAction};
@@ -13,6 +15,7 @@ use word_processor::actions::{self as wp, RegionKind, WordProcessorAction};
 use crate::apply::Editor;
 use crate::model::{Chooser, Decision, Route};
 use crate::plan::{self, Block, Instruction};
+use crate::surface::{self, AppContract, Offer, View};
 use crate::wire::Link;
 
 #[derive(Clone, Debug)]
@@ -21,6 +24,13 @@ pub struct Config {
     pub socket: Option<PathBuf>,
     /// The app whose document this is — its manifest package id, which is
     /// what a launched copy of the app announces.
+    ///
+    /// **Empty joins the room rather than one app.** The broker's fan-out
+    /// narrows to an app only when both ends name one, so a connection
+    /// announcing nothing is cluster-scoped and is handed every app's
+    /// state. That is what lets the agent enumerate the room instead of a
+    /// single document — and it is how it came to be holding the file
+    /// manager's state back when holding it was an accident.
     pub app_id: String,
     /// The room (workspace) the document lives in.
     pub cluster: Uuid,
@@ -40,6 +50,24 @@ pub struct Config {
     /// How long that call may take before the keyword vocabulary decides
     /// instead. Short on purpose: the work must not wait on the network.
     pub model_timeout: Duration,
+    /// The directory the agent is browsing, for the apps whose subject is
+    /// the filesystem rather than a document. Its own view state — the
+    /// equivalent of the caret it puts on a block — and the only thing it
+    /// contributes to those apps' resource trees.
+    pub directory: Option<PathBuf>,
+    /// What the agent is allowed to do, and to which app.
+    ///
+    /// A capability set, evaluated by the one permission model qOS has
+    /// (`ui::permissions`). It gates the surface twice: an operation the
+    /// agent may not perform never becomes an offer, and the same question
+    /// is asked again at dispatch, because a survey is a snapshot and
+    /// acting on a stale one is exactly the failure a gate exists to
+    /// prevent.
+    ///
+    /// Fail-closed: with no capability the agent enumerates nothing and
+    /// performs nothing. It holds no role — an agent is not a person — so
+    /// everything it can do is something a person explicitly granted.
+    pub permissions: PermissionContext,
     /// How long to wait for the room to produce something addressed to
     /// this agent before giving up and saying what it did see.
     ///
@@ -59,7 +87,22 @@ pub struct Config {
 pub struct Session {
     cfg: Config,
     link: Link,
+    /// The document instructions are read from — the one addressed to the
+    /// agent. Its app is whichever one claimed the first snapshot that
+    /// looked like a page.
     editor: Option<Editor>,
+    /// Every *other* app's document the agent is holding, by namespace.
+    ///
+    /// A room is not one document, and until now everything that was not
+    /// the page was discarded. Keeping them is what makes the surface the
+    /// room's rather than one app's: an instruction written on a page can
+    /// name a file in the folder next to it, because the folder is here
+    /// too.
+    peers: BTreeMap<&'static str, Editor>,
+    /// Decoders for every app the agent speaks to. The door decodes through
+    /// this before dispatching, so an action whose type no app registered is
+    /// refused rather than run on trust.
+    registry: ActionRegistry,
     /// Instruction blocks already acted on, so a slow peer re-sending the
     /// same state does not make the agent do the work twice.
     handled: HashSet<String>,
@@ -175,6 +218,8 @@ impl Session {
             cfg,
             link,
             editor: None,
+            peers: BTreeMap::new(),
+            registry: surface::registry(),
             handled: HashSet::new(),
             chooser,
             last_route: None,
@@ -189,6 +234,48 @@ impl Session {
     /// checking after the fact whether a run was live.
     pub fn last_route(&self) -> Option<&Route> {
         self.last_route.as_ref()
+    }
+
+    /// Where the agent is looking: the block it has its caret on, and the
+    /// directory it is browsing. Nothing here is a screen position.
+    pub fn view(&self, focus_block: Option<String>, focus_offset: usize) -> View {
+        View {
+            target_blocks: focus_block.iter().cloned().collect(),
+            focus_block,
+            focus_offset,
+            directory: self.cfg.directory.clone(),
+        }
+    }
+
+    /// Every document the agent is holding, with the app that authored it.
+    fn held(&self) -> Vec<(&'static AppContract, &automerge::AutoCommit)> {
+        self.editor
+            .iter()
+            .map(|e| (e.contract(), &e.doc))
+            .chain(self.peers.values().map(|e| (e.contract(), &e.doc)))
+            .collect()
+    }
+
+    /// Everything the room exports right now that the agent may perform.
+    ///
+    /// Asked, never remembered. Each app builds its own tree from the
+    /// document as it stands and the door surveys it, so what comes back is
+    /// whatever is open at this moment — and an operation the agent holds no
+    /// capability for is absent rather than marked unavailable.
+    pub fn offers(&self, view: &View) -> Vec<Offer> {
+        surface::offers(&self.held(), view, &self.cfg.permissions)
+    }
+
+    /// The editor holding the document `namespace` authored.
+    fn editor_for(&mut self, namespace: &str) -> Option<&mut Editor> {
+        if self
+            .editor
+            .as_ref()
+            .is_some_and(|e| e.contract().namespace == namespace)
+        {
+            return self.editor.as_mut();
+        }
+        self.peers.get_mut(namespace)
     }
 
     /// Changes this replica holds but cannot apply for want of what they
@@ -333,6 +420,17 @@ impl Session {
                 }
                 if changed {
                     self.note_what_is_missing();
+                } else {
+                    // Not the page — try the room's other documents. A
+                    // delta belonging to none of them refers to objects
+                    // nobody here has seen, which is not this agent's
+                    // business and must not end its run.
+                    for ed in self.peers.values_mut() {
+                        if ed.merge_incremental(&data)? {
+                            changed = true;
+                            break;
+                        }
+                    }
                 }
             }
             Some(CollabEvent::RemotePresenceUpdate {
@@ -412,6 +510,38 @@ impl Session {
     ///
     /// Returns whether the agent's replica moved.
     fn take_snapshot(&mut self, data: &[u8]) -> Result<bool> {
+        // A document some *other* app in the room authored. Not the page
+        // instructions are written on, and not a stray frame either: it is
+        // part of the surface the agent can be asked to act on, so it is
+        // kept rather than dropped.
+        if let Some(contract) = crate::apply::attribute(data) {
+            if !crate::apply::looks_like_a_document(data) {
+                match self.peers.get_mut(contract.namespace) {
+                    Some(ed) => {
+                        let took = ed.merge_full_any(data)?;
+                        if took {
+                            tracing::debug!(
+                                app = contract.namespace,
+                                bytes = data.len(),
+                                "merged another app's state in this room"
+                            );
+                        }
+                        return Ok(took);
+                    }
+                    None => {
+                        let ed =
+                            Editor::from_snapshot_for(contract, data, &self.cfg.name)?;
+                        self.peers.insert(contract.namespace, ed);
+                        tracing::info!(
+                            app = contract.namespace,
+                            bytes = data.len(),
+                            "holding another app's state in this room"
+                        );
+                        return Ok(true);
+                    }
+                }
+            }
+        }
         let Some(ed) = self.editor.as_mut() else {
             if !crate::apply::looks_like_a_document(data) {
                 tracing::debug!(
@@ -486,7 +616,19 @@ impl Session {
             },
         })?;
 
-        let Decision { instruction, route } = self.chooser.choose(&asked, &blocks);
+        // What the room exports right now, from the caret the agent just
+        // put down. This is the offer a model chooses from and the floor
+        // matches against - asked afresh, never a list kept here.
+        let view = self.view(Some(ins_id.clone()), blocks[at].text.chars().count());
+        let offers = self.offers(&view);
+        tracing::info!(
+            block = %ins_id,
+            operations = offers.len(),
+            apps = self.held().len(),
+            "surveyed the room"
+        );
+
+        let Decision { instruction, route } = self.chooser.choose(&asked, &blocks, &offers);
         tracing::info!(
             block = %ins_id,
             asked = %asked,
@@ -499,23 +641,127 @@ impl Session {
         self.last_route = Some(route);
 
         match instruction {
+            Instruction::Perform { id, argument } => {
+                self.perform(&id, argument.as_deref(), &view, &blocks, at)?
+            }
             Instruction::Table => self.make_table(&blocks, at)?,
             Instruction::Caption => self.caption_image(&blocks, at)?,
             Instruction::Heading => self.make_heading(&blocks, at)?,
             Instruction::RunSheet(draft) => self.write_run_sheet(&blocks, at, &draft)?,
             Instruction::Unknown(what) => {
+                // Say what could have been asked for instead of naming a
+                // fixed vocabulary, because there is no longer a fixed
+                // vocabulary to name - and an agent that answers "I can do
+                // these four things" while holding a hundred addresses is
+                // wrong about itself.
                 let reply = format!(
-                    "{}: I can't \"{what}\" yet. I can: table, caption, heading.",
-                    self.cfg.name
+                    "{}: I can't \"{what}\" here. {}",
+                    self.cfg.name,
+                    describe_offers(&offers)
                 );
-                let ins = &blocks[at];
-                self.edit(
-                    &ins.id,
-                    wp::splice_text_action(RegionKind::Body, &ins.id, 0, ins.text.chars().count(), &reply),
-                )?;
+                self.reply_at(&blocks, at, &reply)?;
             }
         }
         Ok(true)
+    }
+
+    /// Perform one operation the room exports, by address.
+    ///
+    /// Three things have to hold before anything happens, and they are
+    /// checked here rather than trusted from the survey the answer came
+    /// from: the address has to parse, the agent has to hold a capability
+    /// for the app it names, and the document that app authored has to be
+    /// one the agent is actually holding. The fourth - that the address
+    /// still resolves to a live operation - belongs to
+    /// [`Editor::invoke`](crate::apply::Editor::invoke), which rebuilds the
+    /// tree before resolving against it.
+    ///
+    /// Every refusal is written into the document. A run that could not do
+    /// what it was asked must not be indistinguishable from one that did.
+    fn perform(
+        &mut self,
+        id: &str,
+        argument: Option<&str>,
+        view: &View,
+        blocks: &[Block],
+        at: usize,
+    ) -> Result<()> {
+        let name = self.cfg.name.clone();
+        let Some(address) = surface::decode_address(id) else {
+            let reply = format!("{name}: {id:?} is not an address I can act on.");
+            return self.reply_at(blocks, at, &reply);
+        };
+        // Asked again, at dispatch. The survey filtered on it too, but a
+        // survey is a snapshot: a capability that lapsed between the offer
+        // and now must stop the operation, and a gate that only runs when
+        // the list is built is advisory.
+        if !surface::permitted(&self.cfg.permissions, &address) {
+            let reply = format!(
+                "{name}: I don't have permission to {} here.",
+                address.action
+            );
+            tracing::warn!(%id, "refused: no capability for this operation");
+            return self.reply_at(blocks, at, &reply);
+        }
+        let namespace = surface::app_of(&address.resource).to_string();
+        // The caret goes on the line that asked, so the room can see which
+        // participant is working even for an operation that touches another
+        // app's state entirely.
+        let focus = blocks[at].id.clone();
+        self.show_caret(&focus)?;
+
+        let outcome = {
+            let registry = &self.registry;
+            self.editor_for(&namespace)
+                .map(|ed| ed.invoke(view, &address, argument, registry))
+        };
+        let Some(outcome) = outcome else {
+            let reply = format!(
+                "{name}: nothing from {namespace:?} is open in this room, so I can't act on it."
+            );
+            tracing::warn!(%id, %namespace, "refused: that app's state is not here");
+            return self.reply_at(blocks, at, &reply);
+        };
+        match outcome {
+            Ok(Some(delta)) => {
+                self.link.send(&CollabRequest::SyncIncremental { data: delta })?;
+                tracing::info!(%id, "performed an operation the room exports");
+            }
+            Ok(None) => {
+                tracing::warn!(%id, "the operation changed nothing");
+            }
+            Err(e) => {
+                let reply = format!("{name}: I couldn't do that - {e}.");
+                tracing::warn!(%id, code = e.code(), "refused: {e}");
+                return self.reply_at(blocks, at, &reply);
+            }
+        }
+        std::thread::sleep(self.cfg.pace);
+        Ok(())
+    }
+
+    /// Answer in the document, over the line that asked.
+    fn reply_at(&mut self, blocks: &[Block], at: usize, reply: &str) -> Result<()> {
+        let ins = &blocks[at];
+        let n = ins.text.chars().count();
+        self.edit(
+            &ins.id,
+            wp::splice_text_action(RegionKind::Body, &ins.id, 0, n, reply),
+        )
+    }
+
+    /// Put the agent's caret on a block, so the room can see it working.
+    fn show_caret(&mut self, block: &str) -> Result<()> {
+        let caret_pos = self
+            .editor
+            .as_ref()
+            .and_then(|ed| ed.snapshot().ok())
+            .and_then(|s| s.blocks.iter().find(|b| b.id == block).map(|b| b.text.len()))
+            .unwrap_or(0);
+        self.link.send(&CollabRequest::Presence {
+            key: block_key(block),
+            payload: PresencePayload::Caret { pos: caret_pos },
+        })
     }
 
     /// Bullets above the instruction become a table; the bullets and the
@@ -684,16 +930,7 @@ impl Session {
     /// Show the caret on `focus`, apply `action`, broadcast the change, and
     /// pause so the room can see it happen.
     fn edit(&mut self, focus: &str, action: WordProcessorAction) -> Result<()> {
-        let caret_pos = self
-            .editor
-            .as_ref()
-            .and_then(|ed| ed.snapshot().ok())
-            .and_then(|s| s.blocks.iter().find(|b| b.id == focus).map(|b| b.text.len()))
-            .unwrap_or(0);
-        self.link.send(&CollabRequest::Presence {
-            key: block_key(focus),
-            payload: PresencePayload::Caret { pos: caret_pos },
-        })?;
+        self.show_caret(focus)?;
         let delta = self
             .editor
             .as_mut()
@@ -708,6 +945,29 @@ impl Session {
         std::thread::sleep(self.cfg.pace);
         Ok(())
     }
+}
+
+/// What the agent could have been asked for, in the apps' own words.
+///
+/// Capped, because a room can export a great many operations and a
+/// paragraph is not a catalogue; the count is what makes the truncation
+/// honest rather than a shrug.
+fn describe_offers(offers: &[Offer]) -> String {
+    if offers.is_empty() {
+        return "Nothing in this room is exporting anything I may act on.".to_string();
+    }
+    let shown: Vec<String> = offers
+        .iter()
+        .take(6)
+        .map(|o| format!("{} ({})", o.descriptor.action_label, o.id()))
+        .collect();
+    let more = offers.len().saturating_sub(shown.len());
+    let mut s = format!("I can: {}", shown.join("; "));
+    if more > 0 {
+        s.push_str(&format!("; and {more} more"));
+    }
+    s.push('.');
+    s
 }
 
 fn describe(action: &WordProcessorAction) -> String {

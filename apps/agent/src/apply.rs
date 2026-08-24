@@ -1,29 +1,58 @@
-//! The agent's replica of the document, and how it edits it.
+//! The agent's replicas, and how it edits them.
 //!
-//! Edits go through the word processor's exported actions — the very
-//! `WordProcessorAction::apply` the toolbar dispatches — applied under the
-//! agent's own actor and stamped like the app stamps its commits, so the
-//! ops are the app's ops and the author is the agent.
+//! Edits go through the apps' own exported actions — never the agent's idea
+//! of what a change should be — applied under the agent's own actor and
+//! stamped like the app stamps its commits, so the ops are the app's ops and
+//! the author is the agent.
+//!
+//! There are two ways in, and they differ only in who composed the change:
+//!
+//! * [`Editor::invoke`] performs one operation an app currently exports,
+//!   by address, through [`qos_actions::door`]. The address is resolved
+//!   against a tree built **now**, so an operation that has gone away since
+//!   it was offered is a refusal rather than a substitution.
+//! * [`Editor::apply`] performs one word-processor action the agent
+//!   composed itself, for the editorial recipes no single exported
+//!   operation covers.
+//!
+//! Both commit under the agent's actor, because that is the whole claim: an
+//! edit made this way is attributed in the room's history exactly like an
+//! edit somebody typed.
 
 use anyhow::{Context, Result};
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit};
-use qos_actions::Action;
+use qos_actions::door::{self, ActionAddress, DoorError};
+use qos_actions::{Action, ActionRegistry, LocalTransport, Resource};
 use word_processor::actions::WordProcessorAction;
+
+use crate::surface::{AppContract, View};
 
 pub struct Editor {
     pub doc: AutoCommit,
     actor: ActorId,
+    /// Which app authored this document — the contract that builds its
+    /// resource tree and registers its decoders.
+    contract: &'static AppContract,
+}
+
+/// Which app authored a peer's snapshot, or `None` when no app the agent
+/// speaks to claims it.
+///
+/// The room's traffic is not all one app's, and none of it is labelled: the
+/// broker fans a frame out by address, and a participant that announced no
+/// app id is cluster-scoped and reaches every subscriber in the room.
+/// Seeding a replica from whatever arrived first is how the agent ended up
+/// holding the file manager's state and then failing to merge the page it
+/// had been invited to. Asking each app whether the bytes are its own is
+/// what tells them apart — and the same answer says which contract can
+/// build a tree for it.
+pub fn attribute(bytes: &[u8]) -> Option<&'static AppContract> {
+    let doc = AutoCommit::load(bytes).ok()?;
+    crate::surface::recognise(&doc)
 }
 
 /// Whether a peer's snapshot is a document with blocks in it.
-///
-/// The room's traffic is not all documents, and none of it is labelled:
-/// the broker fans a frame out by address, and a participant that
-/// announced no app id is cluster-scoped and reaches every subscriber in
-/// the room. Seeding a replica from whatever arrived first is how the
-/// agent ended up holding the file manager's state and then failing to
-/// merge the page it had been invited to.
 pub fn looks_like_a_document(bytes: &[u8]) -> bool {
     let Ok(doc) = AutoCommit::load(bytes) else {
         return false;
@@ -39,10 +68,32 @@ impl Editor {
     /// A fresh, unbound document under `actor`. Used by tests; a live
     /// agent always starts from a peer's snapshot.
     pub fn empty(actor_handle: &str) -> Self {
+        Self::empty_for(&crate::surface::CONTRACTS[0], actor_handle)
+    }
+
+    /// [`Editor::empty`] for a named app.
+    pub fn empty_for(contract: &'static AppContract, actor_handle: &str) -> Self {
         let actor = ActorId::from(actor_handle.as_bytes());
         let mut doc = AutoCommit::new();
         doc.set_actor(actor.clone());
-        Self { doc, actor }
+        Self {
+            doc,
+            actor,
+            contract,
+        }
+    }
+
+    /// Which app authored the document this holds.
+    pub fn contract(&self) -> &'static AppContract {
+        self.contract
+    }
+
+    /// The tree the app publishes for this document, seen from `view`.
+    ///
+    /// Rebuilt on every call. An app's tree changes with every edit, and an
+    /// address is only worth anything if it names what is there now.
+    pub fn resources(&self, view: &View) -> Vec<Resource> {
+        crate::surface::tree(self.contract, view, &self.doc)
     }
 
     /// The replica, seeded from a full snapshot a peer sent.
@@ -51,10 +102,25 @@ impl Editor {
     /// of everything in it, and this will happily seed itself from
     /// something that is not a document at all.
     pub fn from_snapshot(bytes: &[u8], actor_handle: &str) -> Result<Self> {
+        let contract = attribute(bytes)
+            .context("no app the agent speaks to claims this document")?;
+        Self::from_snapshot_for(contract, bytes, actor_handle)
+    }
+
+    /// [`Editor::from_snapshot`] for an already-attributed snapshot.
+    pub fn from_snapshot_for(
+        contract: &'static AppContract,
+        bytes: &[u8],
+        actor_handle: &str,
+    ) -> Result<Self> {
         let actor = ActorId::from(actor_handle.as_bytes());
         let mut doc = AutoCommit::load(bytes).context("load the document snapshot")?;
         doc.set_actor(actor.clone());
-        let mut this = Self { doc, actor };
+        let mut this = Self {
+            doc,
+            actor,
+            contract,
+        };
         this.drain();
         Ok(this)
     }
@@ -76,6 +142,27 @@ impl Editor {
             return Ok(false);
         };
         if !has_document_schema(&incoming) {
+            return Ok(false);
+        }
+        if self.doc.merge(&mut incoming).is_err() {
+            return Ok(false);
+        }
+        self.drain();
+        Ok(true)
+    }
+
+    /// Merge a full snapshot this app authored, whatever its schema.
+    ///
+    /// [`Editor::merge_full`] insists the incoming bytes carry a block
+    /// document, which is right for the page and wrong for every other app
+    /// in the room: a file manager's state has no blocks in it and would be
+    /// refused as "not a document" by a test that only knows one shape.
+    /// Here the app itself has already said the bytes are its own.
+    pub fn merge_full_any(&mut self, bytes: &[u8]) -> Result<bool> {
+        let Ok(mut incoming) = AutoCommit::load(bytes) else {
+            return Ok(false);
+        };
+        if !(self.contract.recognises)(&incoming) {
             return Ok(false);
         }
         if self.doc.merge(&mut incoming).is_err() {
@@ -154,6 +241,46 @@ impl Editor {
             return Ok(None);
         }
         qdoc::history::commit_stamped(&mut self.doc);
+        let delta = self.doc.save_incremental();
+        Ok((!delta.is_empty()).then_some(delta))
+    }
+
+    /// Perform the operation `address` names, attributed to the agent.
+    ///
+    /// The address is resolved against a tree built from the document **as
+    /// it stands right now**, not against the survey it was chosen from.
+    /// That is the whole of the dispatch-time check: a section that has been
+    /// deleted, a file that has been renamed, an operation the app has
+    /// stopped publishing — each is [`DoorError::Unknown`] here, and nothing
+    /// is dispatched. The alternative, resolving against a remembered tree,
+    /// would perform an operation on whatever now happens to carry that id.
+    ///
+    /// `registry` is the apps' own decoders: the door decodes the encoded
+    /// action through it before running anything, so an action whose type no
+    /// app registered is refused rather than applied on trust.
+    ///
+    /// Returns the incremental bytes to broadcast, or `None` when the
+    /// operation changed nothing (a no-op is ordinary — a rename proposal
+    /// that already reads that way writes nothing).
+    pub fn invoke(
+        &mut self,
+        view: &View,
+        address: &ActionAddress,
+        argument: Option<&str>,
+        registry: &ActionRegistry,
+    ) -> Result<Option<Vec<u8>>, DoorError> {
+        let resources = self.resources(view);
+        let mut transport = LocalTransport::new();
+        self.doc.set_actor(self.actor.clone());
+        door::invoke(
+            &mut self.doc,
+            &resources,
+            address,
+            argument,
+            self.actor.to_bytes(),
+            registry,
+            &mut transport,
+        )?;
         let delta = self.doc.save_incremental();
         Ok((!delta.is_empty()).then_some(delta))
     }

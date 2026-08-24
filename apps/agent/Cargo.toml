@@ -20,6 +20,10 @@ ui = { path = "../../ui" }
 # The word processor's exported actions: the agent edits with exactly the
 # ops the toolbar produces, never with its own idea of the document.
 word-processor = { path = "../word-processor" }
+# A second app, of a deliberately different shape: a tree of filesystem paths
+# rather than blocks and offsets. The agent links its contract, not a list of
+# what it can do — the operations come from the tree the app publishes.
+file-explorer = { path = "../file-explorer" }
 qos-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
 # The decision — which exported action answers an instruction — is a model
@@ -38,3 +42,8 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 hex.workspace = true
+# The broker the compositor actually binds for an agent. The toolkit also
+# ships an in-process relay, but that one fans every frame to every peer and
+# enforces nothing, so a test on it proves neither the routing nor the gate a
+# live session runs under.
+shell = { path = "../../shell" }
