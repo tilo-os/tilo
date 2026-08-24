@@ -286,6 +286,34 @@ does. Neither could ever have failed on any of these three. The live
 rig now asks the document instead: the run sheet's content is on the
 page, and no refusal is.
 
+### What the model actually does now, measured
+
+Six live calls against the demo's own page, through the gate a real run
+uses (`live_model.rs`, which surveys real addresses off the word
+processor's tree rather than a stand-in):
+
+- **6 of 6 chose the run sheet and drafted it.** `["Time","Item"]`,
+  doors 18:00, sound check 18:30, and the seating figure **left out** —
+  which is the judgement the beat is about, and the thing a split on
+  separators cannot make, because `Seating: 240` has a colon in it like
+  the others.
+- **5 of 6 raised the contradiction.** "The prose says doors open at
+  seven but the notes say 18:00, and the sound check at 18:30 falls
+  after doors open, which would not work in practice." That is the
+  second half of the payoff, and it is not certain: one run in six
+  drafted the table and said nothing. The schema already carries every
+  lever anyone found for this — the field is required, nullable and
+  described — so the remaining variance is the model's, and the honest
+  statement is a rate rather than a property.
+- **1 of 6 drafted a blank row**, `["", ""]`, which passed every bound
+  the gate applied. Fixed above; the five runs after it are clean, and
+  whether they were clean because the fix dropped a blank row or because
+  none was drafted, the page cannot tell the difference and neither can
+  this note.
+
+So the beat works. What it is not is deterministic, and a take should be
+watched rather than assumed.
+
 ### Verified red, and not by me
 
 - **`a_discovered_operation_reaches_the_file_explorer_too` fails.** The
