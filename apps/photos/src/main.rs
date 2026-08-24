@@ -110,13 +110,16 @@ fn render_shot(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
-    let mut widget: Box<dyn Widget> = Box::new(app);
+    // Kept concrete rather than boxed as `dyn Widget`: the `cropping`
+    // scenario has to zoom the viewer between the two passes, and the viewer
+    // only exists once the first pass has synced it into being.
+    let mut widget = app;
 
     // Two passes: the first lays the canvas out so the viewer knows its rect,
     // the second renders with the framing that produced. A single pass would
     // draw the "cropping" scenario before its viewport existed.
     let mut scene = Scene::new();
-    for _ in 0..2 {
+    for pass in 0..2 {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -151,6 +154,13 @@ fn render_shot(
             )?;
         }
         widget.apply_layout(&taffy, child, Point::ORIGIN);
+
+        // The viewer now has a rect, so a zoom means something. Framing the
+        // crop before the second pass is what makes the `cropping` shot show
+        // a photograph being framed rather than merely turned.
+        if pass == 0 && scenario == "cropping" {
+            widget.set_zoom(photos::CROPPING_SCENARIO_ZOOM);
+        }
 
         scene = Scene::new();
         widget.draw_with_presence(

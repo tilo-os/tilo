@@ -129,21 +129,34 @@ pub fn seed_scenario(
     app.open_path(doc, &path.to_string_lossy());
 
     match scenario {
-        // Framed for a crop: turned, and zoomed into the sun.
+        // Turned a quarter. The zoom that frames the crop is applied by the
+        // caller between layout passes — the viewer does not exist until the
+        // first `sync`, so there is nothing here yet to zoom.
         "cropping" => {
             PhotosDoc::set_edits(doc, &PhotosDoc::edits(doc).rotated_right());
         }
-        // After the crop and a turn — the pixels are genuinely different.
+        // A crop and a turn together, which is the pair worth showing: the
+        // crop is stored against the *original*, so it keeps naming the same
+        // region of the photograph however the view is later turned.
         "edited" => {
-            let e = PhotosDoc::edits(doc).cropped_from_view(Rect01 {
-                x: 0.06,
-                y: 0.06,
-                w: 0.46,
-                h: 0.5,
-            });
+            let e = PhotosDoc::edits(doc)
+                .cropped_from_view(Rect01 {
+                    x: 0.06,
+                    y: 0.06,
+                    w: 0.46,
+                    h: 0.5,
+                })
+                .rotated_right();
             PhotosDoc::set_edits(doc, &e);
         }
         // "opened" and any unknown name: the photograph as it arrived.
         _ => {}
     }
 }
+
+/// Zoom the `cropping` scenario applies once the viewer has been laid out.
+///
+/// Framing a crop is what the viewport is *for*, so the scenario named for it
+/// has to actually be zoomed in — otherwise it shows the whole photograph and
+/// is indistinguishable from a plain rotate.
+pub const CROPPING_SCENARIO_ZOOM: f32 = 2.2;
