@@ -104,6 +104,24 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
                 CollabRequest::SignedSyncIncremental { .. }
                 | CollabRequest::FetchScrollback { .. }
                 | CollabRequest::WantBlob { .. } => continue,
+                // Addressed to the session hosting a connection rather than to
+                // the room. This harness is a forwarding loop that hosts
+                // nothing, so it can neither answer nor honestly refuse, and
+                // nothing this test sends produces one — so arriving here means
+                // the harness is being asked for something it does not
+                // implement. Worth failing over: a frame quietly swallowed
+                // would let a later test watch for the right absence and pass
+                // without the behaviour ever existing.
+                CollabRequest::OpenApp { app_id } => panic!(
+                    "broker received OpenApp({app_id:?}) from peer-{src_idx}: \
+                     this harness hosts no desktop, so it cannot open an \
+                     application."
+                ),
+                CollabRequest::CarriedContent { from_app, into_app, .. } => panic!(
+                    "broker received CarriedContent({from_app:?} -> \
+                     {into_app:?}) from peer-{src_idx}: this harness hosts no \
+                     windows, so a crossing has nowhere to be drawn."
+                ),
             };
             let Ok(bytes) = serde_json::to_vec(&event) else {
                 continue;
