@@ -1171,7 +1171,7 @@ impl FileExplorerWidget {
     }
 
     /// The compose panel's rect, as laid out. Zero-area while it is closed.
-    pub fn remark_rect(&self) -> Rect {
+    pub fn remark_rect(&self) -> vello::kurbo::Rect {
         self.remark.rect()
     }
 

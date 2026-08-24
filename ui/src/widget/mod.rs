@@ -129,7 +129,7 @@ pub trait Widget {
     /// host knows to broadcast it.
     fn apply_room_action(
         &mut self,
-        _doc: &mut automerge::AutoCommit,
+        _doc: &mut AutoCommit,
         _type_id: &str,
         _payload: &[u8],
     ) -> bool {

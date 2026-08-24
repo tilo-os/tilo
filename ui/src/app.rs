@@ -1765,10 +1765,10 @@ impl App {
         let Some(remark) = self.root_widget.take_remark() else {
             return false;
         };
-        let remark = remark.with_mentions(qos_reference::resolve_mentions(
-            &remark.text,
-            &self.remark_room(),
-        ));
+        // Resolved before the move: `with_mentions` consumes the remark, so the
+        // borrow of its text has to be finished first.
+        let mentions = qos_reference::resolve_mentions(&remark.text, &self.remark_room());
+        let remark = remark.with_mentions(mentions);
         let id = format!("m_{}", uuid::Uuid::new_v4().simple());
         let author = self.local_author.0.clone();
         let ts = std::time::SystemTime::now()
@@ -1778,12 +1778,13 @@ impl App {
 
         match remark.to_chat_action(id.as_str(), author.as_str(), ts) {
             Ok(action) => {
+                let delivery = remark.delivery();
                 tracing::info!(
                     target: "ui::remark",
                     message = %id,
                     about = %remark.reference.resource_id().as_str(),
-                    to = ?remark.delivery(),
-                    addressed = ?remark.delivery().addressed(),
+                    to = ?delivery,
+                    addressed = ?delivery.addressed(),
                     "sending a remark into the room"
                 );
                 self.collab_manager
