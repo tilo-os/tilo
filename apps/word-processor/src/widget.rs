@@ -1707,7 +1707,7 @@ fn cell_rc(b: &BlockView) -> (usize, usize) {
 }
 
 pub struct WordProcessorWidget {
-    inner: WordProcessor,
+    pub(crate) inner: WordProcessor,
     rect: Rect,
     focused: bool,
     dirty: bool,
@@ -4831,9 +4831,18 @@ impl Widget for WordProcessorWidget {
         // non-list block is reached or a shallower level re-enters.
         let mut ol_counts: Vec<u32> = Vec::new();
         let cell_pad = 8.0f64;
+        // Cells already drawn as part of a table's grid. A table's cells are
+        // identified by a shared `table` attr rather than by sitting next to one
+        // another, so the grid is laid out from all of them at once and the rest
+        // are passed over when the scan reaches them.
+        let mut gridded: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut bi = 0;
         while bi < blocks.len() {
             let b = &blocks[bi];
+            if gridded.contains(&b.id) {
+                bi += 1;
+                continue;
+            }
             // Coarse-wrap only narrows *paragraph* blocks beside a float. A table or
             // another image cannot share the float column, so before laying one out
             // push the cursor below the active float and retire it — they stack under
@@ -4848,11 +4857,22 @@ impl Widget for WordProcessorWidget {
             }
             if let Some(tid) = cell_table(b) {
                 ol_counts.clear();
-                let start = bi;
-                while bi < blocks.len() && cell_table(&blocks[bi]).as_deref() == Some(tid.as_str()) {
-                    bi += 1;
-                }
-                let cells = &blocks[start..bi];
+                // Every cell carrying this table id, wherever it sits — not only the
+                // run adjacent to this one. Block order is a fractional key, and
+                // `key_between` hands two replicas inserting after the *same* block
+                // the same key, ties broken by block id. So a peer writing while this
+                // session inserts a table interleaves the two, and the cells arrive
+                // with the peer's paragraphs between them. Reading only the adjacent
+                // run would then treat every stranded cell as a table of its own — and
+                // a one-cell table is one column wide, so each would be drawn as an
+                // empty box straight across the page, with the paragraphs stranded
+                // between them.
+                let cells: Vec<&BlockView> = blocks[bi..]
+                    .iter()
+                    .filter(|c| cell_table(c).as_deref() == Some(tid.as_str()))
+                    .collect();
+                gridded.extend(cells.iter().map(|c| c.id.clone()));
+                bi += 1;
                 let ncols = cells.iter().map(|c| cell_rc(c).1).max().unwrap_or(0) + 1;
                 let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
                 let col_w = content_w as f64 / ncols as f64;
@@ -4891,7 +4911,7 @@ impl Widget for WordProcessorWidget {
                             let cell_h = layout.height() as f64;
                             row_h = row_h.max(cell_h + 2.0 * cell_pad);
                             new_cache.insert(cell.id.clone(), (key, layout));
-                            row_items.push((c, cell_h, cell));
+                            row_items.push((c, cell_h, *cell));
                         }
                     }
                     rows.push((row_h, row_items));
@@ -4899,7 +4919,7 @@ impl Widget for WordProcessorWidget {
                 let table_h: f64 = rows.iter().map(|(h, _)| *h).sum();
                 // Break to the next page if a manual page break is set on the
                 // first cell, or the whole table would not fit.
-                let force_break = cells.first().map(block_page_break_before).unwrap_or(false);
+                let force_break = cells.first().map(|c| block_page_break_before(c)).unwrap_or(false);
                 let item_top = if placed_on_page && (force_break || y + table_h > page_content_bottom(cur_page) + 0.5) {
                     cur_page += 1;
                     page_content_top(cur_page)
@@ -11341,6 +11361,121 @@ mod tests {
         (state, wp)
     }
 
+    /// The opening sentence of [`interleaved_table_doc`].
+    const INTERLEAVE_PROSE: &str = "Doors open at seven and the room seats two hundred and forty.";
+
+    /// A document in which this session inserted a 2x2 table and a peer typed
+    /// three list lines after the *same* block, concurrently, and the two merged.
+    fn interleaved_table_doc() -> (WordProcessorWidget, ui::State) {
+        let mut state = ui::State::new();
+        state.doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, INTERLEAVE_PROSE);
+        let anchor = wp.inner.caret.block.clone();
+
+        // The peer forks from *before* the table exists, so the two inserts are
+        // concurrent rather than one after the other.
+        let mut peer = state.doc.fork();
+        peer.set_actor(automerge::ActorId::from("bob".as_bytes()));
+
+        wp.model_mut().insert_table(&mut state.doc, 2, 2);
+
+        {
+            let c = qdoc::model::open(&peer, &state.root).expect("qdoc schema");
+            let mut ids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
+            let mut dm = qdoc::DocMut { doc: &mut peer, c: &c, ids: &mut ids };
+            let mut prev = anchor.clone();
+            for line in ["Doors: 18:00", "Sound check: 18:30", "Seating: 240"] {
+                let id = dm.insert_block(Some(&prev), "paragraph");
+                dm.splice_text(&id, 0, 0, line);
+                prev = id;
+            }
+        }
+        state.doc.merge(&mut peer).expect("peers merge");
+        (wp, state)
+    }
+
+    /// A table stays one grid when a peer writes between its cells.
+    ///
+    /// Block order is a fractional key. `key_between` hands two replicas that
+    /// insert after the *same* block the same key, and equal keys are broken by
+    /// block id, so a peer typing a list while this session inserts a table
+    /// interleaves the two: the cells arrive with the peer's paragraphs between
+    /// them. Laying out only a run of adjacent cells then reads every stranded
+    /// cell as a table of its own, and a one-cell table is one column wide, so
+    /// each is drawn as an empty box straight across the page with the
+    /// paragraphs stranded between them, and the prose lands inside one.
+    #[test]
+    fn a_table_stays_one_grid_when_a_peer_writes_between_its_cells() {
+        let (mut wp, mut state) = interleaved_table_doc();
+        pipeline_draw(&mut wp, &mut state, 1400, 1000);
+
+        // Precondition: the merge really did put the peer's paragraphs between
+        // the cells. Without that this proves nothing.
+        let c = qdoc::model::open(&state.doc, &state.root).expect("qdoc schema");
+        let kinds: Vec<String> = qdoc::model::materialize(&state.doc, &c)
+            .blocks
+            .iter()
+            .map(|b| b.kind.clone())
+            .collect();
+        let first = kinds.iter().position(|k| k == "cell").expect("cells merged in");
+        let last = kinds.iter().rposition(|k| k == "cell").expect("cells merged in");
+        assert!(
+            kinds[first..=last].iter().any(|k| k != "cell"),
+            "precondition: concurrent inserts after one block interleave, so the peer's \
+             paragraphs land between the cells; block order came out as {kinds:?}",
+        );
+
+        // The grid: four cells of one 2x2 table, two columns by two rows.
+        let boxes: Vec<Rect> = wp.laid.iter().filter_map(|l| l.cell_box).collect();
+        assert_eq!(boxes.len(), 4, "a 2x2 table draws four cells, got {boxes:?}");
+
+        let widths: Vec<f64> = boxes.iter().map(|b| b.width()).collect();
+        let wmin = widths.iter().copied().fold(f64::INFINITY, f64::min);
+        let wmax = widths.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            wmax - wmin < 0.5,
+            "every cell of a two-column table is the same width, but they came out \
+             {widths:?}: a cell read as a table of its own is one column wide and is \
+             drawn as a box straight across the page",
+        );
+
+        let mut lefts: Vec<i64> = boxes.iter().map(|b| b.x0.round() as i64).collect();
+        lefts.sort_unstable();
+        lefts.dedup();
+        assert_eq!(lefts.len(), 2, "two columns share two left edges, got {lefts:?}");
+
+        let mut tops: Vec<i64> = boxes.iter().map(|b| b.y0.round() as i64).collect();
+        tops.sort_unstable();
+        tops.dedup();
+        assert_eq!(
+            tops.len(),
+            2,
+            "two rows share two tops, got {tops:?}: one top per cell means the table \
+             was laid out a cell at a time down the page",
+        );
+
+        // And the prose is prose: nothing draws a box around it, and it starts at
+        // the text margin rather than inside a column.
+        let prose = wp
+            .laid
+            .iter()
+            .find(|l| l.text.starts_with("Doors open at seven"))
+            .expect("the opening sentence is on the page");
+        assert!(
+            prose.cell_box.is_none(),
+            "the opening sentence is a paragraph, so no cell border is drawn around it",
+        );
+        let margin = lefts[0] as f64;
+        assert!(
+            (prose.text_x - margin).abs() < 1.0,
+            "the opening sentence starts at the text margin ({margin:.0}) but was laid \
+             out at {:.0}, inside a table column",
+            prose.text_x,
+        );
+    }
+
     /// The "New ▾" toolbar button is present and registered as a click target.
     #[test]
     fn new_menu_button_is_in_the_toolbar() {
@@ -13440,15 +13575,20 @@ mod tests {
 
     /// Run the full five-pass + overlay draw and write a PNG to `dir/name.png`.
     fn render_review_png(wp: &mut WordProcessorWidget, state: &mut ui::State, w: u32, h: u32, dir: &std::path::Path, name: &str) {
+        render_review_png_themed(wp, state, w, h, dir, name, &Theme::dark());
+    }
+
+    /// As [`render_review_png`], under an explicit theme, with the backdrop taken
+    /// from that theme so a light palette is not shot against a dark desk.
+    fn render_review_png_themed(wp: &mut WordProcessorWidget, state: &mut ui::State, w: u32, h: u32, dir: &std::path::Path, name: &str, theme: &Theme) {
         use ui::offscreen::OffscreenRenderer;
-        let theme = Theme::dark();
         let presence = PresenceCtx::empty();
         let permission = PermissionContext::permissive();
         let mut tr = TextRenderer::new();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         wp.sync(&mut state.doc, &state.root);
-        let child = wp.build_layout(&mut taffy, &theme, &mut node_map);
+        let child = wp.build_layout(&mut taffy, theme, &mut node_map);
         let root = taffy
             .new_with_children(
                 Style { size: Size { width: Dimension::length(w as f32), height: Dimension::length(h as f32) }, ..Default::default() },
@@ -13474,17 +13614,29 @@ mod tests {
         }
         wp.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
-        wp.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
-        wp.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        wp.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence, &permission);
+        wp.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
         std::fs::create_dir_all(dir).ok();
-        OffscreenRenderer::new(w, h).render_png(&scene, Color::from_rgb8(0x20, 0x22, 0x28), dir.join(format!("{name}.png")));
-    }
+        OffscreenRenderer::new(w, h).render_png(&scene, ChromeColors::for_theme(theme).canvas, dir.join(format!("{name}.png")));
+        }
+
 
     #[test]
     fn render_review_shots() {
         let Some(dir) = std::env::var_os("QOS_WP_REVIEW_SHOTS") else { return };
         let dir = std::path::PathBuf::from(dir);
         let (w, h) = (1200u32, 800u32);
+
+        // 0. A table whose cells a peer wrote between, in every theme: one grid,
+        //    with the peer's lines under it and the prose above, unboxed.
+        for (tag, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high-contrast", Theme::high_contrast()),
+        ] {
+            let (mut wp, mut state) = interleaved_table_doc();
+            render_review_png_themed(&mut wp, &mut state, w, h, &dir, &format!("table-interleave-{tag}"), &theme);
+        }
 
         // 1. Fixed toolbar: vector Image icon, no duplicated font-size stepper.
         {
@@ -13818,7 +13970,6 @@ fn is_dnd_spool_path(path: &std::path::Path) -> bool {
         || path.starts_with(std::env::temp_dir())
 }
 
-
 // ---- a document that opens ready to be written in --------------------------
 //
 // The caret being in the model is not the same claim as a person being able to
@@ -13913,11 +14064,19 @@ mod opens_ready_to_type {
         OffscreenRenderer::new(W, H).render(&scene, ChromeColors::for_theme(theme).canvas)
     }
 
-    /// The bounding box of every pixel that differs between two frames, or
-    /// `None` when they are identical.
-    fn differing_bbox(a: &[u8], b: &[u8]) -> Option<Rect> {
+    /// The bounding box of every pixel that differs between two frames within
+    /// the rows of `band`, or `None` when nothing there differs.
+    ///
+    /// Bounded on purpose: the floating word-count readout fades on a wall
+    /// clock of its own, so two frames taken a moment apart differ down in the
+    /// corner whatever the caret is doing. A band around the line under
+    /// examination is the region the question is actually about, and it is
+    /// nowhere near the readout.
+    fn differing_bbox_in(a: &[u8], b: &[u8], band: Rect) -> Option<Rect> {
         let mut bbox: Option<Rect> = None;
-        for y in 0..H {
+        let y0 = band.y0.max(0.0) as u32;
+        let y1 = (band.y1.max(0.0) as u32).min(H);
+        for y in y0..y1 {
             for x in 0..W {
                 let (ar, ag, ab, _) = OffscreenRenderer::sample(a, W, x, y);
                 let (br, bg, bb, _) = OffscreenRenderer::sample(b, W, x, y);
@@ -14038,21 +14197,22 @@ mod opens_ready_to_type {
             let (mut state, mut wp) = opened_with_content();
             let with_caret = render(&mut wp, &mut state, &theme);
             let expected = caret_rect_of_first_block(&wp);
+            let band = Rect::new(0.0, expected.y0 - 20.0, W as f64, expected.y1 + 20.0);
 
             wp.set_focus(false);
             let without_caret = render(&mut wp, &mut state, &theme);
 
-            let drawn = differing_bbox(&with_caret, &without_caret)
+            let drawn = differing_bbox_in(&with_caret, &without_caret, band)
                 .unwrap_or_else(|| panic!("{name}: nothing was painted for the caret"));
 
-            // Within a pixel of anti-aliased bleed on each side of where the
-            // production geometry puts offset 0 of the first block.
-            let slack = 1.5;
+            // Within a pixel or so of anti-aliased bleed on each side of where
+            // the production geometry puts offset 0 of the first block.
+            let slack = 2.5;
             assert!(
-                (drawn.x0 - expected.x0).abs() <= slack + 1.0
-                    && (drawn.y0 - expected.y0).abs() <= slack + 1.0
-                    && (drawn.x1 - expected.x1).abs() <= slack + 1.0
-                    && (drawn.y1 - expected.y1).abs() <= slack + 1.0,
+                (drawn.x0 - expected.x0).abs() <= slack
+                    && (drawn.y0 - expected.y0).abs() <= slack
+                    && (drawn.x1 - expected.x1).abs() <= slack
+                    && (drawn.y1 - expected.y1).abs() <= slack,
                 "{name}: the caret was painted at {drawn:?}, not at the start of \
                  the body ({expected:?})",
             );
@@ -14060,26 +14220,19 @@ mod opens_ready_to_type {
                 drawn.height() > 6.0,
                 "{name}: the caret is a line-tall bar, not a speck: {drawn:?}",
             );
-        }
 
-        // And the reading above is one this measurement could have failed:
-        // with the caret at the far end of the document instead, the pixels
-        // that change are somewhere else entirely.
-        let (mut state, mut wp) = opened_with_content();
-        let theme = Theme::dark();
-        render(&mut wp, &mut state, &theme);
-        let start = caret_rect_of_first_block(&wp);
-        wp.model_mut().move_doc_end(&state.doc);
-        let with_caret = render(&mut wp, &mut state, &theme);
-        wp.set_focus(false);
-        let without_caret = render(&mut wp, &mut state, &theme);
-        let drawn = differing_bbox(&with_caret, &without_caret)
-            .expect("a caret at the end of the document is painted too");
-        assert!(
-            (drawn.y0 - start.y0).abs() > 2.0 || (drawn.x0 - start.x0).abs() > 2.0,
-            "a caret at the document's end must not measure as one at its \
-             start: {drawn:?} against {start:?}",
-        );
+            // And this is a reading the measurement could have failed: put the
+            // caret at the far end of the document instead and the first line
+            // stops carrying one at all.
+            wp.set_focus(true);
+            wp.model_mut().move_doc_end(&state.doc);
+            let caret_elsewhere = render(&mut wp, &mut state, &theme);
+            assert!(
+                differing_bbox_in(&caret_elsewhere, &without_caret, band).is_none(),
+                "{name}: a caret at the document's end still measured as one on \
+                 the first line",
+            );
+        }
     }
 
     /// The style inspector still takes the keyboard off the page, and the page
