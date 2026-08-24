@@ -475,18 +475,31 @@ fn draw_pill(
         right_edge,
         center_y + h / 2.0,
     );
+    let pill = RoundedRect::from_rect(rect, tokens.radii.md as f64);
     scene.fill(
         Fill::NonZero,
         transform,
         tint.with_alpha_factor(0.20 * alpha),
         None,
-        &RoundedRect::from_rect(rect, tokens.radii.md as f64),
+        &pill,
+    );
+    // The tint diluted to a fifth of itself is still the tint, so a label in
+    // the same hue can only ever be a shade off its own background — this
+    // pill measured 2.61:1 on screen. The fill and an edge carry the colour
+    // meaning, the way the role chip below already does, and the label takes
+    // the readable tier.
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        tint.with_alpha_factor(0.60 * alpha),
+        None,
+        &pill,
     );
     text_renderer.draw_text(
         scene,
         label,
         size,
-        tint.with_alpha_factor(alpha),
+        tokens.colors.text_primary.with_alpha_factor(alpha),
         transform * Affine::translate((rect.x0 + pad_x, rect.y0 + pad_y)),
         None,
     );
@@ -667,12 +680,23 @@ fn draw_danger_button(
     let tokens = &theme.tokens;
     let danger = tokens.colors.semantic.danger;
     let alpha = if enabled { 1.0 } else { DISABLED_ALPHA };
+    let shape = RoundedRect::from_rect(rect, tokens.radii.md as f64);
     scene.fill(
         Fill::NonZero,
         transform,
         danger.with_alpha_factor(0.20 * alpha),
         None,
-        &RoundedRect::from_rect(rect, tokens.radii.md as f64),
+        &shape,
+    );
+    // Red-on-red: the label reached 2.82:1 against a wash made of itself.
+    // The edge keeps the destructive signal — more of it than a 20% fill
+    // alone did — while the word becomes readable.
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        danger.with_alpha_factor(0.60 * alpha),
+        None,
+        &shape,
     );
     let size = tokens.typography.scale.sm;
     let (tw, th) = text_renderer.measure(label, size, None);
@@ -680,7 +704,7 @@ fn draw_danger_button(
         scene,
         label,
         size,
-        danger.with_alpha_factor(alpha),
+        tokens.colors.text_primary.with_alpha_factor(alpha),
         transform
             * Affine::translate((
                 rect.center().x - tw as f64 / 2.0,
