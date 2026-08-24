@@ -1197,7 +1197,11 @@ impl FileExplorerWidget {
     /// other. Returns `false` when there is nothing selected or nowhere to send
     /// — in which case nothing opens, rather than a compose over no subject.
     pub fn open_remark_for_selection(&mut self, doc: &ui::automerge::AutoCommit, at: Point) -> bool {
-        if !self.remark.has_destinations() {
+        // Two homes, one gate. An app drawing the panel itself needs somewhere
+        // to send; an app asking for one needs something to ask. `can_open`
+        // answers both, so a delegated app is not turned away for lacking a
+        // roster it is deliberately never given.
+        if !self.remark.can_open() {
             return false;
         }
         // Ask the app what is selected before opening anything, so a gesture
@@ -1207,6 +1211,9 @@ impl FileExplorerWidget {
         else {
             return false;
         };
+        // Read the address out before the reference is handed over: it is what
+        // the line below reports, and either path consumes the value.
+        let about = reference.resource_id().as_str().to_string();
         self.open_context_menu(at);
         layout_menu_widget(&mut self.context_menu);
         // Beside the menu, not over it: the menu keeps doing its job.
@@ -1214,22 +1221,30 @@ impl FileExplorerWidget {
         if !self.remark.open_reference_beside(reference, menu, self.rect) {
             return false;
         }
-        // Narrated because this panel is a *client's* widget: it is not in the
+        // Narrated because the panel's rect is the one thing about this gesture
+        // that is not addressable from outside.
+        //
+        // When this app draws the panel it is a *client's* widget: not in the
         // compositor's registry, so nothing outside this process can find it by
-        // name or read its rect. A harness driving the gesture has to aim at a
-        // pixel, and this line is where the pixel comes from — the rect the
-        // panel was actually laid out at, in this window's own coordinates,
-        // reported by the process that placed it. Same contract as the drag
-        // narration below: the app says what it did, and a miss is knowable
-        // rather than assumed.
-        let panel = self.remark.rect();
+        // name. A harness driving the gesture has to aim at a pixel, and this
+        // line is where the pixel comes from — the rect the panel was actually
+        // laid out at, in this window's own coordinates, reported by the
+        // process that placed it.
+        //
+        // When the session draws it the rect reported here is the *menu*'s,
+        // because that is what was asked about and the panel's own rect is not
+        // this process's to know. The panel is then an ordinary named target
+        // and a harness reads it the way it reads any other piece of chrome, so
+        // the line is about the subject rather than the geometry. Both say what
+        // this app did, and in both a miss is knowable rather than assumed.
+        let panel = if self.remark.is_delegated() {
+            self.context_menu.get_rect()
+        } else {
+            self.remark.rect()
+        };
         tracing::info!(
             target: "file_explorer::remark",
-            about = %self
-                .remark
-                .reference()
-                .map(|r| r.resource_id().as_str().to_string())
-                .unwrap_or_default(),
+            %about,
             at = ?(panel.x0, panel.y0, panel.width(), panel.height()),
             "remark compose opened"
         );
@@ -3024,6 +3039,22 @@ impl Widget for FileExplorerWidget {
     /// `set_remark_destinations` does: one way in, one way out.
     fn take_remark(&mut self) -> Option<qos_reference::Remark> {
         Self::take_remark(self)
+    }
+
+    /// Stop drawing the compose surface and start asking for it.
+    ///
+    /// Called by the host when a qOS session is drawing this window's chrome.
+    /// The gesture is unchanged from here — the same right-click, the same
+    /// context menu, the same address — but the panel is placed on the desktop
+    /// rather than inside this window, which is the only way it can sit beside
+    /// a menu at the window's edge.
+    fn delegate_remark_surface(&mut self) {
+        self.remark.delegate();
+    }
+
+    /// Hand the request out, for the host to forward to the session.
+    fn take_remark_request(&mut self) -> Option<ui::widget::RemarkRequest> {
+        self.remark.take_request()
     }
 
     fn get_rect(&self) -> vello::kurbo::Rect {
