@@ -157,3 +157,35 @@ fn every_toggle_knob_stays_visible_on_its_track() {
     }
     assert!(failures.is_empty(), "invisible toggle knobs:\n  {}", failures.join("\n  "));
 }
+
+#[test]
+fn a_toggle_knob_never_swaps_sides_under_the_pointer() {
+    // Hover must read as the same knob pressed harder, not as a different
+    // one. Resolving the resting and hovered tones independently is what
+    // produced a near-white knob that turned near-black on hover, each
+    // measuring fine on its own.
+    for theme in themes() {
+        for on in [true, false] {
+            let (track, rest, _, _) = toggle_face_colors(&theme, on, ToggleInteract::default());
+            let (_, hovered, _, _) =
+                toggle_face_colors(&theme, on, ToggleInteract { hovered: true, ..Default::default() });
+            let lighter_than_track = |k: Color| {
+                contrast_ratio(k, Color::from_rgb8(255, 255, 255))
+                    < contrast_ratio(track, Color::from_rgb8(255, 255, 255))
+            };
+            assert_eq!(
+                lighter_than_track(rest),
+                lighter_than_track(hovered),
+                "{} on={on}: knob crossed its track — rest {}, hovered {}",
+                theme.name,
+                hex(rest),
+                hex(hovered),
+            );
+            assert!(
+                contrast_ratio(hovered, track) > contrast_ratio(rest, track),
+                "{} on={on}: hover must make the knob more present, not less",
+                theme.name,
+            );
+        }
+    }
+}
