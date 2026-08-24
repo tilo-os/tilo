@@ -830,12 +830,22 @@ pub fn room_roster(
                 .as_ref()
                 .map(|l| l.name.clone())
                 .unwrap_or_else(|| id.clone());
-            let role = ws.role_of(&name);
             // What the room admitted them as, carried from the room's
             // capability list rather than decided here. A peer the room
             // has said nothing about is a person, which is the same
             // answer the row has always given.
             let is_agent = label.as_ref().is_some_and(|l| l.is_agent);
+            // The role comes off the grant that admitted them, and an
+            // agent's grant is a different subject from a person's. Read
+            // through the person lookup only, an agent with a session of
+            // its own showed no role at all — the one member whose whole
+            // authority *is* a capability, with nothing on screen saying
+            // what the capability was.
+            let role = if is_agent {
+                ws.role_of_agent(&name.to_lowercase())
+            } else {
+                ws.role_of(&name)
+            };
             let who = crate::shell::state::Collaborator::new(id, name).as_kind(is_agent);
             let who = match role {
                 Some(role) => who.with_role(crate::shell::state::role_label(role)),
