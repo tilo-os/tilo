@@ -291,7 +291,7 @@ impl Widget for IconGrid {
             let icon_y = cell.y0 + 10.0;
             let icon_rect = Rect::new(icon_x, icon_y, icon_x + self.icon_px, icon_y + self.icon_px);
             let glyph_color = if selected {
-                vello::peniko::Color::WHITE
+                tokens.colors.on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST)
             } else {
                 tokens.colors.text_primary
             };
@@ -303,7 +303,7 @@ impl Widget for IconGrid {
             let tx = cell.x0 + (self.cell_w - tw as f64) / 2.0;
             let ty = icon_y + self.icon_px + 8.0;
             let label_color = if selected {
-                vello::peniko::Color::WHITE
+                tokens.colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
             } else {
                 tokens.colors.text_primary
             };

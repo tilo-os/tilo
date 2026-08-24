@@ -208,7 +208,15 @@ fn paint_empty_state(
         let x0 = cx - bw / 2.0;
         let action_rect = Rect::new(x0, y, x0 + bw, y + btn_h);
         let hovered = action_rect.contains(hover);
-        let bg = if hovered { theme.accent_hover } else { theme.accent_primary };
+        // The empty state's call to action is a primary button, so it takes
+        // its palette from the one place that resolves a primary button —
+        // including a label measured against the accent rather than assumed
+        // to survive it.
+        let (bg, _border, ink) = crate::widget::face_colors(
+            theme,
+            crate::widget::ButtonStyle::Primary,
+            crate::widget::ButtonInteract { hovered, ..Default::default() },
+        );
         let pill = RoundedRect::from_rect(action_rect, theme.tokens.radii.md as f64);
         scene.fill(Fill::NonZero, transform, bg, None, &pill);
         let ty = action_rect.y0 + (btn_h - btn_size as f64) / 2.0;
@@ -216,7 +224,7 @@ fn paint_empty_state(
             scene,
             label,
             btn_size,
-            Color::WHITE,
+            ink,
             transform * Affine::translate((cx - act_w as f64 / 2.0, ty)),
             None,
         );
