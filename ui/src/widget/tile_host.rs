@@ -444,6 +444,25 @@ impl TileHost {
         self.announce_scope();
     }
 
+    /// The store and record whose document the hosted app is actually on.
+    ///
+    /// A tile redirects its app onto its own record (see [`Self::sync`]),
+    /// so anything outside the tile that wants to read or act on that
+    /// app's state has to be told which document that is — otherwise it
+    /// reads whatever document the parent pass happens to carry, which
+    /// belongs to nobody in particular and is empty. `None` for a tile
+    /// with no record, whose app *is* on the passed document.
+    ///
+    /// Deliberately hands back the binding rather than a borrowed
+    /// document: the store lends its documents one at a time through a
+    /// closure, and returning a reference here would keep that loan open
+    /// for as long as the caller held it.
+    pub fn record_binding(&self) -> Option<(RecordStore, RecordId)> {
+        self.binding
+            .as_ref()
+            .map(|b| (b.store.clone(), b.live.clone()))
+    }
+
     /// Bring the binding up to date with what the app says it is working
     /// on, and hand back the record whose document it must be given.
     fn resolve_record(&mut self) -> Option<RecordId> {
