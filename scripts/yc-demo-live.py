@@ -922,6 +922,30 @@ class Live:
             # here asked for `file_row:harbour.png` and could never once
             # have resolved. It had never run, because the compose surface
             # had never opened far enough for anyone to find out.
+            if not self.args.instruct:
+                # Handed over rather than driven. His window is already
+                # in front -- the cut raised it -- so the only thing
+                # missing is knowing what to do with it, and that is a
+                # line of text rather than a mechanism.
+                self.say("")
+                self.say("  " + "-" * 58)
+                self.say("  XAVER IS YOURS. His window is in front.")
+                self.say("")
+                self.say("    right-click the image in Files, then write:")
+                self.say(f"      {self.args.instruction}")
+                self.say("")
+                self.say("    the rig picks it up from here and watches "
+                         "for the answer")
+                self.say("  " + "-" * 58)
+                self.say("")
+                self.instruction_sent = True
+                # Not claimed. Nothing here observed him write anything,
+                # and a claim that reports a person's gesture it never saw
+                # is worth less than no claim at all.
+                yc.gap("the instruction is being written by hand, so this "
+                       "run does not assert that it was")
+                return True
+
             tile = yc.best_tile(self.x, yc.FILES_APP, yc.VIEWPORT)
             if tile is None:
                 yc.gap("xaver has no file manager window on screen, so "
@@ -1336,6 +1360,17 @@ def main() -> int:
     ap.add_argument("--no-xaver", dest="xaver", action="store_false",
                     help="nobody joins. Leaves you a single machine with an "
                          "agent in the room")
+    ap.add_argument("--no-instruction", dest="instruct",
+                    action="store_false",
+                    help="do not drive xaver's half. His window is raised "
+                         "when the film reaches him and left to you: you "
+                         "right-click the image and write the instruction "
+                         "yourself, on his machine, and the rig goes back "
+                         "to watching for the agent to answer it. Everything "
+                         "mechanical still happens -- his session is "
+                         "admitted, the agent is started -- so what you take "
+                         "over is the gesture the beat is about and nothing "
+                         "else")
     ap.add_argument("--no-agent", dest="agent", action="store_false",
                     help="no agent in the room at all")
     ap.add_argument("--no-agent-model", dest="agent_model",
