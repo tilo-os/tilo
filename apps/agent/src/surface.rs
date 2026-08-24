@@ -441,7 +441,7 @@ fn keywords(rest: &str) -> Vec<String> {
 /// content and calling it the user's.
 pub fn quoted_literal(rest: &str) -> Option<String> {
     let mut found: Vec<String> = Vec::new();
-    for quote in ['"', ''', '\u{201c}'] {
+    for quote in ['"', '\'', '\u{201c}'] {
         let close = if quote == '\u{201c}' { '\u{201d}' } else { quote };
         let mut chars = rest.char_indices().peekable();
         while let Some((i, c)) = chars.next() {

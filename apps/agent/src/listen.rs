@@ -215,16 +215,30 @@ pub fn asked_of(message: &Message, me: &str, name: &str, address: Address) -> St
     match address {
         Address::Named => Instruction::addressed(&message.text, name).unwrap_or_default(),
         Address::Mentioned => {
-            let mut out = String::with_capacity(message.text.len());
+            let text = message.text.as_str();
+            let mut out = String::with_capacity(text.len());
             let mut cut = 0usize;
             for m in &message.mentions {
-                if m.user != me || m.start < cut || m.end() > message.text.len() {
+                if m.user != me || m.start < cut {
                     continue;
                 }
-                out.push_str(&message.text[cut..m.start]);
+                // Every slice goes through `get`. These offsets came out of a
+                // shared document that anything in the room may have written,
+                // and a pair that does not land on character boundaries would
+                // otherwise take the agent down rather than cost it one
+                // mention. A run that will not slice is left in the text: the
+                // request reads slightly oddly, which is recoverable, and the
+                // agent stays up, which is the point.
+                let Some(head) = text.get(cut..m.start) else {
+                    continue;
+                };
+                if text.get(m.end()..).is_none() {
+                    continue;
+                }
+                out.push_str(head);
                 cut = m.end();
             }
-            out.push_str(&message.text[cut.min(message.text.len())..]);
+            out.push_str(text.get(cut..).unwrap_or_default());
             // A body that was only a mention leaves nothing; `trim` is what
             // makes "@Claude   crop this" and "crop this" the same request.
             out.trim().trim_start_matches(':').trim().to_string()
