@@ -1072,6 +1072,36 @@ fn execute_planned_action(
                 &mut ctx.focus,
             );
         }
+        PlannedAction::MousePointerButton { pressed, button } => {
+            use crate::compositor::test_control::PointerButtonKind;
+            let event = WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: if *pressed {
+                    ElementState::Pressed
+                } else {
+                    ElementState::Released
+                },
+                button: match button {
+                    PointerButtonKind::Right => MouseButton::Right,
+                    PointerButtonKind::Middle => MouseButton::Middle,
+                    PointerButtonKind::Left => MouseButton::Left,
+                },
+            };
+            // Same two-step delivery the left button takes: offer it to a
+            // focused client first, and only dispatch into the chrome's own
+            // widget tree when no client took it. A context menu opened by
+            // an app belongs to the app.
+            if to_client(&mut state, fb, &event, &ctx.modifiers) {
+                return None;
+            }
+            fb.dispatch_event(
+                &event,
+                &ctx.modifiers,
+                &mut ctx.doc,
+                &ctx.root_obj,
+                &mut ctx.focus,
+            );
+        }
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
             let event = keyboard_input_event(winit_key, *pressed);
@@ -1275,6 +1305,7 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
         // client that never has to render anything.
         PlannedAction::CursorMoved { .. }
         | PlannedAction::MouseLeftButton { .. }
+        | PlannedAction::MousePointerButton { .. }
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
         | PlannedAction::Snapshot { .. }
