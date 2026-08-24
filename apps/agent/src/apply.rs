@@ -263,9 +263,16 @@ impl Editor {
         action
             .apply(&mut self.doc)
             .map_err(|e| anyhow::anyhow!("apply a foreign action: {e:?}"))?;
-        if self.doc.pending_ops() == 0 {
-            return Ok(None);
-        }
+        // No `pending_ops` short-circuit here, deliberately. `AutoCommit`
+        // commits what is pending whenever a read interleaves the writes, and
+        // an app's own writer reads as it goes — chat's message insert asks
+        // the list its length between two writes. So by the time control
+        // returns, the ops are usually already committed and `pending_ops` is
+        // zero, which said "this changed nothing" about a message that had in
+        // fact been written. The agent then held an answer it had never sent.
+        //
+        // What actually settles it is whether there are unsaved changes, so
+        // that is what is asked.
         self.doc.commit();
         let delta = self.doc.save_incremental();
         Ok((!delta.is_empty()).then_some(delta))

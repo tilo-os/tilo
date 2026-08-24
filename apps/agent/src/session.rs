@@ -169,6 +169,11 @@ pub struct Session {
     /// How the last instruction was decided. The record that keeps a run on
     /// the fallback from being indistinguishable from a live one afterwards.
     last_route: Option<Route>,
+    /// How many answers the agent has actually put on the wire.
+    ///
+    /// Distinct from how many it composed: the gap between the two is an
+    /// agent that thinks it replied and a person who saw nothing.
+    answers_sent: usize,
     /// What the agent last acted on, and when.
     ///
     /// The one piece of state proximity needs: it is what lets "do that
@@ -286,11 +291,17 @@ impl Session {
             chooser,
             last_route: None,
             last_action: None,
+            answers_sent: 0,
             asked_at: Instant::now(),
             reask_every: REASK_EVERY,
             addressed_seen: false,
             missing_ancestors: 0,
         })
+    }
+
+    /// How many answers this agent has put on the wire.
+    pub fn answers_sent(&self) -> usize {
+        self.answers_sent
     }
 
     /// What the agent last acted on, and when.
@@ -1101,9 +1112,19 @@ impl Session {
             .get_mut("chat")
             .context("no conversation in this room to answer in")?
             .apply_foreign(&action)?;
-        if let Some(data) = delta {
-            self.link.send(&CollabRequest::SyncIncremental { data })?;
-            tracing::info!(%channel, ?parent, "answered in the room");
+        match delta {
+            Some(data) => {
+                self.link.send(&CollabRequest::SyncIncremental { data })?;
+                self.answers_sent += 1;
+                tracing::info!(%channel, ?parent, "answered in the room");
+            }
+            // Loud, because this is the shape of the worst bug in this file:
+            // an agent that believes it answered, holding the answer, while
+            // the person who asked sees nothing at all.
+            None => tracing::warn!(
+                %channel, ?parent,
+                "wrote an answer that produced no change to send — nobody will see it"
+            ),
         }
         std::thread::sleep(self.cfg.pace);
         Ok(())
