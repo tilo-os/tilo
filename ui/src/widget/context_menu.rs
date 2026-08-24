@@ -189,6 +189,18 @@ impl ContextMenu {
         None
     }
 
+    /// The menu's laid-out rect, in the same logical coordinates
+    /// [`item_at`](Self::item_at) takes.
+    ///
+    /// A host that positions the menu itself needs its size before it can
+    /// decide where to put it — a completion list has to know its own height to
+    /// open *above* a composer rather than off the bottom of the window — and
+    /// re-deriving the row geometry outside the primitive is exactly how the
+    /// drawn menu and the clickable menu drift apart.
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+
     /// Whether `point` is inside the open menu's rect (for dismiss-on-
     /// click-outside routing).
     pub fn contains(&self, point: [f64; 2]) -> bool {

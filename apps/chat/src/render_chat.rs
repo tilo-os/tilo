@@ -19,6 +19,136 @@ use crate::app::{ChatApp, Hit, MenuTarget, AVATAR};
 use crate::model::{self, Attachment, ChannelKind, Message, Presence};
 use crate::paint::*;
 
+/// Body text size for a message. Shared by the measure and the draw so a
+/// mention-carrying row reserves exactly the height it paints.
+const BODY_SIZE: f32 = 15.0;
+
+/// `RichTextLayout` lays out at `size * 1.4 * mult`; `TextRenderer::measure`
+/// uses `size * 1.25`. Feeding this multiplier keeps a body drawn through the
+/// rich path on the same line grid as one drawn through the plain path, so a
+/// message does not jump when somebody is mentioned in it.
+const BODY_LINE_MULT: f32 = 1.25 / 1.4;
+
+/// How the two mention grounds are mixed out of the participant's own colour.
+/// A mention *of you* gets the stronger band — it is the one you need to find
+/// when you come back to a channel — and everybody else's is a quiet tint.
+const MENTION_BAND_MIX_SELF: f64 = 0.72;
+const MENTION_BAND_MIX_OTHER: f64 = 0.86;
+
+/// How much further from the surface your own mention must sit than anybody
+/// else's, in contrast ratio. Enforced rather than assumed: the two mixes above
+/// order correctly on their own, but the floor below can lift the quiet band
+/// past the loud one on a ground where the quiet one had to be rescued, and
+/// then a mention of you reads as the *less* prominent of the two.
+const MENTION_SELF_MARGIN: f64 = 0.5;
+
+/// Contrast floors for the mention run, measured rather than eyeballed:
+/// AA body text on its own band, and the non-text floor for the band itself
+/// against the surface it sits on (a band nobody can see is not a highlight).
+pub(crate) const MENTION_TEXT_CONTRAST: f64 = 4.5;
+pub(crate) const MENTION_BAND_CONTRAST: f64 = 3.0;
+
+/// The band and ink a mention of `user` is painted in, on `ground`.
+///
+/// The colour is the participant's own, in the shared presence vocabulary — the
+/// same one their caret pill and cursor use — so "who is this about" is answered
+/// the same way everywhere. It is then adjusted until it clears the floors
+/// above on the ground it actually lands on, because a colour picked to tell
+/// people apart is not a colour picked to be read.
+pub(crate) fn mention_colors(
+    app: &ChatApp,
+    user: &str,
+    is_self: bool,
+    theme: &Theme,
+    ground: Color,
+) -> (Color, Color) {
+    let (r, g, b) = app.participant_color(user);
+    let own = Color::from_rgb8(r, g, b);
+    // The quiet band first, floored — everybody else's mention.
+    let quiet = band_at_least(
+        mix(own, ground, MENTION_BAND_MIX_OTHER),
+        own,
+        ground,
+        MENTION_BAND_CONTRAST,
+    );
+    let band = if is_self {
+        // Yours has to be findable *and* visibly louder than theirs, whatever
+        // the quiet one ended up at on this ground.
+        let target =
+            (ui::a11y::contrast_ratio(quiet, ground) + MENTION_SELF_MARGIN).max(MENTION_BAND_CONTRAST);
+        band_at_least(mix(own, ground, MENTION_BAND_MIX_SELF), own, ground, target)
+    } else {
+        quiet
+    };
+    let ink = legible_on(own, band, MENTION_TEXT_CONTRAST, theme.tokens.colors.text_primary);
+    (band, ink)
+}
+
+/// Split a message body into styled runs: prose in body ink, each resolved
+/// mention in its participant's colour on its own band.
+///
+/// Built from the stored [`crate::mention::Mention`] list, never by scanning the
+/// text — the renderer and the resolver agree about where a mention is because
+/// only one of them ever decides.
+pub(crate) fn body_spans(
+    app: &ChatApp,
+    m: &Message,
+    theme: &Theme,
+    ground: Color,
+) -> Vec<ui::richtext::RichSpan> {
+    use ui::richtext::RichSpan;
+    let text = m.text.as_str();
+    let mut spans: Vec<RichSpan> = Vec::new();
+    let mut cursor = 0usize;
+    let mut mentions: Vec<&crate::mention::Mention> = m.mentions.iter().collect();
+    mentions.sort_by_key(|x| x.start);
+    for mention in mentions {
+        let (s, e) = (mention.start, mention.end());
+        // An offset that no longer lands on the body (an edit that did not
+        // re-resolve) is skipped rather than trusted — better plain prose than
+        // a highlight over the wrong words.
+        if s < cursor || e > text.len() || !text.is_char_boundary(s) || !text.is_char_boundary(e) {
+            continue;
+        }
+        if s > cursor {
+            spans.push(RichSpan::new(&text[cursor..s]));
+        }
+        let is_self = mention.user == app.me.id;
+        let (band, ink) = mention_colors(app, &mention.user, is_self, theme, ground);
+        spans.push(
+            RichSpan::new(&text[s..e])
+                .bold(true)
+                .color(Some([ink.r(), ink.g(), ink.b()]))
+                .background(Some([band.r(), band.g(), band.b()])),
+        );
+        cursor = e;
+    }
+    if cursor < text.len() {
+        spans.push(RichSpan::new(&text[cursor..]));
+    }
+    spans
+}
+
+/// Lay out a mention-carrying body at `width`.
+pub(crate) fn shape_body(
+    tr: &mut TextRenderer,
+    spans: &[ui::richtext::RichSpan],
+    width: f32,
+) -> ui::richtext::RichTextLayout {
+    ui::richtext::RichTextLayout::shape(
+        &mut tr.font_system,
+        spans,
+        false,
+        BODY_SIZE,
+        width,
+        ui::richtext::TextAlign::Left,
+        ui::richtext::FontFamily::Sans,
+        Vec::new(),
+        Vec::new(),
+        BODY_LINE_MULT,
+    )
+}
+
 /// Draw a circular initials avatar with an optional presence dot.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_avatar(
@@ -541,7 +671,7 @@ impl ChatApp {
             for (gi, &idx) in g.message_indices.iter().enumerate() {
                 let m = &self.messages[idx];
                 let show_header = gi == 0;
-                let rm = self.measure_row(tr, m, show_header, text_w);
+                let rm = self.measure_row(tr, theme, m, show_header, text_w);
                 total += rm.height();
                 rows.push(rm);
             }
@@ -570,7 +700,14 @@ impl ChatApp {
         }
     }
 
-    fn measure_row(&self, tr: &mut TextRenderer, m: &Message, show_header: bool, text_w: f32) -> RowM {
+    fn measure_row(
+        &self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        m: &Message,
+        show_header: bool,
+        text_w: f32,
+    ) -> RowM {
         let editing = self.editing.as_ref().is_some_and(|(id, _)| id == &m.id);
         // The editor measures its live working text so the timeline reflows as
         // you type; a static message measures its stored body.
@@ -579,8 +716,14 @@ impl ChatApp {
             (tr.measure(t, 15.0, Some(text_w)).1 as f64).max(19.0)
         } else if m.text.is_empty() {
             0.0
+        } else if m.mentions.is_empty() {
+            tr.measure(&m.text, BODY_SIZE, Some(text_w)).1 as f64
         } else {
-            tr.measure(&m.text, 15.0, Some(text_w)).1 as f64
+            // A mention-carrying body is laid out by the rich path, so it must
+            // be measured by the rich path too — measuring one and painting the
+            // other is how a row ends up clipping its own last line.
+            let spans = body_spans(self, m, theme, theme.tokens.colors.surfaces.base);
+            shape_body(tr, &spans, text_w).height() as f64
         };
         let att_h = match &m.attachment {
             None => 0.0,
@@ -650,7 +793,16 @@ impl ChatApp {
             self.draw_message_editor(scene, tf, tr, theme, text_x, text_w, rm, y, hits);
         } else {
             if !m.text.is_empty() {
-                text(scene, tr, tf, &m.text, 15.0, c.text_primary, text_x, *y, TextWeight::Regular, Some(text_w));
+                if m.mentions.is_empty() {
+                    text(scene, tr, tf, &m.text, BODY_SIZE, c.text_primary, text_x, *y, TextWeight::Regular, Some(text_w));
+                } else {
+                    // Mentions are runs inside the paragraph, so the whole body
+                    // goes through the attributed layout — one wrap, one line
+                    // grid, bands painted behind the glyphs they belong to.
+                    let spans = body_spans(self, m, theme, c.surfaces.base);
+                    let layout = shape_body(tr, &spans, text_w);
+                    tr.draw_rich(scene, &layout, tf * Affine::translate((text_x, *y)), c.text_primary);
+                }
                 *y += rm.body_h + 2.0;
             }
             // Right-click your own message (header + body) opens the edit menu.
@@ -965,6 +1117,37 @@ impl ChatApp {
         self.composer_main.apply_layout_external(inner);
         self.composer_main.set_focus(focused);
         self.composer_main.draw(scene, tf, tr, theme, presence);
+        self.mention_anchor = Some(Point::new(inner.x0, rect.y0));
+    }
+
+    /// Draw the `@` picker above the composer, anchored so it grows upward out
+    /// of the field rather than off the bottom of the window.
+    ///
+    /// The popover itself is the shared [`ui::widget::ContextMenu`]; all this
+    /// does is place it and record the rows' hit regions so a click picks a
+    /// participant.
+    pub(crate) fn draw_mention_picker(
+        &mut self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        if !self.mention_menu.is_open() || self.mention_rows.is_empty() {
+            return;
+        }
+        let Some(anchor) = self.mention_anchor else { return };
+        // Height first, so the list can be placed above its anchor.
+        self.mention_menu.move_to([anchor.x as f32, anchor.y as f32]);
+        let h = self.mention_menu.rect().height();
+        let top = (anchor.y - h - 8.0).max(self.rect.y0 + 8.0);
+        self.mention_menu.move_to([anchor.x as f32, top as f32]);
+        // One region for the whole popover; which row a click landed on is the
+        // primitive's own `item_at`, so the row layout is never re-derived here.
+        ChatApp::push_hit(hits, self.mention_menu.rect(), Hit::MentionMenu);
+        self.mention_menu.draw(scene, tf, tr, theme, presence);
     }
 
     /// Draw the composer box chrome — the rounded field, the attach `+`, the
@@ -1398,7 +1581,13 @@ fn file_chip_meta(name: &str, size: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{file_chip_meta, human_size};
+    use super::{
+        body_spans, file_chip_meta, human_size, mention_colors, MENTION_BAND_CONTRAST,
+        MENTION_TEXT_CONTRAST,
+    };
+    use crate::app::ChatApp;
+    use ui::theme::Theme;
+    use ui::ColorCompat;
 
     /// Defect regression: the attachment chip must never leak the internal
     /// mount path. The demo's shared note lives at
@@ -1433,6 +1622,122 @@ mod tests {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(1536), "1.5 KB");
         assert!(human_size(3_000_000).ends_with(" MB"));
+    }
+
+    /// A mention is painted in the participant's own colour, and a colour
+    /// chosen to tell people apart is not a colour chosen to be read. Measured,
+    /// across every shipped ground and every participant colour, because
+    /// eyeballing one theme is exactly how a run ends up invisible in another.
+    #[test]
+    fn a_mention_clears_the_contrast_floors_on_every_ground() {
+        use ui::a11y::contrast_ratio;
+        let app = ChatApp::new_ephemeral();
+        // Ids spanning the palette: `participant_color` hashes the id, so this
+        // samples the whole ring rather than one lucky hue.
+        let ids: Vec<String> = (0..24).map(|i| format!("u_participant_{i}")).collect();
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = theme.tokens.colors.surfaces.base;
+            let (mut worst_text, mut worst_band) = (f64::MAX, f64::MAX);
+            for id in &ids {
+                for is_self in [false, true] {
+                    let (band, ink) = mention_colors(&app, id, is_self, &theme, ground);
+                    let text = contrast_ratio(ink, band);
+                    assert!(
+                        text >= MENTION_TEXT_CONTRAST,
+                        "{} / {id} / self={is_self}: mention text on its band is {text:.2}:1",
+                        theme.name
+                    );
+                    let band_r = contrast_ratio(band, ground);
+                    assert!(
+                        band_r >= MENTION_BAND_CONTRAST,
+                        "{} / {id} / self={is_self}: mention band on the surface is {band_r:.2}:1",
+                        theme.name
+                    );
+                    worst_text = worst_text.min(text);
+                    worst_band = worst_band.min(band_r);
+                }
+            }
+            // The measured floor, printed so the figures behind the claim are
+            // on the record rather than asserted and forgotten.
+            println!(
+                "mention contrast — {}: worst text-on-band {worst_text:.2}:1 (floor {MENTION_TEXT_CONTRAST}), \
+                 worst band-on-surface {worst_band:.2}:1 (floor {MENTION_BAND_CONTRAST})",
+                theme.name
+            );
+        }
+    }
+
+    /// A mention of you must not read like a mention of somebody else — that
+    /// difference is the whole reason to render it at all.
+    #[test]
+    fn your_own_mention_is_told_apart_from_everybody_elses() {
+        let app = ChatApp::new_ephemeral();
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = theme.tokens.colors.surfaces.base;
+            let (mine, _) = mention_colors(&app, "u_me", true, &theme, ground);
+            let (theirs, _) = mention_colors(&app, "u_me", false, &theme, ground);
+            assert_ne!(
+                (mine.r(), mine.g(), mine.b()),
+                (theirs.r(), theirs.g(), theirs.b()),
+                "{}: a mention of you looks identical to a mention of someone else",
+                theme.name
+            );
+            assert!(
+                ui::a11y::contrast_ratio(mine, ground) > ui::a11y::contrast_ratio(theirs, ground),
+                "{}: your own mention should be the one that stands out",
+                theme.name
+            );
+        }
+    }
+
+    /// The runs a body is split into must reconstruct the body exactly. A
+    /// renderer that drops or duplicates a byte is a renderer showing something
+    /// nobody wrote.
+    #[test]
+    fn the_styled_runs_reassemble_the_body_they_came_from() {
+        let app = ChatApp::new_ephemeral();
+        let theme = Theme::dark();
+        let text = "cc @Aria Chen and @Scribe — see the thread";
+        let room = [
+            crate::mention::Participant { id: "u_aria".into(), name: "Aria Chen".into(), is_agent: false },
+            crate::mention::Participant { id: "agent_scribe".into(), name: "Scribe".into(), is_agent: true },
+        ];
+        let mut m = crate::model::Message {
+            id: "m1".into(),
+            channel: "c".into(),
+            author: "u_me".into(),
+            ts: 0,
+            text: text.into(),
+            edited: false,
+            history: vec![],
+            parent: None,
+            reactions: vec![],
+            mentions: crate::mention::resolve(text, &room),
+            reference: None,
+            attachment: None,
+            pinned: false,
+        };
+        assert_eq!(m.mentions.len(), 2);
+        let spans = body_spans(&app, &m, &theme, theme.tokens.colors.surfaces.base);
+        let joined: String = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(joined, text, "the runs must be the body, exactly");
+        assert_eq!(
+            spans.iter().filter(|s| s.background.is_some()).count(),
+            2,
+            "each mention gets its own band"
+        );
+
+        // An offset left over from an edit that did not re-resolve points at
+        // the wrong words — better plain prose than a highlight over them.
+        m.mentions[0].len = 9_999;
+        let spans = body_spans(&app, &m, &theme, theme.tokens.colors.surfaces.base);
+        let joined: String = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(joined, text, "a stale offset must not eat the body");
+        assert_eq!(
+            spans.iter().filter(|s| s.background.is_some()).count(),
+            1,
+            "the stale reference is dropped, the sound one kept"
+        );
     }
 }
 

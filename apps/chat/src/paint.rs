@@ -159,3 +159,76 @@ pub fn palette_color(theme: &Theme, idx: usize) -> Color {
     ];
     ring[idx % ring.len()]
 }
+
+/// Blend `a` toward `b` by `t` (0 = all `a`, 1 = all `b`), in sRGB.
+///
+/// Good enough for tinting a band toward its surface; nothing here is a
+/// perceptual mix, and nothing depends on it being one.
+pub fn mix(a: Color, b: Color, t: f64) -> Color {
+    use ui::color_compat::ColorCompat;
+    let t = t.clamp(0.0, 1.0) as f32;
+    let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
+    Color::from_rgb8(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
+}
+
+/// Move `ink` toward whichever of black/white it needs, until it clears
+/// `target` contrast against `bg` — and return the first step that does.
+///
+/// A participant's colour is assigned to tell people apart, not to be readable
+/// on any particular surface, so painting text in it is a contrast defect
+/// waiting to happen: the same blue that reads cleanly on a light card is
+/// unreadable on a dark one, and the high-contrast theme's ground is neither.
+/// This keeps the colour recognisably theirs while making the text legible on
+/// the ground it actually lands on.
+///
+/// Both directions are tried, not just the one the background suggests: a
+/// mid-toned ground can be short of the target in the obvious direction and
+/// clear it in the other, and stopping after one direction is how a run ends up
+/// at 4.38:1 in exactly one theme. `fallback` is used only when neither
+/// direction can reach the target, and only if it does better than the closest
+/// step found.
+pub fn legible_on(ink: Color, bg: Color, target: f64, fallback: Color) -> Color {
+    use ui::a11y::contrast_ratio;
+    if contrast_ratio(ink, bg) >= target {
+        return ink;
+    }
+    let bg_is_light = ui::a11y::relative_luminance(bg) >= 0.5;
+    let first = if bg_is_light { Color::BLACK } else { Color::WHITE };
+    let second = if bg_is_light { Color::WHITE } else { Color::BLACK };
+    let mut best = ink;
+    let mut best_ratio = contrast_ratio(ink, bg);
+    for toward in [first, second] {
+        for step in 1..=24 {
+            let candidate = mix(ink, toward, step as f64 / 24.0);
+            let r = contrast_ratio(candidate, bg);
+            if r >= target {
+                return candidate;
+            }
+            if r > best_ratio {
+                best_ratio = r;
+                best = candidate;
+            }
+        }
+    }
+    if contrast_ratio(fallback, bg) > best_ratio { fallback } else { best }
+}
+
+/// Strengthen a tint until it stands `target` apart from the ground it sits on.
+///
+/// Unlike [`legible_on`], the first thing tried is more of the colour the tint
+/// came from — a band that gets darker by turning grey has stopped saying whose
+/// it is, which is the only reason the band exists. Only when saturating the
+/// tint still falls short does it move toward black or white.
+pub fn band_at_least(tint: Color, own: Color, ground: Color, target: f64) -> Color {
+    use ui::a11y::contrast_ratio;
+    if contrast_ratio(tint, ground) >= target {
+        return tint;
+    }
+    for step in 1..=16 {
+        let candidate = mix(tint, own, step as f64 / 16.0);
+        if contrast_ratio(candidate, ground) >= target {
+            return candidate;
+        }
+    }
+    legible_on(own, ground, target, own)
+}
