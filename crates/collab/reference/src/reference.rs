@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use qos_actions::ResourceId;
+use qos_actions::{Doc, ResourceId};
 
 /// What [`Span`]'s offsets count.
 ///
@@ -175,8 +175,14 @@ impl ResourceRef {
 ///
 /// Returning `None` means nothing is selected — the gesture is simply not
 /// offered, rather than a reference to nothing being minted.
+///
+/// Takes the shared document for the same reason
+/// [`ResourceProvider`](qos_actions::ResourceProvider) does: the label, the
+/// ordinal and often the id itself are read from the CRDT rather than from
+/// widget fields, so the address is the document's answer and not the paint
+/// layer's.
 pub trait Referent {
-    fn selection_reference(&self) -> Option<ResourceRef>;
+    fn selection_reference(&self, doc: &Doc) -> Option<ResourceRef>;
 }
 
 #[cfg(test)]

@@ -11,6 +11,7 @@
 pub mod actions;
 pub mod history_panel;
 pub mod i18n;
+pub mod reference;
 pub mod styles;
 pub mod widget;
 pub mod word_processor;
