@@ -537,6 +537,46 @@ def pin_locale(env: dict) -> dict:
     # of the variables somebody remembered.
     for var in [k for k in env if k.startswith("LC_")]:
         env[var] = DEMO_LOCALE
+    pin_keyboard(env)
+    return env
+
+
+def pin_keyboard(env: dict) -> dict:
+    """Give the nested compositor the keyboard the person is actually
+    typing on.
+
+    `XkbConfig::default()` compiles from `XKB_DEFAULT_RULES/_MODEL/
+    _LAYOUT/_VARIANT/_OPTIONS`, and with none of them set xkbcommon falls
+    back to a US keymap. On a real qOS install the installer writes those
+    into `/etc/environment` and PAM exports them into the session, so the
+    layout somebody chose is the one that gets compiled.
+
+    Nested on somebody's desktop, nothing writes them: GNOME configures
+    the layout through its own settings rather than the environment. So a
+    German keyboard drove a US compositor — every punctuation key wrong,
+    `y` and `z` swapped, and no way to type the address of anything.
+
+    `localectl` is the system's own answer, and the same one the
+    installer writes. Failing to read it leaves the environment alone
+    rather than guessing: a wrong layout asserted is worse than the
+    fallback, because the fallback is at least the documented default.
+    """
+    try:
+        out = subprocess.run(["localectl", "status"], capture_output=True,
+                             text=True, timeout=5).stdout
+    except Exception:
+        return env
+    fields = {
+        "X11 Layout": "XKB_DEFAULT_LAYOUT",
+        "X11 Model": "XKB_DEFAULT_MODEL",
+        "X11 Variant": "XKB_DEFAULT_VARIANT",
+        "X11 Options": "XKB_DEFAULT_OPTIONS",
+    }
+    for line in out.splitlines():
+        label, _, value = line.strip().partition(":")
+        var = fields.get(label.strip())
+        if var and value.strip() and value.strip() != "n/a":
+            env[var] = value.strip()
     return env
 
 
