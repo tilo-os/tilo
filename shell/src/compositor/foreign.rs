@@ -1231,8 +1231,16 @@ impl Widget for ForeignSurfaceWidget {
         }
 
         let (headline, detail) = self.unshowable_text();
-        let on_card = theme.tokens.colors.neutral[1];
-        let on_card_dim = theme.tokens.colors.neutral[4];
+        // These were fixed ramp indices, which is a guess about which way
+        // round the card is rather than an answer. `neutral[1]` is near-black
+        // on the dark ramp and the card under it is `#16171b`, so the app's
+        // own name — the one thing on screen saying *what* failed to open —
+        // measured 1.03:1 and was invisible; under high contrast the same
+        // near-black sat on pure black. `on_card` derives both tiers from the
+        // card's actual luminance, which is what this text needed all along.
+        let tiers = theme.tokens.colors.on_card();
+        let on_card = tiers.ink;
+        let on_card_dim = tiers.ink_dim;
         let size = theme.tokens.typography.scale.xl;
         let (tw, _) = text_renderer.measure(&headline, size, None);
         let cx = self.rect.center().x;

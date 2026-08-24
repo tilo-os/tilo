@@ -465,6 +465,10 @@ impl Colors {
 
         let scrim = if p.dark { mix8(p.base, black, 0.55) } else { Color::from_rgb8(12, 12, 14) };
 
+        // Which way a translucent surface/border tier has to lean to be seen
+        // at all. See the `surface_white_*` fields below.
+        let veneer = if p.dark { Color::WHITE } else { black };
+
         Self {
             neutral,
             accent,
@@ -493,11 +497,28 @@ impl Colors {
             text_tertiary: p.text_tertiary,
             border_standard: p.border,
             border_focus: p.focus,
-            surface_white_5:  Color::from_rgba8(255, 255, 255, 13),
-            surface_white_10: Color::from_rgba8(255, 255, 255, 26),
-            surface_white_20: Color::from_rgba8(255, 255, 255, 51),
-            border_white_10:  Color::from_rgba8(255, 255, 255, 26),
-            border_white_20:  Color::from_rgba8(255, 255, 255, 51),
+            // A veneer has to move the surface it is laid on, and which way
+            // that is depends on the palette. These tiers were white at every
+            // strength on both sides of the light/dark line, and white over
+            // `raised` — `#ffffff` on the light theme — is nothing at all:
+            // the faint tier measured 1.01:1 there. That is why every
+            // unselected filter chip lost its pill and read as bare text, and
+            // why the collaborators Join button had no body. Wash toward the
+            // contrasting extreme instead, so a tier means the same thing on
+            // both sides. `window_card_border` above already flips for this
+            // reason; these are the same decision made for the surfaces
+            // rather than for the edge.
+            //
+            // Strength is unchanged, and deliberately so: these are quiet
+            // tiers, not shapes a person has to find. A pill that must stay
+            // findable takes an edge clearing [`NON_TEXT_MIN_CONTRAST`]
+            // against its ground — see [`AccentChip::border`] — rather than a
+            // louder body.
+            surface_white_5:  with_a(veneer, 13),
+            surface_white_10: with_a(veneer, 26),
+            surface_white_20: with_a(veneer, 51),
+            border_white_10:  with_a(veneer, 26),
+            border_white_20:  with_a(veneer, 51),
         }
     }
 
@@ -694,12 +715,45 @@ impl Colors {
     /// [`ON_CARD_SMALL_TEXT_CONTRAST`]), and the derivation cannot know the
     /// size it is being drawn at.
     pub fn accent_chip_on(&self, ground: Color, min_ratio: f64) -> AccentChip {
-        let accent = self.accent[ACCENT_PRIMARY_IDX];
-        let fill = mix8(ground, accent, ACCENT_CHIP_WASH);
+        self.tinted_chip_on(
+            ground,
+            self.accent[ACCENT_PRIMARY_IDX],
+            ACCENT_CHIP_WASH,
+            min_ratio,
+        )
+    }
+
+    /// The same resolution as [`Self::accent_chip_on`], for a chip carrying
+    /// any `tint` at any `wash` strength — a danger-tinted button, a
+    /// semantic status pill, a tray glyph on a tinted tray.
+    ///
+    /// This exists because the accent is not the only tint a body gets made
+    /// from, and the failure it prevents is not about the accent at all. A
+    /// label drawn in the *same* tint as its own wash of that tint cannot
+    /// reach a text floor at any wash strength: both sides of the ratio move
+    /// together, so the fill and the label stay a fixed fraction apart no
+    /// matter how the theme is tuned. Every hand-rolled `tint × 0.20` fill
+    /// with a `tint` label in the shell measured between 2.6:1 and 3.6:1 for
+    /// exactly that reason, and no palette change could have lifted them.
+    ///
+    /// So the ink is derived against the composited body rather than against
+    /// the tint the body was mixed from, and walks out of the tint only as
+    /// far as `min_ratio` demands — the pill keeps its hue, its label stops
+    /// sharing it. `min_ratio` belongs to the caller because the headroom
+    /// anti-aliasing spends is a property of the size being drawn at; see
+    /// [`ON_CARD_SMALL_TEXT_CONTRAST`].
+    pub fn tinted_chip_on(
+        &self,
+        ground: Color,
+        tint: Color,
+        wash: f32,
+        min_ratio: f64,
+    ) -> AccentChip {
+        let fill = mix8(ground, tint, wash);
         AccentChip {
             fill,
-            border: self.ink_on(ground, accent, NON_TEXT_MIN_CONTRAST),
-            ink: self.ink_on(fill, accent, min_ratio),
+            border: self.ink_on(ground, tint, NON_TEXT_MIN_CONTRAST),
+            ink: self.ink_on(fill, tint, min_ratio),
         }
     }
 

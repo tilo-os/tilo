@@ -27,6 +27,10 @@ pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_outbound;
 pub mod color_pipeline;
+/// Contrast floors for chrome the shell paints by hand. Test-only: it adds
+/// no production surface, it measures the production one.
+#[cfg(test)]
+mod contrast_floors;
 pub mod crdt_text;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
