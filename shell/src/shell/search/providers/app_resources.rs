@@ -274,6 +274,12 @@ impl SearchProvider for AppResourcesProvider {
                 continue;
             }
             let params = params_for(&d.input);
+            // Whether this operation's one argument is the address of
+            // content rather than words somebody says. The app declared it,
+            // and it is the only thing that distinguishes an operation that
+            // can have carried an object out of another application from one
+            // that merely takes a string.
+            let collects_content = d.input.wants_content();
             let address = d.address.clone();
             let surfaces = self.surfaces.clone();
             let types = Rc::clone(&self.types);
@@ -303,7 +309,30 @@ impl SearchProvider for AppResourcesProvider {
                             &types,
                             &mut transport,
                         )
-                        .map(|_| ())
+                        .map(|_| {
+                            // The operation succeeded, so if it carried
+                            // content here from somewhere else there is now
+                            // something worth showing. Noted *after* the
+                            // dispatch and never before: an action that was
+                            // refused must leave no trace, and a record made
+                            // in advance would animate a crossing that did
+                            // not happen.
+                            //
+                            // A push onto a queue and nothing more — no
+                            // layout, no window lookup. The compositor
+                            // resolves the geometry on a frame it was going
+                            // to render anyway, so this cannot slow the
+                            // operation down.
+                            if collects_content {
+                                if let Some(hash) = argument {
+                                    crate::shell::action_flight::note_flight(
+                                        caller,
+                                        hash.trim(),
+                                        app_of(&address.resource),
+                                    );
+                                }
+                            }
+                        })
                         // The door's own refusal codes line up with the
                         // action API's, so a caller sees the same
                         // vocabulary whether it addressed a shell action

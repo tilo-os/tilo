@@ -187,6 +187,28 @@ fn decode_rgba(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
     Some((rgba.into_raw(), w, h))
 }
 
+/// Decode encoded image bytes into a paintable image, whatever the format.
+///
+/// [`crate::widget::Image::from_encoded`] reads PNG only, which is enough for
+/// an asset shipped beside the code and not enough for a photograph: the
+/// content a person actually has is as likely to be JPEG or WebP. This is the
+/// same decoder the store's own workers use, exposed for callers that already
+/// hold the bytes and want to paint them once rather than fetch them by URL —
+/// content out of the blob store, addressed by hash and never by name.
+///
+/// `None` for bytes that are not an image this build can read. A caller must
+/// have something honest to draw in that case; it must not assume success.
+pub fn decode_image(bytes: &[u8]) -> Option<PenikoImage> {
+    let (rgba, w, h) = decode_rgba(bytes)?;
+    Some(PenikoImage {
+        data: Blob::new(Arc::new(rgba)),
+        format: Format::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: w,
+        height: h,
+    })
+}
+
 /// Paint `img` into `rect` with a `cover` fit (fill the rect, preserve aspect,
 /// crop the overflow) clipped to a rounded rectangle. Mirrors the album-art
 /// tile shape system apps draw, so a real cover drops straight into the slot a
