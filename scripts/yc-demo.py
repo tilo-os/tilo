@@ -4021,8 +4021,14 @@ def beat_four(quinten: Session, xaver: Session, agent: Session,
     # then leaves an empty desktop behind — and means a peer arriving
     # later sees nobody until somebody jiggles a mouse. Nothing is moved
     # here on purpose: both pointers have been still since above.
-    quinten.settle(3.0)
-    still_there = seen_by(quinten, xaver.user)
+    # Three seconds of two motionless cursors. The claim is worth making
+    # -- an edge-triggered cursor looks identical for a second and then
+    # leaves an empty desktop -- and there is nothing in it to watch,
+    # because what is being asserted is that the picture does not change.
+    with off_camera("three seconds pass with nobody moving, and both "
+                    "cursors are still being published"):
+        quinten.settle(3.0)
+        still_there = seen_by(quinten, xaver.user)
     claim("xaver's cursor is still on quinten's screen 3s after it stopped",
           bool(still_there), True)
     if not still_there:
