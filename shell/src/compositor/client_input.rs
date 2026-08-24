@@ -1098,6 +1098,15 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().palette_visible() {
         return true;
     }
+    // The compose surface. It is a text field that appeared under somebody's
+    // hands the instant they right-clicked, and every key belongs to the
+    // sentence being written — including the ones the application underneath
+    // would read as its own shortcuts. Without this the panel is drawn by the
+    // compositor and typed into by whichever client had the keyboard, which is
+    // the same defect the app-drawn version had from the other side.
+    if fb.host().remark_is_open() {
+        return true;
+    }
     // The portal's file chooser, for the same reason as the peer-sync
     // card below. It is modal — drawn over a scrim, above every other
     // overlay — but "drawn above" and "receives the click" are separate
@@ -2084,7 +2093,12 @@ pub fn route_input(
             // summoned workspace wheel counts: it is dismissed with
             // Escape, so the key has to reach the shell rather than the
             // focused client while it is showing.
-            let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
+            // The compose surface counts too: Escape is how somebody abandons
+            // a half-written remark, so the key has to reach the shell rather
+            // than the client whose object the remark is about.
+            let overlay_open = fb.host().palette_visible()
+                || fb.host().wheel_summoned()
+                || fb.host().remark_is_open();
             let shell_owns = captured || is_shell_chord(event, modifiers, overlay_open);
             let forward = if pressed {
                 let forward = !shell_owns && state.client_input.keyboard_focus.is_some();

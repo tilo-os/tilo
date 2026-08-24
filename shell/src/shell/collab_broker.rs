@@ -674,6 +674,43 @@ pub struct OpenAppRequest {
 /// hand the request to a queue and return.
 pub type AppOpener = Box<dyn Fn(OpenAppRequest) + Send + Sync>;
 
+/// An application asking this session to draw the "say something about this"
+/// surface.
+///
+/// The same split [`OpenAppRequest`] makes, for the same reason: `reference`
+/// and `beside` are what the caller said, `room` and `who` are the broker's own
+/// answers about the connection that said it. A caller cannot be allowed to
+/// supply the second half — the panel's destination list is the *room's*
+/// roster, and an app naming its own room would be choosing who may read what
+/// is written into it.
+#[derive(Clone, Debug)]
+pub struct ComposeRemarkRequest {
+    /// The object being talked about, as `serde_json` of a
+    /// `qos_reference::ResourceRef`. Unvalidated here: the session decodes it,
+    /// and an address that will not parse is a refusal the session reports.
+    pub reference: String,
+    /// The chrome to sit beside, in the **asking window's** coordinates:
+    /// `(x, y, width, height)`. The session converts, because the session is
+    /// what knows where that window is.
+    pub beside: (f64, f64, f64, f64),
+    /// The room the asking connection announced on its `Hello`.
+    pub room: String,
+    /// Who asked, as the broker resolved them for every other frame.
+    pub who: String,
+    /// The connection that asked.
+    pub peer: u64,
+}
+
+/// What a session does when an application asks it to draw the compose surface.
+///
+/// The broker holds the door and does not decide what comes through it, exactly
+/// as with [`AppOpener`]: it knows sockets, rooms and names, and nothing about
+/// where a window sits or what a panel looks like.
+///
+/// The sink runs on the reader thread that decoded the frame. Keep it short —
+/// hand the request to a queue and return.
+pub type RemarkComposer = Box<dyn Fn(ComposeRemarkRequest) + Send + Sync>;
+
 pub struct PeerTable {
     peers: Mutex<Vec<Arc<Peer>>>,
     /// Monotonic id source. Shared with the capnp listener so a
@@ -690,6 +727,10 @@ pub struct PeerTable {
     /// installed none — a broker with no desktop behind it — and a request
     /// then gets the honest answer rather than silence.
     app_opener: Mutex<Option<Arc<AppOpener>>>,
+    /// Where a `CollabRequest::ComposeRemark` goes. `None` in a session that
+    /// installed none — a broker with no desktop behind it — and the request is
+    /// then dropped with a line saying so, rather than in silence.
+    remark_composer: Mutex<Option<Arc<RemarkComposer>>>,
 }
 
 /// A subscriber inside the shell process, addressed by room.
@@ -749,6 +790,7 @@ impl PeerTable {
             capnp: Mutex::new(None),
             local_subs: Mutex::new(Vec::new()),
             app_opener: Mutex::new(None),
+            remark_composer: Mutex::new(None),
         }
     }
 
@@ -899,6 +941,10 @@ impl PeerTable {
     /// The installed opener, if this session has one.
     fn app_opener(&self) -> Option<Arc<AppOpener>> {
         self.app_opener.lock().ok().and_then(|g| g.clone())
+    }
+
+    pub(crate) fn remark_composer(&self) -> Option<Arc<RemarkComposer>> {
+        self.remark_composer.lock().ok().and_then(|g| g.clone())
     }
 
     fn send_to_peer(&self, peer_id: u64, event: &CollabEvent) -> bool {
@@ -1153,6 +1199,18 @@ fn translate(
                 src_id, %hash, %from_app, %into_app,
                 "collab_broker: a CarriedContent reached the fan-out; it has no \
                  audience and was dropped, so nothing will be drawn for it"
+            );
+            TranslatedAction::Nothing
+        }
+        // Intercepted before this, in the reader loop, for the same reason an
+        // open is: it asks *this session* to draw something rather than
+        // addressing an audience. Named here so the day one reaches the
+        // fan-out it is a dropped frame with a reason beside it.
+        CollabRequest::ComposeRemark { .. } => {
+            tracing::warn!(
+                src_id,
+                "collab_broker: a ComposeRemark reached the fan-out; it has no \
+                 audience and was dropped, so no compose surface will appear"
             );
             TranslatedAction::Nothing
         }
@@ -1623,6 +1681,44 @@ fn reader_loop(
             );
             continue;
         }
+        // Drawing a compose surface never reaches `translate` either, and for
+        // the same reason opening an application does not: it is addressed to
+        // *this session*. Relaying it would open a compose box on every peer's
+        // desktop because somebody else right-clicked something.
+        if let CollabRequest::ComposeRemark { reference, beside } = &req {
+            let room = src_route
+                .as_ref()
+                .map(|r| r.cluster_id.clone())
+                .unwrap_or_default();
+            match table.remark_composer() {
+                Some(compose) => {
+                    tracing::info!(
+                        peer = peer.id, %room, who = %src_user_id,
+                        "collab_broker: an application asked this session to draw \
+                         a compose surface"
+                    );
+                    compose(ComposeRemarkRequest {
+                        reference: reference.clone(),
+                        beside: *beside,
+                        room,
+                        who: src_user_id.clone(),
+                        peer: peer.id,
+                    });
+                }
+                // No desktop behind this broker. Said rather than dropped: on
+                // the other end somebody has right-clicked an object and is
+                // looking at a menu with no compose box beside it, and "there
+                // is nothing here that draws" is the reason.
+                None => {
+                    tracing::warn!(
+                        peer = peer.id,
+                        "collab_broker: asked to draw a compose surface, but this \
+                         session has no desktop to draw one on"
+                    );
+                }
+            }
+            continue;
+        }
         match translate(peer.id, &src_user_id, src_route.as_ref(), req, &channels) {
             TranslatedAction::Nothing => {}
             TranslatedAction::Fanout { event, route } => {
@@ -1832,6 +1928,48 @@ impl BrokerHandle {
     pub fn set_app_opener(&self, opener: AppOpener) {
         if let Ok(mut guard) = self.peers.app_opener.lock() {
             *guard = Some(Arc::new(opener));
+        }
+    }
+
+    /// Tell the connection that asked that its compose surface has gone.
+    ///
+    /// Addressed to the one peer, never fanned: it is an answer, and nobody
+    /// else's application has a menu standing beside that panel.
+    ///
+    /// **Only the JSON transport carries this today.** Per-peer delivery is a
+    /// thing that dialect has and the Cap'n Proto one does not — every capnp
+    /// verb is either a call's own return or a room-wide stream, and this is
+    /// neither. A sandboxed application dials capnp, so for those the panel
+    /// closes and the context menu it opened beside is left standing until the
+    /// next click puts it away. Visible, and smaller than the defect this
+    /// whole path removes; closing it needs a session-addressed stream on the
+    /// capnp contract, which is a door that does not exist yet.
+    pub fn remark_surface_closed(&self, peer: u64) {
+        let delivered = self
+            .peers
+            .send_to_peer(peer, &CollabEvent::RemarkSurfaceClosed);
+        if !delivered {
+            // Two different reasons, and the log must not pick one: the
+            // application may have gone, or it may be perfectly alive on a
+            // transport with nowhere to put this. Naming a cause it cannot
+            // distinguish is how a known gap gets read as a stale connection.
+            tracing::debug!(
+                peer,
+                "collab_broker: the compose surface closed and the connection \
+                 that asked was not told; it has either gone or is on a \
+                 transport with no per-peer delivery"
+            );
+        }
+    }
+
+    /// Install the sink for "draw me somewhere to say something about this".
+    ///
+    /// The counterpart to [`Self::set_app_opener`]. A broker with no desktop
+    /// behind it installs none, and a request then gets a line saying nothing
+    /// here draws rather than disappearing.
+    pub fn set_remark_composer(&self, composer: RemarkComposer) {
+        if let Ok(mut guard) = self.peers.remark_composer.lock() {
+            *guard = Some(Arc::new(composer));
         }
     }
 

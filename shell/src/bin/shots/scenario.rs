@@ -20,7 +20,7 @@
 use std::cell::RefCell;
 use std::path::Path;
 
-use vello::kurbo::Point;
+use vello::kurbo::{Point, Rect};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use shell::shell::chrome_state::{ChromeState, WsTab};
@@ -41,6 +41,30 @@ use super::driver::ShellDriver;
 pub enum Action {
     /// Click at raw screen coordinates (cursor-move + press + release).
     ClickAt(Point),
+    /// Secondary-click at raw screen coordinates — the gesture that opens a
+    /// context menu, and beside it the "say something about this" surface.
+    SecondaryClickAt(Point),
+    /// Open the compose surface about a named object, beside a rect given in
+    /// the coordinates of the window at `group_fraction` across the strip.
+    ///
+    /// The subject is synthetic. What this captures is *placement* — that the
+    /// panel is put against the display rather than against the window, and is
+    /// painted over the application next door — and the address it carries is
+    /// not what decides that. Which file it is about is proved where it is
+    /// decided: in the file manager's own tests, on a real right-click.
+    ///
+    /// `beside` is a rect in the asking window's own coordinates, exactly as an
+    /// application reports its context menu, so the conversion under test is
+    /// the production one.
+    ComposeRemarkBeside {
+        /// Which hosted window is asking, as a fraction across the strip: 0.0
+        /// is the leftmost, 1.0 the rightmost.
+        window: f64,
+        /// The menu rect, in that window's own coordinates.
+        beside: Rect,
+        /// What the chip says. A label, never an address.
+        label: &'static str,
+    },
     /// Click on a named target. Names are resolved via
     /// [`ShellDriver::resolve_named_rect`]; if the rect is `Rect::ZERO`
     /// at the time of the click the engine logs a warning and skips
@@ -411,6 +435,35 @@ pub fn run_with<S: SnapshotSink>(
 fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut S) {
     match action {
         Action::ClickAt(p) => driver.click_at(*p),
+        Action::SecondaryClickAt(p) => driver.secondary_click_at(*p),
+        Action::ComposeRemarkBeside {
+            window,
+            beside,
+            label,
+        } => {
+            // Lay out first: the window rects this reads are the ones the last
+            // pass produced, and a scenario that opened a window on the
+            // previous action has not had one yet.
+            driver.relayout();
+            let mut rects: Vec<Rect> = driver
+                .host()
+                .group_hit_candidates_for_tests()
+                .into_iter()
+                .map(|(_, _, r)| r)
+                .filter(|r| r.area() > 0.0)
+                .collect();
+            rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+            if rects.is_empty() {
+                eprintln!("scenario: no hosted window to open a compose surface beside");
+                return;
+            }
+            let idx = (((rects.len() - 1) as f64) * window.clamp(0.0, 1.0)).round() as usize;
+            let origin = rects[idx].origin();
+            let reference = qos_reference::ResourceRef::whole("files.entry", "shot:subject", *label);
+            if !driver.host_mut().open_remark(reference, *beside, origin) {
+                eprintln!("scenario: the compose surface opened nothing — no destinations?");
+            }
+        }
         Action::ClickNamed(name) => match driver.resolve_named_centre(name) {
             Some(p) => driver.click_at(p),
             None => eprintln!(
@@ -1523,7 +1576,67 @@ fn catalogue_rest() -> Vec<Scenario> {
         media_key_osd(),
         wifi_password_prompt(),
         file_chooser_dialog(),
+        remark_compose_beside_a_window(),
     ]
+}
+
+/// The "say something about this" surface, beside a window at the screen edge.
+///
+/// The picture this exists to take. Two applications sit side by side on the
+/// strip; the menu is at the *right edge* of the left one, which is the case
+/// that used to be impossible: the panel is wider than the window it was being
+/// clamped into, so it was cut off mid-word with the neighbour visible past the
+/// slice. Drawn by the compositor it simply carries on over that neighbour.
+///
+/// Three shots, and each answers a different objection:
+///
+/// * `01-beside-the-left-window` — the panel crossing a window boundary.
+/// * `02-beside-the-rightmost-window` — no room on the right at all, so the
+///   placement rule falls through to its next choice rather than clipping.
+/// * `03-empty-strip` — the same request with nothing else open, which is the
+///   shape the application used to draw and the control for the other two.
+fn remark_compose_beside_a_window() -> Scenario {
+    // A menu opened near the right edge of its window, which is where a
+    // right-click on a file in the last column lands. The panel is 392 wide
+    // and no window on a two-up strip is, so "beside" is off the window by
+    // construction.
+    let menu = Rect::new(430.0, 180.0, 610.0, 400.0);
+    Scenario {
+        name: "remark_compose_beside_a_window",
+        description: "The compose surface placed against the display, over the window next door.",
+        actions: vec![
+            // Boot hands us one wide group. Cut it to a lone window and
+            // narrow it, so the next application lands in a column of its
+            // own rather than as another tab — the panel has to have a
+            // *neighbour* to be drawn over, and a full-width window has none.
+            Action::LoneWindow(0),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            Action::Wait(2),
+            Action::OpenHostedWindow {
+                app: "Notes",
+                title: "Notes",
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            Action::Wait(4),
+            Action::ComposeRemarkBeside {
+                window: 0.0,
+                beside: menu,
+                label: "harbour.png",
+            },
+            Action::Wait(2),
+            Action::Snapshot("01-beside-the-left-window"),
+            Action::ComposeRemarkBeside {
+                window: 1.0,
+                beside: menu,
+                label: "harbour.png",
+            },
+            Action::Wait(2),
+            Action::Snapshot("02-beside-the-rightmost-window"),
+        ],
+    }
 }
 
 /// Resolve a [`Action::SeedStatus`] preset name into the reading the

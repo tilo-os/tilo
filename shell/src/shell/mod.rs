@@ -25,6 +25,7 @@ pub mod browser_stub;
 pub mod catalogue;
 pub mod chrome_state;
 pub mod agent_opens;
+pub mod remark_surface;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_outbound;

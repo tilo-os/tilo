@@ -565,17 +565,17 @@ codegen-units = 16
 [profile.demo.package.shell]
 debug-assertions = true
 
-# The toolkit needs the same, and for the same reason the compositor does.
+# And `ui`, because `shell` reads across the boundary.
 #
-# `shots` is built as part of `shell`, and it drives widgets through
-# helpers `ui` gates behind `#[cfg(any(test, debug_assertions))]` — the
-# pattern this codebase uses to keep test affordances out of release
-# builds. With assertions on for `shell` and off for `ui`, the scenario
-# code calls `bar_mut_for_tests` and the toolkit has compiled it away, so
-# `cargo build --profile demo -p shell` fails on the `shots` binary while
-# the compositor itself builds. That breaks rendering stills at the
-# profile the film is recorded in, which is the one profile whose stills
-# are worth anything.
+# A `#[cfg(debug_assertions)]` block is evaluated against the crate it is
+# written in, not the crate it calls into. `shots` guards its tab-reveal step
+# on `debug_assertions` — true here, so the block compiles — and the step calls
+# `ui::widget::WindowGroup::bar_mut_for_tests`, which is gated the same way in
+# `ui`. With the override on `shell` alone the guard was on and the symbol was
+# off, and the profile failed to build the one binary it exists to build.
+#
+# Turning it on for both makes the two cfgs agree, which is what the guard
+# always assumed.
 [profile.demo.package.ui]
 debug-assertions = true
 
