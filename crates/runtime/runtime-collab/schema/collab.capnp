@@ -145,6 +145,27 @@ interface ChannelHandle {
   # Subscribe to actions other apps in this room published. Client-pull
   # like every stream here.
   subscribeActions @12 () -> (stream :ActionStream);
+
+  # Ask this session to open the "say something about this" surface.
+  #
+  # The one verb here that is addressed to the session rather than to
+  # the room. Everything else on this interface has an audience; this
+  # asks the compositor on the other end of the socket to draw a panel.
+  #
+  # It is here rather than on a protocol of its own because this is the
+  # socket every app already holds, and because what it carries is a
+  # resource address — which is this interface's subject.
+  #
+  # `reference` is a serialised `qos_reference::ResourceRef` (JSON, the
+  # same encoding `sendAction`'s payload uses). `x`/`y`/`w`/`h` are the
+  # rect to sit beside, in the ASKING WINDOW's own coordinates: the app
+  # reports where its context menu is and the session converts, because
+  # only the session knows where that window sits on a desktop.
+  #
+  # Never relayed to peers. A remark composed here is delivered as an
+  # ordinary action once it is written; asking for the panel is not.
+  composeRemark @13 (reference :Text, x :Float32, y :Float32,
+                     w :Float32, h :Float32) -> ();
 }
 
 interface ActionStream {

@@ -309,6 +309,40 @@ pub enum CollabRequest {
         /// The application whose action it was handed to.
         into_app: String,
     },
+    /// "Somebody wants to say something about this — draw them somewhere to
+    /// say it."
+    ///
+    /// The gesture is right-click an object and write a sentence about it, and
+    /// the panel that appears sits *beside* the ordinary context menu. Beside a
+    /// menu near a window's edge is outside the window, and a Wayland client
+    /// cannot paint outside its own surface — so on a strip of tiled windows an
+    /// app that draws the panel itself has it sliced off mid-word. The session
+    /// draws above every window and has no such edge, so it draws this.
+    ///
+    /// **Never fanned out.** Addressed to the session hosting this connection,
+    /// exactly as [`CollabRequest::OpenApp`] is. Relaying it would open a
+    /// compose box on every peer's desktop because somebody else right-clicked
+    /// something, which nobody asked for.
+    ///
+    /// What the app supplies is an address and a rectangle, and nothing else.
+    /// Who may receive the remark, how the panel looks and where on the desktop
+    /// it lands are the session's own answers — an app cannot see the room's
+    /// roster, cannot see its neighbours, and must not be trusted to say who a
+    /// message may reach.
+    ComposeRemark {
+        /// The object being talked about, as `serde_json` of a
+        /// [`ResourceRef`](qos_reference::ResourceRef).
+        ///
+        /// JSON rather than a typed field for the same reason the action
+        /// payload beside it is: the shape belongs to `qos-reference`, and a
+        /// transport that mirrors it has to be revised every time that crate
+        /// grows a field.
+        reference: String,
+        /// The chrome to sit beside, in the asking window's own coordinates:
+        /// `(x, y, width, height)`. The session converts it, because the
+        /// session is what knows where this window is.
+        beside: (f64, f64, f64, f64),
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1479,6 +1513,21 @@ pub fn local_user_id() -> crate::permissions::UserId {
     crate::permissions::UserId(auto_hello_env().0)
 }
 
+/// Whether a qOS session started this process and is drawing its chrome.
+///
+/// `QOS_SVC_COLLAB_FD` is the connected broker socket `qos-launcher` hands an
+/// app it starts, and nothing else sets it. So its presence answers a question
+/// no other environment variable does: not "can I collaborate" — a relay or a
+/// harness gives that too — but "is there a compositor on the other end of this
+/// fd, drawing the window I am painting into".
+///
+/// That is the question chrome depends on. A surface the OS owns can only be
+/// handed to an OS that is there, and an app that guessed wrong would either
+/// draw a panel twice or draw none at all.
+pub fn launched_by_a_session() -> bool {
+    std::env::var_os("QOS_SVC_COLLAB_FD").is_some()
+}
+
 /// The room this process collaborates in — the cluster every CRDT delta
 /// it sends is addressed to.
 ///
@@ -1990,6 +2039,30 @@ async fn drive_shovel(
                      applications; the session watches its own offers for that",
                 );
             }
+            // The one request on this transport addressed to the session
+            // rather than to the room, and the transport a launched app
+            // actually holds — so unlike `OpenApp` above it is carried here
+            // rather than deferred to the JSON socket.
+            CollabRequest::ComposeRemark { reference, beside } => {
+                let Some(ch) = channel.as_ref() else {
+                    tracing::warn!(
+                        "collab: somebody asked to say something about an object \
+                         before this app joined a channel; there is no session \
+                         connection to draw the surface on",
+                    );
+                    continue;
+                };
+                if let Err(e) = ch.compose_remark(&reference, beside).await {
+                    // Loud, because the visible consequence is a right-click
+                    // that does nothing. A gesture that silently opens no
+                    // surface is indistinguishable from one nobody made.
+                    tracing::error!(
+                        error = ?e,
+                        "collab: asking the session for a compose surface failed; \
+                         the right-click will have opened nothing",
+                    );
+                }
+            }
         }
     }
 }
@@ -2106,6 +2179,14 @@ async fn drive_relay(
                             %hash, %from_app, %into_app,
                             "collab: this relay session hosts no desktop, so a \
                              crossing between applications has nowhere to be drawn",
+                        );
+                    }
+                    // Same reason an open is refused here: a relay draws no
+                    // windows, so there is no desktop for a panel to sit on.
+                    CollabRequest::ComposeRemark { .. } => {
+                        tracing::warn!(
+                            "collab: this relay session hosts no desktop, so there \
+                             is nowhere to draw a compose surface",
                         );
                     }
                 }
@@ -2475,6 +2556,9 @@ pub mod broker {
                 // open is not: the other peer's desktop has its own answer
                 // about where these applications are.
                 CollabRequest::CarriedContent { .. } => continue,
+                // Addressed to a session, and this loopback is two documents
+                // in one process rather than a desktop. Nothing here draws.
+                CollabRequest::ComposeRemark { .. } => continue,
             };
 
             let Ok(bytes) = serde_json::to_vec(&event) else { continue };
