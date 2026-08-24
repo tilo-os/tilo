@@ -175,3 +175,20 @@ to read off the screen, so the eye is on it and has time to notice.
 
 Measured at 1920x1014 in `target/v13/shots/02b-copied.png`: card
 y≈390..625, "Copied" baseline y≈530, button row centred y≈588.
+
+## A scrollbar is drawn on an empty desktop
+
+At the right edge, x≈1913 in a 1920-wide frame, there is a white rounded
+thumb about forty pixels tall. Sampled off `target/v13/shots/
+01-empty-desktop.png`: the run reads (226,226,227) against a (20,20,21)
+background — the highest-contrast element in the opening frame apart
+from the top bar, and it indicates nothing. There is one strip, no
+overflow, and nothing to scroll to.
+
+It is in every frame of the film, so it is not a corner case: it is the
+default state of the desktop. On the opening shot in particular the eye
+goes to the brightest thing on a near-empty screen, and that is a
+scrollbar for content which does not exist.
+
+Worth deciding whether the strip-stack indicator should appear at all
+below overflow, and whether at rest it should be this loud when it does.
