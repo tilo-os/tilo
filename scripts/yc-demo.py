@@ -82,6 +82,12 @@ from reaper import die_with_parent, track   # noqa: E402
 KEEP_SESSIONS = False
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Where cargo puts things. Not `REPO/target` unconditionally: a worktree
+# that sets `CARGO_TARGET_DIR` has no `target/` at all, and every lookup
+# below then reports a binary missing in a tree that just built it —
+# which is how a run once filmed with its evidence decoder absent and
+# reported the resulting blindness as a failing claim about the product.
+TARGET = os.environ.get("CARGO_TARGET_DIR") or os.path.join(REPO, "target")
 
 
 def _shadowed_definitions() -> list[str]:
@@ -124,19 +130,14 @@ def _doc_text_bin() -> str | None:
     it. Absent, the beats that ask are reported as gaps rather than
     quietly answered wrong.
 
-    `CARGO_TARGET_DIR` first, because a worktree that sets it has no
-    `target/` at all and looking only there finds nothing in a tree that
-    built everything.
+    Every profile, because this is a decoder rather than a thing being
+    measured: an optimised build and a debug build read the same
+    document, so a run should not be blinded by which one is to hand.
     """
-    roots = [os.environ.get("CARGO_TARGET_DIR") or "",
-             os.path.join(REPO, "target")]
-    for root in roots:
-        if not root:
-            continue
-        for profile in ("demo", "release", "debug"):
-            path = os.path.join(root, profile, "qos-doc-text")
-            if os.path.exists(path):
-                return path
+    for profile in ("demo", "release", "debug"):
+        path = os.path.join(TARGET, profile, "qos-doc-text")
+        if os.path.exists(path):
+            return path
     return None
 
 
@@ -247,7 +248,7 @@ RUNTIME_BUNDLES = os.path.expanduser("~/.local/share/qos-runtime")
 # machine's installed payload is a static binary from an earlier build
 # and cannot exercise anything that has changed in `ui` since, so a run
 # against it would be filming last month's app.
-LIVE_APPS = os.path.join(REPO, "target", "qos-apps-live")
+LIVE_APPS = os.path.join(TARGET, "qos-apps-live")
 
 # The capability principal quinten grants in beat 3. An agent is not a
 # peer: it is a subject in the permission model, and the grant is scoped
@@ -4153,7 +4154,7 @@ def agent_binary() -> str | None:
     something that looks similar.
     """
     for profile in ("demo", "release", "debug"):
-        path = os.path.join(REPO, "target", profile, "qos-agent")
+        path = os.path.join(TARGET, profile, "qos-agent")
         if os.path.exists(path):
             return path
     return None
@@ -6361,10 +6362,10 @@ def run(quinten: Session, xaver: Session, agent: Session, shots: str,
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out", default=os.path.join(REPO, "target", "yc-demo"),
+    ap.add_argument("--out", default=os.path.join(TARGET, "yc-demo"),
                     help="run directory for state, logs and screenshots")
     ap.add_argument("--shell",
-                    default=os.path.join(REPO, "target", "demo", "shell"),
+                    default=os.path.join(TARGET, "demo", "shell"),
                     help="path to the compositor binary; must be a build that "
                          "still honours QOS_TEST_CONTROL (any profile with "
                          "debug-assertions on — `demo` or `dev`, never "
@@ -6504,7 +6505,7 @@ def main() -> int:
     # is built as, falling back to `debug` where only one exists.
     def tool(name: str) -> str | None:
         for profile in ("demo", "debug"):
-            path = os.path.join(REPO, "target", profile, name)
+            path = os.path.join(TARGET, profile, name)
             if os.path.exists(path):
                 return path
         return None
@@ -6632,7 +6633,7 @@ def main() -> int:
         # The registry quinten fetches from in beat 5. Its config dir is
         # his store's, which is how the catalogue in his session finds it.
         with Registry(
-            os.path.join(REPO, "target", "debug", "examples",
+            os.path.join(TARGET, "debug", "examples",
                          "serve-test-registry"),
             os.path.join(LIVE_APPS, "payloads", WORD_PROCESSOR, "bin",
                          "word-processor"),

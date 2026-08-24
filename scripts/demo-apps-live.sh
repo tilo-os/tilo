@@ -53,7 +53,11 @@ PROFILE="${QOS_DEMO_PROFILE:-demo}"
 # no `target/` at all, and looking only there reports every binary
 # missing in a tree that just built all of them.
 BIN="${CARGO_TARGET_DIR:-$REPO/target}/$PROFILE"
-OUT="${QOS_APPS_LIVE_DIR:-$REPO/target/qos-apps-live}"
+# Under the same root as the binaries, because `yc-demo.py` resolves this
+# registry the same way and the two silently disagreeing means the film
+# serves last month's payload from `target/` while this script writes a
+# fresh one somewhere else.
+OUT="${QOS_APPS_LIVE_DIR:-${CARGO_TARGET_DIR:-$REPO/target}/qos-apps-live}"
 IDENTITY="${QOS_DEMO_IDENTITY:-$OUT/publisher-identity.json}"
 STAGE="$OUT/.stage"
 
