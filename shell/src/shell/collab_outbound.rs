@@ -370,6 +370,17 @@ impl PeerPublisher {
         hash: &str,
         bytes: &[u8],
     ) -> bool {
+        // Remember which application these bytes came from, before anything
+        // about routing can fail. This is the only moment the pair is known:
+        // content is addressed by its hash from here on, and an action that
+        // later names that hash carries no record of who produced it. See
+        // `crate::shell::action_flight` for what the pair is then used for.
+        //
+        // Noted even when the offer does not reach the room. Whether a peer
+        // can be told is a fact about the network; that this app made this
+        // content is a fact about this machine, and it is the second one
+        // that decides what a person watching this screen should see.
+        crate::shell::action_flight::note_offer(hash, &route.app_id);
         let Some(sink) = self.ready(route, transport, "document content") else {
             return false;
         };

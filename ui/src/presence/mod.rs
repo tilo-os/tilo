@@ -5,8 +5,13 @@ use crate::permissions::UserId;
 mod key;
 mod render;
 mod geom;
+mod flight;
 pub use key::{PointerSpace, PresenceKey, PathSegment, SelectionRange};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
+pub use flight::{
+    draw_action_flight,
+    ActionFlight, FlightPose, flight_rect, pose as flight_pose, FLIGHT_DURATION, FLIGHT_LONG_EDGE,
+};
 // `render::draw_remote_cursors` is a free function — re-export so
 // downstream apps (terminal, settings, file-explorer) can call it from
 // their per-frame draw without depending on the shell.

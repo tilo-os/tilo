@@ -19,10 +19,12 @@
 //! - Creating a workspace (any path) triggers a toast.
 //! - A simulated remote cursor floats over the active tile.
 
+pub mod action_flight;
 pub mod actions;
 pub mod browser_stub;
 pub mod catalogue;
 pub mod chrome_state;
+pub mod agent_opens;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_outbound;
