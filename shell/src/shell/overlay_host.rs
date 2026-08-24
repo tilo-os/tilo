@@ -1916,6 +1916,15 @@ impl ShellOverlayHost {
                         st.peer_sync_status = None;
                         st.bump();
                     }
+                    // And a fresh field in the widget that holds the
+                    // text, not only in the chrome that records it.
+                    // `sync_invite_input` re-seeds on the closed→open
+                    // edge, and minting closes the composer and this
+                    // re-opens it — both between two frames, so the edge
+                    // it watches for never happened and the field kept
+                    // the last name. Inviting two people in a row typed
+                    // the second name onto the end of the first.
+                    self.invite_input_open = false;
                 }
                 PeerSyncAction::PromptConnect => {
                     if let Some(chrome) = self.chrome.clone() {
@@ -2328,30 +2337,39 @@ impl ShellOverlayHost {
     /// keystroke and throw away any selection — which is the class of
     /// bug that makes a real text field feel like a hand-rolled one.
     fn sync_invite_input(&mut self) {
-        let open = self.invite_composer_open();
-        if open == self.invite_input_open {
+        let asked = self
+            .chrome
+            .as_ref()
+            .and_then(|c| c.borrow().peer_sync_invite_name.clone());
+        let Some(asked) = asked else {
+            if self.invite_input_open {
+                self.invite_input_open = false;
+                self.invite_name_input.set_text("");
+                self.invite_name_input.set_focus(false);
+            }
+            return;
+        };
+        // Seed on the way in, and again whenever the answer changed
+        // underneath the field — a mint clears it and a second invite
+        // re-opens the card in the same breath, so watching only for the
+        // card to close would miss the reset entirely and the next
+        // person's name would be typed onto the end of the last one's.
+        // Comparing the value rather than tracking edges makes every
+        // path that sets the answer arrive at the same place.
+        let reseed = !self.invite_input_open || asked != self.invite_name_input.value();
+        if !reseed {
             return;
         }
-        self.invite_input_open = open;
-        if open {
-            let seed = self
-                .chrome
-                .as_ref()
-                .and_then(|c| c.borrow().peer_sync_invite_name.clone())
-                .unwrap_or_default();
-            self.invite_name_input.set_text(&seed);
-            self.invite_name_input.set_cursor_pos(seed.len());
-            // The card opens on the field: the question it asks is the
-            // only thing on it, so anything else to focus first would be
-            // a step between the user and the answer.
-            self.invite_name_input.set_focus(true);
-            self.peer_sync_focus = PeerSyncFocus::Field;
-            self.peer_sync_hover = None;
-            self.peer_sync_press = None;
-        } else {
-            self.invite_name_input.set_text("");
-            self.invite_name_input.set_focus(false);
-        }
+        self.invite_input_open = true;
+        self.invite_name_input.set_text(&asked);
+        self.invite_name_input.set_cursor_pos(asked.len());
+        // The card opens on the field: the question it asks is the only
+        // thing on it, so anything else to focus first would be a step
+        // between the user and the answer.
+        self.invite_name_input.set_focus(true);
+        self.peer_sync_focus = PeerSyncFocus::Field;
+        self.peer_sync_hover = None;
+        self.peer_sync_press = None;
     }
 
     /// Offer one event to the composer's field, and mirror what it did
@@ -14567,6 +14585,59 @@ mod palette_dispatch_tests {
             "",
             "a fresh field for a fresh question",
         );
+    }
+
+    /// Raising the composer empties the field, whatever was in it.
+    ///
+    /// Asserted on the field rather than on the token, because the
+    /// token only shows the fault when the two names differ: type
+    /// `Xaver` twice into a field that kept the first and the token
+    /// reads `XaverXaver`, but type `Xaver` and then `Ada` and it reads
+    /// `XaverAda`, which is a name nobody typed and no assertion about
+    /// `Ada`'s token would have caught. The field being empty is the
+    /// whole of the contract, so it is what is checked.
+    ///
+    /// Re-raised without a mint and without a dismissal in between —
+    /// the gesture of pressing Invite again after thinking better of
+    /// who to ask — so the composer never closes and the field's own
+    /// re-seed edge never fires.
+    #[test]
+    fn raising_the_composer_again_asks_on_an_empty_field() {
+        let (mut h, chrome) = host_with_chrome();
+        h.rect = TEST_VIEWPORT;
+        let none = Modifiers::default();
+
+        chrome
+            .borrow_mut()
+            .push_peer_sync_request(PeerSyncAction::PromptInvite);
+        h.pump_peer_sync();
+        draw_peer_sync_face(&mut h, &Theme::dark());
+        for c in ["X", "a", "v", "e", "r"] {
+            h.handle_peer_sync_event(&char_key(c), &none);
+        }
+        assert_eq!(h.invite_name_input.value(), "Xaver", "the field took a name");
+
+        chrome
+            .borrow_mut()
+            .push_peer_sync_request(PeerSyncAction::PromptInvite);
+        h.pump_peer_sync();
+        draw_peer_sync_face(&mut h, &Theme::dark());
+        assert_eq!(
+            h.invite_name_input.value(),
+            "",
+            "the composer came back up still holding the last person's name",
+        );
+        assert_eq!(
+            chrome.borrow().peer_sync_invite_name.as_deref(),
+            Some(""),
+            "and the chrome agrees with the field it is mirroring",
+        );
+
+        // The name that then gets typed is the only name in it.
+        for c in ["A", "d", "a"] {
+            h.handle_peer_sync_event(&char_key(c), &none);
+        }
+        assert_eq!(h.invite_name_input.value(), "Ada");
     }
 
     /// A click in the field takes focus off whichever button had it.
