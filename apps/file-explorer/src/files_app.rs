@@ -1189,6 +1189,16 @@ impl FileExplorerWidget {
         self.context_menu.is_open()
     }
 
+    /// The context menu's rect, in this window's own coordinates.
+    ///
+    /// What a request to open the compose surface is placed against, so a test
+    /// can hold the request to the menu it says it is beside rather than to a
+    /// rect it recomputed for itself.
+    #[doc(hidden)]
+    pub fn context_menu_rect_for_tests(&self) -> vello::kurbo::Rect {
+        self.context_menu.get_rect()
+    }
+
     /// "Say something about this": open the ordinary context menu on the
     /// selection **and** the compose surface beside it.
     ///
