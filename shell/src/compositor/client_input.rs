@@ -2009,9 +2009,25 @@ pub fn route_input(
                     None
                 };
                 if let Some(dir) = step {
-                    let mut cycled = false;
-                    fb.with_chrome(|chrome| cycled = chrome.cycle_active_tab(dir));
-                    if cycled {
+                    // The same walk Alt+Shift+wheel uses, and for the same
+                    // reason: it crosses group boundaries.
+                    //
+                    // The first version of this called `cycle_active_tab`,
+                    // following the shell's own fallback, and did nothing —
+                    // that rotates the tabs *inside* one group. Windows
+                    // opened side by side are one group each holding a
+                    // single tab, so there was nothing to rotate and the
+                    // wheel fell through to the application every time.
+                    // Only windows already gathered into a tab group would
+                    // ever have responded, which is not what "switch
+                    // windows" means on a strip.
+                    let target = {
+                        let chrome = fb.chrome();
+                        let tree = chrome.tree();
+                        step_active_window(&tree, dir)
+                    };
+                    if let Some((strip, group, tab)) = target {
+                        focus_window(fb, strip, group, tab);
                         sync_keyboard_focus(state, fb);
                         return true;
                     }
