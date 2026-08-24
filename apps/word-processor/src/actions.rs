@@ -1210,13 +1210,32 @@ mod tests {
         assert!(ids_of("word_processor.section") >= 1, "a heading section resource");
 
         // The one palette surfaces the tree's actions as rows.
+        //
+        // Asked for by name rather than read off an unfiltered list. The
+        // palette caps each group at `PER_GROUP_CAP` rows so no one provider
+        // floods the overlay, and every action this document exports lands in
+        // the same group — so an unfiltered palette shows the first eight and
+        // no more, and *which* eight moves whenever the document gains an
+        // operation. Asserting on that list pins the cap and the ordering,
+        // which is nobody's intended property; what the palette promises is
+        // that an operation the document exports can be found in it.
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
-        let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Insert table")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete image")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete table")), "{labels:?}");
+        let found = |palette: &mut ui::ActionPalette, query: &str, want: &str| {
+            palette.set_query(query);
+            let labels = palette.result_labels();
+            assert!(
+                labels.iter().any(|l| l.contains(want)),
+                "searching {query:?} did not surface {want:?}: {labels:?}",
+            );
+        };
+        found(&mut palette, "insert table", "Insert table");
+        found(&mut palette, "delete image", "Delete image");
+        found(&mut palette, "delete table", "Delete table");
+        // And the document-level placement, which is what an empty document
+        // has instead of a section to hang one on.
+        found(&mut palette, "place image", "Place image");
     }
 
     /// A document nobody has written in yet is still somewhere a picture can
