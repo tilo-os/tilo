@@ -521,6 +521,11 @@ class Live:
         self.agent_token_at = 0.0
         self.room: str | None = None
         self.xaver_in = False
+        #: Whether xaver's gesture actually went out. Distinct from
+        #: the agent having acted: the agent can only act on what
+        #: reached it, so a run where this is False and the agent
+        #: did something is a run where something else provoked it.
+        self.instruction_sent = False
         self.agent_session_in = False
         self.wp_seen = False
         self.agent_proc: subprocess.Popen | None = None
@@ -831,8 +836,50 @@ class Live:
             else "keyword vocabulary, no network"
         self.say(f"Claude is in the room, watching the document "
                  f"(pid {self.agent_proc.pid}, {decides})")
-        self.say(f'  write "{self.args.instruction}" under a run of '
-                 f'bullets and it will act')
+        self.say("Claude is watching; xaver is about to give it something "
+                 "to do")
+        self.his_instruction()
+
+    def his_instruction(self) -> bool:
+        """Xaver picks the image and says what he wants done with it.
+
+        The argument of the whole film, and the reason it is *his* hand
+        rather than yours. He is not the host, he did not open any of
+        these applications, and he is on another machine -- and he can
+        still take an object out of the shared workspace and hand it to
+        an agent, because what he sends is the object's address rather
+        than a description of where it was sitting on his screen. The
+        agent then works on the thing he pointed at, in a document he
+        never opened, and the result arrives on both screens.
+
+        Right-click rather than a chord, because a chord is a thing you
+        have to be told about and a right-click is a thing you try. That
+        gesture reached the context menu and stopped there until now:
+        `open_remark_for_selection` was written for it, said so in its
+        own documentation, and was never called by it.
+
+        Driven on camera during an excursion, so the audience sees who
+        did it. Returns False rather than raising -- a take that reaches
+        the end and names what was missing is worth more than one that
+        dies at its best moment.
+        """
+        if self.x is None or not self.xaver_in:
+            yc.gap("xaver never joined, so nobody was there to give the "
+                   "instruction")
+            return False
+        self.say("cutting to xaver — he has the image")
+        yc.cut("xaver")
+        try:
+            said = yc.say_something_about(
+                self.x, f"file_row:{yc.PHOTO_NAME}",
+                self.args.instruction, self.shots, "his-instruction")
+        finally:
+            yc.cut("quinten")
+            self.say("back on your screen — watch the document")
+        self.instruction_sent = said
+        yc.claim("the instruction came from the person holding the thing, "
+                 "on another machine", said, True)
+        return said
 
     #: The agent, having changed the document: `applied splice text
     #: (+76 -29)`. On a word boundary, because the same log carries

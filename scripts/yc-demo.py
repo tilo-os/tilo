@@ -3340,26 +3340,32 @@ def say_something_about(session: Session, target: str, text: str,
     session.right_click_at(x + w * 0.5, y + h * 0.5)
     session.settle(0.6)
 
-    field = session.named_rect("remark_compose_field")
-    if not field:
+    # `remark_compose` is the one name the widget publishes. The two that
+    # read like children -- `remark_compose_field`, `remark_compose_send` --
+    # are fluent catalogue keys for the placeholder and the button label,
+    # not test ids. This helper was written against them once.
+    panel = session.named_rect("remark_compose")
+    if not panel:
         gap(f"{session.name}: right-clicking {target!r} opened no compose "
             f"surface, so there was nowhere to say anything")
         return False
     if shots:
         session.snapshot(os.path.join(shots, f"{tag or 'remark'}-open.png"))
 
-    session.click_at(field[0] + field[2] * 0.5, field[1] + field[3] * 0.5)
+    # The field is the upper band of the panel; the destination selector and
+    # the button sit below it. Clicking high inside the panel lands in the
+    # text rather than on a control.
+    session.click_at(panel[0] + panel[2] * 0.5, panel[1] + panel[3] * 0.28)
     session.settle(0.2)
     session.type_prose(text)
     session.settle(0.4)
     if shots:
         session.snapshot(os.path.join(shots, f"{tag or 'remark'}-typed.png"))
 
-    sent = session.click_named("remark_compose_send")
-    if isinstance(sent, dict) and "err" in sent:
-        gap(f"{session.name}: the compose panel would not send "
-            f"({json.dumps(sent['err'])[:120]})")
-        return False
+    # Enter in the field is a send affordance beside the button, and the
+    # widget drains both into one place, so they cannot mean different
+    # things. It is also what a person does after typing a line.
+    session.key("Return")
     claim(f"{session.name} said something about {target!r}", True, True)
     return True
 

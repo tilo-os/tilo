@@ -2702,7 +2702,9 @@ impl Widget for FileExplorerWidget {
             // cursor rather than the file-view context menu.
             if let Some(fav) = self.pending_fav_menu.take() {
                 self.open_favorite_menu(fav, self.last_cursor);
-            } else {
+            } else if !self.open_remark_for_selection(state, self.last_cursor) {
+                // Nothing selected, or nowhere to send: the plain menu, which
+                // is what a right-press over empty space should give you.
                 self.open_context_menu(self.last_cursor);
             }
             *handled = true;
