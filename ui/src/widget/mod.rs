@@ -136,6 +136,20 @@ pub trait Widget {
         None
     }
 
+    /// The compose surface this app asked for has gone; put away the chrome it
+    /// opened beside.
+    ///
+    /// The half of the gesture's lifetime that stops working when the panel
+    /// moves out of the process. An app that drew its own panel saw the Escape
+    /// that dismissed it and closed its context menu in the same breath — the
+    /// two went up on one gesture and come down on one. Once the compositor
+    /// owns the keyboard the app never sees that key, so the menu would be left
+    /// standing as the visible remnant of something already dismissed.
+    ///
+    /// Sent whether the panel was dismissed or sent from, because the menu's
+    /// reason for being on screen ends either way.
+    fn dismiss_remark_chrome(&mut self) {}
+
     /// Apply an action another app in this room published, if this app is the
     /// one that owns it.
     ///

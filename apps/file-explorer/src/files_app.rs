@@ -3067,6 +3067,16 @@ impl Widget for FileExplorerWidget {
         self.remark.take_request()
     }
 
+    /// The panel has gone, so the menu it opened beside goes too.
+    ///
+    /// The same rule this app already applies in the other direction — a menu
+    /// dismissed takes an unwritten panel with it — asserted from the side the
+    /// app can no longer observe for itself.
+    fn dismiss_remark_chrome(&mut self) {
+        self.context_menu.close();
+        self.structure_dirty = true;
+    }
+
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }
