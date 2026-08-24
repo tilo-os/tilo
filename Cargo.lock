@@ -17960,6 +17960,7 @@ dependencies = [
  "arboard",
  "automerge",
  "fluent",
+ "png 0.18.1",
  "qdoc",
  "qdoc-epub",
  "qdoc-html",
