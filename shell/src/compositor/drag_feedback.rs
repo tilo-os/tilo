@@ -45,7 +45,11 @@ const PRESS_RING_R: f64 = 13.0;
 /// `label` is what the drag is carrying, already resolved to something a
 /// person can read — a file name where the compositor knows it, a kind
 /// where all it has is the offer. `None` means no drag: only the pointer
-/// is drawn.
+/// is drawn, which is the other half of what this module is for. A
+/// pointer is the thing on screen that says *a person did that* —
+/// without one a panel opens and a button lights up with nothing visible
+/// causing it, and a recording of the session reads as the machine
+/// operating itself.
 pub fn draw(
     scene: &mut Scene,
     cursor: Point,
@@ -58,20 +62,6 @@ pub fn draw(
         draw_chip(scene, cursor, label, theme, text);
     }
     draw_cursor(scene, cursor, pressed, theme);
-}
-
-/// Draw just the pointer, with no drag in flight.
-///
-/// The other half of what this module is for. A pointer is the thing on
-/// screen that says *a person did that* — without one, a menu opens and
-/// a button lights up with nothing visible causing it, and a recording
-/// of the session reads as the machine operating itself. Backends that
-/// own a cursor plane put it there themselves; the ones that do not
-/// ([`crate::compositor::backend::HeadlessBackend`]) have this, and so
-/// does every readback taken through the snapshot path, which re-renders
-/// the scene and therefore never contains a plane it did not draw.
-pub fn draw_pointer(scene: &mut Scene, at: Point, pressed: bool, theme: &Theme) {
-    draw_cursor(scene, at, pressed, theme);
 }
 
 /// The carried-item chip: a rounded card with the item's name in it.
@@ -117,9 +107,12 @@ fn draw_chip(
 
 /// A plain arrow pointer, hotspot at its tip.
 ///
-/// Drawn here rather than left to the backend because only the winit and
-/// headless paths have no cursor plane of their own — and headless is
-/// where a drag gets photographed.
+/// Drawn here rather than left to the backend because a backend that
+/// owns no cursor plane has nobody else to draw it
+/// ([`crate::compositor::backend::Backend::has_cursor_plane`]), and
+/// because a readback taken through the snapshot path re-renders the
+/// scene and so never contains a plane it did not draw — which is where
+/// this gets photographed.
 fn draw_cursor(scene: &mut Scene, at: Point, pressed: bool, theme: &Theme) {
     // A ring around the hotspot while the button is down. A press is
     // the one pointer state that has to be legible in a single frame:
