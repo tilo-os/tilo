@@ -809,8 +809,14 @@ class Session:
         so the whole trip happens inside a single painted frame and
         nothing photographs it. That is why the path is walked from
         here, one command per step, with the camera free to sample
-        between them.
+        between them — and why, with no camera to sample it, the bundled
+        op is sent instead and the compositor plans its own approach.
         """
+        if not self._filmed():
+            self.input_ops += 1
+            ok(call(self.sock, {"op": "click_at", "x": x, "y": y}))
+            self._pointer = (x, y)
+            return
         self._approach(x, y)
         self._press_and_release()
 
@@ -824,14 +830,27 @@ class Session:
         for — and moves no pointer, so a failed lookup never leaves the
         cursor somewhere nobody aimed it.
         """
-        rect = self.named_rect(name)
+        rect = self.named_rect(name) if self._filmed() else None
         if rect is None:
             self.input_ops += 1
-            return call(self.sock, {"op": "click_named", "name": name})
+            resp = call(self.sock, {"op": "click_named", "name": name})
+            if "err" not in resp:
+                # The compositor clicked the centre of whatever it
+                # resolved; that is where the pointer now is.
+                found = self.named_rect(name)
+                if found:
+                    self._pointer = (found[0] + found[2] / 2.0,
+                                     found[1] + found[3] / 2.0)
+            return resp
         cx, cy = rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0
         self._approach(cx, cy)
         self._press_and_release()
         return {"ok": {"frame": 0}}
+
+    @staticmethod
+    def _filmed() -> bool:
+        """Whether anything is watching this session right now."""
+        return RECORDER is not None and not RECORDER.camera_is_down()
 
     #: Roughly how fast the pointer crosses the screen, in pixels per
     #: second. A hand throwing a mouse across a 1920px desktop takes
@@ -858,15 +877,16 @@ class Session:
 
         Eased at both ends — a hand does not start or stop at speed —
         and paced in wall-clock so the trip is several frames long
-        rather than one. Without a camera there is nobody for it to be
-        visible to, so the pacing is skipped and the pointer is simply
-        put where the click needs it.
+        rather than one. Only reached while something is watching; the
+        callers send the bundled op otherwise.
         """
         here = self._pointer
-        if here is None or RECORDER is None or RECORDER.camera_is_down():
+        if here is None:
+            # Nothing to travel from: a session nobody has pointed at
+            # has no pointer on its screen, and the first thing it gets
+            # is one appearing where the click is about to happen.
             self.pointer_move(x, y)
-            if RECORDER is not None and not RECORDER.camera_is_down():
-                self.settle(self.POINTER_SETTLE_S)
+            self.settle(self.POINTER_SETTLE_S)
             return
         x0, y0 = here
         dx, dy = x - x0, y - y0
@@ -897,8 +917,7 @@ class Session:
         `route_input` — spread over wall-clock instead of a frame.
         """
         self.pointer_button(True)
-        if RECORDER is not None and not RECORDER.camera_is_down():
-            self.settle(self.POINTER_PRESS_S)
+        self.settle(self.POINTER_PRESS_S)
         self.pointer_button(False)
 
     def pointer_move(self, x: float, y: float) -> None:
@@ -3796,7 +3815,19 @@ def beat_one(quinten: Session, shots: str) -> tuple[dict, dict | None]:
     # By its own id through the applications provider — the registry that
     # feeds the palette. There is no on-screen affordance for the first
     # window; the palette is a chord, and this is the same row it offers.
-    painted = quinten.launch(FILES_APP)
+    #
+    # The camera gets out of the way while the app starts. Snapshotting
+    # is most of a filmed compositor's event loop, and the compositor is
+    # what spawns this client, hands it its configure and takes its first
+    # buffer — so filming the launch at full rate is the camera competing
+    # with the thing it is filming. Measured on this build: 1.9s to a
+    # first frame and 2.2s to a window that fills its tab with the camera
+    # eased, against 3.3s for both with it running flat out. The film
+    # loses frame rate for two seconds at the front and gets a second of
+    # its opening back, and — more to the point — stops showing the
+    # product's own speed as worse than it is.
+    with easing(4.0):
+        painted = quinten.launch(FILES_APP)
     claim("Files opened and painted a frame", painted is not None, True)
     if painted:
         note(f"surface {painted.get('surface_id')} at frame "
