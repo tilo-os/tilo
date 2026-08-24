@@ -2249,6 +2249,21 @@ def windows_overlapping(s: Session) -> list[str]:
 #: 500 is half each, which is what two groups need on a 1920 output —
 #: measured, not guessed: two 500-permille groups land at 291..1091 and
 #: 1099..1899 beside the wheel disc, both whole.
+#: Whether the film shows the machine fetching an application it does
+#: not have.
+#:
+#: The capability is real and, since the palette started saying so, it is
+#: finally visible: the row reads "Fetch and open …" beside a "not on
+#: this machine" badge, and the open counts real megabytes. It is also
+#: the one beat in this film that is not about collaboration or about
+#: agents — it is package management, and it costs twelve seconds of a
+#: budget of a hundred.
+#:
+#: So it is cut, and the fetch is exercised off camera anyway so the
+#: transcript still proves the machine gained the app. `--fetch-on-camera`
+#: puts it back.
+FETCH_ON_CAMERA = False
+
 FILM_GROUP_SHARE = 500
 
 #: How far `frame_both_windows` may narrow the groups to get everything
@@ -5274,7 +5289,15 @@ def run(quinten: Session, xaver: Session, agent: Session, shots: str,
         "groups": xaver.groups_here(),
     }
     beat_four(quinten, xaver, agent, host_ws, shots)
-    wp = beat_five(quinten, registry, shots)
+    if FETCH_ON_CAMERA:
+        wp = beat_five(quinten, registry, shots)
+    else:
+        # Same fetch, same registry, same install path — off camera, so
+        # the run still establishes that this machine did not have the
+        # app and has it afterwards. What the film loses is the watching.
+        with off_camera("the machine fetches an application it does not "
+                        "have, verifies it and runs it"):
+            wp = beat_five(quinten, registry, shots)
     # Which tab beat 5 opened, read now — before beat 7 puts a second
     # word processor in the room and makes "new since the baseline"
     # ambiguous. Beat 6 is asked about this one specifically.
