@@ -406,12 +406,26 @@ impl ApplicationHandler for Inner {
         if self.window.is_some() {
             return;
         }
+        let (want_w, want_h) = initial_size();
+        // Undecorated when a size was asked for, because otherwise the
+        // host will not give it.
+        //
+        // `with_inner_size` asks for the client area, so a title bar
+        // should cost nothing — but a decorated window is clamped to the
+        // work area, and the work area is the display minus the host's
+        // own panels. Asking for 1920x1014 on a 1920x1080 screen came
+        // back as 1920x1011: three pixels short, and enough that every
+        // frame of a recording is resampled and letterboxed rather than
+        // going in one to one.
+        //
+        // Only when the size was requested. A compositor opened by hand
+        // for development wants its title bar and its close button; a
+        // session opened to be filmed at an exact size wants the size.
+        let sized = std::env::var(SIZE_ENV).is_ok();
         let attrs = WindowAttributes::default()
             .with_title("nirios")
-            .with_inner_size({
-                let (w, h) = initial_size();
-                winit::dpi::PhysicalSize::new(w, h)
-            });
+            .with_decorations(!sized)
+            .with_inner_size(winit::dpi::PhysicalSize::new(want_w, want_h));
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
