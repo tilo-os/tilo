@@ -93,6 +93,49 @@ pub trait Widget {
     ) {
     }
 
+    /// Collect a remark this app has finished composing, once.
+    ///
+    /// The counterpart to [`set_remark_destinations`](Self::set_remark_destinations),
+    /// and the reason that one was not enough on its own. The room tells an app
+    /// where a remark may go; this is how the written one gets back out. Until
+    /// it existed the compose surface ran to completion — panel closed, text
+    /// taken, [`Remark`](qos_reference::Remark) built — and the message sat in
+    /// the app's outbox with nothing in the process ever asking for it.
+    ///
+    /// Drained once per frame by the host ([`crate::app::App`]), which is the
+    /// half that can address it: it holds the room's roster, so it can resolve
+    /// the `@name`s the toolkit deliberately leaves unresolved, and it holds
+    /// the collaboration connection the message leaves on. An app that offers
+    /// the gesture returns its [`RemarkHost`](crate::widget::RemarkHost)'s
+    /// outbox here; every other app inherits the default and returns `None`.
+    fn take_remark(&mut self) -> Option<qos_reference::Remark> {
+        None
+    }
+
+    /// Apply an action another app in this room published, if this app is the
+    /// one that owns it.
+    ///
+    /// The receiving half of the same idea [`take_remark`](Self::take_remark)
+    /// opens: an app can address a document it does not hold, by saying what
+    /// should happen rather than by writing the bytes. This is where that
+    /// request is answered — by the app that *does* hold the document, through
+    /// its own [`ActionRegistry`](qos_actions::ActionRegistry), which is the
+    /// only decoder that knows the type.
+    ///
+    /// Delivered to every app in the room, so the default is to decline: an
+    /// action carrying a `type_id` this app's registry does not know is
+    /// somebody else's, and dropping it is the correct answer rather than a
+    /// failure. Return `true` only when the document actually changed, so the
+    /// host knows to broadcast it.
+    fn apply_room_action(
+        &mut self,
+        _doc: &mut AutoCommit,
+        _type_id: &str,
+        _payload: &[u8],
+    ) -> bool {
+        false
+    }
+
     fn get_rect(&self) -> vello::kurbo::Rect;
 
     /// Resolve the OS cursor shape this widget wants while the pointer
@@ -792,6 +835,7 @@ pub mod color_picker;     pub use color_picker::ColorPicker;
 pub mod popover_widget;   pub use popover_widget::PopoverWidget;
 pub mod popover;          pub use popover::Popover;
 pub mod remark_compose;   pub use remark_compose::{DestinationOption, RemarkCompose};
+pub mod remark_host;      pub use remark_host::RemarkHost;
 pub mod modal_dialog;     pub use modal_dialog::ModalDialog;
 pub mod modal_frame;      pub use modal_frame::{ModalAction, ModalEmphasis, ModalFrame, ModalHit, ModalLayout, ModalSpec};
 pub mod modal_prompt;     pub use modal_prompt::PromptBody;
