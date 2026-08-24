@@ -89,6 +89,23 @@ fn blocks(doc: &AutoCommit) -> Vec<qdoc::BlockView> {
     qdoc::model::materialize(doc, &c).blocks
 }
 
+/// The capability an inviter issues an agent for the app it was invited to.
+///
+/// The agent holds no role, so this grant is the whole of what it may do: with
+/// none of these it enumerates nothing and performs nothing.
+fn granted(name: &str) -> ui::permissions::PermissionContext {
+    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    PermissionContext::from_capabilities(
+        Actor::agent(name),
+        vec![CapOverride::grant(
+            Subject::agent(name),
+            Scope::App("word-processor".to_string()),
+            Verb::Write,
+        )
+        .with_id("invited")],
+    )
+}
+
 #[test]
 fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
     let dir = tempfile::tempdir().unwrap();
@@ -139,6 +156,8 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
         // `run_until` bounds this test; the wait-for-a-document deadline
         // belongs to `run`, and is exercised on its own below.
         await_document: Duration::ZERO,
+        directory: None,
+        permissions: granted("Scribe"),
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
@@ -323,6 +342,8 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
         model: false,
         model_timeout: Duration::from_secs(1),
         await_document: Duration::ZERO,
+        directory: None,
+        permissions: granted("Scribe"),
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
@@ -473,6 +494,8 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
         model: false,
         model_timeout: Duration::from_secs(1),
         await_document: Duration::from_millis(1500),
+        directory: None,
+        permissions: granted("Scribe"),
     };
     let mut session = Session::connect(cfg).expect("agent connects");
 
@@ -688,6 +711,8 @@ fn a_page_missing_an_ancestor_is_not_mistaken_for_the_whole_page() {
         model: false,
         model_timeout: Duration::from_secs(1),
         await_document: Duration::from_secs(3),
+        directory: None,
+        permissions: granted("Scribe"),
     };
     let mut session = Session::connect(cfg).expect("agent connects");
     let ran = std::thread::spawn(move || session.run());
@@ -816,6 +841,8 @@ fn it_keeps_asking_until_something_is_addressed_to_it() {
         model: false,
         model_timeout: Duration::from_secs(1),
         await_document: Duration::ZERO,
+        directory: None,
+        permissions: granted("Scribe"),
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");

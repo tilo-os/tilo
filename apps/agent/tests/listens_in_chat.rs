@@ -122,11 +122,18 @@ fn broker() -> (tempfile::TempDir, PathBuf, PathBuf, shell::shell::collab_broker
 fn conversation() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("chat-app".as_bytes()));
-    // Seeds the workspace, `c_general`, and this user — under the agent's own
-    // name, which is how the roster comes to have it.
-    ChatDoc::seed_starter(&mut doc, AGENT_ID, AGENT_NAME, "C");
+    // Seeds the workspace and `c_general`, and records this participant as a
+    // member — membership only, because scaffolding a room is still a peer
+    // writing about itself and a name is not a peer's to declare.
+    ChatDoc::seed_starter(&mut doc, AGENT_ID);
     ChatDoc::set_member_is_agent(&mut doc, AGENT_ID, true);
     ChatDoc::ensure_member(&mut doc, AGENT_ID, true, Presence::Online);
+    // The name arrives the way every name in a room does: written *about* the
+    // participant by the room, not by the participant. `me_in_chat` resolves
+    // the agent's own id by matching this name, so a room that never names it
+    // leaves it anonymous — which is the whole reason this is a separate call
+    // and not an argument to the seed.
+    ChatDoc::ensure_user(&mut doc, AGENT_ID, AGENT_NAME, "C", 0, Presence::Online);
     doc.commit();
     doc
 }
