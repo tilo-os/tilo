@@ -123,12 +123,34 @@ def _doc_text_bin() -> str | None:
     honest way to answer "does this hold that sentence" without decoding
     it. Absent, the beats that ask are reported as gaps rather than
     quietly answered wrong.
+
+    `CARGO_TARGET_DIR` first, because a worktree that sets it has no
+    `target/` at all and looking only there finds nothing in a tree that
+    built everything.
     """
-    for profile in ("demo", "debug"):
-        path = os.path.join(REPO, "target", profile, "qos-doc-text")
-        if os.path.exists(path):
-            return path
+    roots = [os.environ.get("CARGO_TARGET_DIR") or "",
+             os.path.join(REPO, "target")]
+    for root in roots:
+        if not root:
+            continue
+        for profile in ("demo", "release", "debug"):
+            path = os.path.join(root, profile, "qos-doc-text")
+            if os.path.exists(path):
+                return path
     return None
+
+
+class CannotDecode(Exception):
+    """The decoder is missing, so no honest answer about a document's
+    contents is available.
+
+    Its own type because the alternative is the bug it was raised for: a
+    missing binary answering "the text is not in the document" for every
+    document, which is a *failing assertion* about the product rather
+    than a gap in the harness. That is the worst failure mode a check
+    has — it accuses working code, and the accusation looks exactly like
+    a real regression. See [`carries_text`].
+    """
 
 
 DOC_TEXT = _doc_text_bin()
@@ -3563,6 +3585,10 @@ class DocumentReader:
         arrives: a late joiner can be answered before the far app has
         applied the change being watched for, and the first frame is
         then a true document that is simply older than the question.
+
+        Raises [`CannotDecode`] when there is no decoder to read the
+        reply with, so a harness that cannot look never reports an
+        absence it did not observe.
         """
         deadline = time.time() + timeout
         newest: bytes | None = None
@@ -3585,13 +3611,13 @@ class DocumentReader:
                 if key in seen:
                     continue
                 seen.add(key)
-                if _carries(blob, needle):
+                if carries_text(blob, needle):
                     return blob, True
             time.sleep(0.5)
         return newest, False
 
 
-def _carries(blob: bytes, needle: str) -> bool:
+def carries_text(blob: bytes, needle: str) -> bool:
     """Whether an Automerge blob holds `needle` as text.
 
     Not a byte search. Automerge DEFLATE-compresses each column of a
@@ -3607,26 +3633,40 @@ def _carries(blob: bytes, needle: str) -> bool:
     absence rather than a misreading, and the document frames are where
     the answer is.
 
-    Decoding is delegated to `qos-doc-text`, which walks the object
-    graph, so this needs no knowledge of the app's schema. Without that
-    binary there is no honest answer available, and saying so beats
-    guessing from bytes.
+    Decoding is delegated to `qos-doc-text`, which walks the whole object
+    graph — every block, including the cells of a table — so this needs
+    no knowledge of the app's schema.
+
+    Without that binary there is no honest answer available, and this
+    raises [`CannotDecode`] rather than returning one. Returning `False`
+    is what it used to do, and it cost a run: the film's build list does
+    not mention `qos-doc-text`, so the decoder was simply never built,
+    every document read as empty, and the transcript reported that the
+    agent's table had no text in it over a frame showing the table with
+    the text in it. An assertion that cannot look must say so, because
+    "absent" and "unreadable" are different answers and only one of them
+    is about the product.
     """
     if not DOC_TEXT:
-        return False
+        raise CannotDecode(
+            "qos-doc-text is not built, so a document's contents cannot be "
+            "read (cargo build --profile demo -p qdoc --bin qos-doc-text)")
     try:
         done = subprocess.run([DOC_TEXT, "-", "--contains", needle],
                               input=blob, stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return False
+    except (OSError, subprocess.SubprocessError) as e:
+        raise CannotDecode(f"qos-doc-text could not be run: {e}") from e
+    # 0 present, 1 absent, 2 "this is not a document" — which is the
+    # ordinary answer for a per-keystroke delta and not a failure to
+    # look, so it stays a plain no-match.
     return done.returncode == 0
 
 
 def carries_bytes(blob: bytes, needle: bytes) -> bool:
     """Whether an Automerge save contains `needle` verbatim.
 
-    The counterpart to [`_carries`] for something that is not text. The
+    The counterpart to [`carries_text`] for something that is not text. The
     word processor stores an image as `ScalarValue::Bytes` under its
     BLAKE3 hash (`qdoc/src/model.rs:2005`), so the PNG's own bytes are
     in the document — which is what makes this answerable without an
@@ -5096,6 +5136,13 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
         except OSError as e:
             note(f"quinten's own session could not be asked ({e})")
             return False
+        except CannotDecode as e:
+            # Not "the words are missing" -- nobody looked. Said in those
+            # words, because the branch below reads the `False` as an app
+            # that dropped the keystrokes and sends the reader after the
+            # wrong thing.
+            note(f"{e}, so his document could not be read either way")
+            return False
         finally:
             if reader is not None:
                 reader.close()
@@ -5220,6 +5267,9 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     except OSError as e:
         gap(f"xaver's session has no JSON broker to ask ({e}) — "
             f"looked at {xaver.collab_json_sock}")
+    except CannotDecode as e:
+        gap(f"{e} — so what his document holds was not established")
+        doc = None
     finally:
         if reader is not None:
             reader.close()
@@ -6178,6 +6228,9 @@ def beat_nine(quinten: Session, xaver: Session, agent: Session,
                                                  DOC_SYNC_TIMEOUT_S)
     except OSError as e:
         gap(f"xaver's session has no JSON broker to ask ({e})")
+        doc, carried = None, False
+    except CannotDecode as e:
+        gap(f"{e} — so what his screen holds was not established")
         doc, carried = None, False
     finally:
         if reader is not None:

@@ -49,7 +49,10 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE="${QOS_DEMO_PROFILE:-demo}"
-BIN="$REPO/target/$PROFILE"
+# Where cargo actually put them. A tree that sets `CARGO_TARGET_DIR` has
+# no `target/` at all, and looking only there reports every binary
+# missing in a tree that just built all of them.
+BIN="${CARGO_TARGET_DIR:-$REPO/target}/$PROFILE"
 OUT="${QOS_APPS_LIVE_DIR:-$REPO/target/qos-apps-live}"
 IDENTITY="${QOS_DEMO_IDENTITY:-$OUT/publisher-identity.json}"
 STAGE="$OUT/.stage"
@@ -74,9 +77,23 @@ die() { echo "FATAL: $*" >&2; exit 1; }
 crates=()
 for app in "${APPS[@]}"; do crates+=(-p "${app#*|}"); done
 
-say "building ${#APPS[@]} app(s), qos-pkg, qos-install (profile: $PROFILE)"
+# `qos-doc-text` is not staged into any payload and is not an app: it is
+# the decoder the *assertions* need. A saved Automerge document is
+# DEFLATE-compressed per column, so "does the page hold this sentence"
+# has no honest answer without it — and the harness used to answer `no`
+# when it was missing, which is a failing claim about the product rather
+# than a gap in the rig. It was missing, for exactly the reason it is
+# built here now: nothing built it. So it is built beside the apps and
+# checked like them, because a run whose evidence tool is absent should
+# not get as far as filming.
+say "building ${#APPS[@]} app(s), qos-pkg, qos-install, qos-doc-text (profile: $PROFILE)"
 (cd "$REPO" && cargo build $PROFILE_FLAG "${crates[@]}" -p pkg-cli -p install)
-for b in qos-pkg qos-install; do
+# Its own invocation, and deliberately so: `--bin` filters apply across
+# every package selected in the same command, so folding this into the
+# line above would build the decoder *instead of* the apps rather than
+# as well as them. That trap has cost two runs already.
+(cd "$REPO" && cargo build $PROFILE_FLAG -p qdoc --bin qos-doc-text)
+for b in qos-pkg qos-install qos-doc-text; do
     [ -x "$BIN/$b" ] || die "$BIN/$b missing after build"
 done
 

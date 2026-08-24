@@ -790,6 +790,10 @@ class Live:
             yc.gap(f"the document could not be read back ({e}), so what is "
                    f"on the page was not established")
             return
+        except yc.CannotDecode as e:
+            yc.gap(f"{e} -- so what is on the page was not established, "
+                   f"which is not the same as the page being empty")
+            return
         finally:
             if reader is not None:
                 reader.close()
@@ -800,10 +804,20 @@ class Live:
         yc.claim("and the page carries the run sheet's own content",
                  carried, True)
         # An address is how the agent dispatches; a refusal quoting one is
-        # the frame this looks for. Searched as raw bytes because that is
-        # what the snapshot is, and both spellings of the fault are the
-        # same substring.
-        refused = b"I can't" in doc
+        # the frame this looks for.
+        #
+        # Decoded, not grepped. This was a byte search, and a byte search
+        # of a saved document answers "no refusal" for every document
+        # including one that is nothing but a refusal: Automerge
+        # DEFLATE-compresses each column, so the sentence is in the
+        # document and not in its bytes. The claim above proves the point
+        # -- the run sheet's own text is likewise unfindable as bytes --
+        # and a check that cannot fail is not a check.
+        try:
+            refused = yc.carries_text(doc, "I can't")
+        except yc.CannotDecode as e:
+            yc.gap(f"{e} -- so whether the agent refused was not established")
+            return
         yc.claim("and it is not a refusal", refused, False)
         if refused:
             yc.gap("the agent answered in the document, and what it wrote "
