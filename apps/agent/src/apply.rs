@@ -269,12 +269,48 @@ impl Editor {
     /// Returns whether it applied. A delta belonging to one of the
     /// room's other documents refers to objects this one has never seen;
     /// that is not this agent's business and must not end its run.
+    ///
+    /// **Whether it applied cannot be read off the error.** Automerge does
+    /// not reject a change whose ancestors are missing — it *queues* it and
+    /// reports success. On a feed that carries every application's frames,
+    /// and the agent's does by design, taking that at its word goes wrong
+    /// twice over. It reports an edit that did not happen, so the agent
+    /// surveys and decides on somebody else's keystroke; and because this
+    /// replica is asked first and its answer is what stops the search, the
+    /// delta never reaches the replica it did belong to, which then quietly
+    /// goes stale. It also parks a dependency that can never be met, and
+    /// `missing_ancestors` is read straight off `get_missing_deps` — one
+    /// foreign delta and the agent reports for the rest of its run that the
+    /// page it holds is short.
+    ///
+    /// So the ancestors are checked against this replica before anything
+    /// touches it. On a throwaway load of the delta rather than on a copy of
+    /// the document, because the delta is one edit and the document is a
+    /// whole page.
     pub fn merge_incremental(&mut self, bytes: &[u8]) -> Result<bool> {
+        let mut incoming = AutoCommit::new();
+        if incoming.load_incremental(bytes).is_err() {
+            return Ok(false);
+        }
+        // What the delta is built on that it does not carry itself. Every one
+        // of those has to be history this replica already holds, or applying
+        // it would park it rather than apply it.
+        if !incoming
+            .get_missing_deps(&[])
+            .iter()
+            .all(|h| self.doc.get_change_by_hash(h).is_some())
+        {
+            return Ok(false);
+        }
+        let before = self.doc.get_heads();
         if self.doc.load_incremental(bytes).is_err() {
             return Ok(false);
         }
         self.drain();
-        Ok(true)
+        // The document moving is the claim being made, so it is the one
+        // measured. A delta this replica already had moves nothing and is
+        // not news.
+        Ok(self.doc.get_heads() != before)
     }
 
     /// Forget what was just merged as far as "changes to broadcast" goes:
@@ -535,6 +571,76 @@ mod tests {
         fn locus(&self) -> ExecutionLocus {
             ExecutionLocus::ClientLocal
         }
+    }
+
+    /// Another app's document in the same room, and one later change to it.
+    ///
+    /// Shaped like the file explorer's: a different schema under a different
+    /// actor, nothing the word processor has ever seen. Returns the delta the
+    /// broker fans out for that later change — which names the first one as an
+    /// ancestor, so a replica that never had the first cannot apply it.
+    fn a_delta_from_another_apps_document() -> Vec<u8> {
+        use automerge::ObjType;
+        let mut foreign = AutoCommit::new();
+        foreign.set_actor(ActorId::from("xaver".as_bytes()));
+        let buffer = foreign
+            .put_object(&ROOT, "files.rename_query", ObjType::Text)
+            .expect("seed the other app's document");
+        foreign.commit();
+        // Everything so far is the document that peer already had; only what
+        // follows is on the wire.
+        let _ = foreign.save_incremental();
+        foreign.splice_text(&buffer, 0, 0, "launch.md").expect("type into it");
+        foreign.commit();
+        foreign.save_incremental()
+    }
+
+    /// A delta belonging to another app's document is refused, and refusing
+    /// it leaves nothing behind.
+    ///
+    /// The agent joins with an empty app id by design, so the broker hands it
+    /// every application's frames and this delta is tried against the page as
+    /// a matter of course. Automerge does not reject a change whose ancestors
+    /// are missing — it *queues* it — so taking it on trust both reports an
+    /// edit that did not happen and parks a dependency that will never be
+    /// met. The second half is the one that does lasting damage:
+    /// `missing_ancestors` is read straight off `get_missing_deps`, and it is
+    /// what makes the agent announce that the page it holds is not whole.
+    #[test]
+    fn a_delta_from_another_document_is_refused_and_leaves_nothing_queued() {
+        let delta = a_delta_from_another_apps_document();
+
+        // The condition, checked rather than assumed: this delta really is
+        // one automerge accepts-by-queueing rather than one it rejects. If
+        // that ever changed, the guard below would be proving nothing.
+        {
+            let mut probe = AutoCommit::new();
+            assert!(
+                probe.load_incremental(&delta).is_ok(),
+                "automerge must accept this delta, or the trap this guards \
+                 against does not exist"
+            );
+            assert!(
+                !probe.get_missing_deps(&[]).is_empty(),
+                "the delta must be one whose ancestor is missing, or this \
+                 exercises nothing"
+            );
+        }
+
+        let mut ed = Editor::empty("Scribe");
+        let before = ed.missing_ancestors();
+        assert!(
+            !ed.merge_incremental(&delta).expect("merge"),
+            "a delta belonging to another document is not this one's, and \
+             saying it applied reports an edit that did not happen"
+        );
+        assert_eq!(
+            ed.missing_ancestors(),
+            before,
+            "refusing a foreign delta must leave nothing queued behind it — \
+             a parked dependency that can never be met makes the agent \
+             report for the rest of its run that the page it holds is short"
+        );
     }
 
     /// A change whose action read after writing is still broadcast.
