@@ -272,6 +272,11 @@ qos-user-identity = { path = "../crates/identity/qos-user-identity" }
 iroh.workspace = true
 iroh-base.workspace = true
 
+# `diagnostics_outlive_a_closed_log_pipe` replaces the process's stderr with
+# a pipe that has no reader, which needs `dup`/`dup2`. There is no std API
+# for redirecting a file descriptor.
+libc.workspace = true
+
 # Runtime probe for the DMA-BUF zero-copy import (needs the WPE engine).
 [[example]]
 name = "wpe_dmabuf_probe"

@@ -272,6 +272,7 @@ def _load(name: str, filename: str):
 # reads. One copy, shared.
 ins = _load("yc_demo_insert", "yc-demo-insert.py")
 yc = ins.yc
+session_exit = _load("session_exit", "session_exit.py")
 
 # How long after the code exists before xaver redeems it. Long enough to
 # be somebody reading a short code off one screen and walking to
@@ -1555,6 +1556,7 @@ def main() -> int:
     bus = None
     registry_ctx = None
     outcome = "not reached"
+    session_ends: list[tuple[str, str]] = []
     rc = 0
     hands = None
     real_stdout = None
@@ -1787,6 +1789,15 @@ def main() -> int:
         stop.set()
         if hands is not None:
             hands.join(timeout=15)
+        # How each session's compositor ended, read before teardown: after
+        # `stop()` every status is this script's own SIGTERM, and the
+        # question worth answering is whether the compositor was already
+        # gone and why. A lost control socket looks the same whether the
+        # session was closed on purpose or crashed, and reporting them
+        # identically is how an application crash was once read as a
+        # compositor crash.
+        session_ends = [(sn.name, session_exit.how_it_ended(sn.proc))
+                        for sn in sessions]
         # Before teardown either way: the capture thread talks to the
         # sessions, and `--keep` is about the sessions, not the camera.
         if recorder is not None:
@@ -1856,6 +1867,8 @@ def main() -> int:
 
     print("\n" + "=" * 70)
     print(f"the take ended because: {outcome}")
+    for name, how in session_ends:
+        print(f"  {name}'s compositor {how}")
     if yc.GAPS:
         print(f"{len(yc.GAPS)} thing(s) this run could not verify:")
         for g in yc.GAPS:

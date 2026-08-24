@@ -28,9 +28,15 @@
 //! ## It does not take over the context menu
 //!
 //! The menu beside it keeps working. This panel owns its own rect and its own
-//! keyboard focus, and closing one does not close the other — dismissing the
-//! compose leaves the menu usable, and dismissing the menu leaves a
-//! half-written remark alone rather than discarding it.
+//! keyboard focus, and dismissing the compose leaves the menu usable.
+//!
+//! The other direction used to be symmetrical and should not have been. The
+//! two open on one gesture, so a panel nobody has typed into is still part of
+//! that gesture and leaves with it; left behind, it is an overlay attached to
+//! a menu that is no longer there. What the symmetry was protecting is real
+//! but narrower — a *half-written* remark must not be discarded by a click
+//! aimed at something else — so that is the case that keeps it open, and only
+//! that one. See `RemarkHost::close_if_unwritten`.
 //!
 //! ## Labels come in localised
 //!

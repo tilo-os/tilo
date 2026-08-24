@@ -199,6 +199,31 @@ pub fn pump(relay: &mut MemoryRelay) {
                 // Answered by whoever holds the content offering it; this
                 // relay has no store of its own to answer from.
             }
+            CollabRequest::SendAction { type_id, payload } => {
+                // An action published into the room reaches every other peer,
+                // which is what the real broker does with one. It is narrowed
+                // at the *receiver* — by whether that peer's own registry
+                // knows the type — so a relay that narrowed it here would be
+                // answering a question the registry already answers, and
+                // would hide the case where the wrong app is listening.
+                for id in &peer_ids {
+                    if id == &from {
+                        continue;
+                    }
+                    inboxes
+                        .get_mut(id)
+                        .unwrap()
+                        .push_back(CollabEvent::ActionArrived {
+                            type_id: type_id.clone(),
+                            payload: payload.clone(),
+                            from_user_id: from.clone(),
+                        });
+                }
+            }
+            CollabRequest::OpenApp { .. } => {
+                // Addressed to a session rather than to an audience, and this
+                // relay hosts no desktop to address.
+            }
             CollabRequest::Hello { .. } => {
                 // no fan-out in tests
             }

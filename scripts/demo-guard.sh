@@ -37,6 +37,42 @@ set -uo pipefail
 CHECK_ONLY=0
 [ "${1:-}" = "--check" ] && CHECK_ONLY=1
 
+# Scopes first, and they are the real answer.
+#
+# A run lives in a transient systemd scope, so stopping the scope takes
+# the whole cgroup — including everything this script has never heard of.
+# That matters more than it sounds: reaping by name left six
+# `xdg-dbus-proxy` processes alive for half an hour, one per sandboxed
+# application, in two scopes systemd still reported as *running*. Because
+# live tasks remained, the scope never terminated and `--collect` never
+# disposed of it.
+#
+# The name list below cannot fix that by growing. A run spawns dbus
+# proxies, the driving rig, ffmpeg, and whatever a launcher decides an
+# application needs; enumerating them is the job the cgroup already does.
+# So the cgroup is asked first, and the names are only the fallback for
+# strays that predate the wrapper or were started outside it.
+scopes() { systemctl --user list-units --all --no-pager 2>/dev/null \
+    | awk '/qos-demo-[0-9]+\.scope/ {print $1}'; }
+
+mapfile -t SCOPES < <(scopes)
+if [ "${#SCOPES[@]}" -gt 0 ]; then
+  echo "demo-guard: ${#SCOPES[@]} demo scope(s) still registered:"
+  printf '  %s\n' "${SCOPES[@]}"
+  if [ "$CHECK_ONLY" -eq 1 ]; then
+    echo "demo-guard: --check given, nothing stopped"
+    exit 1
+  fi
+  systemctl --user stop "${SCOPES[@]}" 2>/dev/null
+  sleep 1
+  mapfile -t SCOPES < <(scopes)
+  if [ "${#SCOPES[@]}" -gt 0 ]; then
+    echo "demo-guard: ${#SCOPES[@]} scope(s) would not stop — investigate"
+    exit 1
+  fi
+  echo "demo-guard: scopes stopped, cgroups gone"
+fi
+
 # Matched on `comm`, not on the full command line. A pattern matched
 # against `args` also matches *this script* and the pipeline reading it,
 # which is how a wait loop here once spun forever against itself.

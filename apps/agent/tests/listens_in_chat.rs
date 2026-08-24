@@ -12,9 +12,8 @@
 //!
 //! So the peers here are not fixtures. They are
 //! [`ui::collaboration::CollaborationManager`] — the same type chat itself
-//! constructs — connected the way the launcher connects one: an fd in
-//! `QOS_SVC_COLLAB_FD`, `QUICK_COLLAB_SOCK` explicitly cleared so the legacy
-//! branch cannot be taken, talking to
+//! constructs — connected the way the launcher connects one: over a
+//! connected fd on the capnp socket, talking to
 //! [`shell::shell::collab_broker::spawn_full`], the broker the compositor
 //! binds, with both sockets bound. The agent joins the JSON socket because
 //! that is the transport `qos-agent` itself has: its whole wire module is the
@@ -34,7 +33,6 @@ use std::collections::HashSet;
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
@@ -55,16 +53,6 @@ const AGENT_NAME: &str = "Claude";
 const ADA: &str = "u_ada";
 const CHANNEL: &str = "c_general";
 
-/// Connecting a peer means writing the process environment, because that is
-/// where a launched app reads its fd and its room from. Every test here is
-/// serialised behind this so no two are mid-handshake at once.
-fn env_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-}
-
 fn wait_for(path: &PathBuf) -> UnixStream {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -76,24 +64,29 @@ fn wait_for(path: &PathBuf) -> UnixStream {
     }
 }
 
-/// A peer of `app`, connected the way the launcher connects a sandboxed app:
-/// a connected fd on the **capnp** socket, named in `QOS_SVC_COLLAB_FD`.
+/// A peer of `app` on the **capnp** socket, connected the way the launcher
+/// connects a sandboxed app: over an already-connected fd, announcing its
+/// package and its room.
 ///
-/// `QUICK_COLLAB_SOCK` is removed rather than merely left unset. The manager
-/// prefers the legacy dialect whenever that variable names a socket it can
-/// reach, and a stray one from another test would silently downgrade this peer
-/// to the transport these tests exist to avoid.
+/// The launcher passes those three in the environment, because a process it
+/// spawned has nowhere else to read them from. This harness has somewhere
+/// else — it bound the socket and minted the room itself — and writing them
+/// into the environment anyway is what made this file unsafe to run in
+/// parallel. `set_var` is process-wide, and from the second peer onwards
+/// there are live shovel and broker threads reading the environment while it
+/// is being rewritten. A mutex around the writers cannot close that, because
+/// the readers belong to a `Room` some other test is still holding, outside
+/// any lock this file could take; that is why these were green only at
+/// `--test-threads=1`.
+///
+/// Passing the address removes the shared state instead of guarding it.
+/// Nothing in this file writes the environment now, so nothing here needs a
+/// lock. It settles the transport structurally too: `from_connected_fd` goes
+/// straight to the capnp path, so a stray `QUICK_COLLAB_SOCK` can no longer
+/// downgrade this peer to the dialect these tests exist to avoid.
 fn capnp_peer(capnp_sock: &PathBuf, room: &Uuid, app: &str) -> CollaborationManager {
     let fd = wait_for(capnp_sock).into_raw_fd();
-    // SAFETY: every test in this file holds `env_lock` across this call, and
-    // `CollaborationManager::new` reads these before it returns.
-    unsafe {
-        std::env::remove_var("QUICK_COLLAB_SOCK");
-        std::env::set_var("QOS_SVC_COLLAB_FD", fd.to_string());
-        std::env::set_var("QOS_WORKSPACE_ID", room.to_string());
-        std::env::set_var("QOS_PACKAGE_ID", app);
-    }
-    let m = CollaborationManager::new();
+    let m = CollaborationManager::from_connected_fd(fd, app, *room);
     assert!(
         m.is_connected(),
         "the {app} peer did not reach the broker over capnp — these tests \
@@ -298,7 +291,6 @@ impl Room {
     /// `conversation` is the channel as the chat app holds it; `document` is
     /// the page the word processor holds, when the test needs one.
     fn open(conversation: AutoCommit, document: Option<AutoCommit>) -> Self {
-        let _guard = env_lock();
         let (dir, json, capnp, handle) = broker();
         let room = Uuid::new_v4();
 
@@ -414,6 +406,56 @@ fn a_message_that_does_not_mention_the_agent_is_not_acted_on() {
     assert!(
         room.replies().is_empty(),
         "and an agent that answers unaddressed chatter is worse than one that misses a mention"
+    );
+}
+
+/// A compose box being typed into is not a message, however far it has got.
+///
+/// Worth pinning because a draft here is not private scratch space: the
+/// composer diff-splices every keystroke into a per-channel `Text` in the
+/// shared document (`ChatDoc::set_draft`), so half a sentence somebody is
+/// still writing genuinely does reach this agent's replica. What keeps it
+/// from being acted on is that a message does not exist until Send appends
+/// one — nothing in the agent's path reads a draft, and this is what says
+/// so out loud.
+///
+/// The text is the one that matters. An instruction sent from a compose
+/// panel opens `@Claude make …`, and `Claude: make ` — the same thirteen
+/// characters — is exactly what a document paragraph got answered at, with
+/// the word `make` quoted back as the whole request. On this path that
+/// cannot happen, and a change that made the agent read drafts "so it can
+/// see what is coming" would reintroduce it here. Then this fails.
+#[test]
+fn a_half_typed_compose_box_is_not_a_message() {
+    let doc = draft();
+    let mut chat = conversation();
+    // Typed, not sent: the state the composer is in between the person
+    // reaching for `m` and reaching for Send.
+    ChatDoc::set_draft(&mut chat, CHANNEL, "@Claude make ");
+    chat.commit();
+
+    let room = Room::open(chat, Some(doc));
+
+    // Non-vacuous: the half-written sentence really is in the document that
+    // crossed the broker to the agent. Without this the test could pass by
+    // the draft never having been shared at all, which would prove nothing
+    // about what the agent does with one.
+    assert_eq!(
+        ChatDoc::draft_text(&room.chat_doc, CHANNEL),
+        "@Claude make ",
+        "the draft must be in the shared document for this test to mean \
+         anything — a draft nobody shared cannot be misread"
+    );
+    assert_eq!(
+        room.acted_on(),
+        None,
+        "the agent acted on a sentence still being typed into a compose box"
+    );
+    assert!(
+        room.replies().is_empty(),
+        "and it must not answer one either — the person has not sent \
+         anything yet: {:?}",
+        room.replies()
     );
 }
 

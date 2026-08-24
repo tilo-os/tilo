@@ -167,21 +167,20 @@ fn window_group_visual_journey_distinguishes_all_states() {
     let fresh_hash = pixel_hash(&fresh);
     maybe_write_png(&fresh, w, h, "window_group_fresh");
 
-    // State 2: search_active on. Should paint the indigo ring/glow pair
-    // around the whole card — the concept's `ring-4 ring-indigo-500/50
-    // shadow-[0_0_60px_rgba(99,102,241,0.6)]` affordance.
-    group.search_active = true;
-    let search = render_group(&mut renderer, &mut group);
-    let search_hash = pixel_hash(&search);
-    maybe_write_png(&search, w, h, "window_group_search");
-    assert_ne!(
-        fresh_hash, search_hash,
-        "search_active must change the rendered output (focus ring + glow)",
-    );
+    // The journey used to pass through a per-group "is searching" state
+    // here, painting an indigo ring and glow around the whole card. That
+    // affordance was deliberately removed when the tab strip settled on
+    // one close button: search became a shell service rather than
+    // something a group is, so `WindowGroup::search_active` went with it.
+    //
+    // The state is dropped rather than replaced. Nothing else on the group
+    // paints that ring, so there is no equivalent to assert, and a stand-in
+    // flag chosen only to keep the step count would prove nothing about
+    // either feature. What remains — fresh, maximized, post-close — is
+    // still every visual state a group has.
 
-    // State 3: maximized (with search_active still on — concept allows
-    // both). Adds the 2 px outline + floating title pill + Restore + ×
-    // pills, so output must again be distinct.
+    // State 2: maximized. Adds the 2 px outline + floating title pill +
+    // Restore + × pills, so output must be distinct from fresh.
     group.maximized = true;
     let maximized = render_group(&mut renderer, &mut group);
     let maximized_hash = pixel_hash(&maximized);
@@ -190,17 +189,12 @@ fn window_group_visual_journey_distinguishes_all_states() {
         fresh_hash, maximized_hash,
         "maximized must change the rendered output (outline + floating pills)",
     );
-    assert_ne!(
-        search_hash, maximized_hash,
-        "maximized on top of search_active must paint additional chrome",
-    );
 
-    // State 4: post-close. Turn the overlays back off and remove the
-    // active tab — exercises the close path's layout-spring start and
-    // the `remove_tab` branch. Pill count drops 3 → 2; rendered output
-    // must differ from the fresh state.
+    // State 3: post-close. Turn the overlay back off and remove the active
+    // tab — exercises the close path's layout-spring start and the
+    // `remove_tab` branch. Pill count drops 3 → 2; rendered output must
+    // differ from the fresh state.
     group.maximized = false;
-    group.search_active = false;
     let detached = group.detach_tab(1);
     assert!(detached.is_some(), "detach_tab(1) must succeed");
     let post_close = render_group(&mut renderer, &mut group);

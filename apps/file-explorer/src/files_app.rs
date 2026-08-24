@@ -1170,6 +1170,11 @@ impl FileExplorerWidget {
         self.remark.destination()
     }
 
+    /// What has been typed into the compose panel so far.
+    pub fn remark_text(&self) -> &str {
+        self.remark.text()
+    }
+
     /// The compose panel's rect, as laid out. Zero-area while it is closed.
     pub fn remark_rect(&self) -> vello::kurbo::Rect {
         self.remark.rect()
@@ -2620,6 +2625,20 @@ impl Widget for FileExplorerWidget {
         taffy: &taffy::TaffyTree<()>,
     ) {
         use winit::event::{ElementState, MouseButton, WindowEvent};
+
+        // The panel and the menu go up on one gesture, so they come down
+        // together. Checked level-triggered rather than hooked into each of
+        // the five places the menu closes — an item chosen, a click away, a
+        // navigation, Escape — because a rule enforced at one of five call
+        // sites is a rule that holds four times out of five.
+        //
+        // Only an *unwritten* panel follows. Once there are words in it, it is
+        // no longer part of the menu's gesture; it is somebody's unsent
+        // sentence, and dismissing a menu must not throw that away.
+        if !self.context_menu.is_open() && self.remark.close_if_unwritten() {
+            self.structure_dirty = true;
+        }
+
         // Track the cursor for menu placement + hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -2662,6 +2681,12 @@ impl Widget for FileExplorerWidget {
                 .is_open()
                 .then(|| self.context_menu.get_rect()),
         ) {
+            // Escape inside the panel closes it. The menu it opened beside is
+            // part of the same gesture, so it goes too rather than being left
+            // as the visible remnant of something that was dismissed.
+            if !self.remark.is_open() {
+                self.context_menu.close();
+            }
             self.structure_dirty = true;
             return;
         }

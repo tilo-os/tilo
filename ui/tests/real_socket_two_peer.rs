@@ -126,9 +126,22 @@ fn real_socket_fans_out_incremental_and_presence() {
                 CollabRequest::OfferBlob { hash, bytes } => {
                     CollabEvent::BlobArrived { hash, bytes }
                 }
+                // An action published into the room reaches the other peer as
+                // one that arrived, which is what the real broker does with
+                // it: fanned to everyone, and narrowed at the receiver by
+                // whether its own registry knows the type.
+                CollabRequest::SendAction { type_id, payload } => {
+                    CollabEvent::ActionArrived {
+                        type_id,
+                        payload,
+                        from_user_id: format!("peer-{src_idx}"),
+                    }
+                }
                 // Signed-op sync, scrollback fetch and content requests
                 // aren't part of this two-peer plaintext scenario — swallow
-                // them like `Hello`.
+                // them like `Hello`. Opening an application is addressed to a
+                // session rather than to an audience, and this relay hosts no
+                // desktop to address.
                 CollabRequest::SignedSyncIncremental { .. }
                 | CollabRequest::FetchScrollback { .. }
                 | CollabRequest::WantBlob { .. } => continue,
