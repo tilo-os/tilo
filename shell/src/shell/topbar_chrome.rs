@@ -311,6 +311,64 @@ fn bar_selector_body(theme: &Theme, state: ui::chrome::SelectionState) -> ui::ch
     ui::chrome::selection_tier(theme, state)
 }
 
+/// How much `danger` the tray pill carries when the battery is critical.
+///
+/// Named because two things must agree on it: the pill's own wash, and the
+/// ground the gauge is measured against.
+pub(crate) const TRAY_CRITICAL_WASH: f32 = 0.18;
+
+/// The opaque colour the tray pill leaves on the screen.
+///
+/// The pill is a lift over the bar, and at critical it takes a `danger`
+/// wash on top of that. Both are translucent, so neither token is the
+/// colour anything drawn on the pill is actually seen against — only this
+/// composite is.
+pub(crate) fn tray_pill_body(theme: &Theme, critical: bool) -> Color {
+    let colors = &theme.tokens.colors;
+    let tier = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
+    let mut body = ui::tokens::colors::over(
+        colors.surfaces.overlay,
+        tier.fill,
+        tier.fill.components[3],
+    );
+    if critical {
+        body = ui::tokens::colors::over(body, colors.semantic.danger, TRAY_CRITICAL_WASH);
+    }
+    body
+}
+
+/// Colour of the battery gauge's charge fill.
+///
+/// At critical the tray pill is itself washed `danger`, so a `danger` fill
+/// sat on a tinted version of itself and measured 2.61:1 — *less* legible
+/// than the merely-low state's 5.40:1. That is the signal running
+/// backwards: the more urgent the state, the harder it was to see, which is
+/// the one direction a battery indicator must never fail in. Deriving the
+/// hue against the pill it is actually drawn on keeps the danger hue and
+/// puts the urgency back in front of it.
+pub(crate) fn battery_gauge_hue(
+    theme: &Theme,
+    critical: bool,
+    low: bool,
+    charging: bool,
+) -> Color {
+    let colors = &theme.tokens.colors;
+    let tone = if critical {
+        colors.semantic.danger
+    } else if low {
+        colors.semantic.warning
+    } else if charging {
+        colors.semantic.success
+    } else {
+        colors.text_dim
+    };
+    colors.ink_on(
+        tray_pill_body(theme, critical),
+        tone,
+        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+    )
+}
+
 impl TopBarChrome {
     pub fn from_tree(tree: &WorkspaceTree) -> Self {
         let mut this = Self {
@@ -1454,7 +1512,7 @@ impl Widget for TopBarChrome {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.semantic.danger.with_alpha_factor(0.18),
+                colors.semantic.danger.with_alpha_factor(TRAY_CRITICAL_WASH),
                 None,
                 &tray,
             );
@@ -1567,15 +1625,12 @@ impl Widget for TopBarChrome {
         // --- Battery --------------------------------------------------
         if let Some(pct) = battery_pct {
             let charging = self.status.battery_is_charging();
-            let hue = if self.status.battery_is_critical() {
-                colors.semantic.danger
-            } else if self.status.battery_is_low() {
-                colors.semantic.warning
-            } else if charging {
-                colors.semantic.success
-            } else {
-                dim
-            };
+            let hue = battery_gauge_hue(
+                theme,
+                self.status.battery_is_critical(),
+                self.status.battery_is_low(),
+                charging,
+            );
             Self::draw_battery_gauge(scene, transform, slot_rect(sx), pct, charging, hue, colors);
             sx += tray_slot;
             if let Some(label) = pct_label.as_ref() {
