@@ -1645,6 +1645,7 @@ async fn drive_shovel(
                                     id: c.user_id,
                                     name: c.display_name,
                                     color: unpack_color(c.color),
+                                    is_agent: c.is_agent,
                                 })
                                 .collect();
                             if itx

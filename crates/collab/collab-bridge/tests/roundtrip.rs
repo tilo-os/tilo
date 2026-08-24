@@ -304,11 +304,13 @@ fn subscribe_context_delivers_upstream_context_events() {
                     id: "alice".into(),
                     name: "Alice".into(),
                     color: [1.0, 0.0, 0.0],
+                    is_agent: false,
                 },
                 Collaborator {
                     id: "bob".into(),
                     name: "Bob".into(),
                     color: [0.0, 1.0, 0.0],
+                    is_agent: false,
                 },
             ],
             permissions: vec!["write".into(), "share".into()],

@@ -107,6 +107,20 @@ pub struct Collaborator {
     pub id: String,
     pub name: String,
     pub color: [f32; 3],
+    /// Whether this member is an agent rather than a person.
+    ///
+    /// The room already knows -- an agent is admitted as one, and
+    /// `RosterRow::is_agent` records it. This projection dropped it,
+    /// so anything downstream that needed to tell an agent from a
+    /// person had to read the id and hope, which is the inference the
+    /// marking exists to make unnecessary.
+    ///
+    /// Defaulted on the wire so an older peer that does not send the
+    /// field is read as "a person" rather than failing to decode.
+    /// A peer wrongly shown as a person is a smaller lie than a
+    /// roster that will not load.
+    #[serde(default)]
+    pub is_agent: bool,
 }
 
 // ---- PresenceKey mirror -------------------------------------------------

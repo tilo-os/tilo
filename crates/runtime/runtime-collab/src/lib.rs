@@ -620,6 +620,10 @@ pub struct Collaborator {
     /// zero on the wire. Consumers unpack into their native colour
     /// space.
     pub color: u32,
+    /// Whether this member is an agent rather than a person, as the room
+    /// recorded when it admitted them. Carried so no consumer has to read
+    /// the id and guess.
+    pub is_agent: bool,
 }
 
 /// Roster + local permissions snapshot delivered on
@@ -661,6 +665,7 @@ impl ContextStream {
                 user_id,
                 display_name,
                 color: c.get_color(),
+                is_agent: c.get_is_agent(),
             });
         }
         let perms_reader = ctx.get_permissions()?;

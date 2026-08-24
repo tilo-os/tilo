@@ -2635,6 +2635,15 @@ fn remote_participant_id(
                 name,
                 // The palette colour the id already resolves to.
                 color: [0.0, 0.0, 0.0],
+                // Not known on this path. The label map above records what
+                // a peer is *called* -- set by whoever invited them -- and
+                // not what they are, so this announcement cannot mark an
+                // agent. The capnp context stream carries `isAgent` from
+                // the room proper; a peer announced only through here is
+                // therefore shown as a person. Wrong for an agent, but a
+                // smaller wrong than guessing from the id, and the fix is
+                // to record kind beside name rather than to infer it.
+                is_agent: false,
             }],
             permissions: Vec::new(),
         };
