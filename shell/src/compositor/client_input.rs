@@ -400,6 +400,15 @@ impl ClientInput {
         self.cursor.unwrap_or_default()
     }
 
+    /// How many pointer buttons are held right now.
+    ///
+    /// Read by the paint path so a press can be drawn as a press: an
+    /// arrow that has arrived at a control and an arrow that is
+    /// actuating it are otherwise the same picture.
+    pub fn buttons_down(&self) -> u32 {
+        self.buttons_down
+    }
+
     /// Where the pointer is, or `None` if it has never been anywhere.
     ///
     /// The honest form of [`Self::cursor`], for the one caller that

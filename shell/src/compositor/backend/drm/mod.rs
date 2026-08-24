@@ -407,6 +407,14 @@ impl Presenter for DrmPresenter {
 }
 
 impl Backend for DrmBackend {
+    /// The hardware cursor plane composites itself, and where there is
+    /// none the scanout draws the fallback straight into the frame
+    /// buffer — either way the pointer is on screen without the scene
+    /// carrying it. See `scanout::present_no_drain`.
+    fn has_cursor_plane(&self) -> bool {
+        true
+    }
+
     /// Inline presentation. Only reached when the presenter has *not*
     /// been split off (the compositor takes it at startup); kept so a
     /// caller that never splits still paints.
