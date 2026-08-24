@@ -4807,7 +4807,35 @@ def run_the_agent(agent: Session, room: str, shots: str,
         # not expose today.
         proc = subprocess.Popen(
             [binary, "--workspace", str(room), "--name", "Claude",
-             "--app", WORD_PROCESSOR,
+             # Room-wide, with the grants named rather than inherited.
+             #
+             # `--app` does two things at once: it scopes the CRDT
+             # route, and it defaults the capability list. Scoped to
+             # the word processor, the broker's `delivers_to` refuses
+             # every document whose app differs -- including the chat
+             # that a remark is written into. The instruction xaver
+             # gives then never reaches the agent at all, and the beat
+             # the whole film is built to reach cannot happen.
+             #
+             # Empty is the flag's own documented room-wide mode: "a
+             # connection that announces nothing is handed every app's
+             # state and the agent can enumerate the room instead of a
+             # single document". It costs what the note here used to
+             # warn about -- with nothing to narrow on, the agent has
+             # to pick its document out of everything the room sends,
+             # and once picked the file manager's. That is a risk of
+             # choosing wrong in place of a certainty of never being
+             # asked.
+             #
+             # The grants are then explicit, because an empty `--app`
+             # would otherwise leave the agent holding nothing: with no
+             # grants "it enumerates nothing and performs nothing".
+             # These four are the apps the film needs it to cross --
+             # read the remark, open the editor, and land the result in
+             # the document the picture came out of Files to reach.
+             "--app", "",
+             "--grant", "word-processor", "--grant", "files",
+             "--grant", "chat", "--grant", "photos",
              "--socket", agent.collab_json_sock, "--once",
              "--pace-ms", "250"],
             stdout=log, stderr=subprocess.STDOUT, cwd=REPO,
