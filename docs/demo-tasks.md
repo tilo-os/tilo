@@ -65,11 +65,32 @@ on the real path · `[!]` landed but unverified, or regressed.
       hover 96 < focused-rest 150 < focused-hover 224), so maximum
       contrast is spent only under the pointer. Measured in all three
       themes, before and after.
-- [x] **Clicks moved no pointer** — a scripted click now travels to
-      what it clicks, so the film stops looking like it operates itself.
-- [x] **Six seconds before the first app** — the opening hold was in
-      front of the launch, not the launch itself. Now measured at 1.4s
-      from asked-for to on-screen.
+- [x] **Clicks moved no pointer** — and the cause was worse than a
+      teleporting click. **The compositor drew no pointer at all in the
+      headless path**: the only code that renders a cursor into the
+      scene ran solely during drags. DRM has a hardware cursor plane and
+      winit sits under the host's pointer, so headless was the one
+      backend with nobody drawing one — and it is the backend that gets
+      photographed. The snapshot path had the same hole for its own
+      reason: it re-renders the scene, so no backend's cursor plane is
+      ever in a readback. Clicks now travel through one shared planner,
+      so there is no longer a way to plan a click that does not first put
+      the pointer where it is about to happen. Proven on film: travelling
+      at 5.45s, arrived on the control at 5.65s, press ring at 5.86s.
+- [x] **Six seconds before the first app** — **my diagnosis was
+      wrong** and the measurement said so: it was not mostly hold. The
+      beat was 1.06s of empty desktop, 0.85s to a window frame, then
+      2.2s of the compositor's opening spinner, *ending while it was
+      still spinning* — the first app was never on screen inside the
+      beat at all. Two real causes: `launch()` returned on the first
+      committed buffer, which is not "the window is up"; and applying
+      the strip share on the first frame invalidated the buffer the
+      client had just drawn, buying a second round trip of placeholder.
+      Files is now fully rendered at 3.4s where the baseline was still
+      spinning past 3.9s. Separately measured and stated: real launch
+      latency is 1.9s unrecorded, 3.3s under recording, because
+      snapshotting is ~78% of a filmed compositor's loop — the camera's
+      cost, not the product's.
 - [x] **Boot bumper** — cut from existing footage, 3.2s, pillarboxed
       to 1920x1080, joined ahead of the demo at exactly 100.000s.
 
