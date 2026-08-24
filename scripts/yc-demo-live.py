@@ -1228,10 +1228,21 @@ def main() -> int:
 
     entries = yc.registry_entries(os.path.join(yc.MACHINE_APPS, "registry.toml"))
     live = yc.registry_entries(os.path.join(yc.LIVE_APPS, "registry.toml"))
+    # Every app the live registry serves, not just the one this rig was
+    # first written around.
+    #
+    # Only the word processor was promoted, so `demo-apps-live.sh` built
+    # and packaged Photos, the registry served it, and the session was
+    # never told — its palette answered `rows: []` for "photos" and the
+    # scene that needs four applications quietly filmed three. Nothing
+    # failed: the app was absent rather than broken, which is the harder
+    # kind to notice.
+    for app_id, entry in live.items():
+        entries[app_id] = entry
+
     live_payload = os.path.join(yc.LIVE_APPS, "payloads", yc.WORD_PROCESSOR,
                                 "bin", "word-processor")
     if yc.WORD_PROCESSOR in live:
-        entries[yc.WORD_PROCESSOR] = live[yc.WORD_PROCESSOR]
         wp_source = f"{yc.LIVE_APPS} (built from this tree)"
     elif yc.WORD_PROCESSOR in entries:
         wp_source = f"{yc.MACHINE_APPS} (the machine's installed payload)"
@@ -1251,12 +1262,24 @@ def main() -> int:
         # binary the registry was serving through and the old app goes
         # out with no error anywhere — the run is green and the app in
         # the picture is the previous one.
-        if os.path.exists(live_payload) and refuse_stale(
-                "the word-processor payload", live_payload,
-                (os.path.join(REPO, "apps", "word-processor", "src"),
-                 os.path.join(REPO, "ui", "src")),
-                "scripts/demo-apps-live.sh"):
-            return 2
+        #
+        # Every live payload, for that reason -- it does not stop being
+        # true of the second app. The binary and the source directory are
+        # both the app id's last segment: `dev.qos.photos` is built from
+        # `apps/photos` into `bin/photos`, the same shape the packaging
+        # script uses to build them.
+        for app_id in sorted(live):
+            leaf = app_id.rsplit(".", 1)[-1]
+            payload = os.path.join(yc.LIVE_APPS, "payloads", app_id,
+                                   "bin", leaf)
+            if not os.path.exists(payload):
+                continue
+            if refuse_stale(
+                    f"the {leaf} payload", payload,
+                    (os.path.join(REPO, "apps", leaf, "src"),
+                     os.path.join(REPO, "ui", "src")),
+                    "scripts/demo-apps-live.sh"):
+                return 2
 
     # ---- staging ---------------------------------------------------
     args.out = os.path.abspath(args.out)
