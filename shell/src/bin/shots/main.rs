@@ -710,4 +710,105 @@ mod tests {
         assert!(DEFAULT_SWEEP.contains(&(800, 600)));
         assert!(DEFAULT_SWEEP.contains(&(1920, 1080)));
     }
+
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("shell/ has a parent")
+            .to_path_buf()
+    }
+
+    /// The crate a source file belongs to, as the identifier a `use`
+    /// path would name it by.
+    fn crate_ident_for(file: &std::path::Path) -> Option<String> {
+        let mut dir = file.parent()?;
+        loop {
+            if dir.join("Cargo.toml").is_file() {
+                return Some(dir.file_name()?.to_string_lossy().replace('-', "_"));
+            }
+            dir = dir.parent()?;
+        }
+    }
+
+    /// Every crate that chooses its catalogue from the environment,
+    /// found by looking for the function that does the choosing.
+    ///
+    /// Deliberately not a hand-kept list. A crate that grows one of
+    /// these later is picked up without anyone remembering to come back
+    /// here, which is the entire point of the test below.
+    fn env_reading_catalogue_crates() -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+        let mut stack = vec![repo_root()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
+                if path.is_dir() {
+                    // Build output and third-party sources are not ours
+                    // to pin, and walking them costs seconds.
+                    if matches!(
+                        name.as_str(),
+                        "target" | "vendor" | ".git" | ".build" | ".claude" | "node_modules"
+                    ) {
+                        continue;
+                    }
+                    stack.push(path);
+                } else if name == "i18n.rs" {
+                    let Ok(src) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    if !src.contains("fn locale_from_env") {
+                        continue;
+                    }
+                    if let Some(krate) = crate_ident_for(&path) {
+                        if !found.contains(&krate) {
+                            found.push(krate);
+                        }
+                    }
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// `shots` draws the apps it photographs in-process, and an app with
+    /// its own catalogue resolves against its own active locale. Pinning
+    /// the shell's and stopping there is how a word-processor tile came
+    /// back entirely German — "Neu / Tabelle / Stile / Lineal" — under an
+    /// English shell pill reading "Document", in a shot taken *after* the
+    /// shell pin was added. Nothing in a PNG says which language produced
+    /// it, so that shipped.
+    #[test]
+    fn shots_pins_every_catalogue_that_reads_the_environment() {
+        let crates = env_reading_catalogue_crates();
+        // A check that cannot see anything has to fail rather than pass.
+        // If this scan stops finding the two known catalogues — a move, a
+        // rename, a repo root resolved wrong — then the invariant is
+        // unverified, which is not the same as satisfied.
+        assert!(
+            crates.len() >= 2,
+            "found only {crates:?}, expected at least the shell's and the \
+             word processor's — the scan is not looking where it thinks, \
+             so it is proving nothing"
+        );
+        let src = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/bin/shots/main.rs"),
+        )
+        .expect("read shots' own source");
+        let missing: Vec<&String> = crates
+            .iter()
+            .filter(|k| !src.contains(&format!("{k}::i18n::set_locale")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{missing:?} choose their catalogue from the environment, and \
+             `shots` never pins them — so they render in whatever language \
+             the machine happens to use, underneath a shell pinned to \
+             another. Add a `set_locale` call beside the others in `main`."
+        );
+    }
 }
