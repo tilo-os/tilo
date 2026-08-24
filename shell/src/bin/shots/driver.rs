@@ -1397,7 +1397,20 @@ pub fn stage_demo_home() {
 /// ordinary furniture of a home directory, so a frame of Files shows
 /// something a viewer believes and a drag beat has a row to pick up.
 fn write_demo_home(home: &std::path::Path) -> std::io::Result<()> {
-    for folder in ["Documents", "Downloads", "Pictures", "Projects"] {
+    // Music and Videos carry nothing, and still have to exist. The
+    // Places sidebar lists all five standard content folders whether or
+    // not they resolve (`UserDirs::content_places` falls back to
+    // `home/<English>`), so leaving them out puts two rows in the
+    // sidebar that open on nothing — a broken-looking frame caused by
+    // the staging rather than by the code being photographed.
+    for folder in [
+        "Documents",
+        "Downloads",
+        "Pictures",
+        "Music",
+        "Videos",
+        "Projects",
+    ] {
         std::fs::create_dir_all(home.join(folder))?;
     }
     std::fs::write(
@@ -1470,8 +1483,8 @@ fn harbour_png() -> Vec<u8> {
             } else {
                 // Land: the frontmost ridge whose crest this pixel is below.
                 let mut shade = 0.72;
-                for (drop, amp, wave, phase, dark) in ridges {
-                    let crest = horizon as f32 + drop + amp * (fx / wave + phase).sin();
+                for (fall, amp, wave, phase, dark) in ridges {
+                    let crest = horizon as f32 + fall + amp * (fx / wave + phase).sin();
                     if fy >= crest {
                         shade = dark;
                     }
@@ -1910,10 +1923,21 @@ mod tests {
         let home = tmp.path();
         write_demo_home(home).expect("the demo home stages");
 
-        for folder in ["Documents", "Downloads", "Pictures", "Projects"] {
+        // All five standard content folders, plus Projects. The Places
+        // sidebar lists the five whether they resolve or not, so any one
+        // missing is a row that opens on nothing.
+        for folder in [
+            "Documents",
+            "Downloads",
+            "Pictures",
+            "Music",
+            "Videos",
+            "Projects",
+        ] {
             assert!(
                 home.join(folder).is_dir(),
-                "the sidebar lists {folder}, so it has to exist"
+                "the sidebar lists {folder}, so it has to exist or the row \
+                 opens on nothing"
             );
         }
         for doc in ["Launch plan.md", "Checklist.md"] {
