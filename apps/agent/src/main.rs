@@ -43,6 +43,12 @@ struct Cli {
     /// base authority underneath these. Defaults to the app named by
     /// `--app`, which is the grant a launcher would hand an agent invited to
     /// one document.
+    ///
+    /// Naming an app here is leave to **open** it as well as to act in it:
+    /// the scope is `Scope::App`, and opening asks about the application
+    /// itself (`ResourceRef::App`) while an operation asks about the
+    /// operation. So an agent that may work in the photo editor may also
+    /// bring it into the room, and one granted a single action may not.
     #[arg(long = "grant")]
     grants: Vec<String>,
     /// The agent's name: its caret pill, its history author, and the word
