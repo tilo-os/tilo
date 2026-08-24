@@ -1426,6 +1426,72 @@ mod tests {
         assert_eq!(users[0].id, model::ME);
     }
 
+    /// Typing `@` offers the room, and picking somebody leaves a reference
+    /// behind rather than their name spelled into the sentence.
+    ///
+    /// The gesture had no test at all: every existing proof either resolved a
+    /// body that already contained an `@name`, or asserted on the picker's
+    /// helper directly. Neither would notice the picker failing to open, which
+    /// is the whole interaction — a person cannot mention anybody if the list
+    /// never appears, however well the resolver works underneath.
+    #[test]
+    fn typing_an_at_offers_the_room_and_picking_leaves_a_reference() {
+        let (mut app, mut doc) = app_with_doc();
+        app.focus = Focus::Main;
+        app.set_composer_focus();
+
+        // The room names the people in it; a peer only ever supplies its id.
+        let mut room = ui::presence::PresenceCtx::empty();
+        for (id, name) in [("u_me", "You"), ("u_aria", "Aria Chen"), ("u_sora", "Sora Vega")] {
+            room.set_display_name(ui::permissions::UserId(id.into()), name);
+        }
+        app.adopt_room(&room);
+
+        assert!(!app.mention_menu.is_open(), "nothing is offered before anybody types");
+        type_str(&mut app, &mut doc, "ping @");
+        assert!(
+            app.mention_menu.is_open(),
+            "typing `@` must offer the room — with no list there is no way to mention anybody"
+        );
+        assert!(!app.mention_rows.is_empty(), "the picker opened on an empty room");
+
+        // Narrowing keeps only who is still being named.
+        type_str(&mut app, &mut doc, "Ar");
+        assert!(app.mention_menu.is_open(), "the picker closed while a name was still being typed");
+        let offered: Vec<String> = app.mention_rows.iter().map(|p| p.name.clone()).collect();
+        assert!(
+            offered.iter().any(|n| n == "Aria Chen"),
+            "the person being named is not among {offered:?}"
+        );
+        assert!(
+            !offered.iter().any(|n| n == "Sora Vega"),
+            "the picker still offers somebody the query rules out: {offered:?}"
+        );
+
+        // Accepting the highlighted row completes the name and closes the list.
+        let idx = app.mention_rows.iter().position(|p| p.id == "u_aria").expect("Aria is offered");
+        app.accept_mention(idx, &mut doc);
+        assert!(!app.mention_menu.is_open(), "the picker stays up after a choice was made");
+        assert!(
+            app.composer_main.value().contains("@Aria Chen"),
+            "the composer reads {:?}",
+            app.composer_main.value()
+        );
+
+        // And on send it is structure, not prose: the message knows who it
+        // named without anybody re-reading the body.
+        feed(&mut app, &mut doc, key_named(NamedKey::Enter));
+        let sent = ChatDoc::list_messages(&doc, &app.active_channel)
+            .into_iter()
+            .last()
+            .expect("the message was sent");
+        assert!(
+            sent.mentions_user("u_aria"),
+            "the sent message carries no reference to the person it named: {:?}",
+            sent.mentions
+        );
+    }
+
     #[test]
     fn typing_then_send_appends_a_message() {
         let (mut app, mut doc) = app_with_doc();
