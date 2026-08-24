@@ -158,10 +158,7 @@ pub struct FileExplorerWidget {
     /// current selection, carrying that file's address into the message. Owned
     /// here for the same reason the menu is: it stays open across frames, and
     /// dismissing either one leaves the other alone.
-    remark: ui::widget::RemarkCompose,
-    /// Where a remark can be sent. Filled by the host that knows the room; the
-    /// app never invents one.
-    remark_destinations: Vec<ui::widget::DestinationOption>,
+    remark: ui::widget::RemarkHost,
     menu_commands: Vec<Option<FileCommand>>,
     /// The "New File ▸" flyout submenu, populated from the Templates dir when
     /// the main menu opens; empty (and closed) when there are no templates.
@@ -343,8 +340,7 @@ impl FileExplorerWidget {
             cmds,
             structure_dirty: false,
             context_menu: ContextMenu::new(),
-            remark: ui::widget::RemarkCompose::new(),
-            remark_destinations: Vec::new(),
+            remark: ui::widget::RemarkHost::new(),
             menu_commands: Vec::new(),
             submenu: ContextMenu::new(),
             submenu_commands: Vec::new(),
@@ -1147,7 +1143,45 @@ impl FileExplorerWidget {
     /// what knows the room; empty until it is, so the app never invents a
     /// roster of its own.
     pub fn set_remark_destinations(&mut self, destinations: Vec<ui::widget::DestinationOption>) {
-        self.remark_destinations = destinations;
+        self.remark.set_destinations(destinations);
+    }
+
+    /// Collect the remark this app has finished composing, once.
+    ///
+    /// The host resolves the `@name`s in it against the room's roster and puts
+    /// it on the wire; nothing here decides where it goes.
+    pub fn take_remark(&mut self) -> Option<qos_reference::Remark> {
+        self.remark.take_remark()
+    }
+
+    /// Whether the compose surface is up.
+    pub fn remark_is_open(&self) -> bool {
+        self.remark.is_open()
+    }
+
+    /// What the open compose surface is about — the address, not the name.
+    pub fn remark_reference(&self) -> Option<&qos_reference::ResourceRef> {
+        self.remark.reference()
+    }
+
+    /// The destination the selector is showing, and therefore the one a remark
+    /// sent now would go to.
+    pub fn remark_destination(&self) -> Option<&qos_reference::Destination> {
+        self.remark.destination()
+    }
+
+    /// The compose panel's rect, as laid out. Zero-area while it is closed.
+    pub fn remark_rect(&self) -> vello::kurbo::Rect {
+        self.remark.rect()
+    }
+
+    /// Whether the ordinary context menu is up.
+    ///
+    /// The compose surface opens *beside* this rather than replacing it, and
+    /// "beside" is only a claim worth making if both can be observed from
+    /// outside: dismissing one must leave the other usable.
+    pub fn context_menu_is_open(&self) -> bool {
+        self.context_menu.is_open()
     }
 
     /// "Say something about this": open the ordinary context menu on the
@@ -1158,7 +1192,7 @@ impl FileExplorerWidget {
     /// other. Returns `false` when there is nothing selected or nowhere to send
     /// — in which case nothing opens, rather than a compose over no subject.
     pub fn open_remark_for_selection(&mut self, doc: &ui::automerge::AutoCommit, at: Point) -> bool {
-        if self.remark_destinations.is_empty() {
+        if !self.remark.has_destinations() {
             return false;
         }
         // Ask the app what is selected before opening anything, so a gesture
@@ -1171,14 +1205,28 @@ impl FileExplorerWidget {
         self.open_context_menu(at);
         layout_menu_widget(&mut self.context_menu);
         // Beside the menu, not over it: the menu keeps doing its job.
-        let anchor = Point::new(self.context_menu.get_rect().x1 + 8.0, at.y);
-        self.remark.open_for(
-            reference,
-            self.remark_destinations.clone(),
-            0,
-            anchor,
-            &ui::widget::remark_compose::placeholder_text(),
-            &ui::widget::remark_compose::send_label(),
+        let menu = self.context_menu.get_rect();
+        if !self.remark.open_reference_beside(reference, menu, self.rect) {
+            return false;
+        }
+        // Narrated because this panel is a *client's* widget: it is not in the
+        // compositor's registry, so nothing outside this process can find it by
+        // name or read its rect. A harness driving the gesture has to aim at a
+        // pixel, and this line is where the pixel comes from — the rect the
+        // panel was actually laid out at, in this window's own coordinates,
+        // reported by the process that placed it. Same contract as the drag
+        // narration below: the app says what it did, and a miss is knowable
+        // rather than assumed.
+        let panel = self.remark.rect();
+        tracing::info!(
+            target: "file_explorer::remark",
+            about = %self
+                .remark
+                .reference()
+                .map(|r| r.resource_id().as_str().to_string())
+                .unwrap_or_default(),
+            at = ?(panel.x0, panel.y0, panel.width(), panel.height()),
+            "remark compose opened"
         );
         true
     }
@@ -1792,27 +1840,6 @@ fn layout_menu_widget(menu: &mut ContextMenu) {
         },
     );
     menu.apply_layout(&taffy, node, Point::ZERO);
-}
-
-/// Lay out a self-positioning floating widget in its own tree, the way
-/// [`layout_menu_widget`] does for a menu.
-///
-/// The compose surface anchors itself with an absolute inset, so computing it
-/// at the origin of a throwaway tree places it exactly where it was opened.
-fn layout_floating_widget(w: &mut dyn Widget) {
-    let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-    let mut node_map: std::collections::HashMap<taffy::NodeId, *mut dyn Widget> =
-        std::collections::HashMap::new();
-    let theme = ui::Theme::dark();
-    let node = w.build_layout(&mut taffy, &theme, &mut node_map);
-    let _ = taffy.compute_layout(
-        node,
-        taffy::Size {
-            width: taffy::AvailableSpace::Definite(1600.0),
-            height: taffy::AvailableSpace::Definite(1000.0),
-        },
-    );
-    w.apply_layout(&taffy, node, Point::ZERO);
 }
 
 /// Thin mockable wrapper around process launch + the desktop "open with
@@ -2573,12 +2600,7 @@ impl Widget for FileExplorerWidget {
         }
         // The compose surface sits beside the menu, on the same tier: it is a
         // second way to act on the selection, not a layer over the first.
-        if self.remark.is_open() {
-            layout_floating_widget(&mut self.remark);
-            self.remark.draw(scene, transform, text_renderer, theme, presence);
-            self.remark
-                .draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
+        self.remark.draw(scene, transform, text_renderer, theme, presence);
         // The drop-target highlight sits on the target folder; the drag ghost
         // floats above everything else.
         self.draw_drop_highlight(scene, transform, theme);
@@ -2620,6 +2642,64 @@ impl Widget for FileExplorerWidget {
         {
             // A release without travel was a click, not a drag.
             self.armed_drag = None;
+        }
+
+        // The compose surface, while it is up, owns the keyboard: it is a field
+        // that just appeared under the hands, and a keystroke meant for the
+        // message must never land in the file list instead. Placed here — after
+        // the pointer has been tracked, before anything in the app reads it —
+        // because every branch below is a branch the panel has to be able to
+        // take priority over.
+        if self.remark.pump(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            self.last_cursor,
+            self.context_menu
+                .is_open()
+                .then(|| self.context_menu.get_rect()),
+        ) {
+            self.structure_dirty = true;
+            return;
+        }
+        // The keyboard equivalent of the right-click gesture, on the current
+        // selection. Not a convenience: an address is exactly what somebody
+        // working without a pointer cannot produce by describing, so the one
+        // gesture that mints one has to be reachable from the keyboard.
+        if let WindowEvent::KeyboardInput { event: ke, .. } = event {
+            if ke.state == ElementState::Pressed
+                && ui::widget::remark_compose::is_compose_chord(ke, modifiers)
+                && self.open_remark_for_selection(state, self.last_cursor)
+            {
+                *handled = true;
+                self.structure_dirty = true;
+                return;
+            }
+        }
+
+        if let Some((to, about, text)) = self.remark.just_sent().map(|r| {
+            (
+                r.destination.display().name.to_string(),
+                r.reference.resource_id().as_str().to_string(),
+                r.text.clone(),
+            )
+        }) {
+            // Say where it went. A send whose only evidence is that the panel
+            // vanished is indistinguishable from a send that failed — and this
+            // is the line a harness reads to know the gesture completed, since
+            // nothing about a client's widgets is visible from outside this
+            // process. The address is logged beside the words on purpose: what
+            // this beat claims is that an address travelled, and a line that
+            // only carried the sentence would not show it.
+            tracing::info!(
+                target: "file_explorer::remark",
+                %to, %about, %text,
+                "remark sent"
+            );
+            self.structure_dirty = true;
         }
 
         // A live drag owns the pointer: the ghost follows the cursor, the
@@ -2911,6 +2991,14 @@ impl Widget for FileExplorerWidget {
         destinations: Vec<ui::widget::remark_compose::DestinationOption>,
     ) {
         Self::set_remark_destinations(self, destinations);
+    }
+
+    /// Hand the finished remark to the host, which addresses and sends it.
+    ///
+    /// Delegates to the inherent method for the same reason
+    /// `set_remark_destinations` does: one way in, one way out.
+    fn take_remark(&mut self) -> Option<qos_reference::Remark> {
+        Self::take_remark(self)
     }
 
     fn get_rect(&self) -> vello::kurbo::Rect {

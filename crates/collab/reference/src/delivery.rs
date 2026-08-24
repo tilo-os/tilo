@@ -57,6 +57,127 @@ impl MentionRef {
     }
 }
 
+/// One participant of the room, as a sender needs to know them to resolve an
+/// `@name` in a body.
+///
+/// The same three facts [`MentionRef`] carries forward, before resolution: who
+/// they are, what the room calls them, and whether they are software. Mirrors
+/// the `mention::Participant` the chat app already defines, field for field,
+/// for the same reason [`MentionRef`] mirrors its `Mention` — this crate stays
+/// free of an app dependency and the two convert by field name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoomMember {
+    pub id: Id,
+    pub name: String,
+    pub is_agent: bool,
+}
+
+impl RoomMember {
+    pub fn new(id: impl Into<Id>, name: impl Into<String>, is_agent: bool) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            is_agent,
+        }
+    }
+}
+
+/// Resolve every `@name` in `text` against the room, into structured mentions.
+///
+/// The toolkit's compose surface deliberately leaves mentions empty — resolving
+/// a name needs the roster, which the host has and a widget does not. This is
+/// the function the host calls before sending, and it is why an `@claude`
+/// somebody typed becomes a participant id rather than staying a word.
+///
+/// The rules are the chat app's, deliberately identical, because a name must
+/// mean the same participant whether it was typed in the chat window or in a
+/// remark about a file:
+///
+/// * longest display name first, so `@Ada Lovelace` beats `@Ada`;
+/// * case-insensitive, except where lowering would change byte length and make
+///   the offsets slice the wrong run, in which case the scan is exact;
+/// * an `@` must open a word, so an e-mail address is not a mention;
+/// * a name must not run into a longer word, so `@ada` in `@adamant` is not
+///   one either.
+///
+/// Identical by assertion, not by intention: `apps/chat` holds a test that runs
+/// this and its own resolver over the same bodies and fails if they disagree,
+/// so the two cannot drift into resolving one name two ways.
+///
+/// `start` and `len` are byte offsets into `text`, so a renderer paints the run
+/// without a second parse and cannot disagree with this about where it is.
+pub fn resolve_mentions(text: &str, room: &[RoomMember]) -> Vec<MentionRef> {
+    // Longest first so "Ada Lovelace" wins over "Ada" at the same offset.
+    let mut by_len: Vec<&RoomMember> = room.iter().collect();
+    by_len.sort_by_key(|m| std::cmp::Reverse(m.name.len()));
+
+    // Case-insensitive matching runs against a lowered copy. `to_lowercase` can
+    // change byte length for a few scripts, which would make offsets computed
+    // on the copy wrong for the original; when that happens fall back to a
+    // case-sensitive scan rather than emitting offsets that slice the wrong run.
+    let lowered = text.to_lowercase();
+    let fold = lowered.len() == text.len();
+    let haystack: &str = if fold { &lowered } else { text };
+
+    let mut out: Vec<MentionRef> = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = text[cursor..].find('@') {
+        let at = cursor + rel;
+        let opens_word = text[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|c| c.is_whitespace());
+        if !opens_word {
+            cursor = at + '@'.len_utf8();
+            continue;
+        }
+        let after = at + '@'.len_utf8();
+        let mut matched: Option<usize> = None;
+        let mut who: Option<&RoomMember> = None;
+        for m in &by_len {
+            if m.name.is_empty() {
+                continue;
+            }
+            let lowered_name = m.name.to_lowercase();
+            let needle: &str = if fold {
+                if lowered_name.len() != m.name.len() {
+                    continue;
+                }
+                &lowered_name
+            } else {
+                &m.name
+            };
+            if !haystack[after..].starts_with(needle) {
+                continue;
+            }
+            // A name must not run into the middle of a longer word.
+            let tail = after + needle.len();
+            let boundary = text[tail..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric());
+            if boundary {
+                matched = Some(needle.len());
+                who = Some(m);
+                break;
+            }
+        }
+        match (matched, who) {
+            (Some(n), Some(m)) => {
+                out.push(MentionRef {
+                    user: m.id.clone(),
+                    start: at,
+                    len: '@'.len_utf8() + n,
+                    is_agent: m.is_agent,
+                });
+                cursor = after + n;
+            }
+            _ => cursor = after,
+        }
+    }
+    out
+}
+
 /// The one place a remark is delivered to. Both the chosen [`Destination`] and
 /// the resulting [`Delivery`] report one of these, and they must agree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -326,6 +447,75 @@ mod tests {
         let agent = scribe.display();
         assert!(agent.private);
         assert!(agent.agent, "an agent destination is marked as one");
+    }
+
+    fn room() -> Vec<RoomMember> {
+        vec![
+            RoomMember::new("u_ada", "Ada", false),
+            RoomMember::new("u_lovelace", "Ada Lovelace", false),
+            RoomMember::new("agent_claude", "Claude", true),
+        ]
+    }
+
+    /// The one this whole path exists for: somebody writes a name and an
+    /// agent's participant id comes out, so the message can be addressed to
+    /// software without anybody having typed an id.
+    #[test]
+    fn an_agents_name_resolves_to_its_participant_id() {
+        let m = resolve_mentions("@claude make square and put in open document", &room());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].user, "agent_claude");
+        assert!(m[0].is_agent, "the mention says it names software");
+        assert_eq!(m[0].start, 0);
+        assert_eq!(m[0].len, "@claude".len());
+    }
+
+    /// Resolved against the room, and the room is what decides — so a body that
+    /// names nobody in it produces no mention rather than a guess.
+    #[test]
+    fn a_name_nobody_in_the_room_has_is_not_a_mention() {
+        assert!(resolve_mentions("@nobody are you there", &room()).is_empty());
+    }
+
+    #[test]
+    fn the_longest_matching_name_wins() {
+        let m = resolve_mentions("@Ada Lovelace look", &room());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].user, "u_lovelace");
+    }
+
+    /// An address is not a mention, and a name inside a longer word is not one
+    /// either — both would ping somebody who was never named.
+    #[test]
+    fn an_at_that_does_not_open_a_word_is_not_a_mention() {
+        assert!(resolve_mentions("write to ada@example.com", &room()).is_empty());
+        assert!(resolve_mentions("@adamant about it", &room()).is_empty());
+    }
+
+    /// The offsets have to slice the run they claim to, or a renderer paints
+    /// the highlight over the wrong words and a reader cuts the wrong text out.
+    #[test]
+    fn the_offsets_slice_the_run_they_name() {
+        let text = "café — @Claude take a look";
+        let m = resolve_mentions(text, &room());
+        assert_eq!(m.len(), 1);
+        assert_eq!(&text[m[0].start..m[0].start + m[0].len], "@Claude");
+    }
+
+    /// A mention in a channel destination directs without redirecting, which is
+    /// what makes an agent-addressed remark readable by the whole room.
+    #[test]
+    fn a_resolved_agent_mention_directs_within_the_channel() {
+        let mentions = resolve_mentions("@claude make square", &room());
+        let d = deliver(&Destination::channel("c_general", "general"), &mentions);
+        assert_eq!(
+            d,
+            Delivery::DirectedInChannel {
+                channel: "c_general".into(),
+                to: vec!["agent_claude".into()]
+            }
+        );
+        assert!(!d.is_private(), "the room must still be able to read it");
     }
 
     #[test]

@@ -45,6 +45,7 @@ pub use collab_capnp::context_stream::Client as ContextStreamClient;
 pub use collab_capnp::cursor_stream::Client as CursorStreamClient;
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
 pub use collab_capnp::blob_stream::Client as BlobStreamClient;
+pub use collab_capnp::action_stream::Client as ActionStreamClient;
 pub use collab_capnp::stream::Client as StreamClient;
 
 /// Try to dial the qOS collab broker via the launcher-supplied
@@ -209,6 +210,41 @@ impl ChannelHandle {
         Ok(BlobStream { inner: Rc::new(stream) })
     }
 
+    /// Publish a typed action into the room, for whichever app owns the
+    /// document it belongs to.
+    ///
+    /// Every other send verb here carries Automerge bytes, which an app can
+    /// only produce for a document it holds. This one carries an action, so an
+    /// app can address a document it has no replica of and no schema for — it
+    /// says what should happen, and the app that owns the document decides
+    /// whether it recognises the request.
+    ///
+    /// Fanned out at cluster scope; a receiver applies it only if its own
+    /// registry knows `type_id`.
+    pub async fn send_action(
+        &self,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.send_action_request();
+        {
+            let mut b = req.get();
+            b.set_type_id(type_id);
+            b.set_payload(payload);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Open a server-pulled stream of actions other apps published into this
+    /// room.
+    pub async fn subscribe_actions(&self) -> Result<ActionStream, NotAvailable> {
+        let req = self.inner.subscribe_actions_request();
+        let reply = req.send().promise.await?;
+        let stream = reply.get()?.get_stream()?;
+        Ok(ActionStream { inner: Rc::new(stream) })
+    }
+
     /// Fetch a page of previously-validated signed ops with
     /// `seq < before_seq`. See [`ScrollbackBatch`] for the response
     /// shape.
@@ -351,6 +387,47 @@ pub struct BlobEvent {
     pub hash: String,
     /// The content itself.
     pub bytes: Vec<u8>,
+}
+
+/// One action off an [`ActionStream`].
+#[derive(Debug, Clone)]
+pub struct ActionEvent {
+    /// The registry type id the action was encoded under. Names the app that
+    /// owns the document it belongs to.
+    pub type_id: String,
+    /// The encoded action, exactly as `qos_actions::EncodedAction` carries it.
+    pub payload: Vec<u8>,
+    /// The broker's attribution for whoever sent the frame. Who *sent* it,
+    /// which is a different claim from who the action says authored it.
+    pub from_user_id: String,
+}
+
+/// Client-pulled stream of actions published into this room. Each `.read()` is
+/// a single RPC, like every other stream in this schema.
+#[derive(Clone)]
+pub struct ActionStream {
+    inner: Rc<ActionStreamClient>,
+}
+
+impl ActionStream {
+    /// Pull the next action published into this room.
+    pub async fn read(&self) -> Result<ActionEvent, NotAvailable> {
+        let req = self.inner.read_request();
+        let reply = req.send().promise.await?;
+        let r = reply.get()?;
+        let type_id = r
+            .get_type_id()?
+            .to_str()
+            .map_err(|e| capnp::Error::failed(format!("invalid utf8 action type id: {e}")))?
+            .to_owned();
+        let payload = r.get_payload()?.to_vec();
+        let from_user_id = r
+            .get_from_user_id()?
+            .to_str()
+            .map_err(|e| capnp::Error::failed(format!("invalid utf8 attribution: {e}")))?
+            .to_owned();
+        Ok(ActionEvent { type_id, payload, from_user_id })
+    }
 }
 
 /// Client-pulled stream of arrived document content. Each `.read()` is
