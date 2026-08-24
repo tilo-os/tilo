@@ -2914,6 +2914,23 @@ pub fn run() -> ! {
         eprintln!("nirios compositor: {}={:?}; will exit cleanly after that", metrics::RUN_SECONDS_ENV, d);
         Instant::now() + d
     });
+    // While a control-socket caller is driving, the loop parks in short
+    // hops instead of sleeping to the next presentation deadline.
+    //
+    // The socket is polled from this loop body rather than registered as
+    // an event source, so nothing about a command arriving can wake the
+    // park it arrives during: the loop notices on its next pass, up to a
+    // whole interval later. That was ~18 ms of every round trip, and for
+    // a recording — which is one command per frame — it set the frame
+    // rate as surely as the work did.
+    //
+    // Armed by traffic rather than by the socket existing, so a session
+    // nobody is driving keeps its ordinary cadence instead of spinning.
+    // Only a development build reaches any of this: the socket is
+    // compiled out of shipped builds (`compositor::dev_env`).
+    const TEST_CONTROL_PARK: Duration = Duration::from_millis(2);
+    const TEST_CONTROL_ACTIVE_FOR: Duration = Duration::from_millis(500);
+    let mut last_test_control: Option<Instant> = None;
     let mut stats_since = Instant::now();
     let (mut frames_total, mut frames_painted) = (0u32, 0u32);
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
@@ -3807,6 +3824,9 @@ pub fn run() -> ! {
                     metrics.note_input(Instant::now());
                 }
             }
+            if !test_control_conns.is_empty() {
+                last_test_control = Some(Instant::now());
+            }
             test_control_conns.retain(|c| !c.closed);
         }
         let t_testctl_done = iter_t0.elapsed();
@@ -3856,8 +3876,13 @@ pub fn run() -> ! {
         // that wakes the loop mid-interval (the render thread retiring a
         // frame, protocol traffic, input) must not be able to push the
         // next frame past its deadline.
-        let park = frame_clock.park(Instant::now());
         let t_sleep_start = Instant::now();
+        let mut park = frame_clock.park(t_sleep_start);
+        if last_test_control
+            .is_some_and(|t| t_sleep_start.duration_since(t) < TEST_CONTROL_ACTIVE_FOR)
+        {
+            park = park.min(TEST_CONTROL_PARK);
+        }
         if let Err(err) = event_loop.dispatch(park, &mut state) {
             eprintln!("nirios compositor: event loop dispatch error: {err}");
             break;
