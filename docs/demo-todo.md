@@ -120,23 +120,33 @@ not change:
 - **A gap describing a limitation that has since been fixed is worse than no gap** — it reports a working feature as broken, and has already sent people to "fix" things that worked.
 - **Twelve times in two days the test or the claim was wrong rather than the code.** Make a check fail for the right reason before believing it passes.
 
-## The word processor cannot be typed into until it is clicked
+## The word processor was not the reason typing went nowhere
 
-Opening the app and typing puts nothing in the document. The caret is not
-in the body on open, so every keystroke goes somewhere that is not the
-page, silently — no caret, no error, no indication that the window which
-is plainly focused is not taking input.
+A beat that typed without clicking first put nothing in the document, and
+that was written down here as the app opening with its caret outside the
+body. It is not what the app does, and the entry sent work at the wrong
+half of the stack.
 
-Found by a beat that deliberately typed without clicking first, on the
-assumption that a document app opens ready to be written in. It does
-not, and the cost was not just the beat: a person opening a new document
-and starting to type is the most ordinary thing anyone does with a word
-processor, and the app's answer is to discard it.
+Driven directly, the word processor opens with the caret at the first
+position of the body, paints it there, and takes keystrokes with nothing
+clicked — asserted on the document that comes back out
+(`apps/word-processor/tests/opens_ready_to_type.rs`) and read off the
+framebuffer, in three palettes, beside the geometry that decides it (the
+`opens_ready_to_type` module in `widget.rs`). The widget holds keyboard
+focus from the moment it is built, and `ui` never takes it away.
 
-The demo now aims a caret into the page first, which is what a person
-would end up doing after the first attempt vanished. The app should not
-require it: opening a document should put the caret at the start of the
-body, the same way `Ctrl+End` now puts it at the end.
+One real caret fault came out of looking: `bind` runs at the top of every
+frame and checked the caret against the *body's* blocks, which never
+contain a running head's. A caret placed in a header band was dragged back
+into the body one frame later, so the band could not be typed into at all.
+It now checks the region being edited.
+
+What is still unaccounted for is the shell side of that beat: a client
+gets keys only while `client_input.keyboard_focus` names its surface, and
+`sync_keyboard_focus` drops it to `None` whenever chrome captures input or
+the active tab is not a foreign surface — after which every key is
+swallowed with no error and no mark on screen, which is exactly what was
+seen. Nothing in the app can put that right.
 
 ## A resting pointer stops being published while its owner types
 
