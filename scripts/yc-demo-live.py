@@ -63,47 +63,42 @@ Budget: boot bumper ~3.2s (cut, exists) + ~75s driven. Hard cap 1:40.
                 desktop has per-app tabs; this is the one gesture that
                 cannot be mistaken for a browser.
 
-    BEAT 3  xaver does something only a person would do           ~12s
-        SCRIPT  xaver walks Files, opens harbour.png in the image
-                editor, looks at it, and says something about it --
-                selecting the image and speaking to it, so the message
-                carries the resource address, not a description.
-                    "this one, but it needs to be square"
-        YOU     keep typing in the word processor throughout. One
-                excursion to his screen, a few seconds.
-        SHOWS   two people, two applications, at the same time, and a
-                message that points at an object in a third.
-        NEEDS   chat cross-peer + @mention  (in flight)
-                selection -> message with resource chip  (in flight)
-                image editor usable  (in flight)
-
-    BEAT 4  the agent reaches across applications                ~15s
-        YOU     select xaver's image, and say:
+    SCENE 3  one instruction, from the person looking at the thing  ~22s
+        SCRIPT  xaver walks Files, opens harbour.png, looks at it, and
+                right-clicks the photograph itself:
                     "@Claude crop this square and put it under Sound
                      check"
-        SHOWS   the instruction arrives as (text, resource address,
-                capability). The agent does not guess what "this" is,
-                and never needs a screen position. It invokes the crop
-                on the image editor's resource and writes the result
-                into the word processor's document -- two applications
-                it does not own, attributed to its own actor.
-        NEEDS   external actions door  (landed, ecd8752d2)
-                agent consumes the door  (in flight)
-                agent scoped listening  (built; the reply path is the
-                    part still unproven -- the agent acts on the right
-                    resource and the answer does not reach the room)
+                One instruction, from him, carrying the image's address.
+                He does not describe the photograph and the agent does
+                not go looking for it.
+        YOU     keep typing in the word processor throughout. One
+                excursion to his screen, a few seconds.
+        SHOWS   the agent crops in the image editor and writes the
+                result into the word processor's document -- two
+                applications it does not own, neither of which knows
+                what an agent is, attributed to its own actor.
+
+                The instruction is deliberately *not* split between the
+                two people. It was, in an earlier cut: he judged the
+                photograph and you turned the judgement into an order.
+                That reads as a person relaying to a machine, and it
+                buries the claim -- which is that one sentence crossed
+                two applications, not that two people agreed about a
+                photograph. It also asks the agent for less than it can
+                do, and an instruction the product cannot yet carry
+                whole is a thing to fix rather than to divide.
+
+        NEEDS   compose gesture in the image editor  (in flight)
+                agent chains two actions in one instruction  (in flight)
+                external actions door  (landed, ecd8752d2)
         NOT NEEDED
                 Chip *navigation* -- clicking a reference to focus the
-                app and reveal the object. It does not exist: nothing
-                maps `files.entry:<path>` to "open that app, scroll to
-                that thing", and building it means a shell-side
-                resolver plus a reveal entry point per app.
-                The beat does not want it. "this" resolves through
-                `Subject::Carried` -- the address rides along with the
-                message, so the agent never asks where the object is on
-                screen, and the viewer's evidence is the chip naming
-                the file, which already renders. Do not build the
-                resolver for this film.
+                app and reveal the object. It does not exist and the
+                scene does not want it: "this" resolves through
+                `Subject::Carried`, so the address rides along with the
+                message and the agent never asks where the object is on
+                screen. The viewer's evidence is the chip naming the
+                photograph, which already renders.
 
     BEAT 5  the agent disagrees, usefully                        ~15s
         YOU     "@Claude does the schedule actually work?"
