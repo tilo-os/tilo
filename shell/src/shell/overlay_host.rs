@@ -10929,7 +10929,7 @@ impl ShellOverlayHost {
             scene,
             copy_label,
             tokens.typography.scale.sm,
-            colors.text_primary,
+            colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             transform
                 * Affine::translate((
                     copy_btn.x0 + (copy_btn.width() - cw as f64) / 2.0,
@@ -11011,7 +11011,7 @@ impl ShellOverlayHost {
                     scene,
                     "You",
                     tokens.typography.scale.xs,
-                    colors.text_primary,
+                    colors.on_accent(ui::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST),
                     transform * Affine::translate((tx + tile_w - 36.0, row_y + 13.0)),
                     None,
                 );
@@ -11590,7 +11590,7 @@ impl ShellOverlayHost {
         let chip_text_size = (tokens.typography.scale.xs).max(10.0);
         let idle_fill = colors.surface_white_5;
         let active_fill = colors.accent[5];
-        let active_text = colors.text_primary;
+        let active_text = colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         let idle_text = colors.text_dim;
         let control_h = Self::FILTER_CONTROL_HEIGHT_PX;
 
@@ -12641,7 +12641,7 @@ impl ShellOverlayHost {
             },
             text_size,
             if live {
-                colors.text_primary
+                colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
             } else {
                 colors.text_primary.with_alpha_factor(0.5)
             },
@@ -13058,7 +13058,7 @@ impl ShellOverlayHost {
                     scene,
                     label,
                     btn_size,
-                    colors.text_primary,
+                    if filled { colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST) } else { colors.text_primary },
                     transform
                         * Affine::translate((
                             rect.center().x - tw as f64 / 2.0,
