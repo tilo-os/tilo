@@ -2364,22 +2364,33 @@ class Recorder:
         chain.append("format=yuv420p")
 
         graph = "[0:v]" + ",".join(chain) + "[v]"
-        with open(os.path.join(self.dir, "filter.txt"), "w") as f:
-            f.write(graph + "\n")
 
         # The narration, if one was recorded. Both tracks began on the
         # same statement, so they are aligned by construction and the
-        # audio simply rides along; `-shortest` trims whichever ran on
-        # after the other stopped.
+        # audio simply rides along.
+        #
+        # It is padded with silence first, and that is not a detail. The
+        # two tracks are the same length only when nothing goes wrong;
+        # a headset that drops, a pulse source that stalls, an ffmpeg
+        # that dies quietly at minute one all end the audio early. With
+        # `-shortest` alone the *picture* is what gets trimmed to match,
+        # so a fault in the microphone would silently cut the end off
+        # the film -- including the shot the whole thing is built to
+        # reach. `apad` makes the audio arbitrarily long, so `-shortest`
+        # can only ever trim it back to the video.
         wav = os.path.join(self.dir, "narration.wav")
         has_audio = os.path.isfile(wav) and os.path.getsize(wav) > 1024
+        if has_audio:
+            graph += ";[1:a]apad[a]"
         cmd = ["ffmpeg", "-y", "-v", "error",
                "-f", "concat", "-safe", "0", "-i", rel_track]
         if has_audio:
             cmd += ["-i", "narration.wav"]
+        with open(os.path.join(self.dir, "filter.txt"), "w") as fh:
+            fh.write(graph + "\n")
         cmd += ["-filter_complex", graph, "-map", "[v]"]
         if has_audio:
-            cmd += ["-map", "1:a", "-c:a", "aac", "-b:a", "160k", "-shortest"]
+            cmd += ["-map", "[a]", "-c:a", "aac", "-b:a", "160k", "-shortest"]
         cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "20",
                 "-pix_fmt", "yuv420p", "-r", str(fps),
                 "-movflags", "+faststart", os.path.abspath(out_path)]
