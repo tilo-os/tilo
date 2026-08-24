@@ -226,16 +226,28 @@ pub struct SelectionTier {
 /// picked. Rows of idle controls each laying down a soft shadow is what
 /// made the tab strip read as muddy rather than as chrome.
 pub fn selection_tier(theme: &Theme, state: SelectionState) -> SelectionTier {
+    selection_tier_on(theme, state, theme.tokens.colors.surfaces.base)
+}
+
+/// [`selection_tier`] for a control that sits on a surface of its own rather
+/// than on `surfaces.base`.
+///
+/// A lift is a step away from what is underneath it, so it is only right for
+/// the ground it was measured against. The top bar paints `surfaces.overlay`,
+/// and on the light palette that is a different white from `surfaces.base` —
+/// the base-anchored lift landed on exactly the bar's own colour, so the
+/// clock pill had no body at 1.00:1 and only its hairline said it was there.
+/// Chrome that knows its own ground passes it here.
+pub fn selection_tier_on(theme: &Theme, state: SelectionState, ground: Color) -> SelectionTier {
     let colors = &theme.tokens.colors;
     let lifted = state.active || state.pressed;
     let fill = if lifted {
-        colors.lift(1.0)
+        colors.lift_on(ground, 1.0)
     } else if state.hover {
-        colors.lift(HOVER_LIFT_T)
+        colors.lift_on(ground, HOVER_LIFT_T)
     } else {
         Color::TRANSPARENT
     };
-    let ground = colors.surfaces.base;
     SelectionTier {
         fill,
         border: lifted.then(|| Colors::hairline_on(ground, HAIRLINE_ALPHA)),

@@ -845,7 +845,20 @@ impl Colors {
     /// [`Colors::hairline_on`] chooses an edge, which keeps a lift available
     /// even where the surface family is deliberately flat.
     pub fn lift(&self, t: f32) -> Color {
-        mix8(self.surfaces.base, self.lift_target(), t)
+        self.lift_on(self.surfaces.base, t)
+    }
+
+    /// [`Self::lift`] anchored on an arbitrary `ground`.
+    ///
+    /// A lift is a step *away from what is underneath*, so it is only correct
+    /// for the surface it was measured against. Chrome that paints its own
+    /// ground — the top bar is `surfaces.overlay`, not `surfaces.base` —
+    /// needs the step re-anchored, because on a palette where those two
+    /// tiers are different whites the base-anchored lift lands exactly on
+    /// the bar's own colour: the clock pill measured 1.00:1, with only its
+    /// hairline to say a pill was there at all.
+    pub fn lift_on(&self, ground: Color, t: f32) -> Color {
+        mix8(ground, self.lift_target_on(ground), t)
     }
 
     /// The colour a lift moves *toward* — the preset's raised tier where it
@@ -856,14 +869,21 @@ impl Colors {
     /// on which direction "away from the ground" is, or a glass pill and a
     /// solid one lift opposite ways on the same theme.
     pub fn lift_target(&self) -> Color {
+        self.lift_target_on(self.surfaces.base)
+    }
+
+    /// [`Self::lift_target`] for an arbitrary `ground`. The raised tier when
+    /// it registers against *that* ground, and a derived step when it does
+    /// not — so a surface that happens to equal the raised tier still gets a
+    /// body it can be told apart from.
+    pub fn lift_target_on(&self, ground: Color) -> Color {
         use crate::a11y::relative_luminance;
-        let base = self.surfaces.base;
-        let g = relative_luminance(base);
+        let g = relative_luminance(ground);
         let raised = self.surfaces.raised;
         if (relative_luminance(raised) - g).abs() >= HAIRLINE_MIN_DELTA {
             raised
         } else {
-            composite(Self::hairline_on(base, LIFT_FALLBACK_ALPHA), base)
+            composite(Self::hairline_on(ground, LIFT_FALLBACK_ALPHA), ground)
         }
     }
 
