@@ -223,6 +223,23 @@ pub struct Session {
     /// How the last instruction was decided. The record that keeps a run on
     /// the fallback from being indistinguishable from a live one afterwards.
     last_route: Option<Route>,
+    /// The agent's own participant id, as the *room* gave it.
+    ///
+    /// Learned from the roster the broker announces, which is the only place
+    /// it reliably appears. The alternative — looking itself up in the chat
+    /// document — only works if something wrote an agent row into that
+    /// document, and in a live room nothing does: chat writes exactly one
+    /// member, itself (`ChatDoc::ensure_member(doc, &self.me.id, ..)`), and
+    /// the agent runs no chat app of its own to write one. Peers the room
+    /// merely knows about are merged in at read time and never written, which
+    /// is deliberate — one peer must not assert facts about another.
+    ///
+    /// So the document lookup answered with the empty string, `addressed`
+    /// skipped its mention check on an empty id, and the only remaining way to
+    /// reach the agent was the `Claude:` form. An `@claude` — the thing every
+    /// mention picker in the room produces — addressed nobody, and looked
+    /// exactly like being ignored.
+    me_from_room: Option<String>,
     /// How many answers the agent has actually put on the wire.
     ///
     /// Distinct from how many it composed: the gap between the two is an
@@ -605,6 +622,7 @@ impl Session {
             visited: HashSet::new(),
             chooser,
             last_route: None,
+            me_from_room: None,
             last_action: None,
             // Joining is itself the start of the room arriving: peers answer
             // the handshake with their documents, and until that has gone
@@ -946,6 +964,27 @@ impl Session {
                     _ => {}
                 }
             }
+            // Who the room says is in it — and, among them, which one is
+            // this agent.
+            //
+            // Matched on the name it was admitted under *and* on being marked
+            // an agent, so a person who happens to share the name is never
+            // mistaken for it. The id is the room's; the agent only supplies
+            // a name, exactly as a peer does.
+            Some(CollabEvent::Context { collaborators, .. }) => {
+                for c in collaborators {
+                    if c.is_agent && c.name.eq_ignore_ascii_case(&self.cfg.name) {
+                        if self.me_from_room.as_deref() != Some(c.id.as_str()) {
+                            tracing::info!(
+                                me = %c.id, name = %c.name,
+                                "the room named this agent; mentions of it can now be matched"
+                            );
+                        }
+                        self.me_from_room = Some(c.id);
+                        break;
+                    }
+                }
+            }
             // Not news for the room and not a change to anything: the
             // answer to a request this agent made, kept for the step that
             // made it. See [`Self::open_app`].
@@ -1164,6 +1203,12 @@ impl Session {
     /// have, and [`listen::addressed`] treats an empty id as matching
     /// nothing rather than as matching everything.
     fn me_in_chat(&self) -> String {
+        // The room's answer first. It is the authoritative one — the room is
+        // what admitted this agent and what every mention picker resolves
+        // against — and it is the only one that exists at all in a live room.
+        if let Some(me) = &self.me_from_room {
+            return me.clone();
+        }
         self.peers
             .get("chat")
             .map(|ed| chat::doc::ChatDoc::list_users(&ed.doc))
