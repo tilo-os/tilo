@@ -3751,6 +3751,74 @@ def type_into_the_document(s: Session, wp: dict | None, text: str) -> bool:
     return True
 
 
+def sources_newer_than(binary: str, roots: list[str]) -> list[str] | None:
+    """Which `.rs` files under `roots` are newer than `binary`.
+
+    `None` when the binary cannot be stat'd at all. An empty list means
+    the binary is current.
+
+    Split out of the compositor's own check because that check existed,
+    worked, and still let a six-hour-old agent be filmed: it guarded one
+    binary, and the rig runs three. A guard that covers one of the things
+    it should cover reads exactly like a guard that covers all of them,
+    which is worse than having none.
+    """
+    try:
+        built = os.path.getmtime(binary)
+    except OSError:
+        return None
+    newer: list[str] = []
+    for root in roots:
+        for dirpath, _dirs, files in os.walk(root):
+            for name in files:
+                if not name.endswith(".rs"):
+                    continue
+                path = os.path.join(dirpath, name)
+                try:
+                    if os.path.getmtime(path) > built:
+                        newer.append(os.path.relpath(path, REPO))
+                except OSError:
+                    pass
+    newer.sort()
+    return newer
+
+
+def refuse_if_stale(binary: str, roots: list[str], build: str,
+                    allow: bool) -> bool:
+    """Print why a binary is too old to film, and say whether to stop.
+
+    Newer source is refused rather than warned about: a warning in a
+    three-hundred-line transcript is a warning nobody reads, and a frame
+    cannot tell you which build it came from.
+    """
+    newer = sources_newer_than(binary, roots)
+    if allow:
+        # Permitted, but never silent. One flag waives both binaries, so
+        # somebody who passes it to film a compositor they know is stale
+        # would otherwise also film a stale agent without being told —
+        # which is the failure this whole guard exists to prevent, just
+        # wearing the flag's permission as cover.
+        if newer:
+            print(f"  filming a stale {os.path.relpath(binary, REPO)}: "
+                  f"{len(newer)} source file(s) are newer, including "
+                  f"{newer[0]}")
+        return False
+    if newer is None:
+        print(f"cannot stat {binary}")
+        return True
+    if not newer:
+        return False
+    print(f"\nrefusing to record: {os.path.relpath(binary, REPO)} is older "
+          f"than {len(newer)} source file(s) under test")
+    for path in newer[:8]:
+        print(f"    {path}")
+    if len(newer) > 8:
+        print(f"    ... and {len(newer) - 8} more")
+    print(f"\n  {build}")
+    print("  (or --allow-stale-shell to film it anyway)")
+    return True
+
+
 def agent_binary() -> str | None:
     """`qos-agent`, if it has been built.
 
@@ -5990,46 +6058,29 @@ def main() -> int:
 
     # Refuse to film a binary older than the code it is meant to show.
     #
-    # This rig has silently recorded a stale compositor more than once:
-    # the run is green, the frames are of last night's build, and the
-    # fix everyone is waiting to see is simply not in the picture. A
-    # screenshot cannot tell you which build it came from, so the check
-    # has to happen here, before anything is recorded.
+    # This rig has silently recorded a stale build more than once: the
+    # run is green, the frames are of last night's compositor, and the
+    # fix everyone is waiting to see is simply not in the picture.
     #
-    # Sources are compared against the binary's own mtime. Newer source
-    # is refused rather than warned about: a warning in a 300-line
-    # transcript is a warning nobody reads.
-    if not args.allow_stale_shell:
-        newer = []
-        try:
-            built = os.path.getmtime(args.shell)
-            for root in (os.path.join(REPO, "shell", "src"),
-                         os.path.join(REPO, "ui", "src")):
-                for dirpath, _dirs, files in os.walk(root):
-                    for f in files:
-                        if not f.endswith(".rs"):
-                            continue
-                        fp = os.path.join(dirpath, f)
-                        try:
-                            if os.path.getmtime(fp) > built:
-                                newer.append(os.path.relpath(fp, REPO))
-                        except OSError:
-                            pass
-        except OSError as e:
-            print(f"cannot stat {args.shell}: {e}")
-            return 2
-        if newer:
-            newer.sort()
-            print(f"\nrefusing to record: {os.path.relpath(args.shell, REPO)} "
-                  f"is older than {len(newer)} source file(s) under test")
-            for f in newer[:8]:
-                print(f"    {f}")
-            if len(newer) > 8:
-                print(f"    ... and {len(newer) - 8} more")
-            print("\n  cargo build --profile demo -p shell --bin shell "
-                  "--bin qos-control")
-            print("  (or --allow-stale-shell to film it anyway)")
-            return 2
+    # Both binaries are checked, because checking only the compositor is
+    # how a six-hour-old agent got filmed answering in a vocabulary the
+    # branch had already replaced. `demo-apps-live.sh` refreshes the app
+    # payloads the registry serves and does not touch the agent, so
+    # nothing else was ever going to catch it.
+    if refuse_if_stale(
+            args.shell,
+            [os.path.join(REPO, "shell", "src"), os.path.join(REPO, "ui", "src")],
+            "cargo build --profile demo -p shell --bin shell --bin qos-control",
+            args.allow_stale_shell):
+        return 2
+
+    _agent_bin = agent_binary()
+    if _agent_bin and refuse_if_stale(
+            _agent_bin,
+            [os.path.join(REPO, "apps", "agent", "src")],
+            "cargo build --profile demo -p agent",
+            args.allow_stale_shell):
+        return 2
 
     # Unix socket paths are capped near 108 bytes, so they go in the
     # runtime dir rather than next to the rest of the run.
