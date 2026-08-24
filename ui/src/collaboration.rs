@@ -3027,6 +3027,14 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             pump(&mut mgr, &mut seen);
+            // Re-raise each round. The outbox the transport queues into is
+            // process-wide (the store's hooks are `&self` on a singleton),
+            // while managers are per-record — so in a test binary standing up
+            // several fake brokers at once, a neighbour's `poll` can drain a
+            // request raised here. Both calls are idempotent: `put` is
+            // content-addressed and re-offers, a missed `get` re-asks.
+            let _ = qdoc::blobstore::put(&bytes);
+            let _ = qdoc::blobstore::get(&absent);
             let c = captures.lock().unwrap();
             let out_done = !c.offered_blobs.is_empty() && c.wanted_blobs.iter().any(|h| h == &absent);
             drop(c);
