@@ -3301,6 +3301,69 @@ def close_collaborators(s: Session) -> None:
         s.settle(0.4)
 
 
+def say_something_about(session: Session, target: str, text: str,
+                       shots: str | None = None,
+                       tag: str | None = None) -> bool:
+    """Right-click a thing and say something to the room about it.
+
+    The gesture this desktop hangs its argument on: pick an object,
+    right-click, and a compose surface opens beside the ordinary context
+    menu carrying that object's **address**. What crosses is not a
+    description of what was on somebody's screen -- it is the resource
+    itself, so an agent never has to guess what "this" was, and the same
+    sentence still means the same thing in a session opened tomorrow.
+
+    Driven rather than simulated. The pointer travels, the right button
+    goes down and up, the panel is found by the name it publishes, the
+    text is typed at a person's pace and Send is pressed. Every step is
+    a control somebody could have clicked, so one that is not drawn, not
+    hit-testable or not wired fails here instead of being routed around.
+
+    Returns False rather than raising. A rig that cannot perform the
+    gesture should say so and let the run reach the end: a take that dies
+    at its own best moment tells you less than one that finishes and
+    names what was missing.
+    """
+    row = session.named_rect(target)
+    if not row:
+        gap(f"{session.name}: nothing on screen is called {target!r}, so "
+            f"there was nothing to right-click. On offer: "
+            f"{sorted(session.target_names())[:8]}")
+        return False
+    x, y, w, h = row[0], row[1], row[2], row[3]
+
+    # Selected with an ordinary click first. A context menu over an
+    # unselected row is a menu about whatever the app decides, and the
+    # whole point is that the subject is the thing the person picked.
+    session.click_at(x + w * 0.5, y + h * 0.5)
+    session.settle(0.35)
+    session.right_click_at(x + w * 0.5, y + h * 0.5)
+    session.settle(0.6)
+
+    field = session.named_rect("remark_compose_field")
+    if not field:
+        gap(f"{session.name}: right-clicking {target!r} opened no compose "
+            f"surface, so there was nowhere to say anything")
+        return False
+    if shots:
+        session.snapshot(os.path.join(shots, f"{tag or 'remark'}-open.png"))
+
+    session.click_at(field[0] + field[2] * 0.5, field[1] + field[3] * 0.5)
+    session.settle(0.2)
+    session.type_prose(text)
+    session.settle(0.4)
+    if shots:
+        session.snapshot(os.path.join(shots, f"{tag or 'remark'}-typed.png"))
+
+    sent = session.click_named("remark_compose_send")
+    if isinstance(sent, dict) and "err" in sent:
+        gap(f"{session.name}: the compose panel would not send "
+            f"({json.dumps(sent['err'])[:120]})")
+        return False
+    claim(f"{session.name} said something about {target!r}", True, True)
+    return True
+
+
 def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
                           tag: str | None = None) -> str | None:
     """Invite somebody from the panel a person opened, with the mouse.
