@@ -2413,11 +2413,16 @@ mod tests {
             .iter()
             .map(crate::network::behaviour::peer_liveness_handle)
             .collect();
+        // The host's own row is the one the roster leaves out, and
+        // `spawn` derives that handle from the same peer id the room
+        // document names this machine under. The test fixture mints its
+        // keypair and its peer id separately, so it has to be spelled
+        // here rather than read off `local_peer_id_hash`.
         let rows = crate::shell::peer_presence::room_roster(
             workspace,
             &labels,
             &arrived,
-            net.local_peer_id_hash(),
+            crate::network::behaviour::peer_liveness_handle(&net.local_peer_id),
         );
 
         assert_eq!(rows.len(), 2, "both people are in the room: {rows:?}");
