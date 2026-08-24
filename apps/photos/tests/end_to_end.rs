@@ -575,6 +575,72 @@ fn the_resource_surface_enumerates_the_open_photograph_and_acts_on_it() {
     );
 }
 
+/// A caller with no display crops the photograph by address, and the pixels
+/// that come back are the region it asked for.
+///
+/// The pieces of this were each covered — the resource surface publishes a
+/// `crop` spec, `parse_crop_arg` reads a string, `Edits::cropped_from_view`
+/// composes a rect — but nothing joined them to the rendered buffer. This
+/// walks the whole way an out-of-process caller does: find the action by its
+/// id, hand it a string, decode it through the registry, apply it, and check
+/// the exported pixels against the original by identity rather than by size.
+#[test]
+fn a_caller_with_no_display_crops_by_address_and_gets_those_pixels() {
+    use qos_actions::{ActionInput, ActionRegistry};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (path, original) = staged(dir.path(), 400, 400);
+    let mut hz = Harness::new(1000.0, 700.0);
+    hz.app.open_path(&mut hz.state.doc, &path);
+    hz.frame();
+
+    // Address the photograph by the id derived from its path — no
+    // enumeration, no coordinate, nothing that needs a screen.
+    let resources = PhotosResources.resources(&hz.state.doc);
+    assert_eq!(
+        resources[0].id.0,
+        photos::actions::resource_id(&path),
+        "the published id is not derivable from the path"
+    );
+
+    let ActionInput::Prompted { build, .. } = &resources[0]
+        .actions
+        .iter()
+        .find(|a| a.id == "crop")
+        .expect("crop is published")
+        .input
+    else {
+        panic!("crop collects an argument");
+    };
+
+    let mut registry = ActionRegistry::new();
+    register(&mut registry);
+    registry
+        .decode(&build("0.5,0.5,0.5,0.5"))
+        .expect("the envelope decodes")
+        .apply(&mut hz.state.doc)
+        .expect("the crop applies");
+    hz.frame();
+
+    let after = hz.app.edited_pixels().expect("re-rendered").clone();
+    assert_eq!(
+        (after.w, after.h),
+        (200, 200),
+        "cropping by address did not resize the exported pixels"
+    );
+    // The bottom-right quarter, by identity — a crop of the right *size*
+    // taken from the wrong *place* would pass a dimensions-only check.
+    assert_eq!(after.pixel(0, 0).unwrap(), original.pixel(200, 200).unwrap());
+    assert_eq!(after.pixel(9, 3).unwrap(), original.pixel(209, 203).unwrap());
+
+    // And the document still carries only the decision, never the pixels.
+    let saved = hz.state.doc.save().len();
+    assert!(
+        saved < 4096,
+        "the document grew to {saved} bytes after a crop by address"
+    );
+}
+
 /// A resource tree with nothing open exports nothing, and a full frame in that
 /// state still renders the empty view.
 #[test]
