@@ -256,6 +256,11 @@ LIVE_APPS = os.path.join(TARGET, "qos-apps-live")
 # peer: it is a subject in the permission model, and the grant is scoped
 # to one app rather than to the workspace.
 AGENT_SUBJECT = "agent:claude"
+#: What the agent is called on the roster, and the name an instruction
+#: addresses. One constant because three things have to agree about it:
+#: the `--name` the process runs under, the row a viewer reads, and the
+#: `@mention` the room resolves to a participant id.
+AGENT_ROSTER_NAME = "Claude"
 #: Every app the agent is given leave to act in, by the resource
 #: namespace its ids start with (`apps/agent/src/surface.rs`).
 #:
@@ -4572,7 +4577,8 @@ def run_the_agent(agent: Session, room: str, shots: str,
         for namespace in AGENT_NAMESPACES:
             grants += ["--grant", namespace]
         proc = subprocess.Popen(
-            [binary, "--workspace", str(room), "--name", "Claude",
+            [binary, "--workspace", str(room),
+             "--name", AGENT_ROSTER_NAME,
              "--app", "", *grants,
              "--socket", (through or agent).collab_json_sock, "--once",
              "--pace-ms", "250"],
@@ -4862,6 +4868,37 @@ def beat_three(quinten: Session, xaver: Session, agent: Session,
         claim("xaver is in it", xaver.user in members, True)
         claim("and the agent is in it the same way the people are — by "
               "holding a capability in it", agent.user in members, True)
+
+    # And that the roster on screen *says* which is which. Admitted the
+    # same way is the claim; indistinguishable afterwards is not, and a
+    # viewer who had to infer which of two rows is a person would
+    # sometimes infer wrong.
+    #
+    # Read off `roster`, which the compositor derives from the same
+    # `collaborator_roster_rows` the panel is drawn from — so what this
+    # asserts and what is on screen cannot drift apart. `is_agent` is
+    # kept beside the label rather than folded into it for that reason.
+    roster = (quinten.peers() or {}).get("roster") or []
+    if not roster:
+        gap("the roster came back empty, so whether Claude is marked as an "
+            "agent on screen could not be read. The panel is up in this "
+            "shot, so this is the reader looking in the wrong place rather "
+            "than a room with nobody in it.")
+    else:
+        note(f"the roster draws {len(roster)} row(s): "
+             + ", ".join(f"{r.get('label')!r}"
+                         f"{' [agent]' if r.get('is_agent') else ''}"
+                         for r in roster))
+        agents = [r for r in roster if r.get("is_agent")]
+        claim("exactly one row on the roster is marked as an agent",
+              len(agents), 1)
+        if agents:
+            claim("and it is Claude", AGENT_ROSTER_NAME.lower()
+                  in str(agents[0].get("label", "")).lower(), True)
+        claim("the people are not marked as agents",
+              any(r.get("is_agent") for r in roster
+                  if str(r.get("label", "")).lower()
+                  in (quinten.user.lower(), xaver.user.lower())), False)
     read_hold(READ_HOLD_S * 1.5)
     quinten.snapshot(os.path.join(shots, "03e-roster.png"))
     close_collaborators(quinten)
@@ -5525,7 +5562,8 @@ def main() -> int:
                 return 2
 
     sessions = []
-    for short, name in zip("qxa", ("quinten", "xaver", "Claude")):
+    for short, name in zip("qxa", ("quinten", "xaver",
+                                   AGENT_ROSTER_NAME)):
         run_dir = os.path.join(args.out, name)
         apps_dir = os.path.join(run_dir, "qos-apps")
         # Every machine holds every app. Quinten's used to be missing
