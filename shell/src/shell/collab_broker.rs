@@ -1105,6 +1105,22 @@ fn translate(
             );
             TranslatedAction::Nothing
         }
+        // Intercepted before this for the same reason an open is: addressed
+        // to this session rather than to an audience. Named here so that the
+        // day one reaches the fan-out it is a dropped frame with a reason
+        // beside it, and not a wildcard swallowing it.
+        CollabRequest::CarriedContent {
+            ref hash,
+            ref from_app,
+            ref into_app,
+        } => {
+            tracing::warn!(
+                src_id, %hash, %from_app, %into_app,
+                "collab_broker: a CarriedContent reached the fan-out; it has no \
+                 audience and was dropped, so nothing will be drawn for it"
+            );
+            TranslatedAction::Nothing
+        }
         CollabRequest::Presence { key, payload } => {
             // Chrome traffic: cluster scope. Every app in the cluster
             // is a legitimate audience for "who else is here", but a
@@ -1536,6 +1552,40 @@ fn reader_loop(
                     );
                 }
             }
+            continue;
+        }
+        // A crossing between two applications, reported by the participant
+        // that performed it. Like an open, it never reaches the fan-out: it
+        // is addressed to the session that draws these windows, and another
+        // peer's desktop has its own answer about where these applications
+        // are — most often that they are not there at all.
+        //
+        // Unlike an open it is a report rather than a request, so nothing is
+        // answered and the reporter never waits. Recording it is a push onto
+        // a bounded queue, drained on a frame the compositor was going to
+        // render anyway.
+        if let CollabRequest::CarriedContent {
+            hash,
+            from_app,
+            into_app,
+        } = &req
+        {
+            // `src_user_id` and not anything in the frame: attribution is
+            // the session's own answer for this connection, resolved exactly
+            // as it is for the presence that names the reporter's caret, so
+            // the crossing is coloured as the participant a viewer can
+            // already see working.
+            let drawn = crate::shell::action_flight::note_reported_flight(
+                &src_user_id,
+                hash,
+                from_app,
+                into_app,
+            );
+            tracing::info!(
+                peer = peer.id, %hash, %from_app, %into_app, who = %src_user_id, drawn,
+                "collab_broker: a participant reported carrying content between \
+                 applications"
+            );
             continue;
         }
         match translate(peer.id, &src_user_id, src_route.as_ref(), req, &channels) {
