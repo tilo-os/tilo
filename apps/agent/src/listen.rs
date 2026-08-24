@@ -296,24 +296,23 @@ pub fn next_summons(
 
 /// What a message is about: what it carried, else what the agent was just
 /// doing, else nothing.
-fn subject_of(message: &Message, last: Option<&LastAction>, now: i64) -> Subject {
+fn subject_of(message: &Message, last: Option<&LastAction>, _now: i64) -> Subject {
     if let Some(r) = &message.reference {
         return Subject::Carried(r.clone());
     }
     match last {
-        // Measured from the message, not from `now`: a message written while
-        // the agent was working is close to that work however long the agent
-        // then took to read it. Using `now` would let a slow queue turn a
-        // timely follow-up into an expired one.
+        // Measured between the message and the action, not from `now`. A
+        // message written while the agent was working is close to that work
+        // however long the agent then took to read it, and measuring from
+        // `now` would let a slow queue turn a timely follow-up into an
+        // expired one — the reading changing because the machine was busy is
+        // exactly the sort of answer nobody can reason about.
+        //
+        // One boundary, so there is one thing to state and one thing to test.
         Some(l) if l.within(message.ts, RECENCY_SECS) => Subject::Recent {
             resource: l.resource.clone(),
             age: (message.ts - l.at).abs(),
         },
-        // `now` still bounds it, so an agent replaying an old document on
-        // startup does not treat a year-old message as a live follow-up.
-        Some(l) if l.within(now, RECENCY_SECS) && (now - message.ts).abs() <= RECENCY_SECS => {
-            Subject::Recent { resource: l.resource.clone(), age: (now - l.at).abs() }
-        }
         _ => Subject::Nothing,
     }
 }

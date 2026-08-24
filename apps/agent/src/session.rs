@@ -782,7 +782,14 @@ impl Session {
         self.last_route = Some(route);
         match instruction {
             Instruction::Perform { id, argument } => {
-                self.perform(&id, argument.as_deref(), &view, &to)?;
+                // A refusal answers for itself; a success has to be said out
+                // loud too. Not politeness: this reply is what records the
+                // message as dealt with, so an agent that worked silently
+                // would do the same work again after a restart.
+                if self.perform(&id, argument.as_deref(), &view, &to)? {
+                    let reply = format!("{}: done — {id}.", self.cfg.name);
+                    self.reply(&to, &reply)?;
+                }
             }
             // The recipes rewrite a run of blocks around the line that asked
             // for them, and a message is not in the document those blocks are
@@ -876,7 +883,7 @@ impl Session {
                     id: blocks[at].id.clone(),
                     chars: blocks[at].text.chars().count(),
                 };
-                self.perform(&id, argument.as_deref(), &view, &to)?
+                let _ = self.perform(&id, argument.as_deref(), &view, &to)?;
             }
             Instruction::Table => self.make_table(&blocks, at)?,
             Instruction::Caption => self.caption_image(&blocks, at)?,
@@ -918,11 +925,12 @@ impl Session {
         argument: Option<&str>,
         view: &View,
         to: &Answer,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let name = self.cfg.name.clone();
         let Some(address) = surface::decode_address(id) else {
             let reply = format!("{name}: {id:?} is not an address I can act on.");
-            return self.reply(to, &reply);
+            self.reply(to, &reply)?;
+            return Ok(false);
         };
         // Asked again, at dispatch. The survey filtered on it too, but a
         // survey is a snapshot: a capability that lapsed between the offer
@@ -934,7 +942,8 @@ impl Session {
                 address.action
             );
             tracing::warn!(%id, "refused: no capability for this operation");
-            return self.reply(to, &reply);
+            self.reply(to, &reply)?;
+            return Ok(false);
         }
         let namespace = surface::app_of(&address.resource).to_string();
         // The caret goes on the line that asked, so the room can see which
@@ -956,7 +965,8 @@ impl Session {
                 "{name}: nothing from {namespace:?} is open in this room, so I can't act on it."
             );
             tracing::warn!(%id, %namespace, "refused: that app's state is not here");
-            return self.reply(to, &reply);
+            self.reply(to, &reply)?;
+            return Ok(false);
         };
         match outcome {
             Ok(Some(delta)) => {
@@ -975,11 +985,12 @@ impl Session {
             Err(e) => {
                 let reply = format!("{name}: I couldn't do that - {e}.");
                 tracing::warn!(%id, code = e.code(), "refused: {e}");
-                return self.reply(to, &reply);
+                self.reply(to, &reply)?;
+                return Ok(false);
             }
         }
         std::thread::sleep(self.cfg.pace);
-        Ok(())
+        Ok(true)
     }
 
     /// Answer wherever the request came from.
