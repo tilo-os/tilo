@@ -1844,7 +1844,45 @@ impl Session {
             let view = self.view(focus.clone(), 0);
             let offers = self.offers(&view);
 
-            match step.instruction {
+            // A step whose operation exists *because of* an earlier step.
+            //
+            // A plan is resolved up front so a sequence that cannot be
+            // finished is never started, and that is right for every step
+            // whose app was already in the room. It is wrong for exactly one
+            // case: "open the photo editor and crop this" names, in its
+            // second clause, an operation no survey could have held while the
+            // first clause had not run. The whole sequence refused, and the
+            // refusal described the room at a moment that had already passed.
+            //
+            // Not a second guess at the same question. The survey above was
+            // retaken after the previous step finished, and opening an app
+            // does not return until that app's state is in the room -- so by
+            // the time this reads, the operations are either exported or they
+            // genuinely are not there. The clause kept its own words for this
+            // purpose, and asking again costs a refusal nothing: one that was
+            // true stays true, in the sentence it would have used anyway.
+            let (instruction, carries) = match step.instruction {
+                Instruction::Unknown(what) => {
+                    let again = crate::plan::Step::reconsider(&what, &offers);
+                    match again.instruction {
+                        Instruction::Unknown(_) => {
+                            (Instruction::Unknown(what), step.carries)
+                        }
+                        resolved => {
+                            tracing::info!(
+                                step = n + 1,
+                                of = total,
+                                clause = %what,
+                                "resolved against a room an earlier step changed"
+                            );
+                            (resolved, again.carries)
+                        }
+                    }
+                }
+                other => (other, step.carries),
+            };
+
+            match instruction {
                 Instruction::Perform { id, argument } => {
                     let label = surface::label_of(&offers, &id).map(|l| l.to_lowercase());
                     // The binding. An operation that collects content is
@@ -1853,7 +1891,7 @@ impl Session {
                     // request, not one from a model, and not a second reading
                     // of the other app's document.
                     let bound;
-                    let argument = if step.carries {
+                    let argument = if carries {
                         let Some(product) = carried.as_ref() else {
                             let reply = refusal(
                                 &name,
