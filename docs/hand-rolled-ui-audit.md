@@ -7,7 +7,10 @@ are the things that MUST be unified: a painted rect with a manual hit-test, or a
 clipboard (Ctrl+C/V/X), keyboard activation and caret nav, the focus ring, the
 a11y tree, and `Theme`-driven colors. The rule is codified in `ui/HIG.md` §8.
 
-**Scope.** All 45 UI apps under `apps/`. Read-only audit — no refactors here. Method: for each category, the
+**Scope.** All 45 UI apps under `apps/`, and the compositor's own chrome under
+`shell/src/` (added later — see [the compositor's own chrome](#the-compositors-own-chrome-shellsrc); the original sweep covered `apps/`
+only, which is how an 18 000-line immediate-mode painter of modals and panels
+went unaudited). Read-only audit — no refactors here. Method: for each category, the
 canonical widget lives in `ui/src/widget/`; app code was graded as hand-rolled
 only when it reimplements that widget rather than legitimately composing it.
 
@@ -604,6 +607,104 @@ word-processor, mail, slides; gap
 DataTable) → monitor, logs; gap **10** (TreeView inline-rename) → notes; gap
 **13** (MathField) → calculator; gap **11** (shared find bar) collapses the
 Wave-1 editor find fields into one primitive.
+
+---
+
+## The compositor's own chrome (`shell/src/`)
+
+**This audit said "all 45 UI apps under `apps/`" and meant it — which left the
+compositor out.** That is not a small omission: `shell/src/shell/overlay_host.rs`
+is a single ~18 000-line immediate-mode painter that draws the modals, panels,
+quick settings and prompts a person meets *before* they open any app, and it was
+never swept. The invite composer is the case that surfaced it — a field built
+out of an `Option<String>` and `scene.fill`, sitting on a modal that was
+otherwise already composed from `ModalFrame`.
+
+The shell is a legitimately different shape from an app: it paints straight into
+a `Scene` and owns its own hit-testing, so it cannot mount a retained widget tree
+for everything. That is **not** an exemption. Two shared entry points exist
+precisely for this caller:
+
+* `ButtonFace` + `Button::paint` — a stateless face an immediate-mode painter
+  can draw with the real fills, hover/press/focus states and accent-safe label.
+* `TextInput::apply_layout_external` + `TextInput::handle_event_local` +
+  `Widget::set_focus` — a real field whose rect the host owns.
+
+`ModalFrame` already documents itself as serving both kinds of caller. The rule
+for `shell/` is therefore the same as for `apps/`: **compose the widget, or
+extend it. Never re-paint it.**
+
+### Done
+
+| Surface | Was | Now |
+|---|---|---|
+| Invite composer name field (`draw_peer_sync`) | `Option<String>` pushed/popped on raw key events; painted rect, elided string, hand-placed caret | `ui::widget::TextInput` |
+| Peer-sync card action row | `ModalFrame` buttons frozen at rest — hover/press/focus never supplied | `ModalAction::{hovered,pressed,focused}` |
+
+### Outstanding — `shell/src/shell/overlay_host.rs`
+
+| Surface | Fn | Hand-rolled | Should use | Risk / effort |
+|---|---|---|---|---|
+| Join / connect token field | `draw_peer_sync` (receiving branch) | Shares the card's `push_str`/`pop` router; paints **no field at all** — a `draw_text` summary line | `TextInput`, mono, non-secret | HIGH / S |
+| Workspace-name inline editor | `draw_ws_settings` + its key branch | Painted field + hand-placed caret; key handling open-codes what `shell/src/shell/text_entry.rs` already shares | `TextInput` | HIGH / M |
+| Wi-Fi passphrase prompt | `draw_qs_wifi_password` | Painted masked field with a proportional-guess caret; two painted buttons | `TextInput` (it has a masked mode) + `ButtonFace` | HIGH / S |
+| Collaborators panel Invite / Join | `draw_collaborators_footer` | `RoundedRect` + accent fill + centred label, rects cached for the click router | `ButtonFace::paint` | MED / S |
+| Room activity row | `draw_collaborators_footer` | Same shape | `ButtonFace::paint` | MED / S |
+| Quick-settings sliders | `draw_quick_settings` | Painted track + fill, drag state on the host | `ui::widget::Slider` | MED / M |
+| Quick-settings tiles + Wi-Fi/BT cards | `draw_quick_settings` | Painted tiles; painted radio cards | `ButtonFace` / `ui::widget::Toggle` | MED / S |
+| Search filter chips + scope switch | `draw_search_banner`, `draw_filter_chip` | Painted pills | `ui::widget::Chip` / `Segmented` | MED / S |
+| Workspace-settings tab strip | `draw_ws_settings` | Painted 3-pill strip | `Segmented` | MED / S |
+| Invite-code readout | `draw_invite_code` | Painted read-only field | — see note | LOW / S |
+
+**On `draw_invite_code`:** it is a read-only readout with no state, no
+hit-test and no keyboard. There is no correctness defect, only non-uniform field
+chrome, and it deliberately uses `theme.on_card().tint` so it reads as a field on
+every palette. Left alone; listed so the next sweep does not re-discover it as a
+finding.
+
+### Outstanding — elsewhere in `shell/src/`
+
+| Surface | File | Hand-rolled | Should use | Risk / effort |
+|---|---|---|---|---|
+| Grant composer: subject + capability pickers | `workspace_settings.rs` `draw_cycler` | Click-to-cycle pill — a dropdown with the affordance removed, so the option set cannot be seen before committing | `ui::widget::Dropdown` | MED / L |
+| Grant composer: expiry | `workspace_settings.rs` `draw_permissions_pane` | Painted 3-segment track | `Segmented` | MED / S |
+| Grant / Revoke buttons | `workspace_settings.rs` `draw_primary_button`, `draw_danger_button`, `draw_pill` | Painted rects | `ButtonFace::paint` | MED / S |
+| Members pane role pill + remove | `workspace_settings.rs` `draw_members_pane` | Painted pills | `Dropdown` + `ButtonFace` | MED / M |
+| Room-activity filter chips | `room_activity.rs` `draw_chip_row` | Painted chips | `Chip` | MED / S |
+| Top-bar controls | `topbar_chrome.rs` | Bare `rect.contains` hit-tests, painted faces | `ButtonFace::paint` | LOW / S |
+
+**Why the grant composer is `L` and the rest are `S`.** Its geometry is
+deliberately factored so paint and hit-test read one source
+(`permissions_pane_layout`), and that contract is pinned by tests. Swapping the
+cyclers for real `Dropdown`s changes the interaction model — a popup list rather
+than cycle-in-place — which invalidates `apply_composer_hit`'s `cycle_subject` /
+`cycle_choice` calls and any scenario driving them. The expiry strip and the
+buttons are independent of that and can land on their own.
+
+**Not findings.** `notification.rs` composes `ui::widget::toast` and takes its
+hit rects from the widget. `sidebar_wheel_disc.rs` is a radial switcher, not a
+toolkit-widget shape. `chrome_state.rs` paints nothing. `bluetooth_prompt.rs`
+and `onboarding_view.rs` are real widget trees already.
+
+### `ui` gaps this sweep opened
+
+Extended rather than forked, per the rule at the foot of this file:
+
+* `TextInput::handle_event_local` — an immediate-mode host had to stand up a
+  scratch `AutoCommit` and a one-leaf `TaffyTree` per keystroke to satisfy
+  `Widget::handle_event`. That ceremony is the friction that gets a field
+  hand-rolled instead, so it now lives in the widget.
+* `TextInput::with_accessible_name` — a `TextInput` announced only its role and
+  value. Every form field in the system has its label drawn as separate chrome,
+  which a reader cannot associate, so every one of them was anonymous.
+* `TextInput::with_placeholder_while_focused` — the placeholder cleared on
+  focus, so a field focused as its surface opens never showed its hint at all.
+* `TextInput` falls back to the logical key when the platform supplied no shaped
+  `KeyEvent::text`, so a synthesised keystroke is not silently dropped.
+* `ModalAction::{hovered,pressed,focused}` and `ModalSpec::{close_hovered,
+  close_focused}` — the action row already painted through `Button::paint` and
+  was never handed any state, so every modal button in the system was a real
+  button frozen at rest.
 
 ---
 
