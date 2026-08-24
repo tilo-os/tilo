@@ -154,6 +154,14 @@ pub struct FileExplorerWidget {
     /// stays open across frames. `menu_commands[i]` is the command to run
     /// for menu item `i` (None for separators).
     context_menu: ContextMenu,
+    /// "Say something about this" — opens *beside* the context menu on the
+    /// current selection, carrying that file's address into the message. Owned
+    /// here for the same reason the menu is: it stays open across frames, and
+    /// dismissing either one leaves the other alone.
+    remark: ui::widget::RemarkCompose,
+    /// Where a remark can be sent. Filled by the host that knows the room; the
+    /// app never invents one.
+    remark_destinations: Vec<ui::widget::DestinationOption>,
     menu_commands: Vec<Option<FileCommand>>,
     /// The "New File ▸" flyout submenu, populated from the Templates dir when
     /// the main menu opens; empty (and closed) when there are no templates.
@@ -335,6 +343,8 @@ impl FileExplorerWidget {
             cmds,
             structure_dirty: false,
             context_menu: ContextMenu::new(),
+            remark: ui::widget::RemarkCompose::new(),
+            remark_destinations: Vec::new(),
             menu_commands: Vec::new(),
             submenu: ContextMenu::new(),
             submenu_commands: Vec::new(),
@@ -1133,6 +1143,46 @@ impl FileExplorerWidget {
         self.open_context_menu(at);
     }
 
+    /// Where a remark from this app can be sent. Supplied by the host, which is
+    /// what knows the room; empty until it is, so the app never invents a
+    /// roster of its own.
+    pub fn set_remark_destinations(&mut self, destinations: Vec<ui::widget::DestinationOption>) {
+        self.remark_destinations = destinations;
+    }
+
+    /// "Say something about this": open the ordinary context menu on the
+    /// selection **and** the compose surface beside it.
+    ///
+    /// The single entry point for both the right-click gesture and its keyboard
+    /// chord, so neither can drift into producing a different message than the
+    /// other. Returns `false` when there is nothing selected or nowhere to send
+    /// — in which case nothing opens, rather than a compose over no subject.
+    pub fn open_remark_for_selection(&mut self, doc: &ui::automerge::AutoCommit, at: Point) -> bool {
+        if self.remark_destinations.is_empty() {
+            return false;
+        }
+        // Ask the app what is selected before opening anything, so a gesture
+        // over nothing leaves the screen alone.
+        let Some(reference) =
+            <Self as qos_reference::Referent>::selection_reference(self, doc)
+        else {
+            return false;
+        };
+        self.open_context_menu(at);
+        layout_menu_widget(&mut self.context_menu);
+        // Beside the menu, not over it: the menu keeps doing its job.
+        let anchor = Point::new(self.context_menu.get_rect().x1 + 8.0, at.y);
+        self.remark.open_for(
+            reference,
+            self.remark_destinations.clone(),
+            0,
+            anchor,
+            &ui::widget::remark_compose::placeholder_text(),
+            &ui::widget::remark_compose::send_label(),
+        );
+        true
+    }
+
     /// Open the context menu *and* its "New File" flyout (headless shots demo).
     #[doc(hidden)]
     pub fn debug_show_templates_menu(&mut self, at: Point) {
@@ -1742,6 +1792,27 @@ fn layout_menu_widget(menu: &mut ContextMenu) {
         },
     );
     menu.apply_layout(&taffy, node, Point::ZERO);
+}
+
+/// Lay out a self-positioning floating widget in its own tree, the way
+/// [`layout_menu_widget`] does for a menu.
+///
+/// The compose surface anchors itself with an absolute inset, so computing it
+/// at the origin of a throwaway tree places it exactly where it was opened.
+fn layout_floating_widget(w: &mut dyn Widget) {
+    let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+    let mut node_map: std::collections::HashMap<taffy::NodeId, *mut dyn Widget> =
+        std::collections::HashMap::new();
+    let theme = ui::Theme::dark();
+    let node = w.build_layout(&mut taffy, &theme, &mut node_map);
+    let _ = taffy.compute_layout(
+        node,
+        taffy::Size {
+            width: taffy::AvailableSpace::Definite(1600.0),
+            height: taffy::AvailableSpace::Definite(1000.0),
+        },
+    );
+    w.apply_layout(&taffy, node, Point::ZERO);
 }
 
 /// Thin mockable wrapper around process launch + the desktop "open with
@@ -2499,6 +2570,14 @@ impl Widget for FileExplorerWidget {
         if self.submenu.is_open() {
             layout_menu_widget(&mut self.submenu);
             self.submenu.draw(scene, transform, text_renderer, theme, presence);
+        }
+        // The compose surface sits beside the menu, on the same tier: it is a
+        // second way to act on the selection, not a layer over the first.
+        if self.remark.is_open() {
+            layout_floating_widget(&mut self.remark);
+            self.remark.draw(scene, transform, text_renderer, theme, presence);
+            self.remark
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         // The drop-target highlight sits on the target folder; the drag ghost
         // floats above everything else.

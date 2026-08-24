@@ -88,6 +88,40 @@ impl I18nManager {
         });
     }
 
+    /// Register a catalogue the **toolkit itself** owns, once, without
+    /// disturbing whatever an app has already set up.
+    ///
+    /// A widget that ships its own user-facing strings cannot call
+    /// [`init`](Self::init) (that would discard the app's bundles) and cannot
+    /// call [`add_resource`](Self::add_resource) blindly (a duplicate message
+    /// id panics, and it silently does nothing when no app has initialised).
+    /// So: resolve `probe` first, and register only when it is still missing —
+    /// which also makes this self-healing if an app initialises *after* a
+    /// widget has already asked for its strings.
+    ///
+    /// `catalogues` is `(language-subtag, ftl)`, most specific first; the entry
+    /// matching the current locale's language wins, else the first is used as
+    /// the fallback rather than showing raw keys.
+    pub fn ensure_resource(probe: &str, catalogues: &[(&str, &str)]) {
+        if catalogues.is_empty() || Self::lookup(probe, None) != probe {
+            return;
+        }
+        let uninitialised = MANAGER.with(|m| m.borrow().is_none());
+        if uninitialised {
+            Self::init("en-US");
+        }
+        let locale = MANAGER
+            .with(|m| m.borrow().as_ref().map(|mgr| mgr.current_locale.to_string()))
+            .unwrap_or_else(|| "en-US".to_string());
+        let lang = locale.split('-').next().unwrap_or("en").to_string();
+        let ftl = catalogues
+            .iter()
+            .find(|(l, _)| *l == lang)
+            .map(|(_, s)| *s)
+            .unwrap_or(catalogues[0].1);
+        Self::add_resource(&locale, ftl.to_string());
+    }
+
     pub fn set_locale(locale: &str) {
         let lang_id: LanguageIdentifier = locale.parse().expect("Parsing failed");
         MANAGER.with(|m| {
