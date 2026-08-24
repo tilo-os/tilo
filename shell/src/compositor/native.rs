@@ -1726,7 +1726,21 @@ fn pump_test_control_conn(
                 // structural layout; without a relayout here the
                 // next command sees stale rects from the previous
                 // frame.
-                if !actions.is_empty() {
+                // Snapshots and drains are readers: they plan an action
+                // because that is how work reaches the executor, but they
+                // change no widget, no chrome and no tree. Relaying out
+                // after one re-does the layout this command already
+                // settled on the way in, and calling it input starts a
+                // latency clock for something nobody typed. During a
+                // recording that is a second layout pass per frame, on
+                // the loop, for a command whose whole purpose is to
+                // observe without disturbing.
+                if actions.iter().any(|a| {
+                    !matches!(
+                        a,
+                        PlannedAction::Snapshot { .. } | PlannedAction::DrainSnapshots
+                    )
+                }) {
                     injected_input = true;
                     frame_builder.relayout();
                 }
