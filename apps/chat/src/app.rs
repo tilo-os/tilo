@@ -310,9 +310,6 @@ pub struct ChatApp {
     pub(crate) mention_menu: UiContextMenu,
     pub(crate) mention_rows: Vec<crate::mention::Participant>,
     pub(crate) mention_query: Option<crate::mention::MentionQuery>,
-    /// Where the composer sat when it was last drawn — the point the picker
-    /// grows upward from. `None` before the first frame.
-    pub(crate) mention_anchor: Option<Point>,
 
     // Structure editing.
     pub(crate) menu: Option<ContextMenu>,
@@ -525,7 +522,6 @@ impl ChatApp {
             mention_menu: UiContextMenu::new(),
             mention_rows: Vec::new(),
             mention_query: None,
-            mention_anchor: None,
             menu: None,
             rename: None,
             swipe: None,
@@ -730,7 +726,11 @@ impl ChatApp {
             // `mention-peer` is the peer who did the addressing, where the same
             // run is somebody else's colour. Same seeded exchange either way —
             // only which participant the window belongs to differs.
-            "mention" | "mention-peer" => {
+            // The same room, with one message that was written *about*
+            // something — a remark. It arrives as an ordinary chat message
+            // carrying an address, and the chip above its body is what a
+            // reader sees of that address.
+            "mention" | "mention-peer" | "remark" => {
                 self.thread_open = None;
                 self.right_flap.snap(true);
                 self.call = CallState::default();
@@ -1411,6 +1411,36 @@ impl ChatApp {
                     ..Default::default()
                 },
             );
+        }
+
+        if which == "remark" {
+            // Seeded through the path a remark really takes, not by writing a
+            // message with a reference field on it: `qos-reference` encodes it
+            // as chat's own `SendMessage`, chat's registry decodes that, and
+            // chat's own action applies it. A chip that only a hand-built
+            // fixture could produce would say nothing about a remark that
+            // actually arrives from another app.
+            let remark = qos_reference::Remark::new(
+                "The times here contradict the run sheet above them.",
+                qos_reference::ResourceRef::ranged(
+                    "word_processor.block",
+                    "word-processor.block:blk_7",
+                    "¶3 of Run sheet",
+                    qos_reference::Span::chars(12, 41),
+                ),
+                qos_reference::Destination::channel(channel.as_str(), "frontend"),
+            );
+            let encoded = remark
+                .to_chat_action("m_remark", "u_sora", crate::doc::NOW)
+                .expect("a remark addressed to a channel is deliverable");
+            use qos_actions::Action as _;
+            let mut registry = qos_actions::ActionRegistry::new();
+            crate::actions::register(&mut registry);
+            registry
+                .decode(&encoded)
+                .expect("chat decodes an action minted under its own type id")
+                .apply(doc)
+                .expect("and applying it inserts the message");
         }
 
         if which == "mention-picker" {
