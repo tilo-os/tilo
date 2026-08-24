@@ -5889,16 +5889,31 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
             if active_tab_surface(quinten, merged["id"]) == int(surface_id):
                 return
 
+    # The window is already showing the image editor: a tab arriving on a
+    # bar becomes the one in front, which is what makes the merge visible
+    # at all. So the switch that follows goes the other way — to the word
+    # processor — and there is exactly one of them.
+    #
+    # It used to switch *to* the image editor first, which was a click on
+    # the tab that was already in front: the tree agreed, the assertion
+    # passed, and the screen moved by 1349 pixels, all of it the cursor.
+    # A gesture that changes nothing is not a demonstration of anything.
+    claim("the window is showing the application that just joined it",
+          active_tab_surface(quinten, merged["id"]),
+          int(editor["surface_id"]))
     shown_before = screen_shot(
         quinten, os.path.join(shots, "12a-before-switch.png"))
-    show_tab(editor["surface_id"])
+    show_tab(wp["surface_id"])
     # Asserted on what the window is showing, not on whether a click was
     # delivered. "The pill was there and I pressed it" is a claim about
     # the harness; the thing being demonstrated is that pressing it puts
     # the other application in the frame.
+    #
+    # And it leaves the document in front, which the beat after this one
+    # is about — a shot of an image editor under a caption about a
+    # document is a shot of the wrong thing.
     claim("switching tab puts the other application in the window",
-          active_tab_surface(quinten, merged["id"]),
-          int(editor["surface_id"]))
+          active_tab_surface(quinten, merged["id"]), int(wp["surface_id"]))
     shown_after = screen_shot(
         quinten, os.path.join(shots, "13-tab-switched.png"))
     moved = pixels_moved(shown_before, shown_after)
@@ -5909,14 +5924,6 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
               moved > SCREEN_MOVED_PX, True)
         note(f"{moved} pixels differ between the two tabs")
     read_hold(1.0)
-
-    # Left on the word processor, because the beat after this one is
-    # about what is written in that document and a shot of an image
-    # editor under a caption about a document is a shot of the wrong
-    # thing.
-    show_tab(wp["surface_id"])
-    claim("and back again, so the beat after this one is of the document",
-          active_tab_surface(quinten, merged["id"]), int(wp["surface_id"]))
     claim("every one of those was a person's gesture",
           quinten.input_ops > before, True)
 
