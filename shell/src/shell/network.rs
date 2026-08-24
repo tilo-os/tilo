@@ -520,7 +520,7 @@ impl ShellNetwork {
             listen_addrs,
             last_sync_kick: Mutex::new(None),
             pending_invites: Mutex::new(std::collections::HashMap::new()),
-        redeemed_invites: Mutex::new(std::collections::HashMap::new()),
+            redeemed_invites: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
@@ -1447,7 +1447,7 @@ impl ShellNetwork {
         let addr = self
             .dial_addr()
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
-        let (token, room) = {
+        let (token, invite_id, room) = {
             let replica = self
                 .replica
                 .lock()
@@ -1458,14 +1458,14 @@ impl ShellNetwork {
                 .iter()
                 .find(|w| w.id == local)
                 .ok_or_else(|| format!("no workspace {} to invite into", local.raw()))?;
-            let token = crate::network::invite::make_invite_token(
+            let (token, invite_id) = crate::network::invite::make_invite(
                 &self.keypair,
                 ws,
                 &addr,
                 expiry_seconds_from_now,
             )
             .map_err(|e| e.to_string())?;
-            (token, ws.room)
+            (token, invite_id, ws.room)
         };
 
         // Nobody invites the inviter.
@@ -1498,20 +1498,19 @@ impl ShellNetwork {
         // `name_invitee_on_arrival` to write when they turn up. Against
         // the invitation rather than the room, so inviting a second
         // person does not overwrite the first person's name.
-        if let Some(invitee) = invitee.map(str::trim).filter(|n| !n.is_empty()) {
-            let parsed = crate::network::invite::validate_invite_token(&token)
-                .map_err(|e| format!("minted an invite this machine cannot read back: {e}"))?;
-            if let Ok(mut pending) = self.pending_invites.lock() {
-                prune_expired(&mut pending);
-                pending.insert(
-                    parsed.invite_id,
-                    PendingInvite {
-                        room,
-                        name: invitee.to_string(),
-                        expires_unix_seconds: parsed.expiry_unix_seconds,
-                    },
-                );
-            }
+        if let Some(invitee) = invitee.map(str::trim).filter(|n| !n.is_empty())
+            && let Ok(mut pending) = self.pending_invites.lock()
+        {
+            prune_expired(&mut pending);
+            pending.insert(
+                invite_id,
+                PendingInvite {
+                    room,
+                    name: invitee.to_string(),
+                    expires_unix_seconds: now_unix_seconds()
+                        .saturating_add(expiry_seconds_from_now),
+                },
+            );
         }
         Ok(token)
     }
@@ -1598,23 +1597,6 @@ impl ShellNetwork {
         }
     }
 
-    /// Record which invitation got this machine into `room`, so every
-    /// request it sends about that room can say so.
-    ///
-    /// A host cannot tell two of its own outstanding invitations apart
-    /// from the room they share; the only thing that distinguishes them
-    /// is the id inside the token, and the only party that can quote it
-    /// back is whoever redeemed it. Storing it here is what makes the
-    /// quoting possible.
-    fn note_redeemed_invite(&self, room: crate::shell::state::RoomId, token: &str) {
-        let Ok(parsed) = crate::network::invite::validate_invite_token(token) else {
-            return;
-        };
-        if let Ok(mut redeemed) = self.redeemed_invites.lock() {
-            redeemed.insert(room, parsed.invite_id);
-        }
-    }
-
     /// Publish messages the replica produced, stamping every sync
     /// request with the invitation that got this machine into the room
     /// it names.
@@ -1684,15 +1666,19 @@ impl ShellNetwork {
         // to. `validate_invite_token` has already run inside
         // `accept_invite_into`, so re-reading the token here cannot let
         // an unverified address through.
-        if let Ok(parsed) = crate::network::invite::validate_invite_token(token)
-            && let Ok(addr) = parsed.owner_addr.parse::<libp2p::Multiaddr>()
-        {
-            let _ = self.cmd_tx.try_send(NetCmd::Connect { addr });
+        if let Ok(parsed) = crate::network::invite::validate_invite_token(token) {
+            if let Ok(addr) = parsed.owner_addr.parse::<libp2p::Multiaddr>() {
+                let _ = self.cmd_tx.try_send(NetCmd::Connect { addr });
+            }
+            // Which invitation this was, recorded before the first
+            // request goes out — so the very first thing the host hears
+            // from this machine already says which of its outstanding
+            // promises just came due. The host has two people invited
+            // and one room; without this it cannot tell which arrived.
+            if let Ok(mut redeemed) = self.redeemed_invites.lock() {
+                redeemed.insert(room, parsed.invite_id);
+            }
         }
-        // Before the first request goes out, so the very first thing
-        // the host hears from this machine already says which
-        // invitation it is answering.
-        self.note_redeemed_invite(room, token);
         replica.request_sync();
         let outgoing = replica.drain_outgoing();
         drop(replica);

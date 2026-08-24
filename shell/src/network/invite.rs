@@ -170,6 +170,26 @@ pub fn make_invite_token(
     owner_addr: &str,
     expiry_seconds_from_now: u64,
 ) -> std::io::Result<String> {
+    make_invite(keypair, workspace, owner_addr, expiry_seconds_from_now).map(|(token, _)| token)
+}
+
+/// [`make_invite_token`], handing back the invitation's id alongside
+/// the token.
+///
+/// The id is what the issuer files its promise under
+/// (`crate::shell::network::ShellNetwork::pending_invites`), so it has
+/// to leave this function rather than be read back out of the token
+/// afterwards. Re-parsing to recover it would make parking a name
+/// depend on a validation that can legitimately refuse — a token minted
+/// with a zero expiry is already spent by the time it is re-read — and
+/// an invitation that mints fine but silently loses its name is the
+/// failure this id exists to prevent.
+pub fn make_invite(
+    keypair: &libp2p::identity::Keypair,
+    workspace: &Workspace,
+    owner_addr: &str,
+    expiry_seconds_from_now: u64,
+) -> std::io::Result<(String, String)> {
     if workspace.room.is_nil() {
         return Err(std::io::Error::other(
             "workspace has no room identity to invite into",
@@ -209,7 +229,7 @@ pub fn make_invite_token(
         signature,
     };
     let json = serde_json::to_vec(&token).map_err(std::io::Error::other)?;
-    Ok(B64.encode(&json))
+    Ok((B64.encode(&json), token.invite_id))
 }
 
 /// Decode and verify an invite token issued by [`make_invite_token`].
