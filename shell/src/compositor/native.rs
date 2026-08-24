@@ -92,6 +92,7 @@ use crate::compositor::backend::{
 use crate::compositor::client_input;
 use crate::compositor::drag_feedback;
 use crate::compositor::foreign;
+use crate::compositor::snapshot_encode;
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
 use crate::compositor::lock_auth;
@@ -1151,7 +1152,20 @@ fn execute_planned_action(
             // so no event needs to flow through `dispatch_event`.
             apply_modifier_mask(ctx, *ctrl, *shift, *alt, *logo);
         }
-        PlannedAction::Snapshot { path } => {
+        PlannedAction::DrainSnapshots => {
+            // Only meaningful if something deferred; `get` rather than
+            // `get_or_init` so a drain never builds a pool just to find
+            // it empty.
+            if let Some(encoder) = SNAPSHOT_ENCODER.get() {
+                if !encoder.drain() {
+                    eprintln!(
+                        "nirios compositor: a deferred snapshot failed to write; \
+                         the frame directory is incomplete"
+                    );
+                }
+            }
+        }
+        PlannedAction::Snapshot { path, defer } => {
             // Re-paint the live scene into a fresh OffscreenRenderer
             // sized to the FrameBuilder's current viewport. We use
             // option 2 from the spec (re-render via OffscreenRenderer)
@@ -1189,7 +1203,7 @@ fn execute_planned_action(
                     pressed: s.client_input.buttons_down() > 0,
                 })
             });
-            write_snapshot_png(fb, path, pointer);
+            write_snapshot_png(fb, path, pointer, *defer);
         }
         PlannedAction::InvokeAction { provider, id, args } => {
             // Re-resolve rather than carrying a handle over from
@@ -1312,6 +1326,18 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
         | PlannedAction::SetGroupWidth { .. }
         | PlannedAction::MergeTabIntoGroup { .. }
         | PlannedAction::InvokeAction { .. } => {}
+        // Not swallowed, because it is not an input action and shows
+        // nothing: it waits for frames captured *before* the lock to
+        // finish being written, and answers only whether they did. The
+        // lock already stops new ones being taken, so letting the
+        // barrier through reveals no hidden chrome — while swallowing it
+        // would hand a caller a completed drain over files still being
+        // written.
+        PlannedAction::DrainSnapshots => {
+            if let Some(encoder) = SNAPSHOT_ENCODER.get() {
+                encoder.drain();
+            }
+        }
     }
 }
 
@@ -1353,6 +1379,23 @@ static SNAPSHOT_RENDERER: std::sync::OnceLock<
 static SNAPSHOT_RENDERERS_BUILT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// Threads that PNG-encode deferred snapshots, built on first use.
+///
+/// Lazy on purpose: a compositor nobody is filming never asks for a
+/// deferred snapshot, so it never pays for the threads. Several sessions
+/// run at once on this machine and a pool spawned per compositor at
+/// startup would be three pools sitting idle.
+///
+/// Process-wide for the same reason [`SNAPSHOT_RENDERER`] is — see
+/// `snapshot_encode` for what the pool does and why encoding does not
+/// belong on the event loop.
+static SNAPSHOT_ENCODER: std::sync::OnceLock<snapshot_encode::SnapshotEncoder> =
+    std::sync::OnceLock::new();
+
+fn snapshot_encoder() -> &'static snapshot_encode::SnapshotEncoder {
+    SNAPSHOT_ENCODER.get_or_init(snapshot_encode::SnapshotEncoder::new)
+}
+
 /// What the pointer looks like this frame: where it is, whether its
 /// button is down, and what it is carrying if anything.
 ///
@@ -1375,12 +1418,26 @@ struct PointerPaint {
 /// Split out of `execute_planned_action` so unit tests can exercise
 /// the snapshot path against a hand-built `FrameBuilder` without going
 /// through `PlannedAction` dispatch.
+/// Capture the live scene and put it on disk as a PNG.
+///
+/// `defer` splits the work in two. The capture — paint, render, read the
+/// pixels back — has to happen here, on the loop that owns the widget
+/// tree and the renderer. The encode does not: it is `deflate` over a
+/// flat buffer and needs nothing from the compositor.
+///
+/// With `defer` false the encode happens inline and the file is on disk
+/// when this returns, which is the contract every existing harness was
+/// written against. With it true the buffer goes to
+/// [`snapshot_encode::SnapshotEncoder`] and the loop is free again after
+/// the readback — measured at 1920x1014, that is ~6.5 ms of loop time
+/// instead of ~31 ms. The caller then owes a `drain_snapshots` before it
+/// treats the directory as complete.
 fn write_snapshot_png(
     fb: &mut FrameBuilder,
     path: &std::path::Path,
     pointer: Option<PointerPaint>,
+    defer: bool,
 ) {
-    use std::io::Write;
     let (w, h) = fb.viewport();
     let (w, h) = (w as u32, h as u32);
     if w == 0 || h == 0 {
@@ -1389,6 +1446,7 @@ fn write_snapshot_png(
         );
         return;
     }
+    let t_begin = std::time::Instant::now();
     let mut scene = fb.paint();
     if let Some(p) = pointer {
         let theme = fb.theme().clone();
@@ -1402,6 +1460,7 @@ fn write_snapshot_png(
         );
     }
     let scene = scene;
+    let t_painted = std::time::Instant::now();
     // The renderer is kept between snapshots and rebuilt only when the
     // viewport changes size.
     //
@@ -1457,34 +1516,30 @@ fn write_snapshot_png(
     // GPU state, and holding the lock across it would serialise
     // concurrent snapshots on file I/O for nothing.
     drop(slot);
-    let file = match std::fs::File::create(path) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("nirios compositor: test_control snapshot: create {path:?}: {e}");
-            return;
-        }
-    };
-    let mut writer = std::io::BufWriter::new(file);
-    let mut encoder = png::Encoder::new(&mut writer, w, h);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut png_writer = match encoder.write_header() {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("nirios compositor: test_control snapshot: png header {path:?}: {e}");
-            return;
-        }
-    };
-    if let Err(e) = png_writer.write_image_data(&rgba) {
-        eprintln!("nirios compositor: test_control snapshot: png write {path:?}: {e}");
-        return;
+    let t_rendered = std::time::Instant::now();
+    if defer {
+        snapshot_encoder().submit(rgba, w, h, path.to_path_buf());
+    } else if let Err(e) = snapshot_encode::encode_png(&rgba, w, h, path) {
+        eprintln!("nirios compositor: test_control snapshot: {path:?}: {e}");
     }
-    // Drop the PNG writer first so the underlying BufWriter holds the
-    // last bytes; then flush explicitly. Without this, a swiftly-following
-    // assertion on file size could race against a still-buffered tail.
-    drop(png_writer);
-    if let Err(e) = writer.flush() {
-        eprintln!("nirios compositor: test_control snapshot: flush {path:?}: {e}");
+    // Where a snapshot's time went, per capture (`QOS_SNAPSHOT_TIMING=1`).
+    //
+    // This is how the split above was established rather than guessed:
+    // the frame rate of a recording is the snapshot's cost, and without
+    // a per-phase number a slow take is indistinguishable between a slow
+    // renderer, a slow encode and a busy machine. Free when unset.
+    if std::env::var_os("QOS_SNAPSHOT_TIMING").is_some() {
+        let t_end = std::time::Instant::now();
+        eprintln!(
+            "snapshot-timing paint={:.1}ms render={:.1}ms encode={:.1}ms total={:.1}ms {}x{} deferred={}",
+            (t_painted - t_begin).as_secs_f64() * 1e3,
+            (t_rendered - t_painted).as_secs_f64() * 1e3,
+            (t_end - t_rendered).as_secs_f64() * 1e3,
+            (t_end - t_begin).as_secs_f64() * 1e3,
+            w,
+            h,
+            defer,
+        );
     }
 }
 
@@ -1671,7 +1726,21 @@ fn pump_test_control_conn(
                 // structural layout; without a relayout here the
                 // next command sees stale rects from the previous
                 // frame.
-                if !actions.is_empty() {
+                // Snapshots and drains are readers: they plan an action
+                // because that is how work reaches the executor, but they
+                // change no widget, no chrome and no tree. Relaying out
+                // after one re-does the layout this command already
+                // settled on the way in, and calling it input starts a
+                // latency clock for something nobody typed. During a
+                // recording that is a second layout pass per frame, on
+                // the loop, for a command whose whole purpose is to
+                // observe without disturbing.
+                if actions.iter().any(|a| {
+                    !matches!(
+                        a,
+                        PlannedAction::Snapshot { .. } | PlannedAction::DrainSnapshots
+                    )
+                }) {
                     injected_input = true;
                     frame_builder.relayout();
                 }
@@ -2855,6 +2924,23 @@ pub fn run() -> ! {
         eprintln!("nirios compositor: {}={:?}; will exit cleanly after that", metrics::RUN_SECONDS_ENV, d);
         Instant::now() + d
     });
+    // While a control-socket caller is driving, the loop parks in short
+    // hops instead of sleeping to the next presentation deadline.
+    //
+    // The socket is polled from this loop body rather than registered as
+    // an event source, so nothing about a command arriving can wake the
+    // park it arrives during: the loop notices on its next pass, up to a
+    // whole interval later. That was ~18 ms of every round trip, and for
+    // a recording — which is one command per frame — it set the frame
+    // rate as surely as the work did.
+    //
+    // Armed by traffic rather than by the socket existing, so a session
+    // nobody is driving keeps its ordinary cadence instead of spinning.
+    // Only a development build reaches any of this: the socket is
+    // compiled out of shipped builds (`compositor::dev_env`).
+    const TEST_CONTROL_PARK: Duration = Duration::from_millis(2);
+    const TEST_CONTROL_ACTIVE_FOR: Duration = Duration::from_millis(500);
+    let mut last_test_control: Option<Instant> = None;
     let mut stats_since = Instant::now();
     let (mut frames_total, mut frames_painted) = (0u32, 0u32);
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
@@ -3787,6 +3873,9 @@ pub fn run() -> ! {
                     metrics.note_input(Instant::now());
                 }
             }
+            if !test_control_conns.is_empty() {
+                last_test_control = Some(Instant::now());
+            }
             test_control_conns.retain(|c| !c.closed);
         }
         let t_testctl_done = iter_t0.elapsed();
@@ -3836,8 +3925,13 @@ pub fn run() -> ! {
         // that wakes the loop mid-interval (the render thread retiring a
         // frame, protocol traffic, input) must not be able to push the
         // next frame past its deadline.
-        let park = frame_clock.park(Instant::now());
         let t_sleep_start = Instant::now();
+        let mut park = frame_clock.park(t_sleep_start);
+        if last_test_control
+            .is_some_and(|t| t_sleep_start.duration_since(t) < TEST_CONTROL_ACTIVE_FOR)
+        {
+            park = park.min(TEST_CONTROL_PARK);
+        }
         if let Err(err) = event_loop.dispatch(park, &mut state) {
             eprintln!("nirios compositor: event loop dispatch error: {err}");
             break;
@@ -4305,7 +4399,10 @@ mod tests {
         let mut fb = FrameBuilder::new((640, 360));
         let mut ctx = TestControlCtx::new();
         execute_planned_action(
-            &PlannedAction::Snapshot { path: path.clone() },
+            &PlannedAction::Snapshot {
+                path: path.clone(),
+                defer: false,
+            },
             &mut fb,
             &mut ctx,
         );
@@ -4358,7 +4455,10 @@ mod tests {
             let mut fb = FrameBuilder::new((640, 360));
             let mut ctx = TestControlCtx::new();
             execute_planned_action(
-                &PlannedAction::Snapshot { path: path.clone() },
+                &PlannedAction::Snapshot {
+                    path: path.clone(),
+                    defer: false,
+                },
                 &mut fb,
                 &mut ctx,
             );
@@ -4391,6 +4491,45 @@ mod tests {
         );
     }
 
+    /// The deferred path writes the same file, just not on this thread.
+    ///
+    /// `defer` exists to take encoding off the compositor's event loop,
+    /// and the way that could go wrong without anyone noticing is for
+    /// the frame to be captured and then never written — a recording
+    /// that runs at a lovely frame rate and produces fewer files than
+    /// frames. So the assertion is on the file, after the drain that the
+    /// wire's `drain_snapshots` performs.
+    #[test]
+    #[serial_test::serial(snapshot_renderer)]
+    fn a_deferred_snapshot_is_on_disk_once_drained() {
+        let tmpdir = tempfile::tempdir().expect("create tempdir for snapshot test");
+        let path = tmpdir.path().join("deferred.png");
+        let mut fb = FrameBuilder::new((640, 360));
+        let mut ctx = TestControlCtx::new();
+        execute_planned_action(
+            &PlannedAction::Snapshot {
+                path: path.clone(),
+                defer: true,
+            },
+            &mut fb,
+            &mut ctx,
+        );
+        execute_planned_action(&PlannedAction::DrainSnapshots, &mut fb, &mut ctx);
+        // Same soft skip as the synchronous test: with no wgpu adapter
+        // there is no buffer to encode and nothing was ever submitted.
+        if SNAPSHOT_RENDERER
+            .get()
+            .and_then(|c| c.lock().ok().map(|s| s.is_none()))
+            .unwrap_or(true)
+        {
+            eprintln!("a_deferred_snapshot_is_on_disk_once_drained: no wgpu adapter, skipping");
+            return;
+        }
+        let meta = std::fs::metadata(&path)
+            .unwrap_or_else(|e| panic!("deferred snapshot missing after drain: {e}"));
+        assert!(meta.len() > 0, "deferred snapshot is empty after drain");
+    }
+
     /// Hostile path inputs — the executor must log the error and
     /// return without panicking. The dispatcher's `Ok` response was
     /// already on the wire; the compositor must not die because a
@@ -4406,6 +4545,7 @@ mod tests {
         execute_planned_action(
             &PlannedAction::Snapshot {
                 path: std::path::PathBuf::from("/nonexistent/dir/x.png"),
+                defer: false,
             },
             &mut fb,
             &mut ctx,

@@ -1519,7 +1519,7 @@ class Session:
 
     # -- painting ----------------------------------------------------
 
-    def snapshot(self, path: str) -> str:
+    def snapshot(self, path: str, defer: bool = False) -> str:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         # Its own timeout, and a generous one. `snapshot` re-renders the
         # scene and PNG-encodes it on the compositor's event loop, so the
@@ -1527,9 +1527,23 @@ class Session:
         # build on a machine that is busy compiling something else can sit
         # here for a minute. Timing out would report a contended box as a
         # broken compositor.
-        ok(call(self.sock, {"op": "snapshot", "path": path},
+        ok(call(self.sock, {"op": "snapshot", "path": path, "defer": defer},
                 timeout=SNAPSHOT_TIMEOUT_S))
         return path
+
+    def drain_snapshots(self) -> None:
+        """Wait for every deferred frame to reach the disk.
+
+        A deferred snapshot returns once the pixels are captured; the
+        PNG is encoded and written off the compositor's event loop,
+        which is what makes filming cheap enough to be worth doing at
+        thirty frames a second. The frames are therefore *not* all on
+        disk when the last one is taken, and the difference is a
+        recording that composes fewer frames than it captured. This is
+        the barrier that closes that gap, and the recorder owes it
+        before anything reads the directory.
+        """
+        ok(call(self.sock, {"op": "drain_snapshots"}, timeout=SNAPSHOT_TIMEOUT_S))
 
     def settle(self, seconds: float = 0.5) -> None:
         """Let the compositor paint."""
@@ -1659,24 +1673,51 @@ FONTS_BOLD = (
 ) + FONTS_REGULAR
 
 # A snapshot blocks the session it is taken from, so the capture loop
-# always yields this long between frames even when asked for "as fast as
-# possible". Without it the demo is competing with its own camera for
+# yields this long between frames even when asked for "as fast as
+# possible". Without some gap the demo competes with its own camera for
 # every reply, and the waits it depends on start timing out. Only one
-# session is sampled now, but it is also the session the demo is
-# driving, so the yield matters more rather than less.
-MIN_CAPTURE_GAP_S = 0.04
+# session is sampled, but it is also the session the demo is driving, so
+# the hand-back is not optional.
+#
+# It used to be 0.04, and that was the single largest term in the frame
+# period — larger than taking the picture. It was sized for a snapshot
+# that PNG-encoded on the compositor's event loop, which cost ~31 ms of
+# loop time and left the filmed session doing almost nothing else.
+# Frames are deferred now: the compositor hands the pixels to encoder
+# threads and is free again after the readback, ~10 ms of a ~28 ms round
+# trip. The loop is idle around two thirds of the time with no gap at
+# all, so the gap that made sense against 78% occupancy is now most of
+# the reason the film was slow.
+MIN_CAPTURE_GAP_S = 0.004
+# The same two numbers for a recorder that is *not* deferring, where a
+# snapshot occupies the loop for its whole cost. These are what the pair
+# above used to be, and they are kept rather than deleted because
+# `--record-sync` still needs them: pacing a synchronous camera as if it
+# were a deferred one is how you starve the demo you are filming.
+SYNC_MIN_CAPTURE_GAP_S = 0.04
 # …and on top of the floor, this share of whatever the last snapshot
-# actually cost. A fixed gap is the wrong shape for a cost that moves by
-# a factor of twenty between an unoptimised build and an optimised one
-# with a warm renderer: too small and the demo queues behind its own
-# camera, too large and a fast compositor sits idle between frames.
-# A share holds the duty cycle steady at either end.
-CAPTURE_YIELD = 0.25
-# What one 1920x1080 snapshot costs an idle machine with this build, in
-# ms. Not a threshold anything is enforced against — the recording is
+# actually cost. A fixed gap is the wrong shape for a cost that moves
+# between an unoptimised build and an optimised one with a warm
+# renderer: too small and the demo queues behind its own camera, too
+# large and a fast compositor sits idle between frames. A share holds
+# the duty cycle steady at either end.
+#
+# Lowered with the floor and for the same reason. The share is taken
+# against the round trip, but only about a third of that round trip is
+# loop time now, so 0.25 was handing back roughly three quarters of the
+# cost of a capture on top of a cost the loop no longer pays.
+CAPTURE_YIELD = 0.12
+SYNC_CAPTURE_YIELD = 0.25
+# What one snapshot costs an idle machine with this build, round trip,
+# in ms. Not a threshold anything is enforced against — the recording is
 # whatever it turns out to be — only the number the report compares
 # against so a contended run says so instead of looking like a slow qOS.
-SNAPSHOT_BUDGET_MS = 150.0
+#
+# Measured at 1920x1014 with frames deferred: ~28 ms back to back, of
+# which ~10 ms is compositor loop time and the rest is the socket round
+# trip. The old figure here was 150, for the days when the event loop
+# also did the encoding.
+SNAPSHOT_BUDGET_MS = 45.0
 
 
 def _pick_font(candidates: tuple[str, ...]) -> str:
@@ -1711,13 +1752,23 @@ class Recorder:
     def __init__(self, sessions: list[Session], directory: str,
                  interval: float, dwell: float = 0.0,
                  cut_dwell: float = 0.0, max_hold: float = 0.0,
-                 narrate: str | None = None) -> None:
+                 narrate: str | None = None, defer: bool = True) -> None:
         # PulseAudio/PipeWire source to record the spoken narration from,
         # or None for a silent take. `"default"` follows the desktop's own
         # sound settings, so changing headset before a take needs nothing
         # here.
         self.narrate = narrate
         self._audio: subprocess.Popen | None = None
+        # Whether a frame's PNG encode happens off the compositor's
+        # event loop. On, because encoding is ~79% of a snapshot and
+        # needs nothing the compositor owns, so leaving it on the loop
+        # costs the film most of its frame rate. Off is the older,
+        # simpler contract — each frame is on disk before the next is
+        # asked for — kept because it is the honest comparison when a
+        # recording looks wrong, and because a caller that wants to
+        # measure the camera itself should be able to remove the
+        # threads from the picture.
+        self.defer = defer
         self.sessions = sessions
         self.by_name = {s.name: s for s in sessions}
         self.dir = directory
@@ -1725,7 +1776,12 @@ class Recorder:
         # The share of the last snapshot's cost handed back to the
         # compositor before taking the next one. Raised, per beat,
         # around anything this film measures — see `easing`.
-        self.yield_share = CAPTURE_YIELD
+        self.yield_share = CAPTURE_YIELD if defer else SYNC_CAPTURE_YIELD
+        # A synchronous snapshot really does occupy the loop for its
+        # whole cost, so it needs the larger hand-back the deferred one
+        # no longer does. The floor follows the cost model rather than
+        # being a number that outlived it.
+        self.min_gap = MIN_CAPTURE_GAP_S if defer else SYNC_MIN_CAPTURE_GAP_S
         self.dwell_s = dwell
         self.cut_dwell_s = cut_dwell
         # The longest one unchanged frame is shown for. See `_timeline`.
@@ -1779,7 +1835,7 @@ class Recorder:
             held = self._holding
             rel = f"frames/{index:06d}.png"
             try:
-                s.snapshot(os.path.join(self.dir, rel))
+                s.snapshot(os.path.join(self.dir, rel), defer=self.defer)
             except Exception as exc:  # noqa: BLE001
                 # A session going quiet costs its own frames and nothing
                 # else: the camera keeps rolling, and a later cut to a
@@ -1796,7 +1852,7 @@ class Recorder:
             self.blocked.append(took)
             self.frames.append((began, rel, s.name, held))
             index += 1
-            self._stop.wait(max(MIN_CAPTURE_GAP_S, self.yield_share * took,
+            self._stop.wait(max(self.min_gap, self.yield_share * took,
                                 self.interval - took))
 
     # -- getting out of the way --------------------------------------
@@ -1805,13 +1861,19 @@ class Recorder:
     def easing(self, share: float):
         """Take the camera off the compositor's back for a moment.
 
-        A snapshot of a 1920x1080 surface costs this build ~0.14s, and
-        the pacing floor is 0.04s, so the filmed compositor spends about
-        78% of its event loop inside `snapshot`. That is fine for
-        watching, and wrong for anything the demo *measures*: an install
-        timed through the camera came out at 21s against a real median
-        of 7.8s, and a viewer with a stopwatch would have read the
-        camera's overhead as the product's speed.
+        This used to be the difference between a watchable film and an
+        honest number. A snapshot cost the filmed compositor ~31 ms of
+        event loop, against a 0.04s pacing floor, so it spent roughly
+        78% of its loop inside `snapshot`: an install timed through the
+        camera came out at 21s against a real median of 7.8s, and a
+        viewer with a stopwatch would have read the camera's overhead as
+        the product's speed.
+
+        Deferring the encode took that to ~10 ms of loop time per frame,
+        so the camera no longer dominates a beat it is filming. The
+        easing stays because the margin is smaller than the difference
+        it was hiding, and a measured beat should not have to trust
+        that.
 
         So a measured beat asks for a larger share of the loop to be
         left alone. It still films — a beat nobody can see is worse than
@@ -1983,6 +2045,32 @@ class Recorder:
             self._thread.join(timeout=30)
             self._thread = None
         self.stopped_at = time.time()
+        # Frames are encoded off the compositor's event loop, so the last
+        # of them are still being written when the camera stops. Every
+        # session that was filmed gets the barrier, because the count
+        # this recorder reports and the files `compose` reads have to be
+        # the same set — a race here is a film that is quietly missing
+        # its final second.
+        filmed = {name for _t, _rel, name, _held in self.frames} if self.defer else set()
+        for s in self.sessions:
+            if s.name not in filmed:
+                continue
+            try:
+                s.drain_snapshots()
+            except Exception as exc:  # noqa: BLE001
+                self.errors.append(
+                    f"{s.name}: draining deferred frames failed: "
+                    f"{type(exc).__name__}: {exc}")
+        # What was promised against what arrived. A deferred write that
+        # failed is reported by the compositor, but a frame that never
+        # reached the disk at all would otherwise only show up as a
+        # shorter video than the run described.
+        missing = [rel for _t, rel, _n, _h in self.frames
+                   if not os.path.exists(os.path.join(self.dir, rel))]
+        if missing:
+            self.errors.append(
+                f"{len(missing)} captured frame(s) never reached the disk, "
+                f"first {missing[0]}")
         self._stop_narration()
 
     # -- narration ---------------------------------------------------
@@ -6921,6 +7009,13 @@ def main() -> int:
                          f"{RECORD_SIZE}): the video's own size, so a frame "
                          f"goes in with nothing resampled. Overridden by an "
                          f"explicit --size.")
+    ap.add_argument("--record-sync", action="store_true",
+                    help="encode each frame before asking for the next, on the "
+                         "compositor's event loop. The old capture path: "
+                         "simpler to reason about, and roughly a third of the "
+                         "frame rate, because PNG encoding is most of a "
+                         "snapshot and the loop cannot do anything else while "
+                         "it runs. Kept for comparing the two honestly.")
     ap.add_argument("--record-interval", type=float, default=0.0, metavar="S",
                     help="target seconds between snapshots; 0 means as fast "
                          "as the compositor sustains")
@@ -7179,7 +7274,8 @@ def main() -> int:
         os.makedirs(record_dir, exist_ok=True)
         RECORDER = Recorder(sessions, record_dir, args.record_interval,
                             args.record_dwell, args.record_cut_dwell,
-                            args.record_max_hold)
+                            args.record_max_hold,
+                            defer=not args.record_sync)
         print(f"recording to:  {record_dir}")
 
     started = time.time()

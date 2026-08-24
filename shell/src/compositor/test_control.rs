@@ -159,7 +159,34 @@ pub enum Command {
     /// disk full, …) is reported via the executor's stderr and the
     /// response from the dispatcher remains `Ok` — proper error
     /// responses are a Phase 5 follow-up.
-    Snapshot { path: String },
+    Snapshot {
+        path: String,
+        /// Return as soon as the pixels have been captured, leaving the
+        /// PNG encode and write to happen off the compositor's event
+        /// loop. The file appears shortly afterwards; a caller that
+        /// needs to know when every deferred frame is on disk asks for
+        /// [`Command::DrainSnapshots`].
+        ///
+        /// Defaults to `false`, so a caller that says nothing keeps the
+        /// original contract: when the reply arrives, the file is
+        /// written. Every existing harness relies on that, and several
+        /// assert on the file the moment the call returns.
+        ///
+        /// A recording is the case this exists for. Encoding is ~79% of
+        /// a snapshot and needs nothing from the compositor, so a filmed
+        /// session that waits for it spends four fifths of its capture
+        /// budget on work the loop should never have been holding.
+        #[serde(default)]
+        defer: bool,
+    },
+    /// Block until every deferred snapshot has been written, then
+    /// report whether all of them succeeded.
+    ///
+    /// The other half of `snapshot`'s `defer`. Returns
+    /// [`Response::Drained`] with `ok: false` if any deferred write
+    /// failed since the compositor started — a caller assembling a
+    /// video wants that before it treats the directory as complete.
+    DrainSnapshots,
     /// Snapshot the live shell state — the persisted [`WorkspaceTree`]
     /// plus a structured view of [`ChromeState`] (overlays, search
     /// scope, ws-settings tab, revision counter, …). Read-only — no
@@ -656,7 +683,11 @@ pub enum PlannedAction {
     /// `String` so the executor doesn't have to re-convert at every
     /// invocation. Failures are logged via `eprintln!` — they don't
     /// propagate to the wire response (Phase 5 will).
-    Snapshot { path: PathBuf },
+    Snapshot { path: PathBuf, defer: bool },
+    /// Block until every deferred snapshot has been written. Planned
+    /// rather than answered in `dispatch_command` because the encoder
+    /// pool lives with the executor, not with the wire.
+    DrainSnapshots,
     /// Give every live window group the same share of its strip, in
     /// permille. Applied against the widget tree because that is where
     /// the laid-out width lives.
@@ -1029,7 +1060,8 @@ pub fn dispatch_command<S: ControlState>(
                 logo: *logo,
             }],
         ),
-        Command::Snapshot { path } => {
+        Command::DrainSnapshots => (Response::Ok { frame: 0 }, vec![PlannedAction::DrainSnapshots]),
+        Command::Snapshot { path, defer } => {
             // Pre-validate empty paths — `File::create("")` would
             // fail with a confusing `ENOENT` message, and the harness
             // wants a stable `invalid_path` code it can branch on.
@@ -1049,6 +1081,7 @@ pub fn dispatch_command<S: ControlState>(
                     Response::Ok { frame: 0 },
                     vec![PlannedAction::Snapshot {
                         path: PathBuf::from(path),
+                        defer: *defer,
                     }],
                 )
             }
@@ -1867,6 +1900,7 @@ mod tests {
         let (resp, actions) = dispatch_command(
             &Command::Snapshot {
                 path: "/tmp/x.png".to_string(),
+                defer: false,
             },
             &state,
         );
@@ -1875,6 +1909,7 @@ mod tests {
             actions,
             vec![PlannedAction::Snapshot {
                 path: PathBuf::from("/tmp/x.png"),
+                defer: false,
             }]
         );
     }
@@ -1889,6 +1924,7 @@ mod tests {
         let (resp, actions) = dispatch_command(
             &Command::Snapshot {
                 path: String::new(),
+                defer: false,
             },
             &state,
         );
@@ -1909,9 +1945,56 @@ mod tests {
         assert_eq!(
             cmd,
             Command::Snapshot {
-                path: "/tmp/round.png".to_string()
+                path: "/tmp/round.png".to_string(),
+                defer: false,
             }
         );
+    }
+
+    /// A wire `snapshot` that says nothing about `defer` must keep the
+    /// original contract — the file is written before the reply. Every
+    /// existing harness depends on that, so the default is asserted on
+    /// the parsed command rather than left to the struct definition.
+    #[test]
+    fn parse_snapshot_defaults_to_waiting_for_the_write() {
+        let cmd = parse_command(r#"{"op":"snapshot","path":"/tmp/d.png"}"#).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Snapshot {
+                path: "/tmp/d.png".to_string(),
+                defer: false,
+            }
+        );
+    }
+
+    /// `defer` reaches the executor. A flag that parsed but was dropped
+    /// on the way to `PlannedAction` would look exactly like a working
+    /// deferral while still encoding on the event loop.
+    #[test]
+    fn deferred_snapshot_carries_the_flag_to_the_action() {
+        let state = StaticState::new(&[]);
+        let cmd = parse_command(r#"{"op":"snapshot","path":"/tmp/x.png","defer":true}"#).unwrap();
+        let (resp, actions) = dispatch_command(&cmd, &state);
+        assert!(matches!(resp, Response::Ok { .. }));
+        assert_eq!(
+            actions,
+            vec![PlannedAction::Snapshot {
+                path: PathBuf::from("/tmp/x.png"),
+                defer: true,
+            }]
+        );
+    }
+
+    /// `drain_snapshots` parses and plans the drain the deferred path
+    /// needs to be completable.
+    #[test]
+    fn drain_snapshots_plans_a_drain() {
+        let state = StaticState::new(&[]);
+        let cmd = parse_command(r#"{"op":"drain_snapshots"}"#).unwrap();
+        assert_eq!(cmd, Command::DrainSnapshots);
+        let (resp, actions) = dispatch_command(&cmd, &state);
+        assert!(matches!(resp, Response::Ok { .. }));
+        assert_eq!(actions, vec![PlannedAction::DrainSnapshots]);
     }
 
     // ===================================================================
