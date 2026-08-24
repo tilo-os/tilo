@@ -1971,7 +1971,51 @@ pub fn route_input(
                 }
                 return true;
             }
+            // Switching windows with the mouse alone.
+            //
+            // Two ways in, because one of them does not exist on every
+            // mouse: a sideways flick of a tilt/secondary wheel, and
+            // Super + the ordinary wheel. Both mean the same thing, both
+            // are one-handed, and neither needs the keyboard — which is
+            // what a demo needs, since a viewer cannot see a chord.
+            //
+            // This has to be decided here, in front of the forward. The
+            // shell already meant to promote a sideways wheel to a window
+            // switch, but it only did so when nothing else claimed the
+            // event, and that test runs against the shell's own widgets.
+            // Wayland gives a client no way to report that it ignored
+            // something, so once the axis is forwarded no answer comes
+            // back: the promotion could only fire where no application sat
+            // under the cursor. Everywhere a person actually points, it
+            // did nothing.
+            //
+            // Dominance is required of the sideways flick rather than mere
+            // presence, because a trackpad reports both axes on any
+            // diagonal drift and a vertical scroll that wobbles must stay a
+            // vertical scroll. Super+wheel needs no such test: the modifier
+            // is the statement of intent.
             if state.client_input.pointer_focus.is_some() {
+                let (dx, dy) = match *delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x as f64, y as f64),
+                    MouseScrollDelta::PixelDelta(p) => (p.x / 40.0, p.y / 40.0),
+                };
+                let sideways = dx.abs() > 0.5 && dx.abs() > dy.abs() * 2.0;
+                let with_super = mods.super_key() && dy.abs() > 0.5;
+                let step = if sideways {
+                    Some(if dx > 0.0 { 1 } else { -1 })
+                } else if with_super {
+                    Some(if dy > 0.0 { 1 } else { -1 })
+                } else {
+                    None
+                };
+                if let Some(dir) = step {
+                    let mut cycled = false;
+                    fb.with_chrome(|chrome| cycled = chrome.cycle_active_tab(dir));
+                    if cycled {
+                        sync_keyboard_focus(state, fb);
+                        return true;
+                    }
+                }
                 state.forward_client_pointer_axis(*delta)
             } else {
                 false
