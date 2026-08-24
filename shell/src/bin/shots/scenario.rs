@@ -287,6 +287,27 @@ pub enum Action {
         from_app: &'static str,
         to_app: &'static str,
     },
+    /// Record a crossing the way a participant **without windows** produces
+    /// one: by reporting it over the collaboration socket.
+    ///
+    /// [`Action::SeedActionFlight`] above is the other path — an application
+    /// on this machine offered the bytes, so the session watched the content
+    /// leave and worked the pair out for itself. An agent produces no such
+    /// offer, and the recording that matters is of *its* work, so this drives
+    /// the branch the agent actually takes.
+    ///
+    /// Not by calling the recording function. A real broker is bound on a
+    /// real socket, a client connects and announces itself the way the agent
+    /// does, and the frame the agent sends is written to it — so what starts
+    /// the motion is a frame decoded off a socket by the compositor's own
+    /// reader, with the actor resolved from the connection rather than
+    /// supplied. Everything downstream is the live code either way.
+    ReportedActionFlight {
+        /// The application the content came from, and the one whose action
+        /// was addressed. Both are matched against the strip's real windows.
+        from_app: &'static str,
+        to_app: &'static str,
+    },
     /// Sample a crossing at fixed points along its curve, capturing each as
     /// `prefix-<ms>`.
     ///
@@ -748,6 +769,16 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                      content, or it is the same application as {to_app}"
                 );
             }
+            // `update` is what promotes a record into a crossing: it is the
+            // pass that can ask where each application's window is, and the
+            // one that starts the pan toward the destination.
+            driver.step_frames(1);
+            driver.relayout();
+        }
+        Action::ReportedActionFlight { from_app, to_app } => {
+            let png = flight_test_content();
+            let hash = qdoc::blobstore::put(&png);
+            report_flight_over_a_socket(&hash, from_app, to_app);
             // `update` is what promotes a record into a crossing: it is the
             // pass that can ask where each application's window is, and the
             // one that starts the pan toward the destination.
@@ -1267,6 +1298,86 @@ fn flight_test_content() -> Vec<u8> {
     }
     out
 }
+/// Bind the compositor's own broker, connect to it, and send the frame an
+/// agent sends when it has carried content from one application into another.
+///
+/// The point of doing it this way rather than calling the recording function
+/// is what sits in between: the frame is serialised, written to a socket,
+/// read back by the broker's reader thread, decoded, and attributed to the
+/// connection it arrived on. A capture made after all of that is a capture of
+/// the path the agent takes.
+///
+/// Panics rather than warns on every failure. A recording rig that quietly
+/// captured a desktop with nothing crossing it would produce frames that look
+/// like the feature is broken, and somebody would spend a day on the renderer.
+fn report_flight_over_a_socket(hash: &str, from_app: &str, to_app: &str) {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
+
+    let before = shell::shell::action_flight::pending_len();
+
+    // Short, because an AF_UNIX path over about 108 bytes cannot be bound and
+    // the failure reads as something else entirely.
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("qos-shots");
+    std::fs::create_dir_all(&dir).expect("a directory to bind the broker socket in");
+    let sock = dir.join(format!("flight-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&sock);
+
+    let broker = shell::shell::collab_broker::spawn_full(sock.clone(), None, None)
+        .expect("the broker binds its socket");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut stream = loop {
+        match UnixStream::connect(&sock) {
+            Ok(s) => break s,
+            Err(e) => {
+                assert!(Instant::now() < deadline, "the broker never bound {sock:?}: {e}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    };
+
+    let mut send = |req: &ui::collaboration::CollabRequest| {
+        let body = serde_json::to_vec(req).expect("encode the frame");
+        stream
+            .write_all(&(body.len() as u32).to_le_bytes())
+            .and_then(|_| stream.write_all(&body))
+            .expect("write the frame to the broker");
+    };
+    // Announced the way the agent announces: no app id, so the connection is
+    // the room's rather than one application's, and a handle, which is what
+    // the session resolves the crossing's actor from when the room has no
+    // label of its own for the connection.
+    send(&ui::collaboration::CollabRequest::Hello {
+        app_id: String::new(),
+        cluster_id: uuid::Uuid::new_v4(),
+        record: None,
+        handle: Some("Claude".to_string()),
+    });
+    send(&ui::collaboration::CollabRequest::CarriedContent {
+        hash: hash.to_string(),
+        from_app: from_app.to_string(),
+        into_app: to_app.to_string(),
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while shell::shell::action_flight::pending_len() == before {
+        assert!(
+            Instant::now() < deadline,
+            "the broker read the report and recorded no crossing from {from_app} \
+             into {to_app}; there is nothing for the next frames to draw",
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    drop(broker);
+    let _ = std::fs::remove_file(&sock);
+}
+
 pub fn catalogue() -> Vec<Scenario> {
 
     // Two applications side by side and an object carried from one into
@@ -1335,6 +1446,43 @@ pub fn catalogue() -> Vec<Scenario> {
             Action::SampleActionFlight {
                 prefix: "offscreen",
                 at_ms: &[0, 180, 360, 540, 660],
+            },
+        ],
+    });
+    // The same crossing, started the way the agent starts one: a frame off
+    // the collaboration socket rather than an offer this session watched.
+    //
+    // Worth capturing separately from `action-flight` above because the two
+    // reach the drawing code by different routes and only one of them is the
+    // film's. There, an application on this machine handed the bytes over and
+    // the session paired them itself. Here nothing did — the participant that
+    // did the work has no windows, no sandbox to push content out of, and one
+    // socket — so the report is the only thing that says a crossing happened
+    // at all. If that path is broken these frames show a desktop with nothing
+    // moving on it, which is precisely what beat five looks like today.
+    out.push(Scenario {
+        name: "agent-action-flight",
+        description: "an object carried between two applications by a \
+                      participant with no windows, reported over the \
+                      collaboration socket the way the agent reports it",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::OpenWindow { app_id: "dev.qos.photos", surface_id: 9301 },
+            Action::OpenWindow { app_id: "dev.qos.word-processor", surface_id: 9302 },
+            Action::SetWindowWidths(440),
+            Action::Wait(6),
+            Action::Relayout,
+            Action::SelectGroup(Some(0)),
+            Action::Wait(10),
+            Action::Relayout,
+            Action::Snapshot("agent-flight-before"),
+            Action::ReportedActionFlight {
+                from_app: "dev.qos.photos",
+                to_app: "dev.qos.word-processor",
+            },
+            Action::SampleActionFlight {
+                prefix: "agent-flight",
+                at_ms: &[0, 90, 180, 270, 360, 450, 540, 630],
             },
         ],
     });

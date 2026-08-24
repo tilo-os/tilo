@@ -784,6 +784,33 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
     };
     let snap = qdoc::model::materialize(doc, &c);
 
+    // Put a picture into the document itself, at the end of the body.
+    //
+    // The section-level `place-image` below anchors under a heading, and for
+    // a long time it was the only one — which made a document with no heading
+    // in it a document nothing could place a picture into. That is not an
+    // edge case: a document that has just been opened has no heading, and by
+    // the rule that applications start empty it is the *usual* state of one.
+    // A caller with a photograph and an open document then found the app
+    // exporting no way to put the first into the second, and the only remedy
+    // was to write a heading first, which is content nobody asked for.
+    //
+    // So the body is an anchor in its own right. `after` names the last block
+    // there is, and an empty body has none — which `insert_block` already
+    // reads as "append", the same answer as "at the end" in both cases.
+    let end_of_body = snap.blocks.last().map(|b| b.id.clone()).unwrap_or_default();
+    root = root.with_action(
+        ActionSpec::prompted_content(
+            "place-image",
+            "Place image",
+            "The image to place, by content hash",
+            "",
+            ExecutionLocus::ClientLocal,
+            move |arg| encode(&place_image_action(&end_of_body, arg.trim())),
+        )
+        .with_description("Put a picture at the end of the document"),
+    );
+
     // Images → a resource each, with a delete action.
     for b in snap.blocks.iter().filter(|b| b.kind == "image") {
         let child = Resource::new(
@@ -899,6 +926,15 @@ mod tests {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
             _ => panic!("expected an immediate action: {}", spec.id),
+        }
+    }
+
+    /// Build a prompted spec's action from the argument it would be given,
+    /// through the spec's own closure — the same call the palette makes.
+    fn prompted_with(spec: &ActionSpec, argument: &str) -> EncodedAction {
+        match &spec.input {
+            ActionInput::Prompted { build, .. } => build(argument),
+            _ => panic!("expected a prompted action: {}", spec.id),
         }
     }
 
@@ -1181,5 +1217,156 @@ mod tests {
         assert!(labels.iter().any(|l| l.contains("Insert table")), "{labels:?}");
         assert!(labels.iter().any(|l| l.contains("Delete image")), "{labels:?}");
         assert!(labels.iter().any(|l| l.contains("Delete table")), "{labels:?}");
+    }
+
+    /// A document nobody has written in yet is still somewhere a picture can
+    /// go.
+    ///
+    /// Placing an image used to be exported only under a heading, which made
+    /// the state a document is in when it is *opened* — no heading, because
+    /// applications start empty — the one state in which nothing could be put
+    /// into it. Somebody holding a photograph and an open document found the
+    /// app exporting no way to combine them, and the only way through was to
+    /// write a heading first, which is content nobody asked for.
+    #[test]
+    fn an_empty_document_still_exports_somewhere_to_put_a_picture() {
+        let mut state = ui::State::new();
+        let mut ed = crate::EditorDoc::bind(&mut state.doc, &state.root);
+        let _ = ed.edit(&mut state.doc);
+        assert!(
+            body_blocks(&state.doc).is_empty(),
+            "this test is about a document with nothing in it",
+        );
+
+        // No caret, because there is no block for one to be on.
+        let ctx = WpResourceCtx {
+            caret_block: String::new(),
+            caret_offset: 0,
+            target_blocks: Vec::new(),
+        };
+        let resources = provide_resources(&ctx, &state.doc);
+        assert_eq!(resources.len(), 1, "one document root");
+        let root = &resources[0];
+        let place = root
+            .actions
+            .iter()
+            .find(|a| a.id == "place-image")
+            .unwrap_or_else(|| {
+                panic!(
+                    "the document exports {:?}, none of which places a picture",
+                    root.actions.iter().map(|a| a.id.clone()).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            matches!(
+                place.input,
+                ActionInput::Prompted { collects: qos_actions::Collects::Content, .. }
+            ),
+            "placing an image collects content — a hash nobody types and \
+             nothing can invent",
+        );
+    }
+
+    /// And it lands where it says: an empty body has no block to sit after,
+    /// so the anchor is the empty one, which `insert_block` reads as "append"
+    /// — the only place there is in a document with nothing in it.
+    ///
+    /// Asserted against the builder rather than by dispatching, the way this
+    /// file already pins `insert-table`: the encoded payload *is* the anchor,
+    /// so an equal payload is the anchor being right, and the test needs no
+    /// process-wide blob store to say so.
+    #[test]
+    fn the_empty_document_s_placement_anchors_on_the_end_of_the_body() {
+        let mut state = ui::State::new();
+        let mut ed = crate::EditorDoc::bind(&mut state.doc, &state.root);
+        let _ = ed.edit(&mut state.doc);
+        assert!(body_blocks(&state.doc).is_empty());
+
+        let ctx = WpResourceCtx {
+            caret_block: String::new(),
+            caret_offset: 0,
+            target_blocks: Vec::new(),
+        };
+        let resources = provide_resources(&ctx, &state.doc);
+        let place = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "place-image")
+            .expect("the document exports placing a picture");
+
+        let from_spec = prompted_with(place, "deadbeef");
+        let from_builder = encode(&place_image_action("", "deadbeef"));
+        assert_eq!(from_spec.type_id, from_builder.type_id);
+        assert_eq!(
+            from_spec.payload, from_builder.payload,
+            "an empty body anchors on no block at all, which appends",
+        );
+    }
+
+    /// With blocks already there, the document-level placement anchors on the
+    /// *last* of them — "at the end of the document" — rather than on the
+    /// caret, which is where the structural inserts beside it go.
+    #[test]
+    fn the_document_level_placement_anchors_on_the_end_not_the_caret() {
+        let (state, ids) = seeded("One\n\nTwo\n");
+        let blocks = body_blocks(&state.doc);
+        let last = blocks.last().expect("two paragraphs").id.clone();
+        assert_ne!(last, ids[0], "the caret block is not the last one here");
+
+        let ctx = WpResourceCtx {
+            caret_block: ids[0].clone(),
+            caret_offset: 0,
+            target_blocks: vec![ids[0].clone()],
+        };
+        let resources = provide_resources(&ctx, &state.doc);
+        let place = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "place-image")
+            .expect("the document exports placing a picture");
+
+        let from_spec = prompted_with(place, "deadbeef");
+        assert_eq!(
+            from_spec.payload,
+            encode(&place_image_action(&last, "deadbeef")).payload,
+            "the document-level placement goes to the end of the body, not to \
+             wherever the caret happens to be",
+        );
+    }
+
+    /// The section-level placement is unchanged: under the heading it names.
+    /// Pinned because the document now exports an action of the same id, and
+    /// the two must not collapse into each other.
+    #[test]
+    fn a_heading_still_places_directly_beneath_itself() {
+        let (state, _) = seeded("# Section\n\nBody\n");
+        let blocks = body_blocks(&state.doc);
+        let heading = blocks
+            .iter()
+            .find(|b| b.kind == "heading")
+            .expect("the heading")
+            .id
+            .clone();
+        let ctx = WpResourceCtx {
+            caret_block: heading.clone(),
+            caret_offset: 0,
+            target_blocks: vec![heading.clone()],
+        };
+        let resources = provide_resources(&ctx, &state.doc);
+        let section = resources[0]
+            .children
+            .iter()
+            .find(|r| r.kind == "word_processor.section")
+            .expect("a section resource for the heading");
+        let place = section
+            .actions
+            .iter()
+            .find(|a| a.id == "place-image")
+            .expect("the section exports placing a picture below it");
+        assert_eq!(
+            prompted_with(place, "deadbeef").payload,
+            encode(&place_image_action(&heading, "deadbeef")).payload,
+            "a section still anchors on its own heading",
+        );
     }
 }

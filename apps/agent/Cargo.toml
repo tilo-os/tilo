@@ -57,6 +57,9 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 hex.workspace = true
+# The record of what crossed between two applications is process-wide, the
+# way the compositor reads it, so the tests that make one take turns.
+serial_test.workspace = true
 # The broker the compositor actually binds for an agent. The toolkit also
 # ships an in-process relay, but that one fans every frame to every peer and
 # enforces nothing, so a test on it proves neither the routing nor the gate a
