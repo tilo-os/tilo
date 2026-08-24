@@ -173,6 +173,18 @@ impl Theme {
         self.tokens.colors.on_surface(surface)
     }
 
+    /// [`Self::on_surface`] against a caller-chosen contrast floor —
+    /// what a caller drawing at the bottom of the type scale asks for.
+    /// Thin forwarder to [`crate::tokens::Colors::on_surface_at`], which
+    /// explains why the floor belongs to the caller.
+    pub fn on_surface_at(
+        &self,
+        surface: Color,
+        min_ratio: f64,
+    ) -> crate::tokens::colors::OnCard {
+        self.tokens.colors.on_surface_at(surface, min_ratio)
+    }
+
     /// The hairline that separates a window from the desktop behind it. Thin
     /// forwarder to [`crate::tokens::Colors::window_edge`], which explains why
     /// the edge is derived from the desktop ground rather than taken as a

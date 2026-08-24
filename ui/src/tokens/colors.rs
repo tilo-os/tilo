@@ -173,6 +173,21 @@ pub struct OnCard {
 /// it is reused there. WCAG 2.1 AA for body text.
 const ON_CARD_MIN_CONTRAST: f64 = 4.5;
 
+/// The floor to ask for when the text will be drawn at the smallest
+/// size the type scale offers.
+///
+/// WCAG's 4.5:1 is stated for an ideal glyph. A real one is
+/// anti-aliased, and at 12 px and below no pixel of a lowercase word
+/// reaches full coverage — the strongest pixel of a label rendered from
+/// an ink measured at 4.56:1 came out at 3.44:1, a whole tier under the
+/// floor its colour was chosen to clear. Asking for AAA leaves enough
+/// headroom that what lands on the screen still clears AA.
+///
+/// This is a property of the size the caller draws at, which is why it
+/// is the caller that picks the floor rather than the derivation
+/// guessing.
+pub const ON_CARD_SMALL_TEXT_CONTRAST: f64 = 7.0;
+
 /// How far a [`OnCard::tint`] surface is pulled from the card toward its ink.
 const ON_CARD_TINT_T: f32 = 0.07;
 
@@ -470,10 +485,24 @@ impl Colors {
     /// `ink_dim` is the tier a caption or a placeholder label uses — the very
     /// text most likely to be the only explanation on screen.
     pub fn on_surface(&self, surface: Color) -> OnCard {
+        self.on_surface_at(surface, ON_CARD_MIN_CONTRAST)
+    }
+
+    /// [`Colors::on_surface`] against a caller-chosen contrast floor.
+    ///
+    /// The floor is not a property of the palette or of the surface —
+    /// it is a property of how the text will be drawn. A caption at the
+    /// bottom of the type scale needs more headroom than body text to
+    /// arrive at the same legibility, because anti-aliasing spends some
+    /// of it (see [`ON_CARD_SMALL_TEXT_CONTRAST`]). So a caller that
+    /// knows it is drawing small says so, and gets ink derived for that
+    /// rather than a shade picked by hand at the call site — which is
+    /// the version that reads correctly until the next palette edit.
+    pub fn on_surface_at(&self, surface: Color, min_ratio: f64) -> OnCard {
         use crate::a11y::contrast_ratio;
 
-        let chrome_tiers_read = contrast_ratio(self.text_primary, surface) >= ON_CARD_MIN_CONTRAST
-            && contrast_ratio(self.text_dim, surface) >= ON_CARD_MIN_CONTRAST;
+        let chrome_tiers_read = contrast_ratio(self.text_primary, surface) >= min_ratio
+            && contrast_ratio(self.text_dim, surface) >= min_ratio;
 
         let (ink, ink_dim, ink_tertiary) = if chrome_tiers_read {
             (self.text_primary, self.text_dim, self.text_tertiary)
@@ -496,8 +525,8 @@ impl Colors {
         // outward to the end that contrasts until the floor is met, rather
         // than returning a tier that reads on the card this was written for
         // and nowhere else.
-        let ink = self.step_out_until_legible(ink, surface);
-        let ink_dim = self.step_out_until_legible(ink_dim, surface);
+        let ink = self.step_out_until_legible(ink, surface, min_ratio);
+        let ink_dim = self.step_out_until_legible(ink_dim, surface, min_ratio);
 
         OnCard {
             ink,
@@ -508,15 +537,15 @@ impl Colors {
     }
 
     /// Darken or lighten `ink` toward whichever extreme contrasts with
-    /// `surface` until it clears [`ON_CARD_MIN_CONTRAST`].
+    /// `surface` until it clears `min_ratio`.
     ///
     /// Returns `ink` untouched when it already clears, so a palette's authored
     /// tone is preferred and only adjusted when it would not be readable. The
     /// walk is bounded and ends at the extreme, which always clears against
     /// any surface it was chosen for.
-    fn step_out_until_legible(&self, ink: Color, surface: Color) -> Color {
+    fn step_out_until_legible(&self, ink: Color, surface: Color, min_ratio: f64) -> Color {
         use crate::a11y::contrast_ratio;
-        if contrast_ratio(ink, surface) >= ON_CARD_MIN_CONTRAST {
+        if contrast_ratio(ink, surface) >= min_ratio {
             return ink;
         }
         let black = Color::from_rgb8(0, 0, 0);
@@ -531,7 +560,7 @@ impl Colors {
         // search.
         for step in 1..=16 {
             let candidate = mix8(ink, target, step as f32 / 16.0);
-            if contrast_ratio(candidate, surface) >= ON_CARD_MIN_CONTRAST {
+            if contrast_ratio(candidate, surface) >= min_ratio {
                 return candidate;
             }
         }

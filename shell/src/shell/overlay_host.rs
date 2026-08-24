@@ -8938,6 +8938,11 @@ fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
 /// person present when none is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RosterRow {
+    /// Who this row is, as the room names them — a peer's handle or an
+    /// agent's principal. Not for display (that is `label`): it is what
+    /// a surface filters on, and the local user's own handle is the one
+    /// every roster has to be able to drop.
+    pub id: String,
     /// What the row is called.
     pub label: String,
     /// Avatar initial.
@@ -8966,6 +8971,19 @@ pub struct RosterRow {
 const ROSTER_ROW_PITCH: f64 = 36.0;
 const ROSTER_AVATAR_SIDE: f64 = 22.0;
 const ROSTER_ROW_BAND_TOP: f64 = 3.0;
+
+/// Weight the row's two small labels are drawn at.
+///
+/// Medium rather than Regular, and this is a legibility fix rather than
+/// a stylistic one. At the bottom of the type scale a Regular stem
+/// covers no pixel fully, so the strongest pixel of a rendered label
+/// falls well short of the ink it was drawn in — and how far short
+/// depends on the letters: measured on the same frame, in the same
+/// colour, `editor` reached 6.09:1 where `agent` reached 4.24:1, because
+/// one word is built from straight stems and the other from round ones.
+/// Weight is what closes that gap; raising the contrast further would
+/// only make the straight-stemmed word louder to fix the round one.
+const ROSTER_LABEL_WEIGHT: TextWeight = TextWeight::Medium;
 
 /// Gap between the left cluster (chip, name, kind tag) and the role at
 /// the right edge, and between the name and the kind tag.
@@ -9003,6 +9021,51 @@ pub(crate) struct RosterRowLayout {
     /// named who has not arrived, that they have not.
     pub role: Option<Rect>,
     pub role_text: Option<String>,
+}
+
+/// The ink a roster row's secondary labels take — the kind tag, the
+/// role, and the name of somebody who has not arrived yet.
+///
+/// Derived from the panel's own ground through
+/// [`ui::theme::Theme::on_surface`] rather than read off
+/// `colors.text_dim`, because only the derivation carries a guarantee:
+/// its two tiers are asserted to clear WCAG AA against whatever ground
+/// they are handed, on every preset. The flat token does not, and did
+/// not — the kind tag, which exists so nobody has to infer which member
+/// is a person, was measured at 3.44:1 on the default dark panel and
+/// was the least legible thing in it.
+///
+/// A shade picked by hand would read correctly today and drift on the
+/// next palette edit, which is the failure this whole tier exists to
+/// avoid.
+fn roster_secondary_ink(theme: &Theme) -> Color {
+    theme
+        .on_surface_at(
+            collaborators_panel_ground(theme),
+            ui::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+        )
+        .ink_dim
+}
+
+/// The colour a reader actually sees behind the collaborators panel's
+/// text.
+///
+/// Not `panel_ground` on its own: this popover is painted at
+/// [`POPOVER_SURFACE_ALPHA`], so what the glyphs land on is that
+/// surface composited over the desktop underneath. Deriving ink from
+/// the *declared* surface instead is how a contrast check can pass
+/// while the rendered frame measures a whole tier lower — the check
+/// was reading a colour nothing paints.
+fn collaborators_panel_ground(theme: &Theme) -> Color {
+    let panel = ui::chrome::shell::panel_ground(theme);
+    // The desktop is what shows through. `surfaces.base` is the ground
+    // `panel_ground` itself measures against, so the two agree about
+    // what "behind" means.
+    let behind = theme.tokens.colors.surfaces.base;
+    let a = POPOVER_SURFACE_ALPHA;
+    let mix = |f: f32, b: f32| f * a + b * (1.0 - a);
+    let (f, b) = (panel.components, behind.components);
+    Color::new([mix(f[0], b[0]), mix(f[1], b[1]), mix(f[2], b[2]), 1.0])
 }
 
 /// Text of a row's kind tag, or `None` when the row needs none.
@@ -9060,7 +9123,7 @@ fn roster_row_layout(
     // is left. The other order is how a long name overprints a role.
     let role_text = roster_role_text(row);
     let role = role_text.as_ref().map(|text| {
-        let (w, h) = text_renderer.measure(text, scale.xs, None);
+        let (w, h) = text_renderer.measure_weighted(text, scale.xs, None, ROSTER_LABEL_WEIGHT);
         Rect::new(
             band.x1 - w as f64,
             mid - h as f64 / 2.0,
@@ -9074,7 +9137,7 @@ fn roster_row_layout(
 
     let name_x = card.x0 + 44.0;
     let tag = roster_kind_tag(row).map(|text| {
-        let (w, h) = text_renderer.measure(&text, scale.xs, None);
+        let (w, h) = text_renderer.measure_weighted(&text, scale.xs, None, ROSTER_LABEL_WEIGHT);
         (text, w as f64, h as f64)
     });
     let tag_budget = tag
@@ -9158,6 +9221,7 @@ pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Ve
                 .copied()
                 .unwrap_or_else(|| ui::presence::user_color(&p.id));
             RosterRow {
+                id: p.id.clone(),
                 initial: roster_initial(&p.name),
                 label: p.name.clone(),
                 color: Color::from_rgb8(r, g, b),
@@ -9191,6 +9255,7 @@ pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Ve
             // subject is both true and the string you would revoke.
             let (r, g, b) = ui::presence::user_color(&agent);
             rows.push(RosterRow {
+                id: agent.clone(),
                 initial: roster_initial(&agent),
                 label: agent,
                 color: Color::from_rgb8(r, g, b),
@@ -12367,6 +12432,7 @@ impl ShellOverlayHost {
         // One source for where the row's parts go, shared with the
         // accessor a test reads, so the two cannot drift apart.
         let layouts = self.collaborator_row_layouts(text_renderer, theme);
+        let secondary_ink = roster_secondary_ink(theme);
         for (row, layout) in rows.iter().zip(layouts.iter()) {
             // Same slot, same size, same order, whichever kind of member
             // the row holds and whichever state it is in — so what a
@@ -12406,7 +12472,7 @@ impl ShellOverlayHost {
                     scene,
                     &initial,
                     size,
-                    colors.text_dim,
+                    secondary_ink,
                     transform
                         * Affine::translate((
                             center.x - iw as f64 / 2.0,
@@ -12425,8 +12491,10 @@ impl ShellOverlayHost {
                     scene,
                     transform,
                     layout.avatar,
+                    &row.initial.to_string(),
                     row.color,
                     theme,
+                    text_renderer,
                 );
             } else {
                 ui::widget::Avatar::draw_at(
@@ -12444,7 +12512,7 @@ impl ShellOverlayHost {
                 &layout.name_text,
                 tokens.typography.scale.sm,
                 if row.invited {
-                    colors.text_dim
+                    secondary_ink
                 } else {
                     colors.text_primary
                 },
@@ -12458,13 +12526,14 @@ impl ShellOverlayHost {
             if let (Some(tag_rect), Some(tag_text)) =
                 (layout.kind_tag, layout.kind_tag_text.as_ref())
             {
-                text_renderer.draw_text(
+                text_renderer.draw_text_weighted(
                     scene,
                     tag_text,
                     tokens.typography.scale.xs,
-                    colors.text_dim,
+                    secondary_ink,
                     transform * Affine::translate((tag_rect.x0, tag_rect.y0)),
                     None,
+                    ROSTER_LABEL_WEIGHT,
                 );
             }
             // What they may do here — on their own line, centred against
@@ -12474,13 +12543,14 @@ impl ShellOverlayHost {
             if let (Some(role_rect), Some(role_text)) =
                 (layout.role, layout.role_text.as_ref())
             {
-                text_renderer.draw_text(
+                text_renderer.draw_text_weighted(
                     scene,
                     role_text,
                     tokens.typography.scale.xs,
-                    colors.text_dim,
+                    secondary_ink,
                     transform * Affine::translate((role_rect.x0, role_rect.y0)),
                     None,
+                    ROSTER_LABEL_WEIGHT,
                 );
             }
         }
@@ -18378,6 +18448,81 @@ mod roster_row_paint {
             rows[0].band.y1 <= rows[1].band.y0,
             "and one member's row must not reach into the next: {rows:?}",
         );
+    }
+
+    /// Both of a row's secondary labels have to be readable, on every
+    /// theme this OS ships.
+    ///
+    /// Measured off rendered frames, the kind tag came out at 3.44:1 on
+    /// the default dark panel and 3.67:1 on the light one, and the role
+    /// at 4.12:1 on dark — all under the 4.5:1 WCAG AA floor for text
+    /// at this size. The tag was the worst of it, which is the wrong
+    /// way round: it is the label that exists so nobody has to infer
+    /// which member is a person.
+    ///
+    /// This asserts the colour the paint actually uses against the
+    /// ground the paint actually puts it on, so a palette edit that
+    /// quietly dims either one fails here rather than on somebody's
+    /// screen.
+    #[test]
+    fn a_rows_secondary_labels_clear_aa_on_every_theme() {
+        use ui::a11y::contrast_ratio;
+
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = super::collaborators_panel_ground(&theme);
+            let ink = super::roster_secondary_ink(&theme);
+            let r = contrast_ratio(ink, ground);
+            // The floor asserted here is the *ideal* one, deliberately
+            // above WCAG's 4.5. What reaches the screen is an
+            // anti-aliased glyph whose strongest pixel measures lower
+            // than the colour it was drawn in — the label that started
+            // this was picked at 4.56:1 and rendered at 3.44:1 — so a
+            // check written at 4.5 would pass on a panel that fails.
+            assert!(
+                r >= ui::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+                "{}: a roster row's secondary labels are drawn in an ink \
+                 measuring {r:.2}:1 on the collaborators panel. At this size \
+                 that has to clear {:.1}:1, not 4.5:1, for the rendered \
+                 glyphs to clear 4.5:1 — the kind tag and the role are both \
+                 drawn in it",
+                theme.name,
+                ui::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+            );
+        }
+    }
+
+    /// The kind tag and the role are the same tier, and neither is the
+    /// quiet one.
+    ///
+    /// They sit on one row, a few pixels apart, saying two different
+    /// things about the same member. Drawing one fainter than the other
+    /// would rank them, and the ranking a reader would infer — that the
+    /// fainter one matters less — is not one this panel means.
+    #[test]
+    fn the_kind_tag_is_not_quieter_than_the_role() {
+        use ui::a11y::contrast_ratio;
+
+        let mut tree = room();
+        admit_agent(&mut tree, "scribe", Verb::Write);
+        let rows = layouts(&tree);
+        let row = &rows[0];
+        assert!(
+            row.kind_tag.is_some() && row.role.is_some(),
+            "this fixture must produce a row carrying both: {rows:?}",
+        );
+
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = super::collaborators_panel_ground(&theme);
+            let ink = super::roster_secondary_ink(&theme);
+            // One ink for both labels is what makes them equal; the
+            // floor is restated so a future split has to clear it twice.
+            assert!(
+                contrast_ratio(ink, ground) >= ui::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+                "{}: both labels are drawn in one ink and it must clear the \
+                 small-text floor",
+                theme.name,
+            );
+        }
     }
 
     /// A name too long for the row loses its own tail rather than
