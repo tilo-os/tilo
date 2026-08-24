@@ -5791,40 +5791,70 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
     read_hold(1.2)
 
     step("and the tabs switch between them")
-    # By the pill's own name in the registry rather than by a coordinate,
-    # so this is a click on the tab a viewer can see and not on wherever
-    # the layout happened to put one.
-    want = next((t["title"] for t in merged["tabs"]
-                 if t["app_id"] == IMAGE_EDITOR and t["title"]), None)
-    shown_before = screen_shot(quinten, os.path.join(shots, "12a-before-switch.png"))
-    switched = False
-    for name in ([f"tab:{want}[{merged['id']}]", f"tab:{want}"] if want else []):
-        if quinten.named_rect(name):
-            quinten.click_named(name)
-            quinten.settle(1.0)
-            switched = True
-            break
-    claim("the other application's tab is on the bar and can be clicked",
-          switched, True)
-    if switched:
-        shown_after = screen_shot(quinten, os.path.join(shots, "13-tab-switched.png"))
-        moved = pixels_moved(shown_before, shown_after)
-        if moved is not None:
-            claim("and clicking it changes what the window shows",
-                  moved > SCREEN_MOVED_PX, True)
-            note(f"{moved} pixels differ between the two tabs")
-        read_hold(1.2)
-        # Left on the word processor, because the beat after this one is
-        # about what is written in that document and a shot of an image
-        # editor under a caption about a document is a shot of the wrong
-        # thing.
-        back = next((t["title"] for t in merged["tabs"]
-                     if t["app_id"] == WORD_PROCESSOR and t["title"]), None)
-        for name in ([f"tab:{back}[{merged['id']}]", f"tab:{back}"] if back else []):
+
+    def active_tab_app(s: Session, group_id) -> str | None:
+        """Which application the merged group is currently showing."""
+        group = next((g for g in tab_groups_here(s) if g["id"] == group_id),
+                     None)
+        if group is None:
+            return None
+        return next((t["app_id"] for t in group["tabs"]
+                     if t["id"] == group["active_tab"]), None)
+
+    def show_tab(app: str) -> bool:
+        """Bring `app`'s tab to the front of the merged group.
+
+        By the pill's own name in the registry first, so what happens is
+        a click on the tab a viewer can see rather than on wherever the
+        layout happened to put one. A horizontal wheel is the fallback
+        and is not a lesser gesture — it is the OS's own "sideways is
+        the next window", the same `cycle_active_tab` the pill drives —
+        for the case where a tab's title is empty and there is no name
+        to click.
+        """
+        title = next((t["title"] for t in merged["tabs"]
+                      if t["app_id"] == app and t["title"]), None)
+        for name in ([f"tab:{title}[{merged['id']}]", f"tab:{title}"]
+                     if title else []):
             if quinten.named_rect(name):
                 quinten.click_named(name)
-                quinten.settle(0.8)
-                break
+                quinten.settle(1.0)
+                return True
+        for _ in range(len(merged["tabs"])):
+            quinten.scroll(1.0, 0.0)
+            quinten.settle(0.8)
+            if active_tab_app(quinten, merged["id"]) == app:
+                return True
+        return False
+
+    shown_before = screen_shot(
+        quinten, os.path.join(shots, "12a-before-switch.png"))
+    was = active_tab_app(quinten, merged["id"])
+    show_tab(IMAGE_EDITOR)
+    # Asserted on what the window is showing, not on whether a click
+    # was delivered. "The pill was there and I pressed it" is a claim
+    # about the harness; the thing being demonstrated is that pressing
+    # it puts a different *application* in the frame.
+    claim("switching tab puts the other application in the window",
+          active_tab_app(quinten, merged["id"]), IMAGE_EDITOR)
+    shown_after = screen_shot(
+        quinten, os.path.join(shots, "13-tab-switched.png"))
+    moved = pixels_moved(shown_before, shown_after)
+    if moved is not None:
+        # And on the screen, because the tree agreeing is not the same
+        # as the compositor drawing it.
+        claim("and the screen changes with it",
+              moved > SCREEN_MOVED_PX, True)
+        note(f"{moved} pixels differ between {was} and the image editor")
+    read_hold(1.2)
+
+    # Left on the word processor, because the beat after this one is
+    # about what is written in that document and a shot of an image
+    # editor under a caption about a document is a shot of the wrong
+    # thing.
+    show_tab(WORD_PROCESSOR)
+    claim("and back again, so the beat after this one is of the document",
+          active_tab_app(quinten, merged["id"]), WORD_PROCESSOR)
     claim("every one of those was a person's gesture",
           quinten.input_ops > before, True)
 
