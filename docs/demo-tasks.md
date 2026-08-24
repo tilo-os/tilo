@@ -54,8 +54,17 @@ on the real path · `[!]` landed but unverified, or regressed.
 - [~] **Typing before clicking is discarded** — the word processor has
       no caret in the body on open, so the first thing anyone does with
       it silently does nothing.
-- [~] **Scrollbar over an empty desktop** — a white thumb indicating
-      content that does not exist, in every frame.
+- [x] **A mark over an empty desktop** — I called it a scrollbar; it is
+      the strip-stack *focus* indicator (`StripRibbon`), one segment per
+      strip. The count was measured correctly all along: `draw` merely
+      skipped `count == 0`, so a lone strip painted its single focused
+      segment at full weight. Now hidden below two strips, gated inside
+      the widget rather than at the paint — gating the paint alone would
+      trade a visible mark meaning nothing for an invisible one that
+      still takes clicks. Resting weight is a ladder now (idle 46 <
+      hover 96 < focused-rest 150 < focused-hover 224), so maximum
+      contrast is spent only under the pointer. Measured in all three
+      themes, before and after.
 - [x] **Clicks moved no pointer** — a scripted click now travels to
       what it clicks, so the film stops looking like it operates itself.
 - [x] **Six seconds before the first app** — the opening hold was in
