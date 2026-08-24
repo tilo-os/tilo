@@ -36,6 +36,7 @@ pub mod action_host;
 pub mod action_palette;
 pub mod app;
 pub mod color_compat;
+pub mod diag;
 pub mod doc;
 pub mod headless;
 pub mod history_source;
