@@ -399,6 +399,31 @@ impl PresenceHandle {
         Ok(())
     }
 
+    /// Publish the local pointer at `(x, y)` in the coordinate space
+    /// `key_bytes` names.
+    ///
+    /// [`Self::publish_cursor`] with the space kept. `key_bytes` is a
+    /// postcard-encoded `ui::PresenceKey` — for a pointer, a
+    /// `PresenceKey::Pointer` carrying a `PointerSpace`. The broker
+    /// relays those bytes untouched, so the receiver reads the space
+    /// its publisher chose rather than one synthesised on the way.
+    pub async fn publish_pointer(
+        &self,
+        key_bytes: &[u8],
+        x: f32,
+        y: f32,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_pointer_request();
+        {
+            let mut b = req.get();
+            b.set_key_bytes(key_bytes);
+            b.set_x(x);
+            b.set_y(y);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Publish the local caret position on the artifact identified
     /// by `key_bytes`. `key_bytes` is a postcard-encoded
     /// `ui::PresenceKey`; the broker treats it as an opaque routing
@@ -509,7 +534,15 @@ impl CursorStream {
 /// Reader / Builder types.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PresencePayload {
+    /// A pointer published without a coordinate space — the legacy
+    /// `publishCursor` shape. The event's `key_bytes` say nothing
+    /// about where this position is measured, so a reader must not
+    /// invent a space for it.
     Cursor { x: f32, y: f32 },
+    /// A pointer published *with* its space, by `publish_pointer`.
+    /// The event's `key_bytes` decode to the `ui::PresenceKey` the
+    /// publisher chose and are authoritative.
+    Pointer { x: f32, y: f32 },
     Caret { pos: u64 },
     Selection { start: u64, end: u64 },
     Arrived,
@@ -561,6 +594,10 @@ fn decode_presence_payload(
     use collab_capnp::presence_payload::Which as W;
     Ok(match reader.which()? {
         W::Cursor(r) => PresencePayload::Cursor {
+            x: r.get_x(),
+            y: r.get_y(),
+        },
+        W::Pointer(r) => PresencePayload::Pointer {
             x: r.get_x(),
             y: r.get_y(),
         },

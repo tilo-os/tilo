@@ -415,6 +415,31 @@ impl presence_handle::Server for BridgePresenceHandle {
         })
     }
 
+    fn publish_pointer(
+        self: Rc<Self>,
+        params: presence_handle::PublishPointerParams,
+        _results: presence_handle::PublishPointerResults,
+    ) -> Promise<(), capnp::Error> {
+        let upstream = self.upstream.clone();
+        let decoded = (|| {
+            let r = params.get()?;
+            let key_bytes = r.get_key_bytes()?.to_vec();
+            Ok((
+                key_bytes,
+                PresencePayload::Pointer {
+                    x: r.get_x(),
+                    y: r.get_y(),
+                },
+            ))
+        })();
+        // Through the same keyed door as caret / selection / arrived /
+        // left. `publish_cursor` below has to invent a key because its
+        // caller gave it none; this one must not, because the key is
+        // the coordinate space the position was measured in and only
+        // the publisher knows it.
+        publish_keyed(upstream, decoded)
+    }
+
     fn subscribe_remote_cursors(
         self: Rc<Self>,
         _params: presence_handle::SubscribeRemoteCursorsParams,
@@ -602,7 +627,12 @@ impl presence_stream::Server for BridgePresenceStream {
                     let mut p: presence_payload::Builder = ev.init_payload();
                     match payload {
                         PresencePayload::Pointer { x, y } => {
-                            let mut c = p.init_cursor();
+                            // Keyed, so the `pointer` case: this
+                            // arm's `key_bytes` are the publisher's
+                            // own and name the coordinate space. The
+                            // keyless `Cursor` envelope above keeps
+                            // the `cursor` case, where they do not.
+                            let mut c = p.init_pointer();
                             c.set_x(x);
                             c.set_y(y);
                         }

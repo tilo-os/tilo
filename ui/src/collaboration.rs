@@ -1645,7 +1645,14 @@ async fn drive_shovel(
                 let Some(ph) = presence.as_ref() else { continue };
                 match payload {
                     PresencePayload::Pointer { x, y } => {
-                        let _ = ph.publish_cursor(x, y).await;
+                        // Keyed, like every other payload here. The
+                        // key is the pointer's coordinate space, and
+                        // dropping it at this door — which is what
+                        // `publish_cursor(x, y)` does, having nowhere
+                        // to put it — is what left every receiver
+                        // guessing, and guessing once per window.
+                        let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
+                        let _ = ph.publish_pointer(&key_bytes, x, y).await;
                     }
                     PresencePayload::Caret { pos } => {
                         let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
@@ -1941,12 +1948,24 @@ fn unpack_color(packed: u32) -> [f32; 3] {
 /// Extracted so the subscription task body stays skimmable and the
 /// unit test can round-trip payloads without spinning a broker.
 fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
-    // Cursor keeps the legacy shape: `user_id + x + y` on
-    // `RemoteCursorMoved`. Every other variant carries the
-    // (postcard-decoded) `PresenceKey` on
-    // `RemotePresenceUpdate`. If key decoding fails on a non-Cursor
-    // variant we fall back to a synthetic key; the peer's presence is
-    // still visible but bound to a placeholder scope.
+    // `Cursor` is the keyless legacy shape and keeps it: `user_id + x
+    // + y` on `RemoteCursorMoved`, with no key, because the publisher
+    // never chose one and inventing one here would be inventing a
+    // coordinate space.
+    //
+    // `Pointer` is the same position published *with* its space, and
+    // it goes through the keyed door like everything else. It used to
+    // come through the keyless one: the broker wrote real key bytes
+    // onto the wire and this translation dropped them again on
+    // arrival, so a pointer reached the app layer as a bare pair of
+    // numbers and every open window placed it in its own coordinates.
+    // The keyBytes were correct the whole way; this was the hop that
+    // discarded them.
+    //
+    // Every other variant carries the (postcard-decoded)
+    // `PresenceKey` on `RemotePresenceUpdate`. If key decoding fails
+    // we fall back to a synthetic key; the peer's presence is still
+    // visible but bound to a placeholder scope.
     match evt.payload {
         runtime_collab::PresencePayload::Cursor { x, y } => CollabEvent::RemoteCursorMoved {
             user_id: evt.user_id,
@@ -1960,6 +1979,9 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
                 }
             });
             let payload = match other {
+                runtime_collab::PresencePayload::Pointer { x, y } => {
+                    PresencePayload::Pointer { x, y }
+                }
                 runtime_collab::PresencePayload::Caret { pos } => PresencePayload::Caret {
                     pos: pos as usize,
                 },

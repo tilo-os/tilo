@@ -5,7 +5,7 @@ use crate::permissions::UserId;
 mod key;
 mod render;
 mod geom;
-pub use key::{PresenceKey, PathSegment, SelectionRange};
+pub use key::{PointerSpace, PresenceKey, PathSegment, SelectionRange};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 // `render::draw_remote_cursors` is a free function — re-export so
 // downstream apps (terminal, settings, file-explorer) can call it from
@@ -523,6 +523,21 @@ pub enum PointerOwner {
     /// through [`PresenceCtx::peer_pointer`] — it is simply not painted
     /// a second time by this layer.
     Desktop,
+    /// Another surface's to paint, and so not this one's.
+    ///
+    /// The position is in some surface's content coordinates
+    /// ([`PresenceKey::Pointer`] carrying
+    /// [`PointerSpace::Surface`]) and the surface named is not this
+    /// one. The frame still arrived — the broker hands presence to
+    /// every app in the room — but the numbers in it are measured in
+    /// content this process is not showing, so there is nowhere here
+    /// they could correctly go.
+    ///
+    /// This is the variant that makes the fan-out safe. One frame
+    /// reaches N apps and exactly one of them can answer "that is my
+    /// surface"; the other N-1 reach this, from the same carried
+    /// fact, without consulting each other or the drawing code.
+    OtherSurface,
 }
 
 #[derive(Debug, Clone)]
@@ -659,6 +674,18 @@ pub struct PresenceCtx {
     /// [`Self::set_own_identity`]; empty means "unknown", which
     /// suppresses nobody.
     own: std::collections::HashSet<UserId>,
+    /// The surface this process draws — the app id it announces,
+    /// spelled as [`crate::local_surface_id`] spells it.
+    ///
+    /// Only ever compared against the surface a pointer says it was
+    /// measured in, and so it answers exactly one question: is a
+    /// content-space position one this process can place? `None`
+    /// means the process has not said, and then the answer is no —
+    /// fail closed, because placing a position measured in somebody
+    /// else's content is precisely the failure this exists to stop,
+    /// and it is invisible when it happens (a pointer in the wrong
+    /// window looks like a pointer).
+    surface: Option<String>,
 }
 
 impl PresenceCtx {
@@ -740,6 +767,50 @@ impl PresenceCtx {
             .filter(|s| !s.as_ref().trim().is_empty())
             .map(|s| UserId(s.as_ref().to_string()))
             .collect();
+    }
+
+    /// Name the surface this process draws, so it can recognise a
+    /// content-space pointer measured in it.
+    ///
+    /// Set from [`crate::local_surface_id`] — the same value the
+    /// publishing side scopes its pointer with, so the two spellings
+    /// cannot drift.
+    pub fn set_surface_id(&mut self, surface: impl Into<String>) {
+        let surface = surface.into();
+        self.surface = (!surface.trim().is_empty()).then_some(surface);
+    }
+
+    /// Which layer should place a pointer that arrived under `key`.
+    ///
+    /// The one place the question is answered, and it is answered
+    /// from what the frame carries rather than from anything about
+    /// the receiver's widget tree or transport:
+    ///
+    /// - no pointer space at all — the keyless dialects, the hosted
+    ///   backend's interpolated cursors — is
+    ///   [`PointerOwner::Window`]. Nothing is above those that could
+    ///   place them, so this layer does.
+    /// - [`PointerSpace::Desktop`] is [`PointerOwner::Desktop`]:
+    ///   compositor scene coordinates, which only the compositor can
+    ///   resolve to a place on screen.
+    /// - [`PointerSpace::Surface`] is this layer's only when the
+    ///   surface named is this one, and [`PointerOwner::OtherSurface`]
+    ///   otherwise.
+    ///
+    /// Because a pointer is in exactly one space and a space names at
+    /// most one painter, a frame delivered to every app in a room
+    /// still has at most one app willing to draw it.
+    pub fn pointer_owner_for(&self, key: &PresenceKey) -> PointerOwner {
+        match key.pointer_space() {
+            None => PointerOwner::Window,
+            Some(PointerSpace::Desktop { .. }) => PointerOwner::Desktop,
+            Some(PointerSpace::Surface { surface }) => {
+                match self.surface.as_deref() {
+                    Some(mine) if mine == surface => PointerOwner::Window,
+                    _ => PointerOwner::OtherSurface,
+                }
+            }
+        }
     }
 
     /// Whether `user_id` is this session's own participant — i.e. a
@@ -1399,28 +1470,19 @@ impl PresenceCtx {
                 // the shared `draw_remote_cursors` helper renders.
                 //
                 // Which of the two gets *painted* is the point of
-                // `owner`. A pointer that arrived under a desktop scope
-                // is a position on the desktop, and the compositor
-                // overlay draws it from `pointers` above every window.
-                // Stamping it `Desktop` is what stops this layer drawing
-                // the very same peer a second time from `remote_cursors`
-                // — the two stores are one arrival, not two people. A
-                // scope inside this window's own content has no overlay
-                // claiming it, so it stays this layer's to paint.
+                // `owner`, and it is decided by the coordinate space
+                // the frame carries — see [`Self::pointer_owner_for`].
+                // A position is in one space, a space names at most
+                // one painter, and so the broker handing this frame to
+                // every app in the room cannot turn one person into
+                // one dot per window.
                 //
-                // `scopes_a_desktop_pointer` owns that distinction, and
-                // owns it in one place because the two halves of it are
-                // reached by different routes and were once answered
-                // differently: a room-keyed pointer was recognised, and
-                // the same pointer with its key stripped by the capnp
-                // cursor path was not — so every open window claimed it
-                // and a person came out once per window.
+                // Nothing here compares this pointer against the ones
+                // already stored, and nothing downstream drops a
+                // duplicate: a second painter is never created, rather
+                // than created and then filtered.
                 let uid = UserId(user_id.clone());
-                let owner = if key.scopes_a_desktop_pointer() {
-                    PointerOwner::Desktop
-                } else {
-                    PointerOwner::Window
-                };
+                let owner = self.pointer_owner_for(&key);
                 self.set_pointer(&key, uid, (x, y));
                 self.upsert_remote_cursor_owned(user_id, [x, y], None, 1.0, owner);
             }

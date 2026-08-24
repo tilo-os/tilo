@@ -33,11 +33,19 @@
 //! - `join_channel(channel_id, identity)` uses the caller's
 //!   `channel_id` verbatim as the channel routing key. No UUID
 //!   derivation, no synthesis.
-//! - `publishCursor(x, y)` fans out as a `Cursor` payload keyed on
+//! - `publishPointer(keyBytes, x, y)` is the keyed pointer publish
+//!   and the one apps use. The key is a `PresenceKey::Pointer`
+//!   naming the coordinate space the position was measured in; the
+//!   broker relays those bytes untouched, so exactly one receiver
+//!   can place the position and the rest can tell it is not theirs.
+//! - `publishCursor(x, y)` is the keyless legacy publish, kept for
+//!   schema-v1 clients. It fans out as a `Cursor` payload keyed on
 //!   [`PresenceKey::pointer_default`] (postcard-encoded). Legacy
 //!   subscribers see it as `CollabEvent::RemoteCursorMoved` (schema
-//!   v1 didn't carry a key on that variant); capnp subscribers get
-//!   the real keyBytes on `subscribeAll` streams.
+//!   v1 didn't carry a key on that variant). It is deliberately a
+//!   *different* payload case from `publishPointer`'s: those key
+//!   bytes are a routing tag this broker made up, not a space the
+//!   publisher chose, and a receiver must not read them as one.
 //! - `sendUnsignedSnapshot` / `sendUnsignedIncremental` route through
 //!   the same fanout as their legacy JSON counterparts. Callers that
 //!   want role enforcement must use `send` with a signed op.
@@ -100,6 +108,18 @@ struct PresenceEnvelope {
     user_id: String,
     key_bytes: Vec<u8>,
     payload: PresencePayload,
+    /// This pointer came in through the keyless legacy
+    /// `publishCursor`, so it goes back out as the schema's `cursor`
+    /// case and its `key_bytes` are a routing tag rather than a
+    /// coordinate space.
+    ///
+    /// A `Pointer` payload otherwise encodes as the schema's
+    /// `pointer` case, whose key the publisher chose and whose space
+    /// the receiver is entitled to act on. The two must stay
+    /// distinguishable on the wire: a reader that treats a
+    /// synthesised tag as a chosen space is inventing a coordinate
+    /// system for numbers that never had one.
+    legacy_cursor: bool,
 }
 
 /// Envelope pushed onto a [`CursorStreamServer`]'s queue.
@@ -410,6 +430,7 @@ impl CapnpBrokerState {
                     user_id: user_id.clone(),
                     key_bytes,
                     payload: PresencePayload::Pointer { x: *x, y: *y },
+                    legacy_cursor: true,
                 };
                 let cursor_env = CursorEnvelope {
                     user_id: user_id.clone(),
@@ -447,6 +468,7 @@ impl CapnpBrokerState {
                     user_id: user_id.clone(),
                     key_bytes,
                     payload: payload.clone(),
+                    legacy_cursor: false,
                 };
                 for subs in channels {
                     subs.presence.retain(|s| {
@@ -1204,6 +1226,37 @@ impl presence_handle::Server for CapnpPresenceHandle {
         Promise::ok(())
     }
 
+    fn publish_pointer(
+        self: Rc<Self>,
+        params: presence_handle::PublishPointerParams,
+        _results: presence_handle::PublishPointerResults,
+    ) -> Promise<(), capnp::Error> {
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        let route = self.route();
+        let full_route = self.full_route();
+        Promise::from_future(async move {
+            let r = params.get()?;
+            let key_bytes = r.get_key_bytes()?.to_vec();
+            let (x, y) = (r.get_x(), r.get_y());
+            // Keyed like every other presence publish, and that is
+            // the whole change: the key holds the coordinate space
+            // the position was measured in, and it is relayed
+            // untouched rather than dropped here and re-synthesised
+            // on the way out. What the publisher said about its own
+            // pointer is what every receiver reads.
+            publish_keyed_presence(
+                &state,
+                peer_id,
+                &route,
+                &full_route,
+                key_bytes,
+                PresencePayload::Pointer { x, y },
+            );
+            Ok(())
+        })
+    }
+
     fn publish_caret(
         self: Rc<Self>,
         params: presence_handle::PublishCaretParams,
@@ -1411,9 +1464,22 @@ impl presence_stream::Server for PresenceStreamServer {
             let mut payload: presence_payload::Builder = ev.init_payload();
             match env.payload {
                 PresencePayload::Pointer { x, y } => {
-                    let mut c = payload.init_cursor();
-                    c.set_x(x);
-                    c.set_y(y);
+                    // `pointer` when the key is the publisher's own —
+                    // it names the coordinate space and the receiver
+                    // may act on it. `cursor` for the keyless legacy
+                    // publish, whose key bytes this broker
+                    // synthesised: same numbers, but nothing said
+                    // what they are measured in, and a reader must
+                    // not be told otherwise.
+                    if env.legacy_cursor {
+                        let mut c = payload.init_cursor();
+                        c.set_x(x);
+                        c.set_y(y);
+                    } else {
+                        let mut c = payload.init_pointer();
+                        c.set_x(x);
+                        c.set_y(y);
+                    }
                 }
                 PresencePayload::Caret { pos } => {
                     payload.init_caret().set_pos(pos as u64);
