@@ -1175,6 +1175,15 @@ impl FileExplorerWidget {
         self.remark.rect()
     }
 
+    /// Whether the ordinary context menu is up.
+    ///
+    /// The compose surface opens *beside* this rather than replacing it, and
+    /// "beside" is only a claim worth making if both can be observed from
+    /// outside: dismissing one must leave the other usable.
+    pub fn context_menu_is_open(&self) -> bool {
+        self.context_menu.is_open()
+    }
+
     /// "Say something about this": open the ordinary context menu on the
     /// selection **and** the compose surface beside it.
     ///
