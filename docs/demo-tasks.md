@@ -174,6 +174,32 @@ inventing a fix for a defect that is gone is its own waste.
 - **The strip ribbon appears when it should**: present on a workspace of
   three strips, absent on one.
 
+## Open, on the payoff frame
+
+Found by reading a frame of a run that reported **every claim held** --
+the claim is "the document was written into", and it was, with this:
+
+> Claude: I can't "make this a run sheet" here. I can: Insert table
+> (word-processor.document#insert-table); Insert page break
+> (word-processor.document#insert-page-break); Align left (...); ...
+
+- [ ] **Raw action addresses written into human prose.** Six internal
+      identifiers, parenthesised, in a document two people are reading.
+      An address is how the agent dispatches; it is not something to say
+      out loud. Dispatched.
+- [ ] **"make this a run sheet" is refused, and it used to work.** It
+      produced a real table plus a note about an inconsistency in the
+      content -- the best moment in the film. `RECIPES` still exist for
+      exactly this, so something stops the recipe being offered on the
+      document path. Dispatched.
+- [ ] **The agent's own chip reads `peer@764`** while `xaver` beside it
+      resolves. Being worked separately.
+
+The lesson, again and at cost: a claim proves the assertion somebody
+wrote. "The document was written into" is true of a refusal, of a wall
+of jargon, and of the best sentence in the film. Only the frame tells
+them apart.
+
 ## Standing hazards, learned the expensive way
 
 - **Legacy transport hides defects.** Three separate total defects have
