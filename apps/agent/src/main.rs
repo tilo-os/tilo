@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use qos_agent::{Config, Session};
+use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
 
 /// A participant without a window: joins a word-processor document through
 /// the session's collaboration broker and carries out instructions written
@@ -21,8 +22,29 @@ struct Cli {
     #[arg(long)]
     record: Option<String>,
     /// The app whose document this is (its manifest package id).
+    ///
+    /// Empty joins the room rather than one app: the broker narrows its
+    /// fan-out to an app only when both ends name one, so a connection that
+    /// announces nothing is handed every app's state and the agent can
+    /// enumerate the room instead of a single document.
     #[arg(long, default_value = "dev.qos.word-processor")]
     app: String,
+    /// The directory the agent is browsing, for the apps whose subject is
+    /// the filesystem rather than a document. Its own view state, the
+    /// counterpart of the caret it puts on a block.
+    #[arg(long)]
+    directory: Option<PathBuf>,
+    /// An app the agent is allowed to act on, by resource namespace
+    /// (`word-processor`, `files`). Repeatable.
+    ///
+    /// This is the capability its inviter issued, and it is the whole of
+    /// what the agent may do: with none it enumerates nothing and performs
+    /// nothing. It holds no role — an agent is not a person — so there is no
+    /// base authority underneath these. Defaults to the app named by
+    /// `--app`, which is the grant a launcher would hand an agent invited to
+    /// one document.
+    #[arg(long = "grant")]
+    grants: Vec<String>,
     /// The agent's name: its caret pill, its history author, and the word
     /// an instruction starts with.
     #[arg(long, default_value = "Claude")]
@@ -74,6 +96,31 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+    // Who the agent is, and what it was given leave to do. `Actor::agent`
+    // carries no role, so every capability below is one somebody granted
+    // explicitly; `decide_capability` denies anything they do not cover.
+    let subject = Subject::agent(&cli.name);
+    let mut grants: Vec<String> = cli.grants.clone();
+    if grants.is_empty() {
+        grants.extend(
+            qos_agent::surface::for_app_id(&cli.app).map(|c| c.namespace.to_string()),
+        );
+    }
+    let caps: Vec<CapOverride> = grants
+        .iter()
+        .map(|app| {
+            CapOverride::grant(subject.clone(), Scope::App(app.clone()), Verb::Write)
+                .with_id(format!("agent-{}-{app}", cli.name))
+        })
+        .collect();
+    tracing::info!(
+        agent = %cli.name,
+        apps = ?grants,
+        "acting under {} capability grant(s)",
+        caps.len()
+    );
+    let permissions =
+        PermissionContext::from_capabilities(Actor::agent(&cli.name), caps);
     let cfg = Config {
         socket: cli.socket,
         app_id: cli.app,
@@ -85,6 +132,8 @@ fn main() -> anyhow::Result<()> {
         model: !cli.no_model,
         model_timeout: Duration::from_millis(cli.model_timeout_ms),
         await_document: Duration::from_millis(cli.await_document_ms),
+        directory: cli.directory,
+        permissions,
     };
     let mut session = Session::connect(cfg)?;
     session.run()
