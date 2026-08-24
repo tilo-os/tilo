@@ -46,3 +46,8 @@ unic-langid.workspace = true
 # Host-native image open through the XDG Desktop Portal (FileChooser). The
 # portal round-trip runs on a worker thread; the chosen path comes back over a
 # channel drained each frame — the UI thread never blocks.
+
+[dev-dependencies]
+# Encoding a real photograph for the visual review frames: the decode path
+# under test is the production one, so the fixture has to be a real PNG.
+png.workspace = true
