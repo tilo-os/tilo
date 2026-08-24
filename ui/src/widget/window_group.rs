@@ -212,13 +212,6 @@ pub struct WindowGroup {
     /// The shell paints the floating controls on top of this rect while
     /// set; click the maximize icon again to un-maximize (restore).
     pub maximized: bool,
-    /// Concept parity for `WindowFrame.isSearching`: the user clicked the
-    /// search glyph on one of this group's tabs. We paint a thicker indigo
-    /// ring + outer glow around the card while set, matching the concept's
-    /// `ring-4 ring-indigo-500/50 shadow-[0_0_60px_rgba(99,102,241,0.6)]`.
-    /// Toggled off by clicking the same icon again or pressing Esc while
-    /// the group is focused.
-    pub search_active: bool,
     /// Hit region for the floating "restore" pill drawn while maximized.
     /// Populated each draw so clicks always map to what's on screen.
     restore_rect: Rect,
@@ -296,7 +289,6 @@ pub struct WindowGroup {
     /// host), so the click has to travel out the same take-pattern wire the
     /// maximize / width / reorder writebacks use. Without it the chip only
     /// toggled a local focus ring and appeared to do nothing.
-    pending_search_open: Option<u64>,
     /// One-shot "the user clicked this group's + chip" request awaiting
     /// harvest by the shell, carrying this group's id. Creating a tab
     /// means mutating the persisted tree and picking what goes in it —
@@ -336,7 +328,6 @@ impl WindowGroup {
             resize_origin: None,
             hover_resize: false,
             maximized: false,
-            search_active: false,
             restore_rect: Rect::ZERO,
             restore_hover: false,
             close_rect: Rect::ZERO,
@@ -351,7 +342,6 @@ impl WindowGroup {
             pending_maximize_change: None,
             pending_width_change: None,
             pending_tab_reorder: None,
-            pending_search_open: None,
             pending_new_tab: None,
         }
     }
@@ -616,12 +606,6 @@ impl WindowGroup {
         self.pending_tab_reorder.take()
     }
 
-    /// Drain a one-shot "open search scoped to this app" request produced by a
-    /// click on a tab's magnifier chip. Returns the tab id once per click.
-    pub fn take_pending_search_open(&mut self) -> Option<u64> {
-        self.pending_search_open.take()
-    }
-
     /// Drain a one-shot "+ was clicked in this group's tab bar" request.
     /// Returns this group's id once per click.
     pub fn take_pending_new_tab(&mut self) -> Option<u64> {
@@ -783,7 +767,6 @@ impl WindowGroup {
             resize_origin: None,
             hover_resize: false,
             maximized: false,
-            search_active: false,
             restore_rect: Rect::ZERO,
             restore_hover: false,
             close_rect: Rect::ZERO,
@@ -798,7 +781,6 @@ impl WindowGroup {
             pending_maximize_change: None,
             pending_width_change: None,
             pending_tab_reorder: None,
-            pending_search_open: None,
             pending_new_tab: None,
         }
     }
@@ -1265,9 +1247,9 @@ impl Widget for WindowGroup {
         };
         let spawn_active = fade_alpha < 1.0;
         if spawn_active {
-            // Clip with a generous margin so the concept-faithful glow
-            // rings (search_active, maximized outline) aren't clipped
-            // mid-fade. 16 px covers the widest outer stroke currently.
+            // Clip with a generous margin so the maximized outline is
+            // not clipped mid-fade. 16 px covers the widest outer stroke
+            // currently.
             let clip = Rect::new(
                 self.rect.x0 - 16.0,
                 self.rect.y0 - 16.0,
@@ -1319,15 +1301,17 @@ impl Widget for WindowGroup {
             .iter()
             .find(|t| t.id == active_id)
             .map(|t| t.title.clone());
-        // Mirror `search_active` onto the active host so its card paints
-        // the concept's focused indigo bloom
-        // (`shadow-[0_0_60px_rgba(99,102,241,0.6)]`, WindowFrame.tsx:359).
-        let focused = self.search_active;
         if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             if let Some(name) = &opening_name {
                 h.set_opening_name(name);
             }
-            h.set_focused(focused);
+            // No per-group "is searching" bloom any more. The tab strip
+            // used to mirror a per-tab magnifier's toggle onto the active
+            // host as a focused indigo bloom; search is a shell service
+            // reached with Ctrl+K, not a state a tab puts its own window
+            // into. `set_focused` stays in the host's API for callers
+            // that have a real reason to raise it — the strip is not one.
+            h.set_focused(false);
             h.draw(scene, transform, tr, theme, presence);
         }
         // Concept-parity close fade-out pass on hosts. Mirrors the
@@ -1422,41 +1406,6 @@ impl Widget for WindowGroup {
                 theme.tokens.colors.accent[5].with_alpha_factor(0.6),
                 None,
                 &ring,
-            );
-        }
-
-        // Search-active visual: concept's `ring-4 ring-indigo-500/50` +
-        // `shadow-[0_0_60px_rgba(99,102,241,0.6)]`. We paint two concentric
-        // indigo strokes (inner 4 px at 50% alpha, outer 8 px at 24% alpha)
-        // to approximate the ring + shadow pair without introducing a blur
-        // primitive. Draws behind the maximized outline so a group can be
-        // simultaneously maximized and searching (as the concept allows).
-        if self.search_active {
-            let ring_outer = Rect::new(
-                self.rect.x0 - 6.0,
-                self.rect.y0 - 6.0,
-                self.rect.x1 + 6.0,
-                self.rect.y1 + 6.0,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(8.0),
-                transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(0.24),
-                None,
-                &ring_outer,
-            );
-            let ring_inner = Rect::new(
-                self.rect.x0 - 2.0,
-                self.rect.y0 - 2.0,
-                self.rect.x1 + 2.0,
-                self.rect.y1 + 2.0,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(4.0),
-                transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(0.5),
-                None,
-                &ring_inner,
             );
         }
 
@@ -1837,18 +1786,6 @@ impl Widget for WindowGroup {
             // we want (the user toggles twice in quick succession,
             // the persisted state lands on the final value).
             self.pending_maximize_change = Some(self.maximized);
-            *handled = true;
-        }
-
-        // Search toggle from the tab bar's hover-action icon. Same pattern
-        // as maximize — the bar publishes `pending_search` once per click,
-        // we drain it here and flip the search-active ring on the group.
-        if let Some(id) = self.bar.take_search() {
-            self.search_active = !self.search_active;
-            // Ask the shell to open the search bar scoped to this app — the
-            // same thing Ctrl+K does. The ring toggle above is only the local
-            // focus affordance.
-            self.pending_search_open = Some(id);
             *handled = true;
         }
 
@@ -3203,26 +3140,6 @@ mod tests {
     /// above reads against the fixture rather than restating a literal.
     fn g_normal_width() -> WindowWidth {
         WindowWidth::Normal
-    }
-
-    #[test]
-    fn search_active_toggles_when_bar_publishes_pending_search() {
-        // Fresh group starts not-searching. Seeding `bar.pending_search`
-        // and re-running the drain block flips the flag, and a second
-        // drain flips it back — matching the concept's click-to-toggle
-        // affordance on the tab pill's search glyph.
-        let mut g = make_group();
-        assert!(!g.search_active, "fresh group must not be searching");
-        g.bar.pending_search = Some(1);
-        if let Some(_id) = g.bar.take_search() {
-            g.search_active = !g.search_active;
-        }
-        assert!(g.search_active, "drain should flip search_active on");
-        g.bar.pending_search = Some(1);
-        if let Some(_id) = g.bar.take_search() {
-            g.search_active = !g.search_active;
-        }
-        assert!(!g.search_active, "second drain should flip search_active off");
     }
 
     #[test]

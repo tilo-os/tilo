@@ -165,15 +165,43 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
 /// Dispatch a single winit event through the whole host, exactly as the run
 /// loop does.
 fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: WindowEvent) {
+    dispatch_with_mods(host, layout, event, &Modifiers::default());
+}
+
+/// Build a `KeyEvent` for `ch`.
+///
+/// Zero-initialised because winit 0.30 keeps `KeyEvent::platform_specific`
+/// crate-private, so a struct literal will not compile. Same workaround
+/// `e2e_shell_flows.rs` uses.
+fn key_event(ch: &str) -> winit::event::KeyEvent {
+    // SAFETY: `KeyEvent`'s public fields are all safe to zero-init and
+    // every one this test depends on is overwritten immediately below.
+    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+    ev.logical_key = winit::keyboard::Key::Character(ch.into());
+    ev.physical_key =
+        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+    ev.location = winit::keyboard::KeyLocation::Standard;
+    ev.state = ElementState::Pressed;
+    ev.repeat = false;
+    ev.text = Some(ch.into());
+    ev
+}
+
+/// [`dispatch`] with the modifier state a chord needs.
+fn dispatch_with_mods(
+    host: &mut ShellOverlayHost,
+    layout: &Layout,
+    event: WindowEvent,
+    modifiers: &Modifiers,
+) {
     let mut doc = automerge::AutoCommit::new();
     let doc_root = automerge::ROOT.clone();
-    let modifiers = Modifiers::default();
     let mut handled = false;
     let mut focus: Option<NodeId> = None;
     host.handle_event(
         &event,
         1.0,
-        &modifiers,
+        modifiers,
         &mut doc,
         &doc_root,
         &mut handled,
@@ -408,54 +436,50 @@ fn group_drag_reorders_strip_window_groups_in_tree() {
     );
 }
 
-/// The magnifier chip in a tab's window decoration must open the search bar
-/// *scoped to that app* — the same thing Ctrl+K does. It used to only toggle a
-/// local focus ring on the group, so clicking it appeared to do nothing.
+/// A tab pill used to carry its own magnifier, which opened the search
+/// palette scoped to the active app. It is gone: the compositor owns
+/// window chrome, search is a shell service, and `Ctrl+K` was already the
+/// door — the chip called the very same entry point with the very same
+/// scope. This holds the *capability* the chip is being removed in favour
+/// of, on the same fixture the chip test used, so "Ctrl+K can do this" is
+/// a checked claim rather than an argument.
+///
+/// The chip was in fact the worse of the two doors. A chip press
+/// deliberately does not select its tab, so clicking the magnifier on a
+/// pill that was not already active opened a search scoped to a different
+/// tab than the one whose chip had been clicked. `Ctrl+K` cannot make that
+/// mistake: it has no target but the focused app.
 #[test]
-fn tab_search_chip_opens_palette_scoped_to_that_app() {
+fn ctrl_k_opens_the_palette_scoped_to_the_focused_app() {
     use shell::shell::chrome_state::SearchScope;
 
-    let (tree, strip_id, _ids) = single_strip_tree(&[100]);
+    let (tree, _strip_id, _ids) = single_strip_tree(&[100]);
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
     assert!(!host.palette_visible(), "palette starts closed");
 
-    // Hover the pill so the per-tab chips get hit rects, then click search.
-    let (pill, chip) = {
-        let g = host
-            .group_at_for_tests(strip_id, 0)
-            .expect("group after layout");
-        let pill = g.tab_rects().first().copied().expect("a pill").center();
-        (pill, g.bar_for_tests().search_rects().first().copied())
-    };
-    cursor(&mut host, &layout, pill);
-    let chip = chip
-        .filter(|r| r.area() > 0.0)
-        .or_else(|| {
-            host.group_at_for_tests(strip_id, 0)
-                .unwrap()
-                .bar_for_tests()
-                .search_rects()
-                .first()
-                .copied()
-        })
-        .expect("search chip rect");
-    cursor(&mut host, &layout, chip.center());
-    press(&mut host, &layout);
-    release(&mut host, &layout);
-
-    // Production runs this each frame inside `Widget::update`.
-    host.tick_pending_search_open_for_tests();
+    let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+    dispatch_with_mods(
+        &mut host,
+        &layout,
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: key_event("k"),
+            is_synthetic: false,
+        },
+        &mods,
+    );
 
     assert!(
         host.palette_visible(),
-        "the decoration's search chip must open the search bar",
+        "Ctrl+K must open the search palette — the door the tab magnifier duplicated",
     );
-    assert_eq!(
+    assert_ne!(
         chrome.borrow().search_scope,
-        SearchScope::ActiveApp,
-        "and it must be scoped to the app, not global",
+        SearchScope::All,
+        "and it must land narrower than the deliberate search-the-machine chord, \
+         which is the whole behaviour the per-tab chip offered",
     );
 }
 
