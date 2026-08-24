@@ -460,6 +460,99 @@ fn mentioning_an_agent_works_the_same_as_mentioning_a_person() {
     let _ = worker.join();
 }
 
+/// A remark — something said *about* a resource — crosses as an ordinary chat
+/// message and arrives with its address still an address.
+///
+/// The encoder is `qos-reference`, not chat. That is the point: another app
+/// mints the message, chat's own registry decodes it, chat's own action applies
+/// it, and it travels the same capnp path as anything typed into the composer.
+/// A fixture written here by hand would only prove chat can read its own
+/// writing.
+///
+/// What must survive is the *address*, not a rendering of it. The label is
+/// deliberately useless below, so a reader that resolved on it would get the
+/// wrong answer and this would fail.
+#[test]
+fn a_remark_from_another_app_crosses_and_keeps_its_address() {
+    let (cmds, reports, worker, _broker) = two_peers_on_one_broker("chat-remark");
+
+    let mut doc_a = automerge::AutoCommit::new();
+    let mut doc_b = automerge::AutoCommit::new();
+    let mut a = peer("u_alice", "AL", 0);
+    let mut b = peer("u_bob", "BO", 3);
+    sync(&mut a, &mut doc_a);
+    cross(&cmds, &reports, "A", &mut doc_a, &mut doc_b);
+    sync(&mut b, &mut doc_b);
+    cross(&cmds, &reports, "B", &mut doc_b, &mut doc_a);
+    sync(&mut a, &mut doc_a);
+
+    let roster = [("u_alice", "Ada Lovelace"), ("u_bob", "Bob Kahn")];
+    room_says(&mut a, &roster);
+    room_says(&mut b, &roster);
+
+    let channel = a.active_channel_id().to_string();
+    let mut reference = qos_reference::ResourceRef::ranged(
+        "word_processor.block",
+        "word-processor.block:blk_7",
+        "¶3 of Run sheet",
+        qos_reference::Span::chars(12, 41),
+    );
+    reference.label = "something else entirely".into();
+    let remark = qos_reference::Remark::new(
+        "The times here contradict the run sheet above them.",
+        reference,
+        qos_reference::Destination::channel(channel.as_str(), "general"),
+    );
+    let encoded = remark
+        .to_chat_action("m_remark", "u_alice", 1_700_000_000)
+        .expect("a remark addressed to a channel is deliverable");
+
+    // Chat's own door, not a private one: the registry the app registers at
+    // startup, keyed by the type id `qos-reference` wrote.
+    use qos_actions::Action as _;
+    let mut registry = qos_actions::ActionRegistry::new();
+    chat::actions::register(&mut registry);
+    registry
+        .decode(&encoded)
+        .expect("chat decodes an action minted under its own type id")
+        .apply(&mut doc_a)
+        .expect("and applying it inserts the message");
+
+    cross(&cmds, &reports, "A", &mut doc_a, &mut doc_b);
+    sync(&mut b, &mut doc_b);
+
+    // It is an ordinary message on Bob's machine — same channel, same history.
+    let seen = chat::doc::ChatDoc::list_messages(&doc_b, &channel);
+    let msg = seen
+        .iter()
+        .find(|m| m.id == "m_remark")
+        .expect("the remark reached Bob as a message in the channel");
+    assert_eq!(msg.author, "u_alice");
+    assert_eq!(
+        b.display_name(&msg.author),
+        "Ada Lovelace",
+        "and under the name the room gave her, like any other message"
+    );
+
+    // And it is still about something, by address.
+    let got = chat::doc::ChatDoc::message_reference(&doc_b, &channel, "m_remark")
+        .expect("the address crossed with the message");
+    assert_eq!(
+        got.resource_id().as_str(),
+        "word-processor.block:blk_7",
+        "the address must survive as an address"
+    );
+    assert_eq!(got.kind, "word_processor.block");
+    assert_eq!(got.span, Some(qos_reference::Span::chars(12, 41)));
+    assert!(
+        !msg.text.contains("blk_7"),
+        "the address must not have been smuggled through the body"
+    );
+
+    let _ = cmds.send(Cmd::Stop);
+    let _ = worker.join();
+}
+
 /// Somebody leaving must not go on being present.
 ///
 /// Presence forgets a peer on leave. Anything that only ever learned from it
