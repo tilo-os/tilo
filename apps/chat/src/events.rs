@@ -1492,6 +1492,54 @@ mod tests {
         );
     }
 
+    /// On a real first run nobody has named anybody, and the identity bar
+    /// still has to say something a person recognises.
+    ///
+    /// This is the visible half of the rule that a peer never writes its own
+    /// name into the shared document. The document's copy is therefore empty,
+    /// and every site that read it directly drew a blank: an empty monogram
+    /// beside an empty name. Falling back to the raw id instead would only
+    /// swap a blank for an internal token.
+    #[test]
+    fn a_first_run_identity_bar_is_neither_blank_nor_an_internal_id() {
+        let data = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("QOS_CHAT_DATA", data.path()) };
+        let mut app = ChatApp::new_ephemeral();
+        app.is_live = true;
+        let mut doc = AutoCommit::new();
+        use ui::Widget;
+        app.sync(&mut doc, &automerge::ROOT);
+        unsafe { std::env::remove_var("QOS_CHAT_DATA") };
+
+        // Precondition: this really is the un-named case the bar has to survive.
+        let stored = ChatDoc::list_users(&doc);
+        assert!(
+            stored.iter().all(|u| u.name.trim().is_empty()),
+            "a peer named itself in the document, so this proves nothing: {stored:?}"
+        );
+
+        let shown = app.chrome_name(&app.me.id);
+        assert!(!shown.trim().is_empty(), "the identity bar drew no name at all");
+        assert_ne!(
+            shown, app.me.id,
+            "the identity bar shows the raw participant id, which is an internal token"
+        );
+        assert!(
+            !ui::widget::Avatar::initials_for_name(&shown).trim().is_empty(),
+            "the monogram beside the name is blank"
+        );
+
+        // And once the room does speak, the room's answer wins outright.
+        let mut room = ui::presence::PresenceCtx::empty();
+        room.set_display_name(ui::permissions::UserId(app.me.id.clone()), "Ada Lovelace");
+        app.adopt_room(&room);
+        assert_eq!(
+            app.chrome_name(&app.me.id),
+            "Ada Lovelace",
+            "the local fallback outranked the room, which is exactly backwards"
+        );
+    }
+
     #[test]
     fn typing_then_send_appends_a_message() {
         let (mut app, mut doc) = app_with_doc();
