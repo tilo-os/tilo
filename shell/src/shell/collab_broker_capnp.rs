@@ -778,6 +778,25 @@ impl CapnpBrokerState {
         peer_id: u64,
     ) -> mpsc::UnboundedReceiver<ContextEnvelope> {
         let (tx, rx) = mpsc::unbounded_channel();
+        // Who this machine's own participant is, said before anything
+        // else on the stream.
+        //
+        // A sandboxed app dials this transport and nothing else, so this
+        // is where the room's list of who is in it reaches an
+        // application -- and every other row on it is somebody else, by
+        // construction: they are minted from frames that arrived from
+        // other machines. Said here rather than on the fanout because
+        // this is the one moment the answer is certainly wanted and
+        // certainly not yet heard; the id in it never changes afterwards.
+        if let Some(row) = self
+            .identity
+            .self_row(Some(&CrdtRoute::cluster(channel_id.to_string())))
+        {
+            let _ = tx.send(ContextEnvelope {
+                collaborators: vec![row],
+                permissions: Vec::new(),
+            });
+        }
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())
                 .or_insert_with(ChannelSubscribers::default)
