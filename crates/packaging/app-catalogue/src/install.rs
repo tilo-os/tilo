@@ -15,7 +15,6 @@
 //! that has to run `qos-install` themselves and mean it.
 
 use std::io::{Read, Write};
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
