@@ -1002,8 +1002,9 @@ def main() -> int:
         # The chooser route needed one; this is what replaced it.
 
         # Files first, so it is the left-hand window: the gesture reads
-        # left to right, and `frame_both_windows` scrolls the strip back
-        # by focusing the leftmost group.
+        # left to right, and `frame_windows` pans the strip to the pair
+        # it is given — right-hand subject first, then the left one,
+        # which lands the left one flush against the left edge.
         files = session.launch(yc.FILES_APP, search="files")
         if files is None:
             raise RuntimeError(
@@ -1040,9 +1041,14 @@ def main() -> int:
         # hanging off an edge is one the gesture would cross out of, and
         # it is worth saying so here rather than discovering it on film.
         viewport = tuple(int(v) for v in session.size.lower().split("x"))
-        yc.frame_both_windows(session, viewport)
+        subjects = [yc.FILES_APP, yc.WORD_PROCESSOR]
+        yc.frame_windows(session, subjects, viewport)
         session.settle(0.8)
-        clipped = yc.windows_off_screen(session, viewport)
+        # The two ends of the gesture, not every window there is. A strip
+        # scrolls, so anything else the person driving this happens to
+        # have open is off the edges on purpose and is not a fault.
+        clipped = (yc.subjects_off_screen(session, subjects, viewport)
+                   + yc.subjects_overlapping(session, subjects))
         print("  both windows in frame  "
               + ("yes" if not clipped else "NO — " + "; ".join(clipped)))
 
