@@ -715,7 +715,10 @@ fn draw_primary_button(
         scene,
         label,
         size,
-        tokens.colors.text_primary.with_alpha_factor(alpha),
+        tokens
+            .colors
+            .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
+            .with_alpha_factor(alpha),
         transform
             * Affine::translate((
                 rect.center().x - tw as f64 / 2.0,
@@ -2023,7 +2026,19 @@ pub fn draw_permissions_pane(
         let size = tokens.typography.scale.sm;
         let (tw, th) = text_renderer.measure(label, size, None);
         let color = if selected {
-            colors.text_primary
+            // The selected segment is the accent at 90% over the raised
+            // track, so the label is measured against that composite rather
+            // than against the accent token it was mixed from.
+            let seg_fill = ui::tokens::colors::over(
+                colors.surfaces.raised,
+                colors.accent[5],
+                0.90,
+            );
+            colors.ink_on_any(
+                &[seg_fill],
+                vello::peniko::Color::WHITE,
+                ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+            )
         } else {
             colors.text_dim
         };
