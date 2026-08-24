@@ -100,6 +100,11 @@ pub struct ShellOverlayHost {
     /// own background indexers etc.) so re-registration would leak
     /// worker threads.
     search_registry: crate::shell::search::SearchRegistry,
+    /// The focused app's published resource tree, shared with the
+    /// provider that serves it. Refreshed from the live widget tree
+    /// immediately before a catalogue is built, so a caller enumerates
+    /// what the app has open *now* rather than at some earlier frame.
+    app_surfaces: crate::shell::search::providers::AppSurfaces,
     /// The result list backing the current palette entries. Indexed in
     /// lock-step with `palette.entries` so an Enter/click resolves the
     /// row by ordinal into this vec and calls the stored `on_open`.
@@ -1390,7 +1395,26 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::FilesProvider::new(),
         ));
+        // The focused app's own resources, in the same registry as the
+        // shell's. Without this an app's published operations were
+        // reachable only from inside the app's own process, so an agent
+        // or a script could open a terminal but not touch the document
+        // it was looking at. The surface is refreshed from the live
+        // widget tree, and `types` holds the decoders the in-process
+        // apps registered — the door refuses an action whose type is
+        // not among them rather than applying it on trust.
+        let app_surfaces = crate::shell::search::providers::AppSurfaces::new();
+        let mut app_types = qos_actions::ActionRegistry::new();
+        word_processor::actions::register(&mut app_types);
+        file_explorer::actions::register(&mut app_types);
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::AppResourcesProvider::new(
+                app_surfaces.clone(),
+                std::rc::Rc::new(app_types),
+            ),
+        ));
         Self {
+            app_surfaces,
             rect: Rect::ZERO,
             content,
             sidebar: None,
@@ -4641,6 +4665,13 @@ impl ShellOverlayHost {
             return;
         }
         self.last_search_query = current_query.clone();
+        // Same refresh the action catalogue does. The palette and the
+        // headless surface read one registry, so an app operation a
+        // caller can address is one a person can also find by typing.
+        {
+            let st = chrome.borrow();
+            self.refresh_app_surfaces(&st, doc);
+        }
         let (scope, active_provider) = {
             let st = chrome.borrow();
             let scope = st.search_scope;
@@ -5059,6 +5090,61 @@ impl ShellOverlayHost {
     /// focused tab's provider, exactly as the palette does), and
     /// `visibility` is the permission seam — a restricted caller only
     /// enumerates what it may see.
+    /// Republish the focused app's resource tree for the app provider to
+    /// serve.
+    ///
+    /// Called immediately before a catalogue is built — enumeration must
+    /// describe what the app has open now, and an app's tree changes with
+    /// every edit (a new heading is a new addressable section).
+    ///
+    /// The focused tab specifically: a session checks out one record at a
+    /// time, so `doc` *is* that app's document and it is the only one this
+    /// can honestly offer to both read and write. Backgrounded tabs are
+    /// parked and are not offered rather than being offered against the
+    /// wrong document.
+    ///
+    /// Read-only by construction: every reference taken here is shared and
+    /// [`Widget::resources`](ui::widget::Widget::resources) takes `&self`
+    /// and `&AutoCommit`, so surveying cannot mutate a widget or the
+    /// document — there is no `&mut` anywhere on this path to do it with.
+    pub fn refresh_app_surfaces(
+        &self,
+        chrome: &crate::shell::chrome_state::ChromeState,
+        doc: &automerge::AutoCommit,
+    ) {
+        let caller = chrome.local_user_id.clone();
+        let Some(active) = chrome.active_tab_id() else {
+            self.app_surfaces.publish(caller.as_str(), Vec::new());
+            return;
+        };
+        for &row_ptr in self.group_row_ptrs.values() {
+            // SAFETY: the pointer comes from a `Box<GroupRow>` owned by
+            // this host's content tree, which outlives the host's use of
+            // it. Unlike the `&mut self` accessors nearby this one takes
+            // only a shared reference and never hands out a `&mut`, so it
+            // cannot alias a live mutable borrow of the same row.
+            let row: &GroupRow = unsafe { &*row_ptr };
+            for group in row.groups.iter() {
+                if group.active_tab_id() != active {
+                    continue;
+                }
+                let Some(host) = group.active_host() else {
+                    continue;
+                };
+                let ui::widget::TileContent::App(app) = host.content() else {
+                    continue;
+                };
+                self.app_surfaces.publish(caller.as_str(), app.resources(doc));
+                return;
+            }
+        }
+        // Focused tab hosts no app widget (a stub, a foreign surface).
+        // Publishing an empty tree rather than leaving the last one in
+        // place is the difference between "this app exports nothing" and
+        // "here is a stale address that resolves to somebody else's tab".
+        self.app_surfaces.publish(caller.as_str(), Vec::new());
+    }
+
     pub fn action_catalog(
         &self,
         query: &str,
@@ -5067,6 +5153,7 @@ impl ShellOverlayHost {
         root: &ObjId,
         visibility: &dyn crate::shell::search::action_api::ActionVisibility,
     ) -> crate::shell::search::action_api::ActionCatalog {
+        self.refresh_app_surfaces(chrome, doc);
         let scope = chrome.search_scope;
         let active_provider = active_tab_provider_id(chrome, &self.search_registry);
         crate::shell::search::action_api::ActionCatalog::build(

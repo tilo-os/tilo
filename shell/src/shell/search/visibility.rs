@@ -35,6 +35,20 @@ use crate::shell::state::{Actor, ResourceRef as CapResource, Verb, Workspace};
 
 use super::ResourceKind;
 use super::action_api::{ActionVisibility, ResourceRef};
+use super::providers::app_resources as app_actions;
+
+/// The label [`app_actions::app_action_kind`] carries, matched here so the
+/// classification below is driven by the provider's own name for its kind
+/// rather than a second copy of the string.
+fn app_action_kind_label() -> String {
+    match app_actions::app_action_kind() {
+        ResourceKind::Custom(k) => k,
+        // The provider mints a `Custom` kind; anything else is a change
+        // there that must be reflected here rather than silently falling
+        // through to the unclassified default.
+        other => unreachable!("app action kind must stay Custom, got {other:?}"),
+    }
+}
 
 /// The app id chrome-level actions are attributed to in the capability
 /// model. They are not exported by any packaged app — they are the
@@ -77,6 +91,31 @@ pub fn required_capability(
                 verb,
             )
         }),
+
+        // An operation an app published through its own resource tree.
+        // Gated like any other act, and gated against *that app* rather
+        // than the shell's namespace: the room grants edit rights per
+        // app, so folding every app's actions under one name would make
+        // a grant in one of them a grant in all of them.
+        //
+        // Both halves come from the address itself — the app from the
+        // resource id's namespace, the verb from the fact that an
+        // exported action is by definition something that changes shared
+        // state (an app never publishes "scroll" or "select"; see
+        // `docs/action-model-recipe.md`).
+        ResourceKind::Custom(k) if *k == app_action_kind_label() => {
+            let (app, action) = match app_actions::decode_address(&resource.id) {
+                Some(addr) => (
+                    app_actions::app_of(&addr.resource).to_string(),
+                    addr.action,
+                ),
+                // An id that is not an address cannot name an app, and a
+                // thing we cannot classify must not be reachable by a
+                // caller who would fail every classified one.
+                None => (SHELL_APP_ID.to_string(), resource.id.clone()),
+            };
+            Some((CapResource::Action { app, action }, Verb::Write))
+        }
 
         // A provider minting its own kind has not been classified here.
         // Treat it as an act: an unmapped action must not be reachable
