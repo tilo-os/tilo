@@ -528,6 +528,9 @@ impl SearchProvider for ActionsProvider {
                     title: action.label.to_string(),
                     subtitle: Some(action.subtitle.to_string()),
                     score,
+                    // An action is the shell doing something it can
+                    // already do; there is nothing to fetch.
+                    fetch_source: None,
                     params: action.params.to_vec(),
                     on_open: Rc::new(move |_doc, _root, chrome: &Chrome, args: &ActionArgs| {
                         let mut st = chrome.borrow_mut();

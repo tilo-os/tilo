@@ -189,6 +189,17 @@ pub struct SearchResult {
     /// creator handle.
     pub subtitle: Option<String>,
     pub score: i32,
+    /// Where the thing behind this row has to come from, when the
+    /// machine does not already have it: the name of the registry that
+    /// offers it. `None` — the overwhelming majority — means it is
+    /// here, and activating the row starts it.
+    ///
+    /// The fetch path has always known this: it is the reason it knows
+    /// to fetch at all. Carrying it on the row rather than re-deriving
+    /// it downstream is what lets the palette say so before the user
+    /// commits, and what stops "is this here?" being answered twice by
+    /// two pieces of code that can disagree.
+    pub fetch_source: Option<String>,
     /// What an invocation must carry. Empty for the nullary majority,
     /// which is why every existing provider builds a row without naming
     /// it (see [`SearchResult::nullary`]).
@@ -220,6 +231,7 @@ impl SearchResult {
             title: title.into(),
             subtitle,
             score,
+            fetch_source: None,
             params: Vec::new(),
             on_open: Rc::new(move |doc, root, chrome, _args| {
                 on_open(doc, root, chrome);
@@ -254,6 +266,7 @@ impl SearchResult {
             title: title.into(),
             subtitle,
             score,
+            fetch_source: None,
             params: Vec::new(),
             on_open: Rc::new(move |doc, root, chrome, _args| on_open(doc, root, chrome)),
         }
@@ -269,6 +282,7 @@ impl std::fmt::Debug for SearchResult {
             .field("title", &self.title)
             .field("subtitle", &self.subtitle)
             .field("score", &self.score)
+            .field("fetch_source", &self.fetch_source)
             .field("params", &self.params)
             .finish_non_exhaustive()
     }

@@ -40,6 +40,101 @@ const INDETERMINATE_SEGMENT_FRAC: f64 = 0.3;
 /// from the left edge to the right edge of the track.
 const INDETERMINATE_PERIOD_SECS: f32 = 2.0;
 
+/// What [`paint_track`] should draw into a rect.
+///
+/// Split out from the widget so a surface that is not a widget — a
+/// notification card reporting a fetch, say — gets the same track, the
+/// same accent, the same sweep and the same reduced-motion behaviour
+/// without a second implementation of any of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ProgressPaint {
+    /// Work is under way, with no honest fraction to show. `phase` is
+    /// `[0, 1)` — where in the sweep the segment currently is — so the
+    /// caller owns the clock and the painter stays pure.
+    Indeterminate { phase: f32 },
+    /// `[0, 1]` of a step whose size is known.
+    Fraction(f32),
+}
+
+/// Paint a progress track (and its fill or its sweeping segment) into
+/// `rect`, modulated by `alpha`.
+///
+/// This is the whole visual definition of progress in qOS: both
+/// [`ProgressBar`] and every non-widget surface that has to report work
+/// go through it, so a bar in a toast and a bar in a dialog cannot
+/// drift apart.
+pub fn paint_track(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    rect: Rect,
+    paint: ProgressPaint,
+    alpha: f32,
+) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 || alpha <= 0.0 {
+        return;
+    }
+    let radius = theme.tokens.radii.md as f64;
+    // The track is always painted: it is the visual anchor even at
+    // zero, so an unstarted bar still reads as a bar.
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.raised.with_alpha(alpha),
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+    let accent = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX].with_alpha(alpha);
+    let track_width = rect.width();
+    match paint {
+        ProgressPaint::Indeterminate { phase } => {
+            let segment_width = track_width * INDETERMINATE_SEGMENT_FRAC;
+            let travel = track_width + segment_width;
+            // Reduced motion holds the segment mid-track: the bar still
+            // reads as busy, but nothing moves.
+            let phase = if theme.reduce_motion {
+                (segment_width / 2.0) / travel
+            } else {
+                phase.clamp(0.0, 1.0) as f64
+            };
+            let x0 = (rect.x0 - segment_width + phase * travel).max(rect.x0);
+            let x1 = (rect.x0 - segment_width + phase * travel + segment_width).min(rect.x1);
+            if x1 > x0 {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    accent,
+                    None,
+                    &RoundedRect::from_rect(Rect::new(x0, rect.y0, x1, rect.y1), radius),
+                );
+            }
+        }
+        // Skipped entirely at zero so an empty bar and a non-empty one
+        // differ at the encoding level, not just visually.
+        ProgressPaint::Fraction(f) if f > 0.0 => {
+            let fill_width = f.clamp(0.0, 1.0) as f64 * track_width;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                accent,
+                None,
+                &RoundedRect::from_rect(
+                    Rect::new(rect.x0, rect.y0, rect.x0 + fill_width, rect.y1),
+                    radius,
+                ),
+            );
+        }
+        _ => {}
+    }
+}
+
+/// The `[0, 1)` sweep position of an indeterminate segment `elapsed`
+/// into the animation. Exposed so a caller driving [`paint_track`]
+/// directly keeps the same period as [`ProgressBar`].
+pub fn indeterminate_phase_at(elapsed: std::time::Duration) -> f32 {
+    (elapsed.as_secs_f32() % INDETERMINATE_PERIOD_SECS) / INDETERMINATE_PERIOD_SECS
+}
+
 pub struct ProgressBar {
     progress: f32,
     indeterminate: bool,
@@ -176,79 +271,19 @@ impl Widget for ProgressBar {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
-        // The track is always painted: it provides the visual anchor
-        // even at `progress == 0.0`. The fill is conditional — see
-        // `progress_bar_at_zero_paints_no_fill` for the contract.
-        let radius = theme.tokens.radii.md as f64;
-        let track_shape = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &track_shape,
-        );
-
-        let track_width = self.rect.width();
-        let accent = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
-
-        if self.indeterminate {
-            // Slide a fixed-width segment across the track. The phase
-            // [0, 1) drives the segment's left edge from
-            // `-segment_width` (just off-screen left) to `track_width`
-            // (just off-screen right), so the segment fully enters and
-            // exits the track every period.
-            let segment_width = track_width * INDETERMINATE_SEGMENT_FRAC;
-            let travel = track_width + segment_width;
-            // With reduced motion the segment holds at a fixed position
-            // instead of sweeping across the track: the bar still reads as
-            // busy, but nothing moves.
-            let phase = if theme.reduce_motion {
-                (segment_width / 2.0) / travel
-            } else {
-                self.indeterminate_phase() as f64
-            };
-            let segment_x0 = self.rect.x0 - segment_width + phase * travel;
-            let segment_x1 = segment_x0 + segment_width;
-            // Clip the segment to the track so the rounded ends never
-            // poke past the track edges.
-            let clipped_x0 = segment_x0.max(self.rect.x0);
-            let clipped_x1 = segment_x1.min(self.rect.x1);
-            if clipped_x1 > clipped_x0 {
-                let segment_rect =
-                    Rect::new(clipped_x0, self.rect.y0, clipped_x1, self.rect.y1);
-                let segment_shape = RoundedRect::from_rect(segment_rect, radius);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    accent,
-                    None,
-                    &segment_shape,
-                );
+        // The track, and its fill or its sweeping segment, come from
+        // the shared painter — the same one the notification card uses,
+        // so the two surfaces cannot drift apart. The fill is skipped
+        // entirely at `progress == 0.0`; see
+        // `progress_bar_at_zero_paints_no_fill` for that contract.
+        let paint = if self.indeterminate {
+            ProgressPaint::Indeterminate {
+                phase: self.indeterminate_phase(),
             }
-        } else if self.progress > 0.0 {
-            // Determinate fill — width is `progress * track_width`.
-            // Crucially, we *skip the fill entirely* at `progress == 0.0`
-            // so the COLOR-draw-tag count distinguishes "empty" from
-            // "non-empty" bars at the encoding level (the visual would
-            // be identical, but the test contract requires zero fill
-            // draws).
-            let fill_width = self.progress as f64 * track_width;
-            let fill_rect = Rect::new(
-                self.rect.x0,
-                self.rect.y0,
-                self.rect.x0 + fill_width,
-                self.rect.y1,
-            );
-            let fill_shape = RoundedRect::from_rect(fill_rect, radius);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                accent,
-                None,
-                &fill_shape,
-            );
-        }
+        } else {
+            ProgressPaint::Fraction(self.progress)
+        };
+        paint_track(scene, transform, theme, self.rect, paint, 1.0);
     }
 
     fn handle_event(

@@ -178,6 +178,17 @@ pub struct CommandEntry {
     /// identity at a glance — the job the bracketed literal was doing
     /// badly.
     pub icon: Option<Icon>,
+    /// Short trailing chip stating a *fact about this row* that the
+    /// title cannot carry — e.g. that the app it opens is not on this
+    /// machine yet.
+    ///
+    /// Deliberately the same shape and weight as the keybinding chip:
+    /// a row that differs from its neighbours has to be findable at a
+    /// glance without becoming the loudest thing in a list of twenty.
+    /// Keep it to two or three words; it is elided against the title,
+    /// not given a line of its own. A row may carry a badge or a
+    /// keybinding, not both — they occupy the same slot.
+    pub badge: Option<String>,
     pub on_select: Option<Arc<SelectFn>>,
 }
 
@@ -190,6 +201,7 @@ impl std::fmt::Debug for CommandEntry {
             .field("keybinding", &self.keybinding)
             .field("argument", &self.argument)
             .field("group", &self.group)
+            .field("badge", &self.badge)
             .field("on_select", &self.on_select.as_ref().map(|_| "<fn>"))
             .finish()
     }
@@ -206,8 +218,15 @@ impl CommandEntry {
             group: None,
             group_total: None,
             icon: None,
+            badge: None,
             on_select: None,
         }
+    }
+
+    /// Attach the trailing fact chip. See [`Self::badge`].
+    pub fn badge(mut self, b: impl Into<String>) -> Self {
+        self.badge = Some(b.into());
+        self
     }
 
     /// Attach a one-line description shown under the label (Commands mode).
@@ -1610,12 +1629,19 @@ impl CommandPalette {
             text_x = icon_rect.x1 + 10.0;
         }
 
-        // Reserve the trailing keybinding chip before measuring the
-        // text, so a long title is ellipsised rather than painted under
-        // the chip.
+        // Reserve the trailing chip before measuring the text, so a long
+        // title is ellipsised rather than painted under it.
+        //
+        // A badge and a keybinding share this slot. The badge wins when
+        // both are set: a keybinding is a convenience the user can also
+        // discover elsewhere, while a badge is a fact about what
+        // activating the row will do, and losing that to a shortcut hint
+        // would be the wrong trade.
         let mut text_right = row.x1 - 12.0;
-        if let Some(kb) = &entry.keybinding {
-            let (kw, kh) = text_renderer.measure(kb, desc_size, None);
+        let chip_text = entry.badge.as_deref().or(entry.keybinding.as_deref());
+        if let Some(chip_label) = chip_text {
+            let is_badge = entry.badge.is_some();
+            let (kw, kh) = text_renderer.measure(chip_label, desc_size, None);
             let chip_w = kw as f64 + 14.0;
             let chip_h = kh as f64 + 8.0;
             let cy = (row.y0 + row.y1) / 2.0;
@@ -1626,25 +1652,34 @@ impl CommandPalette {
                 cy + chip_h / 2.0,
             );
             let chip_shape = RoundedRect::from_rect(chip, 5.0);
+            // A badge is tinted with the accent, a keybinding is not.
+            // The tint is what makes it findable in a list without
+            // giving it a banner; the alpha keeps it quieter than the
+            // selection, which still has to be the loudest thing on
+            // screen. Both come from the theme, so high contrast gets
+            // its own separation rather than this one washed out.
+            let (fill, border, ink) = if is_badge {
+                (
+                    colors.accent[5].with_alpha_factor(0.18),
+                    colors.accent[5].with_alpha_factor(0.55),
+                    colors.accent[5],
+                )
+            } else {
+                (colors.surface_white_5, colors.border_white_10, colors.text_dim)
+            };
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                colors.surface_white_5,
+                fill,
                 None,
                 &chip_shape,
             );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                colors.border_white_10,
-                None,
-                &chip_shape,
-            );
+            scene.stroke(&Stroke::new(1.0), transform, border, None, &chip_shape);
             text_renderer.draw_text(
                 scene,
-                kb,
+                chip_label,
                 desc_size,
-                colors.text_dim,
+                ink,
                 transform
                     * Affine::translate((chip.x0 + 7.0, chip.center().y - kh as f64 / 2.0)),
                 None,
@@ -2325,6 +2360,101 @@ mod tests {
             event: ev,
             is_synthetic: false,
         }
+    }
+
+    /// Paint one row into a fresh scene and hand back the scene, so a
+    /// test can compare what two rows actually encode rather than what
+    /// the code path claims to have drawn.
+    fn render_row(entry: &CommandEntry, theme: &Theme, selected: bool) -> Scene {
+        let p = CommandPalette::new();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        p.draw_one_row(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            theme,
+            Rect::new(0.0, 0.0, 420.0, 50.0),
+            entry,
+            selected,
+            14.0,
+            11.0,
+        );
+        scene
+    }
+
+    fn count_color_fills(scene: &Scene) -> usize {
+        use vello_encoding::DrawTag;
+        scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count()
+    }
+
+    /// A badge is a visible chip, not a field nobody paints: a badged
+    /// row encodes strictly more than the identical row without one.
+    #[test]
+    fn a_badged_row_paints_more_than_the_same_row_without_a_badge() {
+        let theme = Theme::dark();
+        let plain = CommandEntry::new("a", "Open Sheets").description("Opens beside · Office");
+        let badged = CommandEntry::new("a", "Fetch and open Sheets")
+            .description("Opens beside · Office · from qOS main")
+            .badge("not on this machine");
+
+        let bare = count_color_fills(&render_row(&plain, &theme, false));
+        let chipped = count_color_fills(&render_row(&badged, &theme, false));
+        assert!(
+            chipped > bare,
+            "the badge has to reach the scene: {bare} fills without it, \
+             {chipped} with"
+        );
+    }
+
+    /// The chip's colours come from the theme, so the marker survives
+    /// a theme the designer of this row never saw. A hard-coded fill
+    /// would encode identically in all three.
+    #[test]
+    fn the_badge_is_themed_rather_than_hard_coded() {
+        let badged = CommandEntry::new("a", "Fetch and open Sheets").badge("not on this machine");
+        let mut seen: Vec<Vec<u32>> = Vec::new();
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let scene = render_row(&badged, &theme, false);
+            seen.push(scene.encoding().draw_data.clone());
+        }
+        assert_ne!(
+            seen[0], seen[1],
+            "light and dark must not paint the badge identically"
+        );
+        assert_ne!(
+            seen[0], seen[2],
+            "high contrast must not paint the badge identically to dark"
+        );
+    }
+
+    /// A row cannot show a badge and a keybinding at once — they are
+    /// the same slot — and the badge is the one that wins, because it
+    /// is a fact about what the row does rather than a shortcut hint.
+    #[test]
+    fn a_badge_takes_the_trailing_slot_from_a_keybinding() {
+        let theme = Theme::dark();
+        let kb = CommandEntry::new("a", "Sum").keybinding("Alt+=");
+        let both = CommandEntry::new("a", "Sum")
+            .keybinding("Alt+=")
+            .badge("not on this machine");
+        let badge_only = CommandEntry::new("a", "Sum").badge("not on this machine");
+        assert_eq!(
+            render_row(&both, &theme, false).encoding().draw_data,
+            render_row(&badge_only, &theme, false).encoding().draw_data,
+            "with both set the row paints the badge and nothing of the \
+             keybinding"
+        );
+        assert_ne!(
+            render_row(&both, &theme, false).encoding().draw_data,
+            render_row(&kb, &theme, false).encoding().draw_data,
+            "and it is not simply falling back to the keybinding chip"
+        );
     }
 
     #[test]

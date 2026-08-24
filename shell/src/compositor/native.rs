@@ -807,19 +807,20 @@ fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
         "visible": visible,
         "query": query,
         "selected_id": selected,
-        // Label *and* subtitle. The subtitle is the half that says what
-        // the row will do, so a harness asserting on how an app is
-        // offered has to be able to read it — a row that grew a badge
-        // or a "not installed" marker would look identical from the
-        // label alone.
+        // Label, subtitle *and* badge. A row for an app this machine
+        // does not have differs from one for an app it does across all
+        // three — the verb, the subtitle's tail, and the chip — so a
+        // harness asserting on how an app is offered has to be able to
+        // read every one of them.
         "rows": fb
             .host()
             .palette_rows_detailed()
             .into_iter()
-            .map(|(id, label, description)| serde_json::json!({
+            .map(|(id, label, description, badge)| serde_json::json!({
                 "id": id,
                 "label": label,
                 "description": description,
+                "badge": badge,
             }))
             .collect::<Vec<_>>(),
     })

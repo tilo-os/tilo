@@ -855,6 +855,7 @@ mod tests {
                 title: "Needs text".to_string(),
                 subtitle: None,
                 score: 0,
+                fetch_source: None,
                 params: vec![ActionParam::required(
                     "text",
                     ParamType::Text,

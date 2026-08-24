@@ -571,6 +571,42 @@ const PEER_SYNC_CARD_WIDTH: f64 = 520.0;
 /// its chip, which is also the gesture that means "show me all of these".
 const PALETTE_ROW_BUDGET: usize = 8;
 
+/// What an in-flight open's notice says, given where the fetch has got
+/// to.
+///
+/// Each phase gets its own sentence rather than one word covering all
+/// of them, because "still going" and "still going, 40% of 12 MB in"
+/// are different amounts of reassurance, and the second is the one that
+/// distinguishes a slow network from a wedged one.
+/// `None` for [`FetchPhase::Connecting`]: that sentence names the
+/// registry, which the phase does not carry, and the notice was already
+/// raised saying it. Leaving it alone is more informative than
+/// re-deriving it without the name.
+pub(crate) fn progress_body(phase: &crate::shell::catalogue::FetchPhase) -> Option<String> {
+    use crate::shell::catalogue::{FetchPhase, human_bytes};
+    use crate::shell::i18n;
+    Some(match phase {
+        FetchPhase::Connecting => return None,
+        FetchPhase::Downloading {
+            received,
+            total: Some(total),
+        } => i18n::t_args(
+            "notice-fetch-downloading",
+            &[
+                i18n::arg("done", human_bytes(*received).as_str()),
+                i18n::arg("total", human_bytes(*total).as_str()),
+            ],
+        ),
+        FetchPhase::Downloading { received, .. } => i18n::t_args(
+            "notice-fetch-downloading-unsized",
+            &[i18n::arg("done", human_bytes(*received).as_str())],
+        ),
+        FetchPhase::Unpacking => i18n::t("notice-fetch-unpacking"),
+        FetchPhase::Starting => i18n::t("notice-fetch-starting"),
+        FetchPhase::Failed { detail } => detail.clone(),
+    })
+}
+
 /// Glyph that stands for a result kind in the palette. Giving each kind
 /// a picture is what replaced the bracketed kind literal the shell used
 /// to prepend to every subtitle.
@@ -3567,6 +3603,49 @@ impl ShellOverlayHost {
         posted
     }
 
+    /// Re-word each outstanding open's notice from the fetch's own
+    /// reported phase.
+    ///
+    /// The fetch runs on a worker thread and reports where it has got
+    /// to; this is the frame thread reading that and saying it. Without
+    /// it the toast would be a single sentence written at the keystroke
+    /// and never revised — which is exactly as informative about a
+    /// stalled download as it is about a fast one.
+    ///
+    /// Returns whether any notice changed, so the caller can leave the
+    /// frame clean when nothing moved.
+    pub(crate) fn refresh_open_progress_notices(&mut self) -> bool {
+        let pending = crate::shell::catalogue::pending_notices();
+        if pending.is_empty() {
+            return false;
+        }
+        let Some(chrome_handle) = self.chrome.clone() else {
+            return false;
+        };
+        let mut changed = false;
+        for (package_id, notice) in pending {
+            let Some(phase) = crate::shell::catalogue::fetch_phase(&package_id) else {
+                continue;
+            };
+            // A failure is reported by the launch-event path, which
+            // dismisses this notice and posts the reason. Rewriting it
+            // here as well would be the same news twice.
+            if !phase.is_in_progress() {
+                continue;
+            }
+            let Some(body) = progress_body(&phase) else {
+                continue;
+            };
+            let progress = Some(match phase.fraction() {
+                Some(f) => crate::shell::notification::NotificationProgress::Fraction(f),
+                None => crate::shell::notification::NotificationProgress::Indeterminate,
+            });
+            let mut st = chrome_handle.borrow_mut();
+            changed |= st.update_notification_progress(notice, body, progress);
+        }
+        changed
+    }
+
     /// Retire the "Opening …" notice of any app that is now on screen.
     ///
     /// This is the success half of an open's settlement, and what counts
@@ -4330,6 +4409,13 @@ impl ShellOverlayHost {
                 if let Some(sub) = &r.subtitle {
                     e = e.description(sub.clone());
                 }
+                // A row whose thing is not on this machine says so
+                // before the user commits to it. The provider decided
+                // that — this only renders it, so "is it here?" is
+                // answered in one place rather than two that can drift.
+                if r.fetch_source.is_some() {
+                    e = e.badge(crate::shell::i18n::t("palette-not-on-this-machine"));
+                }
                 entries.push(e);
                 results.push(r.clone());
             }
@@ -4613,20 +4699,27 @@ impl ShellOverlayHost {
         )
     }
 
-    /// The rows on offer, with the subtitle each one renders under its
-    /// label.
+    /// The rows on offer: id, label, the subtitle under the label, and
+    /// the trailing badge chip when the row carries one.
     ///
     /// [`Self::palette_snapshot`] carries labels only, which is enough
     /// to say *which* row Enter takes but not enough to say what the
-    /// row tells the user. The subtitle is where a badge, a source
-    /// marker or the word "install" would appear, so a harness
-    /// checking that an app the machine has to fetch is offered
-    /// indistinguishably from one it already has needs to read it.
-    pub fn palette_rows_detailed(&self) -> Vec<(String, String, Option<String>)> {
+    /// row tells the user. A harness checking how an app that is not on
+    /// this machine is offered — versus one that is — needs all three
+    /// of the remaining fields, because the difference between them is
+    /// spread across the verb, the subtitle's tail and the badge.
+    pub fn palette_rows_detailed(&self) -> Vec<(String, String, Option<String>, Option<String>)> {
         self.palette
             .visible_entries()
             .into_iter()
-            .map(|e| (e.id.clone(), e.label.clone(), e.description.clone()))
+            .map(|e| {
+                (
+                    e.id.clone(),
+                    e.label.clone(),
+                    e.description.clone(),
+                    e.badge.clone(),
+                )
+            })
             .collect()
     }
 
@@ -4671,6 +4764,18 @@ impl ShellOverlayHost {
         // of a palette that had not searched.
         self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
         self.refresh_search_results(doc, root);
+    }
+
+    /// Narrow the palette to one or more result kinds, as clicking the
+    /// filter chips does. `bin/shots` uses it to frame a scene on the
+    /// rows it is about: the row budget is shared across every group,
+    /// so an unfiltered palette shows one row of each kind and a
+    /// comparison between two rows of the *same* kind never fits.
+    pub fn set_kind_filter_for_shots(
+        &mut self,
+        kinds: Vec<crate::shell::search::ResourceKind>,
+    ) {
+        self.active_kind_filter = kinds;
     }
 
     /// Build a headless [`ActionCatalog`](crate::shell::search::action_api::ActionCatalog)
@@ -5820,7 +5925,9 @@ impl Widget for ShellOverlayHost {
         // here is what turns "the sandbox refused to start" into
         // something the user can see; the frame thread only ever takes
         // a mutex and moves a Vec out.
-        let launch_dirty = self.drain_launch_events() | self.retire_notices_for_opened_windows();
+        let launch_dirty = self.drain_launch_events()
+            | self.refresh_open_progress_notices()
+            | self.retire_notices_for_opened_windows();
         // Notification lifecycle: drop expired toasts so the stack
         // shrinks even on frames where the user does nothing. The
         // widget's own `update` also drives this, but routing it
@@ -16535,6 +16642,9 @@ mod tests {
     fn ctrl_k_scopes_to_the_focused_app_and_super_k_reaches_installed_apps() {
         use crate::shell::chrome_state::SearchScope;
 
+        // Palette rows are translated, so an assertion on their exact
+        // wording has to say which language it is asserting in.
+        crate::shell::i18n::set_locale("en-US");
         let tmp = tempfile::tempdir().unwrap();
         install_gui_fixture(tmp.path(), "dev.qos.zzyzx", "Zzyzx");
         // SAFETY: guarded by the `process_env` serial group.
@@ -16614,6 +16724,112 @@ mod tests {
         assert_eq!(hit.id, "dev.qos.zzyzx");
         assert_eq!(hit.title, "Open Zzyzx");
 
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        crate::shell::launcher::invalidate_app_cache();
+    }
+
+    /// An app this machine does not have is offered as a row a person
+    /// can tell apart from one it does — and an app it has is offered
+    /// exactly as it always was.
+    ///
+    /// Asserts on the palette entries the production path actually
+    /// builds (`refresh_search_results` → `SearchRegistry::query_grouped`
+    /// → `ApplicationsProvider` → `CommandEntry`), not on the provider's
+    /// return value, because the badge is decided in the provider and
+    /// rendered from the entry: a test on either half alone would pass
+    /// with the two disconnected.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_palette_marks_an_app_this_machine_does_not_have() {
+        crate::shell::i18n::set_locale("en-US");
+        let tmp = tempfile::tempdir().unwrap();
+        install_gui_fixture(tmp.path(), "dev.qos.here", "Herehere");
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        crate::shell::launcher::invalidate_app_cache();
+        crate::shell::catalogue::seed_for_test(vec![crate::shell::catalogue::CatalogueApp {
+            package_id: "dev.qos.elsewhere".to_string(),
+            display_name: "Herethere".to_string(),
+            description: "not on this machine".to_string(),
+            category: Some("Office".to_string()),
+            version: "2.0.0".to_string(),
+            registry: "qOS main".to_string(),
+            trust: "verified".to_string(),
+        }]);
+
+        let mut h = build_harness();
+        let doc = AutoCommit::new();
+        h.chrome.borrow_mut().search_scope = crate::shell::chrome_state::SearchScope::All;
+        h.host.palette.set_query("here");
+        h.host.refresh_search_results(&doc, &automerge::ROOT);
+
+        let rows = h.host.palette_rows_detailed();
+        let find = |label_contains: &str| {
+            rows.iter()
+                .find(|(_, label, _, _)| label.contains(label_contains))
+                .unwrap_or_else(|| {
+                    panic!("no row for {label_contains:?}; got {rows:?}")
+                })
+        };
+
+        // The app that is here: unchanged, no chip, no new verb.
+        let (_, mine_label, mine_sub, mine_badge) = find("Herehere");
+        assert_eq!(mine_label, "Open Herehere");
+        assert_eq!(
+            *mine_badge, None,
+            "a row for an app the machine has must look exactly as it did"
+        );
+        assert!(
+            mine_sub
+                .as_deref()
+                .is_some_and(|s| !s.contains("from")),
+            "and it must not claim to come from anywhere: {mine_sub:?}"
+        );
+
+        // The app that is not: a verb that says what will happen, a
+        // subtitle that says where it comes from, and a chip that says
+        // the fact plainly.
+        let (_, theirs_label, theirs_sub, theirs_badge) = find("Herethere");
+        assert_eq!(theirs_label, "Fetch and open Herethere");
+        assert_eq!(
+            theirs_badge.as_deref(),
+            Some("not on this machine"),
+            "the row states the fact rather than leaving it to be inferred"
+        );
+        assert_eq!(
+            theirs_sub.as_deref(),
+            Some("Opens beside · Office · dev.qos.elsewhere · from qOS main"),
+        );
+
+        // And the two are still one list. The palette draws a header
+        // every time the group changes, so both app rows sharing the
+        // "Applications" group *and* that group appearing once is what
+        // rules out a second "here is the other kind of app" section.
+        let groups: Vec<String> = h
+            .host
+            .palette
+            .visible_entries()
+            .into_iter()
+            .filter_map(|e| e.group.clone())
+            .collect();
+        let app_runs = groups
+            .windows(2)
+            .filter(|w| w[1] == "Applications" && w[0] != "Applications")
+            .count()
+            + usize::from(groups.first().is_some_and(|g| g == "Applications"));
+        assert_eq!(
+            app_runs, 1,
+            "the app rows must form one contiguous section, not two: \
+             {groups:?}"
+        );
+        assert_eq!(
+            groups.iter().filter(|g| *g == "Applications").count(),
+            2,
+            "and both rows have to be in it: {groups:?}"
+        );
+
+        crate::shell::catalogue::seed_for_test(Vec::new());
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
         crate::shell::launcher::invalidate_app_cache();

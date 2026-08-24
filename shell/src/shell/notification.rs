@@ -30,6 +30,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
+use ui::widget::progress_bar::{ProgressPaint, indeterminate_phase_at};
 use ui::widget::toast::{ToastCard, ToastKind};
 
 use crate::shell::chrome_state::Chrome;
@@ -132,6 +133,35 @@ fn next_id() -> u64 {
     COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+/// How much is known about the progress of the work a toast is
+/// reporting.
+///
+/// The distinction is honesty, not decoration. A fraction is a promise
+/// that the remaining wait is proportional to the remaining bar, and
+/// only a step that knows its own size can make it. Everything else —
+/// a request that has not been answered yet, an archive being verified
+/// and unpacked — gets an indication that says *something is happening*
+/// without pretending to say how much is left.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NotificationProgress {
+    /// Work is under way and its remaining duration is genuinely
+    /// unknown.
+    Indeterminate,
+    /// `[0, 1]` of the way through a step whose size is known.
+    Fraction(f32),
+}
+
+impl NotificationProgress {
+    /// The fraction to paint, or `None` for the indeterminate case.
+    /// Clamped, so a caller cannot produce a bar wider than its track.
+    pub fn fraction(self) -> Option<f32> {
+        match self {
+            NotificationProgress::Indeterminate => None,
+            NotificationProgress::Fraction(f) => Some(f.clamp(0.0, 1.0)),
+        }
+    }
+}
+
 /// A single transient notification. The `id` is a process-unique
 /// internal token (used by `dismiss(id)`); the optional `dbus_id` is the
 /// freedesktop `org.freedesktop.Notifications` id used to address the
@@ -159,6 +189,14 @@ pub struct Notification {
     /// `(action_key, action_label)` pairs from the `Notify` call.
     /// Activating the toast invokes the default (or first) action.
     pub actions: Vec<(String, String)>,
+    /// Something is still happening, and this toast is the standing
+    /// indication of it. `None` — nearly every toast — is a statement
+    /// about something that has already finished.
+    ///
+    /// A toast that reports work in progress has to keep moving, or it
+    /// is indistinguishable from one describing a machine that has
+    /// wedged. See [`NotificationProgress`].
+    pub progress: Option<NotificationProgress>,
     /// Show this toast even while Do-Not-Disturb is on.
     ///
     /// Do-Not-Disturb is a request for quiet, not a request to be kept
@@ -188,8 +226,16 @@ impl Notification {
             app_name: None,
             source_workspace: None,
             actions: Vec::new(),
+            progress: None,
             bypass_dnd: false,
         }
+    }
+
+    /// Mark this toast as the standing indication of work still going
+    /// on, and say how much is known about how far along it is.
+    pub fn with_progress(mut self, progress: NotificationProgress) -> Self {
+        self.progress = Some(progress);
+        self
     }
 
     /// Build a toast from a D-Bus [`IncomingNotification`].
@@ -232,6 +278,10 @@ impl Notification {
             },
             source_workspace: inc.caller.as_ref().map(|c| c.workspace_id.0),
             actions: inc.actions,
+            // Never from the wire either: the progress bar is the
+            // shell's own report of work the shell started, and an app
+            // that could set it could draw a bar for nothing.
+            progress: None,
             // Never from the wire: an app that could ask to pierce
             // Do-Not-Disturb would ask every time.
             bypass_dnd: false,
@@ -615,18 +665,30 @@ impl Widget for NotificationStack {
             // actions, expiry — and the click routing; `ui::widget::toast`
             // owns the card's look, the severity stripe, and the dismiss
             // button, and hands back the button rect to hit-test.
+            let mut card = ToastCard::new(&n.title, n.severity.toast_kind())
+                .body(&n.body)
+                .caption(n.app_name.as_deref().unwrap_or(""))
+                .alpha(alpha)
+                .closable(true)
+                .actionable(!n.actions.is_empty());
+            if let Some(progress) = n.progress {
+                // The sweep is clocked off the toast's own age rather
+                // than a per-card `Instant`, so the animation survives
+                // the snapshot-and-repaint the stack does every frame.
+                card = card.progress(match progress.fraction() {
+                    Some(f) => ProgressPaint::Fraction(f),
+                    None => ProgressPaint::Indeterminate {
+                        phase: indeterminate_phase_at(now.saturating_duration_since(n.created_at)),
+                    },
+                });
+            }
             let hit = ui::widget::toast::paint_card(
                 scene,
                 transform,
                 text_renderer,
                 theme,
                 card_rect,
-                &ToastCard::new(&n.title, n.severity.toast_kind())
-                    .body(&n.body)
-                    .caption(n.app_name.as_deref().unwrap_or(""))
-                    .alpha(alpha)
-                    .closable(true)
-                    .actionable(!n.actions.is_empty()),
+                &card,
             );
 
             self.hit_rects.push((n.id, card_rect, hit.close_rect));
