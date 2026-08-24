@@ -1815,6 +1815,32 @@ impl App {
         for event in events {
             any = true;
             match event {
+                CollabEvent::ActionArrived {
+                    type_id,
+                    payload,
+                    from_user_id,
+                } => {
+                    // Offered to the root widget, which decides. Every app in
+                    // the room is handed every action, and the one whose
+                    // registry knows the type is the one that applies it — so
+                    // the app that owns a document stays the only writer of
+                    // it, which is exactly the property that made it safe to
+                    // let another app ask in the first place.
+                    let applied = self.root_widget.apply_room_action(
+                        &mut self.state.doc,
+                        &type_id,
+                        &payload,
+                    );
+                    if applied {
+                        tracing::info!(
+                            target: "ui::remark",
+                            %type_id, from = %from_user_id,
+                            "applied an action published into the room"
+                        );
+                        self.needs_sync = true;
+                        self.structure_dirty = true;
+                    }
+                }
                 CollabEvent::Context { collaborators, .. } => {
                     // The roster is also the list of places a remark can go.
                     // The host knows who is here; an app must never invent a
