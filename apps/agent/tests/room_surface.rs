@@ -180,6 +180,10 @@ fn agent_cfg(room: &Room, permissions: PermissionContext, directory: Option<Path
         // key, and the same answer every run.
         model: false,
         model_timeout: Duration::from_secs(1),
+        // Every page here is seeded whole before the agent connects, so
+        // no line is mid-keystroke and there is nothing to wait out.
+        // The test that *is* about a line being typed raises it itself.
+        settle: Duration::ZERO,
         await_document: Duration::ZERO,
         directory,
         permissions,
@@ -808,6 +812,144 @@ fn an_editorial_change_is_still_answered_on_the_document_path() {
     assert!(
         !text.iter().any(|t| t.starts_with("Scribe: I can't")),
         "an instruction the agent can carry out must not be refused: {text:?}"
+    );
+    no_addresses_written(&peer.doc);
+}
+
+// ---------------------------------------------------------------------------
+// 9. A line that is still being typed
+// ---------------------------------------------------------------------------
+
+/// Type one character into `block` at the end and hand back the change to
+/// broadcast — the shape one keystroke has in the word processor.
+fn type_one(doc: &mut AutoCommit, block: &str, ch: char) -> Vec<u8> {
+    let before = doc.get_heads();
+    {
+        let c = qdoc::model::open(doc, &automerge::ROOT).expect("schema");
+        let at = blocks(doc)
+            .into_iter()
+            .find(|b| b.id == block)
+            .map(|b| b.text.chars().count())
+            .unwrap_or(0);
+        let mut ids = qdoc::model::seeded_id_gen(doc, &c);
+        let mut dm = qdoc::DocMut { doc, c: &c, ids: &mut ids };
+        dm.splice_text(block, at, 0, &ch.to_string());
+    }
+    doc.commit();
+    doc.save_after(&before)
+}
+
+/// An instruction is answered once, when it has been written — not while it
+/// is being typed.
+///
+/// Every page in this file so far was seeded whole before the agent
+/// connected, which is the one arrangement in which this cannot go wrong. A
+/// person at a keyboard is the other arrangement, and it is the one that gets
+/// filmed: the agent is already in the room, and it is handed a delta per
+/// keystroke.
+///
+/// `Claude:` is a complete address with nothing asked after it, and it exists
+/// for as long as it takes to reach for the next key. Reading it then produced
+/// the frame this test exists to make impossible — a refusal quoting an empty
+/// string, written over the top of a sentence still arriving — and, worse,
+/// consumed the line, so the request the person finished typing was never
+/// looked at again. Both halves are asserted, because the second is silent:
+/// a run with the empty refusal deleted afterwards would still never act.
+#[test]
+fn a_line_still_being_typed_is_not_yet_a_request() {
+    let room = room();
+    // The instruction paragraph starts empty and is typed into below, the way
+    // one is in a session.
+    let mut peer = Peer::new(
+        &room,
+        WORD_PROCESSOR,
+        "quinten",
+        page_with_bullets(""),
+        |d| qdoc::model::open(d, &automerge::ROOT).is_ok(),
+    );
+
+    let mut cfg = agent_cfg(&room, granting(&["word-processor"]), None);
+    // Long enough to outlast the gaps between keystrokes below, short enough
+    // that the test does not sit on it. The production default is longer for
+    // the same reason a person's pauses are.
+    cfg.settle = Duration::from_millis(400);
+
+    let within = Duration::from_secs(30);
+    let agent = std::thread::spawn(move || {
+        let mut s = Session::connect(cfg).expect("the agent connects");
+        s.run_until(Instant::now() + within).expect("the agent session")
+    });
+
+    // Let it join and take the page *before* anything is typed. Without this
+    // the agent absorbs a snapshot that already has the finished line in it,
+    // and the race this is about never gets a chance to happen.
+    let joined_by = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < joined_by {
+        peer.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let instruction = blocks(&peer.doc)
+        .into_iter()
+        .filter(|b| b.kind == "paragraph")
+        .next_back()
+        .expect("the empty instruction paragraph")
+        .id;
+
+    // Typed, with a pause after the colon. That pause is the defect's whole
+    // window: it is where `Scribe:` sits addressed to the agent with nothing
+    // asked, and a person reaching for the next key takes longer than this.
+    for ch in "Scribe: make this a run sheet".chars() {
+        let delta = type_one(&mut peer.doc, &instruction, ch);
+        peer.collab.send(CollabRequest::SyncIncremental { data: delta });
+        let pause = if ch == ':' { 250 } else { 20 };
+        let until = Instant::now() + Duration::from_millis(pause);
+        while Instant::now() < until {
+            peer.pump();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    // Now it may act, and the assertion is on the peer's own replica.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut made_a_table = false;
+    while Instant::now() < deadline {
+        peer.pump();
+        if blocks(&peer.doc).iter().any(|b| b.kind == "cell") {
+            made_a_table = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = agent.join();
+    for _ in 0..25 {
+        peer.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let text: Vec<String> = blocks(&peer.doc).iter().map(|b| b.text.clone()).collect();
+    // The half-typed address was never answered. Asserted on its own rather
+    // than folded into the refusal check below, because an empty quotation is
+    // the signature of this fault specifically and says so when it fails.
+    assert!(
+        !text.iter().any(|t| t.contains("I can't \"\"")),
+        "the agent answered a line that had only been addressed, not written: {text:?}"
+    );
+    assert!(
+        !text.iter().any(|t| t.starts_with("Scribe: I can't")),
+        "an instruction the agent can carry out must not be refused: {text:?}"
+    );
+    // And the request survived to be carried out. This is the half that would
+    // otherwise fail silently: consuming the line marks it handled, so the
+    // finished instruction is never read even though nothing on the page says
+    // anything went wrong.
+    assert!(
+        made_a_table,
+        "the finished instruction was never carried out; the page reads {text:?}"
+    );
+    assert!(
+        text.iter().any(|t| t.contains("The Hall")),
+        "the bullets' contents must reach the table: {text:?}"
     );
     no_addresses_written(&peer.doc);
 }

@@ -143,6 +143,9 @@ fn a_person_typing_and_the_agent_working_both_land() {
         once: true,
         model: false,
         model_timeout: Duration::from_secs(1),
+        // The instruction is in the page before the agent connects, so
+        // there is no half-typed line here to wait out.
+        settle: Duration::ZERO,
         await_document: Duration::ZERO,
         directory: None,
         permissions: granted("Scribe"),
