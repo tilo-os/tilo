@@ -564,6 +564,12 @@ codegen-units = 16
 
 [profile.demo.package.shell]
 debug-assertions = true
+# Keep the compositor's symbols. Stripping is a distribution tradeoff and
+# the compositor is not distributed: it is the binary running on the
+# machine being debugged. Without them a crash is a list of hexadecimal
+# offsets, which is what 97 of today's coredumps were.
+strip = "none"
+debug = "line-tables-only"
 
 # And `ui`, because `shell` reads across the boundary.
 #
