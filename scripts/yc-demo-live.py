@@ -1537,10 +1537,18 @@ def main() -> int:
             apps_dir, entries,
             drop=(yc.WORD_PROCESSOR,) if (name == "quinten"
                                           and args.fetch_word_processor) else ())
-        # Only the owner gets a window. Everybody else is headless, which
+        # The people get windows; the agent never does. That asymmetry
         # is the mechanical half of "the agent is never on camera" — the
         # other half is asserted against the frames at the end.
-        cls = (yc.Session if (args.dry_run or name != "quinten")
+        #
+        # Xaver's window is not there to be driven. Beats 4 and 5 are
+        # shot from his screen and driven over his control socket, so
+        # without a window the person narrating is talking over footage
+        # they cannot see. It costs nothing to show them: the recording
+        # is taken with a `snapshot` op off each session's own
+        # framebuffer, never off the screen, so what is stacked in front
+        # of what changes no pixel of the film.
+        cls = (yc.Session if (args.dry_run or name == "Claude")
                else ins.WindowedSession)
         sessions.append(cls(
             name, name, run_dir,
@@ -1632,10 +1640,16 @@ def main() -> int:
                 print("  ! no dbus-daemon; this session shares your "
                       "desktop's bus and its notifications land on it")
 
+        # Cuts now raise the window of whoever the film cut to, so the
+        # person narrating always sees the screen being recorded.
+        if not args.dry_run:
+            yc.SHOW_ON_SCREEN = ins.raise_window
+
         quinten.start()
         quinten.wait_ready(timeout=180.0)
         if not args.dry_run:
             wid = ins.find_window(quinten.proc.pid)
+            quinten.wid = wid
             if wid is None:
                 raise RuntimeError(
                     "the compositor started but mapped no X window, so there "
@@ -1664,12 +1678,42 @@ def main() -> int:
         for s in sessions:
             if s is not quinten:
                 s.size = size
+                # A window opens at the size it is asked for and is never
+                # resized, so the one to ask for is the size quinten was
+                # actually granted rather than the one requested of it.
+                # Frames from the two have to agree exactly: the concat
+                # demuxer refuses a track whose picture size changes part
+                # way through, and a cut to a screen one pixel different
+                # is exactly that.
+                if isinstance(s, ins.WindowedSession):
+                    s.window_size = size
                 s.start()
         for s in sessions:
             if s is not quinten:
                 s.wait_ready()
-                print(f"  {s.name + ' up':<22} pid {s.proc.pid} (headless, "
-                      f"no window anywhere)")
+                if not isinstance(s, ins.WindowedSession):
+                    print(f"  {s.name + ' up':<22} pid {s.proc.pid} "
+                          f"(headless, no window anywhere)")
+                    continue
+                s.wid = ins.find_window(s.proc.pid)
+                if s.wid:
+                    # Staged out of sight. It comes back on its own when
+                    # the film reaches the beat that is shot on it.
+                    ins.hide_window(s.wid)
+                # Measured off a render, not off the X server's opinion,
+                # and checked now rather than discovered in the take.
+                got = ins.png_size(
+                    s.snapshot(os.path.join(args.out, f"probe-{s.name}.png")))
+                if got and f"{got[0]}x{got[1]}" != size:
+                    raise RuntimeError(
+                        f"{s.name} renders {got[0]}x{got[1]} but quinten "
+                        f"renders {size}. Cutting between them would change "
+                        f"the picture size part way through the film, which "
+                        f"the concat demuxer refuses. Close other windows so "
+                        f"the window manager can grant both the same size, "
+                        f"or run with --windowed.")
+                print(f"  {s.name + ' up':<22} pid {s.proc.pid} "
+                      f"(window {size}, staged out of sight)")
         yc.VIEWPORT = rendered
 
         # The strip's proportions, once, before anything is filmed. Every
@@ -1891,11 +1935,11 @@ def main() -> int:
         # is a failure about the harness rather than about the film.
         intruders = [s.name for s in sessions
                      if isinstance(s, ins.WindowedSession)
-                     and s.name != "quinten"]
+                     and s.name == "Claude"]
         if intruders:
             yc.FAILURES.append(
-                f"a window was opened for {intruders} — only the person "
-                f"driving gets one")
+                f"a window was opened for {intruders} — an agent with a "
+                f"desktop is the wrong claim about what it is")
         first = ins.png_size(os.path.join(record_dir, recorder.frames[0][1]))
         source_size = f"{first[0]}x{first[1]}" if first else yc.RECORD_SIZE
         os.makedirs(os.path.dirname(video_path), exist_ok=True)
