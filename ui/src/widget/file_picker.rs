@@ -46,7 +46,7 @@ use crate::presence::PresenceCtx;
 use crate::selection::SelectionModel;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::Widget;
+use crate::widget::{EmptyState, Widget};
 
 /// Fixed footer height — Open + Cancel button cluster + padding.
 pub const FOOTER_HEIGHT: f64 = 56.0;
@@ -174,6 +174,9 @@ pub struct FilePicker {
     /// Available file-type filters; `active_filter` indexes into it.
     filters: Vec<FileFilter>,
     active_filter: usize,
+    /// Files the last read skipped because the active filter rejected
+    /// them. Lets an empty listing say which kind of empty it is.
+    filtered_out: usize,
 
     /// Save-mode filename buffer.
     filename: String,
@@ -230,6 +233,7 @@ impl FilePicker {
             accessible_roots: roots,
             filters: vec![FileFilter::all()],
             active_filter: 0,
+            filtered_out: 0,
             filename: String::new(),
             first_visible: 0,
             pending_outcome: None,
@@ -409,6 +413,7 @@ impl FilePicker {
     /// Re-read + filter the directory listing for `current_dir`.
     pub fn refresh_entries(&mut self) {
         self.entries.clear();
+        self.filtered_out = 0;
         let filter = &self.filters[self.active_filter.min(self.filters.len() - 1)];
         if let Ok(read) = std::fs::read_dir(&self.current_dir) {
             for entry in read.flatten() {
@@ -416,6 +421,7 @@ impl FilePicker {
                 let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
                 // Directories are always shown; files honour the filter.
                 if !is_dir && !filter.matches(&path) {
+                    self.filtered_out += 1;
                     continue;
                 }
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -442,6 +448,29 @@ impl FilePicker {
     fn list_bottom(&self) -> f64 {
         let extras = if self.mode == FilePickerMode::Save { FILENAME_HEIGHT } else { 0.0 };
         self.rect.y1 - FOOTER_HEIGHT - extras
+    }
+
+    /// The band the entry rows occupy — and, when there are none, the band
+    /// the empty state centres itself in.
+    fn list_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x0 + PADDING,
+            self.rect.y0 + HEADER_HEIGHT,
+            self.rect.x1 - PADDING,
+            self.list_bottom(),
+        )
+    }
+
+    /// Whether an empty listing is empty *because of the filter*.
+    ///
+    /// A folder showing nothing because it holds nothing and a folder
+    /// showing nothing because the filter excluded what it holds are
+    /// different facts, and the way out of each is different: go somewhere
+    /// else, or pick another file type. Keyed on files actually skipped by
+    /// the last read rather than on the filter merely being a narrowing
+    /// one, so an empty folder is never told its filter hid something.
+    fn hidden_by_filter(&self) -> bool {
+        self.filtered_out > 0
     }
 
     /// Scroll so that entry `i` is visible.
@@ -771,6 +800,37 @@ impl Widget for FilePicker {
             }
         }
 
+        // --- Nothing to list ---
+        // This band was simply left blank: several hundred pixels of void
+        // between the breadcrumb and the buttons, which reads as a dialog
+        // that failed to load rather than a folder with nothing in it. The
+        // shared empty state is the house pattern for exactly this.
+        if self.entries.is_empty() {
+            let narrowed = self.hidden_by_filter();
+            let message = narrowed.then(|| {
+                format!(
+                    "{} {} here {} hidden by the {} filter.",
+                    self.filtered_out,
+                    if self.filtered_out == 1 { "file" } else { "files" },
+                    if self.filtered_out == 1 { "is" } else { "are" },
+                    self.active_filter_label(),
+                )
+            });
+            EmptyState::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                self.list_rect(),
+                Some(Icon::FolderOpen),
+                if narrowed { "Nothing here matches" } else { "This folder is empty" },
+                message.as_deref(),
+                None,
+                // No action pill, so there is no hover state to feed.
+                Point::new(f64::MIN, f64::MIN),
+            );
+        }
+
         // --- Save-mode filename field ---
         if self.mode == FilePickerMode::Save {
             let field_top = self.rect.y1 - FOOTER_HEIGHT - FILENAME_HEIGHT;
@@ -806,7 +866,18 @@ impl Widget for FilePicker {
             );
         }
 
-        // --- Footer buttons ---
+        // --- Footer ---
+        // A hairline between the content and the button row. Without it the
+        // buttons sat on the same unbroken surface as the list and read as
+        // floating in it rather than as the dialog's own footer.
+        let footer_top = self.rect.y1 - FOOTER_HEIGHT;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.border_standard,
+            None,
+            &Rect::new(self.rect.x0, footer_top, self.rect.x1, footer_top + 1.0),
+        );
         draw_button(scene, transform, text_renderer, theme, self.cancel_rect, "Cancel", self.hover_button == Some(0), false);
         let open_label = match self.mode {
             FilePickerMode::Open => "Open",
@@ -1090,6 +1161,41 @@ mod tests {
         assert_eq!(node.role, Role::Dialog);
         assert_eq!(node.name.as_deref(), Some("Open file"));
         assert!(node.state.modal, "the file chooser traps focus");
+    }
+
+    /// An empty listing has to say *which* empty it is, because the way
+    /// out differs: leave the folder, or change the file type. The band
+    /// used to say nothing at all — several hundred pixels of blank
+    /// between the breadcrumb and the buttons, which reads as a dialog
+    /// that failed to load.
+    #[test]
+    fn an_empty_folder_and_a_filtered_out_folder_are_told_apart() {
+        // Nothing in the folder at all: the filter is not to blame, and
+        // must not be named.
+        let bare = tempfile::tempdir().expect("tempdir");
+        let root = bare.path().to_path_buf();
+        let picker = FilePicker::new("Open", &root, vec![root.clone()])
+            .with_filters(vec![FileFilter::new("Documents", &["md"])]);
+        assert!(picker.entries().is_empty(), "the folder is empty");
+        assert!(
+            !picker.hidden_by_filter(),
+            "an empty folder must not claim the filter hid something",
+        );
+
+        // Same filter, but now there is something it rejected.
+        let (_g, root) = temp_tree();
+        let picker = FilePicker::new("Open", &root, vec![root.clone()])
+            .with_filters(vec![FileFilter::new("Documents", &["md"])]);
+        assert_eq!(
+            picker.entries().len(),
+            1,
+            "the sub-directory is still listed; both .txt files are not",
+        );
+        assert!(
+            picker.hidden_by_filter(),
+            "two .txt files were skipped, so the filter is what is hiding them",
+        );
+        assert_eq!(picker.filtered_out, 2, "and the count says how many");
     }
 
     #[test]
