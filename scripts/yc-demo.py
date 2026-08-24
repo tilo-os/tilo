@@ -2390,6 +2390,12 @@ def easing(share: float = 4.0):
         yield
 
 
+#: Set by a rig that has windows to raise: called with an X11 window id
+#: when the film cuts to the session owning it. Left None by rigs that
+#: run headless, where there is nothing on screen to follow.
+SHOW_ON_SCREEN = None
+
+
 def cut(name: str) -> None:
     """Put `name` on camera for what follows.
 
@@ -2420,6 +2426,24 @@ def cut(name: str) -> None:
     print(f"\n  [ {'next up' if down else 'on camera'}: {name} ]", flush=True)
     if RECORDER:
         RECORDER.cut_to(name)
+
+    # The screen follows the film.
+    #
+    # Somebody narrating a take live is describing what they can see, and
+    # a cut to another machine used to leave them talking over footage
+    # they had no view of. Any session that has a window is brought to
+    # the front as the film reaches it, so the desktop in front of the
+    # narrator is always the one being recorded, and the cut needs no
+    # cue and no keystroke.
+    #
+    # This moves no pixel of the film. Frames are taken with a `snapshot`
+    # op off each session's own framebuffer, never off the screen, so
+    # which window is stacked in front of which is invisible to the
+    # recording -- it only decides what a human in the room can watch.
+    if SHOW_ON_SCREEN is not None:
+        for s in SESSIONS:
+            if s.name == name and getattr(s, "wid", None):
+                SHOW_ON_SCREEN(s.wid)
 
 
 @contextlib.contextmanager
