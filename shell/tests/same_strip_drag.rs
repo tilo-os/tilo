@@ -381,3 +381,46 @@ fn a_window_dragged_into_open_space_keeps_its_new_window() {
          group {new_group} included",
     );
 }
+
+#[test]
+fn dragging_out_a_groups_last_window_leaves_its_neighbours_alone() {
+    // The split's other shape: the source empties, so the tree has to
+    // drop it — and dropping the wrong one deletes a window nobody
+    // touched. Here the neighbour carries two windows, which makes a
+    // mis-prune impossible to mistake for a no-op.
+    let (mut tree, strip, g_left, g_right, left_tabs, right_tab) = one_strip_two_groups();
+    // Hand one of the left group's windows to the right one, so the
+    // left is down to a single window and the right has two.
+    {
+        let ws = tree.active_workspace_mut().expect("workspace");
+        let s = ws.strips.iter_mut().find(|s| s.id == strip).expect("strip");
+        let moved = s.window_groups[0].tabs.remove(0);
+        s.window_groups[1].tabs.push(moved);
+        s.window_groups[0].active_tab = left_tabs[1];
+    }
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+    let lone = left_tabs[1];
+    assert_eq!(
+        widget_layout(&host, strip),
+        vec![
+            (g_left, vec![lone]),
+            (g_right, vec![right_tab, left_tabs[0]]),
+        ],
+        "one window on the left, two on the right",
+    );
+
+    // Drag the lone window onto the right group's bar. The left group
+    // is empty afterwards and must go — and only it.
+    let from = pill_centre(&mut host, strip, 0, lone);
+    let to = bar_centre(&mut host, strip, 1);
+    drag(&mut host, &layout, from, to, 12);
+    settle(&mut host);
+    next_frame(&mut host, &chrome);
+
+    assert_eq!(
+        tree_layout(&chrome, strip),
+        vec![(g_right, vec![right_tab, left_tabs[0], lone])],
+        "the tree dropped the group the window left, and only it",
+    );
+}

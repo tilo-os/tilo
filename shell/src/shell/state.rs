@@ -6554,17 +6554,6 @@ impl WorkspaceTree {
             let at = gap_idx.min(groups.len());
             groups.insert(at, new_group);
         }
-        // The source's index moved if the new group was spliced in at or
-        // before it. Recomputed rather than assumed: getting this wrong
-        // prunes the wrong window.
-        let src_after = if gap_idx.min(
-            self.workspaces[s_ws].strips[s_strip].window_groups.len(),
-        ) <= s_g
-        {
-            s_g + 1
-        } else {
-            s_g
-        };
         self.doc_rewrite_group_tabs(src_group_id, &src_tabs);
         let strip_id = self.workspaces[s_ws].strips[s_strip].id;
         let inserted_at = self.workspaces[s_ws].strips[s_strip]
@@ -6574,12 +6563,18 @@ impl WorkspaceTree {
             .unwrap_or(0);
         let inserted = self.workspaces[s_ws].strips[s_strip].window_groups[inserted_at].clone();
         self.doc_insert_group_in_strip(strip_id, &inserted, inserted_at);
-        if source_emptied
-            && src_after < self.workspaces[s_ws].strips[s_strip].window_groups.len()
-        {
-            self.workspaces[s_ws].strips[s_strip]
+        if source_emptied {
+            // Looked up by id rather than adjusted arithmetically: the
+            // insertion above may have shifted the source along, and an
+            // index that is off by one here prunes somebody else's
+            // window.
+            if let Some(at) = self.workspaces[s_ws].strips[s_strip]
                 .window_groups
-                .remove(src_after);
+                .iter()
+                .position(|g| g.id == src_group_id)
+            {
+                self.workspaces[s_ws].strips[s_strip].window_groups.remove(at);
+            }
         }
         // The window the person just pulled out is the one they are
         // looking at, so that is what the strip is focused on.
