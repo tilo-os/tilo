@@ -295,6 +295,30 @@ DEFAULT_DURATION_S = 900.0
 # thing is ever polled per tick.
 POLL_S = 0.9
 
+
+def mark(title: str) -> None:
+    """Charge the film's next stretch of seconds to `title`.
+
+    `yc-demo.py` has had this since it had beats: `banner` lays a mark
+    and `Recorder.beat_report` charges every captured frame to the mark
+    it was taken after. This file had no beats to hang one off — its
+    whole point is that a person drives and there is no step number —
+    and so it has been the one rig that films a take and cannot say
+    where the take's seconds went.
+
+    Two things need that. A cut over budget needs to know which beat to
+    take the seconds out of rather than which one somebody guesses is
+    longest; the per-scene budgets in the header above were written
+    without measuring and say so. And a narration recorded into the take
+    needs a timing sheet to be written against, which is the same table
+    read forwards.
+
+    A mark is a point in the take, not a section somebody owns: two
+    threads drive this film at once, so what a mark really answers is
+    "what was on screen while this was happening".
+    """
+    yc.BEAT_MARKS.append((title, time.time()))
+
 # What to tell him to write, per agent mode — and they are not
 # interchangeable.
 #
@@ -535,6 +559,9 @@ class Live:
         self.agent_applied = False
         self.agent_done_at = 0.0
         self.visited_after_agent = False
+        #: So the mark charging the agent's latency is laid once, at the
+        #: first tick that finds it working, rather than on every poll.
+        self.marked_agent_wait = False
         self.finished = ""
 
         self.started = time.time()
@@ -708,6 +735,7 @@ class Live:
             # in it. Bounded, because a cut to a bare screen is a poor
             # shot and a stalled take is no shot at all.
             self.wait_for_his_screen()
+            mark("cut to xaver: he is in the room")
             self.visit_xaver("he is in the room now", None)
 
     def bring_the_agent_session_in(self) -> None:
@@ -860,6 +888,7 @@ class Live:
                  f"(pid {self.agent_proc.pid}, {decides})")
         self.say("Claude is watching; xaver is about to give it something "
                  "to do")
+        mark("cut to xaver: his instruction")
         self.his_instruction()
 
     def his_instruction(self) -> bool:
@@ -1077,6 +1106,9 @@ class Live:
             return
 
         if self.agent_proc is not None and not self.agent_done_at:
+            if not self.marked_agent_wait:
+                self.marked_agent_wait = True
+                mark("Claude reads the room, decides, and works")
             self.waiting = ("Claude is working" if self.agent_applied
                             else "Claude waits for a line addressed to it")
             self.check_the_agent()
@@ -1088,6 +1120,7 @@ class Live:
                 return
             if not self.visited_after_agent:
                 self.visited_after_agent = True
+                mark("cut to xaver: the agent's work reached him")
                 self.visit_xaver("the agent's work is on his screen too",
                                  yc.WORD_PROCESSOR)
                 if self.args.stop_after == "agent":
@@ -1163,6 +1196,7 @@ def _the_owners_half(q, shots: str, instruction: str,
     if stop.is_set():
         return
     print("\n  [ --self-test: driving the owner's half ]", flush=True)
+    mark("an empty desktop")
 
     # The applications first, then the people. That is the order somebody
     # actually sets a workspace up in, and the earlier cut had it backwards:
@@ -1185,16 +1219,19 @@ def _the_owners_half(q, shots: str, instruction: str,
     # gesture by somebody who now knows where it is, which is both faster
     # and truer; four full-length searches in a row spends a minute of a
     # hundred-second film on opening things.
+    mark("chat opens, through the search")
     chat = q.launch(yc.CHAT_APP, search="chat", via="palette", look=1.0)
     yc.claim("chat opened", chat is not None, True)
     stop.wait(0.4)
 
+    mark("Files opens")
     files = q.launch(yc.FILES_APP, search="files", via="palette", look=0.45)
     yc.claim("Files opened", files is not None, True)
     stop.wait(0.4)
 
     # Its own group, or the placement rule tabs it in behind what is
     # already there and the strip has one window where the scene wants two.
+    mark("the word processor opens")
     q.place_next_window(yc.WORD_PROCESSOR)
     wp = q.launch(yc.WORD_PROCESSOR, search="word", via="palette", look=0.45)
     yc.claim("the word processor opened", wp is not None, True)
@@ -1220,6 +1257,7 @@ def _the_owners_half(q, shots: str, instruction: str,
     stop.wait(0.8)
 
     # Now the people, into a workspace that already has something in it.
+    mark("inviting xaver")
     yc.show_collaborators(q)
     token = yc.invite_from_the_panel(q, "xaver", shots, "live-invite")
     yc.claim("an invitation was minted from the panel", bool(token), True)
@@ -1228,6 +1266,7 @@ def _the_owners_half(q, shots: str, instruction: str,
     # member like any other. Raised again on an empty field -- the
     # composer used to keep the previous answer, so a second invitation
     # came out addressed to "XaverXaver".
+    mark("inviting Claude — the same card, a different name")
     yc.show_collaborators(q)
     agent_token = yc.invite_from_the_panel(q, "Claude", shots, "live-invite-2")
     yc.claim("a second invitation was minted, for the agent",
@@ -1255,6 +1294,7 @@ def _the_owners_half(q, shots: str, instruction: str,
     # app draws it; here it is a frame primitive the compositor owns, so a
     # file manager and a document and a photograph sit on one bar. That is
     # the one gesture in the film a viewer cannot mistake for a browser.
+    mark("the image editor, and the applications sharing one tab bar")
     extras: dict[str, dict] = {}
     if photos is None:
         photos = q.launch(yc.IMAGE_EDITOR,
@@ -1278,6 +1318,7 @@ def _the_owners_half(q, shots: str, instruction: str,
     # and then the instruction — in that order, because the agent
     # converts the bullets immediately above the paragraph addressed to
     # it.
+    mark("he writes the notes, and the line addressed to Claude")
     typed = yc.type_into_the_document(
         q, wp, yc.AGENT_PROSE + yc.AGENT_BULLETS + instruction + "\n")
     yc.claim("the document was written into", typed, True)
@@ -1870,6 +1911,12 @@ def main() -> int:
     video = None
     if recorder is not None and recorder.frames:
         recorder.report()
+        # Where the take's seconds went. Two threads lay marks, so they
+        # are sorted before they are read as edges: a reactive mark and
+        # an owner mark can land microseconds apart, and an out-of-order
+        # edge charges a whole beat to its neighbour without saying so.
+        yc.BEAT_MARKS.sort(key=lambda m: m[1])
+        recorder.beat_report(yc.BEAT_MARKS, args.fps)
         # The claim the whole thing rests on, checked against the frames
         # rather than trusted to the cuts. `cut` refuses the name, but
         # `cut` is not the only way the camera could come to point there,
