@@ -209,6 +209,31 @@ fn with_alpha(base: Color, alpha: u8) -> Color {
     Color::from_rgba8(base.r(), base.g(), base.b(), alpha)
 }
 
+/// A step off the paper tone, for chrome drawn *on* the sheet (the box an image
+/// occupies before its content arrives, and its edge).
+///
+/// Derived rather than named, so the sheet and the things drawn on it stay one
+/// family whichever palette the OS is using: `ChromeColors::for_theme` picks
+/// the paper from the theme, and a fixed grey that reads well against one paper
+/// is a smudge against another.
+fn shade_paper(paper: Color, amount: f64) -> Color {
+    let k = (1.0 - amount.clamp(0.0, 1.0)) as f32;
+    Color::from_rgba8(
+        (paper.r() as f32 * k) as u8,
+        (paper.g() as f32 * k) as u8,
+        (paper.b() as f32 * k) as u8,
+        paper.a(),
+    )
+}
+
+/// Seconds since this process started drawing, for indicators whose motion is
+/// the whole message. A wall-clock-independent monotonic phase: it must not
+/// jump when the system clock is adjusted mid-transfer.
+fn seconds_running() -> f64 {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    EPOCH.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
+}
+
 const PAGE_TOP: f64 = 28.0;
 const MAX_PAGE_W: f64 = 820.0;
 /// Breathing space (screen px) kept between each edge of the page and the edge of
@@ -1706,6 +1731,14 @@ pub struct WordProcessorWidget {
     /// lazily-decoded image cache (`None` = decode failed / unsupported format).
     blobs: std::collections::BTreeMap<String, Vec<u8>>,
     image_cache: std::collections::HashMap<String, Option<ui::widget::Image>>,
+    /// Set while any image on the page is still waiting for its content.
+    ///
+    /// Keeps frames coming (see `needs_animation_frame`) for two reasons: the
+    /// waiting indicator has to move, and — the one that matters — the picture
+    /// has to appear the moment the bytes land. Without a frame the placeholder
+    /// would sit there until the reader happened to move the pointer, which
+    /// looks exactly like content that never arrived.
+    awaiting_image_content: bool,
     /// The toolbar button the pointer is currently over (for hover feedback).
     hover_tool: Option<Rect>,
     blocks: Vec<BlockView>,
@@ -1982,6 +2015,7 @@ impl WordProcessorWidget {
             find_buttons: Vec::new(),
             blobs: std::collections::BTreeMap::new(),
             image_cache: std::collections::HashMap::new(),
+            awaiting_image_content: false,
             hover_tool: None,
             blocks: Vec::new(),
             header: Vec::new(),
@@ -4648,9 +4682,12 @@ impl Widget for WordProcessorWidget {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep frames coming only while the floating status bubble is lingering /
-        // fading, so it hides itself without needing a stray pointer event. Idle
-        // otherwise.
-        self.status_bubble.needs_frame(std::time::Instant::now())
+        // fading, so it hides itself without needing a stray pointer event, or
+        // while a picture in the document is still on its way — that one has to
+        // appear when the bytes arrive rather than when the reader next touches
+        // something. Idle otherwise.
+        self.awaiting_image_content
+            || self.status_bubble.needs_frame(std::time::Instant::now())
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
@@ -4982,7 +5019,7 @@ impl Widget for WordProcessorWidget {
                         clip: None,
                         bullet: None,
                         ink: PAPER_INK,
-                        image_hash: intrinsic.map(|_| hash),
+                        image_hash: (!hash.is_empty()).then_some(hash),
                         cell_box: None,
                         cell_row: None,
                         page: cur_page,
@@ -5018,7 +5055,7 @@ impl Widget for WordProcessorWidget {
                         clip: None,
                         bullet: None,
                         ink: PAPER_INK,
-                        image_hash: intrinsic.map(|_| hash),
+                        image_hash: (!hash.is_empty()).then_some(hash),
                         cell_box: None,
                         cell_row: None,
                         page: cur_page,
@@ -5387,6 +5424,9 @@ impl Widget for WordProcessorWidget {
         // here renders through `ctf` (the zoom transform) so page content scales
         // while the surrounding chrome stays at 100%.
         let now = std::time::Instant::now();
+        // Whether anything on this page is still waiting for its content, which
+        // is what keeps frames coming until it either lands or is given up on.
+        let mut awaiting_content = false;
         for l in &laid {
             if l.kind == "image" {
                 let rect = Rect::new(l.text_x, l.y_top, l.text_x + l.width, l.y_top + l.height);
@@ -5417,8 +5457,10 @@ impl Widget for WordProcessorWidget {
                 // looking at. A blob still on its way is a normal condition on
                 // a slow link — and a peer may legitimately never fetch one —
                 // so it cannot be left as blank space, which is exactly what a
-                // broken image looks like.
-                let pending = match &l.image_hash {
+                // broken image looks like. Nor can the two be drawn the same:
+                // "arriving" and "not coming" are different pieces of news, and
+                // one box saying neither is what a reader was left with.
+                let placeholder = match &l.image_hash {
                     Some(hash) => match self.image_cache.get_mut(hash) {
                         // Decoded: paint it.
                         Some(Some(img)) => {
@@ -5426,17 +5468,75 @@ impl Widget for WordProcessorWidget {
                             None
                         }
                         // The bytes arrived and would not decode.
-                        Some(None) => Some(t("canvas-image-missing")),
-                        // The reference is here and the content is not.
-                        None => Some(t("canvas-image-loading")),
+                        Some(None) => Some((t("canvas-image-missing"), false)),
+                        // The reference is here and the content is not — and
+                        // which of those two that is, the store knows. Resolved
+                        // means the bytes landed this frame and the decode
+                        // happens on the next one, so it is still "arriving".
+                        None => match qdoc::blobstore::state(hash) {
+                            qdoc::blobstore::BlobState::Unavailable => {
+                                Some((t("canvas-image-missing"), false))
+                            }
+                            _ => Some((t("canvas-image-loading"), true)),
+                        },
                     },
                     // An image block with no blob reference at all.
-                    None => Some(t("canvas-image-missing")),
+                    None => Some((t("canvas-image-missing"), false)),
                 };
-                if let Some(msg) = pending {
-                    scene.fill(Fill::NonZero, ctf, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
-                    scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, Color::from_rgb8(0xcc, 0xce, 0xd6), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
-                    text_renderer.draw_text(scene, &msg, 14.0, PAPER_MUTED, ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)), None);
+                if let Some((msg, arriving)) = placeholder {
+                    awaiting_content |= arriving;
+                    // Tones stepped off the sheet the page is drawn on, which
+                    // `ChromeColors::for_theme` derives from the OS palette —
+                    // so the placeholder follows the theme instead of pinning
+                    // one grey that a light palette makes invisible and a dark
+                    // one makes a hole.
+                    let paper = self.chrome.paper;
+                    let fill = shade_paper(paper, 0.055);
+                    let edge = shade_paper(paper, 0.14);
+                    let rr = vello::kurbo::RoundedRect::from_rect(rect, 6.0);
+                    scene.fill(Fill::NonZero, ctf, fill, None, &rr);
+                    scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, edge, None, &rr);
+                    // A step darker than `PAPER_MUTED`, because this label sits
+                    // on the placeholder's own fill rather than on bare paper —
+                    // muted against the sheet is faint against a tint of it, and
+                    // the one thing this box must be is readable.
+                    text_renderer.draw_text(
+                        scene,
+                        &msg,
+                        14.0,
+                        shade_paper(paper, 0.58),
+                        ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)),
+                        None,
+                    );
+                    if arriving {
+                        // A slim indeterminate sweep under the label. It says
+                        // "something is happening" without claiming a
+                        // percentage nobody here can honestly quote: the app
+                        // knows the content was asked for, not how much of it
+                        // has crossed.
+                        let track_w = (rect.width() - 24.0).clamp(0.0, 180.0);
+                        if track_w > 24.0 {
+                            let ty = rect.y0 + rect.height() / 2.0 + 16.0;
+                            let track = vello::kurbo::RoundedRect::new(
+                                rect.x0 + 12.0,
+                                ty,
+                                rect.x0 + 12.0 + track_w,
+                                ty + 3.0,
+                                1.5,
+                            );
+                            scene.fill(Fill::NonZero, ctf, edge, None, &track);
+                            let pill_w = track_w * 0.34;
+                            let span = track_w - pill_w;
+                            // Ping-pong on a 1.6 s cycle, so it reads as motion
+                            // rather than as a bar that keeps restarting from
+                            // empty and promising completion it cannot know.
+                            let phase = seconds_running() % 1.6 / 1.6;
+                            let t01 = if phase < 0.5 { phase * 2.0 } else { (1.0 - phase) * 2.0 };
+                            let px = rect.x0 + 12.0 + span * t01;
+                            let pill = vello::kurbo::RoundedRect::new(px, ty, px + pill_w, ty + 3.0, 1.5);
+                            scene.fill(Fill::NonZero, ctf, self.chrome.accent, None, &pill);
+                        }
+                    }
                 }
                 // Selection chrome: when this image is the caret's block, ring it
                 // with an accent border + corner resize handles so it reads as
@@ -5671,6 +5771,11 @@ impl Widget for WordProcessorWidget {
                 scene.pop_layer();
             }
         }
+        // Recorded after the pass rather than during layout, because whether a
+        // picture is still coming is a question about this frame's answer from
+        // the store, and the answer changes under the app rather than because
+        // of anything it did.
+        self.awaiting_image_content = awaiting_content;
 
         // Review affordances (comment Resolve + tracked-change Accept/Reject
         // buttons) live in the right-margin cards; rebuilt fresh each frame. Hit
@@ -12451,6 +12556,211 @@ mod tests {
             t("canvas-image-missing"),
             "an image still on its way must not read as a broken one"
         );
+    }
+
+    /// A picture still on its way keeps the page redrawing, and stops when it
+    /// lands.
+    ///
+    /// Two things ride on this. The indicator has to move, and — the one that
+    /// matters — the photograph has to appear the moment the bytes arrive
+    /// rather than the next time the reader happens to touch something. An
+    /// editor that goes idle over a pending reference shows a placeholder that
+    /// is indistinguishable from one that failed, for as long as nobody moves
+    /// the pointer.
+    #[test]
+    fn a_page_waiting_on_a_picture_keeps_redrawing_until_it_lands() {
+        let mut state = ui::State::new();
+        let mut hash = String::new();
+        with_doc(&mut state, |dm| {
+            let p = dm.insert_block(None, "paragraph");
+            dm.splice_text(&p, 0, 0, "Doors at seven, room seats 240.");
+            // Referenced, and its content deliberately not stored here: the
+            // shape a peer's document is in the moment the reference crosses.
+            hash = qdoc::blobstore::hash_bytes(IMG_PNG);
+            let img = dm.insert_block(Some(&p), "image");
+            dm.set_attr(&img, "blob", hash.as_str());
+            dm.set_attr(&img, "blob_w", 400_i64);
+            dm.set_attr(&img, "blob_h", 200_i64);
+        });
+        // An app with a live collaboration link, which is what a peer holding a
+        // reference has. Without one, "not here" means "not coming" and the
+        // page is right to say so — a different, also-honest state.
+        struct Link;
+        impl qdoc::blobstore::BlobTransport for Link {
+            fn offer(&self, _: &str, _: &[u8]) {}
+            fn want(&self, _: &str) {}
+        }
+        qdoc::blobstore::set_transport(std::sync::Arc::new(Link));
+
+        let mut wp = WordProcessorWidget::new();
+        pipeline_draw(&mut wp, &mut state, 1100, 900);
+
+        // The block carries its reference even though nothing decoded, which is
+        // what lets the draw tell "arriving" from "broken" at all.
+        let laid = wp.laid.iter().find(|l| l.kind == "image").expect("image laid out");
+        assert_eq!(
+            laid.image_hash.as_deref(),
+            Some(hash.as_str()),
+            "a block whose content has not arrived dropped its reference, so nothing \
+             downstream can say why the picture is not there",
+        );
+        assert!(
+            wp.awaiting_image_content,
+            "a page waiting on a picture did not record that it was waiting; \
+             `needs_animation_frame` reads this, so the picture would appear only when \
+             the reader next touched something",
+        );
+        assert!(wp.needs_animation_frame(), "and so frames keep coming");
+
+        // The same page with its content present — the state the machine that
+        // added the picture is in, and the one every other machine reaches once
+        // the bytes cross. Built as its own document rather than by taking the
+        // content away from this one, because the store is process-wide and
+        // swapping it under a parallel test would be a race, not a fixture.
+        let mut landed = ui::State::new();
+        let mut here = String::new();
+        with_doc(&mut landed, |dm| {
+            let p = dm.insert_block(None, "paragraph");
+            dm.splice_text(&p, 0, 0, "Doors at seven, room seats 240.");
+            here = dm.put_blob(IMG_PNG);
+            let img = dm.insert_block(Some(&p), "image");
+            dm.set_attr(&img, "blob", here.as_str());
+        });
+        let mut wp2 = WordProcessorWidget::new();
+        pipeline_draw(&mut wp2, &mut landed, 1100, 900);
+        assert!(
+            matches!(wp2.image_cache.get(&here), Some(Some(_))),
+            "content that is present did not decode",
+        );
+        assert!(
+            !wp2.awaiting_image_content,
+            "a page whose picture has arrived still reports itself as waiting for it",
+        );
+    }
+
+    /// Visual review frames for an image whose content has not arrived, beside
+    /// the same page once it has. Set `QOS_WP_IMAGE_SHOTS=<dir>` to emit them;
+    /// a normal run is a no-op.
+    #[test]
+    fn render_image_content_shots() {
+        let Some(dir) = std::env::var_os("QOS_WP_IMAGE_SHOTS") else { return };
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).ok();
+
+        // The reader is a peer with a live collaboration link, which is what
+        // makes "arriving" the truthful state for content that is not here yet.
+        struct Link;
+        impl qdoc::blobstore::BlobTransport for Link {
+            fn offer(&self, _: &str, _: &[u8]) {}
+            fn want(&self, _: &str) {}
+        }
+        qdoc::blobstore::set_transport(std::sync::Arc::new(Link));
+
+        // A picture with something in it, so "the photograph rendered" is
+        // visibly different from "a box the size of the photograph".
+        let photo = wide_test_png(480, 270);
+
+        for (theme, tname) in [
+            (Theme::light(), "light"),
+            (Theme::dark(), "dark"),
+            (Theme::high_contrast(), "high-contrast"),
+        ] {
+            // Authored the way the machine that added the picture authors it,
+            // so the document carries the reference *and* the descriptor the
+            // far side lays out against.
+            let sender: std::sync::Arc<dyn qdoc::blobstore::BlobStore> =
+                std::sync::Arc::new(qdoc::blobstore::MemoryBlobStore::default());
+            qdoc::blobstore::set_store(std::sync::Arc::clone(&sender));
+            let mut state = ui::State::new();
+            let mut hash = String::new();
+            with_doc(&mut state, |dm| {
+                let a = dm.insert_block(None, "paragraph");
+                dm.splice_text(&a, 0, 0, "Doors at seven, room seats 240.");
+                hash = dm.put_blob(&photo);
+                let img = dm.insert_block(Some(&a), "image");
+                dm.set_attr(&img, "blob", hash.as_str());
+                let b = dm.insert_block(Some(&img), "paragraph");
+                dm.splice_text(&b, 0, 0,
+                    "The prose says doors at seven but the note lists doors at 18:00.");
+            });
+
+            // Pending: the receiving machine's store, which has the reference
+            // out of the document and none of the content.
+            let receiver: std::sync::Arc<dyn qdoc::blobstore::BlobStore> =
+                std::sync::Arc::new(qdoc::blobstore::MemoryBlobStore::default());
+            qdoc::blobstore::set_store(std::sync::Arc::clone(&receiver));
+            let mut wp = WordProcessorWidget::new();
+            let presence = PresenceCtx::empty();
+            let scene = scene_with_presence(&mut wp, &mut state, 1000, 760, &theme, &presence);
+            ui::offscreen::OffscreenRenderer::new(1000, 760).render_png(
+                &scene,
+                Color::from_rgb8(0x20, 0x22, 0x28),
+                dir.join(format!("image-arriving-{tname}.png")),
+            );
+
+            // Resolved: the same page and the same widget, once the bytes have
+            // crossed. The image lands in exactly the box the placeholder
+            // reserved, which is what the descriptor's width and height are for
+            // — nothing under it moves.
+            assert!(receiver.put(&hash, &photo));
+            let scene = scene_with_presence(&mut wp, &mut state, 1000, 760, &theme, &presence);
+            ui::offscreen::OffscreenRenderer::new(1000, 760).render_png(
+                &scene,
+                Color::from_rgb8(0x20, 0x22, 0x28),
+                dir.join(format!("image-arrived-{tname}.png")),
+            );
+
+            // And the third state: nothing here can fetch it, so it is not
+            // coming. The box has to say that too, in words — a reader left
+            // watching "arriving" about something that stopped arriving is the
+            // failure this whole indicator exists to end.
+            qdoc::blobstore::clear_transport();
+            qdoc::blobstore::set_store(std::sync::Arc::new(
+                qdoc::blobstore::MemoryBlobStore::default(),
+            ));
+            let mut cold = WordProcessorWidget::new();
+            let scene = scene_with_presence(&mut cold, &mut state, 1000, 760, &theme, &presence);
+            ui::offscreen::OffscreenRenderer::new(1000, 760).render_png(
+                &scene,
+                Color::from_rgb8(0x20, 0x22, 0x28),
+                dir.join(format!("image-unavailable-{tname}.png")),
+            );
+            qdoc::blobstore::set_transport(std::sync::Arc::new(Link));
+        }
+    }
+
+    /// A landscape PNG with visible structure, encoded for real so the decode
+    /// path under test is the production one.
+    fn wide_test_png(w: u32, h: u32) -> Vec<u8> {
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                // A horizon and a sun: recognisable at a glance in a review
+                // frame, and nothing like a flat fill.
+                let sky = y * 255 / h.max(1);
+                let sea = y > h / 2;
+                let dx = x as i32 - (w as i32 * 3 / 4);
+                let dy = y as i32 - (h as i32 / 4);
+                let sun = dx * dx + dy * dy < 900;
+                let (r, g, b) = if sun {
+                    (255, 236, 170)
+                } else if sea {
+                    (20, 60 + sky / 4, 90 + sky / 3)
+                } else {
+                    (60 + sky / 2, 90 + sky / 2, 140 + sky / 4)
+                };
+                rgba.extend_from_slice(&[r as u8, g as u8, b as u8, 255]);
+            }
+        }
+        let mut out = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut out, w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut writer = enc.write_header().expect("png header");
+            writer.write_image_data(&rgba).expect("png data");
+        }
+        out
     }
 
     /// Visual review frames for the peer marker + name pill. Set

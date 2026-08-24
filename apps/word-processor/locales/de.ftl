@@ -171,7 +171,7 @@ layout-spacing-readout = Abstand für { $name }  { $px } px   ·   Griff ziehen 
 ## Canvas
 page-indicator = Seite { $n }
 zoom-fit = Anp.
-canvas-image-missing = Bild
+canvas-image-missing = Bild nicht verfügbar
 canvas-image-loading = Bild wird geladen
 canvas-embedded-content = ⟦ eingebetteter Inhalt ⟧
 canvas-empty-placeholder = Beginne zu schreiben…

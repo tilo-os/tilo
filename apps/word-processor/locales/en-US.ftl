@@ -190,7 +190,7 @@ page-indicator = Page { $n }
 zoom-fit = Fit
 # On-page placeholders (a missing/undecodable image; an embedded object we render
 # as a fidelity box rather than its content).
-canvas-image-missing = image
+canvas-image-missing = image unavailable
 canvas-image-loading = image arriving
 canvas-embedded-content = ⟦ embedded content ⟧
 canvas-empty-placeholder = Start writing…
