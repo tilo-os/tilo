@@ -55,7 +55,7 @@ mod remark;
 pub use delivery::{
     Delivery, Destination, DestinationDisplay, Id, MentionRef, Target, deliver,
 };
-pub use reference::{Referent, ResourceRef, Span};
+pub use reference::{Referent, ResourceRef, Span, SpanUnit};
 pub use remark::{
     CHAT_ACTION_TYPE, ReceivedRemark, Remark, Undeliverable, read_chat_action,
 };

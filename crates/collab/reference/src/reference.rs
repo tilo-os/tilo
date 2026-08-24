@@ -6,23 +6,53 @@ use serde::{Deserialize, Serialize};
 
 use qos_actions::ResourceId;
 
-/// A byte range inside the referenced resource's text.
+/// What [`Span`]'s offsets count.
 ///
-/// Byte offsets, matching the offsets the apps' own text actions already use
-/// (`SpliceText`'s `from`/`to`), so a consumer that wants to *act* on the range
-/// can hand these straight to the app's action without a coordinate change.
+/// Carried explicitly because apps genuinely differ — the word processor's own
+/// text actions address blocks in **characters**, while byte offsets are the
+/// natural unit elsewhere — and the two agree only for ASCII. A span that did
+/// not say which it meant would read correctly in every test written in
+/// English and silently address the wrong run the first time someone selected
+/// text with an accent in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpanUnit {
+    /// Unicode scalar values, counted as `chars()`.
+    Chars,
+    /// UTF-8 bytes.
+    Bytes,
+}
+
+/// A range inside the referenced resource's text.
+///
+/// The offsets are in the unit the *publishing app's own text actions* use (see
+/// [`SpanUnit`]), so a consumer that wants to act on the range can hand them
+/// straight to that app's action without a coordinate change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
+    pub unit: SpanUnit,
 }
 
 impl Span {
-    pub fn new(start: usize, end: usize) -> Self {
-        let (start, end) = if start <= end { (start, end) } else { (end, start) };
-        Self { start, end }
+    /// A span in characters — the unit the word processor's block actions use.
+    pub fn chars(start: usize, end: usize) -> Self {
+        Self::new(start, end, SpanUnit::Chars)
     }
 
+    /// A span in UTF-8 bytes.
+    pub fn bytes(start: usize, end: usize) -> Self {
+        Self::new(start, end, SpanUnit::Bytes)
+    }
+
+    /// Normalises a backwards range, so dragging right-to-left addresses the
+    /// same run as dragging left-to-right.
+    pub fn new(start: usize, end: usize, unit: SpanUnit) -> Self {
+        let (start, end) = if start <= end { (start, end) } else { (end, start) };
+        Self { start, end, unit }
+    }
+
+    /// How many units long. Not a character count unless [`Self::unit`] says so.
     pub fn len(&self) -> usize {
         self.end.saturating_sub(self.start)
     }
@@ -31,14 +61,33 @@ impl Span {
         self.len() == 0
     }
 
-    /// The slice this span covers, or `None` when the offsets do not land on
-    /// character boundaries of `text` — a span carried across an edit that
-    /// moved it. `None` rather than a panic or a silently wrong slice: a
-    /// reference that no longer fits its resource must be *reported*, not
-    /// guessed at.
+    /// The slice this span covers, honouring its unit, or `None` when it does
+    /// not fit `text` — a span carried across an edit that moved it.
+    ///
+    /// `None` rather than a panic or a silently wrong slice: a reference that
+    /// no longer fits its resource must be *reported*, not guessed at.
     pub fn slice<'a>(&self, text: &'a str) -> Option<&'a str> {
-        text.get(self.start..self.end)
+        match self.unit {
+            SpanUnit::Bytes => text.get(self.start..self.end),
+            SpanUnit::Chars => text.get(byte_at(text, self.start)?..byte_at(text, self.end)?),
+        }
     }
+}
+
+/// Byte offset of the `n`th character of `text`, or `text.len()` when `n` names
+/// the position just past the last character. `None` when `n` runs past the end.
+fn byte_at(text: &str, n: usize) -> Option<usize> {
+    if n == 0 {
+        return Some(0);
+    }
+    let mut seen = 0usize;
+    for (i, _) in text.char_indices() {
+        if seen == n {
+            return Some(i);
+        }
+        seen += 1;
+    }
+    (seen == n).then_some(text.len())
 }
 
 /// A durable, machine-readable address for one thing an app has open.
@@ -137,14 +186,38 @@ mod tests {
     #[test]
     fn a_span_normalises_a_backwards_selection() {
         // Dragging right-to-left must address the same range as left-to-right.
-        assert_eq!(Span::new(11, 6), Span::new(6, 11));
-        assert_eq!(Span::new(11, 6).len(), 5);
+        assert_eq!(Span::chars(11, 6), Span::chars(6, 11));
+        assert_eq!(Span::chars(11, 6).len(), 5);
     }
 
     #[test]
     fn a_span_that_no_longer_fits_reports_rather_than_guesses() {
-        assert_eq!(Span::new(6, 11).slice("Hello world"), Some("world"));
-        assert_eq!(Span::new(6, 99).slice("Hello world"), None);
+        assert_eq!(Span::bytes(6, 11).slice("Hello world"), Some("world"));
+        assert_eq!(Span::bytes(6, 99).slice("Hello world"), None);
+        assert_eq!(Span::chars(6, 99).slice("Hello world"), None);
+    }
+
+    /// The reason the unit is on the span at all: on non-ASCII text a char
+    /// range and a byte range address different runs, and an app whose actions
+    /// count characters would otherwise hand over offsets that quietly slice
+    /// the wrong words.
+    #[test]
+    fn a_char_span_and_a_byte_span_address_different_runs() {
+        // "é" is two bytes, so every offset after it disagrees.
+        let text = "café notes";
+        assert_eq!(Span::chars(5, 10).slice(text), Some("notes"));
+        assert_eq!(Span::bytes(5, 10).slice(text), Some(" note"));
+        assert_ne!(
+            Span::chars(5, 10).slice(text),
+            Span::bytes(5, 10).slice(text),
+            "if these ever agree the test has lost its point"
+        );
+    }
+
+    #[test]
+    fn a_char_span_may_end_just_past_the_last_character() {
+        assert_eq!(Span::chars(0, 4).slice("café"), Some("café"));
+        assert_eq!(Span::chars(3, 4).slice("café"), Some("é"));
     }
 
     #[test]
