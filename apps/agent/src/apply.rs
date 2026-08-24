@@ -245,6 +245,32 @@ impl Editor {
         Ok((!delta.is_empty()).then_some(delta))
     }
 
+    /// Apply an action belonging to some app other than the word processor —
+    /// the agent answering in a channel — under the agent's own actor.
+    ///
+    /// Separate from [`Self::apply`] because of what it does *not* do: no
+    /// `qdoc` history stamp. That stamp writes the word processor's own
+    /// undo/authorship schema, and putting it on another app's document would
+    /// be this agent inventing structure in a document it does not own.
+    ///
+    /// The actor still is the agent's, so the message is attributed to it in
+    /// the room exactly as its edits are.
+    pub fn apply_foreign<A: qos_actions::Action>(
+        &mut self,
+        action: &A,
+    ) -> Result<Option<Vec<u8>>> {
+        self.doc.set_actor(self.actor.clone());
+        action
+            .apply(&mut self.doc)
+            .map_err(|e| anyhow::anyhow!("apply a foreign action: {e:?}"))?;
+        if self.doc.pending_ops() == 0 {
+            return Ok(None);
+        }
+        self.doc.commit();
+        let delta = self.doc.save_incremental();
+        Ok((!delta.is_empty()).then_some(delta))
+    }
+
     /// Perform the operation `address` names, attributed to the agent.
     ///
     /// The address is resolved against a tree built from the document **as

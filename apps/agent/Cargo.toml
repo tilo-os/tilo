@@ -24,6 +24,16 @@ word-processor = { path = "../word-processor" }
 # rather than blocks and offsets. The agent links its contract, not a list of
 # what it can do — the operations come from the tree the app publishes.
 file-explorer = { path = "../file-explorer" }
+# Where the agent is spoken to. Chat's own message model and mention list: the
+# room resolves `@name` to a participant id once, when the message is sent, so
+# "am I being addressed" is a field lookup here rather than a second,
+# disagreeing parse of the body. Default features off — the live media engine
+# (GStreamer, iroh, openh264, the screen portal) is a chat window's business
+# and nothing a headless participant reading messages needs.
+chat = { path = "../chat", default-features = false }
+# The address of the thing a message is about, when it was written by selecting
+# something. What lets "crop this" name a resource instead of a screen.
+qos-reference = { path = "../../crates/collab/reference" }
 qos-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
 # The decision — which exported action answers an instruction — is a model

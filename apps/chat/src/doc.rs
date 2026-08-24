@@ -73,6 +73,11 @@ pub struct NewMessage {
     /// authoring time by [`crate::mention::resolve`] and carried into the
     /// document, so a reader never has to re-parse the text.
     pub mentions: Vec<crate::mention::Mention>,
+    /// The address of the thing this message is about, when it was written
+    /// by selecting something. Minted by the publishing app at authoring
+    /// time (`qos_reference::Referent`) and carried verbatim, so it survives
+    /// into the document instead of being lost at the composer.
+    pub reference: Option<qos_reference::ResourceRef>,
 }
 
 pub struct ChatDoc;
@@ -568,6 +573,20 @@ impl ChatDoc {
             let _ = doc.put(&e, "start", m.start as i64);
             let _ = doc.put(&e, "len", m.len as i64);
             let _ = doc.put(&e, "agent", m.is_agent);
+        }
+
+        // reference — the address of what this message is about.
+        //
+        // One JSON scalar rather than a map of its parts, because a reference
+        // is authored once and never co-edited: nothing merges two peers'
+        // idea of which block was selected, so splitting it into fields would
+        // buy convergence nobody needs and risk a half-written address that
+        // still parses. Absent for an ordinary message, which is what keeps
+        // `Message::reference` honest as "written about something".
+        if let Some(r) = &nm.reference {
+            if let Ok(json) = serde_json::to_string(r) {
+                let _ = doc.put(&block, "reference", json.as_str());
+            }
         }
 
         // history
@@ -1368,11 +1387,34 @@ impl ChatDoc {
                 parent: if parent.is_empty() { None } else { Some(parent) },
                 reactions: Self::read_reactions(doc, &m),
                 mentions: Self::read_mentions(doc, &m),
+                reference: Self::read_reference(doc, &m),
                 attachment: Self::read_attachment(doc, &m),
                 pinned: get_bool(doc, &m, "pinned"),
             });
         }
         out
+    }
+
+    /// The address of what a message is about, or `None` for an ordinary
+    /// message — and also for one whose stored address will not parse, which
+    /// is deliberately not the same as a nearby address that does. A
+    /// reference that cannot be read is no reference at all.
+    fn read_reference(doc: &AutoCommit, msg: &ObjId) -> Option<qos_reference::ResourceRef> {
+        let raw = get_str(doc, msg, "reference");
+        if raw.is_empty() {
+            return None;
+        }
+        serde_json::from_str(&raw).ok()
+    }
+
+    /// The address stored on one message, by id — the question a consumer
+    /// that already knows which message it cares about actually asks.
+    pub fn message_reference(
+        doc: &AutoCommit,
+        channel: &str,
+        msg_id: &str,
+    ) -> Option<qos_reference::ResourceRef> {
+        Self::read_reference(doc, &Self::find_message_obj(doc, channel, msg_id)?)
     }
 
     /// The resolved participant references stored on a message block.

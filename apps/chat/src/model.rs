@@ -292,6 +292,13 @@ pub struct Message {
     /// prose: a consumer asks the message who it mentions instead of scanning
     /// `text` for `@`. See [`crate::mention`].
     pub mentions: Vec<crate::mention::Mention>,
+    /// What this message is *about*, when it was written by selecting
+    /// something rather than by typing into the composer.
+    ///
+    /// The address, not a description of it: a reader resolves the block or
+    /// the file the author had selected without reading `text` and without
+    /// ever needing a screen position. `None` for an ordinary message.
+    pub reference: Option<qos_reference::ResourceRef>,
     pub attachment: Option<Attachment>,
     /// Pinned messages are flagged in the shared document so every peer sees the
     /// same pins. A plain scalar flag toggled by an action.
