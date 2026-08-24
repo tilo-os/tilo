@@ -503,7 +503,19 @@ pub fn paint_card(
             rect.x1 - CARD_PAD_X,
             rect.y1 - CARD_PAD_Y,
         );
-        crate::widget::progress_bar::paint_track(scene, transform, theme, track, paint, a);
+        // The card is already a raised surface, so the standalone bar's
+        // raised groove would vanish into it and leave a floating dash
+        // with no extent. The theme's own hairline is what reads as a
+        // groove *on* a card, in every theme.
+        crate::widget::progress_bar::paint_track(
+            scene,
+            transform,
+            theme,
+            track,
+            paint,
+            theme.tokens.colors.border_standard,
+            a,
+        );
     }
 
     // Actionable chevron at the trailing-bottom edge, keyed to severity.
@@ -744,6 +756,36 @@ mod tests {
             "a half-done fetch has to look different from an unstarted \
              one: {empty} vs {filled}"
         );
+    }
+
+    /// The unfilled part of the bar has to be visible on the card it is
+    /// drawn on, in every theme.
+    ///
+    /// Without it there is no extent: a fill with no groove behind it
+    /// says "some progress" and never "this much of that much", and the
+    /// indeterminate sweep becomes a dash floating in space. The first
+    /// version of this took the standalone widget's groove — a raised
+    /// surface — which is exactly the colour of the card, so it painted
+    /// nothing.
+    #[test]
+    fn the_unfilled_track_is_visible_against_the_card_in_every_theme() {
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high-contrast", Theme::high_contrast()),
+        ] {
+            let card = theme.tokens.colors.surfaces.raised.to_rgba8();
+            let track = theme.tokens.colors.border_standard.to_rgba8();
+            let distance = (i32::from(card.r) - i32::from(track.r)).abs()
+                + (i32::from(card.g) - i32::from(track.g)).abs()
+                + (i32::from(card.b) - i32::from(track.b)).abs();
+            assert!(
+                distance > 24,
+                "{name}: the track must be distinguishable from the card \
+                 it sits on, or the bar has no extent — card {card:?} vs \
+                 track {track:?}"
+            );
+        }
     }
 
     /// The bar takes its strip out of the card rather than sharing it
