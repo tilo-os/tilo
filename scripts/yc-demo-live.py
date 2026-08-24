@@ -88,60 +88,99 @@ hold, because it removes a wait rather than shortening one.
                 desktop has per-app tabs; this is the one gesture that
                 cannot be mistaken for a browser.
 
-    SCENE 3  one instruction, from the person looking at the thing  ~22s
-        SCRIPT  xaver walks Files, opens harbour.png, looks at it, and
-                right-clicks the photograph itself:
-                    "@Claude crop this square and put it under Sound
-                     check"
-                One instruction, from him, carrying the image's address.
-                He does not describe the photograph and the agent does
-                not go looking for it.
-        YOU     keep typing in the word processor throughout. One
-                excursion to his screen, a few seconds.
-        SHOWS   the agent crops in the image editor and writes the
-                result into the word processor's document -- two
-                applications it does not own, neither of which knows
-                what an agent is, attributed to its own actor.
+    SCENE 3  one instruction, from the person holding the thing   ~15s
+        SCRIPT  xaver, in **Files**, right-clicks harbour.png and writes:
+                    "@claude make square and put in open document"
+                One sentence, from him, carrying the file's address. He
+                does not describe the photograph and the agent does not
+                go looking for it.
+        YOU     keep typing in the word processor throughout.
+        SHOWS   an instruction that arrives as (text, address, capability)
+                rather than as a description of a screen.
+        NEEDS   right-click compose in the file explorer  (landed)
+                one instruction, several actions  (in flight)
 
-                The instruction is deliberately *not* split between the
-                two people. It was, in an earlier cut: he judged the
-                photograph and you turned the judgement into an order.
-                That reads as a person relaying to a machine, and it
-                buries the claim -- which is that one sentence crossed
-                two applications, not that two people agreed about a
-                photograph. It also asks the agent for less than it can
-                do, and an instruction the product cannot yet carry
-                whole is a thing to fix rather than to divide.
+    SCENE 4  and you watch it happen                              ~20s
+        CUT     back to your screen.
+        SHOWS   Claude **opens the image editor itself**, crops the
+                photograph, and the result travels visibly into the word
+                processor's document.
 
-        NEEDS   compose gesture in the image editor  (in flight)
-                agent chains two actions in one instruction  (in flight)
-                external actions door  (landed, ecd8752d2)
-        NOT NEEDED
-                Chip *navigation* -- clicking a reference to focus the
-                app and reveal the object. It does not exist and the
-                scene does not want it: "this" resolves through
-                `Subject::Carried`, so the address rides along with the
-                message and the agent never asks where the object is on
-                screen. The viewer's evidence is the chip naming the
-                photograph, which already renders.
+                This is the whole film. Not that an agent edited a
+                document -- every word processor now ships something that
+                does. That an agent *used the desktop*: it opened an
+                application because it decided it needed one, acted on an
+                object in it, and put the result in a second application,
+                owning neither, having been granted the right to touch
+                each. Two applications that contain no AI, addressable
+                because the system made them so.
 
-    BEAT 5  the agent disagrees, usefully                        ~15s
-        YOU     "@Claude does the schedule actually work?"
-        SHOWS   it reads the run sheet and answers that sound check at
-                18:30 falls after doors at 18:00. Judgement, not
-                obedience -- the difference between a colleague and a
-                macro. Works today.
+                The motion matters and is not decoration. An action that
+                only appears as a changed document has to be narrated; one
+                you can watch does not. It is also what makes attribution
+                legible -- the object travels in the acting participant's
+                colour, so it reads as *Claude did this*.
 
-    BEAT 6  and it is undoable                                    ~5s
+        NEEDS   the agent may open an application  (in flight)
+                an agent's cross-app action is visible  (in flight)
+                crop by address  (landed, proven to the pixels)
+
+    SCENE 5  and it is undoable                          ~5s, CUTTABLE
         YOU     Ctrl+Z.
-        SHOWS   `undo_for_author` walks back the last change belonging
-                to *that* actor and leaves everyone else's work alone,
-                which is why an agent can be allowed to act at all.
-                Deliberately small: the history UI is roadmap, the
-                fundamentals are here.
+        SHOWS   `undo_for_author` walks back the last change belonging to
+                *that* actor and leaves everyone else's alone -- which is
+                why an agent may be allowed to write at all.
+        This scene is deliberately expendable. It is the strongest
+        architectural claim in the stack and it wants thirty seconds it
+        does not have here, so it is filmed last and cut without
+        argument if it does not read clearly.
 
-    CLOSE   the strip, four applications, three participants, one
-            room. No frame ever came from the agent's session.
+    CLOSE   there is no more, on purpose: the point has been made and
+            every further scene dilutes it.
+
+WHERE YOU ARE ON THE STRIP, AND HOW YOU GOT THERE
+--------------------------------------------------
+The strip is longer than the screen, so at every moment a viewer must be
+able to say which part of it they are looking at and what moved them
+there. That is a hard requirement of this film and not a polish item: a
+desktop whose defining idea is a strip cannot afford to look like windows
+jumping about.
+
+Two rules.
+
+**Motion is motivated.** The strip moves because something asked it to --
+an application opening past the edge, a scene needing two named windows
+in frame, a cut to somebody else's screen. It never moves to tidy itself
+up, and two moves never happen back to back without a reason between
+them.
+
+**Motion is continuous.** Getting from one part of the strip to another
+is a travel a viewer can follow, not a cut. `frame_windows` narrows and
+scrolls to bring named windows into view; anything that repositions
+without animating is a jump, and a jump loses the thread of where things
+are.
+
+Worth watching for in every take: a scroll immediately after a launch
+(the launch already moved it), a frame call that shifts the strip for a
+scene that then does not use the framing, and any reposition during the
+agent's latency, when nothing on screen explains it.
+
+CUT, AND WHY -- so nothing is rebuilt by mistake
+------------------------------------------------
+Scenes that existed, worked, and are deliberately not in this film:
+
+  * Four applications in one tab group. The most distinctive thing this
+    desktop does, and it argues about window management while the
+    audience is waiting for the point.
+  * The agent disagreeing usefully -- reading the run sheet and saying
+    sound check at 18:30 falls after doors at 18:00. The best sentence
+    anything here has produced. It is a second idea, and a film with two
+    ideas makes neither.
+  * The run sheet, the table drafting, its ordering, the registry fetch,
+    the strip pan as a scene of its own.
+
+None of these are wrong and all of them are built. They are cut because
+the film is one argument long.
 
 WHAT EACH BEAT HAS TO SURVIVE
 -----------------------------
