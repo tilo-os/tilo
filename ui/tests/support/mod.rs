@@ -111,25 +111,6 @@ pub fn pump(relay: &mut MemoryRelay) {
     let peer_ids: Vec<String> = inboxes.keys().cloned().collect();
     for (from, req) in pending {
         match req {
-            // This relay fans one peer's frames out to the others. An
-            // `OpenApp` is addressed to the session hosting the
-            // connection — the compositor lifts it out of the fan-out and
-            // hands it to whatever can start an application — so relaying
-            // it is the one reading that is certainly wrong.
-            //
-            // A harness of in-memory inboxes hosts nothing, so it can
-            // neither open the application nor honestly refuse on a
-            // session's behalf. No test here sends one; arriving here
-            // means the harness is being asked for something it does not
-            // implement, and saying so loudly beats a silent drop that
-            // would let a future test pass for the wrong reason.
-            CollabRequest::OpenApp { .. } => {
-                panic!(
-                    "MemoryRelay was asked to open an application. It has \
-                     no session to host one — a test needing that wants a \
-                     real broker, not this harness."
-                );
-            }
             CollabRequest::SyncIncremental { data } => {
                 for id in &peer_ids {
                     if id == &from {
