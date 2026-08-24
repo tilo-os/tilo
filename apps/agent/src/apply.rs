@@ -162,13 +162,66 @@ impl Editor {
         Self::from_snapshot_for(contract, bytes, actor_handle)
     }
 
+    /// [`Editor::from_snapshot`] for an already-attributed snapshot, held as
+    /// a *peer* document rather than as the page the agent was invited to.
+    ///
+    /// The difference is the Automerge actor, and it is not cosmetic. An
+    /// actor id names a **replica**, and the agent holds one replica per
+    /// document in the room — so one id shared across them means two
+    /// unrelated documents both carry a change numbered `(agent, 1)`.
+    ///
+    /// Nothing is wrong with that until the two meet, and in this room they
+    /// do: a participant that announced no app id is cluster-scoped, so every
+    /// frame it sends reaches every subscriber, and a document handed a
+    /// change belonging to *another* document records that sequence number as
+    /// taken. The next real change for that document is then rejected —
+    /// `duplicate seq 1 found for actor …` — and dropped without a word. The
+    /// agent believes it answered; the person who asked sees nothing.
+    ///
+    /// Every app has one actor per app, and that is safe for an app, because
+    /// an app holds one document. It is not safe here, and the agent is the
+    /// only participant for which it is not.
+    ///
+    /// The page keeps the plain name ([`Editor::from_snapshot`]), because
+    /// that is the history somebody reads: `ui`'s history strip turns these
+    /// bytes back into the name beside a revision. Nothing displays the actor
+    /// of the documents held here — a message is attributed by the author id
+    /// the room's roster resolved, not by a replica handle — and the durable
+    /// `author` mark this stamps on text it writes is the plain name either
+    /// way.
+    pub fn peer_from_snapshot(
+        contract: &'static AppContract,
+        bytes: &[u8],
+        actor_handle: &str,
+    ) -> Result<Self> {
+        Self::from_snapshot_as(
+            contract,
+            bytes,
+            actor_handle,
+            &format!("{actor_handle}#{}", contract.namespace),
+        )
+    }
+
     /// [`Editor::from_snapshot`] for an already-attributed snapshot.
     pub fn from_snapshot_for(
         contract: &'static AppContract,
         bytes: &[u8],
         actor_handle: &str,
     ) -> Result<Self> {
-        let actor = ActorId::from(actor_handle.as_bytes());
+        Self::from_snapshot_as(contract, bytes, actor_handle, actor_handle)
+    }
+
+    /// The two above, with the replica's actor spelled out.
+    ///
+    /// `author` is who the room calls this participant and never changes;
+    /// `actor` is which replica is writing, and is per-document.
+    fn from_snapshot_as(
+        contract: &'static AppContract,
+        bytes: &[u8],
+        actor_handle: &str,
+        actor_id: &str,
+    ) -> Result<Self> {
+        let actor = ActorId::from(actor_id.as_bytes());
         let mut doc = AutoCommit::load(bytes).context("load the document snapshot")?;
         doc.set_actor(actor.clone());
         let mut this = Self {
