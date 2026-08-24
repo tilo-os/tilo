@@ -279,6 +279,11 @@ walkdir.workspace = true
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
+# Two `chat` instances in one process for `tests/chat_message_crosses.rs`, which
+# drives real app widgets across the real broker. `default-features = false`
+# drops the live media engine — the conversation under test needs no camera, and
+# the default build would pull GStreamer/openh264/iroh into every shell test run.
+chat = { path = "../apps/chat", default-features = false }
 wayland-client.workspace = true
 tokio-test = "0.4"
 # Canonical-bytes encoder for Phase 3 wire-format round-trip tests in

@@ -442,6 +442,7 @@ mod tests {
             parent: parent.map(|s| s.to_string()),
             reactions: vec![],
             mentions: vec![],
+            reference: None,
             attachment: None,
             pinned: false,
         }

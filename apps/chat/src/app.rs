@@ -215,6 +215,10 @@ pub(crate) enum Hit {
     FocusThread,
     Send,
     ComposerEmoji(Point),
+    /// A press inside the open `@` picker. Which participant it landed on is
+    /// resolved by the popover's own hit test, so the row layout lives in one
+    /// place.
+    MentionMenu,
     /// Open the workspace file picker to share an attachment.
     Attach,
     /// Pick a specific file (by path) from the open attachment picker.
@@ -306,6 +310,9 @@ pub struct ChatApp {
     pub(crate) mention_menu: UiContextMenu,
     pub(crate) mention_rows: Vec<crate::mention::Participant>,
     pub(crate) mention_query: Option<crate::mention::MentionQuery>,
+    /// Where the composer sat when it was last drawn — the point the picker
+    /// grows upward from. `None` before the first frame.
+    pub(crate) mention_anchor: Option<Point>,
 
     // Structure editing.
     pub(crate) menu: Option<ContextMenu>,
@@ -365,6 +372,10 @@ pub struct ChatApp {
     /// `--shots` only: seed the real minimal starter instead of the demo, so
     /// the honest first-run empty state can be captured.
     shot_starter: bool,
+    /// Which mention capture (if any) this `--shots` instance stages. Demo
+    /// content, reachable only from `seed_shot_scenario`; a live run never
+    /// sets it and never sees any of it.
+    mention_shot: Option<String>,
     /// `--shots` only: a draft to stage into the main composer so a screenshot
     /// can show the composer mid-compose (caret + wrapped text). `None` in every
     /// live/interactive path, so production is unaffected.
@@ -456,6 +467,23 @@ impl ChatApp {
         app
     }
 
+    /// A live instance authoring as `me`, rather than as whoever the
+    /// environment resolves to.
+    ///
+    /// [`Self::new`] resolves one identity from the process environment, which
+    /// is right for the binary — a running app is one person's. It is exactly
+    /// wrong for anything that has to be two people at once: a second
+    /// participant standing up in the same process would silently author under
+    /// the first one's id, and every message would come back attributed to the
+    /// wrong peer with nothing on screen to show it.
+    ///
+    /// The identity still comes from outside; this only says which one.
+    pub fn new_as(me: LocalIdentity) -> Self {
+        let mut app = Self::new();
+        app.me = me;
+        app
+    }
+
     /// A non-persistent instance for `--shots` / tests: never reads or
     /// writes disk, so a screenshot run can't clobber a real workspace.
     pub fn new_ephemeral() -> Self {
@@ -497,6 +525,7 @@ impl ChatApp {
             mention_menu: UiContextMenu::new(),
             mention_rows: Vec::new(),
             mention_query: None,
+            mention_anchor: None,
             menu: None,
             rename: None,
             swipe: None,
@@ -524,6 +553,7 @@ impl ChatApp {
             relayout: false,
             flap_animating: false,
             shot_starter: false,
+            mention_shot: None,
             shot_composer_draft: None,
             is_live: false,
             remote_frames: HashMap::new(),
@@ -693,6 +723,26 @@ impl ChatApp {
                 self.shot_starter = true;
                 self.thread_open = None;
                 self.call = CallState::default();
+            }
+            // Two windows onto one channel, so a pair of shots shows what each
+            // side of a conversation sees. `mention` is the peer who was
+            // addressed (their own mention reads in the stronger ground);
+            // `mention-peer` is the peer who did the addressing, where the same
+            // run is somebody else's colour. Same seeded exchange either way —
+            // only which participant the window belongs to differs.
+            "mention" | "mention-peer" => {
+                self.thread_open = None;
+                self.right_flap.snap(true);
+                self.call = CallState::default();
+                self.mention_shot = Some(scenario.to_string());
+            }
+            // The `@` picker mid-type: the room's participants offered under a
+            // half-written name, an agent among them.
+            "mention-picker" => {
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+                self.mention_shot = Some(scenario.to_string());
             }
             "context" => {
                 self.menu = Some(ContextMenu {
@@ -1225,20 +1275,28 @@ impl ChatApp {
     /// seeded from `CollabEvent::Context` — the broker's roster snapshot — so a
     /// name here is the room's answer, arrived over the same transport as the
     /// messages. Nothing a peer says about itself reaches this map.
-    pub(crate) fn adopt_room(&mut self, presence: &PresenceCtx) {
+    ///
+    /// The room's answer **replaces** what was held rather than merging into
+    /// it. Merging is how a peer who has gone keeps a name and a colour on
+    /// everyone else's screen for the rest of the session: presence forgets
+    /// them on leave, and anything downstream that only ever learned would go
+    /// on offering a departed participant in the `@` picker and painting their
+    /// colour behind a mention.
+    pub fn adopt_room(&mut self, presence: &PresenceCtx) {
+        self.room_names.retain(|id, _| {
+            presence.names.contains_key(&ui::permissions::UserId(id.clone()))
+        });
+        self.room_colors.retain(|id, _| {
+            presence.names.contains_key(&ui::permissions::UserId(id.clone()))
+        });
         for (id, name) in &presence.names {
             let name = name.trim();
             if name.is_empty() {
                 continue;
             }
-            let current = self.room_names.get(&id.0);
-            if current.map(|c| c.as_str()) != Some(name) {
-                self.room_names.insert(id.0.clone(), name.to_string());
-            }
-        }
-        // A colour is the same kind of answer: assigned per room so two people
-        // never collide, and shared with the caret pill and the cursor.
-        for id in presence.names.keys() {
+            self.room_names.insert(id.0.clone(), name.to_string());
+            // A colour is the same kind of answer: assigned per room so two
+            // people never collide, and shared with the caret pill and cursor.
             self.room_colors.insert(id.0.clone(), presence.color_for(id));
         }
     }
@@ -1250,7 +1308,7 @@ impl ChatApp {
     /// telling every other peer what to call it, and two peers disagreeing
     /// about a third's name is a difference nobody can settle. So the room
     /// answers, and a peer only ever supplies its id.
-    pub(crate) fn display_name(&self, id: &str) -> String {
+    pub fn display_name(&self, id: &str) -> String {
         if let Some(n) = self.room_names.get(id) {
             if !n.trim().is_empty() {
                 return n.clone();
@@ -1266,7 +1324,7 @@ impl ChatApp {
 
     /// The avatar monogram for `id`, derived from whatever the room calls them
     /// so the letter never disagrees with the name beside it.
-    pub(crate) fn initials_for(&self, id: &str) -> String {
+    pub fn initials_for(&self, id: &str) -> String {
         let name = self.display_name(id);
         let s = ui::widget::Avatar::initials_for_name(&name);
         if s.is_empty() {
@@ -1279,11 +1337,93 @@ impl ChatApp {
     /// The participant's own colour, in the shared presence vocabulary: the
     /// room's assignment when it made one, otherwise the system-wide
     /// per-user colour every other surface derives the same way.
-    pub(crate) fn participant_color(&self, id: &str) -> (u8, u8, u8) {
+    pub fn participant_color(&self, id: &str) -> (u8, u8, u8) {
         self.room_colors
             .get(id)
             .copied()
             .unwrap_or_else(|| ui::presence::user_color(id))
+    }
+
+    /// Stage one of the mention captures. **`--shots` only** — reached from
+    /// [`Self::seed_shot_scenario`], which the live binary never calls, so none
+    /// of this content can appear in a real workspace.
+    ///
+    /// The exchange is the same in every capture; what changes is which
+    /// participant the window belongs to, because that is the thing worth
+    /// looking at: a mention of you and a mention of somebody else are not
+    /// supposed to read the same.
+    fn seed_mention_shot(&mut self, doc: &mut AutoCommit, which: &str) {
+        use crate::doc::NewMessage;
+        use crate::mention::Participant;
+
+        // The room. An agent sits in it alongside the people, which is the
+        // whole point — it is addressed the same way they are.
+        ChatDoc::ensure_member(doc, "agent_scribe", true, model::Presence::Online);
+        let room: Vec<Participant> = [
+            ("u_me", "You", false),
+            ("u_aria", "Aria Chen", false),
+            ("u_sora", "Sora Vega", false),
+            ("agent_scribe", "Scribe", true),
+        ]
+        .into_iter()
+        .map(|(id, name, is_agent)| Participant {
+            id: id.into(),
+            name: name.into(),
+            is_agent,
+        })
+        .collect();
+        for p in &room {
+            self.room_names.insert(p.id.clone(), p.name.clone());
+        }
+
+        self.active_ws = "ws_acme".into();
+        self.active_channel = "c_frontend".into();
+        let channel = self.active_channel.clone();
+
+        // Whose window this is. `mention` belongs to the person addressed;
+        // `mention-peer` to the person who addressed them.
+        if which == "mention-peer" {
+            self.me = crate::identity::LocalIdentity {
+                id: "u_aria".into(),
+                name: String::new(),
+                initials: "AC".into(),
+                color_idx: 1,
+            };
+        }
+
+        for (author, text) in [
+            ("u_sora", "Composer's on the shared TextInput now — caret, selection and IME all come from the toolkit."),
+            ("u_aria", "@You can you take the mention rendering? @Scribe should watch this channel for handoffs."),
+            ("u_me", "On it. @Aria Chen the run needs to stay legible on the high-contrast ground too."),
+        ] {
+            let mentions = crate::mention::resolve(text, &room);
+            ChatDoc::push_message(
+                doc,
+                &channel,
+                NewMessage {
+                    author: author.into(),
+                    ts: crate::doc::NOW,
+                    text: text.into(),
+                    mentions,
+                    ..Default::default()
+                },
+            );
+        }
+
+        if which == "mention-picker" {
+            self.focus = Focus::Main;
+            self.composer_main.set_text("Handing the parser over to @S");
+            let caret = self.composer_main.value().len();
+            self.composer_main.set_cursor_pos(caret);
+            self.reload(doc);
+            self.refresh_mention_picker();
+        }
+    }
+
+    /// The channel currently in view. Per-peer state, not shared truth — two
+    /// people in one workspace read different channels.
+    pub fn active_channel_id(&self) -> &str {
+        &self.active_channel
     }
 
     /// Everyone in this room the composer can address: people and agents
@@ -1294,7 +1434,7 @@ impl ChatApp {
     /// names come from [`Self::display_name`]. An agent is a participant like
     /// any other; only its `is_agent` flag differs, and only so the picker can
     /// say which is which.
-    pub(crate) fn participants(&self) -> Vec<crate::mention::Participant> {
+    pub fn participants(&self) -> Vec<crate::mention::Participant> {
         let mut out: Vec<crate::mention::Participant> = self
             .users
             .iter()
@@ -1584,6 +1724,9 @@ impl Widget for ChatApp {
         } else {
             // Ephemeral `--shots`/test instance: the rich demo workspace.
             ChatDoc::seed_if_empty(doc);
+            if let Some(which) = self.mention_shot.clone() {
+                self.seed_mention_shot(doc, &which);
+            }
         }
         self.reload(doc);
         if self.ensure_selection() {
@@ -1782,6 +1925,10 @@ impl Widget for ChatApp {
             self.draw_host_camera_off(scene, tf, tr, theme);
             self.draw_huddle_fg(scene, tf, tr, theme, &mut hits);
         }
+
+        // The `@` picker sits above the conversation but below the modal
+        // popovers, so an open context menu or emoji sheet still wins.
+        self.draw_mention_picker(scene, tf, tr, theme, presence, &mut hits);
 
         // Top-most popovers.
         if let Some(menu) = self.menu.clone() {

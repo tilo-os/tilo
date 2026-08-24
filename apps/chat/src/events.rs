@@ -472,11 +472,26 @@ impl ChatApp {
     }
 
     fn on_hit(&mut self, hit: Hit, doc: &mut AutoCommit) {
+        // A press inside the `@` picker picks a participant; a press anywhere
+        // else takes it down, the way every other popover here behaves.
+        if matches!(hit, Hit::MentionMenu) {
+            match self.mention_menu.item_at([self.last_mouse.x, self.last_mouse.y]) {
+                Some(idx) => self.accept_mention(idx, doc),
+                None => self.close_mention_picker(),
+            }
+            return;
+        }
+        self.close_mention_picker();
         // Any click dismisses an open context menu unless it's a menu action.
         if !matches!(hit, Hit::MenuAction { .. }) {
             self.menu = None;
         }
         match hit {
+            // Handled above, before the dismissal that every other hit gets:
+            // a press inside the picker is the one press that must not take it
+            // down. The arm exists so adding a `Hit` variant stays a compile
+            // error rather than a silently ignored click.
+            Hit::MentionMenu => {}
             Hit::Workspace(id) => {
                 if self.active_ws != id {
                     self.active_ws = id;
