@@ -60,6 +60,9 @@ pub struct ImageViewer {
     /// can still anchor its zoom on the pointer.
     cursor: Option<Vec2>,
     rect: Rect,
+    /// Optional id for `Widget::test_id`, so a click-driven test can
+    /// resolve the canvas by name.
+    test_id: Option<String>,
 }
 
 impl ImageViewer {
@@ -75,7 +78,15 @@ impl ImageViewer {
             drag_origin: None,
             cursor: None,
             rect: Rect::ZERO,
+            test_id: None,
         }
+    }
+
+    /// Name this viewer for `Widget::test_id`, so a click-driven test can
+    /// resolve its rect by name rather than by hard-coded coordinates.
+    pub fn with_test_id(mut self, id: impl Into<String>) -> Self {
+        self.test_id = Some(id.into());
+        self
     }
 
     /// Reset to the "contain" baseline: `zoom = 1.0`, `pan = ZERO`.
@@ -96,18 +107,66 @@ impl ImageViewer {
         self.pan
     }
 
-    /// Test-only setter for [`Self::zoom`]. Bypasses the wheel-event
-    /// path so tests can stage state directly without simulating a
-    /// chain of `MouseWheel` events.
-    #[cfg(test)]
+    /// Set the zoom directly, clamped to the same range the wheel path
+    /// honours. Lets a host drive zoom from a toolbar button or a
+    /// keyboard shortcut without synthesising wheel events.
     pub fn set_zoom(&mut self, z: f32) {
-        self.zoom = z;
+        self.zoom = z.clamp(ZOOM_MIN, ZOOM_MAX);
     }
 
-    /// Test-only setter for [`Self::pan`]. See [`Self::set_zoom`].
-    #[cfg(test)]
+    /// Set the pan offset directly, in image-space pixels. See
+    /// [`Self::pan`] for the coordinate model.
     pub fn set_pan(&mut self, p: Vec2) {
         self.pan = p;
+    }
+
+    /// Replace the displayed image, resetting zoom and pan to the
+    /// fit-to-viewport baseline.
+    ///
+    /// The reset is the point: a host that swaps in a re-rendered image
+    /// after an edit has just changed the pixel dimensions, so a zoom
+    /// and pan chosen for the old size would leave the new one framed
+    /// somewhere arbitrary — most visibly after a rotation, where the
+    /// axes have swapped. Callers that genuinely want to keep the
+    /// framing can read [`Self::zoom`] / [`Self::pan`] first and put
+    /// them back.
+    pub fn set_image(&mut self, image: peniko::ImageData) {
+        self.image = image;
+        self.fit_to_viewport();
+        self.drag_origin = None;
+    }
+
+    /// The image's intrinsic pixel size.
+    pub fn image_size(&self) -> (u32, u32) {
+        (self.image.width, self.image.height)
+    }
+
+    /// The region of the image currently visible, in normalized `0..1`
+    /// image coordinates as `(x, y, w, h)`.
+    ///
+    /// At the fit-to-viewport baseline this is the whole image — the
+    /// letterbox bars are outside it, and the result is clamped so they
+    /// never widen it past the unit square. Zoomed in, it is the
+    /// framed region, which is what a "crop to what I can see"
+    /// affordance needs and cannot compute from outside: the mapping
+    /// depends on `base_scale`, which is private viewer geometry.
+    ///
+    /// `None` when the image or the viewport has a zero dimension.
+    pub fn visible_image_rect(&self) -> Option<(f64, f64, f64, f64)> {
+        let iw = self.image.width as f64;
+        let ih = self.image.height as f64;
+        if iw <= 0.0 || ih <= 0.0 {
+            return None;
+        }
+        let top_left = self.screen_to_image(Vec2::new(self.rect.x0, self.rect.y0))?;
+        let bottom_right = self.screen_to_image(Vec2::new(self.rect.x1, self.rect.y1))?;
+        // `screen_to_image` measures from the image's centre, so shift by
+        // half the extent before normalising.
+        let x0 = ((top_left.x + iw * 0.5) / iw).clamp(0.0, 1.0);
+        let y0 = ((top_left.y + ih * 0.5) / ih).clamp(0.0, 1.0);
+        let x1 = ((bottom_right.x + iw * 0.5) / iw).clamp(0.0, 1.0);
+        let y1 = ((bottom_right.y + ih * 0.5) / ih).clamp(0.0, 1.0);
+        Some((x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)))
     }
 
     /// Baseline "contain" scale factor: the multiplier that fits the
@@ -350,6 +409,13 @@ impl Widget for ImageViewer {
         "ImageViewer"
     }
 
+    /// The canvas is a click target for click-driven tests (pan, zoom,
+    /// crop-to-view), so it can carry a caller-assigned id. Unnamed by
+    /// default — a host with one viewer needs no id.
+    fn test_id(&self) -> Option<&str> {
+        self.test_id.as_deref()
+    }
+
     /// Accessibility: the viewer presents a single image; `Role::Image`.
     /// There is no alt-text field on the viewer (it's a pan/zoom canvas around
     /// raw `ImageData`), so the node carries no intrinsic name — a host that
@@ -583,5 +649,93 @@ mod tests {
         iv.fit_to_viewport();
         assert_eq!(iv.zoom(), 1.0);
         assert_eq!(iv.pan(), Vec2::ZERO);
+    }
+
+    /// Lay the viewer out over `rect` without a taffy round-trip, so the
+    /// geometry accessors can be exercised directly.
+    fn placed(image: Image, rect: Rect) -> ImageViewer {
+        let mut iv = ImageViewer::new(image);
+        iv.rect = rect;
+        iv
+    }
+
+    #[test]
+    fn set_zoom_is_clamped_to_the_wheel_range() {
+        let mut iv = ImageViewer::new(make_image());
+        iv.set_zoom(1000.0);
+        assert_eq!(iv.zoom(), ZOOM_MAX);
+        iv.set_zoom(-5.0);
+        assert_eq!(iv.zoom(), ZOOM_MIN);
+    }
+
+    #[test]
+    fn swapping_the_image_reports_the_new_size_and_refits() {
+        let mut iv = placed(make_image(), Rect::new(0.0, 0.0, 100.0, 100.0));
+        iv.set_zoom(3.0);
+        iv.set_pan(Vec2::new(4.0, 4.0));
+
+        let pixels = vec![255u8; 4 * 8 * 4];
+        let wide = Image {
+            data: Blob::new(Arc::new(pixels)),
+            format: Format::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 8,
+            height: 4,
+        };
+        iv.set_image(wide);
+
+        assert_eq!(iv.image_size(), (8, 4));
+        assert_eq!(iv.zoom(), 1.0, "a swapped image must refit");
+        assert_eq!(iv.pan(), Vec2::ZERO);
+    }
+
+    #[test]
+    fn at_the_baseline_the_whole_image_is_visible() {
+        // A square image in a wide viewport: contain-fit leaves letterbox
+        // bars left and right, and the visible rect must still be the whole
+        // image rather than spilling past it.
+        let iv = placed(make_image(), Rect::new(0.0, 0.0, 400.0, 200.0));
+        let (x, y, w, h) = iv.visible_image_rect().expect("laid out");
+        assert!((x - 0.0).abs() < 1e-9, "x = {x}");
+        assert!((y - 0.0).abs() < 1e-9, "y = {y}");
+        assert!((w - 1.0).abs() < 1e-9, "w = {w}");
+        assert!((h - 1.0).abs() < 1e-9, "h = {h}");
+    }
+
+    #[test]
+    fn zooming_in_narrows_the_visible_region() {
+        let mut iv = placed(make_image(), Rect::new(0.0, 0.0, 200.0, 200.0));
+        iv.set_zoom(2.0);
+        let (x, y, w, h) = iv.visible_image_rect().expect("laid out");
+        assert!((w - 0.5).abs() < 1e-6, "w = {w}");
+        assert!((h - 0.5).abs() < 1e-6, "h = {h}");
+        // Centred, so a quarter of the image sits outside on each side.
+        assert!((x - 0.25).abs() < 1e-6, "x = {x}");
+        assert!((y - 0.25).abs() < 1e-6, "y = {y}");
+    }
+
+    #[test]
+    fn panning_moves_the_visible_region_the_other_way() {
+        let mut iv = placed(make_image(), Rect::new(0.0, 0.0, 200.0, 200.0));
+        iv.set_zoom(2.0);
+        let before = iv.visible_image_rect().unwrap().0;
+        // Dragging the image right shows more of its left edge.
+        iv.set_pan(Vec2::new(4.0, 0.0));
+        let after = iv.visible_image_rect().unwrap().0;
+        assert!(after < before, "pan right must move the window left: {before} -> {after}");
+    }
+
+    #[test]
+    fn a_degenerate_viewport_has_no_visible_region() {
+        let iv = placed(make_image(), Rect::ZERO);
+        assert!(iv.visible_image_rect().is_none());
+    }
+
+    #[test]
+    fn a_viewer_is_unnamed_until_a_test_id_is_assigned() {
+        let plain = ImageViewer::new(make_image());
+        assert_eq!(Widget::test_id(&plain), None);
+        let named = ImageViewer::new(make_image()).with_test_id("photo-canvas");
+        assert_eq!(Widget::test_id(&named), Some("photo-canvas"));
     }
 }
