@@ -135,6 +135,24 @@ inventing a fix for a defect that is gone is its own waste.
   which is the second-invitation defect showing up on the page rather
   than in the roster. Already dispatched.
 
+## Verified by looking, this round
+
+- **An agent is distinguishable from a person, in both surfaces.** The
+  roster gives it a bot glyph and an `agent` tag beside its name, with
+  the same `editor` role the people have -- a different *kind* of
+  member, not a lesser one. The top-bar stack could not show an agent at
+  all before: it derived from the peer list, and an agent holds
+  membership by capability. It now does, and because a glyph does not
+  survive a 15px chip (the eyes merge, the antenna goes), the
+  distinction there is **silhouette** -- a squircle among circles, which
+  reads even overlapped.
+- **Four different applications in one tab group** -- Notes, Files,
+  Terminal, Document on one tab bar. That is the property no other
+  desktop has, since a tab elsewhere belongs to its application. Worth
+  building the strip beat around.
+- **The strip ribbon appears when it should**: present on a workspace of
+  three strips, absent on one.
+
 ## Standing hazards, learned the expensive way
 
 - **Legacy transport hides defects.** Three separate total defects have
