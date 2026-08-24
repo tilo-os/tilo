@@ -1904,7 +1904,12 @@ impl Session {
                     // request, not one from a model, and not a second reading
                     // of the other app's document.
                     let bound;
-                    let mut from_app: Option<&str> = None;
+                    // Owned rather than borrowed out of `carried`, which is
+                    // reassigned a few lines below: the producing app is one
+                    // short string, and holding a borrow across the dispatch
+                    // that replaces what it points into is not worth the
+                    // saving.
+                    let mut from_app: Option<String> = None;
                     let argument = if carries {
                         let Some((producer, product)) = carried.as_ref() else {
                             let reply = refusal(
@@ -1922,12 +1927,12 @@ impl Session {
                         // operation given a value from anywhere else crossed
                         // nothing, and reporting one would draw a hand-off
                         // that did not happen.
-                        from_app = Some(producer.as_str());
+                        from_app = Some(producer.clone());
                         Some(bound.as_str())
                     } else {
                         argument.as_deref()
                     };
-                    match self.perform(&id, argument, &view, focus.as_deref(), from_app)? {
+                    match self.perform(&id, argument, &view, focus.as_deref(), from_app.as_deref())? {
                         Err(why) => {
                             let reply = refusal(&name, &done, label.as_deref(), &why);
                             self.reply(to, &reply)?;
