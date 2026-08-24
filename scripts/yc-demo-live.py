@@ -450,6 +450,17 @@ def refuse_stale(what: str, artifact: str, roots: tuple[str, ...],
 AGENT_INVITE_GRACE_S = 25.0
 
 
+#: Where finished film goes: `films/` at the repository root, git-ignored.
+#:
+#: Deliberately not under `target/`. That directory is cargo's, and its
+#: whole contract is that everything in it can be deleted and rebuilt — a
+#: recorded take cannot. It costs ten minutes of machine time, it is not
+#: reproducible byte-for-byte, and one has already been lost to a routine
+#: clean. A run's scratch (state, logs, frames) stays in `target/`, because
+#: that genuinely is regenerable; only the thing somebody watches moves.
+FILMS_DIR = os.path.join(REPO, "films")
+
+
 def decode_invite(token: str) -> dict | None:
     """What a token says it admits its holder to, or None.
 
@@ -1476,9 +1487,10 @@ def main() -> int:
     # told apart from a take afterwards.
     video_path = args.video or (
         os.path.join(args.out, "rehearsal.mp4") if args.dry_run else
-        os.path.join(REPO, ".claude", "demo-artifacts",
+        os.path.join(FILMS_DIR,
                      f"yc-live-{time.strftime('%Y%m%d-%H%M%S')}.mp4"))
     video_path = os.path.abspath(video_path)
+    os.makedirs(os.path.dirname(video_path), exist_ok=True)
     record_dir = os.path.join(args.out, "recording")
 
     terminal = None if args.dry_run else ins.active_window()

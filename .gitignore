@@ -56,3 +56,8 @@ os/dev/composefs/stage/
 
 # Recorded demo output. Large binaries; regenerate with scripts/yc-demo.py --record.
 .claude/demo-artifacts/
+
+# Recorded film. Large binaries and not reproducible; kept out of
+# `target/` on purpose, since that is the directory whose contents
+# are safe to delete.
+films/
