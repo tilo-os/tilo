@@ -4787,6 +4787,55 @@ impl ShellOverlayHost {
             )
         };
 
+        // A narrowing scope that finds nothing widens rather than
+        // reporting emptiness.
+        //
+        // `ActiveApp` was described as degrading safely, and it does —
+        // but only when *no* provider claims the focused tab. When one
+        // claims it and has no content yet, the narrowing is total: on
+        // the empty workspace the demo opens in, `Ctrl+K` then `h` said
+        // `No results for "h"` while `Super+K` on the same frame
+        // returned 47. It also put every chrome action behind a scope
+        // that excludes them, so typing `room activity` matched nothing
+        // and the sheet that scenario is named for never opened.
+        //
+        // Nobody reads an empty palette as "this scope is narrow"; they
+        // read it as search being broken. So an empty scoped result set
+        // is re-asked of the whole workspace, and the scope is moved to
+        // match — leaving the pill saying `Only <App>` over workspace
+        // results would just relocate the lie. `Workspace` rather than
+        // `All` because the two fan out identically (see
+        // `search::scope_allows`) and `Everywhere` is the label the
+        // deliberate "search the machine" chord has earned.
+        //
+        // Widening only where the narrow answer is *empty* keeps the
+        // chord's meaning: an app with content still answers for itself.
+        let groups = if groups.is_empty()
+            && matches!(scope, crate::shell::chrome_state::SearchScope::ActiveApp)
+        {
+            use crate::shell::chrome_state::SearchScope;
+            let widened = {
+                let st = chrome.borrow();
+                self.search_registry.query_grouped(
+                    &current_query,
+                    SearchScope::Workspace,
+                    active_provider.as_deref(),
+                    &self.active_kind_filter,
+                    &st,
+                    doc,
+                    root,
+                    PALETTE_ROW_BUDGET,
+                )
+            };
+            let mut st = chrome.borrow_mut();
+            st.search_scope = SearchScope::Workspace;
+            st.bump();
+            drop(st);
+            widened
+        } else {
+            groups
+        };
+
         // Flatten the groups into palette rows. The kind travels as the
         // row's *section* and its *glyph*, not as a `[Files]` literal
         // glued onto every subtitle — that literal was debug output
