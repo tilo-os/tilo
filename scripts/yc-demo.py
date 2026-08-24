@@ -1265,10 +1265,27 @@ class Session:
             # same per-character path the document uses.
             self.type_prose(search)
             self.settle(1.2)
-            rows = self.palette().get("rows") or []
+            pal = self.palette()
+            rows = pal.get("rows") or []
             if not any(app_id in json.dumps(r) for r in rows):
                 note(f"{self.name}: no palette row offers {app_id} for "
                      f"{search!r} (rows: {[r.get('id') for r in rows][:6]})")
+                self.key("Escape")
+                return None
+            # Offered is not the same as *selected*, and Enter takes the
+            # selection. A query that reaches the wanted app somewhere
+            # down the list and something else at the top opens the
+            # something else — and then paints, and answers every
+            # question this function asks afterwards, so the run reports
+            # a launch that worked. That is not hypothetical: searching
+            # "image" once opened the Disk Imager, put it in the strip
+            # beside the word processor and captioned it as the image
+            # editor, and the only sign was on screen.
+            selected = pal.get("selected_id")
+            if selected is not None and app_id not in json.dumps(selected):
+                note(f"{self.name}: {search!r} offers {app_id} but has "
+                     f"{selected!r} selected, and Enter takes the "
+                     f"selection — refusing to open the wrong application")
                 self.key("Escape")
                 return None
             self.key("Enter")
