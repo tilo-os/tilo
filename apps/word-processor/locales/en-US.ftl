@@ -178,9 +178,9 @@ outline-untitled = (untitled)
 ## Page layout (ruler) bottom bar
 layout-margins = Margins
 layout-spacing = Spacing
-layout-none-hint = Page layout — pick Margins or Spacing, then drag on the page
-layout-margins-readout = margins  L { $l }  T { $t }  R { $r }  B { $b }   ·   drag = opposite pair · Shift = one side · Ctrl = all proportional
-layout-spacing-readout = { $name } spacing  { $px } px   ·   drag the handle — every "{ $name }" block follows
+layout-none-hint = Page layout
+layout-margins-readout = margins  L { $l }  T { $t }  R { $r }  B { $b }
+layout-spacing-readout = { $name } spacing  { $px } px
 
 ## Canvas
 page-indicator = Page { $n }
