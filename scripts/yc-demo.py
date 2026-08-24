@@ -148,6 +148,33 @@ AGENT_ACTION_EFFECT = "room_activity"
 APPLICATIONS = "applications"
 FILES_APP = "dev.qos.file-explorer"
 WORD_PROCESSOR = "dev.qos.word-processor"
+CHAT_APP = "dev.qos.chat"
+IMAGE_EDITOR = "dev.qos.imager"
+
+#: The applications the workspace carries, left to right along the strip.
+#:
+#: The order is load-bearing rather than a preference, because a strip
+#: scrolls: only neighbours are ever in frame together, so which pairs
+#: this film can show is decided here and nowhere else. Files sits next
+#: to the word processor because a photograph is dragged from one into
+#: the other and a drag that starts off the edge of the screen is not a
+#: drag anybody can see; the image editor sits next to the word
+#: processor because the two of them end up sharing one window.
+#:
+#: The first two are opened by beats that are about opening them — Files
+#: on an empty desktop, the word processor fetched onto a machine that
+#: did not have it. `STRIP_EXTRAS` is the rest, opened together off
+#: camera, and adding a fifth application to this film is adding its id
+#: to that tuple.
+STRIP_EXTRAS = (IMAGE_EDITOR, CHAT_APP)
+
+#: What to type into the palette when an app's own id is not in the
+#: catalogue an empty query builds — see `Session.launch`. Only needed
+#: for the apps opened by id here; the rest name themselves.
+STRIP_SEARCH = {
+    IMAGE_EDITOR: "image",
+    CHAT_APP: "chat",
+}
 
 # Machine state, deliberately *not* isolated per session: without these
 # two a session enumerates zero applications and every launch fails with
@@ -925,6 +952,23 @@ class Session:
         ok(call(self.sock, {"op": "pointer_move", "x": x, "y": y}))
         self._pointer = (x, y)
 
+    def park_pointer(self) -> None:
+        """Put the pointer somewhere neutral, so there is one at all.
+
+        A session nobody has pointed at has no pointer on its screen,
+        which is true and is also the state in which the first click of
+        a run has nowhere to come from: the cursor materialises on the
+        control it is about to press. Parking it once, low and left of
+        centre where nothing lives, gives the first approach a start —
+        and puts a pointer in the frame from the beginning, which is
+        what a screen somebody is sitting at looks like.
+        """
+        try:
+            w, h = (int(v) for v in self.size.lower().split("x"))
+        except (ValueError, AttributeError):
+            w, h = 1280, 800
+        self.pointer_move(w * 0.42, h * 0.72)
+
     def pointer_button(self, pressed: bool) -> None:
         """Press or release the left button where the pointer already is.
 
@@ -951,6 +995,26 @@ class Session:
         """Give every group in the strip the same share of it. A group
         takes about three quarters by default, so two never fit."""
         return call(self.sock, {"op": "set_group_width", "permille": permille})
+
+    def merge_into_group(self, surface_id: int, into_surface_id: int) -> dict:
+        """Put the window drawing `surface_id` onto the tab bar of the
+        group already drawing `into_surface_id`.
+
+        The same splice dragging a tab pill onto a sibling group's bar
+        commits, reached over the socket instead. Not synthetic input in
+        disguise: a pointer path across two clients is a gesture this
+        script would have to stage exactly right and could not check
+        afterwards, and what would be on film is the harness's aim
+        rather than the compositor's tabbing.
+
+        Counts as an input op for the same reason a click does — a
+        person did this, and the agent's whole claim is that it never
+        does.
+        """
+        self.input_ops += 1
+        return call(self.sock, {"op": "merge_tab_into_group",
+                                "surface_id": int(surface_id),
+                                "into_surface_id": int(into_surface_id)})
 
     # -- launching ---------------------------------------------------
 
@@ -2432,8 +2496,8 @@ FETCH_ON_CAMERA = False
 
 FILM_GROUP_SHARE = 500
 
-#: How far `frame_both_windows` may narrow the groups to get everything
-#: into frame before it gives up and says so. `WIDTH_NARROW_PERMILLE` in
+#: How far `frame_windows` may narrow the groups to get a shot's
+#: subjects into frame before it gives up and says so. `WIDTH_NARROW_PERMILLE` in
 #: the toolkit, which is a third of the strip — under that a window is
 #: too small to read on film, and shrinking further would buy a frame
 #: nobody can see anything in. A shot that will not fit above this floor
@@ -2457,108 +2521,192 @@ def establish_strip(s: Session) -> None:
              f"for the whole film; no beat resizes on camera")
 
 
-def horizontal_overflow(s: Session,
-                        viewport: tuple[int, int]) -> tuple[float, float]:
-    """`(widest group, how far the strip runs off the side)`, in pixels.
+def tiles_for(s: Session, app_id: str) -> list[dict]:
+    """Every window on this screen announcing `app_id`, left to right."""
+    return sorted((t for t in painted_tiles(s).values()
+                   if t["app_id"] == app_id),
+                  key=lambda t: t["rect"][0])
 
-    Read off the rects rather than parsed back out of the sentences
-    `windows_off_screen` writes for people. Those sentences also carry
-    `below the screen`, and a strip narrowed in response to a window
-    being too *tall* gets narrower every attempt while never addressing
-    the thing that is wrong.
+
+def subjects_off_screen(s: Session, apps: list[str],
+                        viewport: tuple[int, int]) -> list[str]:
+    """Which of `apps` is not wholly on screen, and by how much.
+
+    `windows_off_screen` asks it of every window there is. On a strip
+    that scrolls, most of them are off the edges most of the time and
+    that is the layout working, so the question a beat can actually act
+    on is narrower: are the windows *this shot is about* whole.
+    """
+    w, _h = viewport
+    out = []
+    for app in apps:
+        tiles = tiles_for(s, app)
+        if not tiles:
+            out.append(f"{app} — no window on screen announces it")
+            continue
+        # The best-placed one. Two windows can announce the same app id
+        # by the end of this film (a session's own, and a peer's,
+        # replicated in), and the beat only needs one of them framed.
+        best = None
+        for t in tiles:
+            x0, _y0, tw, _th = t["rect"]
+            over = max(0.0, -x0) + max(0.0, (x0 + tw) - w)
+            if best is None or over < best[0]:
+                best = (over, x0, tw)
+        over, x0, tw = best
+        if over <= 0.5:
+            continue
+        said = []
+        if x0 < -0.5:
+            said.append(f"{-x0:.0f}px off the left")
+        if x0 + tw > w + 0.5:
+            said.append(f"{x0 + tw - w:.0f}px past the right")
+        out.append(f"{app} — {', '.join(said)}")
+    return out
+
+
+def subjects_overlapping(s: Session, apps: list[str]) -> list[str]:
+    """Whether the windows this shot is about are drawn over each other.
+
+    The other half of "is this scene filmable", asked of the subjects for
+    the same reason as `subjects_off_screen`. A window a beat is not
+    about may sit under another one all it likes.
+    """
+    wanted = set(apps)
+    tiles = [(str(t["app_id"]), t["rect"]) for t in painted_tiles(s).values()
+             if t["app_id"] in wanted]
+    out = []
+    for i in range(len(tiles)):
+        for j in range(i + 1, len(tiles)):
+            (a_id, (ax, ay, aw, ah)) = tiles[i]
+            (b_id, (bx, by, bw, bh)) = tiles[j]
+            if a_id == b_id:
+                # The same app twice is a window and its replica, not a
+                # fault — and they are meant to be interchangeable.
+                continue
+            ox = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
+            oy = max(0.0, min(ay + ah, by + bh) - max(ay, by))
+            area = ox * oy
+            smaller = min(aw * ah, bw * bh)
+            if smaller > 0 and area / smaller > 0.05:
+                out.append(f"{a_id} and {b_id} overlap by "
+                           f"{100.0 * area / smaller:.0f}% of the smaller")
+    return out
+
+
+def subject_overflow(s: Session, apps: list[str],
+                     viewport: tuple[int, int]) -> tuple[float, float]:
+    """`(widest subject, how far the subjects run off the side)`, in px.
+
+    The arithmetic `frame_windows` narrows by. Read off the subjects
+    rather than off the whole strip, which on a scrolling strip is
+    always wider than the screen — narrowing towards *that* would shrink
+    every window towards unreadability chasing a fit that is not the
+    point.
     """
     w, _ = viewport
     widest, over = 1.0, 0.0
-    for f in s.foreign_frames():
-        r = f.get("rect") or {}
-        if not r.get("w"):
+    for app in apps:
+        tiles = tiles_for(s, app)
+        if not tiles:
             continue
-        x0 = r.get("x", 0.0)
-        widest = max(widest, r["w"])
-        over = max(over, -x0, (x0 + r["w"]) - w)
-    return widest, max(0.0, over)
+        best = None
+        for t in tiles:
+            x0, _y0, tw, _th = t["rect"]
+            this = max(0.0, -x0) + max(0.0, (x0 + tw) - w)
+            if best is None or this < best[0]:
+                best = (this, tw)
+        widest = max(widest, best[1])
+        over = max(over, best[0])
+    return widest, over
 
 
-def frame_both_windows(s: Session, viewport: tuple[int, int] | None = None) -> None:
-    """Put the whole strip in frame: even shares, and scrolled back.
+def scroll_subjects_into_frame(s: Session, apps: list[str]) -> None:
+    """Pan the strip until `apps` are the windows in frame.
+
+    Right subject first, then left, and that order is the whole trick.
+    Focusing a group scrolls it *minimally* into view — a group off the
+    right edge is brought to rest against the right edge, a group off
+    the left to rest against the left. So focusing the rightmost subject
+    guarantees it is in frame wherever it started, and then focusing the
+    leftmost either does nothing (already whole, which is the answer) or
+    brings it flush to the left edge, which at the film's share leaves
+    exactly enough room for the one beside it.
+
+    Doing it the other way round frames the wrong pair: focus the left
+    subject while it is off to the right and it comes to rest against
+    the *right* edge, and what a viewer then sees beside it is its left
+    neighbour rather than the window the beat is about.
+    """
+    for app in reversed(apps):
+        if tiles_for(s, app):
+            focus_app_group(s, app)
+
+
+def frame_windows(s: Session, apps: list[str],
+                  viewport: tuple[int, int] | None = None) -> bool:
+    """Put the windows this beat is about in frame, and say whether it
+    worked.
 
     Two separate things go wrong, and each has to be checked rather than
     performed and assumed.
 
     A group takes about three quarters of the strip by default, which is
     right for reading one window and wrong for filming two — so every
-    group is given an even share. Even means *even between however many
-    groups there are*, which is the half that was wrong: a fixed half
-    each is a strip one and a half screens wide the moment a third group
-    exists, and the window on the end then hangs off by most of its own
-    width. That is what `788px past the right` was, printed underneath a
-    claim that both windows were whole.
+    group is given the film's share. That has to be re-applied here and
+    not only once before filming: `set_group_widths` walks the groups
+    that exist when it is called, so a share settled on an empty desktop
+    governs nothing opened afterwards, and a group opened by a route
+    that does not go through `Session.launch` — beat 5 fetches its app
+    through the palette and installs it — takes the launch default of
+    `WIDTH_NORMAL_PERMILLE`, two thirds. Measured: two thirds of a
+    1596px usable strip is 1065px, which put a second window's right
+    edge 247px past a 1920px frame, printed underneath a claim that both
+    windows were whole. Re-applying is a no-op for a group already at
+    the film share, so the visible jump it risks only happens where the
+    alternative is a window hanging off the side of the picture.
 
-    The second is the strip's scroll offset. Opening a window in a new
-    group scrolls the strip to bring *that* group up, and it does not
-    come back when the content would fit whole: measured at 1920 wide,
-    two even groups land at `-222 … 578` and `586 … 1386`, so the first
-    window is cut by 222px on the left while 534px of empty backdrop
-    sits on the right. Narrowing the groups does not help on its own —
-    the offset stays at -222 and only the windows get smaller — and
-    scrolling the backdrop does not move it either.
+    The second is the strip's scroll offset, which `scroll_subjects_into_frame`
+    owns.
 
-    Focusing the leftmost group does move it: the same two windows then
-    sit at `291 … 1091` and `1099 … 1899`, both whole, filling the strip
-    beside the wheel disc. So that is the gesture — a click on the
-    window you have just opened something next to, which is what a
-    person does anyway.
+    Then it is measured, and narrowed and re-framed until it holds or
+    the attempts run out.
 
-    Then it is measured, and narrowed and re-framed until it holds or the
-    attempts run out. A beat that needs two windows in one shot cannot
-    take "the gesture was performed" for an answer.
+    **The claim is about `apps`, not about everything on screen**, and
+    that narrowing is the point rather than a softening. The film's strip
+    carries four applications and the screen holds two, so "every window
+    is wholly on screen" stopped being a thing that could be true — a
+    check that reports the other two as faults every time reports nothing
+    at all. What a beat can still be held to is that the windows it is
+    about are whole, unobscured and side by side, and this refuses when
+    they are not: a beat naming two apps still fails if either is off the
+    edge, behind the other, or not on screen at all.
     """
+    apps = list(dict.fromkeys(apps))
     groups = max(1, len(s.groups_here()))
-    # The share first, then the scroll — in that order, and both before
-    # the settle, so the strip makes one movement rather than two.
-    #
-    # This used to be scroll-only, on the reasoning that the proportions
-    # were already set once by `establish_strip` and re-setting them here
-    # is what made windows visibly jump a second after an app opened.
-    # Both halves of that were wrong. `set_group_widths` only walks the
-    # groups that exist when it is called, so a share set before filming
-    # governs nothing opened afterwards; and a group opened by a route
-    # that does not go through `Session.launch` — beat 5 fetches its app
-    # through the palette and installs it — takes the launch default of
-    # `WIDTH_NORMAL_PERMILLE`, two thirds. Measured: two thirds of a
-    # 1596px usable strip is 1065px, which puts the second window's right
-    # edge 247px past a 1920px frame. That is exactly the `247px past the
-    # right` this printed underneath a claim that both windows were whole.
-    #
-    # Re-applying is a no-op for a group already at the film share, so
-    # the jump it was avoiding only happens where the alternative is a
-    # window hanging off the side of the picture.
     s.set_group_width(FILM_GROUP_SHARE)
-    focus_leftmost_group(s)
+    scroll_subjects_into_frame(s, apps)
     s.settle(0.6)
     if not viewport:
-        return
+        return True
     share = FILM_GROUP_SHARE
-    wrong = windows_off_screen(s, viewport) + windows_overlapping(s)
+    named = ", ".join(a.rsplit(".", 1)[-1] for a in apps)
+    wrong = (subjects_off_screen(s, apps, viewport)
+             + subjects_overlapping(s, apps))
     if not wrong:
-        note(f"{s.name}: {groups} group(s) at {share} permille "
-             f"- every window is wholly on screen and none is behind "
-             f"another")
-        return
+        note(f"{s.name}: {named} in frame together, whole and side by "
+             f"side, out of {groups} group(s) at {share} permille")
+        return True
 
-    # Narrowed and re-framed until it holds or the attempts run out —
-    # which the docstring above has always described and the code did
-    # not do. What stood here measured the strip twice and reported the
-    # same answer both times.
-    #
-    # The step is measured rather than guessed: the overflow is known in
+    # Narrowed and re-framed until it holds or the attempts run out. The
+    # step is measured rather than guessed: the overflow is known in
     # pixels, so the share that would have fitted is arithmetic on the
-    # widest group. A floor of `WIDTH_NARROW_PERMILLE` stops this
+    # widest subject. A floor of `WIDTH_NARROW_PERMILLE` stops this
     # shrinking windows into unreadability to satisfy a frame — below
     # that the honest answer is that the shot does not fit, and the beat
     # should say so rather than film something too small to read.
     for _ in range(3):
-        widest, over = horizontal_overflow(s, viewport)
+        widest, over = subject_overflow(s, apps, viewport)
         if over <= 0.0:
             # Overlapping rather than off-screen: narrowing cannot help,
             # because the groups already fit and are simply stacked.
@@ -2568,80 +2716,27 @@ def frame_both_windows(s: Session, viewport: tuple[int, int] | None = None) -> N
         if share < NARROW_SHARE_FLOOR:
             break
         s.set_group_width(share)
-        focus_leftmost_group(s)
+        scroll_subjects_into_frame(s, apps)
         s.settle(0.6)
-        wrong = windows_off_screen(s, viewport) + windows_overlapping(s)
+        wrong = (subjects_off_screen(s, apps, viewport)
+                 + subjects_overlapping(s, apps))
         if not wrong:
-            note(f"{s.name}: {groups} group(s) at {share} permille — "
-                 f"narrowed from {FILM_GROUP_SHARE} to fit the frame; "
-                 f"every window is wholly on screen")
-            return
+            note(f"{s.name}: {named} in frame together at {share} "
+                 f"permille — narrowed from {FILM_GROUP_SHARE} to fit")
+            return True
 
-    if wrong:
-        gap(f"{s.name}: the strip is not filmable at {share} permille "
-            f"per group — " + "; ".join(wrong))
-    else:
-        note(f"{s.name}: every window is wholly on screen and none is "
-             f"behind another")
-
-
-def focus_leftmost_group(s: Session) -> None:
-    """Click the leftmost client tile's tab pill, which scrolls the strip
-    back to it.
-
-    Aimed at the pill rather than into the window's body: a click in the
-    body reaches the client and selects whatever is under it, and a file
-    row highlighted by the camera is the camera making the picture rather
-    than the demo.
-
-    A single tile is already the whole strip, so there is nothing to
-    scroll back to and the click is skipped — it would only take focus
-    off whatever the beat had just put it on.
-
-    The tiles come from `painted_tiles`, not from the widget registry.
-    The registry names the same tile two ways (`foreign-surface-<id>` and
-    `foreign-surface-<id>[<tab>]`) and does not always carry it the
-    instant the window is laid out — so a lookup by name could report one
-    tile while two were on screen, conclude there was nothing to scroll
-    back to, and leave the second window hanging off the right edge.
-    `foreign_frames` reports the rect the widget tree laid each tab into
-    and has no names in it to get wrong.
-    """
-    tiles = [(t["rect"][0], str(t["app_id"]), t["rect"])
-             for t in painted_tiles(s).values()]
-    if len(tiles) < 2:
-        return
-    tiles.sort()
-    _x, name, rect = tiles[0]
-    x, y, w, _h = rect
-    # The pill sits above the tile's top edge; 18px up lands on it and
-    # stays clear of the client's own first row.
-    #
-    # Unless the tile starts at the top of the screen, which is a window
-    # occupying the whole strip and wearing no pill at all — 18px above
-    # *that* is the compositor's own top bar, and the click lands on the
-    # workspace switcher. A gesture meant to scroll a strip must never be
-    # able to change which workspace is on camera, so it is skipped and
-    # said out loud rather than aimed anyway.
-    py = y - 18.0
-    if py < TOPBAR_H:
-        note(f"{s.name}: the leftmost window ({name}) starts at y={y:.0f}, "
-             f"so it wears no tab pill to click — the strip is not scrolled "
-             f"back")
-        return
-    s.click_at(max(4.0, x + min(90.0, w / 2.0)), py)
-    s.settle(0.8)
-    note(f"{s.name}: focused the left group ({name}) so the strip scrolls "
-         f"back and both windows are in frame")
+    gap(f"{s.name}: {named} cannot be filmed together at {share} permille "
+        f"per group — " + "; ".join(wrong))
+    return False
 
 
 def frame_one_window(s: Session, app_id: str, prefer: dict | None = None,
                      share: int = 720) -> None:
     """Put one window up at a readable width, with the strip around it.
 
-    `frame_both_windows` exists for a beat that has to show two windows
-    at once, and it pays for that: three groups get a third of the strip
-    each, and a third of this strip is a word processor whose styles
+    `frame_windows` exists for a beat that has to show two windows at
+    once, and it pays for that: two subjects side by side get half the
+    strip each, and half of this strip is a word processor whose styles
     panel leaves a column of page about as wide as a phone. The last shot
     of the film is about what is *written* in a document, and it came out
     with the text clipped mid-word.
@@ -2737,16 +2832,18 @@ def focus_app_group(s: Session, app_id: str,
     """Scroll the strip to the group holding `app_id`, and say whether it
     worked.
 
-    `focus_leftmost_group` frames a strip; this picks a *subject*. The
+    `frame_windows` frames a whole shot; this picks one *subject* out
+    of it and pans to it. The
     last shot of the film is about one window — the document two other
     participants have been writing into — and an even share of the strip
     with the file manager scrolled up in front of it is a shot of the
     wrong thing. It has been exactly that: a payoff frame showing an
     empty folder listing, under a caption about a document.
 
-    Aimed at the tab pill for the same reason as `focus_leftmost_group`:
-    a click in the body reaches the client and selects whatever is under
-    it.
+    Aimed at the tab pill rather than into the window's body: a click
+    in the body reaches the client and selects whatever is under it,
+    and a file row highlighted by the camera is the camera making the
+    picture rather than the demo.
     """
     laid = painted_tiles(s)
     tiles = [t for sid, t in sorted(laid.items()) if t["app_id"] == app_id]
@@ -3808,6 +3905,7 @@ def beat_one(quinten: Session, shots: str) -> tuple[dict, dict | None]:
     host_ws = quinten.active_workspace()
     claim("his desktop starts with no windows on it",
           len(quinten.tabs_here()), 0)
+    quinten.park_pointer()
     quinten.snapshot(os.path.join(shots, "01-empty-desktop.png"))
     read_hold(EMPTY_DESKTOP_HOLD_S)
 
@@ -4343,7 +4441,7 @@ def beat_five(quinten: Session, registry, shots: str) -> dict | None:
     # working exactly as designed, and the app the beat is about is half
     # off screen while it does. Give every group an even share, so the
     # window this beat just opened is actually in the frame that shows it.
-    frame_both_windows(quinten, VIEWPORT)
+    frame_windows(quinten, [FILES_APP, WORD_PROCESSOR], VIEWPORT)
     # A beat later than the first frame. `painted` means the app has
     # presented *something*, and what a `ui` app presents first is its
     # splash — so the shot that is supposed to show a word processor
@@ -4560,7 +4658,7 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     # With the viewport, so the framing is measured rather than performed
     # and assumed: this beat's shot is the far screen, and a far screen
     # that is half off the frame shows nothing about what it holds.
-    frame_both_windows(xaver, VIEWPORT)
+    frame_windows(xaver, [FILES_APP, WORD_PROCESSOR], VIEWPORT)
     # Both apps have to have attached to their broker and announced their
     # address before either types, or the first keystrokes go out to
     # nobody and it reads as a transport failure.
@@ -5018,12 +5116,22 @@ def beat_eight(quinten: Session, files: dict | None, wp: dict | None,
     if unpainted:
         gap(f"the shell is not painting {unpainted} yet, so this would be "
             f"filmed against an empty desktop")
-    frame_both_windows(quinten, VIEWPORT)
+    frame_windows(quinten, [FILES_APP, WORD_PROCESSOR], VIEWPORT)
     quinten.settle(0.5)
     tiles = painted_tiles(quinten)
     if VIEWPORT:
-        clipped = windows_off_screen(quinten, VIEWPORT)
-        claim("both windows are wholly on screen before the gesture",
+        # The two ends of the gesture, and only those. The strip carries
+        # four applications and the screen holds two of them, so asking
+        # whether *every* window is whole is asking a scrolling strip to
+        # stop scrolling. What this drag needs is narrower and is still a
+        # thing that can be false: the window the photograph comes out of
+        # and the window it goes into, both wholly on screen, neither
+        # behind the other.
+        clipped = (subjects_off_screen(quinten, [FILES_APP, WORD_PROCESSOR],
+                                       VIEWPORT)
+                   + subjects_overlapping(quinten,
+                                          [FILES_APP, WORD_PROCESSOR]))
+        claim("both ends of the drag are wholly on screen, side by side",
               clipped, [])
         if clipped:
             gap("a window is cut off, so the gesture would cross an edge "
@@ -5257,6 +5365,226 @@ def beat_eight(quinten: Session, files: dict | None, wp: dict | None,
         gap("the app never answered the late-join handshake, so the "
             "document could not be read back and the delta above is the "
             "only account of the image landing")
+
+
+def tab_groups_here(s: Session) -> list[dict]:
+    """Every window group in the active workspace, with what each of its
+    tabs actually *is*.
+
+    `Session.groups_here` flattens a tab down to its title, which is
+    enough to say how many there are and not enough to say what they
+    are. The one claim the tabbing beat rests on — that these two pills
+    are two different applications rather than two documents inside one
+    — is a claim about the client drawing each tab, so it has to come
+    off the tile.
+    """
+    tree = s.tree()
+    out: list[dict] = []
+    for ws in tree["workspaces"]:
+        if ws["id"] != tree["active"]:
+            continue
+        for strip in ws.get("strips", []):
+            for group in strip.get("window_groups", []):
+                tabs = []
+                for t in group.get("tabs", []):
+                    tile = t.get("tile") or {}
+                    foreign = tile.get("Foreign") if isinstance(tile, dict) else None
+                    tabs.append({
+                        "id": t.get("id"),
+                        "title": t.get("title") or "",
+                        "app_id": (foreign or {}).get("app_id"),
+                    })
+                out.append({"id": group.get("id"),
+                            "active_tab": group.get("active_tab"),
+                            "tabs": tabs})
+    return out
+
+
+def open_the_rest_of_the_strip(quinten: Session) -> dict[str, dict]:
+    """Open `STRIP_EXTRAS`, to the right of what is already there.
+
+    Off camera, and in one go, because four applications opening one
+    after another is four identical launches and the film has already
+    shown two of them properly. What the strip is *for* is worth
+    watching; watching it fill up is not.
+
+    Each in a group of its own — `place_next_window` — because tabs
+    tile inside a group and two windows are only side by side when
+    they are in separate groups. The order is `STRIP_APPS`'s, so the
+    pairs later beats need are neighbours.
+
+    Returns what actually opened, by app id. An app that will not start
+    is reported and skipped rather than faked: the beats that need one
+    check this map and decline if it is not there.
+    """
+    opened: dict[str, dict] = {}
+    for app in STRIP_EXTRAS:
+        quinten.place_next_window(app)
+        painted = quinten.launch(app, search=STRIP_SEARCH.get(app))
+        if painted is None:
+            note(f"{app} did not open, so the strip carries "
+                 f"{len(opened) + 2} applications rather than "
+                 f"{len(STRIP_EXTRAS) + 2}")
+            continue
+        opened[app] = painted
+        # The film's share, on the group that has just appeared.
+        # `Session.launch` already applies it on sight of the group, but
+        # an app that opened by the palette route got there through a
+        # path that sets its own default first, and a group left at two
+        # thirds is a window hanging off the side of every later shot.
+        quinten.set_group_width(FILM_GROUP_SHARE)
+    return opened
+
+
+def beat_strip(quinten: Session, extras: dict[str, dict],
+               wp: dict | None, shots: str) -> None:
+    """Four applications on one strip, and two of them made one window.
+
+    The beat this film was missing. Everything else here is about
+    collaboration or about agents; this is about the desktop itself, and
+    it argues two things a viewer cannot get from a still.
+
+    The first is that the strip is longer than the screen and moves. Two
+    windows are in frame at a readable size and the other two are past
+    the edges, and the shot pans from one pair to the next — which is
+    what makes it a strip rather than a grid that shrinks everything to
+    fit.
+
+    The second is tabbing, and it is the one that needs saying out loud.
+    Everywhere else a tab belongs to its application: a browser's tabs
+    are the browser's, an editor's are the editor's, and nothing can
+    ever be tabbed beside them. Here the compositor owns the frame, so a
+    tab group holds *windows* and a window is any application at all. So
+    the image editor is dragged onto the word processor's bar and the
+    two share one window with a tab each, and the tabs switch between
+    two different programs. Two documents tabbed inside one app would
+    have shown nothing.
+    """
+    banner("the strip: four applications, and two of them in one window")
+    cut("quinten")
+
+    on_strip = [t["app_id"] for t in
+                sorted(painted_tiles(quinten).values(),
+                       key=lambda t: t["rect"][0])]
+    note(f"the strip carries {len(quinten.groups_here())} window group(s): "
+         f"{', '.join(a.rsplit('.', 1)[-1] for a in dict.fromkeys(on_strip))}")
+
+    editor = extras.get(IMAGE_EDITOR)
+    chat = extras.get(CHAT_APP)
+
+    # The far end first, so the pan below runs right to left and ends on
+    # the pair the tabbing happens to. Whichever of the two extras is
+    # actually there — an app another hand is still making usable may
+    # not be — with the chat preferred because it is the rightmost.
+    far = [a for a in (IMAGE_EDITOR, CHAT_APP) if a in extras]
+    if len(far) >= 2:
+        step("two of the four are in frame; the other two are past the edges")
+        if frame_windows(quinten, far, VIEWPORT):
+            off = [a.rsplit(".", 1)[-1] for a in (FILES_APP, WORD_PROCESSOR)]
+            note(f"{', '.join(off)} are on the same strip, scrolled off it")
+            quinten.snapshot(os.path.join(shots, "10-strip-right.png"))
+            read_hold(1.0)
+    elif far:
+        note(f"only {far[0]} of the extra applications opened, so the "
+             f"strip cannot show a pair at its far end")
+
+    if editor is None:
+        gap("the image editor did not open, so there is no second "
+            "application to put in the word processor's window and the "
+            "tabbing is not filmed")
+        return
+    if wp is None:
+        gap("the word processor never opened, so there is nothing to tab "
+            "the image editor beside")
+        return
+
+    step("the strip scrolls back one window")
+    # The pair the merge happens to, both whole before anything moves —
+    # a window sliding into a tab bar that is off the edge of the screen
+    # is a window disappearing.
+    if not frame_windows(quinten, [WORD_PROCESSOR, IMAGE_EDITOR], VIEWPORT):
+        gap("the word processor and the image editor are not in frame "
+            "together, so the merge would happen off camera")
+        return
+    quinten.snapshot(os.path.join(shots, "11-strip-pair.png"))
+    read_hold(0.8)
+
+    before_groups = len(tab_groups_here(quinten))
+    before = quinten.input_ops
+
+    step("the image editor is dropped onto the word processor's tab bar")
+    note("in every other desktop a tab belongs to its application. Here "
+         "the compositor owns the frame, so this bar holds two programs")
+    resp = quinten.merge_into_group(editor["surface_id"], wp["surface_id"])
+    if "err" in resp:
+        gap("the strip refused to merge the two windows — "
+            + json.dumps(resp["err"])[:160])
+        return
+    quinten.settle(1.2)
+
+    # Read off the tree, which is where a tab group actually is. A shot
+    # of a bar with two pills in it would be a picture of the answer, not
+    # the answer: the same picture comes out of one app drawing two tabs
+    # of its own, which is the thing this beat exists to say it is not.
+    groups = tab_groups_here(quinten)
+    merged = next((g for g in groups if len(g["tabs"]) > 1), None)
+    claim("the two windows are now one group with two tabs",
+          merged is not None and len(merged["tabs"]) == 2, True)
+    claim("and the strip is one group shorter than it was",
+          len(groups), before_groups - 1)
+    if merged is None:
+        gap("no group on the strip holds more than one tab, so the merge "
+            "did not take")
+        return
+    note(f"one window, two tabs: {[t['title'] for t in merged['tabs']]}")
+    # The claim the beat is for, and the one a viewer is being asked to
+    # believe: those two pills are two *different applications*, not two
+    # documents inside one. Read off the tile each tab carries, which
+    # names the client that draws it — a title could say anything.
+    claim("and they are two different applications, not two documents "
+          "in one",
+          sorted({t["app_id"] for t in merged["tabs"] if t["app_id"]}),
+          sorted({WORD_PROCESSOR, IMAGE_EDITOR}))
+    quinten.snapshot(os.path.join(shots, "12-tabbed.png"))
+    read_hold(1.2)
+
+    step("and the tabs switch between them")
+    # By the pill's own name in the registry rather than by a coordinate,
+    # so this is a click on the tab a viewer can see and not on wherever
+    # the layout happened to put one.
+    want = next((t["title"] for t in merged["tabs"]
+                 if t["app_id"] == IMAGE_EDITOR and t["title"]), None)
+    shown_before = screen_shot(quinten, os.path.join(shots, "12a-before-switch.png"))
+    switched = False
+    for name in ([f"tab:{want}[{merged['id']}]", f"tab:{want}"] if want else []):
+        if quinten.named_rect(name):
+            quinten.click_named(name)
+            quinten.settle(1.0)
+            switched = True
+            break
+    claim("the other application's tab is on the bar and can be clicked",
+          switched, True)
+    if switched:
+        shown_after = screen_shot(quinten, os.path.join(shots, "13-tab-switched.png"))
+        moved = pixels_moved(shown_before, shown_after)
+        if moved is not None:
+            claim("and clicking it changes what the window shows",
+                  moved > SCREEN_MOVED_PX, True)
+            note(f"{moved} pixels differ between the two tabs")
+        read_hold(1.2)
+        # Left on the word processor, because the beat after this one is
+        # about what is written in that document and a shot of an image
+        # editor under a caption about a document is a shot of the wrong
+        # thing.
+        back = next((t["title"] for t in merged["tabs"]
+                     if t["app_id"] == WORD_PROCESSOR and t["title"]), None)
+        for name in ([f"tab:{back}[{merged['id']}]", f"tab:{back}"] if back else []):
+            if quinten.named_rect(name):
+                quinten.click_named(name)
+                quinten.settle(0.8)
+                break
+    claim("every one of those was a person's gesture",
+          quinten.input_ops > before, True)
 
 
 def beat_nine(quinten: Session, xaver: Session, agent: Session,
@@ -5529,6 +5857,20 @@ def run(quinten: Session, xaver: Session, agent: Session, shots: str,
                     "longest beat here, and not one of the things this "
                     "cut is arguing"):
         beat_eight(quinten, files, wp, shots)
+    # After the drag, deliberately. The drag needs Files and the word
+    # processor in separate groups and both in frame; the tabbing that
+    # follows spends one of those groups. Running it the other way round
+    # would mean the two ends of the gesture were a tab apart, and beat 8
+    # would be filming a window it had to bring up first.
+    #
+    # And after the extras have opened rather than before, which happens
+    # off camera between the two — four applications appearing one after
+    # another is four identical launches, and the film has shown two of
+    # them properly already.
+    with off_camera("the other two applications open, to the right of what "
+                    "is already on the strip"):
+        extras = open_the_rest_of_the_strip(quinten)
+    beat_strip(quinten, extras, wp, shots)
     beat_nine(quinten, xaver, agent, host_ws, wp, shots)
 
 
