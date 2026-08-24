@@ -327,6 +327,11 @@ impl TestControlConn {
 /// the live tree (no caching).
 struct FrameBuilderControlState<'a> {
     fb: &'a FrameBuilder,
+    /// Where this session's pointer is, or `None` if it has never been
+    /// anywhere. Captured by value at construction: the dispatcher only
+    /// needs the number, and reading it here keeps the live `State` out
+    /// of a struct that otherwise borrows nothing mutable.
+    pointer: Option<(f64, f64)>,
     /// The live CRDT the search providers read, plus its root object.
     ///
     /// `None` for the construction sites that only exercise layout and
@@ -339,6 +344,10 @@ struct FrameBuilderControlState<'a> {
 impl<'a> ControlState for FrameBuilderControlState<'a> {
     fn widget_registry(&self) -> HashMap<String, Rect> {
         self.fb.widget_registry()
+    }
+
+    fn pointer(&self) -> Option<(f64, f64)> {
+        self.pointer
     }
 
     /// Serialise the live persisted [`WorkspaceTree`] — same blob
@@ -1082,13 +1091,25 @@ fn execute_planned_action(
             // capture taken through this path used to miss it, so a
             // drag photographed mid-gesture came out as two windows and
             // no drag.
-            let drag = state.as_ref().and_then(|s| {
-                (s.selection.dnd_active || s.selection.chrome_drag.is_some()).then(|| {
-                    let (cx, cy) = s.client_input.cursor();
-                    (vello::kurbo::Point::new(cx, cy), s.selection.dnd_label.get())
+            //
+            // The pointer goes in for the same reason and always, not
+            // only during a drag. This path re-renders the scene into
+            // an offscreen buffer, so whatever cursor plane the backend
+            // owns is by definition not in the readback: a photograph
+            // taken here shows a desktop with no pointer on it, and a
+            // scripted click therefore looks like the machine clicking
+            // itself. Drawn from `pointer_position`, so a session whose
+            // pointer has never been anywhere still gets none.
+            let pointer = state.as_ref().and_then(|s| {
+                let at = s.client_input.pointer_position()?;
+                let dragging = s.selection.dnd_active || s.selection.chrome_drag.is_some();
+                Some(PointerPaint {
+                    at: vello::kurbo::Point::new(at.0, at.1),
+                    label: dragging.then(|| s.selection.dnd_label.get()).flatten(),
+                    pressed: s.client_input.buttons_down() > 0,
                 })
             });
-            write_snapshot_png(fb, path, drag);
+            write_snapshot_png(fb, path, pointer);
         }
         PlannedAction::InvokeAction { provider, id, args } => {
             // Re-resolve rather than carrying a handle over from
@@ -1250,6 +1271,19 @@ static SNAPSHOT_RENDERER: std::sync::OnceLock<
 static SNAPSHOT_RENDERERS_BUILT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// What the pointer looks like this frame: where it is, whether its
+/// button is down, and what it is carrying if anything.
+///
+/// One value rather than three arguments because the three are only
+/// ever meaningful together — there is nothing to say about a press or
+/// a carried label without a position to hang them off.
+#[derive(Debug, Clone)]
+struct PointerPaint {
+    at: vello::kurbo::Point,
+    label: Option<String>,
+    pressed: bool,
+}
+
 /// Re-paint the current scene into a cached `OffscreenRenderer` and
 /// encode the resulting RGBA buffer as a PNG at `path`. Best-effort:
 /// a bad viewport, a missing GPU adapter, and every I/O and encoder
@@ -1262,7 +1296,7 @@ static SNAPSHOT_RENDERERS_BUILT: std::sync::atomic::AtomicUsize =
 fn write_snapshot_png(
     fb: &mut FrameBuilder,
     path: &std::path::Path,
-    drag: Option<(vello::kurbo::Point, Option<String>)>,
+    pointer: Option<PointerPaint>,
 ) {
     use std::io::Write;
     let (w, h) = fb.viewport();
@@ -1274,12 +1308,13 @@ fn write_snapshot_png(
         return;
     }
     let mut scene = fb.paint();
-    if let Some((cursor, label)) = drag {
+    if let Some(p) = pointer {
         let theme = fb.theme().clone();
         drag_feedback::draw(
             &mut scene,
-            cursor,
-            label.as_deref(),
+            p.at,
+            p.label.as_deref(),
+            p.pressed,
             &theme,
             fb.text_renderer_mut(),
         );
@@ -1514,9 +1549,14 @@ fn pump_test_control_conn(
                         // per action. It is idempotent and costs far
                         // less than the round-trip that asked for it.
                         frame_builder.relayout();
+                        // Read before the shadowing binding below takes
+                        // the name: the click ops plan their approach
+                        // from wherever the pointer is right now.
+                        let pointer = state.client_input.pointer_position();
                         let state = FrameBuilderControlState {
                             fb: frame_builder,
                             doc: Some((&ctx.doc, &ctx.root_obj)),
+                            pointer,
                         };
                         test_control::dispatch_command(&cmd, &state)
                     }
@@ -2198,6 +2238,10 @@ pub fn run() -> ! {
             }
         }
     };
+
+    // Asked once: a backend does not grow or lose a cursor plane at
+    // runtime, and the paint loop reads this on every frame.
+    let backend_has_cursor_plane = backend.has_cursor_plane();
 
     // Phase 4: per-frame scene production lifted out of `bin/shots`.
     // The compositor and the offscreen tooling share `FrameBuilder`,
@@ -3446,17 +3490,31 @@ pub fn run() -> ! {
                 // the pointer has left the source window neither end can
                 // paint the thing being carried, so without this a drag
                 // across the desktop is invisible.
-                if state.selection.dnd_active || state.selection.chrome_drag.is_some() {
-                    let label = state.selection.dnd_label.get();
-                    let (cx, cy) = state.client_input.cursor();
-                    let theme = frame_builder.theme().clone();
-                    drag_feedback::draw(
-                        &mut scene,
-                        vello::kurbo::Point::new(cx, cy),
-                        label.as_deref(),
-                        &theme,
-                        frame_builder.text_renderer_mut(),
-                    );
+                //
+                // And the pointer itself whenever the backend has no
+                // plane of its own to put one on. Without it a
+                // display-free session renders a desktop nothing is
+                // pointing at, while input lands on it all the same:
+                // overlays open and buttons actuate with no visible
+                // cause. `pointer_position` rather than `cursor`, so a
+                // session whose pointer has genuinely never moved does
+                // not get an arrow parked in the top-left corner.
+                let dragging =
+                    state.selection.dnd_active || state.selection.chrome_drag.is_some();
+                if dragging || !backend_has_cursor_plane {
+                    if let Some((cx, cy)) = state.client_input.pointer_position() {
+                        let label = dragging.then(|| state.selection.dnd_label.get()).flatten();
+                        let pressed = state.client_input.buttons_down() > 0;
+                        let theme = frame_builder.theme().clone();
+                        drag_feedback::draw(
+                            &mut scene,
+                            vello::kurbo::Point::new(cx, cy),
+                            label.as_deref(),
+                            pressed,
+                            &theme,
+                            frame_builder.text_renderer_mut(),
+                        );
+                    }
                 }
                 scene
             };
@@ -4217,7 +4275,7 @@ mod tests {
     #[test]
     fn state_dump_chrome_includes_overlays_field() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb, doc: None };
+        let state = FrameBuilderControlState { fb: &fb, doc: None, pointer: None };
         let chrome = state.chrome_state_json();
         let overlays = chrome
             .get("overlays")
@@ -4241,7 +4299,7 @@ mod tests {
     #[test]
     fn state_dump_workspace_tree_includes_workspaces_array() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb, doc: None };
+        let state = FrameBuilderControlState { fb: &fb, doc: None, pointer: None };
         let tree = state.workspace_tree_json();
         let workspaces = tree
             .get("workspaces")
@@ -4275,7 +4333,7 @@ mod tests {
             let room = tree.active_workspace().expect("active workspace").room;
             assert!(tree.note_peer_present(room, 0x51, "alice"));
         }
-        let state = FrameBuilderControlState { fb: &fb, doc: None };
+        let state = FrameBuilderControlState { fb: &fb, doc: None, pointer: None };
         let tree = state.workspace_tree_json();
         let found = tree
             .get("workspaces")
@@ -4302,7 +4360,7 @@ mod tests {
     #[test]
     fn dispatch_state_dump_against_frame_builder_returns_state() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb, doc: None };
+        let state = FrameBuilderControlState { fb: &fb, doc: None, pointer: None };
         let (resp, actions) =
             test_control::dispatch_command(&test_control::Command::StateDump, &state);
         assert!(actions.is_empty());

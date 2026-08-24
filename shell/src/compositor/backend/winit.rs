@@ -317,6 +317,12 @@ impl Presenter for WinitPresenter {
 }
 
 impl Backend for WinitBackend {
+    /// The host session draws the pointer over this window, so the
+    /// compositor must not paint a second one into the scene.
+    fn has_cursor_plane(&self) -> bool {
+        true
+    }
+
     /// Inline presentation. Only reached when [`Backend::take_presenter`]
     /// was not called (or already handed the render state away) — the
     /// compositor normally submits through the render thread instead.

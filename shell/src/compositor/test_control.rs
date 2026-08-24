@@ -23,7 +23,9 @@
 //!   or its path-based name (`Parent/Child[index]`), paired with the
 //!   widget's bounding rect.
 //! - `{"op":"click_at","x":<f64>,"y":<f64>}` — synthesise a left
-//!   click at raw coordinates.
+//!   click at raw coordinates. The pointer *travels* there from
+//!   wherever it was: the last motion is always the target, and any
+//!   before it are the trip across the screen.
 //! - `{"op":"click_named","name":<str>}` — click the centre of a
 //!   widget resolved against the registry.
 //! - `{"op":"drag","x_from":<f64>,"y_from":<f64>,"x_to":<f64>,
@@ -68,9 +70,14 @@ pub enum Command {
     /// rect. Same shape as `ShellDriver::widget_registry()` returns
     /// for in-process tests, but reachable over a unix socket.
     ListTargets,
-    /// Synthesise a left-click at raw (x, y) — a CursorMoved followed
-    /// by a Left button Pressed + Released. The compositor's chrome
+    /// Synthesise a left-click at raw (x, y) — motion to the point,
+    /// then a Left button Pressed + Released. The compositor's chrome
     /// receives the events through the same path winit input would.
+    ///
+    /// The motion is a path, not a jump, whenever the pointer is
+    /// somewhere else already: see [`plan_travel`]. A click with no
+    /// pointer movement in front of it is a click nobody watching can
+    /// attribute to anything.
     ClickAt { x: f64, y: f64 },
     /// Resolve `name` against the widget registry, then `click_at` the
     /// centre of the resolved rect. Returns an `unknown_target` error
@@ -384,6 +391,22 @@ pub trait ControlState {
     fn peers_json(&self) -> serde_json::Value {
         serde_json::Value::Null
     }
+    /// Where this session's pointer is right now, or `None` if it has
+    /// never been anywhere.
+    ///
+    /// Read by the click ops so a synthesised click **travels** to its
+    /// target instead of appearing there. A pointer that teleports is
+    /// not a pointer anybody can follow: on a recording the control
+    /// activates with nothing having crossed the screen to reach it,
+    /// and every interaction reads as the machine operating itself.
+    ///
+    /// Default `None` — a fixture with no live compositor has no
+    /// pointer, and the ops then move once to the target, which is
+    /// where the pointer has to end up either way.
+    fn pointer(&self) -> Option<(f64, f64)> {
+        None
+    }
+
     /// Per-surface frame ground truth: what the compositor itself knows
     /// about whether each foreign toplevel has ever presented.
     ///
@@ -700,6 +723,77 @@ pub fn parse_key_tag(key: &str) -> Option<KeyTag> {
     }
 }
 
+/// Longest step a travelling pointer takes between two frames of its
+/// path, in logical pixels.
+///
+/// Small enough that the path reads as a movement rather than as a
+/// handful of jumps, and large enough that crossing a 1920px desktop
+/// stays a couple of dozen events rather than hundreds.
+const TRAVEL_STEP_PX: f64 = 48.0;
+
+/// Most motions one travel is allowed to plan.
+///
+/// A corner-to-corner trip on a large desktop is what sets this; past
+/// it the step simply grows. The cap is here so the action list a
+/// single command produces stays bounded no matter how far apart two
+/// targets are.
+const TRAVEL_MAX_STEPS: u32 = 24;
+
+/// Below this the pointer is already there and a path would be noise.
+const TRAVEL_MIN_PX: f64 = 2.0;
+
+/// Plan the motions that carry the pointer from `from` to `(to_x, to_y)`.
+///
+/// Always ends with a motion **exactly at the target**, whether or not
+/// anything precedes it — that last motion is the one the press needs,
+/// and it is the invariant every caller relies on. What comes before it
+/// is the trip: a pointer that was somewhere else moves through the
+/// intervening space rather than reappearing at the destination.
+///
+/// Eased rather than linear (a smoothstep on the parameter), because a
+/// hand does not start and stop at full speed. It costs nothing here —
+/// the same number of points, spaced differently — and it is the
+/// difference between a path that reads as somebody moving a mouse and
+/// one that reads as a linear interpolation, which is what it is.
+fn plan_travel(from: Option<(f64, f64)>, to_x: f64, to_y: f64) -> Vec<PlannedAction> {
+    let Some((fx, fy)) = from else {
+        return vec![PlannedAction::CursorMoved { x: to_x, y: to_y }];
+    };
+    let (dx, dy) = (to_x - fx, to_y - fy);
+    let distance = dx.hypot(dy);
+    if !distance.is_finite() || distance < TRAVEL_MIN_PX {
+        return vec![PlannedAction::CursorMoved { x: to_x, y: to_y }];
+    }
+    let steps = ((distance / TRAVEL_STEP_PX).ceil() as u32)
+        .clamp(1, TRAVEL_MAX_STEPS);
+    let n = steps as f64;
+    (1..=steps)
+        .map(|i| {
+            let t = i as f64 / n;
+            // smoothstep: slow away from the start, slow into the target.
+            let e = t * t * (3.0 - 2.0 * t);
+            PlannedAction::CursorMoved {
+                x: fx + dx * e,
+                y: fy + dy * e,
+            }
+        })
+        .collect()
+}
+
+/// A click: travel to `(x, y)`, then press and release there.
+///
+/// The one constructor both click ops go through, so there is no way to
+/// plan a click that does not first put the pointer where it is about
+/// to happen. That asymmetry is what went wrong before — the easy call
+/// was the invisible one — and a shared builder is what stops a future
+/// op from re-introducing it.
+fn plan_click(from: Option<(f64, f64)>, x: f64, y: f64) -> Vec<PlannedAction> {
+    let mut actions = plan_travel(from, x, y);
+    actions.push(PlannedAction::MouseLeftButton { pressed: true });
+    actions.push(PlannedAction::MouseLeftButton { pressed: false });
+    actions
+}
+
 /// Dispatch a single command against the live compositor state.
 ///
 /// Returns a tuple of `(response, actions)`. Read-only commands (like
@@ -726,11 +820,7 @@ pub fn dispatch_command<S: ControlState>(
         }
         Command::ClickAt { x, y } => (
             Response::Ok { frame: 0 },
-            vec![
-                PlannedAction::CursorMoved { x: *x, y: *y },
-                PlannedAction::MouseLeftButton { pressed: true },
-                PlannedAction::MouseLeftButton { pressed: false },
-            ],
+            plan_click(state.pointer(), *x, *y),
         ),
         Command::ClickNamed { name } => {
             let registry = state.widget_registry();
@@ -739,11 +829,7 @@ pub fn dispatch_command<S: ControlState>(
                     let c = rect.center();
                     (
                         Response::Ok { frame: 0 },
-                        vec![
-                            PlannedAction::CursorMoved { x: c.x, y: c.y },
-                            PlannedAction::MouseLeftButton { pressed: true },
-                            PlannedAction::MouseLeftButton { pressed: false },
-                        ],
+                        plan_click(state.pointer(), c.x, c.y),
                     )
                 }
                 _ => (
@@ -771,10 +857,7 @@ pub fn dispatch_command<S: ControlState>(
             // interpolate over `steps` motions (inclusive of both
             // endpoints), then release. Matches `ShellDriver::drag`
             // — same wire as the in-process scenarios use.
-            actions.push(PlannedAction::CursorMoved {
-                x: *x_from,
-                y: *y_from,
-            });
+            actions.extend(plan_travel(state.pointer(), *x_from, *y_from));
             actions.push(PlannedAction::MouseLeftButton { pressed: true });
             let n = steps as f64;
             for s in 0..steps {
@@ -1148,12 +1231,25 @@ mod tests {
     /// drive the dispatcher without spinning up a real compositor.
     struct StaticState {
         registry: HashMap<String, Rect>,
+        /// Where the fixture's pointer is. `None` — never been anywhere
+        /// — is the default, which is the state a freshly started
+        /// session is really in.
+        pointer: Option<(f64, f64)>,
     }
 
     impl StaticState {
         fn new(entries: &[(&str, Rect)]) -> Self {
             Self {
                 registry: entries.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+                pointer: None,
+            }
+        }
+
+        /// The same fixture with a pointer already resting somewhere.
+        fn with_pointer(entries: &[(&str, Rect)], at: (f64, f64)) -> Self {
+            Self {
+                pointer: Some(at),
+                ..Self::new(entries)
             }
         }
     }
@@ -1162,6 +1258,21 @@ mod tests {
         fn widget_registry(&self) -> HashMap<String, Rect> {
             self.registry.clone()
         }
+
+        fn pointer(&self) -> Option<(f64, f64)> {
+            self.pointer
+        }
+    }
+
+    /// Every `CursorMoved` in `actions`, in order.
+    fn motions(actions: &[PlannedAction]) -> Vec<(f64, f64)> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                PlannedAction::CursorMoved { x, y } => Some((*x, *y)),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -1239,6 +1350,9 @@ mod tests {
         assert_eq!(entries[0].rect, [40.0, 80.0, 120.0, 36.0]);
     }
 
+    /// A session whose pointer has never been anywhere has nowhere to
+    /// travel *from*, so the click is one motion to the target and the
+    /// press pair — the shape this op has always had.
     #[test]
     fn click_at_emits_motion_press_release_in_order() {
         let state = StaticState::new(&[]);
@@ -2194,4 +2308,182 @@ mod tests {
         assert_eq!(args["text"], "hi");
         assert_eq!(args["at"], 2);
     }
+
+    /// The production path: a click is preceded by pointer motion that
+    /// ends on the target.
+    ///
+    /// This is the invariant the whole thing exists for. A click that
+    /// arrives with no motion in front of it is a control activating
+    /// with nothing visible having reached it, which on any recording
+    /// of the session reads as the machine operating itself.
+    #[test]
+    fn click_at_travels_from_where_the_pointer_already_is() {
+        let state = StaticState::with_pointer(&[], (40.0, 40.0));
+        let (_resp, actions) = dispatch_command(&Command::ClickAt { x: 840.0, y: 500.0 }, &state);
+
+        let path = motions(&actions);
+        assert!(
+            path.len() > 1,
+            "a click across the screen must travel, not teleport: {path:?}"
+        );
+        assert_eq!(
+            path.last().copied(),
+            Some((840.0, 500.0)),
+            "the last motion before the press has to be the target itself"
+        );
+        // Nothing but motion may come before the press, and the press
+        // must be followed by exactly one release.
+        let press = actions
+            .iter()
+            .position(|a| matches!(a, PlannedAction::MouseLeftButton { pressed: true }))
+            .expect("a click presses");
+        assert_eq!(press, actions.len() - 2, "the press is second from last");
+        assert!(
+            actions[..press]
+                .iter()
+                .all(|a| matches!(a, PlannedAction::CursorMoved { .. })),
+            "only motion precedes the press: {actions:?}"
+        );
+        assert_eq!(
+            actions.last(),
+            Some(&PlannedAction::MouseLeftButton { pressed: false })
+        );
+    }
+
+    /// The path starts where the pointer was and stays inside the
+    /// segment between the two points — it is a trip, not a detour.
+    #[test]
+    fn click_travel_starts_near_the_old_position_and_advances_monotonically() {
+        let from = (100.0, 700.0);
+        let to = (1500.0, 120.0);
+        let state = StaticState::with_pointer(&[], from);
+        let (_resp, actions) = dispatch_command(&Command::ClickAt { x: to.0, y: to.1 }, &state);
+        let path = motions(&actions);
+
+        let span = (to.0 - from.0).hypot(to.1 - from.1);
+        let first_hop = (path[0].0 - from.0).hypot(path[0].1 - from.1);
+        assert!(
+            first_hop < span / 2.0,
+            "the first motion continues from where the pointer was, it does \
+             not jump most of the way: hop {first_hop} of {span}"
+        );
+        let mut travelled = 0.0_f64;
+        let mut prev = from;
+        for p in &path {
+            let d = (p.0 - prev.0).hypot(p.1 - prev.1);
+            travelled += d;
+            prev = *p;
+        }
+        // Straight line, so the path length is the distance. A tolerance
+        // rather than equality because the points are sampled.
+        assert!(
+            (travelled - span).abs() < 1.0,
+            "the pointer goes straight there: walked {travelled}, distance {span}"
+        );
+    }
+
+    /// A pointer already on the target does not shuffle around before
+    /// pressing. It still emits the landing motion, because that is what
+    /// the press is aimed with.
+    #[test]
+    fn click_at_the_current_position_is_one_motion_and_a_press() {
+        let state = StaticState::with_pointer(&[], (300.0, 300.0));
+        let (_resp, actions) = dispatch_command(&Command::ClickAt { x: 300.0, y: 300.0 }, &state);
+        assert_eq!(
+            actions,
+            vec![
+                PlannedAction::CursorMoved { x: 300.0, y: 300.0 },
+                PlannedAction::MouseLeftButton { pressed: true },
+                PlannedAction::MouseLeftButton { pressed: false },
+            ]
+        );
+    }
+
+    /// `click_named` is the call most beats reach for, so it gets the
+    /// approach for free — it must not be a second, invisible door.
+    #[test]
+    fn click_named_travels_to_the_widget_centre() {
+        let state = StaticState::with_pointer(
+            &[("collab_invite", Rect::new(1652.0, 154.0, 1770.0, 182.0))],
+            (60.0, 900.0),
+        );
+        let (resp, actions) = dispatch_command(
+            &Command::ClickNamed {
+                name: "collab_invite".to_string(),
+            },
+            &state,
+        );
+        assert!(matches!(resp, Response::Ok { .. }));
+        let path = motions(&actions);
+        assert!(path.len() > 1, "a named click travels too: {path:?}");
+        assert_eq!(path.last().copied(), Some((1711.0, 168.0)));
+        assert_eq!(
+            actions[actions.len() - 2],
+            PlannedAction::MouseLeftButton { pressed: true },
+            "the press comes after the pointer has arrived"
+        );
+    }
+
+    /// A refused `click_named` plans nothing at all — no stray motion
+    /// that would move the pointer somewhere the caller never asked for.
+    #[test]
+    fn click_named_that_cannot_resolve_plans_no_motion() {
+        let state = StaticState::with_pointer(&[], (10.0, 10.0));
+        let (resp, actions) = dispatch_command(
+            &Command::ClickNamed {
+                name: "nope".to_string(),
+            },
+            &state,
+        );
+        assert!(matches!(resp, Response::Err { .. }));
+        assert!(actions.is_empty());
+    }
+
+    /// However far apart the two points are, one command plans a bounded
+    /// number of motions.
+    #[test]
+    fn click_travel_is_bounded_however_far_it_has_to_go() {
+        let state = StaticState::with_pointer(&[], (0.0, 0.0));
+        let (_resp, actions) =
+            dispatch_command(&Command::ClickAt { x: 99_000.0, y: 99_000.0 }, &state);
+        let path = motions(&actions);
+        assert!(
+            path.len() <= TRAVEL_MAX_STEPS as usize,
+            "{} motions is not bounded",
+            path.len()
+        );
+        assert_eq!(path.last().copied(), Some((99_000.0, 99_000.0)));
+    }
+
+    /// A drag reaches its start the same way, so the gesture is watchable
+    /// from the moment the pointer sets off rather than from the press.
+    #[test]
+    fn drag_travels_to_its_start_before_pressing() {
+        let state = StaticState::with_pointer(&[], (20.0, 20.0));
+        let (_resp, actions) = dispatch_command(
+            &Command::Drag {
+                x_from: 600.0,
+                y_from: 400.0,
+                x_to: 900.0,
+                y_to: 400.0,
+                steps: Some(4),
+            },
+            &state,
+        );
+        let press = actions
+            .iter()
+            .position(|a| matches!(a, PlannedAction::MouseLeftButton { pressed: true }))
+            .expect("a drag presses");
+        let approach = motions(&actions[..press]);
+        assert!(
+            approach.len() > 1,
+            "the pointer travels to the drag's start: {approach:?}"
+        );
+        assert_eq!(approach.last().copied(), Some((600.0, 400.0)));
+        assert_eq!(
+            actions.last(),
+            Some(&PlannedAction::MouseLeftButton { pressed: false })
+        );
+    }
+
 }

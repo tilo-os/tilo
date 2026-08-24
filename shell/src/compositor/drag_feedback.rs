@@ -37,6 +37,8 @@ const CHIP_DX: f64 = 14.0;
 const CHIP_DY: f64 = 16.0;
 /// Cursor arrow, in units of its own height.
 const CURSOR_H: f64 = 20.0;
+/// Radius of the ring drawn around the hotspot while the button is down.
+const PRESS_RING_R: f64 = 13.0;
 
 /// Draw the pointer and, when one is in flight, what it is carrying.
 ///
@@ -48,13 +50,28 @@ pub fn draw(
     scene: &mut Scene,
     cursor: Point,
     label: Option<&str>,
+    pressed: bool,
     theme: &Theme,
     text: &mut TextRenderer,
 ) {
     if let Some(label) = label {
         draw_chip(scene, cursor, label, theme, text);
     }
-    draw_cursor(scene, cursor, theme);
+    draw_cursor(scene, cursor, pressed, theme);
+}
+
+/// Draw just the pointer, with no drag in flight.
+///
+/// The other half of what this module is for. A pointer is the thing on
+/// screen that says *a person did that* — without one, a menu opens and
+/// a button lights up with nothing visible causing it, and a recording
+/// of the session reads as the machine operating itself. Backends that
+/// own a cursor plane put it there themselves; the ones that do not
+/// ([`crate::compositor::backend::HeadlessBackend`]) have this, and so
+/// does every readback taken through the snapshot path, which re-renders
+/// the scene and therefore never contains a plane it did not draw.
+pub fn draw_pointer(scene: &mut Scene, at: Point, pressed: bool, theme: &Theme) {
+    draw_cursor(scene, at, pressed, theme);
 }
 
 /// The carried-item chip: a rounded card with the item's name in it.
@@ -103,7 +120,30 @@ fn draw_chip(
 /// Drawn here rather than left to the backend because only the winit and
 /// headless paths have no cursor plane of their own — and headless is
 /// where a drag gets photographed.
-fn draw_cursor(scene: &mut Scene, at: Point, theme: &Theme) {
+fn draw_cursor(scene: &mut Scene, at: Point, pressed: bool, theme: &Theme) {
+    // A ring around the hotspot while the button is down. A press is
+    // the one pointer state that has to be legible in a single frame:
+    // an arrow that has arrived somewhere and an arrow that is
+    // actuating look identical, and on a recording that difference is
+    // the whole difference between watching a click and watching a
+    // thing happen by itself.
+    if pressed {
+        let ring = vello::kurbo::Circle::new(at, PRESS_RING_R);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            theme.accent_primary.multiply_alpha(0.30),
+            None,
+            &ring,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(2.0),
+            Affine::IDENTITY,
+            theme.accent_primary,
+            None,
+            &ring,
+        );
+    }
     let h = CURSOR_H;
     let mut p = BezPath::new();
     p.move_to((at.x, at.y));

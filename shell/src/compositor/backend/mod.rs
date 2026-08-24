@@ -173,6 +173,26 @@ pub trait Backend {
         None
     }
 
+    /// Whether this backend puts a pointer on screen by itself.
+    ///
+    /// `true` for a backend whose display already carries a cursor the
+    /// compositor does not paint — [`DrmBackend`]'s hardware cursor
+    /// plane (with a software fallback composited straight into the
+    /// scanout buffer), and [`WinitBackend`], where the host session
+    /// draws its own pointer over the window. Those must not have one
+    /// painted into the scene as well or there are two of them.
+    ///
+    /// Default `false`, which is [`HeadlessBackend`]: no display, no
+    /// plane, nobody else to draw it. Synthetic input moves a pointer
+    /// that nothing renders, so a click arrives with nothing on screen
+    /// to account for it — the compositor paints the pointer into the
+    /// scene instead. Default-false rather than default-true so a new
+    /// display-free backend is visible by construction and an
+    /// unnecessary arrow is the failure mode, not an invisible one.
+    fn has_cursor_plane(&self) -> bool {
+        false
+    }
+
     /// Power the physical display(s) on (`true`) or off (`false`) for
     /// idle / session-lock blanking (Track D2).
     ///
