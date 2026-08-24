@@ -3148,7 +3148,22 @@ impl AppHandler {
     /// blocking GPU init runs AFTER the winit event loop has processed the
     /// initial `configure` and wired the seat — not inline in `resumed`,
     /// where it would starve those first events and race first-launch focus.
-    fn init_render(&mut self, window: &Arc<Window>) {
+    ///
+    /// Returns why it could not, rather than unwrapping. The usual reason is
+    /// that there is nothing left to draw on: an application still starting
+    /// up when its compositor exits reaches this with a surface the driver
+    /// has already lost, and answers
+    ///
+    /// ```text
+    /// get_physical_device_surface_formats: ERROR_SURFACE_LOST_KHR
+    /// ```
+    ///
+    /// with `Err(UnsupportedSurfaceFormat)`. Unwrapping that panicked on the
+    /// main thread, and under `panic = "abort"` ended the process with
+    /// SIGABRT and a core dump the size of its address space — for the
+    /// entirely ordinary event of a session ending while an application was
+    /// opening.
+    fn init_render(&mut self, window: &Arc<Window>) -> Result<(), String> {
         let size = window.inner_size();
         let mut render_cx = RenderContext::new();
         let surface = pollster::block_on(render_cx.create_surface(
@@ -3157,7 +3172,7 @@ impl AppHandler {
             size.height.max(1),
             vello::wgpu::PresentMode::AutoVsync,
         ))
-        .unwrap();
+        .map_err(|e| format!("could not create a drawing surface: {e}"))?;
         let device_handle = &render_cx.devices[surface.dev_id];
         // vello 0.9's `create_surface` builds the blitter pipeline against
         // the format it chose; flipping to the sRGB suffix here would
@@ -3172,11 +3187,12 @@ impl AppHandler {
                 pipeline_cache: None,
             },
         )
-        .unwrap();
+        .map_err(|e| format!("could not create the renderer: {e}"))?;
         // Hand the wgpu state off to the render worker. After this point
         // the main thread doesn't touch the surface, renderer, or
         // render_cx — every GPU call happens on the `ui-render` thread.
         self.render = Some(spawn_render_thread(render_cx, surface, renderer));
+        Ok(())
     }
 }
 
@@ -3501,7 +3517,16 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // and wired the seat, rather than inline in `resumed`.
                 if self.render.is_none() {
                     qos_startup_metrics::mark("first-redraw-init-render-start");
-                    self.init_render(&window);
+                    if let Err(reason) = self.init_render(&window) {
+                        // Nothing to draw on. Say so and close the window —
+                        // there is no frame to be had, and retrying every
+                        // redraw would only spin. The reason reaches the
+                        // compositor's relay, which quotes it back in the
+                        // notification that names the application.
+                        crate::diag!("qos: {reason}");
+                        event_loop.exit();
+                        return;
+                    }
                     qos_startup_metrics::mark("first-redraw-init-render-done");
                 } else {
                     // Every subsequent redraw hits the "first-paint"
