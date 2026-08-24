@@ -3515,6 +3515,81 @@ impl ShellOverlayHost {
     /// resets to the persisted order on the next shell restart. Mirrors
     /// [`Self::harvest_pending_width_changes`] in shape; gated on a
     /// non-empty pending pile so quiescent frames cost a single map walk.
+    /// Mirror this frame's same-strip tab drag into the persisted
+    /// [`WorkspaceTree`].
+    ///
+    /// A drop that lands inside one strip is resolved entirely by that
+    /// strip's [`GroupRow`] — it can see every group involved, so it
+    /// needs nobody's help to move the window. That is why this was
+    /// missing: the gesture *looks* finished when the row is done with
+    /// it. But the rows are a projection of the tree, and
+    /// [`Self::resync_strips_from_tree`] rebuilds them from it on every
+    /// revision bump — of which a live session has a steady supply. A
+    /// tree that was never told holds the pre-drag arrangement, the
+    /// resync treats the moved window as a stray and puts it back, and
+    /// what the person sees is a drop that took and then undid itself.
+    ///
+    /// Deliberately no `bump()`, for the reason
+    /// [`Self::merge_tab_into_group`] gives: a bump makes the resync
+    /// rebuild the row it just wrote about, tearing down the very
+    /// `TileHost` the drag handed over. The write stands on its own —
+    /// the next bump from anywhere finds the two sides already agreeing.
+    fn harvest_pending_tab_moves(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let mut moves: Vec<ui::widget::TabMove> = Vec::new();
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            if let Some(m) = row.take_pending_tab_move() {
+                moves.push(m);
+            }
+        }
+        if moves.is_empty() {
+            return;
+        }
+        let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        for m in moves {
+            let applied = match m {
+                ui::widget::TabMove::Merge {
+                    tab_id,
+                    dest_group,
+                    dest_idx,
+                } => tree
+                    .move_tab_into_group_at(tab_id, dest_group, dest_idx)
+                    .is_some(),
+                ui::widget::TabMove::Split {
+                    tab_id,
+                    new_group,
+                    gap_idx,
+                } => tree
+                    .split_tab_into_new_group(tab_id, new_group, gap_idx)
+                    .is_some(),
+            };
+            if !applied {
+                // The row moved a window the tree cannot account for.
+                // Loud rather than silent: the two are now describing
+                // different desktops, and the next resync resolves that
+                // by undoing what the person just did.
+                tracing::warn!(
+                    "a strip moved a window the workspace tree could not follow: {m:?}"
+                );
+            }
+        }
+    }
+
+    /// Test-only one-shot: run the same-strip tab-move mirror the
+    /// per-frame `update` runs.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_pending_tab_move_harvest_for_tests(&mut self) {
+        self.harvest_pending_tab_moves();
+    }
+
     fn harvest_pending_group_reorder(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -6536,6 +6611,12 @@ impl Widget for ShellOverlayHost {
         // tab order survives a restart and replicates to peers. Same one-shot
         // take-pattern as the group reorder above.
         self.harvest_pending_tab_reorder();
+        // Mirror any in-frame same-strip tab drag (drop a window onto a
+        // sibling group's bar, or into the space between two groups) into
+        // the persisted `WorkspaceTree`. Without it the strip and the tree
+        // disagree about where the window is, and the next resync settles
+        // that by putting it back.
+        self.harvest_pending_tab_moves();
         // Open the palette aimed at the group whose "+" chip was clicked,
         // and retire that aim once the palette is gone. The refresh has
         // to happen here rather than inside the harvest: a picker that

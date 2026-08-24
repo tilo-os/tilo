@@ -5572,6 +5572,89 @@ impl WorkspaceTree {
         }
     }
 
+    /// Mirror a newly-created window group into the doc: insert a fresh
+    /// map carrying the group's id, flags, width and tabs at `index` in
+    /// the strip's `window_groups` list.
+    ///
+    /// The write half a split needs — [`Self::doc_rewrite_group_tabs`]
+    /// can only edit a group the doc already has, and the group a split
+    /// creates is by definition one it does not. Without this a peer
+    /// reads the tab as having simply vanished from the group it left.
+    ///
+    /// Tolerant of an unseeded doc, like every other `doc_*` mirror
+    /// here: the cache write has already happened and a later
+    /// [`Self::seed_doc_from_cache`] carries it.
+    pub fn doc_insert_group_in_strip(
+        &mut self,
+        strip_id: StripId,
+        group: &WindowGroup,
+        index: usize,
+    ) {
+        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() else {
+            return;
+        };
+        let ws_len = self.doc.length(&workspaces_id);
+        for ws_idx in 0..ws_len {
+            let Some((_, ws_entry)) = self.doc.get(&workspaces_id, ws_idx).ok().flatten() else {
+                continue;
+            };
+            let Some((_, strips_id)) = self.doc.get(&ws_entry, "strips").ok().flatten() else {
+                continue;
+            };
+            let strips_len = self.doc.length(&strips_id);
+            for s_idx in 0..strips_len {
+                let Some((_, strip_entry)) = self.doc.get(&strips_id, s_idx).ok().flatten() else {
+                    continue;
+                };
+                let matches = matches!(
+                    self.doc.get(&strip_entry, "id").ok().flatten(),
+                    Some((Value::Scalar(sc), _))
+                        if matches!(sc.as_ref(), ScalarValue::Uint(id) if *id == strip_id.raw())
+                );
+                if !matches {
+                    continue;
+                }
+                let Some((_, groups_id)) =
+                    self.doc.get(&strip_entry, "window_groups").ok().flatten()
+                else {
+                    return;
+                };
+                let at = index.min(self.doc.length(&groups_id));
+                let Ok(group_entry) = self.doc.insert_object(&groups_id, at, ObjType::Map) else {
+                    return;
+                };
+                let _ = self
+                    .doc
+                    .put(&group_entry, "id", ScalarValue::Uint(group.id));
+                let _ = self.doc.put(
+                    &group_entry,
+                    "maximized",
+                    ScalarValue::Boolean(group.maximized),
+                );
+                let _ = self.doc.put(
+                    &group_entry,
+                    "width_permille",
+                    ScalarValue::Uint(group.width.permille() as u64),
+                );
+                if let Ok(tabs_id) = self.doc.put_object(&group_entry, "tabs", ObjType::List) {
+                    for (l, tab) in group.tabs.iter().enumerate() {
+                        if let Ok(tab_entry) = self.doc.insert_object(&tabs_id, l, ObjType::Map) {
+                            let _ = self.doc.put(&tab_entry, "id", ScalarValue::Uint(tab.id));
+                            let _ = self.doc.put(&tab_entry, "title", tab.title.clone());
+                            if let Ok(blob) = serde_json::to_vec(&tab.tile) {
+                                let _ =
+                                    self.doc
+                                        .put(&tab_entry, "tile_json", ScalarValue::Bytes(blob));
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        }
+    }
+
     /// Mirror an `apply_drop`-style insert: append a tab map to the
     /// active workspace's first strip's first window-group's `tabs`
     /// list. v1 hardcodes "first/first" because that's what
@@ -6297,6 +6380,27 @@ impl WorkspaceTree {
     /// rewriting the tree for one the widgets did not perform would
     /// leave the two disagreeing about where the window is.
     pub fn move_tab_into_group(&mut self, tab_id: TabId, dest_group_id: u64) -> Option<u64> {
+        self.move_tab_into_group_at(tab_id, dest_group_id, usize::MAX)
+    }
+
+    /// As [`Self::move_tab_into_group`], but landing the tab at
+    /// `dest_idx` in the destination's tab list rather than on the end.
+    /// `usize::MAX` (what the appending wrapper passes) clamps to the
+    /// end like any other over-long index.
+    ///
+    /// The index matters because a drag lands where the insertion
+    /// indicator promised, not on the end. A tree that appended instead
+    /// would hold the same *set* of tabs as the bar on screen, so the
+    /// per-frame resync — which reconciles membership, not order — would
+    /// see nothing to do and the two would sit in silent disagreement
+    /// until something rebuilt the row from the tree and the bar
+    /// reshuffled itself with no cause the person could see.
+    pub fn move_tab_into_group_at(
+        &mut self,
+        tab_id: TabId,
+        dest_group_id: u64,
+        dest_idx: usize,
+    ) -> Option<u64> {
         // Locate both ends first, and refuse before touching anything if
         // either is missing. A merge that removes the tab and then finds
         // no destination has destroyed a window.
@@ -6339,7 +6443,8 @@ impl WorkspaceTree {
             .is_empty();
         {
             let group = &mut self.workspaces[d_ws].strips[d_strip].window_groups[d_g];
-            group.tabs.push(moved);
+            let at = dest_idx.min(group.tabs.len());
+            group.tabs.insert(at, moved);
             // The arriving tab is the one the user is now looking at,
             // which is what `WindowGroup::insert_detached_tab` does on
             // the widget side. The two have to agree: the per-frame
@@ -6370,6 +6475,110 @@ impl WorkspaceTree {
         // may not exist any more, and the palette's scope goes with it.
         let strip_id = self.workspaces[d_ws].strips[d_strip].id;
         self.active_group.insert(strip_id, dest_group_id);
+        Some(src_group_id)
+    }
+
+    /// Take `tab_id` out of the group it shares and give it a window of
+    /// its own at `gap_idx` on the same strip, dropping the group it
+    /// left if that emptied it. Returns the id of the group it came
+    /// from, or `None` when the tab is unknown.
+    ///
+    /// This is the persisted half of dragging a window out into open
+    /// space — the gesture's other outcome, beside the merge
+    /// [`Self::move_tab_into_group_at`] records.
+    ///
+    /// `new_group_id` is supplied rather than minted here, and that is
+    /// the whole point of the signature. The widget row has already
+    /// created the group and is drawing the window inside it under an id
+    /// of its own choosing; a tree that minted a second id would be
+    /// describing a different group, and the next reconcile — which
+    /// matches groups by id — would delete the one on screen and splice
+    /// in an empty stranger beside it.
+    pub fn split_tab_into_new_group(
+        &mut self,
+        tab_id: TabId,
+        new_group_id: u64,
+        gap_idx: usize,
+    ) -> Option<u64> {
+        // Refuse before touching anything if the id is already taken.
+        // Two groups sharing an id makes every later lookup ambiguous,
+        // and the lookups are what focus, resize and close all run on.
+        if self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .any(|g| g.id == new_group_id)
+        {
+            return None;
+        }
+        let mut src: Option<(usize, usize, usize)> = None;
+        'scan: for (ws_idx, ws) in self.workspaces.iter().enumerate() {
+            for (strip_idx, strip) in ws.strips.iter().enumerate() {
+                for (g_idx, group) in strip.window_groups.iter().enumerate() {
+                    if group.tabs.iter().any(|t| t.id == tab_id) {
+                        src = Some((ws_idx, strip_idx, g_idx));
+                        break 'scan;
+                    }
+                }
+            }
+        }
+        let (s_ws, s_strip, s_g) = src?;
+        let src_group_id = self.workspaces[s_ws].strips[s_strip].window_groups[s_g].id;
+        let moved = {
+            let group = &mut self.workspaces[s_ws].strips[s_strip].window_groups[s_g];
+            let pos = group.tabs.iter().position(|t| t.id == tab_id)?;
+            let moved = group.tabs.remove(pos);
+            // A group pointing at a tab it no longer holds resolves no
+            // content, so it stops being drawn at all.
+            if group.active_tab == tab_id {
+                if let Some(first) = group.tabs.first() {
+                    group.active_tab = first.id;
+                }
+            }
+            moved
+        };
+        let src_tabs = self.workspaces[s_ws].strips[s_strip].window_groups[s_g]
+            .tabs
+            .clone();
+        let source_emptied = src_tabs.is_empty();
+        let new_group = WindowGroup {
+            id: new_group_id,
+            tabs: vec![moved],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        };
+        {
+            let groups = &mut self.workspaces[s_ws].strips[s_strip].window_groups;
+            let at = gap_idx.min(groups.len());
+            groups.insert(at, new_group);
+        }
+        self.doc_rewrite_group_tabs(src_group_id, &src_tabs);
+        let strip_id = self.workspaces[s_ws].strips[s_strip].id;
+        let inserted_at = self.workspaces[s_ws].strips[s_strip]
+            .window_groups
+            .iter()
+            .position(|g| g.id == new_group_id)
+            .unwrap_or(0);
+        let inserted = self.workspaces[s_ws].strips[s_strip].window_groups[inserted_at].clone();
+        self.doc_insert_group_in_strip(strip_id, &inserted, inserted_at);
+        if source_emptied {
+            // Looked up by id rather than adjusted arithmetically: the
+            // insertion above may have shifted the source along, and an
+            // index that is off by one here prunes somebody else's
+            // window.
+            if let Some(at) = self.workspaces[s_ws].strips[s_strip]
+                .window_groups
+                .iter()
+                .position(|g| g.id == src_group_id)
+            {
+                self.workspaces[s_ws].strips[s_strip].window_groups.remove(at);
+            }
+        }
+        // The window the person just pulled out is the one they are
+        // looking at, so that is what the strip is focused on.
+        self.active_group.insert(strip_id, new_group_id);
         Some(src_group_id)
     }
 
