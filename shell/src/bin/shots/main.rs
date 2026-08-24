@@ -450,9 +450,22 @@ fn main() {
     // `QOS_SHOTS_LANG` overrides it, because shooting the German
     // catalogue on purpose is how you find out whether a longer word
     // still fits — the question this pin would otherwise hide.
+    // Every catalogue this process renders, not just the shell's. `shots`
+    // links the apps it photographs and draws them in-process, and an app
+    // that ships its own catalogue resolves it against its own active
+    // locale — which, left alone, it reads from the environment. So the
+    // shell pill above a word-processor tile said "Document" in English
+    // while the toolbar inside it read "Neu / Tabelle / Stile / Lineal",
+    // in a shot taken *after* this pin was added: the pin was real and
+    // covered one of the two catalogues on screen.
+    //
+    // `set_locale` is per-crate because the catalogues are; keep this
+    // list in step with the crates that have one. `shots_pins_every_-
+    // catalogue` fails when a new one is added without a line here.
     let shots_lang = std::env::var("QOS_SHOTS_LANG")
         .unwrap_or_else(|_| "en_US.UTF-8".to_string());
     shell::shell::i18n::set_locale(&shots_lang);
+    word_processor::i18n::set_locale(&shots_lang);
 
     // Startup timing capture. Same env-var contract as `shell` — a
     // process launched with `QOS_STARTUP_METRICS_PATH=/tmp/x.json` gets
