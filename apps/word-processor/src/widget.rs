@@ -2027,6 +2027,18 @@ pub struct WordProcessorWidget {
     /// committed colour is applied to the focused style. Mouse-driven (SV square /
     /// hue strip / RGB sliders); replaces hand-rolling a bespoke colour control.
     color_picker: Option<ColorPicker>,
+    // ---- "say something about this" ---------------------------------------
+    /// The shared compose surface that opens beside the context menu carrying
+    /// the *address* of the selected text — see [`crate::reference`]. Owned as
+    /// a field rather than built per-frame so a half-written remark survives
+    /// the next repaint.
+    remark: ui::widget::RemarkCompose,
+    /// Where a remark about this document can be sent. Filled by the host that
+    /// knows the room; empty until it is, so the editor never invents a roster
+    /// and the gesture stays inert until something real is behind it.
+    remark_destinations: Vec<ui::widget::DestinationOption>,
+    /// A finished remark waiting to be taken by the host.
+    remark_outbox: Option<qos_reference::Remark>,
 }
 
 /// A crash-recovery offer: a recovery copy exists on disk for the open document
@@ -2168,6 +2180,9 @@ impl WordProcessorWidget {
             style_menu_actions: Vec::new(),
             toast: None,
             color_picker: None,
+            remark: ui::widget::RemarkCompose::new(),
+            remark_destinations: Vec::new(),
+            remark_outbox: None,
         }
     }
 
@@ -6219,6 +6234,26 @@ impl Widget for WordProcessorWidget {
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &Modifiers, state: &mut AutoCommit, _path: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key();
+        // The compose surface, while it is up, owns the keyboard and its own
+        // patch of the screen: a keystroke meant for the message must not reach
+        // the document.
+        if self.remark.is_open()
+            && self.pump_remark(event, scale_factor, modifiers, state, _path, handled)
+        {
+            return;
+        }
+        // ...and the chord that raises it, so the gesture is not mouse-only. An
+        // address is exactly what somebody working without a pointer cannot
+        // produce by describing what they mean.
+        if let WindowEvent::KeyboardInput { event: key, .. } = event {
+            if key.state.is_pressed()
+                && ui::widget::remark_compose::is_compose_chord(key, modifiers)
+                && self.open_remark_for_selection(state)
+            {
+                *handled = true;
+                return;
+            }
+        }
         // While the colour-picker popover is open it captures input (modal-ish):
         // route drags to it, apply committed colours, and let an outside-click /
         // Escape dismiss it before any page/panel hit-testing.
@@ -6991,6 +7026,13 @@ impl Widget for WordProcessorWidget {
         }
         if self.style_menu.is_open() {
             Widget::draw(&mut self.style_menu, scene, transform, text_renderer, theme, presence);
+        }
+        // The compose surface sits beside the menu on the same tier: two ways
+        // to act on one selection, not a layer over the first.
+        if self.remark.is_open() {
+            self.layout_remark();
+            self.remark.draw(scene, transform, text_renderer, theme, presence);
+            self.remark.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         self.draw_color_picker(scene, transform, text_renderer, theme, presence);
     }
@@ -7808,6 +7850,233 @@ impl WordProcessorWidget {
         }
     }
 
+    // ---- "say something about this" ---------------------------------------
+
+    /// Where a remark about this document can be sent. Supplied by the host,
+    /// which is what knows the room.
+    ///
+    /// Empty until it is: an editor that guessed at a roster would be offering
+    /// to send somewhere it has no reason to believe exists, so the gesture is
+    /// simply not offered until a real list arrives.
+    pub fn set_remark_destinations(&mut self, destinations: Vec<ui::widget::DestinationOption>) {
+        self.remark_destinations = destinations;
+    }
+
+    /// Take a finished remark, once.
+    ///
+    /// The host dispatches it: resolving `@name` against the room's roster and
+    /// encoding the chat action are things it knows and a document editor does
+    /// not — and should not learn, or the reference stops being the system's
+    /// idea and becomes this app's.
+    pub fn take_remark(&mut self) -> Option<qos_reference::Remark> {
+        self.remark_outbox.take()
+    }
+
+    /// Whether the compose surface is currently on screen.
+    pub fn remark_is_open(&self) -> bool {
+        self.remark.is_open()
+    }
+
+    /// "Say something about this" without a pointer (`Ctrl+Shift+M`).
+    ///
+    /// The same surface the right-click raises, over the same selection and
+    /// minting the same address — anchored at the caret, because a chord has no
+    /// cursor to sit beside. An address is exactly what somebody working
+    /// without a pointer cannot produce by describing, so this path is not a
+    /// convenience.
+    pub fn open_remark_for_selection(&mut self, doc: &AutoCommit) -> bool {
+        let p = self.caret_screen_point();
+        self.open_remark_beside(doc, Rect::new(p.x, p.y, p.x, p.y))
+    }
+
+    /// Right-click at `at`: the ordinary context menu, and the compose surface
+    /// beside it when there is something to say and somewhere to send it.
+    /// Drives the production path, for the headless shots demo.
+    #[doc(hidden)]
+    pub fn debug_right_click(&mut self, state: &AutoCommit, at: Point) {
+        self.pointer = at;
+        let cp = self.pointer_to_content(at);
+        self.open_context_menu(state, cp, [at.x as f32, at.y as f32]);
+    }
+
+    /// Where the selection's trailing edge sits on screen (headless shots
+    /// demo), so a demo right-click can land on the words it is about rather
+    /// than at a guessed coordinate.
+    #[doc(hidden)]
+    pub fn debug_selection_point(&self) -> Point {
+        self.caret_screen_point()
+    }
+
+    /// Where the caret sits on screen, through the same geometry `draw` paints
+    /// it with. Falls back to the top-left of the page when the body has not
+    /// been laid out yet.
+    fn caret_screen_point(&self) -> Point {
+        let fallback = Point::new(self.rect.x0 + 80.0, self.rect.y0 + 120.0);
+        let Some(laid) = self.laid.iter().find(|l| l.id == self.inner.caret.block) else {
+            return fallback;
+        };
+        let Some((_, layout)) = self.layout_cache.get(&laid.id) else {
+            return fallback;
+        };
+        let (cx, cy, ch) = layout.caret_geometry(self.inner.caret.offset);
+        let r = Rect::new(
+            laid.text_x + cx as f64,
+            laid.layout_y + cy as f64,
+            laid.text_x + cx as f64,
+            laid.layout_y + cy as f64 + ch as f64,
+        );
+        let r = self.content_transform(Affine::IDENTITY).transform_rect_bbox(r);
+        Point::new(r.x1, r.y0)
+    }
+
+    /// Open the compose surface beside `neighbour` — the context menu, or a
+    /// zero-width rect at the caret for the keyboard path.
+    ///
+    /// Returns `false`, having opened nothing, when there is nowhere to send or
+    /// nothing selected: a compose box over no subject would ask for a sentence
+    /// about nothing.
+    fn open_remark_beside(&mut self, doc: &AutoCommit, neighbour: Rect) -> bool {
+        if self.remark_destinations.is_empty() {
+            return false;
+        }
+        let Some(reference) = <Self as qos_reference::Referent>::selection_reference(self, doc)
+        else {
+            return false;
+        };
+        self.remark.open_for(
+            reference,
+            self.remark_destinations.clone(),
+            0,
+            Point::new(neighbour.x1 + 8.0, neighbour.y0),
+            &ui::widget::remark_compose::placeholder_text(),
+            &ui::widget::remark_compose::send_label(),
+        );
+        // Measure, then place: the panel's height is only known once it has
+        // been laid out, and the height is what decides whether it fits.
+        self.layout_remark();
+        self.remark.place_beside(neighbour, self.rect);
+        self.layout_remark();
+        self.dirty = true;
+        true
+    }
+
+    /// Resolve the compose panel's rects in a throwaway taffy tree, the way
+    /// [`Self::layout_color_picker`] does: it is anchored in window coordinates
+    /// rather than being a node of the app's tree.
+    ///
+    /// Deliberately the same pass for painting and for hit-testing, so a
+    /// control can never be drawn somewhere other than where it is clickable.
+    fn remark_layout_pass(&mut self) -> (TaffyTree<()>, NodeId) {
+        // The panel's own metrics come from its constants, and spacing tokens
+        // do not vary by palette, so one theme here keeps draw and hit-test
+        // measuring with the same ruler under every theme.
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = self.remark.build_layout(&mut taffy, &theme, &mut nm);
+        let _ = taffy.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(2000.0),
+                height: taffy::AvailableSpace::Definite(1400.0),
+            },
+        );
+        self.remark.apply_layout(&taffy, node, Point::ZERO);
+        (taffy, node)
+    }
+
+    fn layout_remark(&mut self) {
+        if !self.remark.is_open() {
+            return;
+        }
+        let _ = self.remark_layout_pass();
+    }
+
+    /// While the compose surface is open, route input to it.
+    ///
+    /// The panel owns the keyboard — it is a field that just appeared under the
+    /// hands, and a keystroke meant for the message must never land in the
+    /// document instead. The pointer stays shared: a press inside the panel is
+    /// the panel's, a press on the context menu beside it still works that
+    /// menu, and a press anywhere else puts the compose away the way clicking
+    /// off any composer does. Returns whether the event was consumed.
+    fn pump_remark(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        mods: &Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+    ) -> bool {
+        if !self.remark.is_open() {
+            return false;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = Point::new(position.x / scale, position.y / scale);
+                // Hover feedback only. A move is never reported as consumed, or
+                // the rest of the editor stops tracking the pointer while the
+                // panel is up — and the send button needs the hover it carries.
+                let mut hover = false;
+                self.forward_to_remark(event, scale, mods, state, root, &mut hover);
+                self.dirty = true;
+                false
+            }
+            WindowEvent::KeyboardInput { .. } => {
+                self.forward_to_remark(event, scale, mods, state, root, handled);
+                *handled = true;
+                self.dirty = true;
+                true
+            }
+            WindowEvent::MouseInput { button: MouseButton::Left, state: press, .. } => {
+                // The expanded destination list paints its rows outside the
+                // panel's own rect, so while it is down every press is the
+                // panel's — including the one that dismisses it.
+                let mine = self.remark.get_rect().contains(self.pointer)
+                    || self.remark.destination_list_is_open();
+                if mine {
+                    self.forward_to_remark(event, scale, mods, state, root, handled);
+                    *handled = true;
+                    self.dirty = true;
+                    return true;
+                }
+                if *press == ElementState::Pressed
+                    && !self.context_menu.contains([self.pointer.x, self.pointer.y])
+                {
+                    self.remark.close();
+                    self.dirty = true;
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Hand one event to the open panel and drain anything it finished.
+    fn forward_to_remark(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        mods: &Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+    ) {
+        let (taffy, node) = self.remark_layout_pass();
+        let mut ft: Option<NodeId> = None;
+        self.remark
+            .handle_event(event, scale, mods, state, root, handled, &mut ft, node, &taffy);
+        if let Some(remark) = self.remark.take_sent() {
+            // Say where it went. A send whose only evidence is that the panel
+            // vanished is indistinguishable from a send that failed.
+            let to = remark.destination.display().name.to_string();
+            self.toast = Some(t_args("toast-remark-sent", &[arg("to", to)]));
+            self.remark_outbox = Some(remark);
+            self.dirty = true;
+        }
+    }
+
     /// The next/previous cell id within the caret cell's table, if any.
     /// The char position the toolbar reports font state for: just left of the
     /// caret (so it reflects the run you're typing into), else the caret.
@@ -8058,6 +8327,11 @@ impl WordProcessorWidget {
         menu.open_at(pos);
         self.context_menu = menu;
         self.context_actions = actions;
+        // Beside the menu, not instead of it: "say something about this" is a
+        // second thing to do with the selection, not a replacement for Cut and
+        // Copy. Silently declines when the host has named no destinations, so a
+        // session with no room behind it right-clicks exactly as it always did.
+        self.open_remark_beside(state, self.context_menu.rect());
         self.dirty = true;
     }
 
