@@ -253,6 +253,12 @@ pub enum Action {
     /// `pump_file_picker` the compositor turns every frame. Everything
     /// downstream of the queue is the production path.
     SeedFilePicker(&'static str),
+    /// Advance the open dialog's file-type filter, the way clicking its
+    /// filter chip does. A filter that matches nothing in the folder is
+    /// how the dialog's empty state is reached without needing an empty
+    /// folder to point it at, and it is a state a person hits in normal
+    /// use — pick Images in a folder of notes.
+    CycleFilePickerFilter,
     /// Cut the `idx`-th group of the active strip down to one tab, so a
     /// scenario can set up the "lone window selected" shape rather than
     /// the four-tab group the default workspace boots with.
@@ -784,6 +790,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                     &[(0, "*.odt".into()), (0, "*.md".into()), (0, "*.txt".into())],
                 ),
                 PickerFilter::from_pairs("Images", &[(1, "image/png".into())]),
+                PickerFilter::from_pairs("Spreadsheets", &[(0, "*.ods".into())]),
             ])
             .current_name(save.then(|| "Untitled.md".to_string()));
             // The reply receiver is dropped: a screenshot has nobody to
@@ -800,6 +807,12 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 filters: opts.filters,
                 reply: tx,
             });
+            driver.host_mut().pump_file_picker();
+        }
+        Action::CycleFilePickerFilter => {
+            if let Some(picker) = driver.host_mut().file_picker_mut() {
+                picker.cycle_filter();
+            }
             driver.host_mut().pump_file_picker();
         }
         Action::SeedWifiPrompt(preset) => {
@@ -1312,6 +1325,17 @@ fn file_chooser_dialog() -> Scenario {
             Action::SeedFilePicker("save"),
             Action::Wait(4),
             Action::Snapshot("03-save"),
+            // A folder the active filter has nothing to show from. The
+            // band used to go blank here, which reads as a dialog that
+            // failed rather than a filter that excluded everything.
+            Action::SeedFilePicker("open"),
+            Action::Wait(4),
+            // Twice: past Images, onto Spreadsheets, which is the one
+            // with nothing to show in a folder of notes.
+            Action::CycleFilePickerFilter,
+            Action::CycleFilePickerFilter,
+            Action::Wait(4),
+            Action::Snapshot("04-nothing-matches"),
         ],
     }
 }
