@@ -195,11 +195,21 @@ mod tests {
             elapsed < DEADLINE * 4,
             "the input path must not wait on the bus: took {elapsed:?}"
         );
-        // On a developer machine with a player running this legitimately
-        // returns Some; the invariant under test is the bound, plus that
-        // an absent player is reported as absence.
-        if outcome.is_none() {
-            assert!(true, "no player: reported as nothing, which is correct");
+        // The other half of this test's name, now actually checked. `run`
+        // gives up on its first line when there is no session bus, so on
+        // such a machine — CI, a headless build container — the outcome has
+        // to be absence. A developer machine with a bus and a player
+        // legitimately returns `Some`, which is why the claim is made
+        // against the same precondition production turns on rather than
+        // unconditionally. What stood here was `assert!(true)` inside an
+        // `is_none()` branch: it held whether `send` reported absence, a
+        // fabricated outcome, or nothing at all.
+        if zbus::blocking::Connection::session().is_err() {
+            assert!(
+                outcome.is_none(),
+                "there is no session bus, so no player can have been reached, \
+                 yet send() reported an outcome"
+            );
         }
     }
 }
