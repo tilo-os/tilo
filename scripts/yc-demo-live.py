@@ -22,6 +22,103 @@ step number:
           it. `qos-agent` already does that; there is no beat here that
           makes it act.
 
+THE SHAPE THIS IS BEING REBUILT INTO
+====================================
+
+Everything below this block describes the film as it is *today*: two
+people, one shared document, and an agent that answers one instruction.
+That version proves collaboration in a word processor, and a word
+processor is the one place a viewer has already seen collaboration — it
+invites a comparison with a fifteen-year-old product and loses it.
+
+The rebuilt film argues the thing that has no equivalent: **work moving
+between different applications, between different people, with an agent
+acting across both.** What follows is the beat plan for it, in
+pseudo-code, so it can be built against rather than re-derived. It is
+not implemented yet; where a beat depends on work still in flight, the
+dependency is named.
+
+Budget: boot bumper ~3.2s (cut, exists) + ~75s driven. Hard cap 1:40.
+
+    BEAT 0  the machine boots                                   ~3.2s
+        Not recorded here. `target/bumper/qos-boot-bumper.mp4`,
+        concatenated in front. Console, greeter, filled form, cut
+        before the desktop -- see docs/boot-bumper-cut.md.
+
+    BEAT 1  a workspace, and the people in it                    ~15s
+        YOU     open the collaborators panel, invite xaver, invite
+                Claude. Both invitations outstanding at once -- this
+                used to lose the second name (fixed).
+        SCRIPT  xaver redeems after ~8s; Claude joins when launched.
+        SHOWS   an agent admitted the same way a person is: by holding
+                a capability in the same list, marked as an agent so
+                nobody has to infer which is which.
+
+    BEAT 2  four applications, two in frame                      ~10s
+        YOU     open Files, chat, the word processor. The image editor
+                arrives in beat 3.
+        YOU     scroll the strip; put two of them in one tab group.
+        SHOWS   tabs are a frame primitive the compositor owns, so a
+                tab group holds *different applications*. Every other
+                desktop has per-app tabs; this is the one gesture that
+                cannot be mistaken for a browser.
+
+    BEAT 3  xaver does something only a person would do           ~12s
+        SCRIPT  xaver walks Files, opens harbour.png in the image
+                editor, looks at it, and says something about it --
+                selecting the image and speaking to it, so the message
+                carries the resource address, not a description.
+                    "this one, but it needs to be square"
+        YOU     keep typing in the word processor throughout. One
+                excursion to his screen, a few seconds.
+        SHOWS   two people, two applications, at the same time, and a
+                message that points at an object in a third.
+        NEEDS   chat cross-peer + @mention  (in flight)
+                selection -> message with resource chip  (in flight)
+                image editor usable  (in flight)
+
+    BEAT 4  the agent reaches across applications                ~15s
+        YOU     select xaver's image, and say:
+                    "@Claude crop this square and put it under Sound
+                     check"
+        SHOWS   the instruction arrives as (text, resource address,
+                capability). The agent does not guess what "this" is,
+                and never needs a screen position. It invokes the crop
+                on the image editor's resource and writes the result
+                into the word processor's document -- two applications
+                it does not own, attributed to its own actor.
+        NEEDS   external actions door  (landed, ecd8752d2)
+                agent consumes the door  (in flight)
+                agent scoped listening  (not started)
+
+    BEAT 5  the agent disagrees, usefully                        ~15s
+        YOU     "@Claude does the schedule actually work?"
+        SHOWS   it reads the run sheet and answers that sound check at
+                18:30 falls after doors at 18:00. Judgement, not
+                obedience -- the difference between a colleague and a
+                macro. Works today.
+
+    BEAT 6  and it is undoable                                    ~5s
+        YOU     Ctrl+Z.
+        SHOWS   `undo_for_author` walks back the last change belonging
+                to *that* actor and leaves everyone else's work alone,
+                which is why an agent can be allowed to act at all.
+                Deliberately small: the history UI is roadmap, the
+                fundamentals are here.
+
+    CLOSE   the strip, four applications, three participants, one
+            room. No frame ever came from the agent's session.
+
+WHAT EACH BEAT HAS TO SURVIVE
+-----------------------------
+A beat earns its seconds only if a viewer can *see* the thing it
+claims. Two of these have already been rebuilt for that reason: an app
+fetched over the network looked exactly like an app already installed
+until the row said so, and an agent in the roster looked exactly like a
+person until it carried a mark. Before filming any beat above, ask what
+is on screen that would be different if the capability were absent. If
+the answer is "nothing", the beat is not ready.
+
 The camera is on your screen throughout and steps out to xaver's twice
 — once when he arrives, once when the agent's work lands on it — for a
 few seconds each.
