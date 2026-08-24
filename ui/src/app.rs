@@ -623,6 +623,12 @@ impl App {
         if let Some(scope) = PresenceKey::for_local_workspace() {
             app.set_presence_broadcast_scope(Some(scope));
         }
+        // Name the surface this process draws, so a content-space
+        // pointer measured in it can be recognised as placeable here
+        // and one measured in somebody else's content cannot. Same
+        // value the outbound pointer is scoped with, from the same
+        // function, so the two spellings cannot drift.
+        app.presence_ctx.set_surface_id(crate::local_surface_id());
         app
     }
 
@@ -2882,6 +2888,24 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
     )
 }
 
+/// The identity of this process's surface: the app id it announces.
+///
+/// `QOS_PACKAGE_ID` under the launcher (`dev.qos.word-processor`), the
+/// binary's own name in a dev run. Public because it is half of a
+/// protocol and not an internal detail: it is what a pointer
+/// published in this surface's content coordinates is scoped to (see
+/// [`crate::presence::PointerSpace::Surface`]), and what a receiver
+/// compares against to decide whether a content position is one it
+/// can place. Both ends must spell the surface the same way, so both
+/// ends call this.
+pub fn local_surface_id() -> String {
+    let package_id = std::env::var("QOS_PACKAGE_ID").ok();
+    let binary = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    resolve_app_id(package_id.as_deref(), binary.as_deref())
+}
+
 /// Resolve the wayland `app_id` this process announces.
 ///
 /// `QOS_PACKAGE_ID` when the launcher set it — that is the package's
@@ -3913,12 +3937,28 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // Outbound pointer-presence broadcast: if the
                 // shell has declared a presence scope, relay
                 // every pointer move (throttled to ~30 Hz) so
-                // peers can render this user's cursor on the
-                // same scope. CursorLeft clears the peer-side
-                // pointer via the `Left` payload so their
-                // cursor stops rendering when we wander out
-                // of the window.
-                if let Some(scope) = app.presence_broadcast_scope.clone() {
+                // peers can render this user's cursor. CursorLeft
+                // clears the peer-side pointer via the `Left`
+                // payload so their cursor stops rendering when we
+                // wander out of the window.
+                //
+                // The room scope decides *whether* to publish —
+                // presence outside a room addresses nobody. It is
+                // not what the pointer is scoped to: a winit
+                // `CursorMoved` is measured in this window's own
+                // content, not on the desktop, and saying "room" of
+                // it would be naming the audience while leaving the
+                // coordinate space unsaid. Every receiver then had
+                // to supply a space of its own, and each supplied
+                // itself — one person drawn once per open window, at
+                // the same offset in each.
+                //
+                // So the pointer says which surface it was measured
+                // in, and only a surface showing that same content
+                // can place it. Where the pointer is on the *desktop*
+                // is a different fact, published by the compositor,
+                // which is the only layer that knows it.
+                if app.presence_broadcast_scope.is_some() {
                     match &event {
                         WindowEvent::CursorMoved { position, .. } => {
                             let now = Instant::now();
@@ -3929,7 +3969,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             ) {
                                 app.last_pointer_broadcast = Some(now);
                                 app.broadcast_presence(
-                                    scope.clone(),
+                                    PresenceKey::local_surface_pointer(),
                                     PresencePayload::Pointer {
                                         x: position.x as f32,
                                         y: position.y as f32,
@@ -3938,7 +3978,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             }
                         }
                         WindowEvent::CursorLeft { .. } => {
-                            app.broadcast_presence(scope.clone(), PresencePayload::Left);
+                            app.broadcast_presence(
+                                PresenceKey::local_surface_pointer(),
+                                PresencePayload::Left,
+                            );
                             app.last_pointer_broadcast = None;
                         }
                         _ => {}

@@ -195,6 +195,25 @@ interface PresenceHandle {
   # stream. Each event carries the full `PresencePayload` union
   # (see below); clients discriminate on payload variant.
   subscribeAll @6 () -> (stream :PresenceStream);
+
+  # Publish the local pointer at (x, y), in the coordinate space
+  # `keyBytes` names.
+  #
+  # This is `publishCursor` with the one thing `publishCursor` cannot
+  # say. A pointer position is meaningless without the space it was
+  # measured in: the same (230, 34) is a different place on the
+  # desktop, in a file manager and in a word processor. `publishCursor`
+  # takes coordinates and nothing else, so the space was dropped at
+  # this door and guessed at afterwards — and a guess made once per
+  # receiving window drew one person once per window.
+  #
+  # `keyBytes` is a postcard-encoded `ui::PresenceKey`, as on every
+  # other keyed publish here. For a pointer it is expected to be
+  # `PresenceKey::Pointer`, whose `PointerSpace` names the space and,
+  # for a surface, which surface. The broker keeps the bytes intact
+  # end to end and never re-keys them, so exactly one receiver can
+  # place the position and the rest can tell that it is not theirs.
+  publishPointer @7 (keyBytes :Data, x :Float32, y :Float32) -> ();
 }
 
 interface CursorStream {
@@ -260,6 +279,17 @@ struct PresencePayload {
     }
     arrived @5 :Void;
     left    @6 :Void;
+
+    # A pointer whose `PresenceEvent.keyBytes` is meaningful — the
+    # payload `publishPointer` produces. Distinct from `cursor` so a
+    # reader can tell a position that knows its coordinate space from
+    # one that does not: `cursor` is `publishCursor`'s keyless legacy
+    # shape and a reader must not invent a space for it, whereas this
+    # one is only ever emitted alongside the key its publisher chose.
+    pointer :group {
+      x @7 :Float32;
+      y @8 :Float32;
+    }
   }
 }
 

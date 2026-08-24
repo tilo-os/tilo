@@ -25,6 +25,61 @@ pub enum PresenceKey {
     /// because the key must stay `Hash + Eq`, which `f64` viewport fields
     /// are not.
     View { data: Vec<u8> },
+    /// A pointer position, together with the coordinate space it was
+    /// measured in. See [`PointerSpace`].
+    ///
+    /// Every other variant here is a *scope* — an object presence is
+    /// about. This one is a scope too, but the scope of a pointer is
+    /// the space its numbers mean something in, and saying so is the
+    /// whole point of the variant: a pointer used to be published
+    /// under whatever scope was to hand (the room), which named the
+    /// audience and not the space, and every reader then had to guess
+    /// the space from the audience.
+    Pointer { space: PointerSpace },
+}
+
+/// The coordinate space a pointer position is measured in.
+///
+/// A pointer is a pair of numbers and they mean nothing on their own.
+/// The same `(230, 34)` is a place on the desktop, a place in a file
+/// manager and a place in a word processor, and those are three
+/// different places on one screen. So the space travels with the
+/// position, from the app that measured it to whatever ends up
+/// drawing it, and it is the space — not the transport, not the
+/// receiving widget tree — that decides who may place it.
+///
+/// It also decides who may *not*, which is the property worth having.
+/// A presence frame is delivered to every app in a room, so without
+/// this each of them read the position as its own and one person was
+/// drawn once per open window, in the same place in each. With the
+/// space carried, at most one receiver can answer "yes, that is my
+/// space" — and the rest can tell that it is not theirs without
+/// having to compare notes with each other.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub enum PointerSpace {
+    /// Compositor scene coordinates on `room`'s desktop.
+    ///
+    /// The only space that spans more than one window, so the only
+    /// one in which a pointer can be followed across the strip, the
+    /// chrome and the gaps between windows — and therefore the only
+    /// space a *person's* pointer is ever in. The compositor is the
+    /// layer that owns it, because it is the only one that knows
+    /// where a window is; see
+    /// [`crate::presence::PointerOwner::Desktop`].
+    Desktop { room: String },
+    /// Content coordinates inside the surface `surface` names, which
+    /// is the app id that surface announces (`QOS_PACKAGE_ID`, or the
+    /// binary's own name in a dev run — the same string the
+    /// compositor labels the window with).
+    ///
+    /// Named by the app rather than by the window instance on
+    /// purpose: what makes two content coordinates comparable is that
+    /// they are measured in the same content, and two windows running
+    /// the same app on the same document are the case that wants a
+    /// peer's cursor drawn in it. A file manager and a word processor
+    /// are not, and under this they cannot claim each other's
+    /// positions even though the broker hands both the same frame.
+    Surface { surface: String },
 }
 
 impl PresenceKey {
@@ -74,6 +129,67 @@ impl PresenceKey {
         Some(PresenceKey::Workspace { id: cluster.to_string() })
     }
 
+    /// The key a pointer measured on `room`'s desktop is published
+    /// under.
+    pub fn desktop_pointer(room: impl Into<String>) -> Self {
+        PresenceKey::Pointer {
+            space: PointerSpace::Desktop { room: room.into() },
+        }
+    }
+
+    /// The key a pointer measured inside `surface`'s content is
+    /// published under.
+    pub fn surface_pointer(surface: impl Into<String>) -> Self {
+        PresenceKey::Pointer {
+            space: PointerSpace::Surface {
+                surface: surface.into(),
+            },
+        }
+    }
+
+    /// [`Self::surface_pointer`] for this process's own surface.
+    ///
+    /// What an app publishes its own pointer under. The coordinates a
+    /// winit `CursorMoved` carries are surface-local, so this is the
+    /// only honest thing an app can say about them — it does not know
+    /// where its window is, and the number it would have to add to
+    /// find out is the compositor's.
+    pub fn local_surface_pointer() -> Self {
+        Self::surface_pointer(crate::local_surface_id())
+    }
+
+    /// The coordinate space a pointer arriving under this key is
+    /// measured in, or `None` for a key that is not a pointer scope
+    /// at all.
+    ///
+    /// One place, because the answer used to be reached by three
+    /// routes that disagreed. Two legacy spellings are still produced
+    /// and still mean "desktop", and they are read here rather than
+    /// re-derived at each call site:
+    ///
+    /// - [`PresenceKey::Workspace`] — the session's own desktop
+    ///   pointer, republished per room by the compositor.
+    /// - [`Self::pointer_default`] — the tag the keyless capnp
+    ///   `publishCursor` path used to be re-keyed to. Nothing
+    ///   synthesises it any more; it is read so an older publisher
+    ///   still lands somewhere sensible.
+    ///
+    /// A key that is neither — a widget path, a tab, an app scope —
+    /// is a position in a document rather than on a screen, and is
+    /// not a pointer space.
+    pub fn pointer_space(&self) -> Option<PointerSpace> {
+        match self {
+            PresenceKey::Pointer { space } => Some(space.clone()),
+            PresenceKey::Workspace { id } => Some(PointerSpace::Desktop { room: id.clone() }),
+            PresenceKey::Widget { path } if path.is_empty() => {
+                Some(PointerSpace::Desktop {
+                    room: String::new(),
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// The canonical `PresenceKey` used to attribute a pointer
     /// (cursor) publish that carries no explicit scope. Used by the
     /// capnp `publishCursor(x, y)` path which does not accept a key —
@@ -117,11 +233,7 @@ impl PresenceKey {
     /// through here and stays the window's to paint, because nothing is
     /// above it that could.
     pub fn scopes_a_desktop_pointer(&self) -> bool {
-        match self {
-            PresenceKey::Workspace { .. } => true,
-            PresenceKey::Widget { path } => path.is_empty(),
-            _ => false,
-        }
+        matches!(self.pointer_space(), Some(PointerSpace::Desktop { .. }))
     }
 }
 

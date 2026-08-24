@@ -93,7 +93,7 @@ pub use vello;
 pub use vello::{kurbo, peniko};
 pub use winit;
 
-pub use app::App;
+pub use app::{App, local_surface_id};
 pub use reader_hud::{HudAction, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud};
 pub use color_compat::ColorCompat;
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
