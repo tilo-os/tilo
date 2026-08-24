@@ -876,6 +876,41 @@ mod tests {
         assert_eq!(decode_address(&encode_address(&a)), Some(a));
     }
 
+    /// A word processor holding a document with nothing in it is still a
+    /// word processor with something to be done to it.
+    ///
+    /// This used to report an empty tree: no blocks meant no anchor, and no
+    /// anchor meant the survey returned nothing at all — so a room containing
+    /// an open, untouched document looked exactly like a room containing no
+    /// word processor. Since applications start empty, that is the state a
+    /// document is in precisely when somebody first wants to put something
+    /// into it.
+    #[test]
+    fn a_document_with_no_blocks_is_still_something_to_act_on() {
+        let mut doc = AutoCommit::new();
+        qdoc::model::init(&mut doc, &automerge::ROOT);
+        doc.commit();
+        let c = qdoc::model::open(&doc, &automerge::ROOT).expect("the schema is there");
+        assert!(
+            qdoc::model::materialize(&doc, &c).blocks.is_empty(),
+            "this test is about a document with nothing in it",
+        );
+
+        // No caret either: the agent has no screen, and a block id it made up
+        // would be worse than none.
+        let tree = word_processor_resources(&View::default(), &doc);
+        assert!(
+            !tree.is_empty(),
+            "an empty document reported nothing that could be done to it",
+        );
+        let places = tree[0].actions.iter().any(|a| a.id == "place-image");
+        assert!(
+            places,
+            "the document exports {:?}, none of which places a picture",
+            tree[0].actions.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+        );
+    }
+
     #[test]
     fn the_app_is_read_off_the_resource_namespace() {
         assert_eq!(app_of("word-processor.document"), "word-processor");
