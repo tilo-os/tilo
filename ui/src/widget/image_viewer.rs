@@ -169,6 +169,34 @@ impl ImageViewer {
         Some((x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)))
     }
 
+    /// Where the photograph is actually painted, in window coordinates.
+    ///
+    /// The scaled destination quad clipped to the viewport, which is what
+    /// `draw` paints — at the contain baseline that is the image inside its
+    /// letterbox bars, and zoomed in it is the whole viewport.
+    ///
+    /// Exposed because a host placing a floating surface has to know which
+    /// part of its window the picture occupies, and the mapping depends on
+    /// `base_scale`, which is private viewer geometry. `None` when the image
+    /// or the viewport has a zero dimension, or when the two do not overlap.
+    pub fn image_screen_rect(&self) -> Option<Rect> {
+        let base = self.base_scale();
+        if base <= 0.0 {
+            return None;
+        }
+        let total = base * self.zoom as f64;
+        let dw = self.image.width as f64 * total;
+        let dh = self.image.height as f64 * total;
+        let cx = (self.rect.x0 + self.rect.x1) * 0.5;
+        let cy = (self.rect.y0 + self.rect.y1) * 0.5;
+        let dx = cx - dw * 0.5 + self.pan.x * total;
+        let dy = cy - dh * 0.5 + self.pan.y * total;
+        // Clipped the same way `draw` clips it, so this reports what is on
+        // screen rather than where the quad would have reached.
+        let drawn = Rect::new(dx, dy, dx + dw, dy + dh).intersect(self.rect);
+        (drawn.width() > 0.0 && drawn.height() > 0.0).then_some(drawn)
+    }
+
     /// Baseline "contain" scale factor: the multiplier that fits the
     /// image inside `self.rect` at `zoom == 1.0`. Returns `0.0` if
     /// either the image or the viewport has a zero dimension — callers
@@ -450,6 +478,47 @@ mod tests {
             width: 16,
             height: 16,
         }
+    }
+
+    /// At the contain baseline the photograph occupies a centred box of its own
+    /// aspect ratio, and the letterbox bars are outside it.
+    ///
+    /// The point of reporting this at all: a host placing a floating surface
+    /// needs to know which part of the window is picture and which is bar, and
+    /// the mapping depends on `base_scale`, which is private geometry here.
+    #[test]
+    fn the_drawn_rect_is_the_contain_box_at_the_baseline() {
+        let mut v = ImageViewer::new(make_image()); // 16×16, square
+        v.rect = Rect::new(0.0, 0.0, 400.0, 200.0);
+        let drawn = v.image_screen_rect().expect("a laid-out viewer draws somewhere");
+
+        // The limiting axis is the height, so the box is 200×200, centred.
+        assert!((drawn.width() - 200.0).abs() < 1e-6, "{drawn:?}");
+        assert!((drawn.height() - 200.0).abs() < 1e-6, "{drawn:?}");
+        assert!((drawn.x0 - 100.0).abs() < 1e-6, "not centred: {drawn:?}");
+        assert!(
+            drawn.x0 > v.rect.x0 && drawn.x1 < v.rect.x1,
+            "the letterbox bars must lie outside the picture: {drawn:?}"
+        );
+    }
+
+    /// Zoomed past the fit, the picture covers the whole viewport — the drawn
+    /// rect is clipped to it, the way `draw` clips it, rather than reporting a
+    /// quad that runs off into the chrome either side.
+    #[test]
+    fn the_drawn_rect_is_clipped_to_the_viewport_when_zoomed_in() {
+        let mut v = ImageViewer::new(make_image());
+        v.rect = Rect::new(0.0, 0.0, 400.0, 200.0);
+        v.set_zoom(4.0);
+        let drawn = v.image_screen_rect().expect("still drawn");
+        assert_eq!(drawn, v.rect, "a zoomed-in picture fills its viewport");
+    }
+
+    /// A viewer that has never been laid out has nowhere to report.
+    #[test]
+    fn a_viewer_with_no_rect_draws_nowhere() {
+        let v = ImageViewer::new(make_image());
+        assert!(v.image_screen_rect().is_none());
     }
 
     #[test]

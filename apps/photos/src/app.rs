@@ -37,7 +37,8 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, EmptyState, ImageViewer, Widget};
+use ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::widget::{Button, EmptyState, ImageViewer, RemarkCompose, Widget};
 
 use crate::doc::PhotosDoc;
 use crate::model::{Edits, OpenImage, Rect01};
@@ -231,6 +232,25 @@ pub struct PhotosApp {
     faces: Vec<Face>,
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
+    /// Where the pointer last was, in logical pixels. Tracked because a press
+    /// carries no position of its own.
+    pointer: Point,
+    /// The right-click menu. The shared [`ContextMenu`], painted in the
+    /// overlay pass so it floats above the canvas.
+    context_menu: ContextMenu,
+    /// Per-row intent parallel to `context_menu`'s items (separators map to
+    /// `None`). A row posts the same [`Hit`] a toolbar button does, so the two
+    /// routes cannot drift into doing different things.
+    context_actions: Vec<Option<Hit>>,
+    /// "Say something about this photograph" — the shared compose surface,
+    /// kept as a field rather than built per-frame so a half-written remark
+    /// survives a redraw.
+    remark: RemarkCompose,
+    /// Where a remark about this photograph can go. Filled by the host that
+    /// knows the room; empty until it is, so the app never invents a roster.
+    remark_destinations: Vec<ui::widget::DestinationOption>,
+    /// A finished remark waiting to be taken by the host.
+    remark_outbox: Option<qos_reference::Remark>,
 }
 
 impl Default for PhotosApp {
@@ -262,6 +282,12 @@ impl PhotosApp {
             separator_rects: Vec::new(),
             faces,
             picker: None,
+            pointer: Point::ZERO,
+            context_menu: ContextMenu::new(),
+            context_actions: Vec::new(),
+            remark: RemarkCompose::new(),
+            remark_destinations: Vec::new(),
+            remark_outbox: None,
         }
     }
 
@@ -562,6 +588,424 @@ impl PhotosApp {
         }
         s
     }
+
+    // -- say something about this photograph -------------------------------
+
+    /// Where a remark about this photograph can be sent. Supplied by the host,
+    /// which is what knows the room; empty until it is, so the app never
+    /// invents a roster of its own.
+    pub fn set_remark_destinations(&mut self, destinations: Vec<ui::widget::DestinationOption>) {
+        self.remark_destinations = destinations;
+    }
+
+    /// Take a finished remark, once. The host dispatches it — resolving any
+    /// `@mention` against the roster it holds and this app does not.
+    pub fn take_remark(&mut self) -> Option<qos_reference::Remark> {
+        self.remark_outbox.take()
+    }
+
+    /// Whether the compose surface is up.
+    pub fn remark_is_open(&self) -> bool {
+        self.remark.is_open()
+    }
+
+    /// What an open compose is about — the address, not the words on the chip.
+    pub fn remark_reference(&self) -> Option<&qos_reference::ResourceRef> {
+        self.remark.reference()
+    }
+
+    /// The destination the selector is showing, and therefore the one a remark
+    /// sent now would go to.
+    pub fn remark_destination(&self) -> Option<&qos_reference::Destination> {
+        self.remark.destination()
+    }
+
+    /// "Say something about this" without a pointer (`Ctrl+Shift+M`).
+    ///
+    /// The same surface the right-click raises, over the same photograph and
+    /// minting the same address. Anchored on the picture itself rather than on
+    /// a menu, because a chord has no cursor to sit beside — and the picture is
+    /// what the panel has to stay clear of.
+    pub fn open_remark_for_selection(&mut self, doc: &AutoCommit) -> bool {
+        let subject = self.photograph_rect();
+        // A zero-width rect at the photograph's trailing edge: "beside the
+        // picture", which in a contain-fit canvas is the letterbox band.
+        let neighbour = Rect::new(subject.x1, subject.y0, subject.x1, subject.y0);
+        self.open_remark_beside(doc, neighbour)
+    }
+
+    /// Where the photograph is painted, or the canvas when none is open.
+    ///
+    /// This is the subject the compose surface is placed around, so it is read
+    /// from the viewer's own geometry rather than assumed to be the canvas: a
+    /// contain-fit photograph leaves letterbox bands, and those are exactly
+    /// where a floating panel belongs.
+    pub fn photograph_rect(&self) -> Rect {
+        self.viewer
+            .as_ref()
+            .and_then(|v| v.image_screen_rect())
+            .unwrap_or(self.canvas_rect)
+    }
+
+    /// Right-click at `at`: the ordinary context menu, and the compose surface
+    /// beside it. Drives the production path, for the headless shots demo.
+    #[doc(hidden)]
+    pub fn debug_right_click(&mut self, doc: &AutoCommit, at: Point) {
+        self.pointer = at;
+        self.open_context_menu(doc, at);
+    }
+
+    /// The menu's labels while it is open, so a test can hold that the menu is
+    /// still doing its own job beside the compose.
+    pub fn context_menu_labels(&self) -> Vec<String> {
+        self.context_menu
+            .items()
+            .iter()
+            .filter_map(|i| i.label().map(|s| s.to_string()))
+            .collect()
+    }
+
+    /// A point that lands on the menu row reading `label`, found through the
+    /// menu's own hit-test rather than by re-deriving its row geometry — so a
+    /// caller clicking here clicks where the row actually is.
+    pub fn context_menu_point_for(&self, label: &str) -> Option<Point> {
+        let want = self
+            .context_menu
+            .items()
+            .iter()
+            .position(|i| i.label() == Some(label))?;
+        let r = self.context_menu.rect();
+        let x = r.x0 + r.width() * 0.5;
+        let mut y = r.y0;
+        while y < r.y1 {
+            if self.context_menu.item_at([x, y]) == Some(want) {
+                return Some(Point::new(x, y));
+            }
+            y += 1.0;
+        }
+        None
+    }
+
+    /// The compose panel's laid-out rect while it is open. Exposed so a test
+    /// can ask where the surface went — whether it covers the photograph, and
+    /// whether it stayed on the window — rather than reading pixels back.
+    pub fn remark_rect(&self) -> Rect {
+        self.remark.get_rect()
+    }
+
+    /// Open the right-click menu on the photograph, and the compose surface
+    /// beside it.
+    ///
+    /// The menu offers what can be *done* to the picture — the same operations
+    /// the toolbar and the action door publish — and the compose is a second
+    /// thing to do with it, not a replacement. It declines silently when the
+    /// host has named no destinations, so a session with no room behind it
+    /// right-clicks exactly as it always did.
+    fn open_context_menu(&mut self, doc: &AutoCommit, at: Point) {
+        let edited = !PhotosDoc::edits(doc).is_identity();
+        let mut menu = ContextMenu::new();
+        let mut actions: Vec<Option<Hit>> = Vec::new();
+        let row = |menu: &mut ContextMenu, actions: &mut Vec<Option<Hit>>, hit: Hit, key: &str| {
+            menu.push(MenuItem::action(tr(key), || {}));
+            actions.push(Some(hit));
+        };
+        row(&mut menu, &mut actions, Hit::RotateLeft, "photos-rotate-left");
+        row(&mut menu, &mut actions, Hit::RotateRight, "photos-rotate-right");
+        row(&mut menu, &mut actions, Hit::CropToView, "photos-crop");
+        // Only when there is something to discard, so the menu never offers an
+        // operation that would do nothing.
+        if edited {
+            row(&mut menu, &mut actions, Hit::Reset, "photos-reset");
+        }
+        menu.push(MenuItem::separator());
+        actions.push(None);
+        row(&mut menu, &mut actions, Hit::Copy, "photos-copy");
+        row(&mut menu, &mut actions, Hit::Save, "photos-save");
+
+        menu.open_at([at.x as f32, at.y as f32]);
+        layout_menu_widget(&mut menu);
+        self.context_menu = menu;
+        self.context_actions = actions;
+
+        self.open_remark_beside(doc, self.context_menu.rect());
+    }
+
+    /// Run the menu row at `idx`, then close the menu. Separators and
+    /// out-of-range rows are ignored. Returns whether a row ran.
+    fn dispatch_context_action(&mut self, idx: usize, doc: &mut AutoCommit) -> bool {
+        let Some(Some(hit)) = self.context_actions.get(idx).copied() else {
+            self.context_menu.close();
+            return false;
+        };
+        // Posted, not performed here: `drain_pending` is the one place a
+        // decision becomes an edit, so a menu row and a toolbar button cannot
+        // come to mean different things.
+        self.pending.set(Some(hit));
+        self.drain_pending(doc);
+        self.context_menu.close();
+        true
+    }
+
+    /// Open the compose surface beside `neighbour`.
+    ///
+    /// Returns `false`, having opened nothing, when there is nowhere to send or
+    /// nothing open: a compose box over no subject would ask for a sentence
+    /// about nothing.
+    fn open_remark_beside(&mut self, doc: &AutoCommit, neighbour: Rect) -> bool {
+        if self.remark_destinations.is_empty() {
+            return false;
+        }
+        let Some(reference) = <Self as qos_reference::Referent>::selection_reference(self, doc)
+        else {
+            return false;
+        };
+        self.remark.open_for(
+            reference,
+            self.remark_destinations.clone(),
+            0,
+            Point::new(
+                neighbour.x1 + ui::widget::remark_compose::BESIDE_GAP,
+                neighbour.y0,
+            ),
+            &ui::widget::remark_compose::placeholder_text(),
+            &ui::widget::remark_compose::send_label(),
+        );
+        // Measure, then place: the panel's size is only known once it has been
+        // laid out, and its size is what decides where it fits.
+        self.layout_remark();
+        self.place_remark_beside(neighbour);
+        self.layout_remark();
+        true
+    }
+
+    /// Put the panel beside the menu, preferring a side that leaves the
+    /// photograph clear.
+    ///
+    /// The word processor's rule is right-of-menu, then below, then left,
+    /// because a text selection runs *back* from the click and the menu's left
+    /// is the one place the panel must not cover. A photograph has no such
+    /// direction — its subject is a rectangle in the middle of the canvas — so
+    /// the letter of that rule does not transfer, but the reason does: keep the
+    /// subject visible, because this gesture is about looking. Somebody judges a
+    /// photograph and says something to it, and a panel parked over the picture
+    /// defeats that as surely as one over a selected sentence would.
+    ///
+    /// So: the familiar order stands, and is departed from only when departing
+    /// actually buys the whole picture — when another placement clears the
+    /// photograph completely and the first does not. A contain-fit picture in a
+    /// window of a different shape leaves a letterbox band, and that is the case
+    /// worth moving for. Deciding instead by whichever placement happens to
+    /// cover a few per cent less would make the panel jump sides on a click a
+    /// finger's width further along, which is its own kind of unusable.
+    fn place_remark_beside(&mut self, neighbour: Rect) {
+        use ui::widget::remark_compose::{BESIDE_GAP, EDGE_MARGIN};
+
+        let panel = self.remark.get_rect();
+        let (w, h) = (panel.width(), panel.height());
+        let bounds = self.rect;
+        let subject = self.photograph_rect();
+
+        // Top-aligned with the neighbour, lifted only as far as staying on
+        // screen needs, so the panel still reads as belonging to the click.
+        let level = neighbour
+            .y0
+            .min(bounds.y1 - EDGE_MARGIN - h)
+            .max(bounds.y0 + EDGE_MARGIN);
+        let clamped_x = neighbour
+            .x0
+            .min(bounds.x1 - EDGE_MARGIN - w)
+            .max(bounds.x0 + EDGE_MARGIN);
+
+        let candidates = [
+            Point::new(neighbour.x1 + BESIDE_GAP, level),
+            Point::new(clamped_x, neighbour.y1 + BESIDE_GAP),
+            Point::new(neighbour.x0 - BESIDE_GAP - w, level),
+        ];
+        let fits = |at: Point| {
+            at.x >= bounds.x0 + EDGE_MARGIN
+                && at.y >= bounds.y0 + EDGE_MARGIN
+                && at.x + w <= bounds.x1 - EDGE_MARGIN
+                && at.y + h <= bounds.y1 - EDGE_MARGIN
+        };
+        let clears = |at: Point| {
+            overlap_area(Rect::new(at.x, at.y, at.x + w, at.y + h), subject) == 0.0
+        };
+
+        let mut usable = candidates.into_iter().filter(|&at| fits(at));
+        let at = match usable.next() {
+            Some(first) => {
+                if clears(first) {
+                    first
+                } else {
+                    // Only a placement that shows the whole photograph is worth
+                    // leaving the familiar order for.
+                    usable.find(|&at| clears(at)).unwrap_or(first)
+                }
+            }
+            // Nothing fits: clamp rather than let the panel run off the window,
+            // which is the one place a floating surface stops being usable at
+            // all.
+            None => Point::new(clamped_x, level),
+        };
+        self.remark.move_to(at);
+    }
+    /// Resolve the compose panel's rects in a throwaway taffy tree: it is
+    /// anchored in window coordinates rather than being a node of the app's
+    /// tree. Deliberately the same pass for painting and for hit-testing, so a
+    /// control can never be drawn somewhere other than where it is clickable.
+    fn remark_layout_pass(&mut self) -> (TaffyTree<()>, NodeId) {
+        // The panel's own metrics come from its constants and spacing tokens do
+        // not vary by palette, so one theme here keeps draw and hit-test
+        // measuring with the same ruler under every theme.
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = self.remark.build_layout(&mut taffy, &theme, &mut nm);
+        let _ = taffy.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(2000.0),
+                height: taffy::AvailableSpace::Definite(1400.0),
+            },
+        );
+        self.remark.apply_layout(&taffy, node, Point::ZERO);
+        (taffy, node)
+    }
+
+    fn layout_remark(&mut self) {
+        if self.remark.is_open() {
+            let _ = self.remark_layout_pass();
+        }
+    }
+
+    /// While the compose surface is open, route input to it.
+    ///
+    /// The panel owns the keyboard — it is a field that just appeared under the
+    /// hands, and a keystroke meant for the message must never land in the app
+    /// instead. The pointer stays shared: a press inside the panel is the
+    /// panel's, a press on the menu beside it still works that menu, and a
+    /// press anywhere else puts the compose away the way clicking off any
+    /// composer does.
+    ///
+    /// Consuming the press inside the panel is also what keeps a drag in the
+    /// message field from panning the photograph underneath it: the canvas
+    /// fills the window, so every surface floating over it is over the viewer
+    /// too. Returns whether the event was consumed.
+    fn pump_remark(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale: f64,
+        mods: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+    ) -> bool {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+
+        if !self.remark.is_open() {
+            return false;
+        }
+        match event {
+            WindowEvent::CursorMoved { .. } => {
+                // Hover feedback only. A move is never reported as consumed, or
+                // the rest of the app stops tracking the pointer while the
+                // panel is up — and the send button needs the hover it carries.
+                let mut hover = false;
+                self.forward_to_remark(event, scale, mods, doc, path, &mut hover);
+                false
+            }
+            WindowEvent::KeyboardInput { .. } => {
+                self.forward_to_remark(event, scale, mods, doc, path, handled);
+                *handled = true;
+                true
+            }
+            WindowEvent::MouseInput {
+                button: MouseButton::Left,
+                state: press,
+                ..
+            } => {
+                // The expanded destination list paints its rows outside the
+                // panel's own rect, so while it is down every press is the
+                // panel's — including the one that dismisses it.
+                let mine = self.remark.get_rect().contains(self.pointer)
+                    || self.remark.destination_list_is_open();
+                if mine {
+                    self.forward_to_remark(event, scale, mods, doc, path, handled);
+                    *handled = true;
+                    return true;
+                }
+                if *press == ElementState::Pressed
+                    && !self.context_menu.contains([self.pointer.x, self.pointer.y])
+                {
+                    self.remark.close();
+                }
+                false
+            }
+            // A wheel over the panel would otherwise zoom the canvas beneath
+            // it, moving the photograph out from under the sentence being
+            // written about it.
+            WindowEvent::MouseWheel { .. } if self.remark.get_rect().contains(self.pointer) => {
+                *handled = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Hand one event to the open panel and drain anything it finished.
+    fn forward_to_remark(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale: f64,
+        mods: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+    ) {
+        let (taffy, node) = self.remark_layout_pass();
+        let mut ft: Option<NodeId> = None;
+        self.remark
+            .handle_event(event, scale, mods, doc, path, handled, &mut ft, node, &taffy);
+        if let Some(remark) = self.remark.take_sent() {
+            // Say where it went. A send whose only evidence is that the panel
+            // vanished is indistinguishable from a send that failed.
+            self.notice = Some(crate::strings::tr_args(
+                "photos-remark-sent",
+                &[("to", remark.destination.display().name.to_string())],
+            ));
+            self.remark_outbox = Some(remark);
+        }
+    }
+}
+
+/// Area two rects share, or zero when they do not meet.
+fn overlap_area(a: Rect, b: Rect) -> f64 {
+    let i = a.intersect(b);
+    if i.width() > 0.0 && i.height() > 0.0 {
+        i.width() * i.height()
+    } else {
+        0.0
+    }
+}
+
+/// Resolve a standalone [`ContextMenu`]'s rect from its anchor: it is not part
+/// of the app's taffy tree, so drive a throwaway layout pass.
+fn layout_menu_widget(menu: &mut ContextMenu) {
+    if !menu.is_open() {
+        return;
+    }
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let theme = Theme::dark();
+    let node = menu.build_layout(&mut taffy, &theme, &mut nm);
+    let _ = taffy.compute_layout(
+        node,
+        taffy::Size {
+            width: taffy::AvailableSpace::Definite(400.0),
+            height: taffy::AvailableSpace::Definite(800.0),
+        },
+    );
+    menu.apply_layout(&taffy, node, Point::ZERO);
 }
 
 /// Build one toolbar button in the presentation `face` asks for.
@@ -912,6 +1356,31 @@ impl Widget for PhotosApp {
         }
     }
 
+    /// The floating tier: the right-click menu and the compose surface beside
+    /// it, painted after everything else so nothing drawn later occludes them.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.context_menu.is_open() {
+            layout_menu_widget(&mut self.context_menu);
+            self.context_menu
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
+        if self.remark.is_open() {
+            self.layout_remark();
+            self.remark
+                .draw(scene, transform, text_renderer, theme, presence);
+            // The expanded destination list composites above the panel itself.
+            self.remark
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -924,6 +1393,81 @@ impl Widget for PhotosApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        use winit::keyboard::{Key, NamedKey};
+
+        // The pointer position arrives on moves and nowhere else; a press
+        // carries none, so it is tracked before anything hit-tests with it.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+
+        // The compose surface, while it is up, owns the keyboard and its own
+        // patch of the screen: a keystroke meant for the message must not reach
+        // the app, and a press inside the panel must not reach the canvas.
+        if self.remark.is_open()
+            && self.pump_remark(event, scale_factor, modifiers, doc, path, handled)
+        {
+            return;
+        }
+        // ...and the chord that raises it, so the gesture is not mouse-only. An
+        // address is exactly what somebody working without a pointer cannot
+        // produce by describing what they mean.
+        if let WindowEvent::KeyboardInput { event: key, .. } = event {
+            if key.state.is_pressed()
+                && ui::widget::remark_compose::is_compose_chord(key, modifiers)
+                && self.open_remark_for_selection(doc)
+            {
+                *handled = true;
+                return;
+            }
+            if key.state.is_pressed()
+                && matches!(key.logical_key, Key::Named(NamedKey::Escape))
+                && self.context_menu.is_open()
+            {
+                self.context_menu.close();
+                *handled = true;
+                return;
+            }
+        }
+
+        match event {
+            // A secondary press on the photograph: the ordinary menu, and the
+            // compose surface beside it. Nowhere else — a right-click on the
+            // toolbar belongs to the toolbar, and one over an empty canvas has
+            // no subject to be about.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                if self.viewer.is_some() && self.canvas_rect.contains(self.pointer) {
+                    self.open_context_menu(doc, self.pointer);
+                    *handled = true;
+                }
+                return;
+            }
+            // While the menu is open, route the primary press to it: a row runs
+            // its operation, a press elsewhere dismisses it. Either way the
+            // press is consumed, so it never reaches the canvas beneath — which
+            // would otherwise begin a pan under the menu.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.context_menu.is_open() => {
+                match self.context_menu.item_at([self.pointer.x, self.pointer.y]) {
+                    Some(idx) => {
+                        self.dispatch_context_action(idx, doc);
+                    }
+                    None => self.context_menu.close(),
+                }
+                *handled = true;
+                return;
+            }
+            _ => {}
+        }
+
         let children = taffy.children(node_id).unwrap_or_default();
         if let Some(&bar) = children.first() {
             let bar_children = taffy.children(bar).unwrap_or_default();

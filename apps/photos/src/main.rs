@@ -171,7 +171,33 @@ fn render_shot(
             &presence,
             &permission,
         );
+
+        // The gesture needs the picture laid out first: the panel is placed so
+        // as to hide as little of the photograph as it can, which is not known
+        // until the viewer has a rect. The first pass is the warm-up frame a
+        // real session takes before its first click; the second photographs
+        // the result of that click.
+        if pass == 0 && scenario == "remark" {
+            // Onto the photograph itself, left of centre, where somebody
+            // looking at it would point.
+            let picture = widget.photograph_rect();
+            let at = Point::new(
+                picture.x0 + picture.width() * 0.34,
+                picture.y0 + picture.height() * 0.42,
+            );
+            widget.debug_right_click(&state.doc, at);
+        }
     }
+
+    // The top layer, exactly as `App` runs it: the menu and the compose
+    // surface paint here so nothing drawn later can occlude them.
+    widget.draw_overlay(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
+    );
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();

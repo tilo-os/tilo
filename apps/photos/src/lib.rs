@@ -37,6 +37,7 @@ pub mod app;
 pub mod doc;
 pub mod model;
 pub mod pixels;
+pub mod reference;
 pub mod strings;
 
 pub use app::PhotosApp;
@@ -52,7 +53,7 @@ pub fn app_root() -> Box<dyn Widget> {
 
 /// The ordered `--shots` scenarios, named so the offscreen renderer can walk
 /// them and the gallery reads top-to-bottom.
-pub const SHOT_SCENARIOS: &[&str] = &["empty", "opened", "cropping", "edited"];
+pub const SHOT_SCENARIOS: &[&str] = &["empty", "opened", "cropping", "edited", "remark"];
 
 /// A generated test pattern, used **only** by `--shots`.
 ///
@@ -148,6 +149,24 @@ pub fn seed_scenario(
                 })
                 .rotated_right();
             PhotosDoc::set_edits(doc, &e);
+        }
+        // "remark": the photograph as it arrived, with somewhere to send a
+        // message about it. The destinations are demo values, seeded here and
+        // only here — the app itself never invents a roster. The right-click
+        // that raises the surface happens after layout, in the renderer, so
+        // the menu lands on the picture rather than at a guessed coordinate.
+        "remark" => {
+            use qos_reference::Destination;
+            app.set_remark_destinations(
+                [
+                    Destination::channel("c_shoot", "harbour-shoot"),
+                    Destination::participant("agent_claude", "Claude", true),
+                    Destination::participant("u_ines", "Inés", false),
+                ]
+                .into_iter()
+                .map(ui::widget::DestinationOption::localised)
+                .collect(),
+            );
         }
         // "opened" and any unknown name: the photograph as it arrived.
         _ => {}
