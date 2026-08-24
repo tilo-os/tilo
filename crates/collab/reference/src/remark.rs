@@ -41,6 +41,24 @@ use crate::reference::ResourceRef;
 /// what makes a remark an ordinary chat message rather than a parallel one.
 pub const CHAT_ACTION_TYPE: &str = "chat.action";
 
+/// The channel every room starts with — the room's conversation.
+///
+/// Named here for the same reason [`CHAT_ACTION_TYPE`] is: it is an agreement
+/// between a writer that is not chat and the document chat owns. An app
+/// composing a remark has no way to enumerate chat's channels — they live in
+/// chat's document, in another process — so without a name it could address
+/// nothing at all, and the "room" line in every destination selector would be
+/// an option that silently went nowhere.
+///
+/// This is the id the chat app seeds into a fresh room's document for its
+/// starter `general` channel, and it is the weakest link in this path: a room
+/// whose conversation has been renamed still has this channel, but a room where
+/// it has been deleted does not, and a remark addressed to it lands in a
+/// channel nobody is reading. Resolving the room's conversation from the room
+/// rather than by convention is the fix, and it needs somewhere for an app to
+/// ask — which is not this crate.
+pub const ROOM_CONVERSATION: &str = "c_general";
+
 /// The payload key carrying the resource address. Named here because both the
 /// writer and the reader must agree on it, and because it is the field a chat
 /// build adopts when it grows a reference chip of its own.
