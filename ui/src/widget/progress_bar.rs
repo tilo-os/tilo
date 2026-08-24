@@ -63,12 +63,20 @@ pub enum ProgressPaint {
 /// [`ProgressBar`] and every non-widget surface that has to report work
 /// go through it, so a bar in a toast and a bar in a dialog cannot
 /// drift apart.
+///
+/// `track` is the unfilled part's colour, and the caller supplies it
+/// because "what reads as a groove" depends on what the bar is sitting
+/// on. A raised surface is the right groove against the desktop's base
+/// and is invisible on a card that is itself raised — which is a bar
+/// with no extent, so a half-done fetch and a nearly-done one look the
+/// same. It must still be a theme token, never a literal.
 pub fn paint_track(
     scene: &mut Scene,
     transform: Affine,
     theme: &Theme,
     rect: Rect,
     paint: ProgressPaint,
+    track: vello::peniko::Color,
     alpha: f32,
 ) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 || alpha <= 0.0 {
@@ -80,7 +88,7 @@ pub fn paint_track(
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
-        theme.tokens.colors.surfaces.raised.with_alpha(alpha),
+        track.with_alpha(alpha),
         None,
         &RoundedRect::from_rect(rect, radius),
     );
@@ -283,7 +291,15 @@ impl Widget for ProgressBar {
         } else {
             ProgressPaint::Fraction(self.progress)
         };
-        paint_track(scene, transform, theme, self.rect, paint, 1.0);
+        paint_track(
+            scene,
+            transform,
+            theme,
+            self.rect,
+            paint,
+            theme.tokens.colors.surfaces.raised,
+            1.0,
+        );
     }
 
     fn handle_event(
