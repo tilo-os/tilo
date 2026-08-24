@@ -43,6 +43,7 @@ keys/*.private.pem
 .claude/qos-sccache/
 .claude/qos-build-sem/
 .claude/qos-target/
+.claude/build/
 .claude/qos-tools/
 .claude/worktrees/
 .claude/app-status.md
