@@ -39,16 +39,6 @@ const SNAP_IDLE_MS: u64 = 200;
 /// secondary motions — long enough to read as eased, short enough to
 /// stay out of the user's way if they want to wheel again.
 const SNAP_ANIM_MS: u64 = 200;
-/// How little of a window can be on screen before it stops being a
-/// window and becomes a sliver.
-///
-/// A window group is never laid out narrower than 300 px, so a window
-/// showing less than this is showing under half of the narrowest thing
-/// the strip can hold: too little to read, too much to ignore, and
-/// indistinguishable from a window that is broken rather than scrolled
-/// past. The strip picks a rest that shows none of them.
-const SLIVER_PX: f64 = 160.0;
-
 /// How near an in-flight pan's destination a fresh request has to be
 /// before it counts as the same destination and the journey is left
 /// running. A window's own edges land on whole pixels, so anything
@@ -1039,29 +1029,7 @@ impl GroupRow {
         if hi < lo {
             return sx;
         }
-        let mut best: Option<f64> = None;
-        let mut best_d = f64::MAX;
-        // Every window's leading edge, plus the two ends of the strip —
-        // which are rests for the same reason, the strip's own edge
-        // standing in for a window's.
-        for &edge in self.group_left_edges.iter().chain([0.0, max].iter()) {
-            let c = edge.clamp(0.0, upper);
-            if c < lo - 0.5 || c > hi + 0.5 {
-                continue;
-            }
-            if self.shows_a_sliver_at(c) {
-                continue;
-            }
-            let d = (c - sx).abs();
-            if d < best_d {
-                best_d = d;
-                best = Some(c);
-            }
-        }
-        // Nothing legal in the band: put the focused window's own leading
-        // edge against the viewport's. Whatever else the strip is showing,
-        // the window that was asked for starts where the screen starts.
-        best.unwrap_or(hi)
+        self.nearest_clean_rest(&self.laid_spans, sx, lo, hi)
     }
 
     /// Whether resting at `sx` would show some window as a sliver — on
@@ -1070,12 +1038,65 @@ impl GroupRow {
     /// A window narrower than the threshold in the first place is not a
     /// sliver when it is shown whole; the fault is a window cut down to
     /// a strip of itself, not a small window.
-    fn shows_a_sliver_at(&self, sx: f64) -> bool {
+    /// Whether resting at `sx` would cut a window with the viewport's
+    /// leading edge.
+    ///
+    /// The two ends of the strip are not the same. A window cut at the
+    /// trailing edge is showing its beginning, and a beginning that runs
+    /// off the screen reads as "this continues" — which is what a strip
+    /// is for. A window cut at the leading edge is showing its middle:
+    /// its text starts somewhere off screen, its controls are severed
+    /// from the edge they were laid out against, and there is nothing in
+    /// the picture to say whether it is scrolled past or broken. That is
+    /// the one a viewer cannot read, so that is the one no resting
+    /// offset may produce.
+    fn cuts_a_window_at_the_leading_edge(&self, spans: &[(u64, f64, f64)], sx: f64) -> bool {
         let row_w = self.rect.width().max(1.0);
-        self.laid_spans.iter().any(|&(_, x0, x1)| {
-            let shown = x1.min(sx + row_w) - x0.max(sx);
-            shown > 0.5 && shown < SLIVER_PX && x1 - x0 > SLIVER_PX
-        })
+        spans
+            .iter()
+            .any(|&(_, x0, x1)| x0 < sx - 0.5 && x1 > sx + 0.5 && x1 - x0 <= row_w)
+            && spans.iter().any(|&(_, x0, _)| x0 > sx + 0.5 && x0 < sx + row_w)
+    }
+
+    /// The offset nearest `want`, within `[lo, hi]`, that rests on a
+    /// window's leading edge and severs nothing.
+    ///
+    /// Both framing paths end at the same question — the focus pan
+    /// asking where to land, and the layout pass asking where the strip
+    /// belongs now the windows have moved — so they ask it once, here.
+    /// `want` comes back unchanged when no candidate is clean, which
+    /// keeps a repair that has to happen from turning into a no-op
+    /// because the perfect offset does not exist.
+    fn nearest_clean_rest(
+        &self,
+        spans: &[(u64, f64, f64)],
+        want: f64,
+        lo: f64,
+        hi: f64,
+    ) -> f64 {
+        let max = self.max_scroll_x();
+        let upper = max.max(self.rect.width().max(1.0) * 3.0);
+        let mut best: Option<f64> = None;
+        let mut best_d = f64::MAX;
+        // Every window's leading edge, plus the two ends of the strip,
+        // which are rests for the same reason — the strip's own edge
+        // standing in for a window's.
+        let edges = spans.iter().map(|&(_, x0, _)| x0).chain([0.0, max]);
+        for edge in edges {
+            let c = edge.clamp(0.0, upper);
+            if c < lo - 0.5 || c > hi + 0.5 {
+                continue;
+            }
+            if self.cuts_a_window_at_the_leading_edge(spans, c) {
+                continue;
+            }
+            let d = (c - want).abs();
+            if d < best_d {
+                best_d = d;
+                best = Some(c);
+            }
+        }
+        best.unwrap_or(want)
     }
 
     /// Whether the strip is resting cut on both sides at once: one group
@@ -1212,20 +1233,35 @@ impl GroupRow {
             // Nearest offset that shows it whole — the same "smallest
             // correction" the everything-fits rule uses, over the
             // narrower window of offsets that frames this one group.
-            let lo = (x1 - row_w).clamp(0.0, max);
-            let hi = x0.clamp(0.0, max).max(lo);
-            let target = self.scroll_x.clamp(lo, hi);
+            // Bounded by the strip's *pannable* range rather than by
+            // `max_scroll_x`. Pinning the band to the strip's end is what
+            // leaves no offset to choose but the one that severs the
+            // subject's neighbour: at the end of the strip there is
+            // exactly one place to stand. The row already lets the view
+            // sit past the last window — that is the same affordance the
+            // wheel and the bounds clamp use — and a hand's width of
+            // desktop is a better thing to show than the middle of a
+            // window.
+            let upper = max.max(row_w * 3.0);
+            let lo = (x1 - row_w).clamp(0.0, upper);
+            let hi = x0.clamp(0.0, upper).max(lo);
+            let want = self.scroll_x.clamp(lo, hi);
+            // Framing the subject says nothing about what happens to the
+            // windows either side of it, and the offset that merely
+            // frames it is routinely the one that cuts its neighbour to
+            // a splinter. Same question the focus pan asks, same answer.
+            let target = self.nearest_clean_rest(spans, want, lo, hi);
             if (target - self.scroll_x).abs() > 0.5 {
                 return Some(target);
             }
-            // Already whole: fall through, so a strip that is *also* cut
-            // on both edges still gets its neighbour repair.
+            // Already framed and clean: fall through, so a strip that is
+            // *also* cut on both edges still gets its neighbour repair.
         }
 
         if !self.cut_on_both_edges_at(spans, self.scroll_x) {
             return None;
         }
-        let mut best: Option<f64> = None;
+        let mut best: Option<(f64, bool)> = None;
         for &(_, x0, x1) in spans {
             if x1 - x0 <= 0.0 || x1 - x0 > row_w {
                 continue;
@@ -1235,15 +1271,27 @@ impl GroupRow {
                 if self.cut_on_both_edges_at(spans, candidate) {
                     continue;
                 }
-                let nearer = best.is_none_or(|b: f64| {
-                    (candidate - self.scroll_x).abs() < (b - self.scroll_x).abs()
-                });
-                if nearer {
-                    best = Some(candidate);
+                // A clean offset beats a nearer dirty one; among equals,
+                // nearest still wins. Tracked rather than skipped so the
+                // repair still happens when every offset severs
+                // something.
+                let clean = !self.cuts_a_window_at_the_leading_edge(spans, candidate);
+                let better = match best {
+                    None => true,
+                    Some((b, b_clean)) => match (clean, b_clean) {
+                        (true, false) => true,
+                        (false, true) => false,
+                        _ => (candidate - self.scroll_x).abs() < (b - self.scroll_x).abs(),
+                    },
+                };
+                if better {
+                    best = Some((candidate, clean));
                 }
             }
         }
-        best.filter(|t| (t - self.scroll_x).abs() > 0.5)
+        best
+            .map(|(t, _)| t)
+            .filter(|t| (t - self.scroll_x).abs() > 0.5)
     }
 
     /// True while a snap-to-nearest-group animation is in flight, or
@@ -5372,6 +5420,23 @@ mod tests {
             .min_by(|a, b| a.1.total_cmp(&b.1))
     }
 
+    /// The window the screen's leading edge falls through, if any, and
+    /// how much of it the viewer is left with.
+    ///
+    /// Computed from the spans rather than asked of the row, so the
+    /// assertion is about what is on screen and not about the rule that
+    /// put it there. A window scrolled wholly past the edge does not
+    /// count — that is the strip working. Only one with part of itself
+    /// on screen and part of itself off the leading end has been severed
+    /// where a viewer cannot tell scrolled-past from broken.
+    fn severed_at_the_leading_edge(row: &GroupRow, sx: f64) -> Option<(u64, f64)> {
+        let row_w = row.rect.width().max(1.0);
+        row.laid_spans
+            .iter()
+            .find(|&&(_, x0, x1)| x0 < sx - 0.5 && x1 > sx + 0.5 && x1 - x0 <= row_w)
+            .map(|&(id, _, x1)| (id, x1 - sx))
+    }
+
     /// Three windows of unlike widths — a narrow chat, a middling file
     /// manager, a word processor taking nearly the whole display — which
     /// is the arrangement that was filmed.
@@ -5410,13 +5475,11 @@ mod tests {
         // The premise: revealing the last window's trailing edge — all
         // the old rule asked for — cuts its neighbour to a splinter.
         let bare_reveal = last_x1 - row_w;
-        let (victim, shown) = narrowest_on_screen(&row, bare_reveal)
-            .expect("something is on screen at the bare reveal offset");
+        let severed = severed_at_the_leading_edge(&row, bare_reveal);
         assert!(
-            shown < 60.0,
+            severed.is_some(),
             "test setup: the bare reveal offset {bare_reveal:.0} has to be \
-             the one that severs a window, but the narrowest window on \
-             screen there is {victim} at {shown:.0} px — spans {:?}",
+             the one that severs a window at the leading edge — spans {:?}",
             row.laid_spans,
         );
 
@@ -5431,12 +5494,67 @@ mod tests {
             (sx - bare_reveal).abs() > 0.5,
             "the strip came to rest on the offset that severs a window",
         );
-        let (id, shown) =
-            narrowest_on_screen(&row, sx).expect("something is on screen after the pan");
+        assert_eq!(
+            severed_at_the_leading_edge(&row, sx),
+            None,
+            "a window is left cut by the screen's leading edge, showing its \
+             middle — spans {:?} resting at scroll_x {sx:.0} across a \
+             {row_w:.0} px row",
+            row.laid_spans,
+        );
+    }
+
+    /// Widening the windows may not come to rest on a sliver either.
+    ///
+    /// The rule that keeps the window the strip was brought to whole
+    /// says nothing about the windows either side of it, and the offset
+    /// that merely frames the subject is routinely the one that cuts its
+    /// neighbour to a splinter. Captured on the strip re-framing itself
+    /// after a width change: the subject framed exactly as intended, and
+    /// the window before it clipped to a hand's width of unreadable text
+    /// against the screen edge — the same arrangement that was filmed,
+    /// arrived at down a different path.
+    ///
+    /// Nothing here moves focus. The only thing that can move the view
+    /// is the layout pass noticing the geometry changed under it, which
+    /// is the path this pins.
+    #[test]
+    fn re_framing_after_a_width_change_never_rests_on_a_sliver() {
+        // Three windows sharing the display, all of them whole — the
+        // arrangement the capture starts from.
+        let mut row = strip_at(3, 1600.0, 291.0, 333);
+        let last = row.groups.last().expect("three windows").id;
+        row.scroll_group_into_view(last);
+        relayout_strip(&mut row, 1600.0);
+        settle_pan(&mut row);
+
+        // Every window is given half the display. Focus does not move,
+        // so the layout pass noticing its own geometry moved is the only
+        // thing that can move the view.
+        set_strip_permille(&mut row, 500);
+        relayout_strip(&mut row, 1600.0);
+        settle_pan(&mut row);
+        relayout_strip(&mut row, 1600.0);
+        settle_pan(&mut row);
+
+        let row_w = row.rect.width().max(1.0);
+        let sx = row.scroll_x();
+        let overflow = row
+            .laid_spans
+            .last()
+            .zip(row.laid_spans.first())
+            .map(|((_, _, r), (_, l, _))| r - l)
+            .unwrap_or_default();
         assert!(
-            shown >= SLIVER_PX,
-            "window {id} is on screen as a {shown:.0} px sliver — spans \
-             {:?} resting at scroll_x {sx:.0} across a {row_w:.0} px row",
+            overflow > row_w,
+            "test setup: three windows at half the display must overflow it, \
+             got {overflow:.0} across {row_w:.0}",
+        );
+        assert_eq!(
+            severed_at_the_leading_edge(&row, sx),
+            None,
+            "the re-frame left a window cut by the screen's leading edge — \
+             spans {:?} resting at scroll_x {sx:.0} across a {row_w:.0} px row",
             row.laid_spans,
         );
     }
