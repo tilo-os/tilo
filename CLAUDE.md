@@ -44,27 +44,37 @@ cannot see its own namespace's headers. `jobs = 4` lives in `.cargo/config.toml`
 a concurrency cap, it throttles the machine even when idle. `QCARGO_DEBUG=1` prints the
 routing decision, `QCARGO_BYPASS=1` skips the shim.
 
-**`CARGO_TARGET_DIR` is yours to set, and when several agents build at once you should.**
-The shim does not set it — the rule that said otherwise was wrong about which variable it
-was protecting. The real hazard is *sharing*: two worktrees pointed at one target directory
-collide, because cargo's artifact key omits the package path, and you silently get the other
-one's binary. A directory *per builder* is the opposite of that and is safe.
+**Never set `CARGO_TARGET_DIR`. Work in your own worktree and use its own `target/`.**
 
-It is also the difference between building N-wide and queueing. Cargo takes one exclusive
-lock per target directory, so agents sharing one do not build in parallel, they take turns.
-Measured mid-fleet: 7 cargo processes, 2 rustc, 16 idle cores. Give each concurrent builder
-its own directory under `.claude/build/`:
+sccache folds every `CARGO_*` environment variable into its Rust cache key, excluding
+exactly four (`CARGO_MAKEFLAGS`, `CARGO_REGISTRIES_*`, `CARGO_BUILD_JOBS`,
+`CARGO_ENCODED_RUSTFLAGS`). `CARGO_TARGET_DIR` is not one of them, so setting it gives that
+builder a **private cache namespace that no other builder can ever hit**. Read out of a live
+`rustc`'s own `/proc/<pid>/environ` mid-fleet, with a dozen agents compiling: Rust hit rate
+**14.6%**, against **100%** for C/C++ and assembler, which do not carry the variable in
+their key. Twelve private copies of the same compilations, in a cache pinned at its 100 GiB
+ceiling and evicting.
 
-```bash
-export CARGO_TARGET_DIR=/…/quickdesktop/.claude/worktrees/<wt>/.claude/build/<slot>
-```
+The instruction that used to be here had it backwards. It was right that *sharing* one
+target directory between two worktrees is unsafe — cargo's artifact key omits the package
+path, so you silently get the other one's binary — and right that one exclusive lock per
+target directory serialises builders that share one. But per-agent worktrees already solve
+both: a worktree's default `target/` is private to it and locked independently. The
+variable bought nothing that the worktree had not already given, and cost the entire cache.
 
-What keeps that affordable is sccache, and what keeps sccache working is `incremental =
-false` in `[profile.dev]` (see the note in the root `Cargo.toml`). sccache refuses any
-compilation carrying `-C incremental=`, so with incremental on, 79% of this workspace's
-compilations were uncacheable and nothing was shared between directories. With it off they
-are content-addressed: the first builder compiles a crate, the rest get it as a hit. Delete
-a slot when its agent is done — artifacts are per-directory even though compilation is not.
+So: one worktree per concurrent builder, each using its plain `target/`, and no
+`CARGO_TARGET_DIR` anywhere. Do not set `CARGO_BUILD_TARGET_DIR` either — same prefix, same
+key, same result.
+
+What makes the shared cache work at all is `incremental = false` (see the note in the root
+`Cargo.toml`). sccache refuses any compilation carrying `-C incremental=`, so with
+incremental on, 79% of this workspace's compilations were uncacheable. With it off they are
+content-addressed: the first builder to compile a crate pays for it, everyone else gets a
+hit. **Do not turn incremental back on** — it looks like a speed-up for one builder and
+turns the cache off for all of them.
+
+Delete a worktree's `target/` when its branch has landed; the cache keeps the compilations,
+so refilling it is cheap.
 
 The host has none of the native dev libraries and cannot get them (`/usr` is read-only); the
 container pins the build environment. A missing one shows up as `pkg-config exited with
