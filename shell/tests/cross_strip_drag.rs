@@ -616,3 +616,170 @@ fn a_group_closing_its_last_tab_keeps_its_fade_and_is_not_written_back() {
         "the closing group must be empty — its tabs are closed"
     );
 }
+
+/// One strip, one group, two tabs whose contents cannot be recovered
+/// from a tab descriptor: a live wayland client (identified only by its
+/// `surface_id`) and a hosted app whose pill shows the document's name
+/// rather than the app's, so the title-matching table has nothing to
+/// match on.
+///
+/// Both are the shapes the widget→tree harvest used to guess at, and
+/// both guesses are wrong in a way the user sees.
+fn foreign_and_document_titled_tree() -> (WorkspaceTree, StripId, GroupId, u64, u64, u64) {
+    let ws_id = WorkspaceId::new();
+    let strip_id = StripId::new();
+    let group: GroupId = 1001;
+    let foreign_tab: u64 = 31;
+    let hosted_tab: u64 = 32;
+    let surface: u64 = 4242;
+
+    let strip = Strip {
+        id: strip_id,
+        name: "Strip".into(),
+        window_groups: vec![WindowGroup {
+            id: group,
+            tabs: vec![
+                Tab {
+                    id: foreign_tab,
+                    title: "Inkscape".into(),
+                    tile: TileContent::Foreign {
+                        app_id: "org.inkscape.Inkscape".into(),
+                        surface_id: surface,
+                    },
+                },
+                Tab {
+                    id: hosted_tab,
+                    // The pill shows what the app has open, which is
+                    // what the title-matching recovery cannot invert.
+                    title: "Meeting notes".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Notes".into()),
+                        label: "Notes".into(),
+                    },
+                },
+            ],
+            active_tab: foreign_tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+        }],
+    };
+    let ws = Workspace {
+        strips: vec![strip],
+        ..Workspace::test_default(ws_id, "Test")
+    };
+    let mut active_strip = HashMap::new();
+    active_strip.insert(ws_id, strip_id);
+    let mut active_group = HashMap::new();
+    active_group.insert(strip_id, group);
+    let tree = WorkspaceTree {
+        workspaces: vec![ws],
+        active: ws_id,
+        active_strip,
+        active_group,
+        collaborators: vec![],
+        ..Default::default()
+    };
+    (tree, strip_id, group, foreign_tab, hosted_tab, surface)
+}
+
+/// Every persisted tile the tree holds under `tab_id`.
+///
+/// Plural on purpose. A tab should appear once, and the assertions
+/// below check every copy rather than the first one found — reading
+/// only the first is how a rebuilt-and-wrong copy hides behind an
+/// intact one the reconciler forgot to remove.
+fn tree_tiles(chrome: &shell::shell::chrome_state::Chrome, tab_id: u64) -> Vec<TileContent> {
+    let st = chrome.borrow();
+    let tree = st.tree();
+    tree.workspaces
+        .iter()
+        .flat_map(|ws| ws.strips.iter())
+        .flat_map(|s| s.window_groups.iter())
+        .flat_map(|g| g.tabs.iter())
+        .filter(|t| t.id == tab_id)
+        .map(|t| t.tile.clone())
+        .collect()
+}
+
+/// Dragging a tab out into its own group must not change what is inside
+/// it.
+///
+/// The detach hands the live `TileHost` straight to the new group, so
+/// the *widget* is fine for exactly as long as nothing bumps the chrome
+/// revision. What broke it was the writeback: the harvest rebuilt the
+/// tab out of the widget's descriptor — id, title, app kind — and wrote
+/// that back into the tree. A client's `surface_id` and a hosted app's
+/// identity are not in a descriptor, so both were lost, and the next
+/// resync noticed the tree's tile no longer matched what was on screen
+/// and "corrected" the screen: a live window became a stub card.
+#[test]
+fn a_tab_dragged_into_its_own_group_keeps_what_was_inside_it() {
+    let (tree, strip_id, _group, foreign_tab, hosted_tab, surface) =
+        foreign_and_document_titled_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    // One production frame, so the resync's per-tab tile memo is
+    // populated exactly as it is by the time a user gets to drag
+    // anything.
+    let _ = host.take_structure_dirty();
+
+    let bound_to_surface = |tiles: &[TileContent]| {
+        !tiles.is_empty()
+            && tiles.iter().all(
+                |t| matches!(t, TileContent::Foreign { surface_id, .. } if *surface_id == surface),
+            )
+    };
+    assert!(
+        bound_to_surface(&tree_tiles(&chrome, foreign_tab)),
+        "precondition: the tree binds the tab to the client's surface"
+    );
+
+    // Drag the client's tab out into its own window, the way a drop in
+    // the gap between two groups does.
+    {
+        let row = host
+            .group_row_mut_for_tests(strip_id)
+            .expect("the strip's live row");
+        assert!(
+            row.split_tab_into_new_group(0, foreign_tab, 1),
+            "the detach itself must succeed"
+        );
+    }
+    // The frame boundary that writes the new group back into the tree.
+    let _ = host.take_structure_dirty();
+
+    assert!(
+        bound_to_surface(&tree_tiles(&chrome, foreign_tab)),
+        "the detached tab must still be bound to the client's surface, got {:?}",
+        tree_tiles(&chrome, foreign_tab)
+    );
+
+    // The hosted tab stayed where it was, and must be untouched too —
+    // the harvest rebuilt every tab of the group it wrote, not just the
+    // one that moved.
+    let hosted = tree_tiles(&chrome, hosted_tab);
+    assert!(
+        !hosted.is_empty()
+            && hosted.iter().all(|t| matches!(
+                t,
+                TileContent::Stub { kind: AppKind::Other(name), .. } if name == "Notes"
+            )),
+        "a tab whose pill shows a document name must keep its app, got {hosted:?}"
+    );
+
+    // Now something bumps the revision. The resync compares each tab's
+    // memoised tile against the tree's, and this is where a tree tile
+    // that had been guessed at reached the screen.
+    chrome.borrow_mut().bump();
+    let _ = host.take_structure_dirty();
+
+    let detached_group_tiles = host
+        .group_at_for_tests(strip_id, 1)
+        .expect("the detached tab's new group")
+        .tile_kind_labels_for_tests();
+    assert_eq!(
+        detached_group_tiles,
+        vec!["App".to_string()],
+        "the detached window must still be the live client, not a stub card"
+    );
+}

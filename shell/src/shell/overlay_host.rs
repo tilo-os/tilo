@@ -5617,6 +5617,20 @@ impl ShellOverlayHost {
         {
             let st = chrome.borrow();
             let tree = st.tree();
+            // Every tab the tree already knows, by id. A tab that was
+            // dragged out of one group into another is not a new tab —
+            // it is this tab, somewhere else — and the widget layer
+            // kept only its id, title and app kind. Looking the real
+            // `Tab` up is what stops the rebuild below from inventing a
+            // lesser one in its place.
+            let known: std::collections::HashMap<u64, crate::shell::state::Tab> = tree
+                .workspaces
+                .iter()
+                .flat_map(|w| w.strips.iter())
+                .flat_map(|s| s.window_groups.iter())
+                .flat_map(|g| g.tabs.iter())
+                .map(|t| (t.id, t.clone()))
+                .collect();
             let Some(ws) = tree.workspaces.iter().find(|w| w.id == tree.active) else {
                 return;
             };
@@ -5641,7 +5655,7 @@ impl ShellOverlayHost {
                     if wg.close_in_flight() || wg.tab_count() == 0 {
                         continue;
                     }
-                    writes.push((strip.id, idx, build_state_group_from_widget(wg)));
+                    writes.push((strip.id, idx, build_state_group_from_widget(wg, &known)));
                 }
             }
         }
@@ -10781,14 +10795,25 @@ fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f32, t
 /// resolves a group that only exists widget-side (a fresh drag-detach
 /// whose writeback to the tree hasn't landed yet).
 ///
-/// Each tab is reconstructed as a `TileContent::AppPlaceholder` — good
-/// enough for the persisted tree's structural view (id, title,
-/// per-tab `active_tab` pointer). If the underlying kind was
-/// already `AppKind::Other(name)`, we keep the name; anything else
-/// becomes `AppKind::Other(String::new())`, matching the format the
-/// tree's automerge codec already writes for foreign / stub tabs.
+/// A tab the tree already knows is carried over whole, from `known`.
+/// That is the case that matters: a group made by dragging a tab out of
+/// another one is full of tabs the tree has had all along, and what is
+/// *in* them — a wayland client's `surface_id`, the terminal's session,
+/// the document a hosted editor has open — is not recoverable from a
+/// widget-side tab descriptor. Rebuilding from the descriptor turned a
+/// live client into a stub card, re-forked a terminal, and demoted any
+/// hosted app whose tab shows a document name instead of the app's.
+///
+/// Only a tab the tree has never seen is reconstructed, as a
+/// `TileContent::AppPlaceholder` — good enough for the tree's
+/// structural view (id, title, per-tab `active_tab` pointer). If the
+/// underlying kind was already `AppKind::Other(name)`, we keep the
+/// name; anything else becomes `AppKind::Other(String::new())`,
+/// matching the format the tree's automerge codec already writes for
+/// foreign / stub tabs.
 fn build_state_group_from_widget(
     widget: &ui::widget::WindowGroup,
+    known: &std::collections::HashMap<u64, crate::shell::state::Tab>,
 ) -> crate::shell::state::WindowGroup {
     use crate::shell::state::{
         AppKind, Tab, TileContent, WindowGroup as StateGroup, WindowWidth as StateWidth,
@@ -10797,6 +10822,15 @@ fn build_state_group_from_widget(
         .tabs()
         .iter()
         .map(|desc| {
+            if let Some(existing) = known.get(&desc.id) {
+                // The tab moved; it did not become something else. Keep
+                // the tile, take the title from the widget — a pill the
+                // user renamed is a widget-side fact.
+                return Tab {
+                    title: desc.title.clone(),
+                    ..existing.clone()
+                };
+            }
             // Carry the widget-side AppKind hint into the tree so
             // `owns_tab` predicates (Notes / Files / …) can still
             // classify the tab. Fallback to an empty `AppKind::Other`
