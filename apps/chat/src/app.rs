@@ -189,6 +189,9 @@ pub(crate) enum Hit {
     VoiceChannel(Id),
     /// Toggle a category's collapsed state.
     CategoryToggle(Id),
+    /// Open or close the reasoning on an agent's record, by the id of the
+    /// reply that carries it.
+    AgentReasoning(Id),
     /// Execute a context-menu / create action.
     MenuAction { target: MenuTarget, action: MenuAction },
     /// The "+" create-channel button on a category header.
@@ -361,6 +364,14 @@ pub struct ChatApp {
     video_node: Option<NodeId>,
     pub(crate) video: VideoPlayer,
     pub(crate) hits: Vec<(Rect, Hit)>,
+    /// Which agent records have their reasoning open, by reply id.
+    ///
+    /// A field on the app and not in the document, deliberately. Whether I
+    /// have opened an explanation is a fact about where I am looking, not
+    /// about the conversation — putting it in the CRDT would fold somebody
+    /// else's disclosure open on my screen and write a change to the room
+    /// every time anyone read one.
+    pub(crate) open_reasoning: std::collections::HashSet<Id>,
     pub(crate) last_mouse: Point,
     relayout: bool,
     /// True while either flap is mid-slide — drives `needs_animation_frame`
@@ -547,6 +558,7 @@ impl ChatApp {
             video_node: None,
             video,
             hits: Vec::new(),
+            open_reasoning: std::collections::HashSet::new(),
             last_mouse: Point::ZERO,
             relayout: false,
             flap_animating: false,
@@ -584,14 +596,14 @@ impl ChatApp {
     /// is blocked from join/speak/camera/screen-share; leaving is always
     /// allowed so a downgraded peer can drop out.
     pub(crate) fn call_allows(&self, action: crate::call::CallAction) -> bool {
-        self.perms.allows(&self.active_ws, action)
+        self.perms.allows(action)
     }
 
     /// Whether the local peer may post / react / start a call in the active
     /// workspace (an Edit grant). The permissive default allows; a restricted
     /// context gates writes while still letting the peer read.
     pub(crate) fn can_participate(&self) -> bool {
-        self.perms.can_participate(&self.active_ws)
+        self.perms.can_participate()
     }
 
     /// Whether the local peer may hydrate + render the bytes behind an
@@ -654,6 +666,22 @@ impl ChatApp {
                 pinned: m.pinned,
             })
             .collect();
+        // Only while there is a call to describe. A catalogue that offered
+        // "Mute" with nothing to mute would be advertising an address that
+        // resolves to nothing happening.
+        let call = self.call.active.then(|| actions::CallResource {
+            channel: self.call.channel.clone(),
+            channel_name: self
+                .channels
+                .iter()
+                .find(|c| c.id == self.call.channel)
+                .map(|c| c.name.clone())
+                .unwrap_or_default(),
+            muted: self.call.muted,
+            deafened: self.call.deafened,
+            audio_only: self.call.audio_only,
+            sharing: self.call.sharing,
+        });
         actions::ChatResourceCtx {
             me: self.me.id.clone(),
             workspace_id: self.active_ws.clone(),
@@ -662,6 +690,7 @@ impl ChatApp {
             active_channel: self.active_channel.clone(),
             messages,
             participants: self.participants(),
+            call,
         }
     }
 
@@ -755,6 +784,20 @@ impl ChatApp {
                 self.right_flap.snap(true);
                 self.call = CallState::default();
                 self.agent_shot = Some(scenario.to_string());
+            }
+            // The same channel with one record's reasoning opened, which is
+            // the state a click produces. Staged rather than clicked for the
+            // same reason `mention-picker` stages a half-typed name: the
+            // capture has to land on a frame, and the frame is what is being
+            // reviewed. Opening is view state, so setting it here is setting
+            // exactly what the click sets and nothing else.
+            "agent-reasoning" => {
+                self.thread_open = None;
+                self.right_flap.snap(true);
+                self.call = CallState::default();
+                self.agent_shot = Some("agent".to_string());
+                self.open_reasoning.insert("m_rec_0".into());
+                self.open_reasoning.insert("m_rec_3".into());
             }
             // The thread the agent answered in, which is where the record
             // actually lives: the strip sits on the agent's own reply, above
@@ -1491,7 +1534,7 @@ impl ChatApp {
     fn seed_agent_shot(&mut self, doc: &mut AutoCommit, which: &str) {
         use crate::doc::NewMessage;
         use crate::mention::Participant;
-        use crate::model::{AgentWork, AgentWorkState};
+        use crate::model::{AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
 
         ChatDoc::ensure_member(doc, "agent_scribe", true, model::Presence::Online);
         let room: Vec<Participant> = [
@@ -1524,12 +1567,32 @@ impl ChatApp {
         crate::actions::register(&mut registry);
 
         // Each beat: what somebody asked, and where the agent got to.
-        let beats: [(&str, &str, AgentWorkState, &str); 4] = [
+        //
+        // A render fixture, and only that: it exists so the four states, the
+        // rows and the reasoning can be captured headless under every theme.
+        // Nothing here runs in a live session — a live record's rows are
+        // written by the agent's own dispatch path and its reasoning by the
+        // route that decided, so neither can appear unless one actually did.
+        // The two beats that have dispatched nothing carry no rows, which is
+        // what a real record at that point in the work looks like.
+        let beats: Vec<(&str, &str, AgentWorkState, &str, Vec<AgentStep>, Option<AgentReasoning>)> = vec![
             (
                 "u_aria",
                 "@Scribe crop the harbour shot to the boats.",
                 AgentWorkState::Done { did: "crop".into() },
                 "Scribe: done — crop.",
+                vec![AgentStep {
+                    resource: "photos.image:harbour".into(),
+                    label: "Crop".into(),
+                    outcome: AgentStepOutcome::Applied,
+                }],
+                Some(AgentReasoning {
+                    route: AgentRoute::Model,
+                    why: "The request names the harbour photograph, and crop is \
+                          the only operation the room exports for it that changes \
+                          the framing."
+                        .into(),
+                }),
             ),
             (
                 "u_me",
@@ -1539,6 +1602,8 @@ impl ChatApp {
                     about: "¶3 of Run sheet".into(),
                 },
                 "",
+                Vec::new(),
+                None,
             ),
             (
                 "u_aria",
@@ -1547,16 +1612,29 @@ impl ChatApp {
                     app: "Files".into(),
                 },
                 "",
+                Vec::new(),
+                None,
             ),
             (
                 "u_me",
                 "@Scribe delete the originals once you're done.",
                 AgentWorkState::Refused,
                 "Scribe: I'm not allowed to delete here.",
+                vec![AgentStep {
+                    resource: "files.file:originals".into(),
+                    label: "Delete".into(),
+                    outcome: AgentStepOutcome::Refused {
+                        why: "I'm not allowed to delete here".into(),
+                    },
+                }],
+                Some(AgentReasoning {
+                    route: AgentRoute::Floor,
+                    why: "no api key".into(),
+                }),
             ),
         ];
 
-        for (n, (author, asked, state, said)) in beats.into_iter().enumerate() {
+        for (n, (author, asked, state, said, trace, reasoning)) in beats.into_iter().enumerate() {
             let asked_id = format!("m_ask_{n}");
             let mentions = crate::mention::resolve(asked, &room);
             ChatDoc::push_message_with_id(
@@ -1583,10 +1661,12 @@ impl ChatApp {
                 None,
                 Vec::new(),
             );
+            let mut work = AgentWork::new(state, crate::doc::NOW).with_trace(trace);
+            work.reasoning = reasoning;
             let note = crate::actions::set_agent_work_action(
                 &channel,
                 &record_id,
-                AgentWork::new(state, crate::doc::NOW),
+                work,
                 if said.is_empty() { None } else { Some(said) },
             );
             for action in [post, note] {
@@ -1791,6 +1871,15 @@ impl ChatApp {
     /// is still the room's answer, recorded by whoever addressed the agent at
     /// the moment they addressed it — the same reason a mention carries
     /// `is_agent` as a snapshot rather than asking the roster again later.
+    /// Whether the reasoning on `reply`'s record is open on **this** screen.
+    ///
+    /// Closed is the answer for every record nobody has opened, which is the
+    /// default and stays the default across a reload: the set is view state,
+    /// so a record arriving from the room never opens itself.
+    pub(crate) fn reasoning_open(&self, reply: &str) -> bool {
+        self.open_reasoning.contains(reply)
+    }
+
     pub(crate) fn agent_label(&self, reply: &Message) -> String {
         let name = self.display_name(&reply.author);
         if name != reply.author {

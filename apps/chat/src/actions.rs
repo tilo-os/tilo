@@ -21,11 +21,35 @@
 //! indicators, and live presence. Nothing there replicates as a discrete
 //! mutation.
 //!
-//! **External → never an action:** voice / screen-share transport, media upload,
-//! and the network send itself. When a file is shared, the message **row insert**
-//! is the action (it carries the attachment *by reference* — a FUSE path, name
-//! and dimensions, never the bytes); the media bytes and their transport are
-//! external and hydrate on demand.
+//! **External → never an action:** voice / screen-share *transport*, media
+//! upload, and the network send itself. When a file is shared, the message **row
+//! insert** is the action (it carries the attachment *by reference* — a FUSE
+//! path, name and dimensions, never the bytes); the media bytes and their
+//! transport are external and hydrate on demand.
+//!
+//! ## A call is both halves, and only one of them is external
+//!
+//! That last rule used to swallow the whole of a call, which put chat's call
+//! controls outside the model chat itself declares. They are two different
+//! things:
+//!
+//! * The **transport** — the portal handshake for a screen source, publishing a
+//!   track, dialling a peer by its ticket, the join cue — is external and must
+//!   stay external. [`Action::apply`] has to be a pure function of `(payload,
+//!   base document)` so a peer can replay it byte-identically; a replay that
+//!   reached for a capture source on somebody else's machine would be far worse
+//!   than merely wrong.
+//! * The **voice-membership map** — who is in the call, who is muted or
+//!   deafened, who is presenting, how to dial them — is shared document state
+//!   every peer reads. Nothing distinguishes it from a reaction or a pin. So it
+//!   is an action ([`ChatAction::JoinCall`] and its siblings), which is what
+//!   makes mute and screen-share enumerable, attributable, and undoable through
+//!   the same single route as everything else.
+//!
+//! What is *local* stays local and is neither: the expanded/collapsed call
+//! overlay, the participants drawer, and this peer's own view of its call —
+//! `call.muted` and friends — are the presentation half above. The action is
+//! what gets written down for everyone else.
 //!
 //! ## Determinism contract
 //!
@@ -171,6 +195,57 @@ pub enum ChatAction {
         #[serde(default)]
         say: Option<String>,
     },
+
+    // --- the call, as it appears in the document ---------------------------
+    //
+    // A call has two halves and only one of them is here. The transport —
+    // the portal handshake, publishing a track, dialling a peer, the join
+    // cue — is external and stays external; see the module note. What is
+    // *written down* is the voice-membership map: who is in, who is muted,
+    // who is presenting, how to dial them. That is shared document state
+    // every peer reads, so by the rule this module opens with it is an
+    // action, and it was the one part of chat that was not.
+    /// Enter the call on `channel` as `user`, as far as the document is
+    /// concerned: the membership row appears and everyone sees it.
+    JoinCall { channel: String, user: String },
+    /// Leave it. The membership row goes, along with everything hanging off
+    /// it — which is why this is one action and not a clear of each field.
+    LeaveCall { channel: String, user: String },
+    /// This peer's mic and listening state, as the others read it.
+    ///
+    /// One action rather than four because it is one fact with four fields:
+    /// a peer that unmuted and undeafened in the same gesture must not be
+    /// two entries in the room's history, and must not be two steps to undo.
+    SetCallState {
+        channel: String,
+        user: String,
+        talking: bool,
+        muted: bool,
+        deafened: bool,
+        audio_only: bool,
+    },
+    /// Whether this peer is presenting. Separate from [`Self::SetCallState`]
+    /// because it is a separate decision with a separate gate: acquiring a
+    /// screen goes through the portal, and only a granted source gets here.
+    SetScreenShare {
+        channel: String,
+        user: String,
+        sharing: bool,
+    },
+    /// How peers dial this one's media transport.
+    ///
+    /// An action because it writes to the shared document, and everything
+    /// that writes to the shared document is one — a signalling row that
+    /// replicated outside the action path would be a row a peer could not
+    /// replay and history could not account for. It is deliberately *not*
+    /// published as an addressable operation: the value is an opaque ticket
+    /// only the local transport can mint, so there is nothing a caller
+    /// naming this by hand could correctly pass.
+    SetCallTicket {
+        channel: String,
+        user: String,
+        ticket: String,
+    },
 }
 
 impl Action for ChatAction {
@@ -269,6 +344,38 @@ impl Action for ChatAction {
                 say,
             } => {
                 ChatDoc::set_message_work(doc, channel, msg, work, say.as_deref());
+            }
+            ChatAction::JoinCall { channel, user } => {
+                ChatDoc::voice_join(doc, channel, user);
+            }
+            ChatAction::LeaveCall { channel, user } => {
+                ChatDoc::voice_leave(doc, channel, user);
+            }
+            ChatAction::SetCallState {
+                channel,
+                user,
+                talking,
+                muted,
+                deafened,
+                audio_only,
+            } => {
+                ChatDoc::voice_set_state(
+                    doc, channel, user, *talking, *muted, *deafened, *audio_only,
+                );
+            }
+            ChatAction::SetScreenShare {
+                channel,
+                user,
+                sharing,
+            } => {
+                ChatDoc::voice_set_sharing(doc, channel, user, *sharing);
+            }
+            ChatAction::SetCallTicket {
+                channel,
+                user,
+                ticket,
+            } => {
+                ChatDoc::voice_set_ticket(doc, channel, user, ticket);
             }
         }
         Ok(())
@@ -459,6 +566,51 @@ pub fn mark_read_action(channel: &str, user: &str, count: i64) -> ChatAction {
     }
 }
 
+/// The call's mic/listening state, written whole.
+///
+/// `talking` is derived rather than passed: for the local peer it is simply
+/// "not muted", and deriving it in the one place both the control and the
+/// palette build through is what stops the two from disagreeing about what a
+/// muted peer looks like to everyone else.
+pub fn call_state_action(
+    channel: &str,
+    user: &str,
+    muted: bool,
+    deafened: bool,
+    audio_only: bool,
+) -> ChatAction {
+    ChatAction::SetCallState {
+        channel: channel.to_string(),
+        user: user.to_string(),
+        talking: !muted,
+        muted,
+        deafened,
+        audio_only,
+    }
+}
+
+pub fn screen_share_action(channel: &str, user: &str, sharing: bool) -> ChatAction {
+    ChatAction::SetScreenShare {
+        channel: channel.to_string(),
+        user: user.to_string(),
+        sharing,
+    }
+}
+
+pub fn join_call_action(channel: &str, user: &str) -> ChatAction {
+    ChatAction::JoinCall {
+        channel: channel.to_string(),
+        user: user.to_string(),
+    }
+}
+
+pub fn leave_call_action(channel: &str, user: &str) -> ChatAction {
+    ChatAction::LeaveCall {
+        channel: channel.to_string(),
+        user: user.to_string(),
+    }
+}
+
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -498,6 +650,28 @@ pub struct ChatResourceCtx {
     /// palette resolves `@name` into the same structured references a message
     /// typed into the composer does — one binding rule, not two.
     pub participants: Vec<crate::mention::Participant>,
+    /// The call this peer is in, when it is in one. `None` while it is not,
+    /// which is what keeps mute and hang-up out of the catalogue while there
+    /// is nothing to mute or hang up — an address that resolves to something
+    /// that is not happening is worse than one that never existed.
+    pub call: Option<CallResource>,
+}
+
+/// This peer's own call, as the resource tree needs to describe it.
+///
+/// Every field is a *current* value, because the operations published against
+/// it are the toggles: "unmute" and "mute" are the same document write with a
+/// different payload, and which one to offer is decided here, at authoring
+/// time, from the state the person can see. The same decision the on-screen
+/// button makes.
+#[derive(Debug, Clone)]
+pub struct CallResource {
+    pub channel: String,
+    pub channel_name: String,
+    pub muted: bool,
+    pub deafened: bool,
+    pub audio_only: bool,
+    pub sharing: bool,
 }
 
 fn immediate_spec(id: &str, label: &str, action: &ChatAction) -> ActionSpec {
@@ -708,6 +882,91 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
         workspace = workspace.with_child(channel);
     }
 
+    // The call this peer is in, as a resource of its own.
+    //
+    // It hangs off the workspace rather than off the voice channel because
+    // that is what it is: one call, the one you are in, and there is at most
+    // one. Nesting it under a channel would put the same operations behind a
+    // navigation step that has nothing to do with them.
+    //
+    // Every operation here is a toggle resolved at authoring time from the
+    // state that is on screen, exactly as the buttons resolve it — so the
+    // catalogue offers "Unmute" to a muted peer, and one address never means
+    // two different things depending on when it is read.
+    if let Some(call) = &ctx.call {
+        let mut resource = Resource::new(
+            format!("chat.call:{}", call.channel),
+            "chat.call",
+            if call.channel_name.trim().is_empty() {
+                "Call".to_string()
+            } else {
+                format!("Call — {}", call.channel_name)
+            },
+        );
+
+        let with_muted = |muted: bool| {
+            call_state_action(&call.channel, &ctx.me, muted, call.deafened, call.audio_only)
+        };
+        resource = resource.with_action(immediate_spec(
+            if call.muted { "unmute" } else { "mute" },
+            if call.muted { "Unmute" } else { "Mute" },
+            &with_muted(!call.muted),
+        ));
+
+        // Deafening implies muting — the state the control writes, so the
+        // action writes it too rather than leaving the two to be reconciled
+        // by whoever reads the document next.
+        resource = resource.with_action(immediate_spec(
+            if call.deafened { "undeafen" } else { "deafen" },
+            if call.deafened { "Undeafen" } else { "Deafen" },
+            &call_state_action(
+                &call.channel,
+                &ctx.me,
+                if call.deafened { call.muted } else { true },
+                !call.deafened,
+                call.audio_only,
+            ),
+        ));
+
+        resource = resource.with_action(immediate_spec(
+            if call.audio_only { "camera-on" } else { "camera-off" },
+            if call.audio_only {
+                "Turn camera on"
+            } else {
+                "Turn camera off"
+            },
+            &call_state_action(
+                &call.channel,
+                &ctx.me,
+                call.muted,
+                call.deafened,
+                !call.audio_only,
+            ),
+        ));
+
+        // Stopping a share is publishable; *starting* one is not offered
+        // here, because starting it means asking the portal for a source and
+        // that is a prompt on somebody's screen, not a document write. An
+        // action that could only ever half-happen is worse than one that is
+        // absent — so the catalogue offers the half that is entirely a
+        // document write, and the half that needs a person stays a button.
+        if call.sharing {
+            resource = resource.with_action(immediate_spec(
+                "stop-sharing",
+                "Stop sharing screen",
+                &screen_share_action(&call.channel, &ctx.me, false),
+            ));
+        }
+
+        resource = resource.with_action(immediate_spec(
+            "leave",
+            "Leave call",
+            &leave_call_action(&call.channel, &ctx.me),
+        ));
+
+        workspace = workspace.with_child(resource);
+    }
+
     vec![workspace]
 }
 
@@ -808,6 +1067,7 @@ mod tests {
                     is_agent: u.is_agent,
                 })
                 .collect(),
+            call: None,
         }
     }
 
@@ -974,6 +1234,213 @@ mod tests {
             ChatDoc::list_messages(&state.doc, "c_general").len(),
             before,
             "undo reverted the posted message and nothing else"
+        );
+    }
+
+    /// A call, described the way the resource tree describes it: this peer is
+    /// in `c_standup`, unmuted, not presenting.
+    fn in_a_call(doc: &AutoCommit) -> ChatResourceCtx {
+        ChatResourceCtx {
+            call: Some(CallResource {
+                channel: "c_standup".to_string(),
+                channel_name: "standup".to_string(),
+                muted: false,
+                deafened: false,
+                audio_only: false,
+                sharing: false,
+            }),
+            ..ctx_from(doc)
+        }
+    }
+
+    /// The call is enumerable, through the same builder, forest and palette
+    /// every other operation goes through.
+    ///
+    /// It used to be none of those things: mute, deafen, audio-only, share and
+    /// leave wrote into the shared voice map directly, so a caller that could
+    /// not see the screen had no way to learn they existed and no address to
+    /// name them by.
+    #[test]
+    fn the_call_is_published_like_every_other_operation() {
+        let doc = seeded();
+        let resources = provide_resources(&in_a_call(&doc), &doc);
+        let ws = &resources[0];
+
+        let call = ws
+            .children
+            .iter()
+            .find(|c| c.id.as_str() == "chat.call:c_standup")
+            .expect("a call this peer is in is a resource of the workspace");
+        assert_eq!(call.kind, "chat.call");
+
+        let ids: Vec<&str> = call.actions.iter().map(|a| a.id.as_str()).collect();
+        for want in ["mute", "deafen", "camera-off", "leave"] {
+            assert!(ids.contains(&want), "the call must publish {want}: {ids:?}");
+        }
+
+        // Reachable by the same flatten the palette and the shell's app
+        // provider read, not merely present on the resource.
+        let flat = qos_actions::flatten(&resources);
+        let labels: Vec<&str> = flat.iter().map(|f| f.action.label.as_str()).collect();
+        assert!(labels.contains(&"Mute"), "{labels:?}");
+        assert!(labels.contains(&"Leave call"), "{labels:?}");
+
+        // And findable in the one palette, the way a person finds anything
+        // else — the same rows, ranked by the same query, with no separate
+        // list for the things a call can do.
+        let mut palette = ui::ActionPalette::new();
+        palette.load_open_resources(&resources);
+        palette.open();
+        palette.set_query("call");
+        let shown = palette.result_labels();
+        assert!(
+            shown.iter().any(|l| l.contains("Leave call")),
+            "the palette must reach the call's operations: {shown:?}"
+        );
+    }
+
+    /// The toggles read the state that is on screen, so one address never
+    /// means two things. A muted peer is offered "Unmute", not a second "Mute"
+    /// that would silently be a no-op.
+    #[test]
+    fn the_call_toggles_resolve_against_the_state_they_are_built_from() {
+        let doc = seeded();
+        let mut ctx = in_a_call(&doc);
+        let unmuted: Vec<String> = provide_resources(&ctx, &doc)[0].children.iter()
+            .find(|c| c.id.as_str() == "chat.call:c_standup")
+            .expect("call resource")
+            .actions.iter().map(|a| a.id.clone()).collect();
+        assert!(unmuted.contains(&"mute".to_string()), "{unmuted:?}");
+
+        let call = ctx.call.as_mut().expect("a call");
+        call.muted = true;
+        call.sharing = true;
+        let muted: Vec<String> = provide_resources(&ctx, &doc)[0].children.iter()
+            .find(|c| c.id.as_str() == "chat.call:c_standup")
+            .expect("call resource")
+            .actions.iter().map(|a| a.id.clone()).collect();
+        assert!(muted.contains(&"unmute".to_string()), "{muted:?}");
+        assert!(
+            !muted.contains(&"mute".to_string()),
+            "a muted peer is not also offered Mute: {muted:?}"
+        );
+        assert!(
+            muted.contains(&"stop-sharing".to_string()),
+            "a presenting peer can be asked to stop: {muted:?}"
+        );
+    }
+
+    /// Starting a share is deliberately absent.
+    ///
+    /// It needs a portal prompt on somebody's screen before there is anything
+    /// to write down, so an address for it would resolve, be invoked, and
+    /// half-happen. That is worse than an address that is not there, and the
+    /// gap is a decision rather than an oversight — assert it so it stays one.
+    #[test]
+    fn starting_a_share_is_not_published_because_it_needs_a_person() {
+        let doc = seeded();
+        let ids: Vec<String> = provide_resources(&in_a_call(&doc), &doc)[0]
+            .children
+            .iter()
+            .find(|c| c.id.as_str() == "chat.call:c_standup")
+            .expect("call resource")
+            .actions
+            .iter()
+            .map(|a| a.id.clone())
+            .collect();
+        assert!(
+            !ids.iter().any(|id| id == "share" || id == "start-sharing"),
+            "acquiring a screen source is a prompt, not a document write: {ids:?}"
+        );
+    }
+
+    /// Nothing to mute means nothing published. An address that resolved to a
+    /// call that is not happening is the failure mode the level-triggered
+    /// publish exists to prevent.
+    #[test]
+    fn no_call_publishes_no_call_operations() {
+        let doc = seeded();
+        let resources = provide_resources(&ctx_from(&doc), &doc);
+        assert!(
+            !resources[0]
+                .children
+                .iter()
+                .any(|c| c.kind == "chat.call"),
+            "a peer in no call exports no call operations"
+        );
+    }
+
+    /// A call operation undoes through the same bracket a message does, and
+    /// records exactly one boundary.
+    ///
+    /// Deliberately the same shape as
+    /// `action_records_one_undo_boundary_and_reverts` above, driving the real
+    /// registry decode and `qos_actions::dispatch`: the claim is that mute is
+    /// on the same route, so it has to be proved by walking that route.
+    #[test]
+    fn a_call_operation_undoes_through_the_same_bracket_a_message_does() {
+        let mut state = ui::State::new();
+        state.doc = seeded();
+        // Be in the call first, so the state being toggled exists.
+        ChatDoc::voice_join(&mut state.doc, "c_standup", model::ME);
+        let muted_now = |doc: &AutoCommit| {
+            ChatDoc::list_voice_members(doc, "c_standup")
+                .into_iter()
+                .find(|m| m.user == model::ME)
+                .map(|m| m.muted)
+                .unwrap_or(false)
+        };
+        assert!(!muted_now(&state.doc), "unmuted to begin with");
+
+        let before_heads = state.doc.get_heads();
+        let encoded = encode(&call_state_action("c_standup", model::ME, true, false, false));
+        let decoded = registry().decode(&encoded).expect("a call action decodes");
+        let mut tx = LocalTransport::new();
+        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        state.record_committed_action(before_heads, None, None);
+
+        assert!(muted_now(&state.doc), "the action muted this peer for everyone");
+        assert!(
+            state.peek_last_undo().is_some(),
+            "muting records an undo boundary — it used to record none, because \
+             it never reached the action host at all"
+        );
+
+        state.undo(None, None).expect("an undo entry to pop");
+        assert!(
+            !muted_now(&state.doc),
+            "undo put the call back the way it was"
+        );
+    }
+
+    /// And it replays byte-identically on a peer, which is the property that
+    /// makes it a collaborative operation rather than a local write that
+    /// happened to land in a shared document.
+    #[test]
+    fn a_call_operation_replays_byte_identical_on_a_peer() {
+        let mut a = seeded();
+        ChatDoc::voice_join(&mut a, "c_standup", model::ME);
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).unwrap();
+        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+
+        let action = screen_share_action("c_standup", model::ME, true);
+        let encoded = encode(&action);
+        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
+        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "the same call operation replayed on a replica lands on the same \
+             document, hashes and all"
+        );
+        assert!(
+            ChatDoc::list_voice_members(&b, "c_standup")
+                .into_iter()
+                .any(|m| m.user == model::ME && m.sharing),
+            "and the peer reads the share off its own replica"
         );
     }
 

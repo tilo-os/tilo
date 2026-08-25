@@ -24,8 +24,18 @@ What it proves, in order, and each read back rather than assumed:
 
 Build first:
 
-    cargo build --profile demo -p shell --bin shell \\
-        -p word-processor -p qdoc --bin qos-doc-text
+    cargo build --profile demo --bin shell --bin word-processor --bin qos-doc-text
+
+Every binary is named as a `--bin`, and none of them behind a `-p`. That is
+not style. `--bin` is a global selector rather than one scoped to the `-p`
+before it, so the earlier spelling here --
+`-p shell --bin shell -p word-processor -p qdoc --bin qos-doc-text` --
+selected the word processor's *package* and then filtered its binaries away.
+It compiled the library, printed `Finished`, and left whatever
+`word-processor` happened to already be on disk. A run of this proof was
+read as "a running application published nothing" when what it had actually
+started was an app binary from before the publishing code was written.
+`binary()` now refuses such a binary rather than running it.
 """
 from __future__ import annotations
 
@@ -41,7 +51,12 @@ import threading
 import time
 import zlib
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+#: Three levels up: this file is `<repo>/scripts/headless-examples/<name>.py`.
+#: Two of them lands on `<repo>/scripts`, and the default target directory
+#: below then resolves to `<repo>/scripts/target`, which never exists — so
+#: running this without `CARGO_TARGET_DIR` reported that the compositor was
+#: not built no matter how freshly it had been.
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TARGET = os.environ.get("CARGO_TARGET_DIR") or os.path.join(REPO, "target")
 
 APP_ID = "dev.qos.word-processor"
@@ -66,11 +81,93 @@ def claim(ok: bool, msg: str) -> bool:
     return ok
 
 
+def _inputs_newer_than(path: str) -> list[tuple[float, str]] | None:
+    """The sources `path` was built from that have changed since, newest first.
+
+    Read out of the depfile cargo writes beside every artifact (`<name>.d`),
+    which for a binary spans the workspace crates it links — `ui/src/app.rs`
+    is among the word processor's entries — and not merely the crate's own
+    modules. So this answers about the toolkit the app was built
+    against, which is where the code under test actually lives.
+
+    `None` means the question could not be asked: no depfile, so nothing
+    recorded what this binary was made of.
+    """
+    dep = path + ".d"
+    try:
+        text = open(dep).read()
+    except OSError:
+        return None
+    built = os.path.getmtime(path)
+    newer: list[tuple[float, str]] = []
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        # Makefile rule: `<artifact>: <input> <input> …`. A path this fails
+        # to parse (cargo backslash-escapes spaces) simply will not stat, and
+        # drops out — one unreadable entry among hundreds does not blind the
+        # check, and the alternative is a parser nobody needs.
+        for dep_path in line.split(":", 1)[1].split():
+            if not dep_path.startswith("/"):
+                continue
+            try:
+                m = os.path.getmtime(dep_path)
+            except OSError:
+                continue
+            if m > built:
+                newer.append((m, dep_path))
+    newer.sort(reverse=True)
+    return newer
+
+
 def binary(name: str) -> str:
+    """The built binary — and only if it was built from the tree as it stands.
+
+    "It exists" and "it is current" were the same answer here until a run of
+    this proof reported that a running word processor published nothing. It
+    published nothing because it was an hour and a half older than
+    `ui::App::publish_action_surface`: the compositor beside it had been
+    rebuilt, the app had not, and an app with no publishing code in it is
+    indistinguishable — from out here — from a product that fails to
+    publish. Every claim below then reads as a verdict on the product when
+    it is a verdict on the build.
+
+    So a stale binary is refused rather than run, and so is one whose
+    depfile is missing, because that is the case where the question cannot
+    be asked at all. The cost of being wrong is one `cargo build`; the cost
+    of the other direction is a green harness making a false claim, or a
+    red one blamed on the code it was pointed at.
+    """
     for profile in ("demo", "release", "debug"):
         p = os.path.join(TARGET, profile, name)
-        if os.path.exists(p):
-            return p
+        if not os.path.exists(p):
+            continue
+        newer = _inputs_newer_than(p)
+        if newer is None:
+            sys.exit(
+                f"{p} has no depfile beside it ({name}.d), so whether it "
+                f"matches this tree cannot be established. Rebuild it: see "
+                f"the module docstring."
+            )
+        if newer:
+            when = time.strftime("%H:%M:%S", time.localtime(os.path.getmtime(p)))
+            newest = time.strftime("%H:%M:%S", time.localtime(newer[0][0]))
+            # Relative to the repo when it is in the repo, absolute when it
+            # is not — a target directory belonging to another worktree is
+            # exactly the case worth naming plainly, and `relpath` renders
+            # it as a ladder of `..` that hides which tree it came from.
+            listed = "\n".join(
+                f"    {os.path.relpath(f, REPO) if f.startswith(REPO + os.sep) else f}"
+                for _, f in newer[:5]
+            )
+            sys.exit(
+                f"{p} was built at {when} from sources that have changed "
+                f"since — {len(newer)} of them, the newest at {newest}:\n"
+                f"{listed}\n"
+                f"Running it would test a binary that is not this tree. "
+                f"Rebuild: see the module docstring."
+            )
+        return p
     sys.exit(f"{name} is not built under {TARGET}; see the module docstring.")
 
 

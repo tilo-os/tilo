@@ -11,6 +11,7 @@ use vello::peniko::Color;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::icons::{draw_icon, Icon};
 use ui::widget::Avatar;
 use ui::ColorCompat;
 use ui::Widget;
@@ -860,7 +861,7 @@ impl ChatApp {
 
         if rm.work_h > 0.0 {
             if let Some(reply) = self.agent_record(&m.id) {
-                self.draw_work_strip(scene, tf, tr, theme, reply, text_x, *y, text_w, true);
+                self.draw_work_strip(scene, tf, tr, theme, reply, text_x, *y, text_w, true, hits);
                 *y += rm.work_h;
             }
         }
@@ -1065,7 +1066,7 @@ impl ChatApp {
         reply: &Message,
         text_w: f32,
         with_reason: bool,
-    ) -> Option<(WorkLine, f64, f64)> {
+    ) -> Option<WorkStrip> {
         let work = reply.work.as_ref()?;
         let line = work_line(
             work,
@@ -1079,8 +1080,53 @@ impl ChatApp {
         } else {
             tr.measure(&line.detail, WORK_TEXT_SIZE, Some(inner)).1 as f64 + 3.0
         };
-        let total = WORK_PAD_Y * 2.0 + WORK_HEAD_H + detail_h + WORK_GAP;
-        Some((line, detail_h, total))
+
+        // One row per operation the agent dispatched. The list is whatever the
+        // agent wrote and nothing else — this function has no way to add a row
+        // and does not look at the reply's text to find one.
+        let rows: Vec<TraceRow> = work
+            .trace
+            .iter()
+            .map(|s| trace_row(s, &line.detail))
+            .collect();
+        let rows_h = if rows.is_empty() {
+            0.0
+        } else {
+            WORK_SECTION_GAP + rows.len() as f64 * WORK_ROW_H
+        };
+
+        // Collapsed by default: the question "how did it decide" is one a
+        // reader asks about a particular turn, and a transcript that answered
+        // it for every turn at once would be unreadable.
+        let open = self.reasoning_open(&reply.id);
+        let reason = work.reasoning.clone();
+        let (reason_head_h, reason_body_h) = match &reason {
+            None => (0.0, 0.0),
+            Some(r) => {
+                let head = WORK_SECTION_GAP + WORK_ROW_H;
+                let body = if open && !r.why.trim().is_empty() {
+                    // Indented under the line that opened it, so the body is
+                    // measured against the width it will actually wrap to.
+                    let w = (inner as f64 - WORK_ICON - WORK_ICON_GAP).max(40.0) as f32;
+                    tr.measure(r.why.trim(), WORK_TEXT_SIZE, Some(w)).1 as f64 + 3.0
+                } else {
+                    0.0
+                };
+                (head, body)
+            }
+        };
+
+        let box_h = WORK_PAD_Y * 2.0 + WORK_HEAD_H + detail_h + rows_h + reason_head_h + reason_body_h;
+        Some(WorkStrip {
+            line,
+            detail_h,
+            rows,
+            reason,
+            reason_open: open,
+            reason_head_h,
+            box_h,
+            total: box_h + WORK_GAP,
+        })
     }
 
     /// Height reserved for `reply`'s record, or zero when it has none.
@@ -1092,7 +1138,7 @@ impl ChatApp {
         with_reason: bool,
     ) -> f64 {
         self.work_strip_of(tr, reply, text_w, with_reason)
-            .map(|(_, _, h)| h)
+            .map(|s| s.total)
             .unwrap_or(0.0)
     }
 
@@ -1115,14 +1161,24 @@ impl ChatApp {
         y: f64,
         text_w: f32,
         with_reason: bool,
+        hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let Some((line, detail_h, total)) = self.work_strip_of(tr, reply, text_w, with_reason)
-        else {
+        let Some(strip_m) = self.work_strip_of(tr, reply, text_w, with_reason) else {
             return;
         };
+        let WorkStrip {
+            line,
+            detail_h,
+            rows,
+            reason,
+            reason_open,
+            reason_head_h,
+            box_h,
+            ..
+        } = &strip_m;
+        let (detail_h, box_h) = (*detail_h, *box_h);
         let ground = theme.tokens.colors.surfaces.base;
         let (fill, edge, ink) = work_strip_colors(theme, ground, line.tone);
-        let box_h = total - WORK_GAP;
         let strip = Rect::new(x, y, x + text_w as f64, y + box_h);
         fill_round(scene, tf, strip, WORK_RADIUS, fill);
         stroke_round(scene, tf, strip, WORK_RADIUS, edge, 1.0);
@@ -1147,6 +1203,80 @@ impl ChatApp {
                 tx, y + WORK_PAD_Y + WORK_HEAD_H + 3.0,
                 TextWeight::Regular, Some(inner),
             );
+        }
+
+        let mut ry = y + WORK_PAD_Y + WORK_HEAD_H + detail_h;
+
+        // One line per operation the agent dispatched, in the order it
+        // dispatched them.
+        if !rows.is_empty() {
+            ry += WORK_SECTION_GAP;
+            for row in rows {
+                let mark = row.tone.seed(theme);
+                // Floored against the wash it lands on, exactly as the label
+                // is: a tone is a colour chosen to mean something, which is
+                // never automatically one that can be seen on this ground.
+                let mark = band_at_least(mark, mark, fill, WORK_EDGE_CONTRAST);
+                let icon_rect = Rect::new(
+                    tx,
+                    ry + (WORK_ROW_H - WORK_ICON) / 2.0,
+                    tx + WORK_ICON,
+                    ry + (WORK_ROW_H + WORK_ICON) / 2.0,
+                );
+                draw_icon(scene, tf, icon_rect, row.icon, mark, 1.5);
+                let lx = tx + WORK_ICON + WORK_ICON_GAP;
+                let lw = (x + text_w as f64 - WORK_PAD_X) - lx;
+                let label = truncate_to(tr, &row.label, WORK_TEXT_SIZE, lw);
+                text(
+                    scene, tr, tf, &label, WORK_TEXT_SIZE, ink,
+                    lx, ry, TextWeight::Regular, None,
+                );
+                ry += WORK_ROW_H;
+            }
+        }
+
+        // The line that opens the reasoning, and the reasoning under it when
+        // it is open. Drawn last because it is the least urgent thing in the
+        // strip and the only part a reader has to ask for.
+        if let Some(r) = reason {
+            ry += WORK_SECTION_GAP;
+            let open = *reason_open;
+            let chev = Rect::new(
+                tx,
+                ry + (WORK_ROW_H - WORK_ICON) / 2.0,
+                tx + WORK_ICON,
+                ry + (WORK_ROW_H + WORK_ICON) / 2.0,
+            );
+            draw_icon(
+                scene,
+                tf,
+                chev,
+                if open { Icon::ChevronDown } else { Icon::ChevronRight },
+                ink,
+                1.5,
+            );
+            let lx = tx + WORK_ICON + WORK_ICON_GAP;
+            let lw = (x + text_w as f64 - WORK_PAD_X) - lx;
+            let head = truncate_to(tr, &reasoning_head(r), WORK_TEXT_SIZE, lw);
+            text(
+                scene, tr, tf, &head, WORK_TEXT_SIZE, ink,
+                lx, ry, TextWeight::Semibold, None,
+            );
+            // The whole line is the target, not the chevron: a 10px square is
+            // not something to ask anybody to hit.
+            ChatApp::push_hit(
+                hits,
+                Rect::new(x, ry, x + text_w as f64, ry + WORK_ROW_H),
+                Hit::AgentReasoning(reply.id.clone()),
+            );
+            ry += *reason_head_h - WORK_SECTION_GAP;
+            if open && !r.why.trim().is_empty() {
+                text(
+                    scene, tr, tf, r.why.trim(), WORK_TEXT_SIZE, ink,
+                    lx, ry + 3.0, TextWeight::Regular,
+                    Some((lw as f32).max(40.0)),
+                );
+            }
         }
     }
 
@@ -1466,7 +1596,7 @@ impl ChatApp {
         tx: f64,
         tw: f32,
         y: f64,
-        _hits: &mut Vec<(Rect, Hit)>,
+        hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
         let c = &theme.tokens.colors;
         let mut yy = y;
@@ -1485,7 +1615,7 @@ impl ChatApp {
         // timeline draws the same strip under the message that summoned it —
         // one fact, rendered where each reader is looking.
         if m.work.is_some() {
-            self.draw_work_strip(scene, tf, tr, theme, m, tx, yy, tw, false);
+            self.draw_work_strip(scene, tf, tr, theme, m, tx, yy, tw, false, hits);
             yy += self.work_strip_height(tr, m, tw, false);
         }
         if let Some(att) = &m.attachment {
@@ -1891,6 +2021,14 @@ const WORK_RADIUS: f64 = 8.0;
 /// Width of the bar down the leading edge that carries the state's tone.
 const WORK_RAIL_W: f64 = 3.0;
 const WORK_TEXT_SIZE: f32 = 11.5;
+/// One dispatched operation, or the line that opens the reasoning.
+const WORK_ROW_H: f64 = 15.0;
+/// Square the outcome mark and the disclosure chevron are drawn in.
+const WORK_ICON: f64 = 10.0;
+/// Between a row's mark and its words.
+const WORK_ICON_GAP: f64 = 6.0;
+/// Above the first row of a section, separating it from the line before.
+const WORK_SECTION_GAP: f64 = 5.0;
 /// The strip is context around a sentence, so it keeps mostly the ground it
 /// sits on — the same reasoning, and the same numbers, as the reference chip.
 const WORK_FILL_MIX: f64 = 0.86;
@@ -1966,6 +2104,100 @@ pub(crate) fn work_strip_colors(
         theme.tokens.colors.text_primary,
     );
     (fill, edge, ink)
+}
+
+/// An agent's strip, measured once.
+///
+/// One struct for the measure pass and the draw pass, so the two cannot
+/// disagree about the height — the fault that clips a row's last line.
+pub(crate) struct WorkStrip {
+    pub line: WorkLine,
+    pub detail_h: f64,
+    pub rows: Vec<TraceRow>,
+    pub reason: Option<model::AgentReasoning>,
+    pub reason_open: bool,
+    pub reason_head_h: f64,
+    /// The painted box.
+    pub box_h: f64,
+    /// The box plus the gap under it — what the row advances by.
+    pub total: f64,
+}
+
+/// One dispatched operation, worded and toned for a reader.
+///
+/// Built only from an [`AgentStep`](model::AgentStep), which the agent writes
+/// from its own dispatch path. There is deliberately no constructor here that
+/// takes a sentence: a row on screen means an operation was attempted, and a
+/// row that could be built from prose would mean nothing at all.
+pub(crate) struct TraceRow {
+    /// The app's own word for the operation.
+    pub label: String,
+    /// The mark at the head of the row. Shape, not colour — the tone is a
+    /// second signal for readers who have it, never the only one.
+    pub icon: Icon,
+    pub tone: WorkTone,
+}
+
+/// Word one dispatched operation.
+///
+/// `said` is what the strip already shows above the rows — the agent's own
+/// sentence about the turn. A refusal whose reason is already in that
+/// sentence shows only the operation: the row is there to name which
+/// operation was refused, and repeating the reason under it says the same
+/// thing twice and reads as two separate problems.
+pub(crate) fn trace_row(step: &model::AgentStep, said: &str) -> TraceRow {
+    use model::AgentStepOutcome as O;
+    match &step.outcome {
+        O::Applied => TraceRow {
+            label: step.label.clone(),
+            icon: Icon::Check,
+            tone: WorkTone::Done,
+        },
+        // Not a tick. It ran and the document is unchanged, and a reader who
+        // goes looking for the edit has to find the row that told them there
+        // wasn't one.
+        O::NoChange => TraceRow {
+            label: crate::i18n::t_args(
+                "chat-agent-step-unchanged",
+                &[("did", step.label.as_str().into())],
+            ),
+            icon: Icon::Info,
+            tone: WorkTone::Silent,
+        },
+        O::Refused { why } => TraceRow {
+            label: if why.trim().is_empty() || said_covers(said, why) {
+                step.label.clone()
+            } else {
+                crate::i18n::t_args(
+                    "chat-agent-step-refused",
+                    &[("did", step.label.as_str().into()), ("why", why.as_str().into())],
+                )
+            },
+            icon: Icon::Ban,
+            tone: WorkTone::Stopped,
+        },
+    }
+}
+
+/// Whether the sentence the agent already wrote says what `why` says.
+///
+/// Compared on the words rather than on the exact string: the reply is a
+/// sentence — signed, punctuated — around the same clause the refusal
+/// carries, so the two are never byte-identical even when they say the same
+/// thing.
+fn said_covers(said: &str, why: &str) -> bool {
+    let why = why.trim().trim_end_matches('.').to_lowercase();
+    !why.is_empty() && said.to_lowercase().contains(&why)
+}
+
+/// How the agent decided, worded for the line that opens it.
+pub(crate) fn reasoning_head(reasoning: &model::AgentReasoning) -> String {
+    match reasoning.route {
+        model::AgentRoute::Model => crate::i18n::t("chat-agent-reasoning-model"),
+        // Said plainly rather than hidden. A turn the model never answered
+        // must not read like one it did.
+        model::AgentRoute::Floor => crate::i18n::t("chat-agent-reasoning-floor"),
+    }
 }
 
 /// One line of an agent's record, ready to draw.
@@ -2573,3 +2805,116 @@ mod tests {
 
 /// Horizontal centre of the workspace rail (column of square buttons).
 const RAIL_W_CENTER: f64 = crate::app::RAIL_W / 2.0;
+
+#[cfg(test)]
+mod agent_trace_tests {
+    use super::{reasoning_head, said_covers, trace_row, WorkTone};
+    use crate::model::{AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome};
+    use ui::icons::Icon;
+
+    fn step(label: &str, outcome: AgentStepOutcome) -> AgentStep {
+        AgentStep {
+            resource: "photos.image:harbour".into(),
+            label: label.into(),
+            outcome,
+        }
+    }
+
+    /// Each outcome gets its own mark **and** its own tone. The mark is the
+    /// load-bearing one: the wash a row sits on is mostly ground, which is
+    /// not enough to tell three outcomes apart, and would be nothing at all
+    /// to a reader who cannot separate them by hue.
+    #[test]
+    fn an_outcome_is_answerable_from_the_shape_and_not_only_the_colour() {
+        let applied = trace_row(&step("Crop", AgentStepOutcome::Applied), "");
+        let nothing = trace_row(&step("Crop", AgentStepOutcome::NoChange), "");
+        let refused = trace_row(
+            &step("Delete", AgentStepOutcome::Refused { why: "not allowed".into() }),
+            "",
+        );
+        let marks = [applied.icon, nothing.icon, refused.icon];
+        assert_eq!(
+            marks.len(),
+            marks.iter().collect::<std::collections::HashSet<_>>().len(),
+            "two outcomes share a mark, so they can only be told apart by colour"
+        );
+        assert_eq!(applied.icon, Icon::Check);
+        assert_eq!(applied.tone, WorkTone::Done);
+        // An operation that ran and changed nothing is not a success. A tick
+        // here would send a reader looking for an edit nobody made.
+        assert_ne!(
+            nothing.tone,
+            WorkTone::Done,
+            "'changed nothing' must not be toned as work carried out"
+        );
+        assert!(
+            nothing.label.to_lowercase().contains("crop"),
+            "the row still has to name which operation changed nothing: {:?}",
+            nothing.label
+        );
+        assert_eq!(refused.tone, WorkTone::Stopped);
+    }
+
+    /// A refusal carries its reason, unless the sentence above it already
+    /// said the same thing — in which case the row says only which operation
+    /// was refused. Saying it twice reads as two separate problems.
+    #[test]
+    fn a_refusal_says_why_once_and_not_twice() {
+        let s = step(
+            "Delete",
+            AgentStepOutcome::Refused { why: "I'm not allowed to delete here".into() },
+        );
+        let alone = trace_row(&s, "");
+        assert!(
+            alone.label.contains("not allowed"),
+            "with nothing above it, the row is the only place the reason can go: {:?}",
+            alone.label
+        );
+        let beneath = trace_row(&s, "Scribe: I'm not allowed to delete here.");
+        assert_eq!(
+            beneath.label, "Delete",
+            "the reason is already on the line above, so the row must not repeat it"
+        );
+    }
+
+    /// The comparison is on the words, not the bytes. The reply is a signed,
+    /// punctuated sentence wrapped around the same clause, so the two are
+    /// never identical even when they say the same thing.
+    #[test]
+    fn the_sentence_above_is_matched_on_its_words() {
+        assert!(said_covers("Scribe: I'm not allowed to delete here.", "I'm not allowed to delete here"));
+        assert!(said_covers("Scribe: I'm not allowed to delete here.", "I'm not allowed to delete here."));
+        assert!(!said_covers("Scribe: done — crop.", "I'm not allowed to delete here"));
+        // An empty reason is covered by nothing, so it can never suppress a
+        // row's own words by accident.
+        assert!(!said_covers("anything at all", "   "));
+    }
+
+    /// The line that opens the reasoning says which path decided. A turn no
+    /// model answered must not read like one it did — the whole reason the
+    /// route is recorded rather than assumed.
+    #[test]
+    fn the_disclosure_says_when_no_model_decided() {
+        let by_model = reasoning_head(&AgentReasoning {
+            route: AgentRoute::Model,
+            why: "because".into(),
+        });
+        let by_floor = reasoning_head(&AgentReasoning {
+            route: AgentRoute::Floor,
+            why: "no api key".into(),
+        });
+        assert_ne!(
+            by_model, by_floor,
+            "both routes read identically, so a turn decided without a model \
+             is indistinguishable from one a model chose"
+        );
+        assert!(
+            !by_model.starts_with("chat-agent-"),
+            "the string did not resolve through the catalogue: {by_model:?}"
+        );
+        assert!(
+            !by_floor.starts_with("chat-agent-"),
+            "the string did not resolve through the catalogue: {by_floor:?}"
+        );
+    }
+}

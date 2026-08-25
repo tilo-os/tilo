@@ -125,10 +125,16 @@ pub struct ShellOverlayHost {
     /// so an unfiltered fan-out is the default. Toggled by clicks on
     /// the shell-drawn chip strip above the palette.
     active_kind_filter: Vec<crate::shell::search::ResourceKind>,
+    /// The kinds this query actually turned up, which is what the chip
+    /// strip offers — see [`Self::palette_filter_kinds`]. Recomputed by
+    /// [`Self::refresh_search_results`] from the *unfiltered* results,
+    /// so narrowing to one kind never removes the chips you would use
+    /// to narrow to a different one.
+    search_available_kinds: Vec<crate::shell::search::ResourceKind>,
     /// Painted rects of the chip strip's chips this frame, indexed in
-    /// the same order [`Self::search_registry`]::registered_kinds
-    /// returns. Populated during draw so `handle_event` can hit-test
-    /// without recomputing geometry.
+    /// the same order [`Self::palette_filter_kinds`] returns. Populated
+    /// during draw so `handle_event` can hit-test without recomputing
+    /// geometry.
     search_chip_rects: Vec<Rect>,
     /// Rect of the leading "All" chip that clears the kind filter.
     /// Cached from the draw pass so the click hit-test uses exactly the
@@ -1004,6 +1010,25 @@ struct ChipStrip {
     rows_needed: usize,
 }
 
+/// The distinct kinds a set of result groups covers, in the order the
+/// groups came in — which is already the palette's own ranking, so the
+/// chip strip reads left to right in the same order as the results
+/// below it.
+///
+/// Deduplicated rather than mapped one-for-one: a group is a contiguous
+/// run of one kind, and nothing in the ranking *guarantees* one run per
+/// kind. Two runs of the same kind would otherwise put the same chip on
+/// the strip twice.
+fn distinct_kinds(groups: &[crate::shell::search::KindGroup]) -> Vec<crate::shell::search::ResourceKind> {
+    let mut out: Vec<crate::shell::search::ResourceKind> = Vec::new();
+    for g in groups {
+        if !out.contains(&g.kind) {
+            out.push(g.kind.clone());
+        }
+    }
+    out
+}
+
 /// Lay the filter chips out across a band that may be too narrow.
 ///
 /// **The invariant is that every chip gets a rect.** The strip used to
@@ -1504,6 +1529,7 @@ impl ShellOverlayHost {
             search_results: Vec::new(),
             last_search_query: String::new(),
             active_kind_filter: Vec::new(),
+            search_available_kinds: Vec::new(),
             search_chip_rects: Vec::new(),
             search_all_chip_rect: Rect::ZERO,
             search_chip_rows: 1,
@@ -5003,6 +5029,35 @@ impl ShellOverlayHost {
             .downcast_mut::<SidebarWheelDisc>()
     }
 
+    /// Every strip's horizontal pan, and how far it could travel.
+    ///
+    /// The pan is what "where along the strip am I looking" means, and
+    /// nothing else a harness can read carries it: two frames with the
+    /// same tree and the same chrome can be showing completely different
+    /// windows. An assertion that the viewport did or did not move has
+    /// no subject without it.
+    ///
+    /// Reported with the bound it is a pan against, because on a strip
+    /// whose content fits the display the pan is pinned at zero — and
+    /// then "the viewport did not move" is true of every possible change
+    /// and proves nothing. A caller has to be able to see whether it
+    /// could have moved at all.
+    pub fn strip_scroll_offsets(&self) -> Vec<(u64, f64, f64)> {
+        let mut out: Vec<(u64, f64, f64)> = self
+            .group_row_ptrs
+            .iter()
+            .map(|(sid, &ptr)| {
+                // SAFETY: same contract as every other `group_row_ptrs`
+                // accessor — the pointer is captured from a `Box<GroupRow>`
+                // owned through the content tree, and the host outlives it.
+                let row: &GroupRow = unsafe { &*ptr };
+                (sid.0, row.scroll_x(), row.max_scroll_x())
+            })
+            .collect();
+        out.sort_by_key(|(sid, _, _)| *sid);
+        out
+    }
+
     pub fn group_row_mut_for_tests(&mut self, strip_id: StripId) -> Option<&mut GroupRow> {
         let &ptr = self.group_row_ptrs.get(&strip_id)?;
         // SAFETY: see field doc on `group_row_ptrs`.
@@ -5292,7 +5347,7 @@ impl ShellOverlayHost {
             let st = chrome.borrow();
             self.refresh_app_surfaces(&st, doc);
         }
-        let (scope, active_provider) = {
+        let (mut scope, active_provider) = {
             let st = chrome.borrow();
             let scope = st.search_scope;
             let active_provider = active_tab_provider_id(&st, &self.search_registry);
@@ -5356,10 +5411,44 @@ impl ShellOverlayHost {
             st.search_scope = SearchScope::Workspace;
             st.bump();
             drop(st);
+            // The chip strip is computed below off this same scope; if
+            // it stayed `ActiveApp` a filtered query that had just been
+            // widened would re-ask the narrow scope for its kinds and
+            // come back with none.
+            scope = SearchScope::Workspace;
             widened
         } else {
             groups
         };
+
+        // What the chip strip may offer: the kinds this query actually
+        // turned up, ignoring whatever it is currently narrowed to.
+        //
+        // Unfiltered is the point. Reading the kinds off `groups` while
+        // a filter is on would leave the strip holding only the kind
+        // already selected, so the one control that could widen the
+        // search back out would be the one the search had removed.
+        //
+        // The extra fan-out only happens while a filter is active,
+        // which is the rarer half of the palette's life; unfiltered —
+        // the state it opens in and the one a query is normally typed
+        // in — the groups in hand are already the answer.
+        let available = if self.active_kind_filter.is_empty() {
+            distinct_kinds(&groups)
+        } else {
+            let st = chrome.borrow();
+            distinct_kinds(&self.search_registry.query_grouped(
+                &current_query,
+                scope,
+                active_provider.as_deref(),
+                &[],
+                &st,
+                doc,
+                root,
+                PALETTE_ROW_BUDGET,
+            ))
+        };
+        self.search_available_kinds = available;
 
         // Flatten the groups into palette rows. The kind travels as the
         // row's *section* and its *glyph*, not as a `[Files]` literal
@@ -5559,6 +5648,29 @@ impl ShellOverlayHost {
         }
         tree.active_strip.insert(ws_id, strip_id);
         tree.active_group.insert(strip_id, group_id);
+    }
+
+    /// The kinds the filter strip offers for the query on screen.
+    ///
+    /// Every kind any provider *could* return used to be offered, all
+    /// the time. That put nine chips and a scope switch above a query
+    /// with one answer in it — twelve controls over one row — and eight
+    /// of the nine were filters to nothing: pressing them emptied the
+    /// list. The eye landed on the controls instead of the answer.
+    ///
+    /// So the strip names what this query found. One kind is not a
+    /// choice either, so it draws nothing at all and the answer stands
+    /// alone; two or more and the strip appears, led by `All`.
+    ///
+    /// The kinds come from [`Self::search_available_kinds`], which is
+    /// computed *unfiltered* — narrowing to Files must not take away
+    /// the Notes chip, or the narrowing could not be undone except
+    /// through `All`.
+    fn palette_filter_kinds(&self) -> Vec<crate::shell::search::ResourceKind> {
+        if self.search_available_kinds.len() < 2 {
+            return Vec::new();
+        }
+        self.search_available_kinds.clone()
     }
 
     /// Toggle a kind in the chip filter. Multiple kinds may be active
@@ -9484,7 +9596,7 @@ impl Widget for ShellOverlayHost {
                         *handled = true;
                         return;
                     }
-                    let kinds = self.search_registry.registered_kinds();
+                    let kinds = self.palette_filter_kinds();
                     for (idx, rect) in self.search_chip_rects.iter().enumerate() {
                         if rect.contains(p) {
                             if let Some(kind) = kinds.get(idx).cloned() {
@@ -12488,15 +12600,33 @@ impl ShellOverlayHost {
         }
 
         // --- Kind chips (left, multi-select) ---------------------------
-        // Dynamic: one chip per kind any registered provider exposes, so
-        // a new provider gets a chip for free. Empty selection means
+        // One chip per kind *this query found* — see
+        // [`Self::palette_filter_kinds`]. Empty selection means
         // "everything shows", which the leading "All" chip states rather
         // than leaving the strip looking like nothing is on.
         //
         // Every chip is painted, whatever the width — the strip wraps,
         // and the band grows to hold the rows. See [`lay_out_chip_strip`]
         // for why not painting one was the bug.
-        let kinds = self.search_registry.registered_kinds();
+        let kinds = self.palette_filter_kinds();
+        if kinds.is_empty() {
+            // Nothing to choose between, so nothing is offered: a lone
+            // `All` chip is a control whose only state is the one it is
+            // already in. The band keeps its single row for the scope
+            // switch beside it.
+            //
+            // The cached rects go with it. A chip that is not painted
+            // must not keep answering clicks from where it used to be.
+            self.search_chip_rects.clear();
+            self.search_all_chip_rect = Rect::ZERO;
+            if self.search_chip_rows != 1 {
+                self.search_chip_rows = 1;
+                if self.palette.set_host_filter_strip_rows(1) {
+                    self.palette_layout_dirty = true;
+                }
+            }
+            return;
+        }
         let labels: Vec<&str> = std::iter::once("All")
             .chain(kinds.iter().map(|k| k.label()))
             .collect();
@@ -16120,7 +16250,11 @@ mod palette_dispatch_tests {
                 "Loading…",
             ))
         };
-        crate::shell::catalogue::note_pending_notice("dev.qos.retirefixture", notice);
+        assert_eq!(
+            crate::shell::catalogue::note_pending_notice("dev.qos.retirefixture", notice),
+            None,
+            "this fixture's id is its own, so the open supersedes nothing"
+        );
 
         assert!(
             !h.retire_notices_for_opened_windows(),
@@ -16192,7 +16326,11 @@ mod palette_dispatch_tests {
                 "Loading…",
             ))
         };
-        crate::shell::catalogue::note_pending_notice("dev.qos.retirefixture", notice);
+        assert_eq!(
+            crate::shell::catalogue::note_pending_notice("dev.qos.fastpaintfixture", notice),
+            None,
+            "this fixture's id is its own, so the open supersedes nothing"
+        );
 
         const SURFACE: u64 = 918_274;
         let store = crate::compositor::foreign::store();
@@ -16203,7 +16341,7 @@ mod palette_dispatch_tests {
             crate::compositor::tab_binding::adopt_toplevel(
                 &mut tree,
                 SURFACE,
-                Some("dev.qos.retirefixture".to_string()),
+                Some("dev.qos.fastpaintfixture".to_string()),
             );
         }
         store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
@@ -16225,6 +16363,87 @@ mod palette_dispatch_tests {
         assert!(
             !chrome.borrow().notifications().iter().any(|n| n.id == notice),
             "once the app is on screen the indication has done its job"
+        );
+        store.forget(SURFACE);
+    }
+
+    /// Pressing Enter twice on the same row must not leave a "Loading…"
+    /// standing over the app that opened.
+    ///
+    /// Only the newest open of a package is tracked, so the notice a
+    /// second press displaces can no longer be retired by the window
+    /// arriving — the window settles the notice the list *names*, and
+    /// the displaced one is no longer named. It used to be dropped from
+    /// the list and nowhere else, so it sat on screen until its own
+    /// two-minute expiry: on a recording, an "Opening Chat / Loading…"
+    /// still up a minute later with Chat plainly open behind it.
+    ///
+    /// Asserts on the chrome's notification list, which is what the
+    /// toast stack is drawn from, rather than on the pending-notice
+    /// bookkeeping — the defect was precisely that the two disagreed.
+    #[test]
+    fn a_second_open_does_not_strand_the_first_ones_loading_notice() {
+        let (mut h, chrome) = host_with_chrome();
+        const PKG: &str = "dev.qos.doubleopenfixture";
+        let raise = || {
+            let mut st = chrome.borrow_mut();
+            st.push_notification_full(crate::shell::notification::Notification::new(
+                "Opening Ledger",
+                "Loading…",
+            ))
+        };
+
+        let first = raise();
+        assert_eq!(
+            crate::shell::catalogue::note_pending_notice(PKG, first),
+            None,
+            "precondition: nothing was pending for this package"
+        );
+
+        // The user presses Enter again while the first open is still in
+        // flight. This is the production sequence: raise the new notice,
+        // then hand the displaced one back so it can be taken down.
+        let second = raise();
+        let displaced = crate::shell::catalogue::note_pending_notice(PKG, second);
+        assert_eq!(
+            displaced,
+            Some(first),
+            "the notice the second open displaced has to be handed back"
+        );
+        if let Some(stale) = displaced {
+            chrome.borrow_mut().dismiss_notification(stale);
+        }
+        assert!(
+            !chrome.borrow().notifications().iter().any(|n| n.id == first),
+            "the displaced notice must leave the screen with the open it \
+             was describing, not linger until its own expiry"
+        );
+
+        // And the surviving one still settles the ordinary way, so the
+        // fix has not simply moved the stranding onto the newer notice.
+        const SURFACE: u64 = 918_275;
+        let store = crate::compositor::foreign::store();
+        store.forget(SURFACE);
+        {
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            crate::compositor::tab_binding::adopt_toplevel(
+                &mut tree,
+                SURFACE,
+                Some(PKG.to_string()),
+            );
+        }
+        let tile = vello::kurbo::Rect::new(0.0, 0.0, 120.0, 80.0);
+        store.publish_rgba(SURFACE, &vec![0; 120 * 80 * 4], 120, 80);
+        assert!(store.mark_presented(SURFACE, tile), "precondition: it presented");
+        assert!(
+            h.retire_notices_for_opened_windows(),
+            "the window arriving settles the open that is still live"
+        );
+        assert!(
+            chrome.borrow().notifications().is_empty(),
+            "both notices are accounted for: one displaced, one settled — \
+             nothing is left standing over the running app"
         );
         store.forget(SURFACE);
     }
@@ -17308,14 +17527,33 @@ mod overlay_event_absorb_tests {
         paint(h);
     }
 
+    /// Put every kind the registry knows on the strip, so a layout test
+    /// exercises the widest strip the palette can ever be asked to draw.
+    ///
+    /// The strip normally offers only the kinds a query turned up. That
+    /// is the product rule, and it is deliberately *narrower* than what
+    /// these layout tests are for: they pin the packing invariant, which
+    /// has to hold for the largest set, not for whatever a fixture query
+    /// happens to match.
+    fn offer_every_kind(h: &mut AbsorbHarness) -> Vec<crate::shell::search::ResourceKind> {
+        let kinds = h.host.search_registry.registered_kinds();
+        assert!(
+            kinds.len() >= 2,
+            "the registry must expose at least two kinds or the strip is \
+             not drawn at all and this test proves nothing"
+        );
+        h.host.search_available_kinds = kinds.clone();
+        kinds
+    }
+
     /// **Every filter has to be reachable at every width.**
     ///
     /// The strip used to stop painting at the first chip that did not
     /// fit, and a chip that is not painted has no rect — so the filter it
-    /// stands for could be listed by the registry and still be
-    /// unclickable. At 1600 px the five kinds of the day exactly filled
-    /// the row, so a sixth was invisible; under the test harness's own
-    /// metrics even `Folders` was dropped.
+    /// stands for could be offered and still be unclickable. At 1600 px
+    /// the five kinds of the day exactly filled the row, so a sixth was
+    /// invisible; under the test harness's own metrics even `Folders`
+    /// was dropped.
     ///
     /// Asserts on the rects the production `draw` cached, because that is
     /// the thing a click is hit-tested against.
@@ -17328,9 +17566,9 @@ mod overlay_event_absorb_tests {
             let mut h = build_harness_sized(vw, vh);
             h.host.set_palette_visible(true);
             h.host.force_palette_settled();
+            let kinds = offer_every_kind(&mut h);
             settle(&mut h, vw, vh);
 
-            let kinds = h.host.search_registry.registered_kinds();
             let rects = h.host.search_chip_rects.clone();
             assert_eq!(
                 rects.len(),
@@ -17405,15 +17643,11 @@ mod overlay_event_absorb_tests {
         let mut h = build_harness_sized(vw, vh);
         h.host.set_palette_visible(true);
         h.host.force_palette_settled();
-        settle(&mut h, vw, vh);
-
-        let last_kind = h
-            .host
-            .search_registry
-            .registered_kinds()
+        let last_kind = offer_every_kind(&mut h)
             .last()
             .cloned()
             .expect("the registry has kinds");
+        settle(&mut h, vw, vh);
         assert!(
             h.host.active_kind_filter.is_empty(),
             "the palette starts unfiltered"
@@ -17441,6 +17675,94 @@ mod overlay_event_absorb_tests {
         assert!(
             h.host.palette_visible(),
             "and the click must not be taken for a dismissal"
+        );
+    }
+
+    /// **The strip offers what the query found, and only when there is
+    /// a choice in it.**
+    ///
+    /// Every kind any provider could ever return used to be offered on
+    /// every query. A search with a single answer was therefore crowned
+    /// with nine kind chips and a three-way scope switch — twelve
+    /// controls over one row — and eight of those nine filtered to
+    /// nothing at all: pressing one emptied the list.
+    ///
+    /// One kind is not a choice, so the strip is not drawn; two or more
+    /// and it is, led by `All`.
+    #[test]
+    fn the_strip_offers_only_the_kinds_the_query_found() {
+        use crate::shell::search::ResourceKind;
+        let mut h = build_harness_sized(1280.0, 800.0);
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
+
+        // One kind on offer: nothing to choose between.
+        h.host.search_available_kinds = vec![ResourceKind::Application];
+        assert!(
+            h.host.palette_filter_kinds().is_empty(),
+            "a single kind is not a choice — filtering to the only kind \
+             present is a control whose one state is the one it is in"
+        );
+        settle(&mut h, 1280.0, 800.0);
+        assert!(
+            h.host.search_chip_rects.is_empty()
+                && h.host.search_all_chip_rect.area() <= 0.0,
+            "and nothing may be painted for it — a chip with no choice \
+             behind it still takes the eye, and a cached rect still \
+             answers clicks"
+        );
+
+        // Two: now there is a choice, and All leads it.
+        h.host.search_available_kinds =
+            vec![ResourceKind::Application, ResourceKind::File];
+        assert_eq!(
+            h.host.palette_filter_kinds(),
+            vec![ResourceKind::Application, ResourceKind::File],
+            "the strip names exactly what the query turned up"
+        );
+        settle(&mut h, 1280.0, 800.0);
+        assert_eq!(
+            h.host.search_chip_rects.len(),
+            2,
+            "both kinds are painted"
+        );
+        assert!(
+            h.host.search_all_chip_rect.area() > 0.0,
+            "and the reset chip is there to get back out of a narrowing"
+        );
+
+        // A kind no provider matched is never offered, however many
+        // providers could in principle return it.
+        assert!(
+            !h.host
+                .palette_filter_kinds()
+                .contains(&ResourceKind::Note),
+            "a filter to nothing is a trap, not a choice"
+        );
+    }
+
+    /// Narrowing must not remove the way back out.
+    ///
+    /// The kinds on the strip are computed from the *unfiltered* result
+    /// set precisely so that clicking `Files` leaves `Notes` on the
+    /// strip. Reading them off the filtered results instead would leave
+    /// the strip holding only the kind already selected — the one
+    /// control that could widen the search removed by the search.
+    #[test]
+    fn narrowing_to_one_kind_keeps_the_others_on_the_strip() {
+        use crate::shell::search::ResourceKind;
+        let mut h = build_harness_sized(1280.0, 800.0);
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
+        h.host.search_available_kinds =
+            vec![ResourceKind::Application, ResourceKind::File];
+        h.host.active_kind_filter = vec![ResourceKind::File];
+
+        assert_eq!(
+            h.host.palette_filter_kinds(),
+            vec![ResourceKind::Application, ResourceKind::File],
+            "narrowing to Files must leave Applications reachable, or the \
+             narrowing is a one-way door"
         );
     }
 
@@ -17508,6 +17830,15 @@ mod overlay_event_absorb_tests {
         let mut h = build_harness();
         h.host.set_palette_visible(true);
         h.host.force_palette_settled();
+        // `set_palette_visible` is the test-only door; the production
+        // open (`open_palette_with_scope`) clears `last_search_query` so
+        // the empty query still fans out and the strip learns what it
+        // found. Going in through the door means no search has run, so
+        // the strip is offered its kinds directly — same as
+        // `the_last_chip_can_be_clicked_at_the_narrowest_width`. What
+        // this test is about is the click, not where the kinds came
+        // from.
+        offer_every_kind(&mut h);
 
         assert!(
             h.host.active_kind_filter.is_empty(),
@@ -18637,7 +18968,7 @@ mod tests {
         );
         assert_eq!(
             theirs_sub.as_deref(),
-            Some("Opens beside · Office · dev.qos.elsewhere · from qOS main"),
+            Some("Opens beside · Office · from qOS main"),
         );
 
         // And the two are still one list. The palette draws a header

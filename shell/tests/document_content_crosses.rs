@@ -66,7 +66,7 @@ impl PeerPublishSink for Room {
     fn app_crdt_signed(&self, _: String, _: String, _: String, _: collab_types::SignedOp) {}
     fn app_crdt_snapshot(&self, _: String, _: String, _: String, _: Vec<u8>) {}
     fn app_presence(&self, _: String, _: String, _: Vec<u8>) {}
-    fn scrollback_request(&self, _: collab_types::ArtifactId, _: u64, _: u16) {}
+    fn scrollback_request(&self, _: &str, _: collab_types::ArtifactId, _: u64, _: u16) {}
 
     fn offer_blob(&self, _cluster_id: &str, hash: &str, bytes: &[u8]) -> bool {
         // The key is the content's identity. Taking bytes that hash to

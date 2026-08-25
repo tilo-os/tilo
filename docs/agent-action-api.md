@@ -154,11 +154,52 @@ list and an unfiltered dispatcher disagree and the list is merely advisory.
 
 The implementation the socket passes is `CapabilityVisibility`
 (`shell/src/shell/search/visibility.rs`), which resolves the active workspace,
-builds the actor for the local user, and asks that workspace's own capability
+builds the actor for whoever is calling, and asks that workspace's own capability
 model. It is fail-closed twice over: `decide_capability` denies unless something
 explicitly permits, and a session that cannot resolve a workspace at all errors
 rather than falling back to showing everything. A gate that opens when it cannot
 find its policy is not a gate.
+
+### Who is calling
+
+Both ops take an optional `agent`:
+
+```json
+{"op":"actions_enumerate","query":"","agent":"Claude"}
+{"op":"actions_invoke","provider":"actions","id":"window.new.terminal","agent":"Claude"}
+```
+
+Omitted is the person at the keyboard. The rest of this socket types and clicks
+on their behalf, so a harness driving its own machine is them, and every existing
+caller keeps working unchanged.
+
+Present, it is gated as that agent — `Workspace::actor_for_agent`, which carries
+the room but **no role**, the same principal `apps/agent` announces on its
+`Hello` and the same one `agent_opens` decides an app-open against. That is the
+whole difference: an agent holds exactly what somebody granted it by name, so a
+grant can be revoked without revoking the person, and the room's history says the
+agent made the change. Without it an agent driving the desktop held the person's
+own role, and there was nothing to revoke short of revoking them.
+
+It has to be carried on both ops. Enumerating as the agent and invoking as the
+person would make the gate advisory in the one direction that matters: the
+surface a caller was shown would stop being the surface it can reach.
+
+An **empty** name is refused rather than read as "nobody" — otherwise the way
+past this gate would be to announce nothing at all and be handed the person's
+surface. `agent_opens::decide` refuses the same thing for the same reason: a
+capability names a subject, and the empty string is not one.
+
+The name is an announcement, not proof. It is unauthenticated here for exactly
+the reason it is on the collaboration socket: anything that can reach the socket
+can call itself whatever it likes. It narrows a grant to the participant it was
+written for without proving the caller is that participant. Signing the handshake
+is what would make it identity.
+
+Grants match the announced string, so `agent:claude` does not cover an agent
+announcing `Claude`. A mismatch fails closed — the agent goes dark rather than
+over-reaching — but it goes dark quietly, so keep the name a room grants and the
+name a participant announces the same on both doors.
 
 ### What is gated, and what is not
 
@@ -200,6 +241,14 @@ The socket path comes from `$QOS_TEST_CONTROL`, or `--socket`. The shim never
 fabricates an action list or a success: if the compositor is unreachable, or
 answers `{"err": ...}`, the model receives that as a tool error with the
 compositor's own code and message intact.
+
+Every call it makes announces an agent — `Claude` by default, matching
+`apps/agent`'s own `--name`, overridable with `--agent` or `$QOS_AGENT_NAME`. So
+a model behind this shim is gated as that agent and not as the person whose
+desktop it is, and until somebody grants the agent a capability in the active
+room it can see the room's documents and open its overlays and nothing else.
+`--selftest` says which of those it is, because "connected, and permitted
+nothing" and "not connected" must not look alike.
 
 ## Source of truth
 

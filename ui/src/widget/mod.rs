@@ -568,6 +568,15 @@ pub trait Widget {
     /// buttons and its Ctrl+K entries share one dispatch + undo path, and the
     /// user's Ctrl+Z reverts a button-driven action just like a palette one.
     ///
+    /// What makes that last sentence true is a rule one layer down. Heads are
+    /// all a widget reports — it has no identity to give — so the entry lands
+    /// **unattributed**, while the interactive Ctrl+Z always undoes as somebody
+    /// (`undo_as(Some(local_author))`). The two only meet because an
+    /// author-scoped undo also claims unattributed entries; see
+    /// `UndoLog::claimable_by`. Match on the author alone and every button in
+    /// every app goes quietly un-undoable, with this comment still describing
+    /// what was meant.
+    ///
     /// Rising-edge: reading MUST clear it (return `Some` once per dispatched
     /// batch, then `None`). Default: nothing to record.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
@@ -919,7 +928,7 @@ pub use history::{
     HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay,
     format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
 };
-pub use activity_timeline::ActivityTimeline;
+pub use activity_timeline::{ActivityTimeline, BandUndoRequest};
 pub use history_scrubber::HistoryScrubber;
 // The op/artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
 // caller can build one without naming the collab-types crate directly.

@@ -24,13 +24,8 @@ use crate::network::protocol::NeighbourMsg;
 use crate::network::replica::WorkspaceTreeReplica;
 #[cfg(test)]
 use crate::shell::state::WorkspaceTree;
-use crate::shell::state::WorkspaceTreeHandle;
+use crate::shell::state::{RoomId, WorkspaceTreeHandle};
 
-/// Default workspace topic id that v1 publishes/subscribes on. Per-
-/// workspace routing is a Phase 3 follow-up — every shell currently
-/// shares the same gossipsub topic so a v1 LAN demo "just works"
-/// without per-workspace negotiation.
-pub const DEFAULT_WS_TOPIC: u64 = 0;
 
 /// Largest app-document snapshot this shell will put on the gossip
 /// topic, in bytes.
@@ -156,6 +151,26 @@ fn prune_expired(pending: &mut std::collections::HashMap<String, PendingInvite>)
     pending.retain(|_, held| held.expires_unix_seconds > now);
 }
 
+/// The room a pointer-presence key is scoped to, or `None`.
+///
+/// The shell publishes cursor presence under the broadcast scope it set
+/// in `compositor::hosted` — `PresenceKey::Workspace { id: <room> }` —
+/// so the room a pointer belongs in travels inside the frame's own
+/// routing key. Reading it back here is what lets a cursor go to that
+/// room's topic instead of to every machine on the network.
+///
+/// Every other key shape (a widget path, a tab, a broadcast view) names
+/// no room. Those are not published by this path, and if one ever were,
+/// `None` drops it rather than guessing a room for it.
+fn room_of_presence_key(key: &str) -> Option<RoomId> {
+    match serde_json::from_str::<ui::presence::PresenceKey>(key).ok()? {
+        ui::presence::PresenceKey::Workspace { id } => {
+            RoomId::parse(&id).filter(|r| !r.is_nil())
+        }
+        _ => None,
+    }
+}
+
 /// Shell-side handle for the peer-sync subsystem.
 ///
 /// Owns the tokio runtime that hosts the [`Actor`], the per-workspace
@@ -202,6 +217,13 @@ pub struct ShellNetwork {
     /// When [`Self::kick_periodic_sync`] last asked. `None` until the
     /// first tick, so the first frame after startup kicks a round.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
+    /// Rooms whose gossip topic this session is currently subscribed to.
+    ///
+    /// Kept in step with the tree's own room list by
+    /// [`Self::sync_room_subscriptions`]. It is the whole of what this
+    /// machine receives: a room absent from here is a room whose traffic
+    /// never arrives, because nothing is listening on its topic.
+    joined_rooms: Mutex<std::collections::HashSet<RoomId>>,
     /// Names this machine has promised to whoever redeems each invite
     /// it has minted, keyed by that **invitation** — not by its room.
     ///
@@ -386,6 +408,10 @@ pub struct InboundAppCrdtSigned {
 /// requested range.
 #[derive(Debug, Clone)]
 pub struct InboundScrollbackRequest {
+    /// The room the request arrived on. The answer is published back
+    /// onto it, so a page of history goes to the room that asked and
+    /// nowhere else.
+    pub room: RoomId,
     /// Hashed libp2p peer id of the asker; the broker's response
     /// uses this to mark its own response as a reply to that peer
     /// (i.e. fills `ScrollbackResponse::responder` with `self`, not
@@ -519,6 +545,7 @@ impl ShellNetwork {
             local_peer_id,
             listen_addrs,
             last_sync_kick: Mutex::new(None),
+            joined_rooms: Mutex::new(std::collections::HashSet::new()),
             pending_invites: Mutex::new(std::collections::HashMap::new()),
             redeemed_invites: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
@@ -541,11 +568,6 @@ impl ShellNetwork {
         self.local_peer_hash
     }
 
-    /// Workspace topic the next [`Self::publish_presence`] should
-    /// publish to. v1 hard-codes [`DEFAULT_WS_TOPIC`] because the actor
-    /// only joins the default workspace at startup; per-workspace
-    /// routing arrives alongside the workspace-id resolver in a Phase
-    /// 3 follow-up.
     /// What the peers in `cluster_id` are called and what they were
     /// admitted as, keyed by the peer handle presence frames carry.
     ///
@@ -571,8 +593,93 @@ impl ShellNetwork {
         labels
     }
 
-    pub fn active_ws_for_publish(&self) -> u64 {
-        DEFAULT_WS_TOPIC
+    /// The room a cluster id names, or `None` if it names no room.
+    ///
+    /// An app addresses its traffic by `(app_id, cluster_id, record_id)`
+    /// and the cluster *is* the room's uuid. A value that is not a uuid,
+    /// or is the unminted nil sentinel, is not a room — so it has no
+    /// topic, and refusing to publish is the fail-closed direction. The
+    /// alternative, a fallback topic, is the hole this replaces: it made
+    /// every unaddressed payload a broadcast to every machine.
+    fn room_of(cluster_id: &str) -> Option<RoomId> {
+        RoomId::parse(cluster_id).filter(|r| !r.is_nil())
+    }
+
+    /// Put `msg` on `room`'s topic.
+    ///
+    /// The single door out. Every publish names the room it belongs to,
+    /// so there is no path by which a payload reaches a topic other than
+    /// its own. `try_send` failures (full command channel, actor gone)
+    /// are swallowed: the traffic here is either idempotent (CRDT
+    /// deltas, which the next one re-carries) or best-effort (presence),
+    /// and neither is worth stalling the render loop for.
+    fn publish_to(&self, room: RoomId, msg: NeighbourMsg) {
+        let _ = self.cmd_tx.try_send(NetCmd::Publish { room, msg });
+    }
+
+    /// Put `msg` on the topic of the room `cluster_id` names, or drop it
+    /// if it names none.
+    fn publish_to_cluster(&self, cluster_id: &str, what: &str, msg: NeighbourMsg) {
+        let Some(room) = Self::room_of(cluster_id) else {
+            tracing::debug!(
+                cluster = %cluster_id,
+                kind = %what,
+                "shell_network: no room to publish to; dropped rather than broadcast",
+            );
+            return;
+        };
+        self.publish_to(room, msg);
+    }
+
+    /// Bring the actor's topic subscriptions in line with the rooms this
+    /// session is actually in.
+    ///
+    /// Called on every sync kick and directly after an invite is
+    /// accepted. Joining is what makes a room's traffic arrive; leaving
+    /// is what makes it stop — which is the half that used not to exist,
+    /// because there was one topic and it was never left.
+    pub fn sync_room_subscriptions(&self) {
+        let Ok(replica) = self.replica.lock() else {
+            return;
+        };
+        let current: std::collections::HashSet<RoomId> = replica
+            .tree
+            .read()
+            .rooms()
+            .into_iter()
+            .filter(|r| !r.is_nil())
+            .collect();
+        drop(replica);
+
+        let Ok(mut joined) = self.joined_rooms.lock() else {
+            return;
+        };
+        for room in current.difference(&joined).copied().collect::<Vec<_>>() {
+            if self
+                .cmd_tx
+                .try_send(NetCmd::JoinRoom {
+                    room,
+                    on_event: self.event_tx.clone(),
+                })
+                .is_ok()
+            {
+                joined.insert(room);
+            }
+        }
+        for room in joined.difference(&current).copied().collect::<Vec<_>>() {
+            if self.cmd_tx.try_send(NetCmd::LeaveRoom { room }).is_ok() {
+                joined.remove(&room);
+            }
+        }
+    }
+
+    /// The rooms this session is subscribed to right now. For tests and
+    /// diagnostics.
+    pub fn joined_rooms(&self) -> Vec<RoomId> {
+        self.joined_rooms
+            .lock()
+            .map(|j| j.iter().copied().collect())
+            .unwrap_or_default()
     }
 
     /// Shared handle to the inbound-presence buffer. The shell's
@@ -585,14 +692,23 @@ impl ShellNetwork {
         Arc::clone(&self.inbound_presence)
     }
 
-    /// Forward a local-cursor presence move to the active workspace's
-    /// peers. Throttling lives upstream in the toolkit
+    /// Forward a local-cursor presence move to the peers in the room the
+    /// key is scoped to.
+    ///
+    /// A pointer publish is scoped by its own key: the shell sets the
+    /// broadcast scope to `PresenceKey::Workspace { id: <room> }`
+    /// (`compositor::hosted`), so the room the cursor belongs in is
+    /// already inside the frame and does not need to be guessed. A key
+    /// that names no room is dropped — a cursor with nowhere to be is
+    /// not a reason to put one on every screen on the network.
+    ///
+    /// Throttling lives upstream in the toolkit
     /// (`pointer_broadcast_allowed`); this method just packages the
-    /// event into a `NetCmd::Publish`. `try_send` failures (full
-    /// command channel, actor dropped) are intentionally swallowed —
-    /// presence is best-effort and a momentary backlog of cursor
-    /// deltas should never block the render loop.
+    /// event into a `NetCmd::Publish`.
     pub fn publish_presence(&self, key: String, point: (f64, f64)) {
+        let Some(room) = room_of_presence_key(&key) else {
+            return;
+        };
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -604,10 +720,7 @@ impl ShellNetwork {
             point,
             ts,
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        self.publish_to(room, msg);
     }
 
     /// Adapter: queue a received presence move into the inbound buffer
@@ -666,14 +779,11 @@ impl ShellNetwork {
         let msg = NeighbourMsg::AppCrdtIncremental {
             peer: self.local_peer_id_hash(),
             app_id,
-            cluster_id,
+            cluster_id: cluster_id.clone(),
             record_id,
             data,
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        self.publish_to_cluster(&cluster_id, "app-crdt increment", msg);
     }
 
     /// Offer the room any content this frame newly refers to, and **ask** the
@@ -723,7 +833,14 @@ impl ShellNetwork {
                 obs.missing_ancestors,
             );
         }
-        let ws = self.active_ws_for_publish();
+        let Some(room) = Self::room_of(cluster_id) else {
+            tracing::warn!(
+                cluster = %cluster_id, record = %record_id,
+                "shell_network: this document's cluster names no room, so its content \
+                 cannot be asked for or offered; images stay placeholders",
+            );
+            return;
+        };
         for hash in &obs.missing {
             if !relay.should_ask(cluster_id, hash) {
                 continue;
@@ -738,7 +855,7 @@ impl ShellNetwork {
                 cluster_id: cluster_id.to_string(),
                 hash: hash.clone(),
             };
-            if self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_err() {
+            if self.cmd_tx.try_send(NetCmd::Publish { room, msg }).is_err() {
                 tracing::warn!(
                     room = %cluster_id, hash = %hash,
                     "shell_network: could not send the request for this content; \
@@ -788,7 +905,14 @@ impl ShellNetwork {
             return;
         };
         let count = chunks.len() as u32;
-        let ws = self.active_ws_for_publish();
+        let Some(room) = Self::room_of(cluster_id) else {
+            tracing::warn!(
+                cluster = %cluster_id, hash = %hash,
+                "shell_network: this content's cluster names no room, so there is nowhere \
+                 to send it; peers will show a placeholder",
+            );
+            return;
+        };
         let mut sent = 0u32;
         for (index, data) in chunks.into_iter().enumerate() {
             let msg = NeighbourMsg::BlobChunk {
@@ -799,7 +923,7 @@ impl ShellNetwork {
                 count,
                 data,
             };
-            if self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok() {
+            if self.cmd_tx.try_send(NetCmd::Publish { room, msg }).is_ok() {
                 sent += 1;
             }
         }
@@ -927,8 +1051,15 @@ impl ShellNetwork {
             cluster_id: cluster_id.to_string(),
             hash: hash.to_string(),
         };
-        let ws = self.active_ws_for_publish();
-        if self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_err() {
+        let Some(room) = Self::room_of(cluster_id) else {
+            tracing::warn!(
+                cluster = %cluster_id, hash = %hash,
+                "shell_network: this content's cluster names no room, so nobody can be \
+                 asked for it",
+            );
+            return;
+        };
+        if self.cmd_tx.try_send(NetCmd::Publish { room, msg }).is_err() {
             tracing::warn!(
                 room = %cluster_id, hash = %hash,
                 "shell_network: could not ask the room for content an app is waiting on",
@@ -1066,14 +1197,11 @@ impl ShellNetwork {
         let msg = NeighbourMsg::AppCrdtIncrementalSigned {
             peer: self.local_peer_id_hash(),
             app_id,
-            cluster_id,
+            cluster_id: cluster_id.clone(),
             record_id,
             envelope: Box::new(envelope),
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        self.publish_to_cluster(&cluster_id, "signed app-crdt increment", msg);
     }
 
     /// Adapter: queue a received `AppCrdtIncrementalSigned` into the
@@ -1115,13 +1243,10 @@ impl ShellNetwork {
         let msg = NeighbourMsg::AppPresence {
             peer: self.local_peer_id_hash(),
             app_id,
-            cluster_id,
+            cluster_id: cluster_id.clone(),
             frame,
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        self.publish_to_cluster(&cluster_id, "app presence", msg);
     }
 
     /// Shared handle to the inbound app-presence buffer, drained by the
@@ -1198,14 +1323,11 @@ impl ShellNetwork {
         let msg = NeighbourMsg::AppCrdtSnapshot {
             peer: self.local_peer_id_hash(),
             app_id,
-            cluster_id,
+            cluster_id: cluster_id.clone(),
             record_id,
             data,
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        self.publish_to_cluster(&cluster_id, "app-crdt snapshot", msg);
     }
 
     /// Record that somebody in `cluster_id` needs a whole document.
@@ -1294,14 +1416,20 @@ impl ShellNetwork {
         Arc::clone(&self.inbound_scrollback_response)
     }
 
-    /// Phase 6: publish a `NeighbourMsg::ScrollbackRequest` to the
-    /// default workspace topic. The broker calls this when a local
-    /// app's `FetchScrollback` returned `exhausted=true` with an
-    /// empty batch (the broker has nothing more in-memory, but the
-    /// app still wants the range). `try_send` failures are
-    /// swallowed; the app can re-issue the request after a back-off.
+    /// Ask a room whether anyone still holds a range of an artifact's
+    /// history. The broker calls this when a local app's
+    /// `FetchScrollback` returned `exhausted=true` with an empty batch
+    /// (the broker has nothing more in memory, but the app still wants
+    /// the range).
+    ///
+    /// `cluster_id` is the asking route's room. It is not decoration:
+    /// a `ScrollbackRequest` names an artifact and a range, and an
+    /// artifact id says nothing about which room it belongs to — so
+    /// without the room from the route, the only way to ask would be to
+    /// ask everybody.
     pub fn publish_scrollback_request(
         &self,
+        cluster_id: &str,
         artifact: collab_types::ArtifactId,
         before_seq: u64,
         max: u16,
@@ -1312,17 +1440,20 @@ impl ShellNetwork {
             max,
             requester: self.local_peer_id_hash(),
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        self.publish_to_cluster(cluster_id, "scrollback request", msg);
     }
 
-    /// Phase 6: publish a `NeighbourMsg::ScrollbackResponse`. The
+    /// Answer a scrollback request with the ops this session holds. The
     /// broker calls this when it sees a `ScrollbackRequest` for an
     /// artifact whose log it has matching ops for.
+    ///
+    /// `room` is the room the request arrived on, carried through the
+    /// inbound queue rather than re-derived: an answer goes back where
+    /// the question came from, so a page of somebody's history cannot
+    /// be published into a room that never asked for it.
     pub fn publish_scrollback_response(
         &self,
+        room: RoomId,
         artifact: collab_types::ArtifactId,
         ops: Vec<Box<collab_types::SignedOp>>,
     ) {
@@ -1331,10 +1462,7 @@ impl ShellNetwork {
             ops,
             responder: self.local_peer_id_hash(),
         };
-        let _ = self.cmd_tx.try_send(NetCmd::Publish {
-            ws: self.active_ws_for_publish(),
-            msg,
-        });
+        self.publish_to(room, msg);
     }
 
     /// Adapter: queue a received `ScrollbackRequest` for the broker
@@ -1342,6 +1470,7 @@ impl ShellNetwork {
     /// calls this when it sees the inbound `NeighbourMsg`.
     pub fn handle_scrollback_request_message(
         &self,
+        room: RoomId,
         requester: u64,
         artifact: collab_types::ArtifactId,
         before_seq: u64,
@@ -1349,6 +1478,7 @@ impl ShellNetwork {
     ) {
         if let Ok(mut buf) = self.inbound_scrollback_request.lock() {
             buf.push(InboundScrollbackRequest {
+                room,
                 requester,
                 artifact,
                 before_seq,
@@ -1374,18 +1504,17 @@ impl ShellNetwork {
         }
     }
 
-    /// Subscribe the actor to the default workspace topic, registering
-    /// our `event_tx` as the per-workspace event sink. v1 uses a
-    /// single topic ([`DEFAULT_WS_TOPIC`]); per-workspace routing
-    /// lands in a Phase 3 follow-up. Returns whether the command was
-    /// successfully queued.
-    pub fn join_default_workspace(&self) -> bool {
-        self.cmd_tx
-            .try_send(NetCmd::JoinWorkspace {
-                ws: DEFAULT_WS_TOPIC,
-                on_event: self.event_tx.clone(),
-            })
-            .is_ok()
+    /// Subscribe the actor to every room this session is in, registering
+    /// our `event_tx` as each one's event sink.
+    ///
+    /// Called at startup; [`Self::sync_room_subscriptions`] keeps it
+    /// current afterwards. Returns whether this session is now
+    /// subscribed to anything at all — a machine in no room subscribes
+    /// to no topic, which is correct and is also what "collaboration is
+    /// off" looks like on the wire.
+    pub fn join_rooms(&self) -> bool {
+        self.sync_room_subscriptions();
+        !self.joined_rooms().is_empty()
     }
 
     /// The dial address this shell publishes in an invite.
@@ -1625,10 +1754,7 @@ impl ShellNetwork {
             {
                 *invite = Some(id.clone());
             }
-            let _ = self.cmd_tx.try_send(NetCmd::Publish {
-                ws: DEFAULT_WS_TOPIC,
-                msg,
-            });
+            self.publish_room_scoped(msg);
         }
     }
 
@@ -1660,13 +1786,18 @@ impl ShellNetwork {
             let mut tree = replica.tree.write();
             accept_invite_into(&mut tree, local, token)?
         };
-        // Dial what the token named. mdns finds peers on a LAN, but an
-        // invite that carries an address and never uses it leaves the
-        // guest waiting on discovery for a host it was handed directions
-        // to. `validate_invite_token` has already run inside
+        // Admit and dial what the token named. mdns finds peers on a
+        // LAN but no longer meshes with them — sharing a network is not
+        // being in a room together — so redeeming an invite is what
+        // turns a discovered machine into a peer this session talks to.
+        // `validate_invite_token` has already run inside
         // `accept_invite_into`, so re-reading the token here cannot let
-        // an unverified address through.
+        // an unverified peer or address through: the id is cross-checked
+        // against the public key the signature verified with.
         if let Ok(parsed) = crate::network::invite::validate_invite_token(token) {
+            if let Ok(peer) = parsed.owner_peer_id.parse::<libp2p::PeerId>() {
+                let _ = self.cmd_tx.try_send(NetCmd::AdmitPeer { peer });
+            }
             if let Ok(addr) = parsed.owner_addr.parse::<libp2p::Multiaddr>() {
                 let _ = self.cmd_tx.try_send(NetCmd::Connect { addr });
             }
@@ -1682,12 +1813,21 @@ impl ShellNetwork {
         replica.request_sync();
         let outgoing = replica.drain_outgoing();
         drop(replica);
+        // Subscribe before asking: the answer comes back on the new
+        // room's topic, and a topic nobody is listening on delivers
+        // nothing.
+        self.sync_room_subscriptions();
         self.publish_outgoing(outgoing);
         Ok(room)
     }
 
     /// Ask every room this machine is in for whatever it is missing,
     /// and publish the requests.
+    ///
+    /// The replica already asks room by room ([`WorkspaceTreeReplica::
+    /// request_sync`] stashes one `SyncReq` per room, each carrying that
+    /// room's heads), so each request goes out on its own room's topic
+    /// and is seen only by that room's members.
     pub fn publish_sync_requests(&self) {
         let Ok(replica) = self.replica.lock() else {
             return;
@@ -1696,6 +1836,30 @@ impl ShellNetwork {
         let outgoing = replica.drain_outgoing();
         drop(replica);
         self.publish_outgoing(outgoing);
+    }
+
+    /// Publish a replica-produced message onto the topic of the room it
+    /// names.
+    ///
+    /// `SyncReq` and `SyncResp` both carry their room — that is what
+    /// scopes the answer, and it is now what scopes delivery too. A
+    /// message naming no room (or one this transport cannot parse) is
+    /// dropped: there is no topic that means "everyone", and inventing
+    /// one is what this replaces.
+    fn publish_room_scoped(&self, msg: NeighbourMsg) {
+        let named = match &msg {
+            NeighbourMsg::SyncReq { room, .. } | NeighbourMsg::SyncResp { room, .. } => {
+                room.as_str()
+            }
+            _ => "",
+        };
+        let Some(room) = Self::room_of(named) else {
+            tracing::debug!(
+                "shell_network: a replica message named no room; dropped rather than broadcast",
+            );
+            return;
+        };
+        self.publish_to(room, msg);
     }
 
     /// [`Self::publish_sync_requests`], rate-limited to
@@ -1713,6 +1877,10 @@ impl ShellNetwork {
         }
         *last = Some(now);
         drop(last);
+        // Membership first: a room joined since the last kick has to be
+        // subscribed before its request goes out, and a room left has to
+        // be unsubscribed before this session is asked about it again.
+        self.sync_room_subscriptions();
         self.publish_sync_requests();
     }
 
@@ -1765,7 +1933,12 @@ impl ShellNetwork {
                 }
                 continue;
             }
-            if let NetEvent::Msg { ws: _, peer, msg } = event {
+            if let NetEvent::Msg {
+                room: arrived_on,
+                peer,
+                msg,
+            } = event
+            {
                 // Presence updates skip the replica entirely — they're
                 // ephemeral overlay state, not CRDT state — and land
                 // in the inbound buffer the shell's frame-tick drains.
@@ -1976,7 +2149,11 @@ impl ShellNetwork {
                 {
                     if requester != self.local_peer_hash {
                         self.handle_scrollback_request_message(
-                            requester, artifact, before_seq, max,
+                            arrived_on,
+                            requester,
+                            artifact,
+                            before_seq,
+                            max,
                         );
                     }
                     continue;
@@ -2074,6 +2251,7 @@ pub(crate) fn shell_network_for_test_with_store(
         local_peer_id: libp2p::PeerId::random(),
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
         last_sync_kick: Mutex::new(None),
+        joined_rooms: Mutex::new(std::collections::HashSet::new()),
         pending_invites: Mutex::new(std::collections::HashMap::new()),
         redeemed_invites: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
@@ -2095,6 +2273,25 @@ pub(crate) fn shell_network_for_test_with_store(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A room id these tests can name. Distinct from the nil uuid,
+    /// which names no room and is refused by every publish path.
+    const A_ROOM: &str = "6b3f9a10-0000-4000-8000-00000000000a";
+    /// A second room, for the assertions about traffic *not* crossing.
+    const ANOTHER_ROOM: &str = "6b3f9a10-0000-4000-8000-00000000000b";
+
+    fn a_room() -> RoomId {
+        RoomId::parse(A_ROOM).expect("a valid room id")
+    }
+
+    /// The presence key the shell publishes a cursor under: the room's
+    /// own id, which is how the frame carries its scope.
+    fn presence_key_for(room: &str) -> String {
+        serde_json::to_string(&ui::presence::PresenceKey::Workspace {
+            id: room.to_string(),
+        })
+        .expect("presence keys serialise")
+    }
 
     #[test]
     fn shell_network_spawns_with_default_keypair() {
@@ -2566,7 +2763,7 @@ mod tests {
         host_net
             .event_tx
             .try_send(crate::network::actor::NetEvent::Msg {
-                ws: DEFAULT_WS_TOPIC,
+                room,
                 peer: guest_peer,
                 msg: NeighbourMsg::SyncReq {
                     since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new())
@@ -2603,12 +2800,12 @@ mod tests {
     /// in one call. Both halves are checked on the real objects: the
     /// tree's room after the call, and the command the network actor was
     /// handed.
-    /// Build the inbound event a LAN peer's app-CRDT publish arrives as.
+    /// Build the inbound event a peer's app-CRDT publish arrives as.
     fn app_crdt_event(cluster_id: &str, from_peer_hash: u64) -> NetEvent {
         NetEvent::Msg {
-            // The shared gossipsub topic every machine subscribes to,
-            // which is exactly how such a frame reaches us today.
-            ws: DEFAULT_WS_TOPIC,
+            // Arriving on the room's own topic, which is now the only
+            // way such a frame can reach this session at all.
+            room: RoomId::parse(cluster_id).unwrap_or_else(RoomId::nil),
             peer: libp2p::PeerId::random(),
             msg: NeighbourMsg::AppCrdtIncremental {
                 peer: from_peer_hash,
@@ -2690,6 +2887,7 @@ mod tests {
         );
         let host_room = host_ws.room;
         let owner_key = libp2p::identity::Keypair::generate_ed25519();
+        let host_peer_id = owner_key.public().to_peer_id().to_base58();
         let token = make_invite_token(&owner_key, &host_ws, "/ip4/127.0.0.1/tcp/4001", 3600)
             .expect("the host issues an invite");
 
@@ -2711,11 +2909,26 @@ mod tests {
             "the guest's workspace now addresses the inviter's room",
         );
 
-        // Two commands, in this order: dial the address the token named,
-        // then ask that room for a catch-up. The dial is what makes the
-        // address in an invite mean anything — mdns finds peers on a
-        // LAN, but a guest handed directions should not have to wait for
-        // discovery to find the host it was pointed at.
+        // Redeeming the invite is what admits the host. Discovery does
+        // not: mDNS reports every qOS machine on the network, and being
+        // reachable is not being in a room together — so a peer joins
+        // this session's gossip mesh only because a signed invite named
+        // it. The id here is the one the signature was verified with.
+        let admit = cmd_rx
+            .try_recv()
+            .expect("accepting an invite must admit the peer that issued it");
+        match admit {
+            NetCmd::AdmitPeer { peer } => assert_eq!(
+                peer.to_base58(),
+                host_peer_id,
+                "the admitted peer must be the one the token was signed by",
+            ),
+            other => panic!("expected NetCmd::AdmitPeer, got {other:?}"),
+        }
+        // Then dial the address the token named. The dial is what makes
+        // the address in an invite mean anything — a guest handed
+        // directions should not have to wait for discovery to find the
+        // host it was pointed at.
         let dial = cmd_rx
             .try_recv()
             .expect("accepting an invite must dial the address it named");
@@ -2727,12 +2940,29 @@ mod tests {
             ),
             other => panic!("expected NetCmd::Connect, got {other:?}"),
         }
+        // Subscribing to the joined room comes before asking it
+        // anything: the answer arrives on that topic, and a topic
+        // nobody is listening on delivers nothing.
+        let join = cmd_rx
+            .try_recv()
+            .expect("accepting an invite must subscribe to the room it joined");
+        match join {
+            NetCmd::JoinRoom { room, .. } => assert_eq!(
+                room, host_room,
+                "the subscription must be to the room just joined",
+            ),
+            other => panic!("expected NetCmd::JoinRoom, got {other:?}"),
+        }
         let cmd = cmd_rx
             .try_recv()
             .expect("accepting an invite must ask the room for a catch-up");
         match cmd {
-            NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+            NetCmd::Publish { room: topic, msg } => {
+                assert_eq!(
+                    topic, host_room,
+                    "the request must ride the joined room's own topic, \
+                     not a topic every machine shares",
+                );
                 match msg {
                     NeighbourMsg::SyncReq { room, .. } => assert_eq!(
                         room,
@@ -2785,13 +3015,18 @@ mod tests {
         // receiver and can drain commands without spinning up libp2p.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xABCDu64);
-        net.publish_presence("local-cursor".into(), (100.0, 200.0));
+        let cursor_key = presence_key_for(A_ROOM);
+        net.publish_presence(cursor_key.clone(), (100.0, 200.0));
         let cmd = cmd_rx
             .try_recv()
             .expect("publish_presence must enqueue a NetCmd");
         match cmd {
-            NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+            NetCmd::Publish { room, msg } => {
+                assert_eq!(
+                    room,
+                    a_room(),
+                    "a cursor goes to the room its key is scoped to",
+                );
                 match msg {
                     NeighbourMsg::PresenceMoved {
                         peer,
@@ -2806,7 +3041,7 @@ mod tests {
                         // than a hashed session handle.
                         assert_eq!(user, crate::shell::state::local_user_id());
                         assert!(!user.is_empty());
-                        assert_eq!(key, "local-cursor");
+                        assert_eq!(key, cursor_key);
                         assert_eq!(point, (100.0, 200.0));
                     }
                     other => panic!("expected PresenceMoved, got {other:?}"),
@@ -2826,10 +3061,10 @@ mod tests {
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
 
         // Nobody has arrived, so this document's state is carried by the
-        // deltas and has no business on a broadcast topic.
+        // deltas and has no business on the room's topic.
         net.publish_app_crdt_snapshot(
             "dev.qos.word-processor".into(),
-            "00000000-0000-0000-0000-000000000000".into(),
+            A_ROOM.into(),
             "file:/work/report.odt".into(),
             vec![0xAA, 0xBB, 0xCC],
         );
@@ -2838,10 +3073,10 @@ mod tests {
             "a snapshot nobody asked for must not be published",
         );
 
-        net.note_snapshot_request("00000000-0000-0000-0000-000000000000");
+        net.note_snapshot_request(A_ROOM);
         net.publish_app_crdt_snapshot(
             "dev.qos.word-processor".into(),
-            "00000000-0000-0000-0000-000000000000".into(),
+            A_ROOM.into(),
             "file:/work/report.odt".into(),
             vec![0xAA, 0xBB, 0xCC],
         );
@@ -2849,8 +3084,8 @@ mod tests {
             .try_recv()
             .expect("publish_app_crdt_snapshot must enqueue a NetCmd");
         match cmd {
-            NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+            NetCmd::Publish { room, msg } => {
+                assert_eq!(room, a_room());
                 match msg {
                     NeighbourMsg::AppCrdtSnapshot {
                         peer,
@@ -2861,7 +3096,7 @@ mod tests {
                     } => {
                         assert_eq!(peer, 0xCAFEu64);
                         assert_eq!(app_id, "dev.qos.word-processor");
-                        assert_eq!(cluster_id, "00000000-0000-0000-0000-000000000000");
+                        assert_eq!(cluster_id, A_ROOM);
                         assert_eq!(record_id, "file:/work/report.odt");
                         assert_eq!(data, vec![0xAA, 0xBB, 0xCC]);
                     }
@@ -2884,10 +3119,10 @@ mod tests {
         // consequence is that nothing goes out.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
-        net.note_snapshot_request("00000000-0000-0000-0000-000000000000");
+        net.note_snapshot_request(A_ROOM);
         net.publish_app_crdt_snapshot(
             "dev.qos.word-processor".into(),
-            "00000000-0000-0000-0000-000000000000".into(),
+            A_ROOM.into(),
             String::new(),
             vec![0u8; MAX_APP_SNAPSHOT_BYTES + 1],
         );
@@ -2898,10 +3133,10 @@ mod tests {
 
         // Exactly at the cap still goes out — the boundary belongs to
         // the documents that fit, not to the ones that don't.
-        net.note_snapshot_request("00000000-0000-0000-0000-000000000000");
+        net.note_snapshot_request(A_ROOM);
         net.publish_app_crdt_snapshot(
             "dev.qos.word-processor".into(),
-            "00000000-0000-0000-0000-000000000000".into(),
+            A_ROOM.into(),
             String::new(),
             vec![0u8; MAX_APP_SNAPSHOT_BYTES],
         );
@@ -2921,7 +3156,7 @@ mod tests {
         // the commits after it stay local until somebody else arrives.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
-        let room = "00000000-0000-0000-0000-000000000000";
+        let room = A_ROOM;
 
         net.note_snapshot_request(room);
         for _ in 0..4 {
@@ -2939,7 +3174,7 @@ mod tests {
         );
 
         // A different room's arrival does not release this one's.
-        net.note_snapshot_request("00000000-0000-0000-0000-000000000001");
+        net.note_snapshot_request(ANOTHER_ROOM);
         net.publish_app_crdt_snapshot(
             "dev.qos.word-processor".into(),
             room.into(),
@@ -3065,16 +3300,16 @@ mod tests {
 
     #[test]
     fn publish_app_crdt_incremental_emits_a_publish_command() {
-        // Phase 2 bridge: the broker should be able to forward a
-        // local `SyncIncremental` as a `NeighbourMsg::AppCrdtIncremental`.
-        // Verify the wrapping is correct (peer id stamped, payload
-        // round-trips verbatim, default workspace topic) without
+        // The broker forwards a local `SyncIncremental` as a
+        // `NeighbourMsg::AppCrdtIncremental`. Verify the wrapping is
+        // correct — peer id stamped, payload verbatim, and the room's
+        // own topic rather than one every machine shares — without
         // spinning up libp2p.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
         net.publish_app_crdt_incremental(
             "terminal".into(),
-            "00000000-0000-0000-0000-000000000000".into(),
+            A_ROOM.into(),
             "file:/work/notes.md".into(),
             vec![0xAA, 0xBB, 0xCC],
         );
@@ -3082,8 +3317,8 @@ mod tests {
             .try_recv()
             .expect("publish_app_crdt_incremental must enqueue a NetCmd");
         match cmd {
-            NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+            NetCmd::Publish { room, msg } => {
+                assert_eq!(room, a_room());
                 match msg {
                     NeighbourMsg::AppCrdtIncremental {
                         peer,
@@ -3094,7 +3329,7 @@ mod tests {
                     } => {
                         assert_eq!(peer, 0xCAFEu64);
                         assert_eq!(app_id, "terminal");
-                        assert_eq!(cluster_id, "00000000-0000-0000-0000-000000000000");
+                        assert_eq!(cluster_id, A_ROOM);
                         // The record has to survive the wrap: it is what
                         // tells the receiving broker which document these
                         // changes belong to.
@@ -3536,17 +3771,16 @@ mod tests {
 
     #[test]
     fn publish_app_crdt_signed_emits_a_publish_command() {
-        // Phase 3 outbound bridge: the broker forwards a validated
-        // `SignedSyncIncremental` as a
+        // The broker forwards a validated `SignedSyncIncremental` as a
         // `NeighbourMsg::AppCrdtIncrementalSigned`. Verify the wrapping
-        // is correct (peer id stamped, envelope round-trips verbatim,
-        // default workspace topic) without spinning up libp2p.
+        // is correct — peer id stamped, envelope verbatim, and the
+        // room's own topic — without spinning up libp2p.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
         let envelope = make_envelope(7);
         net.publish_app_crdt_signed(
             "notes".to_string(),
-            "cluster-7".to_string(),
+            A_ROOM.to_string(),
             "uuid:9f".to_string(),
             envelope.clone(),
         );
@@ -3554,8 +3788,8 @@ mod tests {
             .try_recv()
             .expect("publish_app_crdt_signed must enqueue a NetCmd");
         match cmd {
-            NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+            NetCmd::Publish { room, msg } => {
+                assert_eq!(room, a_room());
                 match msg {
                     NeighbourMsg::AppCrdtIncrementalSigned {
                         peer,
@@ -3569,7 +3803,7 @@ mod tests {
                         // has to survive the wrap verbatim, or the
                         // envelope arrives unaddressed and is dropped.
                         assert_eq!(app_id, "notes");
-                        assert_eq!(cluster_id, "cluster-7");
+                        assert_eq!(cluster_id, A_ROOM);
                         assert_eq!(record_id, "uuid:9f");
                         assert_eq!(*got, envelope);
                     }
@@ -3593,7 +3827,7 @@ mod tests {
         net.handle_app_crdt_signed_message(
             99u64,
             "notes".to_string(),
-            "cluster-7".to_string(),
+            A_ROOM.to_string(),
             "uuid:9f".to_string(),
             envelope.clone(),
         );
@@ -3601,20 +3835,111 @@ mod tests {
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0].peer, 99u64);
         assert_eq!(buf[0].app_id, "notes");
-        assert_eq!(buf[0].cluster_id, "cluster-7");
+        assert_eq!(buf[0].cluster_id, A_ROOM);
         assert_eq!(buf[0].record_id, "uuid:9f");
         assert_eq!(*buf[0].envelope, envelope);
     }
 
+    /// This session subscribes to the rooms it is in, and to nothing
+    /// else — and leaving one unsubscribes.
+    ///
+    /// Subscription is the whole of what arrives: gossipsub delivers a
+    /// message only to peers subscribed to its topic, so a room absent
+    /// from this set is a room whose traffic never reaches this machine.
+    /// The previous behaviour subscribed once, to a topic every machine
+    /// shared, and never left it — which is why membership had to be
+    /// re-checked after delivery instead of deciding it.
     #[test]
-    fn active_ws_for_publish_returns_default_topic() {
-        // v1: publishes go to the single default workspace topic. This
-        // contract is asserted explicitly so per-workspace routing
-        // (Phase 3 follow-up) gets a tripping test rather than a
-        // silent behaviour change.
+    fn a_session_subscribes_to_its_own_rooms_and_leaves_the_ones_it_drops() {
+        let mut tree = WorkspaceTree::default();
+        let first = tree.append_empty_workspace("Design review");
+        let second = tree.append_empty_workspace("Payroll");
+        let first_room = tree.room_of(first).expect("a minted room");
+        let second_room = tree.room_of(second).expect("a minted room");
+        let handle = tree.shared();
+        let (net, mut cmd_rx) = shell_network_for_test(handle.clone(), 0u64);
+
+        assert!(net.join_rooms(), "a session in two rooms subscribes");
+        let mut joined = Vec::new();
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            match cmd {
+                NetCmd::JoinRoom { room, .. } => joined.push(room),
+                other => panic!("expected only JoinRoom, got {other:?}"),
+            }
+        }
+        joined.sort_by_key(|r| r.to_string());
+        let mut want = vec![first_room, second_room];
+        want.sort_by_key(|r| r.to_string());
+        assert_eq!(joined, want, "one subscription per room, and no others");
+
+        // Steady state: nothing is re-sent for rooms already joined.
+        net.sync_room_subscriptions();
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "an unchanged membership must not re-issue subscriptions",
+        );
+
+        // Drop a room. The subscription has to go with it, or this
+        // session keeps being delivered a room it is no longer in.
+        handle.write().workspaces.retain(|w| w.id != second);
+        net.sync_room_subscriptions();
+        let left = cmd_rx
+            .try_recv()
+            .expect("leaving a room must unsubscribe from its topic");
+        match left {
+            NetCmd::LeaveRoom { room } => assert_eq!(room, second_room),
+            other => panic!("expected NetCmd::LeaveRoom, got {other:?}"),
+        }
+        assert_eq!(
+            net.joined_rooms(),
+            vec![first_room],
+            "only the room still held stays subscribed",
+        );
+    }
+
+    /// A payload that names no room is dropped rather than broadcast.
+    ///
+    /// There is no topic that means "everyone", and the previous
+    /// fallback to one is what made every unaddressed payload reach
+    /// every qOS machine on the network. Each of the four app-level
+    /// publish paths is checked, because each used to take that
+    /// fallback independently.
+    #[test]
+    fn a_payload_that_names_no_room_goes_nowhere() {
         let tree = WorkspaceTree::bootstrap_demo().shared();
-        let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
-        assert_eq!(net.active_ws_for_publish(), DEFAULT_WS_TOPIC);
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xBEEF_u64);
+        const NIL: &str = "00000000-0000-0000-0000-000000000000";
+
+        for cluster in ["", "not-a-uuid", NIL] {
+            net.publish_app_crdt_incremental(
+                "notes".into(),
+                cluster.into(),
+                "r".into(),
+                vec![1],
+            );
+            net.publish_app_presence("notes".into(), cluster.into(), vec![1]);
+            net.publish_app_crdt_signed(
+                "notes".into(),
+                cluster.into(),
+                "r".into(),
+                make_envelope(1),
+            );
+            net.note_snapshot_request(cluster);
+            net.publish_app_crdt_snapshot("notes".into(), cluster.into(), "r".into(), vec![1]);
+            net.publish_scrollback_request(cluster, collab_types::ArtifactId::new(), 1, 1);
+        }
+        // Presence keyed to nothing, and to a room that is not one.
+        net.publish_presence("local-cursor".into(), (1.0, 2.0));
+        net.publish_presence(presence_key_for(NIL), (1.0, 2.0));
+
+        let mut escaped = Vec::new();
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            escaped.push(cmd);
+        }
+        assert!(
+            escaped.is_empty(),
+            "a payload with no room must not reach the wire, got {escaped:?}",
+        );
     }
 
     #[test]
@@ -3623,13 +3948,17 @@ mod tests {
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xDEAD_u64);
         let artifact = ArtifactId::new();
-        net.publish_scrollback_request(artifact, 100, 25);
+        net.publish_scrollback_request(A_ROOM, artifact, 100, 25);
         let cmd = cmd_rx
             .try_recv()
             .expect("publish_scrollback_request must enqueue a NetCmd");
         match cmd {
-            NetCmd::Publish { ws, msg } => {
-                assert_eq!(ws, DEFAULT_WS_TOPIC);
+            NetCmd::Publish { room, msg } => {
+                assert_eq!(
+                    room,
+                    a_room(),
+                    "a question about one room's history is asked of that room",
+                );
                 match msg {
                     NeighbourMsg::ScrollbackRequest {
                         artifact: got_art,
@@ -3656,7 +3985,7 @@ mod tests {
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let handle = net.inbound_scrollback_request_handle();
         let artifact = ArtifactId::new();
-        net.handle_scrollback_request_message(7u64, artifact, 50, 10);
+        net.handle_scrollback_request_message(a_room(), 7u64, artifact, 50, 10);
         let buf = handle.lock().unwrap();
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0].requester, 7u64);

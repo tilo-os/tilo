@@ -132,8 +132,11 @@ class Session:
             "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
             "QOS_USER_ID": name,
             "NIRIOS_HEADLESS_SIZE": "1600x1000",
-            # The host is de_DE and bwrap does not clear the
-            # environment, so without this the chrome renders in German.
+            # The host is de_DE. The sandbox clears the environment and
+            # carries the locale across explicitly
+            # (`sandbox::INHERITED_ENV`), so this is what decides the
+            # language inside the app; without it the chrome renders in
+            # German.
             "LC_ALL": "en_US.UTF-8",
             "LANG": "en_US.UTF-8",
         }

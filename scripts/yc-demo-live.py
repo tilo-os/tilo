@@ -3,11 +3,11 @@
 
 `yc-demo.py` performs all three participants. This performs two of them.
 Quinten's session opens in a window on your desktop and nothing in this
-file ever touches it: you open Files, you open the collaborators panel,
-you mint the invitation, you open the word processor, you type, you drag
-the photograph, you ask the agent for a run sheet. Every beat that was
-synthesised — the clicks, the typing rhythm, the framing, the dwells —
-stops being a thing that can look staged, because it is not staged.
+file ever touches it: you open Files, chat and the word processor, you
+open the collaborators panel, you mint the invitations, you type. Every
+beat that was synthesised — the clicks, the typing rhythm, the framing,
+the dwells — stops being a thing that can look staged, because it is not
+staged.
 
 What is left to script is only what a second person and an agent would
 really do, and each of them reacts to something you did rather than to a
@@ -22,23 +22,28 @@ step number:
           it. `qos-agent` already does that; there is no beat here that
           makes it act.
 
-THE SHAPE THIS IS BEING REBUILT INTO
-====================================
+THE FILM THIS DRIVES
+====================
 
-Everything below this block describes the film as it is *today*: two
-people, one shared document, and an agent that answers one instruction.
-That version proves collaboration in a word processor, and a word
-processor is the one place a viewer has already seen collaboration — it
-invites a comparison with a fifteen-year-old product and loses it.
+An earlier cut was two people, one shared document, and an agent that
+answered one instruction in it. That proves collaboration in a word
+processor, and a word processor is the one place a viewer has already
+seen collaboration — it invites a comparison with a fifteen-year-old
+product and loses it.
 
-The rebuilt film argues the thing that has no equivalent: **work moving
-between different applications, between different people, with an agent
-acting across both.** What follows is the beat plan for it, in
-pseudo-code, so it can be built against rather than re-derived. It is
-not implemented yet; where a beat depends on work still in flight, the
-dependency is named.
+This one argues the thing that has no equivalent: **work moving between
+different applications, between different people, with an agent acting
+across both.** The beats below are what this file now drives; where one
+depends on work still in flight, the dependency is named under NEEDS.
 
-Budget: boot bumper ~3.2s (cut, exists) + ~75s driven. Hard cap 1:40.
+`docs/demo-script.md` is the same film in the form somebody films from,
+and is the one to read at the camera. This block is the same beats with
+their reasons attached, for whoever is changing the rig.
+
+Budget: boot bumper ~3.2s + ~75s driven. Hard cap 1:40. The bumper is
+not recorded here and is gitignored, so a fresh checkout has no copy:
+`films/qos-boot-bumper.mp4`, joined on the front by
+`scripts/demo-assemble.py` (which `scripts/demo.sh` runs for you).
 
 MEASURED, from a full three-session take on 2026-08-24. The per-scene
 budgets below were written without measuring, and two of them are fiction:
@@ -66,9 +71,12 @@ happen. Interleaving those is worth more than any second trimmed from a
 hold, because it removes a wait rather than shortening one.
 
     BEAT 0  the machine boots                                   ~3.2s
-        Not recorded here. `target/bumper/qos-boot-bumper.mp4`,
-        concatenated in front. Console, greeter, filled form, cut
-        before the desktop -- see docs/boot-bumper-cut.md.
+        Not recorded here. `films/qos-boot-bumper.mp4`, concatenated
+        in front by `scripts/demo-assemble.py`. Console, greeter,
+        filled form, cut before the desktop -- see
+        docs/boot-bumper-cut.md. Not under `target/`: it lived there
+        once and a routine reclaim deleted it, and a recorded boot is
+        the one asset here that cannot be regenerated on demand.
 
     BEAT 1  a workspace, and the people in it                    ~15s
         YOU     open the collaborators panel, invite xaver, invite
@@ -100,8 +108,14 @@ hold, because it removes a wait rather than shortening one.
         NEEDS   right-click compose in the file explorer  (landed)
                 one instruction, several actions  (in flight)
 
-    SCENE 4  and you watch it happen                              ~20s
-        CUT     back to your screen.
+    SCENE 4  and he watches it happen                             ~20s
+        HOLD    on xaver. He asked for it, so he sees it land -- on a
+                machine where he owns nothing and opened nothing,
+                which is a stronger claim than watching a result
+                arrive where it was already going. This said `CUT
+                back to your screen` while the code stayed where it
+                was; `his_instruction` never cuts back, and
+                docs/demo-script.md agrees with the code.
         SHOWS   Claude **opens the image editor itself**, crops the
                 photograph, and the result travels visibly into the word
                 processor's document.
@@ -289,25 +303,58 @@ SYNC_GRACE_S = 3.0
 DEFAULT_DWELL_S = 6.0
 # The outside limit on one unattended take.
 DEFAULT_DURATION_S = 900.0
+# Longest one unchanged frame is shown for. Trimming is the one edit the
+# composer makes, and it is why a narrated take cannot have it: see the
+# note in `main` where the two are reconciled.
+DEFAULT_MAX_HOLD_S = 1.2
 # How often the watcher looks at anything. Every probe is a `state_dump`
 # and blocks the session it is asked of — including, while recording,
 # the session being filmed — so this is deliberately unhurried. Only one
 # thing is ever polled per tick.
 POLL_S = 0.9
 
+
+def mark(title: str) -> None:
+    """Charge the film's next stretch of seconds to `title`.
+
+    `yc-demo.py` has had this since it had beats: `banner` lays a mark
+    and `Recorder.beat_report` charges every captured frame to the mark
+    it was taken after. This file had no beats to hang one off — its
+    whole point is that a person drives and there is no step number —
+    and so it has been the one rig that films a take and cannot say
+    where the take's seconds went.
+
+    Two things need that. A cut over budget needs to know which beat to
+    take the seconds out of rather than which one somebody guesses is
+    longest; the per-scene budgets in the header above were written
+    without measuring and say so. And a narration recorded into the take
+    needs a timing sheet to be written against, which is the same table
+    read forwards.
+
+    A mark is a point in the take, not a section somebody owns: two
+    threads drive this film at once, so what a mark really answers is
+    "what was on screen while this was happening".
+    """
+    yc.BEAT_MARKS.append((title, time.time()))
+
 # What to tell him to write, per agent mode — and they are not
 # interchangeable.
 #
-# `yc.AGENT_INSTRUCTION` asks for a *run sheet*, which is a judgement
-# about which of those lines is a scheduled item and whether they are
-# consistent. A model can do that. The keyword vocabulary matches three
-# substrings — `table`, `caption`, `heading` (`apps/agent/src/plan.rs`)
-# — so it finds nothing in "run sheet" and answers, on the page, in
-# front of everybody: *I can't "make this a run sheet" yet. I can:
-# table, caption, heading.* Which is honest, is the right behaviour,
+# The film's instruction is `yc.CROP_INSTRUCTION`: he is holding a
+# photograph, and what he asks for takes two applications to answer.
+# Composing that is a judgement, so it needs the model.
+#
+# `--no-agent-model` does not have one. Its floor matches the
+# instruction's own words against the words the *apps* put on their
+# operations, plus a handful of named recipes (`apps/agent/src/plan.rs`)
+# — and given "make this square and put it in the open document" it
+# finds no clear winner and answers, on the page, in front of
+# everybody, that it cannot. Which is honest, is the right behaviour,
 # and is not what anybody wants filmed.
 #
-# So the terminal asks for the thing the running mode can actually do.
+# So that mode asks for the thing it can actually do, and the readback
+# after it asserts *that* outcome rather than the crop's. One
+# instruction per mode, and the mode decides both ends.
 KEYWORD_INSTRUCTION = "Claude: turn the bullets into a table"
 
 # What the film calls each session, under its name on the band. Quinten
@@ -535,6 +582,10 @@ class Live:
         self.agent_applied = False
         self.agent_done_at = 0.0
         self.visited_after_agent = False
+        #: So the mark charging the agent's latency is laid once, at the
+        #: first tick that finds it working, rather than on every poll.
+        self.marked_agent_wait = False
+        self.watched_it_think = False
         self.finished = ""
 
         self.started = time.time()
@@ -708,6 +759,7 @@ class Live:
             # in it. Bounded, because a cut to a bare screen is a poor
             # shot and a stalled take is no shot at all.
             self.wait_for_his_screen()
+            mark("cut to xaver: he is in the room")
             self.visit_xaver("he is in the room now", None)
 
     def bring_the_agent_session_in(self) -> None:
@@ -884,6 +936,7 @@ class Live:
                  f"(pid {self.agent_proc.pid}, {decides})")
         self.say("Claude is watching; xaver is about to give it something "
                  "to do")
+        mark("cut to xaver: his instruction")
         self.his_instruction()
 
     def his_instruction(self) -> bool:
@@ -980,9 +1033,17 @@ class Live:
     #: sentence as the agent acting, in a run where it had not.
     APPLIED = re.compile(r"\bapplied .*")
 
+    #: The agent, having taken the summons (`session.rs`, "spoken to in
+    #: the room"). Between this and the first `applied` is the model
+    #: deciding, which is most of the wait and all of the dead air.
+    SPOKEN_TO = re.compile(r"\bspoken to in the room\b")
+
     def check_the_agent(self) -> None:
         """Whether it has done anything, and whether it has finished."""
         fresh = self.agent_tail.read() if self.agent_tail else ""
+        if not self.watched_it_think and self.SPOKEN_TO.search(fresh):
+            self.watched_it_think = True
+            self.watch_it_think()
         hit = self.APPLIED.search(fresh)
         if hit and not self.agent_applied:
             self.agent_applied = True
@@ -1006,6 +1067,49 @@ class Live:
         self.say(f"Claude has finished (exit {code}); giving the network "
                  f"{SYNC_GRACE_S:.0f}s before looking at xaver's screen")
 
+    def watch_it_think(self) -> None:
+        """Point the camera at where the agent is narrating itself.
+
+        Between the instruction landing and the first change appearing
+        is the model deciding, and it has been measured at some
+        twenty-eight seconds. Nothing about that will get shorter, so
+        the only question is what is on screen while it happens -- and
+        the answer already exists: the agent posts its own state into
+        chat as each thing actually happens, `Taken` then `Waiting` then
+        `Doing` then `Done` or `Refused` (`apps/chat/src/model.rs`),
+        written never to claim something is happening now that is not.
+        A wait filled by the agent saying what it is waiting for is not
+        dead air.
+
+        Done here rather than earlier because this is the first moment
+        it is safe: the trigger is the agent's own log saying it was
+        spoken to, so the remark has been written and sent. Reframing
+        any sooner would move a window out from under whoever was still
+        right-clicking in it.
+
+        The camera is already on xaver -- `his_instruction` cut to him
+        and stays -- so this is a reframe within his strip and not
+        another cut. Losing it costs the shot its subject and nothing
+        else, so a failure here is reported and the take goes on.
+        """
+        if self.recorder is None or self.x is None:
+            return
+        try:
+            if yc.best_tile(self.x, yc.CHAT_APP, yc.VIEWPORT) is None:
+                yc.gap("no chat window is on screen, so the agent's account "
+                       "of what it is doing has nowhere to be read and the "
+                       "wait is filmed as a still page")
+                return
+            yc.frame_one_window(self.x, yc.CHAT_APP)
+            self.say("framing chat — Claude says what it is doing there as "
+                     "it does it")
+            self.x.snapshot(os.path.join(
+                self.shots,
+                f"claude-thinking-{int(time.time() - self.started):04d}.png"))
+        except Exception as exc:  # noqa: BLE001
+            yc.gap(f"the camera could not be pointed at chat for the agent's "
+                   f"working period ({type(exc).__name__}: {exc})")
+
     def read_back_what_it_wrote(self) -> None:
         """Ask the document what is in it, rather than the log what happened.
 
@@ -1021,11 +1125,114 @@ class Live:
 
         This asks the app instead, over the same protocol the scripted
         half's readback uses, and asserts on the two things that tell
-        them apart: the run sheet's own content is on the page, and no
-        refusal is. Both, because either alone can mislead -- a page can
-        carry the notes it always carried while the agent refused beside
-        them, and an agent that wrote nothing at all refuses nothing.
+        them apart: the outcome the instruction asked for is on the page,
+        and no refusal is. Both, because either alone can mislead -- a
+        page can carry the notes it always carried while the agent
+        refused beside them, and an agent that wrote nothing at all
+        refuses nothing.
+
+        Which outcome that is comes from `args.outcome`, set beside the
+        instruction so the two cannot drift apart.
         """
+        if self.args.outcome == "crop":
+            self.read_back_the_crop()
+        else:
+            self.read_back_the_run_sheet()
+
+    def read_back_the_crop(self) -> None:
+        """The picture, and whether it is square.
+
+        The instruction asked for two things and this asserts both.
+
+        *In the open document.* A document carries a picture's BLAKE3
+        address and a small descriptor, never its bytes -- so the
+        reference is the whole of what replicates, and it is what the
+        other machine draws from. `picture_references` reads it back out
+        of the document the app answers with.
+
+        *Square.* A fact about the picture rather than about the page, so
+        it is read off the picture: the bytes that address resolves to,
+        out of the content store beside the document, measured at their
+        own IHDR. Nothing here needs a before-and-after -- the
+        photograph he pointed at is 512x320, so a square picture on that
+        page is one somebody made, and an uncropped one fails this by
+        being the shape it always was. That also keeps the readback to
+        the single attach the run already makes, rather than putting a
+        second phantom collaborator on screen mid-take.
+
+        A run that cannot reach the bytes says so. "The shape could not
+        be established" and "the picture is not square" are different
+        answers, and reporting the first as either is the defect this
+        rig keeps finding in itself.
+        """
+        reader = None
+        try:
+            reader = yc.DocumentReader(self.q.collab_json_sock, str(self.room),
+                                       record=None)
+            doc, _ = reader.await_document(
+                "image/", 30.0,
+                predicate=lambda blob, _n: bool(yc.picture_references(blob)))
+        except OSError as e:
+            yc.gap(f"the document could not be read back ({e}), so what is "
+                   f"on the page was not established")
+            return
+        except yc.CannotDecode as e:
+            yc.gap(f"{e} -- so what is on the page was not established, "
+                   f"which is not the same as the page being empty")
+            return
+        finally:
+            if reader is not None:
+                reader.close()
+        if doc is None:
+            yc.gap("no app answered with the document, so what is on the "
+                   "page was not established")
+            return
+        try:
+            pictures = yc.picture_references(doc)
+        except yc.CannotDecode as e:
+            yc.gap(f"{e} -- so whether a picture reached the page was not "
+                   f"established")
+            return
+        yc.claim("the picture the agent worked on is in the open document",
+                 bool(pictures), True)
+        if not pictures:
+            self.no_refusal(doc)
+            return
+
+        was = yc.png_size(self.the_photograph()) or (0, 0)
+        measured: list[tuple[str, int, int]] = []
+        for hash_ in pictures:
+            raw = yc.blob_beside_the_document(self.q, str(self.room),
+                                              yc.WORD_PROCESSOR, hash_)
+            size = yc.png_size(raw) if raw else None
+            if size is None:
+                yc.gap(f"the page references a picture ({hash_[:12]}) whose "
+                       f"bytes are not reachable from here, so its shape was "
+                       f"not established -- which is not the same as its not "
+                       f"being square")
+                continue
+            measured.append((hash_, size[0], size[1]))
+            yc.note(f"the page holds {size[0]}x{size[1]} at {hash_[:12]}")
+        if measured:
+            yc.claim(f"and it is square, where the photograph he pointed at "
+                     f"is {was[0]}x{was[1]}",
+                     any(w == h for _h, w, h in measured), True)
+        self.no_refusal(doc)
+
+    def the_photograph(self) -> bytes:
+        """The file he right-clicked, as it sits in his home."""
+        for home in (self.x.home if self.x else None, self.q.home):
+            if not home:
+                continue
+            try:
+                with open(os.path.join(home, yc.PHOTO_NAME), "rb") as fh:
+                    return fh.read()
+            except OSError:
+                continue
+        return b""
+
+    def read_back_the_run_sheet(self) -> None:
+        """The table, and the bullets' own words in its cells."""
         reader = None
         try:
             reader = yc.DocumentReader(self.q.collab_json_sock, str(self.room),
@@ -1056,16 +1263,22 @@ class Live:
             return
         yc.claim("and the run sheet's own content is in the table's cells",
                  carried, True)
-        # An address is how the agent dispatches; a refusal quoting one is
-        # the frame this looks for.
-        #
-        # Decoded, not grepped. This was a byte search, and a byte search
-        # of a saved document answers "no refusal" for every document
-        # including one that is nothing but a refusal: Automerge
-        # DEFLATE-compresses each column, so the sentence is in the
-        # document and not in its bytes. The claim above proves the point
-        # -- the run sheet's own text is likewise unfindable as bytes --
-        # and a check that cannot fail is not a check.
+        self.no_refusal(doc)
+
+    def no_refusal(self, doc: bytes) -> None:
+        """That what landed on the page is the work and not a decline.
+
+        An address is how the agent dispatches; a refusal quoting one is
+        the frame this looks for.
+
+        Decoded, not grepped. This was a byte search, and a byte search
+        of a saved document answers "no refusal" for every document
+        including one that is nothing but a refusal: Automerge
+        DEFLATE-compresses each column, so the sentence is in the
+        document and not in its bytes. The claim beside it proves the
+        point -- the agent's own output is likewise unfindable as bytes
+        -- and a check that cannot fail is not a check.
+        """
         try:
             refused = yc.carries_text(doc, "I can't")
         except yc.CannotDecode as e:
@@ -1125,6 +1338,9 @@ class Live:
             return
 
         if self.agent_proc is not None and not self.agent_done_at:
+            if not self.marked_agent_wait:
+                self.marked_agent_wait = True
+                mark("Claude reads the room, decides, and works")
             self.waiting = ("Claude is working" if self.agent_applied
                             else "Claude waits for a line addressed to it")
             self.check_the_agent()
@@ -1136,6 +1352,7 @@ class Live:
                 return
             if not self.visited_after_agent:
                 self.visited_after_agent = True
+                mark("cut to xaver: the agent's work reached him")
                 self.visit_xaver("the agent's work is on his screen too",
                                  yc.WORD_PROCESSOR)
                 if self.args.stop_after == "agent":
@@ -1211,6 +1428,7 @@ def _the_owners_half(q, shots: str, instruction: str,
     if stop.is_set():
         return
     print("\n  [ --self-test: driving the owner's half ]", flush=True)
+    mark("an empty desktop")
 
     # The applications first, then the people. That is the order somebody
     # actually sets a workspace up in, and the earlier cut had it backwards:
@@ -1233,16 +1451,19 @@ def _the_owners_half(q, shots: str, instruction: str,
     # gesture by somebody who now knows where it is, which is both faster
     # and truer; four full-length searches in a row spends a minute of a
     # hundred-second film on opening things.
+    mark("chat opens, through the search")
     chat = q.launch(yc.CHAT_APP, search="chat", via="palette", look=1.0)
     yc.claim("chat opened", chat is not None, True)
     stop.wait(0.4)
 
+    mark("Files opens")
     files = q.launch(yc.FILES_APP, search="files", via="palette", look=0.45)
     yc.claim("Files opened", files is not None, True)
     stop.wait(0.4)
 
     # Its own group, or the placement rule tabs it in behind what is
     # already there and the strip has one window where the scene wants two.
+    mark("the word processor opens")
     q.place_next_window(yc.WORD_PROCESSOR)
     wp = q.launch(yc.WORD_PROCESSOR, search="word", via="palette", look=0.45)
     yc.claim("the word processor opened", wp is not None, True)
@@ -1268,6 +1489,7 @@ def _the_owners_half(q, shots: str, instruction: str,
     stop.wait(0.8)
 
     # Now the people, into a workspace that already has something in it.
+    mark("inviting xaver")
     yc.show_collaborators(q)
     token = yc.invite_from_the_panel(q, "xaver", shots, "live-invite")
     yc.claim("an invitation was minted from the panel", bool(token), True)
@@ -1276,6 +1498,7 @@ def _the_owners_half(q, shots: str, instruction: str,
     # member like any other. Raised again on an empty field -- the
     # composer used to keep the previous answer, so a second invitation
     # came out addressed to "XaverXaver".
+    mark("inviting Claude — the same card, a different name")
     yc.show_collaborators(q)
     agent_token = yc.invite_from_the_panel(q, "Claude", shots, "live-invite-2")
     yc.claim("a second invitation was minted, for the agent",
@@ -1303,6 +1526,7 @@ def _the_owners_half(q, shots: str, instruction: str,
     # app draws it; here it is a frame primitive the compositor owns, so a
     # file manager and a document and a photograph sit on one bar. That is
     # the one gesture in the film a viewer cannot mistake for a browser.
+    mark("the image editor, and the applications sharing one tab bar")
     extras: dict[str, dict] = {}
     if photos is None:
         photos = q.launch(yc.IMAGE_EDITOR,
@@ -1326,6 +1550,7 @@ def _the_owners_half(q, shots: str, instruction: str,
     # and then the instruction — in that order, because the agent
     # converts the bullets immediately above the paragraph addressed to
     # it.
+    mark("he writes the notes, and the line addressed to Claude")
     typed = yc.type_into_the_document(
         q, wp, yc.AGENT_PROSE + yc.AGENT_BULLETS + instruction + "\n")
     yc.claim("the document was written into", typed, True)
@@ -1348,7 +1573,9 @@ def main() -> int:
                     help="run directory for state, logs and frames")
     ap.add_argument("--video", default=None,
                     help="where the clip goes (default: a timestamped file "
-                         "under .claude/demo-artifacts/)")
+                         "under films/ at the top of the checkout, which is "
+                         "gitignored and is not under target/ — cargo may "
+                         "delete that, and a take cannot be rebuilt)")
     ap.add_argument("--allow-stale", action="store_true",
                     help="record against a compositor or an app payload "
                          "older than its own sources (default: refuse)")
@@ -1416,13 +1643,18 @@ def main() -> int:
                          "desktop's sound settings select). The microphone "
                          "opens on the same statement that starts the frames "
                          "and closes on the one that stops them, so the two "
-                         "tracks share a start and a length and need no "
-                         "syncing afterwards. The boot bumper is prepended "
-                         "separately and stays silent.")
-    ap.add_argument("--max-hold", type=float, default=1.2, metavar="S",
-                    help="longest one unchanged frame is shown for, which "
-                         "trims the stretches where you were thinking. Never "
-                         "shows a frame for longer than it was live")
+                         "tracks share a start — and they share a length "
+                         "only while nothing shortens the picture, so this "
+                         "sets --max-hold to 0 and refuses a take that asks "
+                         "for both. The boot bumper is prepended separately "
+                         "and stays silent.")
+    ap.add_argument("--max-hold", type=float, default=None, metavar="S",
+                    help=f"longest one unchanged frame is shown for, which "
+                         f"trims the stretches where you were thinking "
+                         f"(default {DEFAULT_MAX_HOLD_S}; never shows a "
+                         f"frame for longer than it was live). 0 keeps the "
+                         f"take on the wall clock, which is what --narrate "
+                         f"needs")
     ap.add_argument("--windowed", action="store_true",
                     help="do not open the window at the full work area")
     ap.add_argument("--no-record", dest="record", action="store_false",
@@ -1444,8 +1676,53 @@ def main() -> int:
     # `--self-test`, the one that actually gets written. It is only ever
     # advice: the agent reads whatever is in the document, and he can
     # write anything he likes.
-    args.instruction = (yc.AGENT_INSTRUCTION.strip() if args.agent_model
-                        else KEYWORD_INSTRUCTION)
+    #
+    # `args.outcome` travels with it and decides what is read back
+    # afterwards. The two were separate once: whichever instruction was
+    # picked, the readback asserted a table with the run sheet's words
+    # in its cells — so a take of the crop would have failed a claim
+    # about a beat it was not filming, and a take of the run sheet
+    # passed one about an instruction it had not been given.
+    if args.agent_model:
+        args.instruction, args.outcome = yc.CROP_INSTRUCTION, "crop"
+    else:
+        args.instruction, args.outcome = KEYWORD_INSTRUCTION, "table"
+
+    # ---- narration and trimming cannot both be on ------------------
+    #
+    # The microphone opens on the statement that starts the frames and
+    # closes on the one that stops them, so the two tracks begin
+    # together. They only *stay* together while nothing shortens the
+    # picture. `--max-hold` does: `Recorder._timeline` collapses runs of
+    # identical frames and reports what it took out as `trimmed`, so the
+    # video comes out shorter than the wall clock while the live mic
+    # track is still exactly as long as the take was. The voice then
+    # drifts progressively later across the film — silently, discovered
+    # after filming, which is the failure this whole rig is built to
+    # stop making.
+    #
+    # So it is not a warning. Left to its default, narrating turns the
+    # trim off; asked for explicitly, the run refuses rather than
+    # quietly overriding what somebody typed.
+    asked_for_hold = args.max_hold is not None
+    if args.max_hold is None:
+        args.max_hold = DEFAULT_MAX_HOLD_S
+    if args.narrate is not None and args.max_hold > 0:
+        if asked_for_hold:
+            print(f"--narrate and --max-hold {args.max_hold:g} cannot both "
+                  f"be on.\n"
+                  f"  Trimming shortens the picture and cannot shorten the "
+                  f"microphone, so the\n"
+                  f"  voice drifts further behind the further into the take "
+                  f"you get.\n"
+                  f"  Drop --max-hold (it becomes 0 for a narrated take), or "
+                  f"drop --narrate\n"
+                  f"  and lay the voice over afterwards.", file=sys.stderr)
+            return 2
+        args.max_hold = 0.0
+        print("narrating, so --max-hold is 0 for this take: the picture "
+              "stays on the wall\nclock, because trimming it would leave "
+              "the voice behind.")
 
     # ---- preflight -------------------------------------------------
     #
@@ -1992,6 +2269,12 @@ def main() -> int:
     video = None
     if recorder is not None and recorder.frames:
         recorder.report()
+        # Where the take's seconds went. Two threads lay marks, so they
+        # are sorted before they are read as edges: a reactive mark and
+        # an owner mark can land microseconds apart, and an out-of-order
+        # edge charges a whole beat to its neighbour without saying so.
+        yc.BEAT_MARKS.sort(key=lambda m: m[1])
+        recorder.beat_report(yc.BEAT_MARKS, args.fps)
         # The claim the whole thing rests on, checked against the frames
         # rather than trusted to the cuts. `cut` refuses the name, but
         # `cut` is not the only way the camera could come to point there,

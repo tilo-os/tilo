@@ -275,9 +275,37 @@ shared widgets, and are themselves candidates for a shared editor primitive
 (§ toolkit gaps) rather than N private forks.
 
 > Enforcement: a new painted control is a toolkit gap, not an app feature. Grep
-> your diff for `Color::rgb`, `draw_*_button`, and `Key::Character => *.push` — each
-> hit is either a shared-widget call you skipped or a widget you should be
-> extending.
+> your diff for the patterns in §9.13 plus `draw_*_button` and
+> `Key::Character => *.push` — each hit is either a shared-widget call you
+> skipped or a widget you should be extending.
+
+**Grep for the spelling the code actually uses.** This rule used to say
+"grep for `Color::rgb`", and that pattern is why hard-coded colour accumulated
+under it for months: `Color::rgb8(…)` is the *old* peniko constructor and this
+tree does not call it. The one automated check that implemented the rule
+(`ui/tests/design_token_audit.rs`) was green over 125 literal
+`Color::from_rgb8(…)` colours in `ui/src` alone, because it was looking for a
+string that appears nowhere. Two more spellings were invisible for the same
+reason:
+
+- **`Color::WHITE` / `Color::BLACK`** — ~440 sites across the tree, ~200 of them
+  in apps (`slides` 28, `video_editor` 26, `software_store` 20, `maps` 19,
+  `git_client` 12). Most are a defensible ink on an accent fill or a scrim; the
+  defect is that nothing was looking, so nobody ever had to say which.
+- **`surface_white_*` / `border_white_*`** — ~255 sites in 42 app files. The
+  values are no longer literally white: `Colors::themed` washes them toward the
+  contrasting extreme, so they flip to black on a light palette (the fix landed
+  after every unselected filter chip lost its pill at 1.01:1 on light). What
+  survives is the reason §9.5 deprecates them anyway — the *name* still says
+  white, which is how a reader picks one while reasoning about the wrong colour,
+  and the tier is a **declared** alpha that never measures itself against the
+  ground it lands on. `Colors::lift()` and `Colors::hairline_on()` do measure,
+  which is why they are the answer for a surface or an edge that has to be seen.
+
+`design_token_audit.rs` now covers all three, ratcheted against
+`ui/tests/design_token_baseline.txt`: a file may never gain one, and a file that
+sheds one lowers its record in the same commit. The count only goes down. When
+you clean an app up, that is the file you edit alongside it.
 
 ---
 
@@ -461,10 +489,18 @@ under it and disappears on one theme or glares on another.
 - separator inside a Panel: alpha 26, inset from the panel edge by
   `spacing.s3`, never running full-bleed into the corner radius
 
-`surface_white_5` / `surface_white_10` / `border_white_10` are literal white at
+`surface_white_5` / `surface_white_10` / `border_white_10` were literal white at
 low alpha in **every** theme, including light ones where a white veneer over a
-white panel is invisible. Treat them as deprecated in chrome: use `lift` and
-`hairline_on`.
+white panel is invisible — the faint tier measured 1.01:1 on light, which is why
+every unselected filter chip there read as bare text. `Colors::themed` now
+washes them toward the contrasting extreme instead, so they flip to black on a
+light palette and a tier means the same thing on both sides of the line.
+
+They stay **deprecated in chrome** regardless, for the half that derivation
+cannot fix: the name says white while the value is a veneer, and the strength is
+*declared* rather than measured against the ground the surface actually lands
+on. `lift` and `hairline_on` take that measurement, so a hairline stays a
+hairline on a palette their author never saw. Reach for those.
 
 ### 9.6 Type and density
 
@@ -607,12 +643,31 @@ Selector for scope, not a bespoke dialog per entry point. Specifically:
 
 Grep a chrome diff for these; each hit is a role you skipped:
 
-- `Color::from_rgb8(` / `Color::from_rgba8(` / literal hex in a draw path
+- `Color::from_rgb8(` / `Color::from_rgba8(` / `Color::rgb8(` / literal hex in a
+  draw path — match **both** constructor spellings, not just the one you happen
+  to have typed lately (see §8: grepping only for `Color::rgb` is how ~125 of
+  these accumulated under a green check)
+- `Color::WHITE` / `Color::BLACK` — a colour is a colour even when it has a
+  name; the theme has an on-accent ink and a scrim token
+- `surface_white_` / `border_white_` (any suffix, not only `_5` / `_10` /
+  `_10`) — literal white in every palette, light included (§9.5)
 - `colors.neutral[` in chrome (use `surfaces.*`)
 - a numeric literal passed as a corner radius
 - `Duration::from_millis(` with a literal in an animation
-- `surface_white_5` / `surface_white_10` / `border_white_10`
 - a `Command::new` / blocking read reachable from `draw`
+
+One regex covering the colour half, so it can be pasted rather than
+remembered:
+
+```bash
+git diff -U0 | grep -nE 'Color::(from_)?rgba?8\(|Color::(WHITE|BLACK)|(surface|border)_white_'
+```
+
+The first three are enforced for `ui/src` by
+`ui/tests/design_token_audit.rs::theme_escape_hatches_do_not_grow`, ratcheted
+against `ui/tests/design_token_baseline.txt` so the count can only fall. Apps
+are not scanned yet; until they are, the grep above is what stands between an
+app and a colour the user's theme cannot reach.
 
 
 ---

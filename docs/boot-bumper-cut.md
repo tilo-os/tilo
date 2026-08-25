@@ -10,9 +10,14 @@ given only as an example of the shape.
 
 ## Where it lives
 
-`films/qos-boot-bumper.mp4` — the cut, 7.5s. `films/qos-boot-bumper-source.mp4`
-is the full recording it was cut from, kept so the cut can be revised without
-re-recording a boot.
+`films/qos-boot-bumper.mp4` — the cut, **3.2s** (97 frames at 30 fps; the
+worked arithmetic is at the bottom of this file).
+`films/qos-boot-bumper-source.mp4` is the full recording it was cut from, kept
+so the cut can be revised without re-recording a boot.
+
+3.2 and not the 7.5 this line said for a while, and not the 15 the script once
+budgeted: 7.5 was the length before the cap was worked out against a 96.8s
+demo, and every other figure in the rig now agrees on 3.2.
 
 Not under `target/`. It was there once and a routine reclaim deleted it along
 with everything else in that directory, which is exactly what `target/` is for.

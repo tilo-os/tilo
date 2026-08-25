@@ -118,7 +118,11 @@ class Session:
             "QOS_APPS_DATA_DIR": str(apps_dir),
             "QOS_RUNTIME_BUNDLE_DIR": str(runtime_bundles),
             "NIRIOS_HEADLESS_SIZE": "2000x1000",
-            # de_DE host, and bwrap does not clear the environment.
+            # de_DE host. The sandbox clears the environment and rebuilds
+            # it, and the locale is on the short list it carries across
+            # (`sandbox::INHERITED_ENV`) — so setting it on the compositor
+            # is what puts it inside the app, deliberately rather than by
+            # inheritance.
             "LC_ALL": "en_US.UTF-8",
             "LANG": "en_US.UTF-8",
             "RUST_LOG": "info",
