@@ -4246,6 +4246,17 @@ def say_something_about(session: Session, log: "LogTail", tile: tuple,
     """
     log.read()
 
+    # What his screen looks like before anything is aimed at it.
+    #
+    # The one frame that tells a miss apart from a rig fault. A press that
+    # lands on nothing has several causes that read identically in a
+    # transcript — a list that is not there, a permission dialog over it, a
+    # window still painting its first frame — and every one of them is
+    # obvious in a picture. Taken before the press so it cannot be a
+    # picture of the consequences.
+    if shots:
+        session.snapshot(os.path.join(shots, f"{tag or 'remark'}-before.png"))
+
     # Find the row, and with it the mapping between the two coordinate
     # spaces. `press_the_photo_row` returns with the button still down —
     # it exists for the drag beat — so let go, which makes it a click and
@@ -6847,6 +6858,20 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
 LIST_ROW_H = 34.0
 LIST_HEADER_H = 30.0
 
+#: How long to let a file manager finish opening before pressing into it.
+#:
+#: The compositor calls a window `presented` once it has taken a single
+#: frame from it, and a client one frame old is still being told what size
+#: it is — measured with a 1600x934 buffer inside an 800x882 tile — and has
+#: not finished reading its directory. The row a press is aimed at does not
+#: exist yet. On a loaded machine, where an unoptimised app spends seconds
+#: in shader compilation before its first frame, that gap is long enough to
+#: swallow the whole beat.
+#:
+#: Spent only when it has to be: the wait ends the moment the app publishes
+#: a rect for the file, which on a settled window is the first reading.
+PRESS_PATIENCE_S = 25.0
+
 
 def expected_listing(home: str) -> list[str]:
     """The order Files draws this directory in: folders first, then
@@ -6922,6 +6947,33 @@ def where_the_app_draws(log: LogTail, surface: str, tile: tuple,
     return (tx + x0 + across * (x1 - x0), ty + client_y, client_y, address)
 
 
+def frame_ink(path: str) -> str:
+    """How much of a captured frame is not the background.
+
+    A one-line answer to "did anything paint", for a transcript. A rig
+    that trusts `foreign_frames` can report a window placed, presented and
+    seven frames in while the picture of it is uniformly black — the
+    compositor's bookkeeping and its output are two different facts, and
+    only one of them is the film.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return "unread (no Pillow)"
+    try:
+        im = Image.open(path).convert("RGB")
+    except Exception as exc:  # noqa: BLE001
+        return f"unread ({type(exc).__name__})"
+    colours = im.getcolors(maxcolors=1 << 20)
+    if colours is None:
+        return f"{im.size[0]}x{im.size[1]}, many colours"
+    colours.sort(reverse=True)
+    total = im.size[0] * im.size[1]
+    top, rgb = colours[0]
+    return (f"{im.size[0]}x{im.size[1]}, {len(colours)} colour(s), "
+            f"{100.0 * top / total:.0f}% {rgb}")
+
+
 def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
                         photo_name: str, listing: list[str],
                         surface: str = FILES_APP) -> tuple | None:
@@ -6986,33 +7038,50 @@ def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
     def press(at_y: float) -> tuple[str, float] | None:
         return press_at(x, at_y)
 
-    # Ask the app where the row is, and press there.
+    # Wait for the app to say the row is there, then press where it says.
     #
-    # Three attempts, and none of them is a retry of the same aim.
+    # The waiting is not politeness, it is the precondition. A window the
+    # compositor calls `presented` has produced *one* frame, and a client
+    # one frame old is still being told what size it is — measured with
+    # `buffer` at 1600x934 inside an 800x882 tile. It has not finished
+    # reading its directory, so the row this beat is about does not exist
+    # yet, and a press aimed into it lands on whatever is there instead.
+    # The app publishing a rect for the file's own address is the first
+    # moment the row provably exists, so that is what is waited for.
     #
-    #   1. the map as read. On a window that has settled this is the
-    #      answer and there is no second press.
-    #   2. a window reframed a moment ago is still relaying out, and a map
-    #      read before that settled describes the size it used to be — so
-    #      a miss re-reads, by which time the new map has been published.
-    #   3. a press that landed on *some* row measures the translation
+    # The tile is re-read each time round, because the window moves while
+    # this waits: it is being framed for the shot, and a rect from before
+    # that is the placement of a window that is no longer there.
+    deadline = time.time() + PRESS_PATIENCE_S
+    aim = None
+    while time.time() < deadline:
+        fresh = best_tile(quinten, surface, VIEWPORT)
+        if fresh is not None:
+            tile = tuple(fresh["rect"])
+        aim = where_the_app_draws(log, surface, tile, photo_name)
+        if aim is not None:
+            break
+        quinten.settle(0.5)
+
+    # Then press, correcting once from what the app says it got.
+    #
+    #   1. the map as read. On a settled window this is the answer and
+    #      there is no second press.
+    #   2. a press that landed on *some* row measures the translation
     #      between the two coordinate spaces exactly: the app reported the
     #      position in its own, and the difference from where the press was
     #      aimed is the offset. Applied to the target's published rect that
-    #      lands on it, whatever made the first aim wrong — a stale
-    #      placement, a window that moved between the two readings.
+    #      lands on it, whatever made the first aim wrong — a window that
+    #      moved between the reading and the press, a placement read a
+    #      frame early.
     #
     # Nothing here counts rows or knows a row height. The correction is a
     # subtraction of two numbers each side reported about the same press.
     offset = None
     for attempt in range(3):
-        aim = where_the_app_draws(log, surface, tile, photo_name)
+        if attempt:
+            aim = where_the_app_draws(log, surface, tile, photo_name)
         if aim is None:
-            if attempt == 0:
-                # No map yet. Give the window one settle to publish one
-                # before falling back to hunting for the row.
-                quinten.settle(0.5)
-                continue
             said = log.surfaces_that_published()
             drawn = log.resource_rects(surface)
             note(f"{surface} published no layout naming {photo_name} "

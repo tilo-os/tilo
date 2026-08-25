@@ -464,6 +464,33 @@ impl Widget for PermissionPrompt {
 
     fn name(&self) -> &str { "PermissionPrompt" }
 
+    /// The four answers, by name.
+    ///
+    /// This widget paints its own buttons into one rect, so without these
+    /// it is a single addressable box and the only way to reach an answer
+    /// is to guess at coordinates inside it — which is to say there is no
+    /// way to answer it at all from outside the process. That is a bad
+    /// property for any control and a dangerous one for this one: it is
+    /// modal, it is raised by things a session does routinely (opening the
+    /// file manager asks for the user's home), and until it is answered the
+    /// application behind it is confined and shows an empty window.
+    ///
+    /// A take was lost to exactly that — minutes of it framed on an
+    /// unanswered dialog while the beats it was hiding happened off camera,
+    /// because nothing driving the session could see the prompt, let alone
+    /// press it.
+    ///
+    /// The rects are the ones the widget hit-tests against, so the name and
+    /// the target stay the same object.
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        vec![
+            ("permission_allow".to_string(), self.allow_rect),
+            ("permission_session".to_string(), self.session_rect),
+            ("permission_always".to_string(), self.always_rect),
+            ("permission_deny".to_string(), self.deny_rect),
+        ]
+    }
+
     /// Accessibility: a permission request is a modal, attention-demanding
     /// dialog. `Role::Dialog` with `modal = true`; the accessible name states
     /// what is being requested ("Camera access requested by org.gnome.gedit")

@@ -694,6 +694,60 @@ class Live:
         yc.gap(f"xaver's screen still showed nothing after {budget:.0f}s, "
                f"so the cut to it is of an empty desktop")
 
+    def let_him_read_his_home(self) -> None:
+        """Answer the question his own machine is asking him.
+
+        A file manager needs the user's home, and it is never given it
+        implicitly: the palette asks for it
+        (`applications::ask_user_home_for_file_manager`) and so does the
+        window a peer's click opens (`peer_windows::open_for`), which is
+        deliberate — "a grant minted from that would be the user's home
+        directory handed over by somebody else's click". Until somebody
+        answers, the app runs confined to its own sandbox directory, lists
+        nothing, and says the folder is empty. That is what a guest's
+        screen showed while the host's listed the same home's contents,
+        and it is why no press could land on a row: there were no rows.
+
+        Answering is a person's job and this is the half that stands in
+        for his hands. It presses the prompt's own button, by name, so a
+        prompt that is not drawn or not hit-testable fails here instead of
+        being routed around.
+
+        Recording the capability does not widen an application that is
+        already running — its namespace was fixed when `bwrap` started it
+        — so the file manager is opened again afterwards, and it is that
+        instance the beat presses into.
+        """
+        if self.x is None:
+            return
+        answered = False
+        due = time.time() + 20.0
+        while time.time() < due and not self.stop.is_set():
+            # `Always`, not `Allow`: `Allow` satisfies one call without
+            # writing anything, and what is needed here is a capability
+            # that outlives the prompt for the launch that follows it.
+            if self.x.named_rect("permission_always"):
+                # `err` in the reply is a refusal, and a dict is truthy
+                # either way — so the answer is read off the key rather
+                # than off the object.
+                answered = "err" not in self.x.click_named("permission_always")
+                break
+            self.waiting = "the question about his home reaching his screen"
+            self.stop.wait(0.5)
+        yc.claim("xaver was asked before anything read his home", answered, True)
+        if not answered:
+            yc.gap("no permission prompt appeared on xaver's screen, so "
+                   "either his file manager was never opened for him or it "
+                   "was given the home without asking — both are worth "
+                   "knowing and neither is what this expects")
+            return
+        # The instance that asked is still confined. Open another, which
+        # starts with the answer already recorded.
+        self.x.settle(0.5)
+        again = self.x.launch(yc.FILES_APP, search="files", via="palette",
+                              look=0.4)
+        yc.claim("and his file manager opened with it", again is not None, True)
+
     def wait_for_his_files(self, budget: float = 25.0) -> dict | None:
         """Hold until the file manager is on xaver's screen and painted.
 
@@ -793,6 +847,21 @@ class Live:
         if self.xaver_in:
             yc.claim("and his session holds the room the token named",
                      self.x.active_workspace()["room"], self.room)
+            # And his file manager gets to read his own home.
+            #
+            # Not a repeat of the grant made before anybody was invited.
+            # A capability is per-workspace, and that one landed in the
+            # workspace he was sitting in on his own machine; the window
+            # this beat presses into opens in the room he has only now
+            # joined, where he holds nothing.
+            #
+            # He cannot grant it to himself either: `Command::Grant` goes
+            # through the room's authority and he is a guest, not its
+            # owner. That refusal is correct and is not something to route
+            # around — so what answers the question is the question's own
+            # affordance, the prompt the shell raises on his screen, which
+            # is what a person in his chair would press.
+            self.let_him_read_his_home()
             # Not before his screen has something on it.
             #
             # The excursion exists to show that the room reached him, and
@@ -1072,11 +1141,27 @@ class Live:
             # different processes writing to different logs, so a beat that
             # aims at one and reads the other's account finds nothing and
             # cannot say why.
-            here = yc.tiles_for(self.x, yc.FILES_APP)
-            self.say(f"xaver's screen has {len(here)} file-manager "
-                     f"window(s): " + ", ".join(
-                         f"surface {t['surface_id']} at "
-                         f"{[round(v) for v in t['rect']]}" for t in here))
+            for f in self.x.foreign_frames():
+                r = f.get("rect") or {}
+                self.say(
+                    f"  xaver holds {f.get('app_id')} surface "
+                    f"{f.get('surface_id')} rect="
+                    f"{[round(r.get(k, 0)) for k in ('x', 'y', 'w', 'h')]} "
+                    f"frame_seq={f.get('frame_seq')} "
+                    f"presented={f.get('presented')} "
+                    f"opening={f.get('opening')} "
+                    f"buffer={f.get('buffer')}")
+            # The same instant, off both machines. A black frame from one
+            # session and a full one from the other says the fault is in
+            # that session; two black frames say it is in the capture.
+            if self.shots:
+                for who in (self.x, self.q):
+                    shot = os.path.join(self.shots,
+                                        f"beat-{who.name}.png")
+                    who.snapshot(shot)
+                    self.say(f"  {who.name}'s frame: {yc.frame_ink(shot)}")
+                self.say(f"  xaver's shell offers "
+                         f"{len(self.x.targets())} named target(s)")
             yc.frame_one_window(self.x, yc.FILES_APP)
             # Re-read after framing: it moves and resizes the group, so a
             # rect taken before is the placement of a window that is no
