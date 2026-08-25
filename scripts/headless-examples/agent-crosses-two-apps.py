@@ -317,6 +317,25 @@ def png_has_content(path: str) -> bool | None:
     return len(set(flat[::997])) > 2
 
 
+def blob_bytes(hash_hex: str, roots: list[str]) -> bytes | None:
+    """The content a document names, out of whichever blob store holds it.
+
+    A document carries a hash and a descriptor; the bytes live in a store
+    addressed by content (`crates/doc/qdoc/src/blobstore.rs`), one per HOME.
+    The agent, the applications and this script do not share a HOME here, so
+    the hash is looked for in each of them rather than in one guessed root.
+    """
+    if not hash_hex or not all(c in "0123456789abcdef" for c in hash_hex):
+        return None
+    for root in roots:
+        path = os.path.join(root, "qos", "blobs", hash_hex[:2], hash_hex)
+        try:
+            return open(path, "rb").read()
+        except OSError:
+            continue
+    return None
+
+
 # -- starting things ----------------------------------------------------------
 
 def dial(path: str, tries: int = 120) -> socket.socket:
@@ -694,6 +713,40 @@ def main() -> int:
             note(f"image reference: {s}")
         claim(bool(image),
               "the word processor's document holds an image reference")
+
+        # And whether it is what was actually asked for.
+        #
+        # "Make this square" is the whole instruction, and an image reference
+        # arriving proves the two applications were crossed -- not that the
+        # crossing carried out the request. The original is deliberately not
+        # square, so the picture in the document is square only if something
+        # cropped it, and the bytes are the only place that can be read: the
+        # document carries a hash and a descriptor, and a descriptor is a
+        # claim about content rather than the content itself.
+        #
+        # A blob that cannot be found FAILS rather than being skipped. A check
+        # that passes because it could not look is the failure this repository
+        # has produced most often.
+        placed_hash = next(
+            (s.split("\t")[-1].strip() for s in after_strings
+             if s.split("\t")[0].endswith("blob")), "")
+        caches = [os.path.expanduser("~/.cache")]
+        for entry in os.listdir(run_dir):
+            caches.append(os.path.join(run_dir, entry, ".cache"))
+        raw = blob_bytes(placed_hash, caches) if placed_hash else None
+        size = png_size(raw) if raw else None
+        if size is None:
+            note(f"the picture the document names "
+                 f"({placed_hash[:12] or 'none'}) could not be read out of "
+                 f"any blob store, so its shape cannot be looked at")
+        else:
+            note(f"the picture in the document is {size[0]}x{size[1]}; "
+                 f"the original is {original[0]}x{original[1]}")
+        claim(size is not None and size[0] == size[1],
+              "the picture that reached the document is square")
+        claim(size is not None and size != original,
+              "the photo editor's own document carries a crop -- the placed "
+              "picture is not the original's shape")
 
         shot = os.path.join(run_dir, "after.png")
         call(control, {"op": "snapshot", "path": shot})

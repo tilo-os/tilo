@@ -69,9 +69,9 @@ struct Cli {
     /// reproducible and needs no network — and says so in its log.
     #[arg(long)]
     no_model: bool,
-    /// How long a model may take to decide before the keyword vocabulary
-    /// decides instead. The work must never wait on the network
-    /// indefinitely — but it does have to wait long enough.
+    /// How long deciding may take before the keyword vocabulary decides
+    /// instead. The work must never wait on the network indefinitely — but it
+    /// does have to wait long enough.
     ///
     /// This was 9000, set when the decision was a one-of-three pick that
     /// came back in under a second. Drafting a table is a real reading of
@@ -81,7 +81,15 @@ struct Cli {
     /// silently producing the very output the model is there to better,
     /// while the log still says a model was asked. A margin that wide is
     /// cheap; being on the wrong side of it during a demonstration is not.
-    #[arg(long, default_value_t = 30_000)]
+    ///
+    /// It now bounds a **conversation** rather than one call: the room is
+    /// asked about through named tools and answered in one turn, and the
+    /// answer comes back in the next. Two or three round trips is the
+    /// ordinary shape. So the same reasoning that moved this off 9000 moves
+    /// it off 30000 — a deadline inside the spread is worse than a generous
+    /// one, because what a run that misses produces is the keyword
+    /// vocabulary's answer under a log line saying a model was asked.
+    #[arg(long, default_value_t = 75_000)]
     model_timeout_ms: u64,
     /// How long an addressed line must stop changing before it is read as
     /// a request.
