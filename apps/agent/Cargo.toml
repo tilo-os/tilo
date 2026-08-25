@@ -12,6 +12,13 @@ path = "src/lib.rs"
 name = "qos-agent"
 path = "src/main.rs"
 
+# Posts a traced request body again, outside a session. A decline is a claim
+# about the input, and the input is a room — so being able to cut one down and
+# ask again is the difference between diagnosing it and guessing.
+[[bin]]
+name = "qos-agent-replay"
+path = "src/bin/replay.rs"
+
 [dependencies]
 # The wire types every participant speaks (`CollabRequest` / `CollabEvent`,
 # presence keys and payloads) — the same definitions the word processor
