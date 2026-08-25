@@ -1083,6 +1083,34 @@ pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
     }
 }
 
+/// The mark of the *application* a tile is showing, when the tile knows
+/// which application that is.
+///
+/// [`tile_app_kind`] answers a different question — what kind of thing is
+/// in the tile — out of a five-value vocabulary, and every window from a
+/// process the compositor does not host lands on its unknown-kind cog.
+/// A strip of four packaged applications therefore came up as four
+/// identical cogs, which tells a person nothing about which pill is
+/// which.
+///
+/// A window that arrived from a client announces an app id, and
+/// [`ui::icons::icon_for_app_id`] is already the one place that turns an
+/// app id into a glyph — the same table the permission prompt draws its
+/// mark from, so the shape a person is shown when an app asks for
+/// something is the shape on its tab. Unrecognised ids resolve there to
+/// a generic "an application" mark rather than to nothing, which is the
+/// right answer for a third-party or host application.
+///
+/// `None` for the tiles the shell draws itself: those have a real
+/// [`AppKind`](state::AppKind) and their glyph is not a fallback.
+pub(crate) fn tile_app_icon(t: &ShellTile) -> Option<ui::icons::Icon> {
+    match t {
+        ShellTile::Foreign { app_id, .. } => Some(ui::icons::icon_for_app_id(app_id)),
+        ShellTile::PeerWindow { app_id, .. } => Some(ui::icons::icon_for_app_id(app_id)),
+        ShellTile::Stub { .. } | ShellTile::AppPlaceholder { .. } => None,
+    }
+}
+
 pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
     match t {
         ShellTile::Stub { kind, label } => UiTile::Stub {
@@ -1253,6 +1281,7 @@ pub fn to_ui_window_group_reusing(
                 id: t.id,
                 title: t.title.clone(),
                 app_kind: Some(tile_app_kind(&t.tile)),
+                app_icon: tile_app_icon(&t.tile),
             };
             let host = take_parked(parked, t)
                 .unwrap_or_else(|| ui::widget::TileHost::new(to_ui_tile(&t.tile)));

@@ -1468,6 +1468,7 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
             id: 1,
             title: "Notes".into(),
             app_kind: Some(AppKind::Editor),
+            app_icon: None,
         },
         TileContent::Stub {
             kind: AppKind::Editor,

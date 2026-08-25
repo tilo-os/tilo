@@ -46,6 +46,7 @@ fn make_window_group() -> WindowGroup {
                 id: 1,
                 title: "Editor".into(),
                 app_kind: Some(AppKind::Editor),
+                app_icon: None,
             },
             TileContent::Stub {
                 kind: AppKind::Editor,
@@ -57,6 +58,7 @@ fn make_window_group() -> WindowGroup {
                 id: 2,
                 title: "Files".into(),
                 app_kind: Some(AppKind::Files),
+                app_icon: None,
             },
             TileContent::Stub {
                 kind: AppKind::Files,
@@ -68,6 +70,7 @@ fn make_window_group() -> WindowGroup {
                 id: 3,
                 title: "Term".into(),
                 app_kind: Some(AppKind::Terminal),
+                app_icon: None,
             },
             TileContent::Stub {
                 kind: AppKind::Terminal,
