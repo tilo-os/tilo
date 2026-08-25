@@ -528,7 +528,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             driver.relayout();
             let mut rects: Vec<Rect> = driver
                 .host()
-                .group_hit_candidates_for_tests()
+                .group_hit_candidates_for_capture()
                 .into_iter()
                 .map(|(_, _, r)| r)
                 .filter(|r| r.area() > 0.0)
