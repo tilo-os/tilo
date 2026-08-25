@@ -2592,6 +2592,20 @@ fn files_in_a_workspace() -> Scenario {
             Action::Wait(12),
             Action::Relayout,
             Action::Snapshot("01-workspace-trail"),
+            // And a held press in the empty part of the pane, which is
+            // the other thing this frame of the film had in it. The ring
+            // that marks a press is drawn around the pointer's hotspot,
+            // and the arrow hangs down-and-right from that — so a ring
+            // much wider than the arrow is tall put most of itself in
+            // empty space beside the cursor and was read as an
+            // unlabelled circle sitting in the middle of the pane.
+            Action::MoveCursor(Point::new(600.0, 620.0)),
+            Action::Wait(2),
+            Action::MousePress,
+            Action::Relayout,
+            Action::Wait(2),
+            Action::Snapshot("02-a-press-in-the-pane"),
+            Action::MouseRelease,
         ],
     }
 }
