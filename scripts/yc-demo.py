@@ -242,6 +242,39 @@ STRIP_SEARCH = {
 # that would make the path stop mattering.
 HOMES_ROOT = "/var/tmp/qos/home"
 
+# The workspace the room carries, and the one directory the photograph
+# lives in.
+#
+# **Why this is not a home.** The film's central gesture is xaver, on a
+# machine that hosts nothing, picking up an object and handing it to an
+# agent. If that object sits in a home, then either he reaches into
+# somebody else's — which the sandbox refuses, correctly, because a home
+# holds this user's signing seed and every other app's per-room state —
+# or he reaches into his own, in which case he is holding *his copy* and
+# the beat is two files that happen to share a name. Staging it in
+# `~/Pictures` was quietly making the film argue against its own premise.
+#
+# So it goes where the project says collaborative files go. `fs/` mounts
+# the real thing at `/var/workspace` and the file manager knows that path
+# by name (`file_explorer::model::WORKSPACE_ROOT`) — it lists such a
+# directory as a first-class location and reads per-file hydration state
+# off it. `QOS_WORKSPACE_ROOTS` is that constant's documented override,
+# "for tests and alternate mounts", and this is an alternate mount.
+#
+# **The honest limit, stated here because it is easy to overclaim.** The
+# FUSE driver is not running — no demo session has ever started it (see
+# `docs/demo-todo.md`). So this is one directory on one host that every
+# session opens, rather than a projection hydrating over iroh. What that
+# still proves, and proves properly, is the half the beat is actually
+# about: the *capability* travels with the room. The owner grants this
+# path on the room, `WorkspaceTreeReplica` replicates the room's
+# capability list to whoever was admitted to it, and the guest's file
+# manager is launched with the room's grants — so he reaches the object
+# by being in the room and not by being handed anyone's home. What it
+# does not prove is byte-level P2P hydration, and nothing here says it
+# does.
+WORKSPACE_ROOT = "/var/tmp/qos/workspace"
+
 # The photograph beat 8 drags into the document, by the name it wears on
 # screen. Named once because four places have to agree about it: the
 # staging that writes it, the assertion that it is there, the row the
@@ -916,6 +949,21 @@ class Session:
             # set, the standard folders resolve underneath this home and
             # nothing consults the real account's configuration.
             QOS_USER_HOME=self.home,
+            # The room's shared workspace, which every session points at
+            # the same directory — see `WORKSPACE_ROOT`. This is the
+            # documented override of the file manager's `/var/workspace`
+            # constant, and it is what makes that directory a *workspace*
+            # to the app rather than a folder it happens to be showing:
+            # it goes in the places sidebar, its entries are read for
+            # hydration state, and a cold start opens on it.
+            #
+            # Set on the compositor, not on the apps. The launcher clears
+            # the environment and rebuilds it, and passes this on only
+            # after narrowing it to the roots a capability has actually
+            # bound (`sandbox::push_workspace_roots`) — so a session that
+            # was granted the workspace sees it and one that was not
+            # cannot even name it.
+            QOS_WORKSPACE_ROOTS=WORKSPACE_ROOT,
             # The two stores an app launch cannot do without. The install
             # root is this session's; the runtime bundle is the machine's,
             # because every packaged app pins it and none of them ship it.
@@ -5684,28 +5732,52 @@ def stage_home(path: str) -> str:
     """
     for folder in ("Documents", "Downloads", "Pictures", "Projects"):
         os.makedirs(os.path.join(path, folder), exist_ok=True)
-    # The photograph beat 8 drags into the document, written twice.
+    # The photograph is deliberately **not** written here. It lives in
+    # the room's workspace ([`WORKSPACE_ROOT`], staged by
+    # [`stage_workspace`]) because that is the only place it can be one
+    # object rather than one per machine.
     #
-    # In `Pictures`, because that is where it belongs and where a person
-    # would look for it — and at the top of the home, because that is
-    # the directory Files is *showing* when the beat starts, and a drag
-    # can only pick up a row that is on screen. Navigating there first
-    # would be two more client-aimed clicks before the gesture the beat
-    # is actually about, each of which can miss.
-    #
-    # Both are the same bytes, so whichever is dragged produces the same
-    # payload and the same document delta.
-    photo = a_real_png()
-    for where in (os.path.join(path, "Pictures", PHOTO_NAME),
-                  os.path.join(path, PHOTO_NAME)):
-        with open(where, "wb") as fh:
-            fh.write(photo)
+    # This used to write it twice into every home — `~/harbour.png` and
+    # `~/Pictures/harbour.png`, in all three homes. Six copies of a
+    # picture the film calls "the thing he is holding". The beat that
+    # asks whether a guest can reach the host's object would have passed
+    # against his own copy of it, and passed for the wrong reason.
     with open(os.path.join(path, "Documents", "Launch plan.md"), "w") as fh:
         fh.write("# Launch plan\n\n- Venue - The Hall\n- Date - 3 Sep\n")
     with open(os.path.join(path, "Documents", "Checklist.md"), "w") as fh:
         fh.write("# Checklist\n\n- Doors\n- Sound\n- Seating\n")
     with open(os.path.join(path, "Projects", "README.md"), "w") as fh:
         fh.write("# Projects\n")
+    return path
+
+
+def stage_workspace(path: str = WORKSPACE_ROOT) -> str:
+    """The room's own directory, holding the photograph, staged once.
+
+    One directory for the whole rig, not one per session — which is the
+    entire point. Every session is pointed at *this* path through
+    `QOS_WORKSPACE_ROOTS`, so when two file managers list it they are
+    listing the same inode, and when one person points at a row the
+    address he sends names a thing the other machine can also name.
+
+    A workspace root is a first-class location to the file manager, not
+    a directory it happens to be showing: `model::workspace_roots` reads
+    it out of the environment, `is_workspace_path` gates the per-entry
+    sync-state lookup on it, and `initial_path` opens on it. So a
+    session that starts here starts *in the shared workspace*, which is
+    where a collaborative desktop's files are supposed to be and is a
+    better first frame than somebody's home.
+
+    Kept deliberately small. A workspace with four folders and a stack
+    of documents in it is a stage set; what the film needs is the one
+    object two people both reach, and a couple of things beside it so a
+    listing has more than a single row in it.
+    """
+    os.makedirs(path, exist_ok=True)
+    with open(os.path.join(path, PHOTO_NAME), "wb") as fh:
+        fh.write(a_real_png())
+    with open(os.path.join(path, "Run of show.md"), "w") as fh:
+        fh.write("# Run of show\n\n- Doors\n- Sound\n- Seating\n")
     return path
 
 
@@ -7428,8 +7500,8 @@ def beat_eight(quinten: Session, files: dict | None, wp: dict | None,
     note("two sandboxed clients, two mount namespaces: the drag carries "
          "the file's bytes, not a path either app could resolve")
 
-    photo = os.path.join(quinten.home, PHOTO_NAME)
-    claim("there is a photograph in his home to drag",
+    photo = os.path.join(WORKSPACE_ROOT, PHOTO_NAME)
+    claim("there is a photograph in the shared workspace to drag",
           os.path.exists(photo), True)
     if not os.path.exists(photo):
         return
@@ -7533,8 +7605,8 @@ def beat_eight(quinten: Session, files: dict | None, wp: dict | None,
     quinten.click_at(fx + fw * 0.45, fy + fh * 0.16)
     quinten.settle(0.8)
 
-    listing = expected_listing(quinten.home)
-    note(f"his home lists as {listing}")
+    listing = expected_listing(WORKSPACE_ROOT)
+    note(f"the shared workspace lists as {listing}")
     held = press_the_photo_row(quinten, log, files_tile, PHOTO_NAME, listing)
     claim(f"the press landed on {PHOTO_NAME}'s own row", held is not None, True)
     if held is None:
@@ -8392,6 +8464,10 @@ def main() -> int:
     # from a previous run carries that run's edits into this one's first
     # shot.
     shutil.rmtree(HOMES_ROOT, ignore_errors=True)
+    # And the room's workspace, for the same reason and on the same
+    # terms. Staged once, below, rather than once per session.
+    shutil.rmtree(WORKSPACE_ROOT, ignore_errors=True)
+    stage_workspace()
     shots = os.path.join(args.out, "shots")
     os.makedirs(shots, exist_ok=True)
 

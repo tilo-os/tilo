@@ -224,11 +224,22 @@ pub fn format_path(path: &Path, home: Option<&Path>) -> String {
 pub fn initial_path() -> PathBuf {
     // Prefer the collaborative workspace mount; fall back to the legacy
     // path, then the user's home, then the cwd, then root.
-    for candidate in [WORKSPACE_ROOT, "/workspace"] {
-        let p = PathBuf::from(candidate);
-        if p.exists() {
-            return p;
-        }
+    //
+    // Asked of [`workspace_roots`] rather than of [`WORKSPACE_ROOT`]
+    // directly, so that the one function which decides *where the
+    // workspace is* also decides where a cold start lands. With no
+    // override the two name the same directory and this is the
+    // behaviour it has always had. With `QOS_WORKSPACE_ROOTS` set they
+    // disagreed: the listing badged an alternate mount as a workspace
+    // and gave its entries sync state, while the window opened
+    // somewhere else entirely — the same question answered two ways by
+    // two functions a line apart.
+    if let Some(root) = workspace_roots().into_iter().next() {
+        return root;
+    }
+    let legacy = PathBuf::from("/workspace");
+    if legacy.exists() {
+        return legacy;
     }
     if let Some(home) = user_home() {
         return home;

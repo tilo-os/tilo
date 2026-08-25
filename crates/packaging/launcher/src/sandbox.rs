@@ -944,6 +944,71 @@ pub fn push_user_home(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> 
     Some(home)
 }
 
+/// Pass on the session's workspace roots, narrowed to the ones this
+/// app's capability plan has actually bound.
+///
+/// The same contract as [`push_user_home`], for the same reason and with
+/// the same safeguard. `QOS_WORKSPACE_ROOTS` names the collaborative
+/// mounts the session is using — `/var/workspace` on the image, an
+/// alternate mount anywhere else — and an app that knows about them
+/// lists their entries as workspace content rather than as an ordinary
+/// directory.
+///
+/// It is deliberately **not** on [`INHERITED_ENV`]. That list is for
+/// preferences naming no path and no capability, and this names paths.
+/// So it is derived from the binds instead: each root is kept only if
+/// the capability plan already mounted something containing it, which
+/// means the variable can never name a directory the app cannot read.
+/// An app granted none of them does not see the variable and can tell
+/// it was given nothing, rather than opening on a path that is not
+/// there and reporting an empty folder.
+///
+/// Order is preserved, because the first root is the one a file manager
+/// cold-starts into.
+///
+/// Returns the value exported, if any.
+pub fn push_workspace_roots(
+    argv: &mut Vec<String>,
+    capabilities: &CapabilityPlan,
+) -> Option<String> {
+    let raw = std::env::var("QOS_WORKSPACE_ROOTS").ok()?;
+    let value = granted_workspace_roots(&raw, capabilities)?;
+    argv.push("--setenv".to_string());
+    argv.push("QOS_WORKSPACE_ROOTS".to_string());
+    argv.push(value.clone());
+    Some(value)
+}
+
+/// The roots of `raw` that `capabilities` has actually bound, in order.
+///
+/// Split out from [`push_workspace_roots`] so the narrowing — the part
+/// that decides what an app is allowed to be told — is testable without
+/// mutating the process environment.
+///
+/// `None` rather than an empty string when nothing survives: those are
+/// different states inside the sandbox, and an app that can distinguish
+/// "no workspace" from "a workspace with no roots" gives a better
+/// account of itself than one that cannot.
+fn granted_workspace_roots(raw: &str, capabilities: &CapabilityPlan) -> Option<String> {
+    let kept: Vec<&str> = raw
+        .split(':')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter(|root| {
+            let root = Path::new(root);
+            capabilities
+                .ro_paths
+                .iter()
+                .chain(capabilities.rw_paths.iter())
+                .any(|granted| root.starts_with(granted))
+        })
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    Some(kept.join(":"))
+}
+
 fn push_bind(argv: &mut Vec<String>, kind: &str, src: &Path, dst: &Path) {
     argv.push(kind.to_string());
     argv.push(src.display().to_string());
@@ -993,6 +1058,69 @@ mod tests {
     use super::*;
     use crate::manifest::Entrypoint;
     use std::collections::BTreeMap;
+
+    /// A workspace root an app was never granted must not even be named
+    /// to it.
+    ///
+    /// Telling it would be worse than useless: the path is not in the
+    /// namespace, so the app opens on a directory that is not there and
+    /// reports an empty folder — which is indistinguishable, on screen,
+    /// from a shared workspace that genuinely has nothing in it.
+    #[test]
+    fn an_ungranted_workspace_root_is_not_named_to_the_app() {
+        let plan = CapabilityPlan::default();
+        assert_eq!(granted_workspace_roots("/var/workspace", &plan), None);
+    }
+
+    /// A granted one is, at the path the bind put it at.
+    #[test]
+    fn a_granted_workspace_root_reaches_the_app() {
+        let plan = CapabilityPlan {
+            ro_paths: vec![PathBuf::from("/var/workspace")],
+            ..CapabilityPlan::default()
+        };
+        assert_eq!(
+            granted_workspace_roots("/var/workspace", &plan).as_deref(),
+            Some("/var/workspace"),
+        );
+    }
+
+    /// Narrowed per root, not all-or-nothing: the granted ones cross and
+    /// the rest are dropped, in the order they were given.
+    #[test]
+    fn only_the_granted_roots_cross() {
+        let plan = CapabilityPlan {
+            ro_paths: vec![PathBuf::from("/var/workspace")],
+            rw_paths: vec![PathBuf::from("/var/tmp/qos/workspace")],
+            ..CapabilityPlan::default()
+        };
+        assert_eq!(
+            granted_workspace_roots(
+                "/var/workspace:/srv/somebody-elses:/var/tmp/qos/workspace",
+                &plan,
+            )
+            .as_deref(),
+            Some("/var/workspace:/var/tmp/qos/workspace"),
+            "a root nobody granted must be dropped while the granted ones stay",
+        );
+    }
+
+    /// Matching is by path component, not by string prefix.
+    ///
+    /// A grant on `/var/workspace` must not carry `/var/workspace-notes`
+    /// across — the same component-aligned rule `Scope::FsPath` states
+    /// for the grant itself, applied to the variable derived from it.
+    #[test]
+    fn a_sibling_directory_is_not_covered_by_the_grant() {
+        let plan = CapabilityPlan {
+            ro_paths: vec![PathBuf::from("/var/workspace")],
+            ..CapabilityPlan::default()
+        };
+        assert_eq!(
+            granted_workspace_roots("/var/workspace-notes", &plan),
+            None,
+        );
+    }
 
     fn mk_manifest(net_mode: &str) -> MinimalManifest {
         MinimalManifest {
