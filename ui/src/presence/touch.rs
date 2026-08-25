@@ -111,8 +111,20 @@ const PILL_GAP: f64 = 4.0;
 /// bounds it is clamped into. A bracket that is nearly the whole edge is a
 /// rectangle; one that is a few pixels is a speck.
 const ARM_FRACTION: f64 = 0.22;
-const ARM_MIN: f64 = 10.0;
-const ARM_MAX: f64 = 34.0;
+const ARM_MIN: f64 = 12.0;
+const ARM_MAX: f64 = 40.0;
+
+/// How thick the ring is, and how much thicker the corner brackets are.
+///
+/// They differ on purpose, and the difference is what the held middle of the
+/// mark has to live on. For most of its life the brackets have arrived and sit
+/// exactly on the ring, so if the two were the same weight the plateau would
+/// paint one even outline — and an even outline around a picture is what
+/// *selection* looks like, which is the one thing a viewer must not read here.
+/// At twice the ring's weight the four corners stay legible as corners, on a
+/// still frame, without the mark having to keep moving to say what it is.
+const RING_W: f64 = 2.0;
+const ARM_W: f64 = 4.0;
 
 /// One resource a participant is acting on, right now.
 ///
@@ -266,7 +278,7 @@ pub fn draw_action_touch(
     // photograph without becoming part of it.
     let ring = RoundedRect::from_rect(rect.inflate(p.offset * 0.4, p.offset * 0.4), radius);
     scene.stroke(
-        &Stroke::new(2.0),
+        &Stroke::new(RING_W),
         transform,
         peer.with_alpha_factor(a * 0.9),
         None,
@@ -293,7 +305,7 @@ pub fn draw_action_touch(
         rect.x1 + o,
         rect.y1 + o,
     );
-    let stroke = Stroke::new(3.0);
+    let stroke = Stroke::new(ARM_W);
     let ink = peer.with_alpha_factor(a);
     for (corner, dx, dy) in [
         ((b.x0, b.y0), 1.0, 1.0),

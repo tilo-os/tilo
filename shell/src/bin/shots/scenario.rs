@@ -1829,7 +1829,12 @@ fn agent_touches_the_photograph() -> Scenario {
                 title: "harbour.png",
                 path,
             },
-            Action::Wait(10),
+            // Long enough for the strip to finish travelling to the window it
+            // just opened. Ten frames caught it mid-pan, so the control frame
+            // was taken at one scroll offset and every frame after it at
+            // another — which reads as the desktop jumping at the moment the
+            // agent acts, and is the one thing this beat must not look like.
+            Action::Wait(34),
             Action::Relayout,
             Action::Snapshot("01-opened"),
             Action::InvokeAppAction {
@@ -1842,7 +1847,12 @@ fn agent_touches_the_photograph() -> Scenario {
             },
             Action::SampleActionTouch {
                 prefix: "touch",
-                at_ms: &[0, 90, 200, 400, 750, 1100, 1350, 1460],
+                // Inside the span at both ends. The mark is *designed* to be
+                // invisible at 0 and at the very end — it fades in as it
+                // arrives and out as it lets go — so sampling there wrote two
+                // frames with nothing on them and spent two of eight captures
+                // proving the fade works.
+                at_ms: &[40, 110, 220, 450, 800, 1120, 1260, 1380],
             },
             Action::Wait(12),
             Action::Relayout,
