@@ -5433,17 +5433,27 @@ impl WorkspaceTree {
         None
     }
 
-    /// Mirror a `move_tab_across_strips` mutation into the doc. v1
-    /// captures the tab's identifying scalars from the source, deletes
-    /// it from the source list, and appends a fresh map (with the same
-    /// scalars) to the destination strip's first window-group's `tabs`
-    /// list. Returns `false` and is a no-op if the source tab or
-    /// destination strip aren't seeded into the doc.
+    /// Mirror a [`Self::move_tab_across_strips`] mutation into the doc:
+    /// capture the tab's scalars from the source, delete it there, and
+    /// append a fresh single-tab window group carrying them to the
+    /// destination strip.
+    ///
+    /// `new_group_id` is the id the cache gave that group, and the two
+    /// have to agree. They did not: the cache appended a new group while
+    /// this appended the tab to whatever group happened to be first on
+    /// the destination strip. Since the cache rebuild from the doc only
+    /// ever adds, reading the doc back put the tab in the first group
+    /// *as well as* the one the cache had made for it, and the same
+    /// window was open twice.
+    ///
+    /// Returns `false` and is a no-op if the source tab or destination
+    /// strip aren't seeded into the doc.
     pub fn doc_move_tab_across_strips(
         &mut self,
         src_strip: StripId,
         dst_strip: StripId,
         tab_id: u64,
+        new_group_id: GroupId,
     ) -> bool {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
         // Capture source.
@@ -5495,22 +5505,28 @@ impl WorkspaceTree {
                 else {
                     return false;
                 };
-                if self.doc.length(&groups_id) == 0 {
-                    return false;
-                }
-                let Some((_, first_group)) = self.doc.get(&groups_id, 0_usize).ok().flatten()
-                else {
+                // A new group at the end of the strip, exactly as the
+                // cache made it — same id, same single tab. Same shape
+                // as `doc_reorder_group_within_strip` writes.
+                let at = self.doc.length(&groups_id);
+                let Ok(group_entry) = self.doc.insert_object(&groups_id, at, ObjType::Map) else {
                     return false;
                 };
-                let tabs_id = match self.doc.get(&first_group, "tabs").ok().flatten() {
-                    Some((_, id)) => id,
-                    None => match self.doc.put_object(&first_group, "tabs", ObjType::List) {
-                        Ok(id) => id,
-                        Err(_) => return false,
-                    },
+                let _ = self
+                    .doc
+                    .put(&group_entry, "id", ScalarValue::Uint(new_group_id));
+                let _ = self
+                    .doc
+                    .put(&group_entry, "maximized", ScalarValue::Boolean(false));
+                let _ = self.doc.put(
+                    &group_entry,
+                    "width_permille",
+                    ScalarValue::Uint(WindowWidth::Normal.permille() as u64),
+                );
+                let Ok(tabs_id) = self.doc.put_object(&group_entry, "tabs", ObjType::List) else {
+                    return false;
                 };
-                let new_idx = self.doc.length(&tabs_id);
-                let Ok(tab_entry) = self.doc.insert_object(&tabs_id, new_idx, ObjType::Map) else {
+                let Ok(tab_entry) = self.doc.insert_object(&tabs_id, 0_usize, ObjType::Map) else {
                     return false;
                 };
                 let _ = self.doc.put(&tab_entry, "id", ScalarValue::Uint(tab_id));
@@ -6702,7 +6718,12 @@ impl WorkspaceTree {
                     // Mirror the cache mutation into the doc. The widget
                     // side has already accepted the drop; the doc-side
                     // write keeps peer-sync coherent.
-                    self.doc_move_tab_across_strips(src_strip_id, dest_strip_id, tab_id);
+                    self.doc_move_tab_across_strips(
+                        src_strip_id,
+                        dest_strip_id,
+                        tab_id,
+                        new_group_id,
+                    );
                     return true;
                 }
             }

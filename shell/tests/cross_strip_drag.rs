@@ -1097,3 +1097,50 @@ fn a_cross_strip_move_to_a_strip_that_is_gone_keeps_the_tab() {
         "a refused move must leave every tab exactly where it was"
     );
 }
+
+/// A cross-strip move has to land in the same place in the room
+/// document as it does in the cache.
+///
+/// It did not. The cache appended a brand-new window group carrying the
+/// moved tab; the doc appended the tab to whatever group happened to be
+/// first on the destination strip. Rebuilding the cache from the doc —
+/// which a restore-from-history does, and which only ever adds — then
+/// put the tab in the first group as well as the one the cache had made
+/// for it, and the same window was open twice.
+#[test]
+fn a_cross_strip_move_lands_in_the_same_group_in_the_document_as_in_the_cache() {
+    let (mut tree, s_a, s_b, a_tabs, _b_tabs) = two_strip_two_tab_tree();
+    tree.seed_doc_from_cache();
+
+    let moved = a_tabs[0];
+    assert!(
+        tree.move_tab_across_strips(s_a, s_b, moved),
+        "the move itself must succeed"
+    );
+
+    let holders = |t: &WorkspaceTree| -> Vec<GroupId> {
+        t.workspaces
+            .iter()
+            .flat_map(|ws| ws.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .filter(|g| g.tabs.iter().any(|tab| tab.id == moved))
+            .map(|g| g.id)
+            .collect()
+    };
+    let after_move = holders(&tree);
+    assert_eq!(
+        after_move.len(),
+        1,
+        "precondition: the cache has the moved tab in exactly one group"
+    );
+
+    // What a restore-from-history does: rewrite the document, then
+    // bring the cache back in line with it.
+    tree.resync_cache_from_doc();
+
+    assert_eq!(
+        holders(&tree),
+        after_move,
+        "reading the document back must not open the same window a second time"
+    );
+}
