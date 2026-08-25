@@ -44,6 +44,14 @@ fn main() {
     let config_dir = PathBuf::from(arg("--config-dir").expect("--config-dir is required"));
     let package_id = arg("--package-id").unwrap_or_else(|| "dev.qos.sheets".to_string());
     let name = arg("--name").unwrap_or_else(|| "Sheets".to_string());
+    // The name this registry gives itself in `registries.toml`, which is
+    // not an internal label: the palette prints it on the row for every
+    // app it offers ("… from qOS Apps") and the fetch notice addresses
+    // it by it. It was "local test", which read on screen as leftover
+    // scaffolding rather than as a place software comes from — so the
+    // default is a name, and `--registry-name` is here for a setup that
+    // wants to be explicit about which one it is standing in for.
+    let registry_name = arg("--registry-name").unwrap_or_else(|| "qOS Apps".to_string());
     // The payload binary the packaged app runs. `/bin/true` proves the
     // install path; point it at a real client to prove the launch.
     let payload_bin = PathBuf::from(arg("--payload").unwrap_or_else(|| "/bin/true".to_string()));
@@ -89,7 +97,7 @@ fn main() {
     let mut entry = RegistryEntry {
         package_id: package_id.clone(),
         name: name.clone(),
-        description: format!("{name}, served by the local test registry"),
+        description: format!("{name}, offered by {registry_name}"),
         categories: vec!["Office".into()],
         icon_url: None,
         source_url: None,
@@ -113,7 +121,7 @@ fn main() {
     std::fs::create_dir_all(&config_dir).expect("create config dir");
     std::fs::write(
         config_dir.join("registries.toml"),
-        format!("[[registry]]\nname = \"local test\"\nbase_url = \"{base_url}\"\n"),
+        format!("[[registry]]\nname = \"{registry_name}\"\nbase_url = \"{base_url}\"\n"),
     )
     .expect("write registries.toml");
 

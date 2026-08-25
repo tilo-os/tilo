@@ -30,10 +30,17 @@
 //! for an app that is, and no more: its verb is **Fetch and open**
 //! rather than Open, and it carries the registry it would come from in
 //! [`SearchResult::fetch_source`], which the palette renders as a small
-//! trailing chip. Everything else — the group, the glyph, the
-//! subtitle's shape, the ranking scale, the activation path — is
-//! identical, so the distinction is one the eye can find and not one
-//! that reorganises the list.
+//! trailing chip. Everything else — the group, the glyph, the ranking
+//! scale, the activation path — is identical, so the distinction is one
+//! the eye can find and not one that reorganises the list.
+//!
+//! Its second line spends the room it has on that difference: where the
+//! window lands, what kind of app it is, and which registry offers it.
+//! No package id, because the line above already names the app and the
+//! id is the same name written for the machine — and none of the three
+//! is worth losing to it when the subtitle has to elide. Provenance is
+//! only printed when the registry's self-chosen name reads as a name;
+//! see [`presentable_registry`].
 //!
 //! Neither string says *install*. Nobody asked to install anything;
 //! they asked to open an app, and fetching it is how that gets done.
@@ -72,6 +79,35 @@ pub const APPLICATIONS_KIND: &str = "Applications";
 /// each make "the app I actually named" lose to "an app I happen to
 /// have".
 const NOT_INSTALLED_TIEBREAK: i32 = 1;
+
+/// The registry's name, if it is one a person can be shown.
+///
+/// A registry names itself in `registries.toml`, and nothing validates
+/// what it puts there. Two of the ways that goes wrong reach the user as
+/// a row in the palette: an empty name leaves a subtitle ending in a
+/// dangling separator, and a name left as the base URL — the easiest
+/// thing to paste into the field — turns a sentence about where an app
+/// comes from into a socket address. Neither is provenance; both are
+/// worse than saying nothing, because the badge beside them has already
+/// said the app is not here.
+///
+/// So the segment is earned rather than assumed. Anything else the
+/// operator chose is shown verbatim: this rejects what cannot be read as
+/// a name, and does not try to judge the taste of what can.
+pub(crate) fn presentable_registry(name: &str) -> Option<&str> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // A URL, a bare host, or a host:port — the shapes an address takes
+    // when it is dropped into a name field. A real name may contain a
+    // dot ("qOS main, v2.0"), so an address is judged by having no
+    // spaces *and* looking addressed.
+    let addressish = trimmed.contains("://")
+        || (!trimmed.contains(char::is_whitespace)
+            && (trimmed.contains(':') || trimmed.contains('/') || trimmed.contains('.')));
+    (!addressish).then_some(trimmed)
+}
 
 pub struct ApplicationsProvider {
     kinds: Vec<ResourceKind>,
@@ -205,23 +241,41 @@ impl ApplicationsProvider {
             let package_id = app.package_id.clone();
             let display_name = app.display_name.clone();
             let registry = app.registry.clone();
-            // The same fields an installed row shows, plus where it
-            // would come from. The registry goes at the *end* because
-            // the palette elides a subtitle from the middle: the part
-            // that says this is not a local app is the part that has to
-            // survive a narrow window.
+            // What the second line is *for* on this row is where the app
+            // would come from — the one fact a local row cannot have.
+            // So the package id comes off it: the title one line above
+            // already names the app, and `dev.qos.word-processor`
+            // repeats that in a form addressed to the machine. What is
+            // left is what the publisher declared this app *is*, and
+            // then its provenance, which goes last because the palette
+            // elides a subtitle from the middle and provenance is the
+            // part that has to survive a narrow window.
             let detail = match app.category.as_deref() {
-                Some(cat) => format!("{cat} · {}", app.package_id),
-                None => format!("{} · {}", app.package_id, app.version),
+                Some(cat) => cat.to_string(),
+                None => app.version.clone(),
             };
-            let subtitle = i18n::t_args(
-                "palette-app-subtitle-remote",
-                &[
-                    i18n::arg("hint", open_target.result_hint()),
-                    i18n::arg("detail", detail.as_str()),
-                    i18n::arg("registry", app.registry.as_str()),
-                ],
-            );
+            // Provenance is worth a segment only when the name reads as
+            // a place rather than as a machine address — a registry
+            // whose operator left its name as a URL says nothing to the
+            // person reading it, and printing it anyway is how a row
+            // ends up quoting a socket at a user.
+            let subtitle = match presentable_registry(&app.registry) {
+                Some(name) => i18n::t_args(
+                    "palette-app-subtitle-remote",
+                    &[
+                        i18n::arg("hint", open_target.result_hint()),
+                        i18n::arg("detail", detail.as_str()),
+                        i18n::arg("registry", name),
+                    ],
+                ),
+                None => i18n::t_args(
+                    "palette-app-subtitle",
+                    &[
+                        i18n::arg("hint", open_target.result_hint()),
+                        i18n::arg("detail", detail.as_str()),
+                    ],
+                ),
+            };
             out.push(SearchResult {
                 kind: ResourceKind::Application,
                 provider_id: self.id().to_string(),
