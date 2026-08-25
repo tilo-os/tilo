@@ -1107,6 +1107,27 @@ pub(crate) fn tile_app_icon(t: &ShellTile) -> Option<ui::icons::Icon> {
     match t {
         ShellTile::Foreign { app_id, .. } => Some(ui::icons::icon_for_app_id(app_id)),
         ShellTile::PeerWindow { app_id, .. } => Some(ui::icons::icon_for_app_id(app_id)),
+        // A tile the shell draws itself keeps its kind glyph — but only
+        // where the kind is a real answer, and `AppKind::Other` is not
+        // one. It is the fallback of the same five-value vocabulary, and
+        // `to_ui_kind` sends every label it cannot place to the
+        // unknown-kind cog: a hosted Photos tab wore exactly the mark
+        // this function exists to take away, in the same tab bar as a
+        // hosted word processor.
+        //
+        // Its canonical id is the one [`state::AppKind::app_id`] already
+        // mints for the capability grants map, so the pill and the
+        // permission prompt name the program the same way. Where the
+        // table has never heard of it, the generic "an application" mark
+        // is *less* than the kind glyph — for the labels the shell hosts
+        // in-process that glyph is a real editor — so the kind keeps it.
+        ShellTile::Stub { kind: kind @ ShellKind::Other(_), .. }
+        | ShellTile::AppPlaceholder { kind: kind @ ShellKind::Other(_), .. } => {
+            match ui::icons::icon_for_app_id(&kind.app_id()) {
+                ui::icons::Icon::LayoutGrid => None,
+                icon => Some(icon),
+            }
+        }
         ShellTile::Stub { .. } | ShellTile::AppPlaceholder { .. } => None,
     }
 }

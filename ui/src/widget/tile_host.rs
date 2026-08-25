@@ -1120,9 +1120,18 @@ fn draw_opening_card(
     // window open had to read. The light presets had the mirror bug. This
     // is the same fix the stub card and the foreign-surface placeholder
     // already carry; this call site was missed.
-    let ink = theme.on_card();
-    let on_card = ink.ink;
-    let on_card_dim = ink.ink_dim;
+    let card = theme.tokens.colors.surfaces.window_card;
+    let on_card = theme.on_card().ink;
+    // The line under the name is set at the bottom of the type scale, where
+    // the default floor is measured for an ideal glyph and a real one is
+    // anti-aliased: derived at 4.5:1 it reached the screen at 3.8:1 on the
+    // light card, a tier under the floor its colour was picked to clear.
+    // `ON_CARD_SMALL_TEXT_CONTRAST` is the headroom this size needs, and
+    // the caller picks it because the caller is the one that knows the
+    // size. Still a quieter grey than the name in every theme.
+    let on_card_dim = theme
+        .on_surface_at(card, crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST)
+        .ink_dim;
     let size = theme.tokens.typography.scale.xl;
     let sm = theme.tokens.typography.scale.sm;
     let cx = rect.center().x;
