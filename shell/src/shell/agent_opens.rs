@@ -23,6 +23,19 @@
 //!   the application and the reason. An agent that is not told cannot tell a
 //!   refusal from a slow start, and will report the wrong one.
 //!
+//! ## Two ways in, one gate
+//!
+//! A request also arrives here when a participant opened an application in a
+//! workspace this session *shares* — a workspace carries its own
+//! collaborators, so an application opened in one is the workspace's and not
+//! the opening machine's, and the room says so
+//! (`NeighbourMsg::AppOpened`). That path is a peer's account of what a
+//! participant asked for, never a peer's authority over this desktop: it is
+//! put through the identical decision below, against this session's own
+//! workspace, and a session whose policy does not cover the participant opens
+//! nothing and writes down why. The only thing the origin changes is where a
+//! refusal goes — see [`OpenOrigin`].
+//!
 //! ## What a grant has to say
 //!
 //! Opening `dev.qos.photos` asks about `ResourceRef::App("dev.qos.photos")`
@@ -59,7 +72,7 @@ use std::sync::{Arc, Mutex};
 use collab_types::caps::{ResourceRef, Verb};
 
 use crate::shell::chrome_state::Chrome;
-use crate::shell::collab_broker::{BrokerHandle, OpenAppRequest};
+use crate::shell::collab_broker::{BrokerHandle, OpenAppRequest, OpenOrigin};
 use crate::shell::launcher;
 use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
 
@@ -118,7 +131,7 @@ pub fn pump(chrome: &Chrome, broker: &BrokerHandle, pending: &PendingOpens) {
                     app = %req.app_id, with = ?req.with,
                     "refused to open an application onto content: {why}",
                 );
-                broker.refuse_open(req.peer, &req.app_id, &why);
+                refuse(broker, &req, &why);
                 continue;
             }
         };
@@ -144,7 +157,7 @@ pub fn pump(chrome: &Chrome, broker: &BrokerHandle, pending: &PendingOpens) {
                     // The person watching has already been told by the
                     // launcher's own error notification. The participant that
                     // asked has not, and it is the one that is waiting.
-                    broker.refuse_open(req.peer, &req.app_id, &format!("{e}"));
+                    refuse(broker, &req, &format!("{e}"));
                 }
             }
             Err(why) => {
@@ -152,9 +165,29 @@ pub fn pump(chrome: &Chrome, broker: &BrokerHandle, pending: &PendingOpens) {
                     app = %req.app_id, who = ?req.handle, room = %req.room,
                     "refused to open an application: {why}",
                 );
-                broker.refuse_open(req.peer, &req.app_id, &why);
+                refuse(broker, &req, &why);
             }
         }
+    }
+}
+
+/// Say no, to whoever is in a position to hear it.
+///
+/// A request that arrived on this session's own socket has a participant
+/// blocked on the answer, and it gets one — an agent that is not told cannot
+/// tell a refusal from a slow start. A request that arrived over the room does
+/// not: the participant asked another session and was answered there, and the
+/// peer that relayed the fact is not owed a reply. What that one gets is a log
+/// line, because a workspace where one machine has the window and another
+/// silently does not is precisely the divergence somebody will have to explain.
+fn refuse(broker: &BrokerHandle, req: &OpenAppRequest, why: &str) {
+    match req.origin {
+        OpenOrigin::Connection(peer) => broker.refuse_open(peer, &req.app_id, why),
+        OpenOrigin::Room(peer) => tracing::warn!(
+            from = peer, app = %req.app_id, room = %req.room, who = ?req.handle,
+            "this session will not open an application the rest of the \
+             workspace has: {why}",
+        ),
     }
 }
 
@@ -428,7 +461,7 @@ mod tests {
             room: "room".to_string(),
             who: "peer-1".to_string(),
             handle: None,
-            peer: 1,
+            origin: OpenOrigin::Connection(1),
         };
         let why = decide(&chrome, &req).expect_err("an unnamed asker must be refused");
         assert!(

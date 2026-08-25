@@ -744,9 +744,32 @@ pub struct OpenAppRequest {
     /// must be no by default. It narrows a grant; it never makes one. See
     /// `shell::shell::agent_opens`.
     pub handle: Option<String>,
-    /// The connection to answer a refusal on. See
-    /// [`BrokerHandle::refuse_open`].
-    pub peer: u64,
+    /// Where the request came from, and therefore who — if anyone — is
+    /// waiting to be told the answer.
+    pub origin: OpenOrigin,
+}
+
+/// How an open reached this session.
+///
+/// It decides one thing only: where a refusal goes. What is *permitted* is
+/// decided identically for both — against this session's own workspace, by
+/// `crate::shell::agent_opens::decide` — because a request that came over the
+/// room is a peer's account of what a participant asked for, not a peer's
+/// authority over this desktop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenOrigin {
+    /// A connection on this session's own collaboration socket asked, and is
+    /// blocked waiting for the window or the reason there is none. The `u64`
+    /// is the peer id to answer on — see [`BrokerHandle::refuse_open`].
+    Connection(u64),
+    /// A participant opened the application in a workspace this session
+    /// shares, and the room carried the fact here. Nobody is waiting: the
+    /// asker was answered by the session it asked. A refusal is written to
+    /// the log, because there is nowhere else for it to go.
+    ///
+    /// The `u64` is the hashed peer id of the session that published it, for
+    /// attribution. It confers nothing.
+    Room(u64),
 }
 
 /// What a session does when a participant asks it to open an application.
@@ -1227,15 +1250,86 @@ enum TranslatedAction {
     },
 }
 
-/// Read one length-prefixed frame. Returns `None` on EOF / broken pipe
-/// — the caller treats that as "peer disconnected" and unwinds.
-fn read_frame(s: &mut UnixStream) -> Option<Vec<u8>> {
+/// No frame arrived, and why not.
+///
+/// These four were one `None`, and the loop that consumed it logged a
+/// single `debug!` line naming none of them. A peer that vanished a
+/// second after connecting was therefore indistinguishable — in the
+/// log *and* in the type — from an application closing normally at
+/// shutdown, and telling those two apart is the whole of diagnosing a
+/// connection that dies on its own.
+#[derive(Debug)]
+enum FrameEnd {
+    /// Closed between frames: the ordinary end of a connection.
+    Closed,
+    /// Closed *inside* a frame — a length prefix arrived and its body
+    /// did not. The writer died mid-send; it did not hang up.
+    Truncated { expected: usize, got: usize },
+    /// A length prefix so large the sender cannot have meant it. Read
+    /// as a length, four bytes of garbage ask for an allocation of up
+    /// to 4 GiB, so this is refused rather than attempted.
+    Implausible { len: usize },
+    /// The read failed while the peer was still there.
+    Failed(std::io::Error),
+}
+
+impl std::fmt::Display for FrameEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed => write!(f, "it closed the connection between frames"),
+            Self::Truncated { expected, got } => write!(
+                f,
+                "it closed mid-frame — {got} of {expected} body bytes arrived"
+            ),
+            Self::Implausible { len } => write!(
+                f,
+                "it announced a {len}-byte frame, which is not a length anything sends"
+            ),
+            Self::Failed(e) => write!(f, "the read failed: {e}"),
+        }
+    }
+}
+
+/// The largest frame this broker will allocate for. A whole-document
+/// snapshot is the big one and is orders of magnitude under this;
+/// anything above it is a desynchronised stream, not a payload.
+const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
+
+/// Fill `buf` completely, distinguishing the ways that can fail.
+///
+/// `at_boundary` says whether a zero-length read here means the peer
+/// hung up cleanly (true — nothing of this frame had arrived) or
+/// dropped in the middle of one (false).
+fn read_exactly(s: &mut UnixStream, buf: &mut [u8], at_boundary: bool) -> Result<(), FrameEnd> {
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        match s.read(&mut buf[filled..]) {
+            Ok(0) if at_boundary && filled == 0 => return Err(FrameEnd::Closed),
+            Ok(0) => {
+                return Err(FrameEnd::Truncated {
+                    expected: buf.len(),
+                    got: filled,
+                })
+            }
+            Ok(n) => filled += n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(FrameEnd::Failed(e)),
+        }
+    }
+    Ok(())
+}
+
+/// Read one length-prefixed frame, or say why there is not one.
+fn read_frame(s: &mut UnixStream) -> Result<Vec<u8>, FrameEnd> {
     let mut len_buf = [0u8; 4];
-    s.read_exact(&mut len_buf).ok()?;
+    read_exactly(s, &mut len_buf, true)?;
     let len = u32::from_le_bytes(len_buf) as usize;
+    if len > MAX_FRAME_BYTES {
+        return Err(FrameEnd::Implausible { len });
+    }
     let mut buf = vec![0u8; len];
-    s.read_exact(&mut buf).ok()?;
-    Some(buf)
+    read_exactly(s, &mut buf, false)?;
+    Ok(buf)
 }
 
 /// Write one length-prefixed frame. Errors propagate so the caller can
@@ -1692,7 +1786,17 @@ fn reader_loop(
     // same reason `remote_participant_id` re-announces a peer for a
     // connection that arrived after its name was said.
     let mut said_self: Option<(String, String, bool)> = None;
-    while let Some(frame) = read_frame(&mut stream) {
+    // Counted so the disconnect line can say whether this connection ever
+    // got going. "Connected, said nothing, went away" and "served for an
+    // hour and closed" are the same event without them.
+    let opened = std::time::Instant::now();
+    let mut frames = 0u64;
+    let ended = loop {
+        let frame = match read_frame(&mut stream) {
+            Ok(frame) => frame,
+            Err(end) => break end,
+        };
+        frames += 1;
         let Ok(req) = serde_json::from_slice::<CollabRequest>(&frame) else {
             tracing::debug!(
                 "collab_broker: dropping malformed frame from peer-{} ({} bytes)",
@@ -1908,11 +2012,26 @@ fn reader_loop(
                 );
             }
         }
-        // Opening an application never reaches `translate`, because it has no
-        // audience to be translated for. It is addressed to *this session*:
-        // relaying it would put a window on every peer's desktop because
-        // somebody else's participant needed one, which nobody asked for and
-        // no peer could refuse. So it leaves the fan-out here.
+        // Opening an application leaves the fan-out here, because the fan-out
+        // translates payloads for an audience of applications and an open is
+        // not one — it is addressed to the *workspace*.
+        //
+        // So it goes two ways at once. This session opens it, because a
+        // participant on this socket asked. And the room is told, because a
+        // workspace carries its own collaborators and its own permissions:
+        // an application opened in a shared workspace belongs to the
+        // workspace, not to whichever machine the asker's socket landed on.
+        // Without the second half, an agent asked to crop a photograph opened
+        // the editor where nobody could see it and the person it was working
+        // with went on looking at a window that said no photograph was open.
+        //
+        // Telling the room is not deciding for it. Every session that hears
+        // it puts the open through its own workspace's capabilities before
+        // anything appears — the same gate this one is about to apply — and a
+        // session whose policy does not cover the participant declines and
+        // says so in its log. "No peer could refuse" was never the objection
+        // it looked like: refusing is exactly what a workspace's permissions
+        // are for.
         if let CollabRequest::OpenApp { app_id, with } = &req {
             let room = src_route
                 .as_ref()
@@ -1929,11 +2048,33 @@ fn reader_loop(
                     open(OpenAppRequest {
                         app_id: app_id.clone(),
                         with: with.clone(),
-                        room,
+                        room: room.clone(),
                         who: src_user_id.clone(),
                         handle: peer.announced_handle(),
-                        peer: peer.id,
+                        origin: OpenOrigin::Connection(peer.id),
                     });
+                    // And the rest of the workspace, on the room's own topic.
+                    // Named by the participant's announced name rather than by
+                    // this session's label for the connection: the receiving
+                    // workspace matches its grants against the participant, and
+                    // "the machine it reached us through" is not one.
+                    //
+                    // Only this branch publishes, and only for a request that
+                    // arrived on a socket. An open that arrived *from* the room
+                    // is handed straight to the opener by the inbound drain and
+                    // never comes past here, which is what keeps two sessions
+                    // from relaying one open back and forth into a window per
+                    // round trip.
+                    let who = peer
+                        .announced_handle()
+                        .unwrap_or_else(|| src_user_id.clone());
+                    if !publisher.app_opened(&room, Transport::Json, app_id, with.clone(), &who) {
+                        tracing::warn!(
+                            %app_id, %room, %who,
+                            "collab_broker: the open stayed on this machine — the \
+                             rest of the workspace will not get this window",
+                        );
+                    }
                 }
                 // No desktop behind this broker. Said rather than dropped:
                 // the caller is blocked on an answer, and "nothing here can
@@ -2092,8 +2233,21 @@ fn reader_loop(
                 table.fanout_to_route(&event, peer.id, &route);
             }
         }
-    }
-    tracing::debug!("collab_broker: peer-{} disconnected", peer.id);
+    };
+    // At `info!`, not `debug!`: a peer leaving is rare and the one line
+    // it writes is what a live session has to reason from. The demo runs
+    // this at info, which is exactly why the old `debug!` line meant a
+    // connection could die with the log showing only that it had opened.
+    tracing::info!(
+        "collab_broker: peer-{} left after {:?} and {} frame(s), route={}: {}",
+        peer.id,
+        opened.elapsed(),
+        frames,
+        peer.route()
+            .map(|r| format!("{r:?}"))
+            .unwrap_or_else(|| "none (never said Hello)".into()),
+        ended,
+    );
     table.remove(peer.id);
 }
 
@@ -2613,6 +2767,7 @@ fn spawn_inner(
             let signed_inbound = net.inbound_app_crdt_signed_handle();
             let sb_req_inbound = net.inbound_scrollback_request_handle();
             let sb_resp_inbound = net.inbound_scrollback_response_handle();
+            let open_inbound = net.inbound_app_open_handle();
             let drain_table = Arc::clone(&table);
             let drain_channels = Arc::clone(&channels);
             let drain_net = Arc::clone(net);
@@ -2669,6 +2824,72 @@ fn spawn_inner(
                                 entry.record_id,
                             );
                             drain_table.fanout_to_route(&event, u64::MAX, &route);
+                        }
+
+                        // Drain applications peers opened in workspaces this
+                        // session shares, and put each one to the session's
+                        // own opener — the same door a request arriving on
+                        // this machine's socket goes through, so the same
+                        // capability check decides it. The workspace's
+                        // permissions are what govern whether a window
+                        // appears here, and they are consulted on the thread
+                        // that draws; nothing about the frame having crossed
+                        // the network shortens that path.
+                        //
+                        // Handed over as `OpenOrigin::Room`, which is what
+                        // stops a refusal being addressed to a socket peer
+                        // that does not exist: the participant that asked was
+                        // answered by the session it asked, and a refusal
+                        // here is this session's own business.
+                        let drained_opens: Vec<_> = {
+                            let mut buf = match open_inbound.lock() {
+                                Ok(g) => g,
+                                Err(_) => break,
+                            };
+                            std::mem::take(&mut *buf)
+                        };
+                        for entry in drained_opens {
+                            match drain_table.app_opener() {
+                                Some(open) => {
+                                    tracing::info!(
+                                        from = entry.peer,
+                                        app = %entry.app_id,
+                                        room = %entry.cluster_id,
+                                        who = %entry.who,
+                                        "collab_broker: a participant opened an \
+                                         application in a workspace this session \
+                                         shares; deciding it here",
+                                    );
+                                    open(OpenAppRequest {
+                                        app_id: entry.app_id,
+                                        with: entry.with,
+                                        room: entry.cluster_id,
+                                        who: entry.who.clone(),
+                                        // The participant's own name, carried
+                                        // across so this workspace's grants are
+                                        // matched against the participant and
+                                        // not against the machine that relayed
+                                        // it. Unauthenticated, exactly as it is
+                                        // locally, and it narrows a grant
+                                        // rather than making one.
+                                        handle: Some(entry.who),
+                                        origin: OpenOrigin::Room(entry.peer),
+                                    });
+                                }
+                                // Nobody is waiting on this one, so there is
+                                // no refusal to send — but a session that
+                                // silently drops the window everybody else in
+                                // the workspace can see is exactly the kind of
+                                // divergence that has to leave a line behind.
+                                None => tracing::warn!(
+                                    from = entry.peer,
+                                    app = %entry.app_id,
+                                    room = %entry.cluster_id,
+                                    "collab_broker: a participant opened an \
+                                     application in a shared workspace, and this \
+                                     session has no desktop to open one in",
+                                ),
+                            }
                         }
 
                         // Drain inbound whole-document snapshots. A
@@ -3705,6 +3926,45 @@ mod tests {
 
     /// Unique-per-test socket path so concurrent test runs (or a
     /// resurrected stale inode) don't collide.
+    /// A peer that hangs up cleanly and one that dies mid-frame are
+    /// different events, and the broker used to report both as `None`
+    /// — one `debug!` line, no cause, which is what made a connection
+    /// that died on its own take several recorded takes to diagnose.
+    #[test]
+    fn a_frame_that_stops_halfway_is_not_a_clean_goodbye() {
+        use super::{read_frame, FrameEnd};
+        use std::os::unix::net::UnixStream as Sock;
+
+        // Closed between frames: the ordinary end of a connection.
+        let (mut a, b) = Sock::pair().expect("socketpair");
+        drop(b);
+        assert!(
+            matches!(read_frame(&mut a), Err(FrameEnd::Closed)),
+            "a peer that hangs up between frames has closed, nothing worse",
+        );
+
+        // A length prefix promising ten bytes, then four and a hang-up.
+        let (mut a, mut b) = Sock::pair().expect("socketpair");
+        b.write_all(&10u32.to_le_bytes()).unwrap();
+        b.write_all(b"four").unwrap();
+        drop(b);
+        match read_frame(&mut a) {
+            Err(FrameEnd::Truncated { expected, got }) => {
+                assert_eq!((expected, got), (10, 4));
+            }
+            other => panic!("a half-sent frame must be reported as such, got {other:?}"),
+        }
+
+        // Four bytes of garbage read as a length must not be allocated for.
+        let (mut a, mut b) = Sock::pair().expect("socketpair");
+        b.write_all(&u32::MAX.to_le_bytes()).unwrap();
+        drop(b);
+        assert!(
+            matches!(read_frame(&mut a), Err(FrameEnd::Implausible { .. })),
+            "a 4 GiB frame length is a desynchronised stream, not a payload",
+        );
+    }
+
     fn temp_sock(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "qos-collab-broker-{}-{}-{:?}.sock",

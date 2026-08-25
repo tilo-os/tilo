@@ -289,6 +289,9 @@ pub struct ShellNetwork {
     /// history, and the receiving app folds them in by different calls.
     /// See [`Self::inbound_app_crdt_snapshot_handle`].
     inbound_app_crdt_snapshot: Arc<Mutex<Vec<InboundAppCrdt>>>,
+    /// Applications peers opened in rooms this machine is in, awaiting the
+    /// session's own decision. See [`Self::inbound_app_open_handle`].
+    inbound_app_open: Arc<Mutex<Vec<InboundAppOpen>>>,
     /// Rooms with an outstanding request for somebody's whole
     /// document, keyed by cluster id.
     ///
@@ -375,6 +378,32 @@ pub struct InboundAppPresence {
     pub cluster_id: String,
     /// The serialised `CollabRequest::Presence`, opaque here.
     pub frame: Vec<u8>,
+}
+
+/// One application a peer opened in a room this machine shares, queued by
+/// [`ShellNetwork::tick`] for the `collab_broker` drainer to hand to the
+/// session's own opener.
+///
+/// Queued rather than acted on here for the same reason every other inbound
+/// payload is: the thread that decodes the frame knows nothing about
+/// workspaces, capabilities or launchers, and the one that does is the one
+/// drawing. See [`crate::network::protocol::NeighbourMsg::AppOpened`].
+#[derive(Debug, Clone)]
+pub struct InboundAppOpen {
+    /// Hashed libp2p peer id of the session that published it. Attribution
+    /// only — what this session may do about the open is decided against its
+    /// own workspace, never against who sent it.
+    pub peer: u64,
+    /// The application to open, as the asking participant named it.
+    pub app_id: String,
+    /// The room it was opened in; the workspace this concerns.
+    pub cluster_id: String,
+    /// blake3 hex of the content the open was bound to, or `None`.
+    pub with: Option<String>,
+    /// The participant that asked, as it announced itself. Unauthenticated —
+    /// it is the *subject* this session's grants are matched against, and a
+    /// name nothing was granted opens nothing here.
+    pub who: String,
 }
 
 /// One received *signed* app-CRDT envelope, queued by
@@ -553,6 +582,7 @@ impl ShellNetwork {
             inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
+            inbound_app_open: Arc::new(Mutex::new(Vec::new())),
             snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
             blob_relay: Arc::new(Mutex::new(crate::network::blob_relay::BlobRelay::new())),
             inbound_blob: Arc::new(Mutex::new(Vec::new())),
@@ -1151,6 +1181,65 @@ impl ShellNetwork {
             "PROBE is_in_room",
         );
         in_room
+    }
+
+    /// Tell the room that a participant opened an application in it.
+    ///
+    /// The counterpart to [`Self::handle_app_open_message`], and the reason a
+    /// collaborator sees the window at all: a workspace is shared, so an
+    /// application opened in one is the workspace's, not the opening machine's.
+    ///
+    /// Published once and never repeated, so a room that does not exist is
+    /// worth the same complaint a lost change gets — see
+    /// [`NeighbourMsg::loss_is_permanent`].
+    pub fn publish_app_opened(
+        &self,
+        app_id: String,
+        cluster_id: String,
+        with: Option<String>,
+        who: String,
+    ) {
+        let msg = NeighbourMsg::AppOpened {
+            peer: self.local_peer_id_hash(),
+            cluster_id: cluster_id.clone(),
+            app_id,
+            with,
+            who,
+        };
+        self.publish_to_cluster(&cluster_id, "application open", msg);
+    }
+
+    /// Adapter: queue a received `AppOpened` for the broker's drainer. Public
+    /// so tests can inject one without going through gossipsub, exactly as
+    /// [`Self::handle_app_crdt_message`] is.
+    ///
+    /// Queueing is not deciding. What reaches this queue has passed the room
+    /// filter and nothing else; whether the application actually opens is the
+    /// session's own answer, taken against its workspace's capabilities on the
+    /// thread that draws.
+    pub fn handle_app_open_message(
+        &self,
+        peer: u64,
+        app_id: String,
+        cluster_id: String,
+        with: Option<String>,
+        who: String,
+    ) {
+        if let Ok(mut buf) = self.inbound_app_open.lock() {
+            buf.push(InboundAppOpen {
+                peer,
+                app_id,
+                cluster_id,
+                with,
+                who,
+            });
+        }
+    }
+
+    /// Shared handle to the inbound application-open queue. The broker's
+    /// drainer empties it and hands each entry to the session's opener.
+    pub fn inbound_app_open_handle(&self) -> Arc<Mutex<Vec<InboundAppOpen>>> {
+        Arc::clone(&self.inbound_app_open)
     }
 
     pub fn handle_app_crdt_message(
@@ -1999,6 +2088,46 @@ impl ShellNetwork {
                     }
                     continue;
                 }
+                // A participant opened an application in a workspace this
+                // machine is in, so this machine's copy of that workspace has
+                // one too. Two gates, the same two a document gets: not our
+                // own echo — a session must not open a second window because
+                // it heard itself — and not a room we are not in, because a
+                // workspace we do not hold is not one anybody can put a
+                // window in here.
+                //
+                // Nothing is decided here. The queue is handed to the broker's
+                // drainer, and the session answers it against its own
+                // workspace's capabilities on the thread that draws: this is
+                // an announcement to consider, not an instruction to obey.
+                if let NeighbourMsg::AppOpened {
+                    peer: peer_hash,
+                    ref cluster_id,
+                    ref app_id,
+                    ref with,
+                    ref who,
+                } = msg
+                {
+                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
+                        tracing::info!(
+                            from = peer_hash,
+                            app = %app_id,
+                            cluster = %cluster_id,
+                            who = %who,
+                            "shell_network: a participant opened an application in a \
+                             workspace we share; this session will decide it against \
+                             its own capabilities",
+                        );
+                        self.handle_app_open_message(
+                            peer_hash,
+                            app_id.clone(),
+                            cluster_id.clone(),
+                            with.clone(),
+                            who.clone(),
+                        );
+                    }
+                    continue;
+                }
                 // A piece of a document's content, travelling separately from
                 // the document precisely so neither has to fit inside the
                 // other. Verified against its hash before it is stored.
@@ -2259,6 +2388,7 @@ pub(crate) fn shell_network_for_test_with_store(
         inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
+        inbound_app_open: Arc::new(Mutex::new(Vec::new())),
         snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
         blob_relay: Arc::new(Mutex::new(
             crate::network::blob_relay::BlobRelay::with_store(store),

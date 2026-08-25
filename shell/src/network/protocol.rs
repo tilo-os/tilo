@@ -517,6 +517,63 @@ pub enum NeighbourMsg {
         #[serde(default)]
         hash: String,
     },
+    /// A participant opened an application in a workspace this room is.
+    ///
+    /// A workspace carries its own collaborators, its own permissions and its
+    /// own host, and applications live *inside* it: an app opened in a shared
+    /// workspace is a change to that workspace, not a change to the desktop of
+    /// whichever machine the participant's socket happened to land on. Until
+    /// this frame existed there was no way to say so, so an agent asked to
+    /// crop a photograph opened the editor on its own session and the person
+    /// it was working with went on looking at a window that said no photograph
+    /// was open.
+    ///
+    /// # What a receiver does with it, and what it does not
+    ///
+    /// This is an announcement, not a command. A session that receives it puts
+    /// the request through the *same* gate a request arriving on its own
+    /// collaboration socket passes (`crate::shell::agent_opens`): its own
+    /// workspace's capabilities decide, against the participant named in
+    /// `who`, and a session whose workspace grants that participant nothing
+    /// declines and says so in its log. Nobody is waiting on the answer, so
+    /// there is no refusal to send back — which is the difference between this
+    /// and the `CollabRequest::OpenApp` it came from.
+    ///
+    /// A session must never republish an open it performed because of one of
+    /// these; the frame is emitted where a *local* connection asks, and the
+    /// remote path hands its request straight to the session's opener. Two
+    /// peers relaying each other's opens would otherwise be a window per
+    /// round trip.
+    AppOpened {
+        /// Hashed libp2p PeerId of the session that published it, so a shell
+        /// ignores its own echo — and, with it, the window it already opened.
+        peer: PeerId,
+        /// The room the application was opened in: the workspace whose
+        /// collaborators this concerns. A shell not in it drops the frame
+        /// before anything is decided, exactly as it does for a document.
+        #[serde(default)]
+        cluster_id: String,
+        /// Package id of the application, as the asking participant named it.
+        /// Unvalidated on the wire; the receiving session resolves it and an
+        /// id naming nothing installed is a refusal it logs.
+        #[serde(default)]
+        app_id: String,
+        /// The content the open was bound to, as a blake3 hex — `None` for an
+        /// open that named no object. The bytes travel separately
+        /// ([`NeighbourMsg::BlobChunk`]), so a receiver that does not hold
+        /// them yet opens nothing rather than opening an empty window.
+        #[serde(default)]
+        with: Option<String>,
+        /// The participant that asked, as it announced itself on its `Hello`.
+        ///
+        /// The subject the receiving workspace's grants are matched against,
+        /// and **it is not authenticated** — the same caveat the local path
+        /// carries (see `shell::shell::agent_opens`). It narrows a grant to
+        /// the participant it was written for; it never makes one, and a name
+        /// the receiving workspace granted nothing opens nothing there.
+        #[serde(default)]
+        who: String,
+    },
 }
 
 impl NeighbourMsg {
@@ -545,6 +602,7 @@ impl NeighbourMsg {
             Self::ScrollbackResponse { .. } => "ScrollbackResponse",
             Self::BlobChunk { .. } => "BlobChunk",
             Self::BlobRequest { .. } => "BlobRequest",
+            Self::AppOpened { .. } => "AppOpened",
         }
     }
 
@@ -563,6 +621,12 @@ impl NeighbourMsg {
                 | Self::AppCrdtSnapshot { .. }
                 | Self::SyncResp { .. }
                 | Self::ScrollbackResponse { .. }
+                // Nothing repeats an open. It is published once, at the
+                // moment a participant asks for the window, and a peer that
+                // does not receive it is left looking at a workspace that is
+                // missing an application everyone else can see — with no
+                // later frame that would put it there.
+                | Self::AppOpened { .. }
         )
     }
 }
@@ -607,6 +671,23 @@ mod tests {
         for m in &crdt {
             assert!(m.loss_is_permanent(), "{} carries history; losing it is permanent", m.kind());
         }
+
+        // Said once, and by nothing else. A workspace missing an application
+        // the rest of the room can see is not corrected by a later frame, so
+        // a failed publish of one has to be reported as loudly as a lost
+        // change is.
+        assert!(
+            NeighbourMsg::AppOpened {
+                peer: 1,
+                cluster_id: String::new(),
+                app_id: String::new(),
+                with: None,
+                who: String::new(),
+            }
+            .loss_is_permanent(),
+            "an open is published once; losing it leaves a peer without the \
+             window and nothing republishes it"
+        );
 
         // Repeated state. The next one corrects the last, so a drop is noise.
         let recoverable = [
@@ -920,5 +1001,44 @@ mod tests {
         let bytes = postcard::to_allocvec(&msg).expect("postcard serialize");
         let back: NeighbourMsg = postcard::from_bytes(&bytes).expect("postcard deserialize");
         assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn app_opened_round_trips() {
+        round_trip(NeighbourMsg::AppOpened {
+            peer: 0xABCDEF,
+            cluster_id: "11111111-2222-3333-4444-555555555555".to_string(),
+            app_id: "dev.qos.photos".to_string(),
+            with: Some("b3a1f0".repeat(6)),
+            who: "Claude".to_string(),
+        });
+        // The open that named no object is the ordinary case and has to
+        // survive the same trip.
+        round_trip(NeighbourMsg::AppOpened {
+            peer: 1,
+            cluster_id: "11111111-2222-3333-4444-555555555555".to_string(),
+            app_id: "dev.qos.notes".to_string(),
+            with: None,
+            who: "Xaver".to_string(),
+        });
+    }
+
+    /// A peer that predates the open frame omits its fields entirely, and the
+    /// frame still has to parse — an unaddressed one that opens nothing, not
+    /// a decode error that takes the rest of the receive loop with it.
+    #[test]
+    fn an_app_open_from_a_peer_that_omits_its_fields_still_parses() {
+        let sparse = r#"{"AppOpened":{"peer":7}}"#;
+        let parsed: NeighbourMsg = serde_json::from_str(sparse).expect("deserialize");
+        assert_eq!(
+            parsed,
+            NeighbourMsg::AppOpened {
+                peer: 7,
+                cluster_id: String::new(),
+                app_id: String::new(),
+                with: None,
+                who: String::new(),
+            },
+        );
     }
 }
