@@ -33,7 +33,7 @@ const HEIGHT: u32 = 720;
 
 fn shoot(theme: &Theme, out: PathBuf, steps: &[&str]) {
     let mut state = State::new();
-    let mut view = OnboardingView::with_minter(Box::new(|| {
+    let mut view = OnboardingView::with_minter(Box::new(|_name| {
         Ok(MintedIdentity {
             fingerprint: "3f7a1c9e40b28d6512ef0a73c8b4d915e26f88a0c3147bd5e9f20a6c7b81d34e"
                 .to_string(),
