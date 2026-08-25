@@ -761,11 +761,28 @@ pub fn offers(
 /// agent that opened something and went quiet is worse than one that said it
 /// could not.
 ///
-/// And it is the apps that are **not already here**. A held app needs no
-/// opening; offering it anyway invites a second window over the first, and
-/// invites a request to be answered by opening the thing it is about. So the
-/// set empties itself as the room fills, and the moment an app arrives its own
-/// operations replace the one that asked for it.
+/// And it is the apps that are **not already here** *with something in them*.
+/// A held app needs no opening; offering it anyway invites a second window
+/// over the first, and invites a request to be answered by opening the thing
+/// it is about. So the set empties itself as the room fills, and the moment an
+/// app arrives its own operations replace the one that asked for it.
+///
+/// # An open application holding nothing
+///
+/// "Already here" is not the same as "has something to work on", and treating
+/// them as the same made an app invisible in both directions at once. The
+/// photo editor opened by a person from the palette holds no photograph, so
+/// [`photos::actions::PhotosResources`] exports nothing — correctly, since
+/// there is no picture for a crop to be an operation *on*. Being held, it was
+/// also filtered out of this set. The room therefore offered no way to crop
+/// and no way to open the editor onto anything, and a model asked to make a
+/// photograph square answered, accurately, that nothing there could do it.
+///
+/// So an app that is present but exports nothing is still openable: the open
+/// is what gives it something, and the operations it then publishes are what
+/// answer the rest of the sentence. The claim the exclusion protects — that a
+/// request is not answered by opening the thing it is about — still holds,
+/// because an app with resources of its own is still excluded.
 fn openable(
     held: &[(&'static AppContract, &AutoCommit)],
     view: &View,
@@ -789,7 +806,14 @@ fn openable(
     };
     CONTRACTS
         .iter()
-        .filter(|c| !held.iter().any(|(h, _)| h.namespace == c.namespace))
+        // Held *and holding something*. An app present but exporting nothing
+        // has nothing for a request to be answered by, so offering to open it
+        // onto content is the only thing that can move the work forward.
+        .filter(|c| {
+            !held.iter().any(|(h, doc)| {
+                h.namespace == c.namespace && !(h.resources)(view, doc).is_empty()
+            })
+        })
         .map(|c| Offer {
             app: c.namespace,
             descriptor: ActionDescriptor {
