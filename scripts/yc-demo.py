@@ -4843,16 +4843,21 @@ def a_real_png(width: int = 512, height: int = 320) -> bytes:
             ry = by - dy                       # mirrored below the waterline
             if not horizon <= ry < height:
                 continue
-            fade = max(0.0, 0.52 - (ry - by) * 0.022) * cov
+            fade = max(0.0, 0.46 - (ry - by) * 0.013) * cov
             if fade <= 0.0:
                 continue
             x = bx + dx + wobble(ry, by)
             if not 0 <= x < width:
                 continue
+            # Darker than the thing reflected, and pulled toward the
+            # water. A mirror of the literal colours put two near-white
+            # blobs under the hulls: a white deck reflects as grey,
+            # because what comes back off water is a fraction of what
+            # went in, and the eye knows it.
             p = px[ry * width + x]
-            px[ry * width + x] = [p[0] * (1 - fade) + col[0] * fade,
-                                  p[1] * (1 - fade) + col[1] * fade,
-                                  p[2] * (1 - fade) + col[2] * fade]
+            px[ry * width + x] = [p[0] * (1 - fade) + col[0] * 0.58 * fade,
+                                  p[1] * (1 - fade) + col[1] * 0.60 * fade,
+                                  p[2] * (1 - fade) + col[2] * 0.64 * fade]
 
     # -- the boats themselves ------------------------------------------------
     for bx, by, pixels in drawn:
