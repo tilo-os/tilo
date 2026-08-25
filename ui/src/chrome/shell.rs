@@ -26,7 +26,7 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Shape};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
@@ -681,6 +681,117 @@ pub fn panel_shadow(
 /// on one theme or glares on another.
 pub fn chrome_hairline(theme: &Theme) -> Color {
     Colors::hairline_on(theme.tokens.colors.surfaces.overlay, HAIRLINE_ALPHA)
+}
+
+/// Share of a scrim's strength that the flat *level* stage takes; the
+/// *tone* stage takes the whole of it. See [`fill_scrim`].
+pub const SCRIM_LEVEL_SHARE: f32 = 0.55;
+
+/// Paint a scrim over `rect` at `strength`, in the theme's own scrim hue.
+///
+/// A scrim's job is to put the surface in front of it *in front*. What it
+/// must not do is decide that job differently depending on what the user
+/// happens to have open — and one flat fill of a dark colour does exactly
+/// that, because the amount of lightness it removes depends entirely on
+/// how much lightness was there.
+///
+/// Measured on a real frame, a flat 0.45 wash took **39.6 L\*** off a
+/// word processor's `bg-white` page (252 → 143) and **1.5 L\*** off the
+/// desktop beside it (20 → 16). Same fill, a twenty-six-fold difference
+/// in what it did: the page read as blanked out and nothing else read as
+/// dimmed at all. It cost the page its structure as well as its level —
+/// the 12 code values between the page and a rule drawn on it closed to
+/// 7, because a flat wash scales the whole range toward the scrim colour
+/// and the top of the range has the furthest to fall.
+///
+/// So the wash is split into two fills that answer the two halves:
+///
+/// - **Tone**, a soft-light layer with a black source. Soft light against
+///   black squares the backdrop (`Cb²`), which is a *proportional* move:
+///   it barely touches the top of the range and takes real bites out of
+///   the middle and the bottom, where a flat wash can only move a code
+///   value or two. This is the stage that makes a dark desktop visibly
+///   dim rather than nominally dim.
+/// - **Level**, the theme's `surfaces.scrim` at [`SCRIM_LEVEL_SHARE`] of
+///   the strength. This is the flat wash, kept — something has to bring
+///   the top of the range down, and the hue has to be the theme's
+///   because the dim behind a modal is chrome and the OS owns what its
+///   chrome looks like.
+///
+/// Together they take **21-23 L\* off every ground from `#ffffff` down to
+/// mid grey**, tapering only below that, where a ground has no lightness
+/// left to give up. The page lands at 191 with its 12-value internal span
+/// intact, and every dark surface on the screen moves further than the
+/// flat wash moved it.
+///
+/// `strength` is the scrim's full strength, and both stages scale with
+/// it, so a caller multiplying by an `openness` still gets a scrim that
+/// fades in and out cleanly.
+///
+/// Blend modes need a backdrop, so this must be called after whatever it
+/// is dimming has been drawn into the same `Scene` — which is where a
+/// scrim goes anyway.
+pub fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f32, theme: &Theme) {
+    let strength = strength.clamp(0.0, 1.0);
+    if strength <= 0.0 {
+        return;
+    }
+
+    let tone = (strength * 255.0).round().clamp(0.0, 255.0) as u8;
+    if tone > 0 {
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::new(Mix::SoftLight, Compose::SrcOver),
+            1.0,
+            transform,
+            &rect,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::from_rgba8(0, 0, 0, tone),
+            None,
+            &rect,
+        );
+        scene.pop_layer();
+    }
+
+    let level = (strength * SCRIM_LEVEL_SHARE * 255.0)
+        .round()
+        .clamp(0.0, 255.0) as u8;
+    if level > 0 {
+        let c = theme.tokens.colors.surfaces.scrim.to_rgba8();
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::from_rgba8(c.r, c.g, c.b, level),
+            None,
+            &rect,
+        );
+    }
+}
+
+/// What [`fill_scrim`] does to one 8-bit grey behind it, as a pure
+/// function of the same inputs the painter uses.
+///
+/// Exists so the property the two fills are *for* — comparable dimming
+/// across every ground, rather than a number that happens to be 0.45 —
+/// can be asserted without a GPU. Mirrors the shader: soft light against
+/// a black source is `Cb²` (see the W3C compositing spec), the layer
+/// composites `lerp(Cb, Cb², αs)`, and the level stage is an ordinary
+/// source-over of the theme's scrim hue.
+pub fn scrim_maps(value: u8, strength: f32, theme: &Theme) -> u8 {
+    let strength = strength.clamp(0.0, 1.0) as f64;
+    let v = value as f64 / 255.0;
+    let tone = (strength * 255.0).round().clamp(0.0, 255.0) / 255.0;
+    let toned = v * (1.0 - tone) + v * v * tone;
+    let level = (strength * SCRIM_LEVEL_SHARE as f64 * 255.0).round().clamp(0.0, 255.0) / 255.0;
+    let hue = theme.tokens.colors.surfaces.scrim.to_rgba8();
+    // The scrim hue is a near-neutral by construction, so its own
+    // relative luminance is the honest stand-in for "the grey it adds".
+    let hue_grey = (0.2126 * hue.r as f64 + 0.7152 * hue.g as f64 + 0.0722 * hue.b as f64) / 255.0;
+    let out = toned * (1.0 - level) + hue_grey * level;
+    (out.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 #[cfg(test)]
@@ -1584,6 +1695,238 @@ mod ribbon_tests {
                 rest >= 3.0,
                 "{name}: the focused segment at rest is {rest:.2}:1, under the 3:1 a \
                  non-text control needs to be seen"
+            );
+        }
+    }
+
+    /// Perceived lightness of an 8-bit grey, CIE L\*.
+    ///
+    /// A scrim's job is described in what the *eye* loses, not in what
+    /// the code value loses: a flat wash takes the same fraction of every
+    /// code value, and that is precisely why it reads as two completely
+    /// different amounts of dimming on a light page and on a dark
+    /// desktop.
+    fn lstar(v: u8) -> f64 {
+        let s = v as f64 / 255.0;
+        let y = if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        };
+        if y > 0.008856 {
+            116.0 * y.cbrt() - 16.0
+        } else {
+            903.3 * y
+        }
+    }
+
+    /// The one flat fill this replaced, so the comparison in the tests
+    /// below is against the thing that was actually on screen rather than
+    /// against a remembered number.
+    fn flat_wash(v: u8, strength: f32, theme: &Theme) -> u8 {
+        let a = strength.clamp(0.0, 1.0) as f64;
+        let hue = theme.tokens.colors.surfaces.scrim;
+        let grey = (0.2126 * hue.r() as f64 + 0.7152 * hue.g() as f64 + 0.0722 * hue.b() as f64)
+            / 255.0;
+        let out = (v as f64 / 255.0) * (1.0 - a) + grey * a;
+        (out.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+
+    /// A scrim must read as the same amount of dimming whatever is behind
+    /// it.
+    ///
+    /// This is the property the two fills in [`fill_scrim`] exist for,
+    /// and the one a single flat wash cannot have. Measured off a real
+    /// frame, the flat 0.45 wash took 39.6 L\* off a word processor's
+    /// `bg-white` page and 1.5 L\* off the desktop beside it — the page
+    /// read as blanked out and nothing else read as dimmed at all.
+    ///
+    /// Asserted across every ground from `#ffffff` down to mid grey,
+    /// because those are the ones that *can* lose a fixed amount; below
+    /// that a ground simply has less lightness than the scrim wants to
+    /// take, and the honest requirement there is the separate one below.
+    #[test]
+    fn a_scrim_dims_every_bright_ground_by_the_same_amount() {
+        for (name, theme) in themes() {
+            let drops: Vec<(u8, f64)> = [255u8, 252, 240, 220, 180, 128]
+                .iter()
+                .map(|&v| (v, lstar(v) - lstar(scrim_maps(v, 0.45, &theme))))
+                .collect();
+            let lo = drops.iter().map(|d| d.1).fold(f64::MAX, f64::min);
+            let hi = drops.iter().map(|d| d.1).fold(f64::MIN, f64::max);
+            assert!(
+                hi - lo <= 4.0,
+                "on {name} the scrim takes between {lo:.1} and {hi:.1} L* off \
+                 grounds that are all bright enough to give it up, so it is \
+                 not one gesture — it is a different one per app: {drops:?}"
+            );
+            assert!(
+                lo >= 15.0,
+                "on {name} the scrim only takes {lo:.1} L* off the ground it \
+                 moves least, which is not a dim, it is a tint: {drops:?}"
+            );
+        }
+    }
+
+    /// …and it must not take so much that a light page stops being one.
+    ///
+    /// The upper bound is the whole of the 2026-08 film defect: at a flat
+    /// 0.45 a `bg-white` page went to 143, and read on camera as the
+    /// document blanking out rather than as the document being behind
+    /// something.
+    #[test]
+    fn a_scrim_does_not_erase_the_brightest_ground() {
+        for (name, theme) in themes() {
+            let page = scrim_maps(252, 0.45, &theme);
+            let drop = lstar(252) - lstar(page);
+            assert!(
+                drop <= 28.0,
+                "on {name} the scrim takes {drop:.1} L* off a bg-white page \
+                 (252 -> {page}); past about 28 the page stops reading as a \
+                 page and starts reading as a grey slab"
+            );
+        }
+    }
+
+    /// A scrim lowers the level of what is behind it. It must not flatten
+    /// it.
+    ///
+    /// A flat wash scales the whole range toward the scrim colour, so the
+    /// top of the range — which has the furthest to fall — loses its
+    /// internal differences first: the 12 code values between a page and
+    /// a rule drawn on it closed to 7 under the old fill. That is what
+    /// "the page went flat" means, measured, and it is the half of the
+    /// range a light app lives in.
+    ///
+    /// The trade is stated rather than hidden. Squaring the backdrop is a
+    /// proportional move, so it does the opposite at the bottom: a span
+    /// low on the ramp comes out a code value tighter than the flat wash
+    /// left it (6 rather than 7, from 12). That is the price of the dark
+    /// grounds moving at all — see the test below — and it is bounded
+    /// here so it cannot quietly become a collapse.
+    #[test]
+    fn a_scrim_keeps_the_structure_of_what_is_behind_it() {
+        for (name, theme) in themes() {
+            for (hi, lo) in [(252u8, 240u8), (255, 245)] {
+                let span_before = i32::from(hi) - i32::from(lo);
+                let span_after = i32::from(scrim_maps(hi, 0.45, &theme))
+                    - i32::from(scrim_maps(lo, 0.45, &theme));
+                let flat_after = i32::from(flat_wash(hi, 0.45, &theme))
+                    - i32::from(flat_wash(lo, 0.45, &theme));
+                assert!(
+                    span_after >= flat_after,
+                    "on {name} the scrim compresses {lo}..{hi} harder than the \
+                     flat wash it replaced ({span_before} -> {span_after}, flat \
+                     managed {flat_after}) — the bright end is exactly where a \
+                     wash goes flat and where this must not"
+                );
+            }
+            for (hi, lo) in [(64u8, 52u8), (40, 28)] {
+                let span_before = i32::from(hi) - i32::from(lo);
+                let span_after = i32::from(scrim_maps(hi, 0.45, &theme))
+                    - i32::from(scrim_maps(lo, 0.45, &theme));
+                assert!(
+                    span_after * 2 >= span_before,
+                    "on {name} a dark span {lo}..{hi} came out at {span_after} \
+                     from {span_before}; the tone pass is allowed to cost the \
+                     dark end a code value, not half of it"
+                );
+            }
+        }
+    }
+
+    /// Every dark ground must move *further* than the flat wash moved it.
+    ///
+    /// This is the other half of the film defect: the desktop and the
+    /// window cards around the page barely changed, so the screen did not
+    /// read as dimmed — only the page did. A ground at L\* 6 cannot lose
+    /// 20 L\*, so the requirement here is not a fixed amount; it is that
+    /// the new scrim beats the old one everywhere it is asked to.
+    #[test]
+    fn a_scrim_reaches_the_dark_grounds_a_flat_wash_could_not() {
+        for (name, theme) in themes() {
+            for v in [96u8, 64, 40, 32, 23, 20, 10] {
+                let now = lstar(v) - lstar(scrim_maps(v, 0.45, &theme));
+                let was = lstar(v) - lstar(flat_wash(v, 0.45, &theme));
+                assert!(
+                    now > was,
+                    "on {name} a ground at {v} loses {now:.1} L* to the scrim \
+                     where the flat wash it replaced took {was:.1} — the dark \
+                     half of the screen is the half that never showed the dim"
+                );
+            }
+        }
+    }
+
+    /// A scrim fades with its surface, and both of its fills have to fade
+    /// with it or the dim arrives before the panel does.
+    #[test]
+    fn a_scrim_fades_monotonically_with_its_openness() {
+        for (name, theme) in themes() {
+            let mut last = 253u8;
+            for step in 0..=8 {
+                let openness = step as f32 / 8.0;
+                let page = scrim_maps(252, 0.45 * openness, &theme);
+                assert!(
+                    page <= last,
+                    "on {name} the scrim got *lighter* between openness steps \
+                     ({last} -> {page} at {openness})"
+                );
+                last = page;
+            }
+            assert!(
+                scrim_maps(252, 0.0, &theme) == 252,
+                "on {name} a closed scrim still moved the page"
+            );
+        }
+    }
+
+    /// The high-contrast palette is white ink on pure black, and a scrim
+    /// over it must not undo the reason somebody chose it.
+    ///
+    /// The flat wash did: it took white text to 143, which is 6.4:1
+    /// against the black behind it, below the 7:1 the palette exists to
+    /// clear. A dialog opening is not a reason to drop a user out of
+    /// their accessibility setting.
+    #[test]
+    fn a_scrim_leaves_high_contrast_high_contrast() {
+        let theme = Theme::high_contrast();
+        let ink = scrim_maps(255, 0.45, &theme);
+        let ground = scrim_maps(0, 0.45, &theme);
+        let lum = |v: u8| {
+            let s = v as f64 / 255.0;
+            if s <= 0.03928 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+        };
+        let ratio = (lum(ink) + 0.05) / (lum(ground) + 0.05);
+        assert!(
+            ratio >= 7.0,
+            "white ink behind the scrim is {ink} on {ground} = {ratio:.1}:1; \
+             the high-contrast palette is chosen to clear AAA (7:1) and a \
+             scrim must not take that away"
+        );
+    }
+
+    /// The paint path and the model in [`scrim_maps`] have to agree about
+    /// how many fills a scrim is, or the model is describing something
+    /// nobody sees.
+    #[test]
+    fn a_scrim_paints_the_two_stages_the_model_describes() {
+        let rect = Rect::new(0.0, 0.0, 200.0, 120.0);
+        for (name, theme) in themes() {
+            let mut scene = Scene::new();
+            fill_scrim(&mut scene, Affine::IDENTITY, rect, 0.45, &theme);
+            let n = scene.encoding().draw_tags.len();
+            assert!(
+                n >= 3,
+                "on {name} the scrim encoded {n} draws; it is a soft-light \
+                 layer, the tone fill inside it, and the level fill after it"
+            );
+            let mut closed = Scene::new();
+            fill_scrim(&mut closed, Affine::IDENTITY, rect, 0.0, &theme);
+            assert_eq!(
+                closed.encoding().draw_tags.len(),
+                0,
+                "on {name} a scrim at zero strength still painted something"
             );
         }
     }
