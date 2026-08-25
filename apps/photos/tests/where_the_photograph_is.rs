@@ -210,3 +210,83 @@ fn cropping_moves_the_place_the_mark_belongs_on() {
          wide on screen: before {before:?}, after {after:?}"
     );
 }
+
+/// A photograph a collaborator opened is drawn here too.
+///
+/// # The loss this rules out
+///
+/// The document is shared and the path in it is not. The same picture handed
+/// to a room is staged by each session under its own runtime directory, so
+/// three participants looking at one photograph write three different absolute
+/// paths into one shared field. One of them wins, and the other two are then
+/// holding a path into a directory that does not exist for them: the picture
+/// leaves their screens, mid-edit, while the document still says a photograph
+/// is open.
+///
+/// That is what happened, in this shape — three sessions,
+/// `…/qlva…/qos-opened/<hash>.png`, `…/qlvq…/`, `…/qlvx…/`, carrying the same
+/// content hash. The session whose path won kept the picture; the other two
+/// published an empty rect map, which is the same thing this asserts on.
+///
+/// Both ways round, because which path wins is a race nobody chose: the
+/// picture has to be here whether the document names this machine's copy or
+/// somebody else's.
+#[test]
+fn a_photograph_a_collaborator_opened_is_drawn_here_too() {
+    let (mut state, mut app, _mine, _dir) = opened_sized(1200, 400);
+    layout(&mut app, &mut state);
+    assert!(
+        !Widget::resource_rects(&app).is_empty(),
+        "the fixture failed to draw its own photograph, so nothing below \
+         proves anything"
+    );
+
+    let opened = PhotosDoc::image(&state.doc).expect("the fixture opened one");
+    assert!(
+        opened.content.is_some(),
+        "a picture opened from bytes has to name those bytes, or no other \
+         participant can resolve it",
+    );
+
+    // The same photograph, as the session that staged it names it: a path
+    // under another machine's runtime directory, unreadable here, carrying the
+    // content hash that is the same word everywhere.
+    let theirs = photos::model::OpenImage {
+        path: format!(
+            "/run/user/1000/qlvx-another-session/qos-opened/{}.png",
+            opened.content.clone().unwrap()
+        ),
+        ..opened.clone()
+    };
+    assert!(
+        std::fs::read(&theirs.path).is_err(),
+        "the stand-in for somebody else's path is readable here, so it is not \
+         standing in for one"
+    );
+
+    for (image, whose) in [(theirs, "a collaborator's"), (opened, "this machine's")] {
+        PhotosDoc::set_image(&mut state.doc, Some(&image));
+        layout(&mut app, &mut state);
+        assert!(
+            !Widget::resource_rects(&app).is_empty(),
+            "with {whose} path in the document this session drew no \
+             photograph — the picture is its content, and this machine holds \
+             the content",
+        );
+    }
+
+    // And the honest placeholder stays honest: content nobody here has is no
+    // picture, rather than a picture drawn from whatever the path finds.
+    let nowhere = photos::model::OpenImage {
+        path: "/run/user/1000/qlvx-another-session/qos-opened/absent.png".to_string(),
+        content: Some("0".repeat(64)),
+        ..PhotosDoc::image(&state.doc).expect("still open")
+    };
+    PhotosDoc::set_image(&mut state.doc, Some(&nowhere));
+    layout(&mut app, &mut state);
+    assert!(
+        Widget::resource_rects(&app).is_empty(),
+        "a photograph whose bytes are nowhere on this machine must draw \
+         nothing and wait, not claim a place on screen"
+    );
+}

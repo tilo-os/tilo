@@ -128,13 +128,28 @@ impl Edits {
 /// freezes every peer's replica at the change before it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OpenImage {
-    /// Absolute path the bytes were read from.
+    /// Absolute path the bytes were read from, on the machine that opened it.
+    ///
+    /// A hint, not the picture's identity. This document is shared, and the
+    /// path in it is true of exactly one participant: the same photograph
+    /// handed to a room is staged under a different absolute path in every
+    /// session that receives it, so whichever session's path ends up in the
+    /// document is a path the others cannot read. Resolve [`Self::content`]
+    /// first and treat this as the local shortcut it is.
     pub path: String,
     /// File name, as shown.
     pub name: String,
     /// Intrinsic pixel size of the *original*, before any edit.
     pub width: u32,
     pub height: u32,
+    /// blake3 of the picture's bytes — the one name for it that means the
+    /// same thing in every session.
+    ///
+    /// `#[serde(default)]` so a document written before this field existed
+    /// still parses; such a picture has only its path, which is why the
+    /// resolution order keeps working from one.
+    #[serde(default)]
+    pub content: Option<String>,
 }
 
 impl OpenImage {
@@ -149,7 +164,19 @@ impl OpenImage {
             name,
             width,
             height,
+            content: None,
         }
+    }
+
+    /// Name the bytes this picture is, by their hash.
+    ///
+    /// Set wherever the picture is opened from bytes this machine has, which
+    /// is also where those bytes are put into the content store — the two go
+    /// together, because a hash in a document that no participant can resolve
+    /// is worth less than the path it replaced.
+    pub fn with_content(mut self, hash: impl Into<String>) -> Self {
+        self.content = Some(hash.into());
+        self
     }
 
     /// Pixel size after `edits` — what the status line reports and what a
