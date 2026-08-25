@@ -3261,6 +3261,46 @@ impl Widget for GroupRow {
         out
     }
 
+    /// Where each hosted application's published resources are on screen.
+    ///
+    /// Republished here for the same reason [`Self::test_rects`] republishes
+    /// named targets: the row is the deepest node a tree walk reaches, because
+    /// the strip lays its groups out itself rather than through taffy and the
+    /// tile host owns the app widget. A resource rect that stayed inside the
+    /// app widget would be unreachable, and an action address would resolve to
+    /// no region on screen — which is the whole thing being fixed.
+    ///
+    /// Every group, not just the active one: two applications side by side on
+    /// a strip are both visible, and an operation performed on the one that is
+    /// not focused is exactly the case worth showing.
+    fn resource_rects(&self) -> Vec<(String, Rect)> {
+        let mut out = Vec::new();
+        for g in &self.groups {
+            let Some(host) = g.active_host() else {
+                continue;
+            };
+            let TileContent::App(app) = host.content() else {
+                continue;
+            };
+            // Clipped to the window showing it. A resource's rect is the app's
+            // answer in its own coordinates and can run past the tile — a
+            // photograph fitted to the full width of its canvas ends exactly
+            // on the window's edge, and a mark drawn around it would put its
+            // outer stroke on the desktop beside the window. Intersecting also
+            // gives the scrolled-away case for free: no overlap is no rect, so
+            // an address stops resolving the moment its window leaves the
+            // screen rather than resolving to somewhere off it.
+            let clip = host.get_rect();
+            for (id, rect) in crate::widget::collect_resource_rects(app.as_ref() as &dyn Widget) {
+                let visible = rect.intersect(clip);
+                if visible.width() > 0.0 && visible.height() > 0.0 {
+                    out.push((id, visible));
+                }
+            }
+        }
+        out
+    }
+
     fn needs_redraw(&self) -> bool {
         // The parent Column / Stack caches its subtree scene via
         // `draw_with_presence` and only rebuilds when at least one
