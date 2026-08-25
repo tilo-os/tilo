@@ -3346,6 +3346,29 @@ class LogTail:
     #: a window nobody has touched.
     LAYOUT_TAIL_BYTES = 4 << 20
 
+    def surfaces_that_published(self) -> list[str]:
+        """Which surfaces have said where they are drawing anything.
+
+        For the report a miss writes. "The file manager published no
+        layout" is three different situations — no app there at all, an
+        app too old to answer, an app whose window belongs to a different
+        session — and naming who *did* answer tells them apart.
+        """
+        try:
+            with open(self.path, "rb") as fh:
+                try:
+                    fh.seek(-self.LAYOUT_TAIL_BYTES, os.SEEK_END)
+                except OSError:
+                    fh.seek(0)
+                text = self.ANSI.sub("", fh.read().decode(errors="replace"))
+        except OSError:
+            return []
+        seen: list[str] = []
+        for said_by, _blob in self.RESOURCES.findall(text):
+            if said_by not in seen:
+                seen.append(said_by)
+        return seen
+
     def resource_rects(self, surface: str) -> dict[str, tuple]:
         """Where `surface` says it is drawing each thing it publishes.
 
@@ -6990,7 +7013,11 @@ def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
                 # before falling back to hunting for the row.
                 quinten.settle(0.5)
                 continue
-            note(f"{surface} published no layout naming {photo_name}; "
+            said = log.surfaces_that_published()
+            drawn = log.resource_rects(surface)
+            note(f"{surface} published no layout naming {photo_name} "
+                 f"(it named {sorted(drawn)[:4] if drawn else 'nothing'}; "
+                 f"surfaces heard from: {said or 'none'}); "
                  f"falling back to sweeping for its row")
             break
         aim_x, aim_y, client_y, address = aim
