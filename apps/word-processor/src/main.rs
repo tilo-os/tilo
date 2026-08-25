@@ -216,8 +216,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         // without an app saying so. A missing QUICK_APP_ID falls back to a
         // per-process id so two un-configured instances still get distinct
         // actors.
-        let app_id = std::env::var("QUICK_APP_ID")
-            .unwrap_or_else(|_| format!("wp-{}", std::process::id()));
+        // Distinct per replica, not per process. Every application here runs
+        // in its own PID namespace, so `wp-{pid}` was `wp-2` in every session
+        // and two replicas wrote under one actor — which Automerge refuses:
+        // `duplicate seq 1 found for actor`. The frame is dropped and the
+        // change never crosses. `QOS_USER_ID` is the session's own identity,
+        // distinct by construction and readable in a history.
+        let app_id = std::env::var("QUICK_APP_ID").unwrap_or_else(|_| {
+            match std::env::var("QOS_USER_ID") {
+                Ok(user) if !user.is_empty() => format!("wp-{user}"),
+                _ => {
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.subsec_nanos())
+                        .unwrap_or_default();
+                    format!("wp-{}-{nanos}", std::process::id())
+                }
+            }
+        });
         state
             .doc
             .set_actor(automerge::ActorId::from(app_id.as_bytes()));
