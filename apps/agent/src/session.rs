@@ -828,7 +828,6 @@ impl Session {
         }
     }
 
-
     /// Every document the agent is holding, with the app that authored it.
     fn held(&self) -> Vec<(&'static AppContract, &automerge::AutoCommit)> {
         self.editor
@@ -3772,10 +3771,6 @@ mod tests {
         assert_eq!("Claude: make ".len(), 13, "the signature of the fault");
     }
 
-    /// A block caret key round-trips. The two halves are separate functions
-    /// — the agent writes one, the word processor writes the other — and a
-    /// drift between them would be silent: the agent would simply never see
-    /// anybody typing, and fall back to the timer for ever.
     /// A request that named a file is decided against the directory that file
     /// is in — and against nothing else.
     #[test]
@@ -3796,6 +3791,10 @@ mod tests {
         assert_eq!(directory_of(Some("files.entry:harbour.png")), None);
     }
 
+    /// A block caret key round-trips. The two halves are separate functions
+    /// — the agent writes one, the word processor writes the other — and a
+    /// drift between them would be silent: the agent would simply never see
+    /// anybody typing, and fall back to the timer for ever.
     #[test]
     fn a_block_caret_key_round_trips() {
         assert_eq!(block_of(&block_key("b7")), Some("b7"));
