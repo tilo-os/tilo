@@ -4097,16 +4097,32 @@ def strip_order(s: Session) -> list[dict]:
             active = (tree.get("active_group") or {}).get(sid)
             for group in strip.get("window_groups", []):
                 surfaces = []
+                windows = []
                 for t in group.get("tabs", []):
                     tile = t.get("tile") or {}
                     foreign = (tile.get("Foreign")
                                if isinstance(tile, dict) else None)
-                    if foreign and foreign.get("surface_id") is not None:
-                        surfaces.append(int(foreign["surface_id"]))
+                    surface = (foreign or {}).get("surface_id")
+                    if surface is not None:
+                        surfaces.append(int(surface))
+                    windows.append({
+                        "tab": t.get("id"),
+                        "surface_id": (int(surface) if surface is not None
+                                       else None),
+                        "app_id": (foreign or {}).get("app_id"),
+                    })
                 tabs = [t.get("id") for t in group.get("tabs", [])]
                 out.append({"id": group.get("id"), "strip": sid,
                             "surfaces": surfaces,
                             "tabs": tabs,
+                            # Every tab, with what it *is*, whether or
+                            # not the group is currently showing it.
+                            # `painted_tiles` cannot answer that: a tab
+                            # its group is not showing has no laid-out
+                            # rect, so every route through the pixels
+                            # reports it as absent from a screen it is
+                            # plainly a tab of.
+                            "windows": windows,
                             "active_tab": group.get("active_tab"),
                             "active": group.get("id") == active})
     return out
@@ -4145,6 +4161,38 @@ def group_index_of(s: Session, subject,
     wanted = {t["surface_id"] for t in tiles_for(s, subject)}
     return next((i for i, g in enumerate(order)
                  if wanted & set(g["surfaces"])), None)
+
+
+def window_slot(s: Session, subject,
+                order: list[dict] | None = None) -> tuple[int, object] | None:
+    """Which *window* `subject` is, as `(group index, tab id)`.
+
+    The unit `window_order` and `active_window` speak, and the unit the
+    strip's own navigation moves in — so a walk can be asked to arrive
+    at a particular tab rather than merely at the group holding it.
+
+    Read off the tree rather than off the painted tiles, and that is the
+    whole reason it exists. A group shows one tab at a time; the others
+    have no laid-out rect, so `tiles_for` — and everything built on it,
+    `group_index_of` included — answers "nothing on screen is that" for
+    a window that is a tab of a group in the middle of the frame. The
+    film's one cut went to xaver's word processor through that route,
+    found it absent because his group was showing the image editor,
+    left the strip alone, said so in a note nobody reads, and put an
+    empty photo viewer under the caption that carries the whole
+    argument.
+    """
+    order = strip_order(s) if order is None else order
+    if isinstance(subject, dict):
+        subject = subject.get("surface_id")
+    for i, g in enumerate(order):
+        for w in g.get("windows", []):
+            if isinstance(subject, int):
+                if w["surface_id"] == int(subject):
+                    return (i, w["tab"])
+            elif w["app_id"] == subject:
+                return (i, w["tab"])
+    return None
 
 
 #: Slack on top of the number of windows a walk has to cross, for
@@ -4188,19 +4236,29 @@ def jump_to_group(s: Session, subject) -> bool:
     Reads the strip back between notches rather than firing a computed
     number of them, because a jump stops at the ends of the strip and a
     walk that assumed otherwise would drift.
+
+    **The target is a window, not a group.** A notch selects a window, so
+    the walk can be asked to arrive at the subject's own tab and not
+    merely at the group holding it — which is the difference between
+    framing a document and framing whichever of its group's tabs happened
+    to be in front. Stopping at the group was how the film's one cut
+    landed on an empty photo viewer sharing a bar with the word processor
+    it was supposed to be of.
     """
     order = strip_order(s)
-    want = group_index_of(s, subject, order)
+    want = window_slot(s, subject, order)
     if want is None:
         return False
     budget = len(window_order(order)) + STRIP_STEP_SLACK
     for _ in range(budget):
+        flat = window_order(order)
         was = active_window(order)
-        here = was[0] if was else None
-        if here is None or here == want:
+        if was is None or was == want:
+            break
+        if was not in flat or want not in flat:
             break
         s.modifiers(alt=True, shift=True)
-        s.scroll(0.0, -1.0 if want > here else 1.0)
+        s.scroll(0.0, -1.0 if flat.index(want) > flat.index(was) else 1.0)
         s.modifiers()
         s.settle(0.45)
         order = strip_order(s)
@@ -4208,17 +4266,15 @@ def jump_to_group(s: Session, subject) -> bool:
         if now == was:
             # Genuinely stuck: the same *window* is focused after a
             # notch, so it is the end of the strip or a jump that did
-            # not take — not merely a step inside a group, which moves
-            # a window while leaving the group index alone.
-            note(f"{s.name}: the strip did not step past group {here}, so "
+            # not take.
+            note(f"{s.name}: the strip did not step past {was}, so "
                  f"{subject_name(subject)} is as close as it gets")
             break
-        want = group_index_of(s, subject, order)
+        want = window_slot(s, subject, order)
         if want is None:
             return False
     order = strip_order(s)
-    landed = active_window(order)
-    return landed is not None and landed[0] == want
+    return active_window(order) == window_slot(s, subject, order)
 
 
 def scroll_subjects_into_frame(s: Session, subjects: list) -> None:
@@ -4383,8 +4439,27 @@ def frame_one_window(s: Session, app_id: str, prefer: dict | None = None,
     # `share` is kept in the signature and ignored, so the two call sites
     # that pass one do not have to change in the same breath as this.
     _ = share
-    focus_app_group(s, app_id, prefer=prefer)
+    # A GAP when the subject could not be brought up at all, and that is
+    # the loudest thing in this function. It used to be a note inside
+    # `focus_app_group` and nothing here at all, so a call that framed
+    # nothing whatsoever returned True: the check below asks whether any
+    # window carrying `app_id` hangs off the edge, and a subject the
+    # strip never went to has no rect to hang off anything, so an empty
+    # list read as a shot that had worked. That is how the film's one cut
+    # was taken on a photo viewer with a word processor a tab away.
+    if not focus_app_group(s, app_id, prefer=prefer):
+        gap(f"{s.name}: the shot is of {app_id} and the strip could not be "
+            f"brought to it, so this frame is of whatever was already up")
+        return False
     s.settle(0.6)
+    # And *showing* it: the walk selects a window, and a window that is
+    # selected but has not yet been laid out is not in the picture. Read
+    # off the painted tiles, which is the compositor's answer to "is this
+    # on screen" rather than to "is this focused".
+    if not tiles_for(s, (prefer or {}).get("surface_id") or app_id):
+        gap(f"{s.name}: the strip is on {app_id} and nothing is painting "
+            f"it, so this frame is of an empty tile")
+        return False
     # Measured, not assumed — the same rule the two-window framing keeps.
     # Focusing a group scrolls it *into view*, which is not the same as
     # scrolling it *wholly* into view: at 720 permille the shot came out
@@ -4491,40 +4566,42 @@ def focus_app_group(s: Session, app_id: str,
     one only works while the group is already on screen — which is the
     case this exists to fix. See `jump_to_group`.
 
-    The pill still gets clicked afterwards, and only then: once the
-    group is up, selecting the right *tab* inside it is a click on a
-    pill that is now where the compositor says it is. That matters from
-    the moment two applications share a bar.
+    That walk selects the *window*, tab included, so there is no pill to
+    click afterwards and this no longer aims one. It used to, and the
+    click could not do the job it was there for: a group's tabs all share
+    one tile rect, so `x + 90` above it is the *first* pill in the bar
+    whichever tab the shot is of. Two applications share a bar in this
+    film by design, and the second of them was unreachable.
+
+    Which subject is asked for is read off the tree, not off the painted
+    tiles, so a window that is an inactive tab of a group counts as being
+    on this screen — because it is. See `window_slot`.
     """
     subject = app_id
+    order = strip_order(s)
     # By the end of the film two windows on this screen announce the same
     # app id — the session's own, and the peer's, replicated in. They are
     # showing the same document, so either would do; `prefer` names the
     # one the beat has been talking about, so the shot is of the window
     # the audience watched arrive.
     want = (prefer or {}).get("surface_id")
-    if want is not None and tiles_for(s, int(want)):
+    if want is not None and window_slot(s, int(want), order) is not None:
         subject = int(want)
-    if not tiles_for(s, subject):
-        note(f"{s.name}: nothing on screen is {app_id}, so the strip is "
-             f"left where it is")
+    if window_slot(s, subject, order) is None:
+        note(f"{s.name}: no window on this screen is {app_id}, so the "
+             f"strip is left where it is")
         return False
-    jump_to_group(s, subject)
+    if not jump_to_group(s, subject):
+        note(f"{s.name}: the strip would not come to rest on {app_id}")
+        return False
     s.settle(0.5)
-    # And the tab, if the group it landed on holds more than one. The
-    # jump selects a window, so this is usually already done; it is not
-    # when the beat wants a particular tab of a group that was already
-    # focused on another.
-    tile = tiles_for(s, subject)
-    if tile:
-        x, y, w, _h = tile[0]["rect"]
-        py = y - 18.0
-        # One window filling the strip wears no pill, and 18px above it
-        # is the workspace switcher. A gesture meant to frame a window
-        # must never be able to change which workspace is on camera.
-        if py >= TOPBAR_H and x >= 0.0:
-            s.click_at(max(4.0, x + min(90.0, w / 2.0)), py)
-            s.settle(0.5)
+    # Asked of the compositor rather than assumed off the walk: the beat
+    # needs the group to be *showing* this tab, and a walk that stopped
+    # early leaves it showing its neighbour.
+    order = strip_order(s)
+    if active_window(order) != window_slot(s, subject, order):
+        note(f"{s.name}: the strip landed elsewhere than on {app_id}")
+        return False
     note(f"{s.name}: brought {app_id} up in the strip for the shot")
     return True
 
@@ -5941,8 +6018,120 @@ class Registry:
         return False
 
 
-def type_into_the_document(s: Session, wp: dict | None, text: str) -> bool:
+#: How long the page is given to catch up with the keyboard before a
+#: beat that waits for it gives up and says so.
+#:
+#: Generous, because what it is waiting for is a real application
+#: applying real keystrokes and the honest answer is however long that
+#: takes. Measured on a three-session room, the word processor has been
+#: seconds behind the last keystroke — which is exactly the wait this
+#: exists to make visible rather than to paper over.
+WRITTEN_BUDGET_S = 15.0
+
+
+def written_on_the_page(s: Session, wp: dict | None, room: str, proof: str,
+                        budget: float = WRITTEN_BUDGET_S) -> float | None:
+    """Wait until the app really holds `proof`, and has drawn since.
+
+    Seconds waited, or `None` if it never got there.
+
+    The beat this serves is the film's whole argument — somebody types,
+    and it is on another machine — and the way that beat failed was not
+    a missing wait but a wait on the wrong thing. `type_prose` returns
+    when the last keystroke has been *posted to the compositor*, and a
+    rig that treats that as "he has written" is timing the socket rather
+    than the document. On the take this was written for, the last
+    keystroke was posted at 48.4s, the page was still showing the first
+    letter of the sentence at 51.0s, and the film cut away on it.
+
+    So two questions, asked of two different things:
+
+    * **the document** — the app's own, over the broker, in the app's own
+      protocol (`DocumentReader`). What comes back is produced by the
+      running application out of what it is holding, so it is the app
+      saying it took the keystrokes rather than the compositor saying it
+      sent them.
+    * **the screen** — `frame_seq` is the count of frames the compositor
+      has taken from that client, so a frame taken *after* the document
+      answered is a frame drawn from a document that already had the
+      words in it. A `ui` app draws from its document; there is no third
+      state where it holds the sentence and paints something else.
+
+    A budget that runs out is a GAP rather than a failure: it says the
+    page did not catch up in the time given, which is a thing to know
+    about the product and not a thing to hide from the transcript.
+    """
+    began = time.time()
+    reader = None
+    doc, carried = None, False
+    try:
+        reader = DocumentReader(s.collab_json_sock, str(room), None,
+                                handle="typing")
+        doc, carried = reader.await_document(proof, budget)
+    except OSError as exc:
+        gap(f"{s.name}: no broker answered on {s.collab_json_sock} ({exc}), "
+            f"so whether the words reached his own document was never "
+            f"established")
+        return None
+    except CannotDecode as exc:
+        gap(f"{exc} — so whether the words reached his own document was "
+            f"never established, which is not the same as their not having")
+        return None
+    finally:
+        if reader is not None:
+            reader.close()
+    if doc is None:
+        gap(f"{s.name}: his own word processor never answered the "
+            f"handshake within {budget:.0f}s, so nothing here knows what "
+            f"is on his page")
+        return None
+    if not carried:
+        gap(f"{s.name}: his own app answered with {len(doc)} bytes and "
+            f"none of it is {proof!r} — the keystrokes were sent and the "
+            f"document did not take them")
+        return None
+    # And on screen.
+    if drawn_since(s, wp or {}, max(0.0, budget - (time.time() - began))):
+        return time.time() - began
+    gap(f"{s.name}: the page holds {proof!r} and the app has not drawn a "
+        f"frame since, so the film cannot say the words are on screen")
+    return None
+
+
+def drawn_since(s: Session, subject, budget: float = 3.0) -> bool:
+    """Wait for `subject`'s client to commit a frame from here on.
+
+    `frame_seq` counts frames the compositor has actually taken from a
+    client (`native.rs::foreign_frames_json`), so this is the compositor
+    answering "has that application redrawn since I asked", which is a
+    different question from "is it on screen" and the one a beat needs
+    after it has changed something the application has to react to.
+
+    False when the budget runs out. Silent — the caller knows what it was
+    waiting for and what its absence costs, and this is called from two
+    beats that say very different things about it.
+    """
+    def seq() -> int:
+        seen = [t.get("frame_seq") or 0 for t in tiles_for(s, subject)]
+        return max(seen) if seen else 0
+
+    was = seq()
+    due = time.time() + budget
+    while time.time() < due:
+        if seq() > was:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def type_into_the_document(s: Session, wp: dict | None, text: str,
+                           room: str | None = None,
+                           proof: str | None = None) -> bool:
     """Put the caret in the page and type, the way a person would.
+
+    With a `room`, this does not return until the words are in the app's
+    own document and the app has drawn since — see `written_on_the_page`,
+    and the take that made it necessary.
 
     The word processor is a foreign client, so its insides are not in
     the compositor's widget registry and there is no name to aim at.
@@ -5994,8 +6183,19 @@ def type_into_the_document(s: Session, wp: dict | None, text: str) -> bool:
     s.key_up("Control")
     s.settle(0.35)
     s.type_prose(text)
-    # And a moment on the finished text before whatever comes next moves
-    # the strip out from under it.
+    if room is None:
+        # No room to ask, so the old contract: the keystrokes went, and a
+        # moment on the finished text before whatever comes next moves
+        # the strip out from under it.
+        s.settle(0.7)
+        return True
+    waited = written_on_the_page(s, wp, room, proof or text.strip())
+    if waited is None:
+        return False
+    note(f"{s.name}: the page had the whole sentence on it {waited:.1f}s "
+         f"after the last keystroke went")
+    # And a moment on the finished text, now that there is some, before
+    # whatever comes next moves the strip out from under it.
     s.settle(0.7)
     return True
 
