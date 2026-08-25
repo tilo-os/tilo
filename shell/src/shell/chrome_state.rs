@@ -297,6 +297,27 @@ pub struct ChromeState {
     /// type-mismatch error rather than silently borrowing the wrong
     /// thing. Use [`Self::tree`] / [`Self::tree_mut`] for guarded access.
     pub tree_handle: WorkspaceTreeHandle,
+    /// How far the active strip is scrolled, in scene pixels.
+    ///
+    /// Here because two sides of the same fact need it and neither can
+    /// see the other. A peer's pointer is published by the compositor
+    /// and painted by the overlay, and the number that makes them agree
+    /// lives in a `GroupRow` -- widget state, not in the tree.
+    ///
+    /// What it fixes: presence was published in *scene* space and
+    /// painted in scene space, so a remote cursor was pinned to a screen
+    /// position rather than to what it was pointing at. Scrolling the
+    /// strip slid the windows out from under everyone else's cursor and
+    /// left the dots where they were, which reads exactly as somebody
+    /// else's mouse following yours around.
+    ///
+    /// Adding it on the way out and subtracting it on the way in makes
+    /// the published number a position in the *workspace* instead: two
+    /// machines scrolled differently then draw the same cursor over the
+    /// same window. Both sides use their own value, so the correction is
+    /// symmetric and a session that never scrolls is unaffected.
+    pub strip_scroll_x: f64,
+
     pub overlays: OverlayFlags,
     pub quick_settings: QuickSettingsState,
     /// When `Some`, the workspace-settings modal's Name input is in text-
@@ -550,6 +571,7 @@ impl ChromeState {
     /// shell chrome — closes audit finding C-3.
     pub fn new_with_handle(tree_handle: WorkspaceTreeHandle) -> Rc<RefCell<Self>> {
         Rc::new(RefCell::new(Self {
+            strip_scroll_x: 0.0,
             tree_handle,
             overlays: OverlayFlags::default(),
             quick_settings: QuickSettingsState::default(),
