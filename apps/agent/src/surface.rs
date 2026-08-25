@@ -751,6 +751,30 @@ pub fn offers(
     out
 }
 
+/// Whether the room holds `namespace`'s state **with something in it**.
+///
+/// Two facts wear the same word. An application is *here* when a document it
+/// authored has arrived and its contract claims it. It is **surveyable** when
+/// the tree it publishes for that document is not empty. The photo editor
+/// writes its `edits` field the moment it starts and publishes nothing at all
+/// until a photograph is in it, so between those two moments it is here and
+/// exports nothing — and a step that follows an open, asking what the open
+/// produced, gets the second answer while the first is what it was told.
+///
+/// One expression, in one place, because [`openable`] decides whether an
+/// application still needs opening by this question and the session's own
+/// `open_app` decides whether it has *been* opened by it. Asked two ways, the
+/// survey offers an open that the open then answers with "already open",
+/// having opened nothing.
+pub fn surveyable(
+    held: &[(&'static AppContract, &AutoCommit)],
+    view: &View,
+    namespace: &str,
+) -> bool {
+    held.iter()
+        .any(|(c, doc)| c.namespace == namespace && !(c.resources)(view, doc).is_empty())
+}
+
 /// The applications this room does not have open, as the operations that
 /// would open them.
 ///
@@ -809,11 +833,7 @@ fn openable(
         // Held *and holding something*. An app present but exporting nothing
         // has nothing for a request to be answered by, so offering to open it
         // onto content is the only thing that can move the work forward.
-        .filter(|c| {
-            !held.iter().any(|(h, doc)| {
-                h.namespace == c.namespace && !(h.resources)(view, doc).is_empty()
-            })
-        })
+        .filter(|c| !surveyable(held, view, c.namespace))
         .map(|c| Offer {
             app: c.namespace,
             descriptor: ActionDescriptor {
@@ -1472,6 +1492,66 @@ mod tests {
             all.iter().any(|o| opens(o.address()).is_some()),
             "the survey has to carry the openable apps, or nothing can choose \
              to open one"
+        );
+    }
+
+    /// **Here is not the same as ready**, asked of one document at the two
+    /// moments an open takes it through.
+    ///
+    /// Both questions were being answered with the first one. An open
+    /// returned as soon as the application's state arrived, and the step
+    /// after it asks what that application exports — which, for a photo
+    /// editor that has started and has no photograph yet, is nothing. The
+    /// same confusion sat on the other side of the same call: an application
+    /// present and exporting nothing is *offered* as openable, and an open
+    /// answering that offer with "already open" would open nothing and leave
+    /// the next step exactly the empty room the offer existed to fill.
+    #[test]
+    fn an_application_that_is_here_and_empty_is_not_yet_surveyable() {
+        let view = View::default();
+        let photos = CONTRACTS
+            .iter()
+            .find(|c| c.namespace == "photos")
+            .expect("the photo editor's contract");
+
+        // The photo editor's document the instant it starts: its own seed,
+        // and no photograph in it.
+        let mut doc = automerge::AutoCommit::new();
+        ::photos::doc::PhotosDoc::seed(&mut doc);
+        doc.commit();
+        assert!(
+            (photos.recognises)(&doc),
+            "this document is the photo editor's own, so an agent holding it \
+             is holding the photo editor — which is all `holds` ever meant"
+        );
+        let held: Vec<(&'static AppContract, &automerge::AutoCommit)> = vec![(photos, &doc)];
+        assert!(
+            !surveyable(&held, &view, "photos"),
+            "and it publishes nothing, so a step that followed an open here \
+             would survey a room with no operation on a photograph in it"
+        );
+
+        // The photograph the open was made for, arriving.
+        let img = ::photos::model::OpenImage::from_path("/var/tmp/qos/harbour.png", 512, 320);
+        ::photos::doc::PhotosDoc::set_image(&mut doc, Some(&img));
+        doc.commit();
+        let held: Vec<(&'static AppContract, &automerge::AutoCommit)> = vec![(photos, &doc)];
+        assert!(
+            surveyable(&held, &view, "photos"),
+            "now it publishes its own operations, which is what the open was \
+             for"
+        );
+        let perms = granting(vec![grant(Scope::Workspace)]);
+        assert!(
+            offers(&held, &view, &perms)
+                .iter()
+                .any(|o| o.id().ends_with("#crop")),
+            "and the crop is among them, or this proves nothing about the \
+             step that wanted it: {:?}",
+            offers(&held, &view, &perms)
+                .iter()
+                .map(Offer::id)
+                .collect::<Vec<_>>()
         );
     }
 
