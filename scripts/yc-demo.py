@@ -65,6 +65,7 @@ import re
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -439,11 +440,41 @@ AGENT_BULLETS = "\n- Doors: 18:00\nSound check: 18:30\nSeating: 240\n\n"
 # these lines is a scheduled item, what order they belong in, and
 # whether they are consistent — which is the difference between a
 # formatting command and something worth filming.
+#
+# This is the *nine-beat* film's instruction, and it belongs to it: the
+# prose and bullets above are what it acts on, and the readback after it
+# asserts a table with those bullets' own words in its cells. It is not
+# the sentence the live take asks for — see [`CROP_INSTRUCTION`].
 AGENT_INSTRUCTION = "Claude: make this a run sheet\n"
 # One cell's text, looked for in the document afterwards. If the table
 # came out empty this is gone, and the claim fails instead of passing on
 # the existence of a grid.
 AGENT_BULLET_PROOF = "Sound check"
+
+#: The sentence the film turns on, written once and referenced everywhere.
+#:
+#: One instruction, naming no application, no operation and no file. It
+#: is handed to an agent by somebody who is holding a *photograph*, and
+#: what makes it the whole argument is that answering it takes two
+#: applications the agent owns neither of: open the image editor, crop
+#: by address, and put the result in a document opened by somebody else
+#: on another machine.
+#:
+#: Three copies of this used to disagree — a run sheet here, a table in
+#: the live rig, a crop in the script and in the headless proof — and
+#: the rig picked the run-sheet one and pointed it at the photograph. So
+#: the person right-clicked a picture and asked for a run sheet, and the
+#: readback then asserted the run sheet's outcome. Every one of those
+#: reads correctly on its own; only together are they a different film.
+#:
+#: `Claude:` and not `@claude`. Both address the agent, but by different
+#: routes: a mention is a structured range the room resolved and only
+#: exists where something mints one, while the name prefix is matched on
+#: the text itself (`Instruction::addressed`, `apps/agent/src/plan.rs`)
+#: and therefore works in a chat message and in a document paragraph
+#: alike. The line a person is told to type has to be the one that works
+#: wherever they type it.
+CROP_INSTRUCTION = "Claude: make this square and put it in the open document"
 
 # How long to wait for a change to cross between sessions.
 SYNC_TIMEOUT_S = 25.0
@@ -1472,9 +1503,16 @@ class Session:
                     return found
             time.sleep(0.12)
         if found is not None:
-            note(f"{self.name}: {app_id} drew a frame "
-                 f"{first_frame - began:.1f}s in but never filled its tab; "
-                 f"reporting it as opened anyway")
+            # `first_frame` is set on both paths that set `found`, so it is
+            # never None here -- but the two are only tied together by
+            # reading the loop, and this line runs inside a launch, during
+            # filming, where an AttributeError on a `None` would take the
+            # take down at the worst possible moment. So it says what it
+            # does not know rather than assuming it.
+            since = (f"{first_frame - began:.1f}s"
+                     if first_frame is not None else "an unrecorded time")
+            note(f"{self.name}: {app_id} drew a frame {since} in but never "
+                 f"filled its tab; reporting it as opened anyway")
             return found
         return None
 
@@ -1488,8 +1526,12 @@ class Session:
                       args: dict | None = None) -> dict:
         """Invoke one action by its stable address. Raw response, so a
         refusal is a result rather than an exception."""
-        payload = {"op": "actions_invoke", "provider": provider,
-                   "id": action_id}
+        # Annotated, because the values are not all strings: `args` is a
+        # nested object and the wire is JSON. Inferred from the literal
+        # alone this reads as `dict[str, str]`, and the line below then
+        # looks like a bug in a request that has always been correct.
+        payload: dict[str, object] = {"op": "actions_invoke",
+                                      "provider": provider, "id": action_id}
         if args is not None:
             payload["args"] = args
         return call(self.sock, payload)
@@ -2558,8 +2600,20 @@ class Recorder:
         graph = "[0:v]" + ",".join(chain) + "[v]"
 
         # The narration, if one was recorded. Both tracks began on the
-        # same statement, so they are aligned by construction and the
-        # audio simply rides along.
+        # same statement, so they *start* aligned and the audio rides
+        # along from there.
+        #
+        # They stay aligned only while nothing shortens the picture, and
+        # `max_hold` shortens it: `_timeline` collapses runs of identical
+        # frames and reports what it removed as `trimmed`. A live
+        # microphone cannot be trimmed to match, so every second taken
+        # out of the video is a second the voice arrives late for, and
+        # the drift accumulates across the take. This comment used to say
+        # the two "need no syncing", which is true at `max_hold == 0` and
+        # at no other setting. `yc-demo-live.py` will not start a
+        # narrated take with trimming on, which is where that is
+        # enforced; nothing about the mux can rescue a take recorded with
+        # both.
         #
         # It is padded with silence first, and that is not a detail. The
         # two tracks are the same length only when nothing goes wrong;
@@ -4366,6 +4420,76 @@ def carries_text_in_a_table(blob: bytes, needle: str) -> bool:
                for p, t in found)
 
 
+def picture_references(blob: bytes) -> list[str]:
+    """Every image blob an Automerge document references, by its hash.
+
+    The counterpart of [`carries_text_in_a_table`] for the other film:
+    where that one asks whether the agent built a table, this asks
+    whether it put a *picture* on the page.
+
+    A document does not carry an image any more — it carries the BLAKE3
+    address of one and a small descriptor beside it, `mime`/`len`/`w`/`h`
+    under `blobs.<hash>` (`put_blob`, `crates/doc/qdoc/src/model.rs`).
+    Only `mime` is a string, so it is the only one of the four that
+    `qos-doc-text` can print; the hash comes back as the *path* that
+    string sits at, which is what makes this answerable at all.
+
+    Raises [`CannotDecode`] on the same terms as everything else that
+    reads a document: not being able to look is a different answer from
+    looking and finding nothing.
+    """
+    out = []
+    for path, text in document_strings(blob):
+        if path.startswith("blobs.") and path.endswith(".mime") \
+                and text.startswith("image/"):
+            hash_ = path[len("blobs."):-len(".mime")]
+            if hash_ and "." not in hash_:
+                out.append(hash_)
+    return out
+
+
+def png_size(blob: bytes) -> tuple[int, int] | None:
+    """`(width, height)` out of a PNG's IHDR, or None if it is not one."""
+    if len(blob) < 24 or not blob.startswith(b"\x89PNG\r\n\x1a\n"):
+        return None
+    return struct.unpack(">II", blob[16:24])
+
+
+def blob_beside_the_document(session: "Session", room: str, app_id: str,
+                             hash_: str) -> bytes | None:
+    """The bytes an app's own content store holds under `hash_`, or None.
+
+    The document only ever carries the address; the bytes live in a
+    content-addressed store, and the launcher gives every app a private
+    `HOME` and `XDG_CACHE_HOME` inside its own sandbox — deliberately,
+    so an app and its shell share no directory. From out here that
+    sandbox is an ordinary path under the session's data home
+    (`host_app_dir`, `crates/packaging/launcher/src/appdir.rs`), and
+    the store lays a blob out as `<root>/<first two of hash>/<hash>`
+    (`FsBlobStore::path_for`).
+
+    Returning None means the bytes were not reachable from here, which
+    is not the same as the picture not existing — every caller has to
+    say which it is rather than reporting the absence as the answer.
+    """
+    if not hash_ or not all(c in "0123456789abcdef" for c in hash_):
+        return None
+    root = os.path.join(session.dir, "data", "qos-rooms", room,
+                        _sanitised(app_id), ".cache", "qos", "blobs")
+    path = os.path.join(root, hash_[:2], hash_)
+    try:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _sanitised(package_id: str) -> str:
+    """`sanitise_component`, as the launcher applies it to a package id."""
+    return "".join(c if (c.isascii() and (c.isalnum() or c in "._-")) else "_"
+                   for c in package_id.strip())
+
+
 def carries_bytes(blob: bytes, needle: bytes) -> bool:
     """Whether an Automerge save contains `needle` verbatim.
 
@@ -4508,100 +4632,281 @@ def installed_ids(apps_dir: str) -> list[str]:
 
 
 def a_real_png(width: int = 512, height: int = 320) -> bytes:
-    """A photograph — a sun over ridged hills, drawn pixel by pixel.
+    """The photograph the demo works on: a harbour, drawn pixel by pixel.
 
-    It has to read as a photograph at two sizes at once: as a 16px
-    thumbnail in a file row, where only the sky/land split and the sun
-    survive, and as a picture in the document, where a flat gradient
-    would be obviously synthetic. So there is a horizon, a light source,
-    receding ridges that get paler with distance, and a little grain.
+    It is called `harbour.png` and it has to *be* one. The picture that
+    used to be here was four sine ridges under a sun — no water and no
+    boat — which at 16px in a file row was fine, because at 16px only
+    the sky/land split survives. Scene 4 opens this file in an image
+    editor and blows 512x320 into a 1920-wide frame, and a picture whose
+    name does not match it is the most likely thing in the film to read
+    as fabricated. So: a horizon with water under it, moored boats with
+    their reflections, a sun path broken across the swell, and a quay
+    across the near corner.
 
-    Generated rather than embedded because a checked-in JPEG is a binary
-    blob nobody can review, and because the demo wants a payload whose
-    size it chose: the whole point of beat 8 is that ~98 KB of image
-    crosses into the document where a keystroke moves ~100 bytes, and
-    that number should come from this function rather than from whatever
-    file somebody happened to drop in the tree.
+    Two things it is built to survive, and one it does not claim.
+
+    **The crop.** The instruction the film turns on is "make this square",
+    so the picture has to be one where square is a visible change rather
+    than a slightly narrower version of the same shot. The subjects are
+    spread the full width — a quay at the left edge, a boat at the right
+    — and any square crop of a 512x320 frame has to drop one end.
+
+    **The scale.** A one-pixel mast and a hull's sheer drawn as hard
+    pixels alias into a staircase the moment the frame is enlarged, so
+    the boats are sampled nine times per pixel and composited by
+    coverage. That is what makes the edges read as edges rather than as
+    a screenshot of a chart.
+
+    What it does not claim is to be a photograph. It is a drawing, and
+    at any size it reads as one: flat-shaded, deterministic, no lens and
+    no camera. A photograph would have to be a binary in the tree, which
+    is a blob nobody can review — and the demo also wants a payload
+    whose size it chose rather than whatever file somebody happened to
+    drop in.
+
+    Deterministic throughout, grain included: `random` would make the
+    file, and so the document delta, differ between runs.
     """
     import math
     import struct
     import zlib
 
-    horizon = int(height * 0.56)
-    sun_x, sun_y = int(width * 0.72), int(horizon * 0.42)
-    sun_r = max(6.0, height * 0.055)
-
-    # Each ridge: how far below the horizon its crest sits, its
-    # amplitude, its wavelength, a phase, and how dark it is. Front
-    # ridges are darker and rougher — that is what makes them read as
-    # nearer rather than merely lower.
-    # The `base` of each has to clear its own amplitude, or the crest
-    # rises above the horizon, gets clipped by the sky, and paints as a
-    # dead flat plate with a notch in it — which is precisely what the
-    # first version of this drew.
-    ridges = [
-        (0.045, 0.055, 1.7, 0.4, (96, 122, 132)),
-        (0.130, 0.075, 1.1, 2.1, (66, 94, 100)),
-        (0.270, 0.095, 0.8, 4.3, (42, 68, 70)),
-        (0.470, 0.130, 0.6, 1.2, (24, 44, 44)),
-    ]
+    horizon = int(height * 0.46)
+    sun_x, sun_y = int(width * 0.63), int(horizon * 0.34)
+    sun_r = max(5.0, height * 0.042)
 
     def clamp(v: float) -> int:
         return 0 if v < 0 else (255 if v > 255 else int(v))
 
-    # Deterministic grain. `random` would make the file — and so the
-    # document delta — differ between runs, and the demo prints that
-    # number.
     def grain(x: int, y: int) -> float:
         h = (x * 374761393 + y * 668265263) & 0xFFFFFFFF
         h = (h ^ (h >> 13)) * 1274126177 & 0xFFFFFFFF
         return ((h >> 16) & 0xFF) / 255.0 - 0.5
 
+    px = [[0.0, 0.0, 0.0] for _ in range(width * height)]
+
+    # -- sky, and the sun in it -----------------------------------------
+    for y in range(horizon):
+        t = y / max(1, horizon)
+        r, g, b = 96 + 150 * t, 128 + 106 * t, 158 + 44 * t
+        for x in range(width):
+            rr, gg, bb = r, g, b
+            d = math.hypot(x - sun_x, (y - sun_y) * 1.15)
+            if d < sun_r:
+                rr, gg, bb = 255.0, 248.0, 226.0
+            elif d < sun_r * 9.0:
+                k = (1.0 - (d - sun_r) / (sun_r * 8.0)) ** 2.2
+                rr, gg, bb = (rr + (255 - rr) * k, gg + (248 - gg) * k,
+                              bb + (226 - bb) * k)
+            px[y * width + x] = [rr, gg, bb]
+
+    # -- the far shore ---------------------------------------------------
+    # Low and mostly haze. It is there to give the horizon somewhere to
+    # be rather than to be looked at; a hard silhouette at this distance
+    # is what made the old picture read as a poster.
+    def headland(x: int):
+        u = x / width
+        if u > 0.62:
+            return None
+        h = math.sin(u * 5.1 + 0.6) * 0.28 + math.sin(u * 11.0) * 0.10 + 0.62
+        if u > 0.42:
+            h *= 1.0 - (u - 0.42) / 0.20
+        return horizon - h * height * 0.085
+
+    for x in range(width):
+        top = headland(x)
+        if top is None:
+            continue
+        for y in range(int(top), horizon):
+            base = px[y * width + x]
+            k = 0.55
+            px[y * width + x] = [base[0] * (1 - k) + 86 * k,
+                                 base[1] * (1 - k) + 104 * k,
+                                 base[2] * (1 - k) + 112 * k]
+
+    # -- the boats, as shapes ---------------------------------------------
+    # (centre x, waterline y, hull length, hull colour, deck colour)
+    boats = [
+        (int(width * 0.20), horizon + int(height * 0.10), width * 0.115,
+         (28, 40, 56), (222, 220, 208)),
+        (int(width * 0.45), horizon + int(height * 0.045), width * 0.075,
+         (44, 62, 70), (208, 206, 196)),
+        (int(width * 0.83), horizon + int(height * 0.20), width * 0.175,
+         (34, 34, 44), (232, 228, 214)),
+    ]
+
+    def boat_pixels(length: float, hull_col: tuple, deck_col: tuple) -> list:
+        """`(dx, dy, colour, coverage)` relative to (centre, waterline).
+
+        Sampled nine times per pixel rather than tested once: see the
+        note about scale above.
+        """
+        hull_h = max(3.0, length * 0.16)
+        half = length / 2.0
+        mast_h = length * 1.05
+        cabin_w = length * 0.26
+        cabin_h = max(2.0, length * 0.10)
+        mast_x = -length * 0.04
+        mast_w = 0.8 + length * 0.012
+        boom_y = -hull_h - cabin_h - mast_h * 0.10
+        boom_to = length * 0.30
+        spar = (58, 56, 52)
+
+        def at(u: float, v: float):
+            """The boat's colour at boat-local `(u, v)`, or None."""
+            if (-mast_w * 0.5 <= u - mast_x <= mast_w * 0.5
+                    and -mast_h <= v <= -hull_h):
+                return spar
+            if boom_y - 0.9 <= v <= boom_y + 0.9 and mast_x <= u <= boom_to:
+                return spar
+            if (-cabin_w * 0.55 <= u <= cabin_w * 0.45
+                    and -hull_h - cabin_h <= v <= -hull_h):
+                return deck_col
+            if abs(u) <= half:
+                t = abs(u) / half
+                if -hull_h <= v <= -hull_h * (t ** 2.4):
+                    # A pale strake along the sheer, stopping short of
+                    # the ends: it is what tells a hull from a wedge.
+                    if v < -hull_h + 1.6 and t < 0.9:
+                        return deck_col
+                    return hull_col
+            return None
+
+        out = []
+        for dy in range(int(-mast_h) - 1, 2):
+            for dx in range(int(-half) - 1, int(max(half, boom_to)) + 2):
+                hits, r, g, b = 0, 0.0, 0.0, 0.0
+                for sy in (-0.33, 0.0, 0.33):
+                    for sx in (-0.33, 0.0, 0.33):
+                        c = at(dx + sx, dy + sy)
+                        if c is not None:
+                            hits += 1
+                            r, g, b = r + c[0], g + c[1], b + c[2]
+                if hits:
+                    out.append((dx, dy, (r / hits, g / hits, b / hits),
+                                hits / 9.0))
+        return out
+
+    drawn = [(bx, by, boat_pixels(ln, hc, dc)) for bx, by, ln, hc, dc in boats]
+
+    # -- water -------------------------------------------------------------
+    for y in range(horizon, height):
+        d = (y - horizon) / max(1.0, height - horizon)      # 0 far, 1 near
+        base_r, base_g, base_b = 124 - 96 * d, 142 - 96 * d, 148 - 80 * d
+        # Wave bands in a *perspective* coordinate, not in y. Spacing on
+        # a real surface seen at a shallow angle opens out toward the
+        # viewer; bands evenly spaced down the frame are the one thing
+        # that reads instantly as a texture rather than as water.
+        q = (y - horizon + 1) ** 0.55
+        amp = 2.5 + 20.0 * d
+        for x in range(width):
+            swell = math.sin(q * 3.1 + math.sin(x * 0.0135) * 2.2 + 0.7)
+            chop = math.sin(q * 8.6 + x * 0.011 + math.sin(x * 0.04) * 0.8)
+            v = (swell * 0.68 + chop * 0.32) * amp
+            px[y * width + x] = [base_r + v, base_g + v * 1.04,
+                                 base_b + v * 0.88]
+
+    # -- the sun's path across it -------------------------------------------
+    for y in range(horizon, height):
+        d = (y - horizon) / max(1.0, height - horizon)
+        q = (y - horizon + 1) ** 0.55
+        spread = 14 + 74 * d
+        # On the crests, not across them: the same phase the chop has, so
+        # the light lands on the faces already turned toward it.
+        crest = (0.5 + 0.5 * math.sin(q * 8.6)) ** 1.8
+        for x in range(int(sun_x - spread), int(sun_x + spread) + 1):
+            if not 0 <= x < width:
+                continue
+            k = max(0.0, 1.0 - abs(x - sun_x) / spread) ** 1.7
+            # Broken along its length as well, or it is a beam rather
+            # than a scatter — and a continuous column down the middle
+            # of a picture reads as a rendering artefact and nothing
+            # else.
+            k *= crest * (0.45 + 0.55 * (0.5 + 0.5
+                                         * math.sin(x * 0.23 + y * 0.09)))
+            k *= 0.95 - 0.32 * d
+            p = px[y * width + x]
+            px[y * width + x] = [p[0] + (255 - p[0]) * k,
+                                 p[1] + (250 - p[1]) * k,
+                                 p[2] + (218 - p[2]) * k]
+
+    # -- and the boats' reflections in it ------------------------------------
+    def wobble(y: int, waterline: int) -> int:
+        depth = y - waterline
+        return int(round(math.sin(depth * 0.55) * (1.0 + depth * 0.10)))
+
+    for bx, by, pixels in drawn:
+        for dx, dy, col, cov in pixels:
+            if dy >= 0:
+                continue
+            ry = by - dy                       # mirrored below the waterline
+            if not horizon <= ry < height:
+                continue
+            fade = max(0.0, 0.46 - (ry - by) * 0.013) * cov
+            if fade <= 0.0:
+                continue
+            x = bx + dx + wobble(ry, by)
+            if not 0 <= x < width:
+                continue
+            # Darker than the thing reflected, and pulled toward the
+            # water. A mirror of the literal colours put two near-white
+            # blobs under the hulls: a white deck reflects as grey,
+            # because what comes back off water is a fraction of what
+            # went in, and the eye knows it.
+            p = px[ry * width + x]
+            px[ry * width + x] = [p[0] * (1 - fade) + col[0] * 0.58 * fade,
+                                  p[1] * (1 - fade) + col[1] * 0.60 * fade,
+                                  p[2] * (1 - fade) + col[2] * 0.64 * fade]
+
+    # -- the boats themselves ------------------------------------------------
+    for bx, by, pixels in drawn:
+        for dx, dy, col, cov in pixels:
+            x, y = bx + dx, by + dy
+            if not (0 <= x < width and 0 <= y < height):
+                continue
+            p = px[y * width + x]
+            px[y * width + x] = [p[0] * (1 - cov) + col[0] * cov,
+                                 p[1] * (1 - cov) + col[1] * cov,
+                                 p[2] * (1 - cov) + col[2] * cov]
+
+    # -- a quay across the near corner ---------------------------------------
+    # The left end of the picture, and the reason a square crop of it is
+    # a different picture rather than the same one with less sky.
+    quay = (108, 100, 92)
+    quay_w = width * 0.34
+    for x in range(int(quay_w)):
+        u = x / quay_w
+        top = height * 0.80 + u * height * 0.24
+        if top >= height:
+            continue
+        for y in range(int(top), height):
+            k = min(1.0, (y - top) / (height * 0.16))
+            band = math.sin(y * 0.55) * 5 + math.sin(x * 0.31 + y * 0.9) * 4
+            edge = 1.28 if y - top < 2 else 1.0
+            px[y * width + x] = [(quay[0] * (1 - 0.30 * k) + band) * edge,
+                                 (quay[1] * (1 - 0.30 * k) + band) * edge,
+                                 (quay[2] * (1 - 0.30 * k) + band) * edge]
+    for cx, ch in ((int(width * 0.07), 13), (int(width * 0.235), 10)):
+        top = int(height * 0.80 + (cx / quay_w) * height * 0.24)
+        for dy in range(-ch, 1):
+            wide = 3 if dy > -ch + 2 else 2
+            for dx in range(-wide, wide + 1):
+                x, y = cx + dx, top + dy
+                if 0 <= x < width and 0 <= y < height:
+                    px[y * width + x] = [58.0, 54.0, 52.0]
+
+    # -- grain, and out -------------------------------------------------------
+    # Enough to break the banding a pure gradient shows on a large flat
+    # sky, and no more: grain is nearly incompressible, and this file's
+    # size *is* the payload that crosses into the document.
     rows = bytearray()
     for y in range(height):
         rows.append(0)  # filter: none
         for x in range(width):
-            if y < horizon:
-                # Sky: deep above, warm and pale toward the horizon.
-                t = y / max(1, horizon)
-                r, g, b = (58 + 150 * t, 108 + 122 * t, 165 + 70 * t)
-                # The sun, and the haze around it.
-                d = math.hypot(x - sun_x, y - sun_y)
-                if d < sun_r:
-                    r, g, b = 255, 250, 214
-                elif d < sun_r * 7.0:
-                    k = (1.0 - (d - sun_r) / (sun_r * 6.0)) ** 2.4
-                    r, g, b = (r + (255 - r) * k, g + (250 - g) * k,
-                               b + (214 - b) * k)
-            else:
-                # Land, painted back to front so a nearer ridge covers
-                # the one behind it. What shows through above the
-                # furthest crest is haze, not ground — filling this with
-                # the ground colour put a dark band along the horizon,
-                # and filling it with one flat haze colour put a flat
-                # one there instead. So it fades out of the sky.
-                t = min(1.0, (y - horizon) / max(1.0, height * 0.10))
-                r, g, b = (208 - 76 * t, 230 - 78 * t, 235 - 77 * t)
-                for base, amp, freq, phase, colour in ridges:
-                    crest = (horizon + height * base
-                             + math.sin(x / width * math.pi * 2 * freq + phase)
-                             * height * amp * 0.5
-                             + math.sin(x / width * math.pi * 9 * freq + phase * 3)
-                             * height * amp * 0.12)
-                    if y >= crest:
-                        # A little vertical shading inside each band, so
-                        # it is not a flat cut-out.
-                        k = min(1.0, (y - crest) / (height * 0.30))
-                        r, g, b = (colour[0] * (1 - 0.35 * k),
-                                   colour[1] * (1 - 0.35 * k),
-                                   colour[2] * (1 - 0.35 * k))
-            # Enough grain to break up the banding a pure gradient shows
-            # on a large flat sky, and no more: grain is nearly
-            # incompressible, and this file's size *is* the payload the
-            # demo measures crossing into the document. At 7.0 the same
-            # picture was 294 KB.
+            p = px[y * width + x]
             n = grain(x, y) * 2.5
-            rows += bytes((clamp(r + n), clamp(g + n), clamp(b + n)))
+            rows += bytes((clamp(p[0] + n), clamp(p[1] + n), clamp(p[2] + n)))
 
     def chunk(tag: bytes, payload: bytes) -> bytes:
         return (struct.pack(">I", len(payload)) + tag + payload

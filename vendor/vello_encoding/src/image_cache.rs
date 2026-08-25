@@ -164,6 +164,15 @@ impl ImageCache {
             && image.height <= self.atlas.size().height as u32
     }
 
+    /// Current side length of the square atlas texture.
+    ///
+    /// Exists so the caller can say how big the atlas already was when it
+    /// gave up on an image, which is the difference between "this image is
+    /// absurd" and "the atlas is full of other things".
+    pub(crate) fn atlas_size(&self) -> u32 {
+        self.atlas.size().width as u32
+    }
+
     pub(crate) fn evict_stale_entries(&mut self) -> bool {
         if self.evicted_in_resolve != 0 {
             return false;
@@ -230,6 +239,23 @@ mod tests {
         assert_eq!(cache.atlas.size().width, 32);
         cache.begin_resolve();
         assert_eq!(cache.atlas.size().width, 32);
+    }
+
+    /// `atlas_size` is what the drop report quotes when an image will
+    /// not fit, so it has to be the atlas's real current side length
+    /// rather than the size it was constructed with.
+    #[test]
+    fn atlas_size_reports_the_live_size() {
+        let mut cache = ImageCache::new_with_sizes(16, 64);
+        assert_eq!(cache.atlas_size(), 16);
+        assert!(cache.bump_size());
+        assert_eq!(cache.atlas_size(), 32);
+        assert!(cache.bump_size());
+        assert_eq!(cache.atlas_size(), 64);
+        // At the maximum, growth stops and the size stays truthful --
+        // this is the state in which images start being dropped.
+        assert!(!cache.bump_size());
+        assert_eq!(cache.atlas_size(), 64);
     }
 
     #[test]

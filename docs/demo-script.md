@@ -2,9 +2,13 @@
 
 The film we are building. Five beats, two machines, one agent. Everything
 below is what a viewer sees, in order; anything not here is not in the film.
+`scripts/yc-demo-live.py` drives it, and its module docstring carries these
+same beats with their reasons attached; `docs/demo-shape.md` is the earlier
+seven-beat shape, kept as a record and not to be shot from.
 
-Total: **1:40 maximum.** Boot is 15s of it; the remaining 75s is the rest.
-A beat that cannot be done inside its share is cut, not hurried.
+Total: **1:40 maximum.** The boot bumper is 3.2s of it, cut and concatenated
+in front rather than recorded with the rest; the driven take is ~75s. A beat
+that cannot be done inside its share is cut, not hurried.
 
 The film must be drivable two ways, and both must work:
 
@@ -16,7 +20,11 @@ The film must be drivable two ways, and both must work:
 
 ## 1 — Boot
 
-A cold machine reaching a usable desktop. ≤15s.
+A cold machine reaching a usable desktop. **3.2s**, and it is not filmed with
+the rest: it is a cut from a QEMU recording, `films/qos-boot-bumper.mp4`,
+joined on the front by `scripts/demo-assemble.py`. Console, greeter, filled
+form, and it ends before the desktop. See `boot-bumper-cut.md` for the cut
+and the arithmetic behind the 3.2.
 
 ## 2 — An empty workspace, and three applications opened into it
 
@@ -48,9 +56,18 @@ workspace is the shared thing, so joining it brings what is in it.
 
 Xaver **right-clicks the image in Files** and writes:
 
-> `@claude make square and put in open document`
+> `Claude: make this square and put it in the open document`
 
-One instruction. Not two, not one per app.
+One instruction. Not two, not one per app. The rig prints this line for
+whoever is at xaver's keyboard, out of `CROP_INSTRUCTION` in
+`scripts/yc-demo.py`, so what is on the terminal and what is in this file
+cannot drift apart.
+
+`Claude:` rather than `@claude`. Both address the agent; a mention is a
+structured range something has to mint at send, while the name prefix is
+matched on the text itself and therefore works in a chat message and in a
+document paragraph alike. The line a person is told to type has to be the one
+that works wherever they type it.
 
 He is not the host, he opened none of these applications, and he is on
 another machine. What he sends is the object's **address**, not a
@@ -68,6 +85,13 @@ On **xaver's** screen, not the owner's. He asked for it, so he sees it
 land, on a machine where he owns nothing and opened nothing. That is a
 stronger claim than watching it arrive where it was already going, and it
 costs a cut rather than adding one.
+
+Between the instruction landing and the first change appearing is the model
+deciding, and it has been measured at some twenty-eight seconds. That is not
+going to get shorter, so the camera moves — inside xaver's strip, not another
+cut — to **chat**, where the agent posts its own state as each thing actually
+happens: taken, waiting on an app, doing, done. A wait filled by the agent
+saying what it is waiting for is not dead air, and it costs nothing to shoot.
 
 The video is finished after this. Nothing more is needed.
 

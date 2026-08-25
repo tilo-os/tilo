@@ -61,18 +61,41 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TARGET = os.environ.get("CARGO_TARGET_DIR") or os.path.join(REPO, "target")
 
-WP_APP = "dev.qos.word-processor"
-PHOTOS_APP = "dev.qos.photos"
-FILES_APP = "dev.qos.file-explorer"
+
+def _film():
+    """`scripts/yc-demo.py`, for the few things this must not restate.
+
+    Loading a 7000-line module to read three constants out of it looks
+    like a lot, and the alternative is worse: this script and the film
+    have to be asking for *the same thing*, or a green run here says
+    nothing about the take. They disagreed once — a crop here, a run
+    sheet in the film, a table in the live rig — and each read correctly
+    on its own. Importing costs about a quarter of a second and nothing
+    else; that module does no work at import.
+    """
+    import importlib.util
+    path = os.path.join(REPO, "scripts", "yc-demo.py")
+    spec = importlib.util.spec_from_file_location("yc_demo_film", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+film = _film()
+
+WP_APP = film.WORD_PROCESSOR
+PHOTOS_APP = film.IMAGE_EDITOR
+FILES_APP = film.FILES_APP
 ROOM = "11111111-2222-3333-4444-555555555555"
-PHOTO = "harbour.png"
+PHOTO = film.PHOTO_NAME
 
 #: The agent's name: what it is called in the room, the prefix an instruction
 #: is addressed with, and the subject a grant has to name.
 AGENT_NAME = "Claude"
 
-#: The sentence. It names no application, no operation and no file.
-INSTRUCTION = f"{AGENT_NAME}: make this square and put it in the open document"
+#: The sentence, taken from the film rather than written again here. It
+#: names no application, no operation and no file.
+INSTRUCTION = film.CROP_INSTRUCTION
 
 FAIL: list[str] = []
 
@@ -249,48 +272,15 @@ def app_document(json_sock: str, room: str, app_id: str, scope: str,
 # -- a photograph -------------------------------------------------------------
 
 def a_photograph(width: int = 512, height: int = 320) -> bytes:
-    """A wide picture, so "square" is a crop somebody can measure.
+    """The film's own photograph, so this proof and the take use one picture.
 
-    Drawn rather than checked in: a binary blob in the tree is one nobody can
-    review, and the aspect ratio is the whole point of the instruction.
+    Drawn rather than checked in — a binary blob in the tree is one nobody
+    can review — and drawn *there* rather than here, because the aspect
+    ratio is the whole point of the instruction and two generators drifting
+    apart would mean this measured a crop of a different picture from the
+    one on camera.
     """
-    import math
-    import struct
-    import zlib
-
-    horizon = int(height * 0.56)
-    sun_x, sun_y = int(width * 0.72), int(horizon * 0.42)
-    sun_r = max(6.0, height * 0.055)
-    rows = bytearray()
-    for y in range(height):
-        rows.append(0)  # filter: none
-        for x in range(width):
-            if y < horizon:
-                t = y / max(1, horizon)
-                r, g, b = (40 + int(150 * t), 90 + int(110 * t), 170 + int(60 * t))
-                d = math.hypot(x - sun_x, y - sun_y)
-                if d < sun_r:
-                    r, g, b = 255, 240, 200
-                elif d < sun_r * 3:
-                    k = 1.0 - (d - sun_r) / (sun_r * 2)
-                    r = min(255, r + int(90 * k))
-                    g = min(255, g + int(70 * k))
-                    b = min(255, b + int(30 * k))
-            else:
-                t = (y - horizon) / max(1, height - horizon)
-                ridge = math.sin(x / 37.0 + t * 3.0) * 6.0
-                v = 70 - int(35 * t) + int(ridge)
-                r, g, b = (max(0, v), max(0, v + 18), max(0, v + 8))
-            rows += bytes((r & 255, g & 255, b & 255))
-
-    def chunk(kind: bytes, data: bytes) -> bytes:
-        return (struct.pack(">I", len(data)) + kind + data
-                + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
-
-    return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(bytes(rows), 6))
-            + chunk(b"IEND", b""))
+    return film.a_real_png(width, height)
 
 
 def png_size(raw: bytes) -> tuple[int, int] | None:
