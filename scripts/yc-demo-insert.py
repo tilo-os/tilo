@@ -80,9 +80,15 @@ timestamped video, so a bad take costs nothing but running it again.
   in flight — `Surface::configure` finds a live `SurfaceOutput` and the
   present thread goes down, taking the session with it. Two runs died
   exactly there. So nothing here resizes anything: the window is
-  *created* at the size the window manager will grant
-  (`NIRIOS_WINIT_SIZE`), and is iconified and re-raised rather than
-  resized while the rest is staged.
+  *created* at the size the clip is built at (`NIRIOS_WINIT_SIZE`), which
+  the compositor publishes as fixed so the window manager cannot revise
+  it, and is iconified and re-raised rather than resized while the rest
+  is staged.
+
+  Fixed matters as much as undecorated. A resizable window whose request
+  already covers most of the work area is auto-maximized on map, so the
+  ask used to be granted by being overruled — and a frame thirty-four
+  rows too tall is a frame the caption band comes down over.
 """
 from __future__ import annotations
 
@@ -222,6 +228,13 @@ class WindowedSession(yc.Session):
     #: `NIRIOS_WINIT_SIZE` in `backend/winit.rs`: a resize with a frame in
     #: flight panics the present thread, so the only safe way to record
     #: at the video's own resolution is to open the window at it.
+    #:
+    #: The compositor also publishes that size as fixed, which is what
+    #: makes the ask reliable: a *resizable* window covering most of the
+    #: work area is auto-maximized on map, so asking for the video's
+    #: 1920x1014 of a 1920x1048 work area was granted the whole 1048 and
+    #: every frame went into the film letterboxed with the caption band
+    #: over the bottom of it. Ask for what the video needs; it is granted.
     window_size: str | None = None
     #: Whether a person's hands are on the keyboard for this session.
     #:
