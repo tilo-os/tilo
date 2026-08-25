@@ -1738,7 +1738,17 @@ impl ChatApp {
                 },
                 "",
                 Vec::new(),
-                None,
+                // A turn still in flight carries its explanation on the
+                // surface, so the capture shows the strip as somebody
+                // waiting on this agent actually sees it — the state line and
+                // the rows say what and which, and this is the only part that
+                // says why.
+                Some(AgentReasoning {
+                    route: AgentRoute::Model,
+                    why: "The lines under Logistics are a list of pairs, which \
+                          is a table with the header left implicit."
+                        .into(),
+                }),
             ),
             (
                 "u_aria",
@@ -2009,6 +2019,13 @@ impl ChatApp {
     /// are software to keep in step with this one. The newest wins, so a room
     /// with two agents in it shows the one that most recently took the
     /// message rather than an arbitrary one.
+    pub(crate) fn agent_record(&self, msg: &str) -> Option<&Message> {
+        self.messages
+            .iter()
+            .filter(|r| r.parent.as_deref() == Some(msg) && r.work.is_some())
+            .next_back()
+    }
+
     /// The record to draw under `m` in the timeline, if it has one.
     ///
     /// Ordinarily the agent's reply to it. What a person needs to see is that
@@ -2022,18 +2039,11 @@ impl ChatApp {
     /// record nobody can read. Replies are not drawn in the timeline at all
     /// (`model::group_messages` keeps to top-level messages), so this cannot
     /// draw the same record twice.
-    pub(crate) fn timeline_record(&self, m: &Message) -> Option<&Message> {
+    pub(crate) fn timeline_record<'a>(&'a self, m: &'a Message) -> Option<&'a Message> {
         if m.work.is_some() && m.is_top_level() {
             return Some(m);
         }
         self.agent_record(&m.id)
-    }
-
-    pub(crate) fn agent_record(&self, msg: &str) -> Option<&Message> {
-        self.messages
-            .iter()
-            .filter(|r| r.parent.as_deref() == Some(msg) && r.work.is_some())
-            .next_back()
     }
 
     /// The label a message used for `user`, out of the body it was written in.
