@@ -1433,6 +1433,34 @@ class Live:
             self.finished = ("the instruction was never sent, so there is "
                              "nothing left for the camera to film")
 
+    def hand_him_the_gesture(self) -> None:
+        """Say whose hands the next gesture belongs to, and stop driving.
+
+        Handed over rather than driven. His window is already in front --
+        the cut raised it, and the beat above framed it -- so the only
+        thing missing is knowing what to do with it, and that is a line
+        of text rather than a mechanism.
+        """
+        self.say("")
+        self.say("  " + "-" * 58)
+        self.say("  XAVER IS YOURS. His window is in front.")
+        self.say("")
+        self.say("    right-click the image in Files, then write:")
+        self.say(f"      {self.args.instruction}")
+        self.say("")
+        self.say("    the rig picks it up from here and watches "
+                 "for the answer")
+        self.say("  " + "-" * 58)
+        self.say("")
+        self.instruction_sent = True
+        # Not claimed. Nothing here observed him write anything, and a
+        # claim that reports a person's gesture it never saw is worth
+        # less than no claim at all. What *is* claimed above it is the
+        # state his screen was in when it was handed over, which nothing
+        # about a person's hand makes unobservable.
+        yc.gap("the instruction is being written by hand, so this run "
+               "does not assert that it was")
+
     def his_instruction(self) -> bool:
         """Xaver picks the image and says what he wants done with it.
 
@@ -1466,39 +1494,6 @@ class Live:
         # whose hands the next gesture belongs to.
         yc.cut("xaver")
         try:
-            # Aimed at a pixel, and the pixel is asked for rather than
-            # guessed. A client application's widgets are not in the
-            # compositor's target registry -- that registry walks the
-            # shell's own tree -- so `named_rect("file_row:harbour.png")`
-            # could never once have resolved, and sweeping the window for
-            # a row instead is what lost a take. The app answers now:
-            # `Widget::resource_rects` says where it drew the row for that
-            # file's own address, and `press_the_photo_row` converts it
-            # with the window's placement.
-            if not self.args.instruct:
-                # Handed over rather than driven. His window is already
-                # in front -- the cut raised it -- so the only thing
-                # missing is knowing what to do with it, and that is a
-                # line of text rather than a mechanism.
-                self.say("")
-                self.say("  " + "-" * 58)
-                self.say("  XAVER IS YOURS. His window is in front.")
-                self.say("")
-                self.say("    right-click the image in Files, then write:")
-                self.say(f"      {self.args.instruction}")
-                self.say("")
-                self.say("    the rig picks it up from here and watches "
-                         "for the answer")
-                self.say("  " + "-" * 58)
-                self.say("")
-                self.instruction_sent = True
-                # Not claimed. Nothing here observed him write anything,
-                # and a claim that reports a person's gesture it never saw
-                # is worth less than no claim at all.
-                yc.gap("the instruction is being written by hand, so this "
-                       "run does not assert that it was")
-                return True
-
             # Wait for the file manager to reach him, rather than asking
             # once and giving up.
             #
@@ -1513,11 +1508,27 @@ class Live:
             # Bounded, and painted rather than merely placed — the compositor
             # answers with a laid-out rect for a window it is not yet drawing,
             # and a press aimed into one lands on whatever is behind it.
+            #
+            # Waited for on both paths, and everything below it asked on
+            # both paths. Only the gesture at the end is a hand. This
+            # used to branch first and hand over here, which meant the
+            # run that a person drives never asked the one question the
+            # beat rests on — *is the photograph on his screen, out of
+            # the room's workspace* — and could not have told him it was
+            # not. It was not: he was handed an empty home with no
+            # workspace in its sidebar, on a run whose every printed
+            # claim had passed.
             tile = self.wait_for_his_files()
             if tile is None:
                 yc.gap("xaver has no file manager window on screen, so "
                        "there is no image for him to right-click")
-                return False
+                if self.args.instruct:
+                    return False
+                # Handed over anyway. A person can open Files himself,
+                # and ending the take over a window that has not crossed
+                # yet takes the beat away from him for no reason.
+                self.hand_him_the_gesture()
+                return True
             # How many of them there are, before one of them is picked.
             # A session can be showing two windows that are both the file
             # manager — its own, and a peer's replicated in — and they are
@@ -1593,6 +1604,11 @@ class Live:
                        f"none of them is {yc.PHOTO_NAME}; if it published "
                        f"none at all it was granted nothing and is showing "
                        f"its own sandbox directory. See {self.x.log_path}")
+
+            if not self.args.instruct:
+                self.hand_him_the_gesture()
+                return True
+
             if self.args.instruction_via == "room":
                 # The room's half alone, because the gesture that reaches
                 # it is unavailable. Everything above still ran — his file
@@ -1631,6 +1647,15 @@ class Live:
                          "reached the room, from his machine", said, True)
                 return said
 
+            # Aimed at a pixel, and the pixel is asked for rather than
+            # guessed. A client application's widgets are not in the
+            # compositor's target registry -- that registry walks the
+            # shell's own tree -- so `named_rect("file_row:harbour.png")`
+            # could never once have resolved, and sweeping the window for
+            # a row instead is what lost a take. The app answers now:
+            # `Widget::resource_rects` says where it drew the row for that
+            # file's own address, and `press_the_photo_row` converts it
+            # with the window's placement.
             said = yc.say_something_about(
                 self.x, log, tuple(tile["rect"]), yc.PHOTO_NAME,
                 # The room's workspace, not his home. That is the whole
@@ -1842,8 +1867,15 @@ class Live:
         the middle puts the two out of step for the rest of the film.
 
         Pair with `camera_back_up` when this returns True.
+
+        A run with no camera has nothing to take down, which is not the
+        same as having a camera that will not come down: without the
+        first test, `--no-record` reached the handover and died there on
+        `NoneType has no attribute max_hold` — at the one beat somebody
+        verifying the rig without filming is most likely to be aiming at.
         """
-        if self.recorder.max_hold <= 0 or self.camera_down is not None:
+        if self.recorder is None or self.recorder.max_hold <= 0 \
+                or self.camera_down is not None:
             return False
         stack = contextlib.ExitStack()
         stack.enter_context(self.recorder.hold_off())
@@ -2685,57 +2717,22 @@ def _the_owners_half(q, shots: str, live: "Live",
     stop.wait(0.15)
 
     mark("Files opens")
-    # Granted before it starts, not asked for after.
+    # Nothing is granted here. The homes and the room's workspace were
+    # bound during staging, before this thread existed and before
+    # anybody could have opened a window — see the grants beside
+    # `place_next_window` in `main`.
     #
-    # The file manager's sandbox is built at launch, so a capability
-    # granted to a process already running changes the list and not the
-    # mount: the prompt appears, the answer is recorded, and the window
-    # still says "No such file or directory" about a directory that is
-    # right there. Granting first means the bind exists when the process
-    # does.
+    # They used to be on this line, one statement above the launch, and
+    # that read as "granted before it starts, not asked for after" while
+    # only ever being true of the driven run. Whoever drives the demo by
+    # hand opens Files at a moment nothing here can order itself against,
+    # so the only ordering that holds for both is one that finishes
+    # before either half starts.
     #
-    # And a permission dialog is not this film's subject. The capability
-    # model gets its own beat, with a grant somebody actually watches
-    # being made; a modal in front of the file manager during a different
-    # scene is an interruption that teaches nothing.
-    # Every session, not just the one being driven. A capability is
-    # per-workspace and each person here has their own, so granting only
-    # quinten's left the guest's file manager asking — and his screen is
-    # the one the camera cuts to. A finished take spent 204 unbroken
-    # seconds, three and a half minutes, framed on an unanswered
-    # "read/write access to /var/tmp/qos/home/xaver" that nobody was ever
-    # going to click, while the beats it was hiding happened off-camera.
-    for s in yc.SESSIONS:
-        if getattr(s, "home", None) is None:
-            continue
-        yc.claim(
-            f"{s.name}'s file manager may read the home it is about to show",
-            s.grant(f"app:{yc.FILES_APP}", f"fs:{s.home}", "write")
-             .get("answer", {}).get("granted") is not None,
-            True,
-        )
-    # And the workspace the *room* carries — granted once, by the person
-    # who owns the room, on the room.
-    #
-    # This one is not a convenience like the homes above, it is the beat.
-    # A capability recorded on a room is replicated to whoever was
-    # admitted to it (`WorkspaceTreeReplica`), and a peer's window is
-    # launched with the room's own capability list
-    # (`peer_windows::open_for` → `launcher::launch_in_workspace`). So
-    # granting it here, on the host, is what puts the photograph within
-    # xaver's reach later — not a second grant made on his machine, which
-    # he could not make anyway: `Workspace::grant_as` refuses a grantor
-    # who neither owns the room nor holds admin over it, and a guest is
-    # neither. He reaches the object by being in the room.
-    #
-    # Read, not write. Nothing in the film needs to change it, and the
-    # narrower grant is the one that proves the point.
-    yc.claim(
-        "the room carries a workspace its file manager may read",
-        q.grant(f"app:{yc.FILES_APP}", f"fs:{yc.WORKSPACE_ROOT}", "read")
-         .get("answer", {}).get("granted") is not None,
-        True,
-    )
+    # A permission dialog is not this film's subject either way. The
+    # capability model gets its own beat, with a grant somebody actually
+    # watches being made; a modal in front of the file manager during a
+    # different scene is an interruption that teaches nothing.
     files = q.launch(yc.FILES_APP, search="files", via="palette",
                      look=0.25, read=0.45, watch=WATCH_IT_OPEN_S)
     yc.claim("Files opened", files is not None, True)
@@ -3590,6 +3587,71 @@ def main() -> int:
         # behind it. Staging, not driving: it changes where his next
         # window lands, never whether or when he opens one.
         quinten.place_next_window(yc.WORD_PROCESSOR)
+
+        # What the file manager is allowed to read, decided before
+        # anybody can open one.
+        #
+        # This is staging for the same reason the two lines above are: it
+        # changes what a window shows, never whether or when somebody
+        # opens it. It used to sit in the driving half instead, and that
+        # was a real defect rather than an untidiness. A capability is
+        # read when the sandbox is *built*, at launch, so granting it
+        # after the process exists changes the list and not the mount.
+        # The driving half opened Files itself, one line after granting,
+        # so the ordering held there and nowhere else: with a person at
+        # the keyboard the grants never happened at all, and the file
+        # manager he opened by hand was launched with nothing bound.
+        #
+        # What that looked like — and it was found by somebody driving
+        # the demo, not by a test: `push_user_home` and
+        # `push_workspace_roots` each export their variable only when a
+        # grant has already bound the path, so with no grants the app
+        # saw neither. It fell back to the platform's idea of home,
+        # which inside the sandbox is the app's own per-room directory,
+        # and drew it accurately: "Home", zero items, and no workspace
+        # anywhere in the places sidebar. The room's photograph was
+        # unreachable from the window the film's pivotal gesture is
+        # made in.
+        for s in sessions:
+            if getattr(s, "home", None) is None:
+                continue
+            # Every session, not just the one being driven. A capability
+            # is per-workspace and each person here has their own, so
+            # granting only quinten's leaves the guest's file manager
+            # asking — on the screen the camera cuts to. A finished take
+            # spent 204 unbroken seconds framed on an unanswered
+            # "read/write access to …/home/xaver" that nobody was ever
+            # going to click, while the beats it was hiding happened
+            # off-camera.
+            yc.claim(
+                f"{s.name}'s file manager may read the home it will show",
+                s.grant(f"app:{yc.FILES_APP}", f"fs:{s.home}", "write")
+                 .get("answer", {}).get("granted") is not None,
+                True,
+            )
+        # And the workspace the *room* carries — granted once, by the
+        # person who owns the room, on the room.
+        #
+        # A capability recorded on a room is replicated to whoever was
+        # admitted to it (`WorkspaceTreeReplica`), and a peer's window is
+        # launched with the room's own capability list
+        # (`peer_windows::open_for` → `launcher::launch_in_workspace`).
+        # So granting it here, on the host, is what puts the photograph
+        # within xaver's reach later — not a second grant made on his
+        # machine, which he could not make anyway: `Workspace::grant_as`
+        # refuses a grantor who neither owns the room nor holds admin
+        # over it, and a guest is neither. He reaches the object by being
+        # in the room.
+        #
+        # Read, not write. Nothing in the film needs to change it, and
+        # the narrower grant is the one that proves the point.
+        yc.claim(
+            "the room carries a workspace its file manager may read",
+            quinten.grant(f"app:{yc.FILES_APP}", f"fs:{yc.WORKSPACE_ROOT}",
+                          "read")
+             .get("answer", {}).get("granted") is not None,
+            True,
+        )
 
         if terminal:
             ins.raise_window(terminal)
