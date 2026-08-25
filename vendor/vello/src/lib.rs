@@ -490,6 +490,7 @@ impl Renderer {
         // by the frame after the one that grew it. When the reservation
         // changes, the pooled buffers at the old sizes are dropped
         // rather than kept for a size nothing will ask for again.
+        self.budget.set_viewport(params.width, params.height);
         if self.budget.collect(device, &mut self.engine) {
             self.engine.clear_pool();
         }
@@ -744,6 +745,7 @@ impl Renderer {
     ) -> Result<RenderResult> {
         let mut render = Render::new();
         let encoding = scene.encoding();
+        self.budget.set_viewport(params.width, params.height);
         // This path awaits the bump counters between the coarse and fine
         // stages anyway, so it always reads them: the reservation for the
         // next frame comes from this one, exactly as in the sync path.

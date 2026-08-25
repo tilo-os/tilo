@@ -455,19 +455,23 @@ impl BufferSizes {
         //    which on a u32 underflows to near four billion if the buffer
         //    is ever sized below the scene's own info block.
         let n_tiles = width_in_tiles.max(1) * height_in_tiles.max(1);
-        let ptcl_floor = n_tiles.saturating_mul(PTCL_INITIAL_ALLOC);
+        let floor = BumpBudget::floor_for_viewport(n_tiles);
         let bin_data = BufferSize::new(
             layout
                 .bin_data_start
-                .saturating_add(budget.binning.max(MIN_BINNING)),
+                .saturating_add(budget.binning.max(floor.binning)),
         );
-        let tiles = BufferSize::new(budget.tiles.max(n_tiles));
-        let lines = BufferSize::new(budget.lines.max(MIN_LINES));
-        let seg_counts = BufferSize::new(budget.seg_counts.max(MIN_SEGMENTS));
-        let segments = BufferSize::new(budget.segments.max(MIN_SEGMENTS));
+        let tiles = BufferSize::new(budget.tiles.max(floor.tiles));
+        let lines = BufferSize::new(budget.lines.max(floor.lines));
+        let seg_counts = BufferSize::new(budget.seg_counts.max(floor.seg_counts));
+        let segments = BufferSize::new(budget.segments.max(floor.segments));
         // 16 * 16 (1 << 8) is one blend spill, so this allows for 1024 spills.
-        let blend_spill = BufferSize::new(budget.blend_spill.max(MIN_BLEND_SPILL));
-        let ptcl = BufferSize::new(ptcl_floor.saturating_add(budget.ptcl.max(MIN_PTCL_DYNAMIC)));
+        let blend_spill = BufferSize::new(budget.blend_spill.max(floor.blend_spill));
+        let ptcl = BufferSize::new(
+            n_tiles
+                .saturating_mul(PTCL_INITIAL_ALLOC)
+                .saturating_add(budget.ptcl.max(floor.ptcl)),
+        );
         Self {
             path_reduced,
             path_reduced2,
@@ -504,17 +508,36 @@ const PTCL_INITIAL_ALLOC: u32 = 64;
 
 /// Floors for the measured buffers, in elements.
 ///
-/// Small enough that an application drawing almost nothing reserves
-/// almost nothing -- together they are under 6 MB, against upstream's
-/// 165 MB -- and large enough that an ordinary first frame fits without
-/// waiting for a growth round. Measured across the shell's whole scene
-/// catalogue at 1920x1080, the heaviest frame asked for 35k lines, 108k
-/// segment counts, 24k segments and 63k tiles.
-const MIN_LINES: u32 = 1 << 16;
-const MIN_SEGMENTS: u32 = 1 << 17;
-const MIN_BINNING: u32 = 1 << 14;
-const MIN_BLEND_SPILL: u32 = 1 << 14;
-const MIN_PTCL_DYNAMIC: u32 = 1 << 16;
+/// The budget grows to fit, but growth is a frame behind, so the floor
+/// is what the *first* frame gets — and a first frame is the compositor
+/// painting a whole desktop, not a blank window. These come from
+/// measurement rather than taste: the shell's scene catalogue, all 28
+/// scenes, rendered with the counters logged.
+///
+/// | buffer     | peak at 1920x1080 | per tile | peak at 3840x2160 | per tile |
+/// |------------|-------------------|----------|-------------------|----------|
+/// | lines      | 27943             | -        | 29377             | -        |
+/// | binning    | 1833              | 0.22     | 5592              | 0.17     |
+/// | tiles      | 115406            | 14.1     | 439039            | 13.5     |
+/// | seg_counts | 54177             | 6.6      | 123122            | 3.8      |
+/// | segments   | 54177             | -        | 123122            | -        |
+/// | blend      | 0                 | -        | 0                 | -        |
+/// | ptcl (dyn) | 659200            | 80.8     | 1361664           | 42.0     |
+///
+/// So the ones that track screen area are written per tile with roughly
+/// twice the measured headroom, and the ones that track how much *stuff*
+/// is on screen -- lines, and the binning list -- are flat. At 1920x1080
+/// that is 13 MB reserved against upstream's 165 MB; at 3840x2160, 37 MB,
+/// where upstream's ptcl constant is itself only four times the
+/// structural floor.
+const FLOOR_LINES: u32 = 1 << 16;
+const FLOOR_BINNING: u32 = 1 << 14;
+const FLOOR_BLEND_SPILL: u32 = 1 << 14;
+const FLOOR_TILES_PER_TILE: u32 = 24;
+const FLOOR_SEG_COUNTS_PER_TILE: u32 = 8;
+const FLOOR_SEG_COUNTS_MIN: u32 = 1 << 17;
+const FLOOR_PTCL_PER_TILE: u32 = 96;
+const FLOOR_PTCL_MIN: u32 = 1 << 17;
 
 /// How much bump-allocated scratch a renderer reserves, in elements.
 ///
@@ -560,17 +583,39 @@ impl BumpBudget {
         ptcl: 1 << 23,
     };
 
-    /// What a renderer starts from, before it has seen a frame: the
-    /// floors above, which is to say as little as the viewport allows.
+    /// What a renderer starts from, before it has seen a frame: zero,
+    /// with [`BufferSizes`] applying the viewport floor underneath. A
+    /// renderer that never draws anything reserves what the floor says
+    /// and no more.
     pub const INITIAL: Self = Self {
-        lines: MIN_LINES,
-        binning: MIN_BINNING,
+        lines: 0,
+        binning: 0,
         tiles: 0,
-        seg_counts: MIN_SEGMENTS,
-        segments: MIN_SEGMENTS,
-        blend_spill: MIN_BLEND_SPILL,
-        ptcl: MIN_PTCL_DYNAMIC,
+        seg_counts: 0,
+        segments: 0,
+        blend_spill: 0,
+        ptcl: 0,
     };
+
+    /// The least a viewport of `n_tiles` can be rendered with, per the
+    /// measurements at the constants above.
+    pub fn floor_for_viewport(n_tiles: u32) -> Self {
+        Self {
+            lines: FLOOR_LINES,
+            binning: FLOOR_BINNING,
+            tiles: n_tiles.saturating_mul(FLOOR_TILES_PER_TILE),
+            seg_counts: n_tiles
+                .saturating_mul(FLOOR_SEG_COUNTS_PER_TILE)
+                .max(FLOOR_SEG_COUNTS_MIN),
+            segments: n_tiles
+                .saturating_mul(FLOOR_SEG_COUNTS_PER_TILE)
+                .max(FLOOR_SEG_COUNTS_MIN),
+            blend_spill: FLOOR_BLEND_SPILL,
+            ptcl: n_tiles
+                .saturating_mul(FLOOR_PTCL_PER_TILE)
+                .max(FLOOR_PTCL_MIN),
+        }
+    }
 
     /// Nothing grows past this -- four times upstream's reservation. No
     /// user interface reaches it; a scene that did would have rendered
@@ -641,4 +686,142 @@ impl Default for BumpBudget {
 
 const fn align_up(len: u32, alignment: u32) -> u32 {
     len + (len.wrapping_neg() & (alignment - 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BufferSizes, BumpAllocators, BumpBudget, PTCL_INITIAL_ALLOC, RenderConfig};
+    use crate::{Layout, WorkgroupCounts};
+
+    /// A layout with nothing in it. The bump-allocated sizes do not
+    /// depend on the scene, only on the viewport and the budget, so this
+    /// is enough to exercise them.
+    fn sizes(width: u32, height: u32, budget: &BumpBudget) -> BufferSizes {
+        let layout = Layout {
+            bin_data_start: 4096,
+            ..Layout::default()
+        };
+        let (w_tiles, h_tiles) = (width.div_ceil(16), height.div_ceil(16));
+        let wgs = WorkgroupCounts::new(&layout, w_tiles, h_tiles, 0);
+        BufferSizes::new(&layout, &wgs, w_tiles, h_tiles, budget)
+    }
+
+    /// `coarse.wgsl` indexes ptcl as `tile_ix * PTCL_INITIAL_ALLOC`
+    /// before it allocates anything, so that much of the buffer is
+    /// spoken for whatever the scene is. Sizing the buffer as a fraction
+    /// of a constant -- rather than from the viewport -- leaves a 4K
+    /// screen with a few thousand words to draw a desktop from, and the
+    /// overflow is silent.
+    #[test]
+    fn ptcl_has_room_to_allocate_from_at_every_resolution() {
+        for (w, h) in [(800, 600), (1920, 1080), (2560, 1440), (3840, 2160)] {
+            let s = sizes(w, h, &BumpBudget::INITIAL);
+            let structural = w.div_ceil(16) * h.div_ceil(16) * PTCL_INITIAL_ALLOC;
+            let dynamic = s.ptcl.len() - structural;
+            assert!(
+                dynamic >= structural / 2,
+                "{w}x{h}: {dynamic} words to allocate from, under a floor of {structural}",
+            );
+        }
+    }
+
+    /// The config hands the shaders `bin_data - bin_data_start` as the
+    /// binning size. On a u32 that underflows to near four billion if
+    /// the buffer is ever smaller than the scene's own draw-info block,
+    /// and the shaders then believe they have unlimited room.
+    #[test]
+    fn bin_data_always_clears_the_info_block() {
+        let layout = Layout {
+            bin_data_start: 1 << 20,
+            ..Layout::default()
+        };
+        let wgs = WorkgroupCounts::new(&layout, 120, 68, 0);
+        let s = BufferSizes::new(&layout, &wgs, 120, 68, &BumpBudget::INITIAL);
+        assert!(
+            s.bin_data.len() > layout.bin_data_start,
+            "bin_data {} does not clear bin_data_start {}",
+            s.bin_data.len(),
+            layout.bin_data_start,
+        );
+        let cfg = RenderConfig::new(&layout, 1920, 1080, &peniko::Color::BLACK, &BumpBudget::INITIAL);
+        assert!(
+            cfg.gpu.binning_size < s.bin_data.len(),
+            "binning_size {} underflowed",
+            cfg.gpu.binning_size,
+        );
+    }
+
+    /// Growth covers what a frame asked for, including the part that did
+    /// not fit -- the shaders bump the counter first and check after, so
+    /// the reported count is the need, not the fit.
+    #[test]
+    fn growth_covers_an_overflowed_frame() {
+        let mut budget = BumpBudget::INITIAL;
+        let overflowed = BumpAllocators {
+            failed: 0x2,
+            binning: 4_000,
+            ptcl: 700_000,
+            tile: 500_000,
+            seg_counts: 90_000,
+            segments: 90_000,
+            blend: 0,
+            lines: 40_000,
+        };
+        assert!(budget.observe(&overflowed), "should have grown");
+        assert!(budget.tiles >= overflowed.tile);
+        assert!(budget.ptcl >= overflowed.ptcl);
+        assert!(budget.lines >= overflowed.lines);
+        // And it settles: a second frame like the first asks for nothing
+        // more, so the buffers stop being reallocated.
+        assert!(
+            !budget.observe(&overflowed),
+            "a repeat of the same frame should not grow again"
+        );
+    }
+
+    /// Growth is one-way and bounded.
+    #[test]
+    fn growth_stops_at_the_ceiling() {
+        let mut budget = BumpBudget::INITIAL;
+        let huge = BumpAllocators {
+            failed: 0x1f,
+            binning: u32::MAX,
+            ptcl: u32::MAX,
+            tile: u32::MAX,
+            seg_counts: u32::MAX,
+            segments: u32::MAX,
+            blend: u32::MAX,
+            lines: u32::MAX,
+        };
+        budget.observe(&huge);
+        assert_eq!(budget.tiles, BumpBudget::CEILING.tiles);
+        assert_eq!(budget.ptcl, BumpBudget::CEILING.ptcl);
+        let quiet = BumpAllocators::default();
+        assert!(
+            !budget.observe(&quiet),
+            "a quiet frame must not shrink the reservation mid-session"
+        );
+    }
+
+    /// The whole point: a desktop-sized viewport reserves a fraction of
+    /// what upstream's constants do.
+    #[test]
+    fn a_desktop_viewport_reserves_far_less_than_upstream() {
+        let ours = sizes(1920, 1080, &BumpBudget::INITIAL);
+        let theirs = sizes(1920, 1080, &BumpBudget::UPSTREAM);
+        let bytes = |s: &BufferSizes| -> u64 {
+            u64::from(s.lines.size_in_bytes())
+                + u64::from(s.bin_data.size_in_bytes())
+                + u64::from(s.tiles.size_in_bytes())
+                + u64::from(s.seg_counts.size_in_bytes())
+                + u64::from(s.segments.size_in_bytes())
+                + u64::from(s.blend_spill.size_in_bytes())
+                + u64::from(s.ptcl.size_in_bytes())
+        };
+        let (ours, theirs) = (bytes(&ours), bytes(&theirs));
+        assert!(
+            ours * 8 < theirs,
+            "reserved {ours} bytes against upstream's {theirs}; expected under an eighth",
+        );
+    }
 }
