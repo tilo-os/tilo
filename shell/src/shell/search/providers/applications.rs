@@ -884,7 +884,7 @@ mod tests {
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
     use parking_lot::RwLock;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     fn chrome_rc() -> Chrome {
@@ -930,6 +930,140 @@ mod tests {
             version: "0.1.0".to_string(),
             registry: "qOS main".to_string(),
             trust: "verified".to_string(),
+        }
+    }
+
+    /// Write the registry row + manifest pair `qos-install` writes, so
+    /// the real `launcher::installed_apps()` enumerates this package.
+    ///
+    /// Deliberately a store on disk rather than a `Vec<InstalledApp>`:
+    /// the step this pins is the one between "the registry serves it"
+    /// and "the palette offers it", and handing the provider a list
+    /// skips exactly that step.
+    fn install_gui_package(dir: &Path, package_id: &str, name: &str, category: &str) {
+        let payload = dir.join("payloads").join(package_id);
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        let manifest_path = payload.join("manifest.toml");
+        std::fs::write(
+            &manifest_path,
+            format!(
+                "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
+                 category = \"{category}\"\nversion = \"0.1.0\"\nkind = \"app\"\n\
+                 [entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n\
+                 [providers]\nmime = []\next = []\n"
+            ),
+        )
+        .unwrap();
+        let registry = dir.join("registry.toml");
+        let mut existing = std::fs::read_to_string(&registry).unwrap_or_default();
+        existing.push_str(&format!(
+            "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            payload.display().to_string(),
+            manifest_path.display().to_string()
+        ));
+        std::fs::write(&registry, existing).unwrap();
+    }
+
+    /// The ids a registry file serves, read off the file itself.
+    ///
+    /// The left-hand side of the assertion has to come from somewhere
+    /// other than the code under test, or "every package is offered"
+    /// degenerates into "every package the provider found is one the
+    /// provider found".
+    fn registry_ids(dir: &Path) -> Vec<String> {
+        std::fs::read_to_string(dir.join("registry.toml"))
+            .unwrap()
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("id = "))
+            .map(|v| v.trim().trim_matches(['\'', '"']).to_string())
+            .collect()
+    }
+
+    /// Every GUI package the registry serves reaches the palette — in
+    /// the list an empty query builds, and under its own name.
+    ///
+    /// A package can be installed, registered and runnable and still
+    /// never appear here, and when it does the failure looks exactly
+    /// like the app not being installed: the palette answers with no
+    /// row, there is nothing to press, and nothing anywhere reports a
+    /// problem. The palette is the only way to open an app, so a
+    /// package that enumerates but never becomes a row is a package
+    /// the user does not have.
+    ///
+    /// Drives `query` — the same entry point the palette calls per
+    /// keystroke — against a store on disk, so the registry read, the
+    /// manifest read, the GUI filter and the scoring are all in the
+    /// path.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn every_package_the_registry_serves_is_offered_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Name and category as their shipped manifests declare them,
+        // and the word a person would actually type to reach each one.
+        let served = [
+            ("dev.qos.word-processor", "Word Processor", "Office", "word"),
+            ("dev.qos.photos", "Photos", "Graphics", "photos"),
+            ("dev.qos.chat", "Chat", "Network", "chat"),
+            ("dev.qos.file-explorer", "Files", "System", "files"),
+        ];
+        for (id, name, category, _) in served {
+            install_gui_package(tmp.path(), id, name, category);
+        }
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        launcher::invalidate_app_cache();
+        // Nothing here is about apps that are not installed, and an
+        // unseeded catalogue would put a registry fetch on the path.
+        catalogue::seed_for_test(Vec::new());
+
+        let p = ApplicationsProvider::new();
+        let c = chrome_rc();
+        let doc = AutoCommit::new();
+        let ids_for = |needle: &str| -> Vec<String> {
+            let cs = c.borrow();
+            p.query(SearchContext {
+                needle,
+                wanted: &[ResourceKind::Application],
+                chrome: &cs,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+            .into_iter()
+            .map(|r| r.id)
+            .collect()
+        };
+
+        let registered = registry_ids(tmp.path());
+        let listed = ids_for("");
+        let by_name: Vec<(&str, Vec<String>)> = served
+            .iter()
+            .map(|(id, _, _, needle)| (*id, ids_for(needle)))
+            .collect();
+
+        // Restored before the assertions: a failure that leaves the
+        // override set takes the rest of the serial group with it.
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        launcher::invalidate_app_cache();
+        catalogue::invalidate();
+
+        assert_eq!(
+            registered.len(),
+            served.len(),
+            "the fixture registry did not come back as written"
+        );
+        for id in &registered {
+            assert!(
+                listed.contains(id),
+                "{id} is in the registry but not in the list an empty \
+                 query builds; got {listed:?}"
+            );
+        }
+        for (id, rows) in &by_name {
+            assert!(
+                rows.iter().any(|r| r == id),
+                "no palette row offers {id} for its own name; got {rows:?}"
+            );
         }
     }
 
