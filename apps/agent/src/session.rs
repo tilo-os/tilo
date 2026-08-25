@@ -2245,8 +2245,36 @@ impl Session {
         let name = self.cfg.name.clone();
         // Nothing is dispatched yet, so a part that answers to nothing costs
         // only a sentence. Said before the loop and not inside it.
+        // Resolving up front is what stops a sequence that cannot be finished
+        // from being started half way, and it is right for every step whose
+        // application was already in the room.
+        //
+        // It is wrong for the one case an open creates. "Make this square and
+        // put it in the open document" needs the photo editor's crop, which no
+        // survey can hold while the editor is shut — so the clause arrives
+        // unanswered *by construction*, and refusing the sequence for it threw
+        // away the plan before the open that would have answered it had run.
+        // That refusal described a room at a moment which had not happened yet,
+        // and it is why the crop was never reached: the machinery to ask again
+        // existed one screen below, and nothing ever reached it.
+        //
+        // So an unanswered clause is fatal only when nothing before it opens an
+        // application. If something does, the clause is carried to the
+        // dispatcher, asked again against the survey retaken after that open,
+        // and refused there in its own words if the room still cannot answer
+        // it — a refusal made after looking rather than instead of looking.
         if plan.is_sequence() {
-            if let Some(part) = plan.unanswered() {
+            let opens_first = plan.steps.iter().take_while(|s| !s.is_unanswered()).any(|s| {
+                matches!(
+                    &s.instruction,
+                    crate::plan::Instruction::Perform { id, .. }
+                        if qos_actions::ActionAddress::parse(id)
+                            .as_ref()
+                            .and_then(surface::opens)
+                            .is_some()
+                )
+            });
+            if let Some(part) = plan.unanswered().filter(|_| !opens_first) {
                 let reply = format!(
                     "{name}: I can't \"{part}\", so I haven't done any of it. {}",
                     describe_offers(scope)
@@ -2312,7 +2340,27 @@ impl Session {
             // true stays true, in the sentence it would have used anyway.
             let (instruction, carries) = match step.instruction {
                 Instruction::Unknown(what) => {
-                    let again = crate::plan::Step::reconsider(&what, &offers);
+                    // Asked of the model, not only of the keyword floor.
+                    //
+                    // The floor matches an instruction's words against the
+                    // labels apps put on their operations and insists on a
+                    // clear winner. That is the right rule for a short
+                    // request naming one thing, and it cannot read the case
+                    // this path exists for: "make this square" is not the
+                    // label of the crop, and the sentence that produced this
+                    // clause was the half of an instruction the room could
+                    // not answer *yet*. Resolving it with the floor meant
+                    // the one case reconsider was written for was the one
+                    // case it could not resolve.
+                    //
+                    // `choose` falls back to the floor by itself on every
+                    // unhappy path, so this is strictly wider: the survey is
+                    // the one retaken above, and a clause that answers to
+                    // nothing still comes back Unknown.
+                    let again = self.chooser.choose(&what, &[], &offers);
+                    let again = again.plan.steps.into_iter().next().unwrap_or(
+                        crate::plan::Step::reconsider(&what, &offers),
+                    );
                     match again.instruction {
                         Instruction::Unknown(_) => {
                             (Instruction::Unknown(what), step.carries)

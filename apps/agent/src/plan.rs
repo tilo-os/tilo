@@ -402,6 +402,26 @@ impl Step {
         Step::bound(Instruction::from_floor(clause, offers), offers)
     }
 
+    /// A clause kept in its own words, to be bound when the room can answer it.
+    ///
+    /// The survey a plan is made from holds what the room exports *now*, and
+    /// the answer is pinned to it — which is right for every operation
+    /// belonging to an app already open, and impossible for one that only
+    /// exists once an app has been started. Such a clause is not declined by
+    /// the model; it is unnameable, and a plan built only from what could be
+    /// named is a plan that stops short of the sentence.
+    ///
+    /// So it travels as words and is resolved by the dispatcher against the
+    /// survey it retakes after each step. If the room still cannot answer it
+    /// by then, it refuses in the words it was given — which is a refusal a
+    /// person can read, and not a step quietly missing from the work.
+    pub(crate) fn unresolved(clause: &str) -> Step {
+        Step {
+            instruction: Instruction::Unknown(clause.to_string()),
+            carries: false,
+        }
+    }
+
     fn bound(instruction: Instruction, offers: &[Offer]) -> Step {
         let carries = match &instruction {
             Instruction::Perform { id, .. } => {
