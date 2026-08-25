@@ -689,6 +689,7 @@ class Live:
         self.instruction_at = 0.0
         self.timeline: list[tuple[float, str]] = []
         self.clock: "CrossingClock | None" = None
+        self.sheet: "ContactSheet | None" = None
         self.agent_session_in = False
         self.wp_seen = False
         self.agent_proc: subprocess.Popen | None = None
@@ -1612,10 +1613,12 @@ class Live:
         """
         if not self.args.time_the_crossing or self.clock is not None:
             return
-        self.clock = CrossingClock(
-            {"quinten": self.q, "xaver": self.x, "Claude": self.a},
-            str(self.room))
+        everyone = {"quinten": self.q, "xaver": self.x, "Claude": self.a}
+        self.clock = CrossingClock(everyone, str(self.room))
         self.clock.start()
+        self.sheet = ContactSheet(everyone,
+                                  os.path.join(self.shots, "contact-sheet"))
+        self.sheet.start()
 
     #: Lines in the agent's log worth a row on the timing sheet, each
     #: naming the moment one owner handed off to the next. Substrings
@@ -2430,6 +2433,63 @@ class CrossingClock:
                 print(f"    {at - sent_at:7.1f}s  {name}", flush=True)
         for g in self.gaps:
             yc.gap(g)
+
+
+class ContactSheet:
+    """Photograph every session while the agent works, including the ones
+    the film never points a camera at.
+
+    The recorder films whoever is on camera, and the agent's own session
+    deliberately never is — nobody is meant to watch a participant that
+    holds no screen. That is right for the film and wrong for answering
+    what the agent did: the photo editor it opens opens *there*, and the
+    only account of the crop is otherwise a document readback and a log
+    line.
+
+    So this is evidence, not picture. Every session, on a timer, into a
+    directory of its own, using the same `snapshot` op the recorder uses
+    — the compositor re-renders its own scene and hands back a PNG, so a
+    frame here is that session's own render and not a screen grab.
+
+    It costs each session about fifty milliseconds per frame. On a take
+    that is being measured rather than filmed that is worth paying and
+    is said out loud; on a filmed take it is off.
+    """
+
+    EVERY_S = 1.5
+
+    def __init__(self, sessions: dict, into: str) -> None:
+        self.sessions = {n: s for n, s in sessions.items() if s is not None}
+        self.into = into
+        self.stop = threading.Event()
+        self.thread: threading.Thread | None = None
+        self.taken = 0
+        os.makedirs(into, exist_ok=True)
+
+    def start(self) -> None:
+        self.thread = threading.Thread(target=self._run, name="contact-sheet",
+                                       daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        began = time.time()
+        while not self.stop.is_set():
+            for name, session in self.sessions.items():
+                if self.stop.is_set():
+                    return
+                at = int((time.time() - began) * 10)
+                try:
+                    session.snapshot(os.path.join(
+                        self.into, f"{at:05d}-{name}.png"))
+                    self.taken += 1
+                except Exception:  # noqa: BLE001 — evidence is optional
+                    pass
+            self.stop.wait(self.EVERY_S)
+
+    def close(self) -> None:
+        self.stop.set()
+        if self.thread is not None:
+            self.thread.join(timeout=4.0)
 
 
 # --------------------------------------------------------------------
@@ -3574,6 +3634,10 @@ def main() -> int:
         if live is not None:
             if live.clock is not None:
                 live.clock.close()
+            if live.sheet is not None:
+                live.sheet.close()
+                print(f"\n  {live.sheet.taken} evidence frame(s) in "
+                      f"{live.sheet.into}")
             live.timing_sheet()
         # Before teardown either way: the capture thread talks to the
         # sessions, and `--keep` is about the sessions, not the camera.
