@@ -5197,6 +5197,43 @@ impl ShellOverlayHost {
         None
     }
 
+    /// Where the pointer is standing, as far as this chrome knows.
+    ///
+    /// `None` until something has moved a pointer through this session at all.
+    /// Kept apart from "the origin" deliberately — see [`Self::note_pointer`].
+    pub fn pointer_position(&self) -> Option<Point> {
+        self.last_cursor
+    }
+
+    /// Note where the pointer is, for motion this tree is not going to be
+    /// handed.
+    ///
+    /// The chrome hit-tests a press against the position the last motion left
+    /// behind, because a `MouseInput` carries no position of its own. That
+    /// works for as long as the chrome sees every motion — and it does not.
+    /// A `CursorMoved` over an application window belongs to that application,
+    /// so the compositor delivers it there and never dispatches it into this
+    /// tree, and from the first such motion the chrome's idea of where the
+    /// pointer is stops being true for as long as the pointer stays inside a
+    /// window.
+    ///
+    /// Nothing noticed, because until the compose surface no chrome could
+    /// *open* while the pointer was inside a window and then decide something
+    /// from that position on the very next press. The compose surface does
+    /// exactly that: it opens above the windows on a right-click made inside
+    /// one, and the next press decides whether it stays. Hit-tested against a
+    /// position from whenever the pointer last crossed the desktop, that press
+    /// reads as aimed somewhere else however carefully it was aimed at the
+    /// panel — so the panel closed under the hands of the person who had just
+    /// asked for it.
+    ///
+    /// So the compositor says where the pointer went whoever ends up reading
+    /// the motion. The pointer really is at that spot on this screen; which
+    /// process is being told about it is a separate question.
+    pub fn note_pointer(&mut self, p: Point) {
+        self.last_cursor = Some(p);
+    }
+
     /// Whether the compose surface is up.
     ///
     /// Public for the same reason [`Self::palette_visible`] is: the client
@@ -8711,7 +8748,7 @@ impl Widget for ShellOverlayHost {
         // recently summoned by a deliberate gesture; anything the shell had up
         // beforehand had its chance at the keyboard already.
         if self.remark.is_open() {
-            let pointer = self.last_cursor.unwrap_or(Point::ZERO);
+            let pointer = self.last_cursor;
             let neighbour = (self.remark_neighbour.area() > 0.0).then_some(self.remark_neighbour);
             let consumed = self.remark.pump(
                 event,
