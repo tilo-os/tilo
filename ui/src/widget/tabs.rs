@@ -1477,7 +1477,18 @@ impl TabBar {
         // matching the concept's per-pill motion init.
         self.snapshot_layout_for_spring();
         self.tabs.insert(clamped, desc);
-        self.inserted_at.insert(id, Instant::now());
+        // ...but only for a tab that is *arriving* at a strip already on
+        // screen. A host that fills its strip before the first layout is
+        // describing the state the bar opens in, not an arrival, and
+        // fading that in makes a bar's first painted frame a function of
+        // how long the renderer took to boot — the same reason
+        // `advance_reveal` seeds a tab's reveal settled rather than
+        // animating it in from nothing. A single offscreen capture froze
+        // the whole pill part-way through: dim title, dim chips, a body
+        // that never arrived.
+        if !self.tab_rects.is_empty() {
+            self.inserted_at.insert(id, Instant::now());
+        }
         self.active_id = id;
     }
 
@@ -3495,6 +3506,35 @@ mod tests {
         // rendered tab to look it up against.
         assert!(b.prev_tab_rects_by_id.contains_key(&1));
         assert!(b.prev_tab_rects_by_id.contains_key(&3));
+    }
+
+    #[test]
+    fn a_strip_filled_before_its_first_layout_opens_settled() {
+        // A host that fills its strip before anything has been laid out is
+        // describing the state the bar opens in, not an arrival. Fading
+        // that in makes the first painted frame depend on how long the
+        // renderer took to boot, which a single offscreen capture renders
+        // as a half-drawn pill.
+        let mut b = TabBar::new("g1", Vec::new(), 0);
+        b.insert_tab(0, TabDescriptor::new(1, "A"));
+        b.insert_tab(1, TabDescriptor::new(2, "B"));
+        // No entry is the whole property: `draw` reads `inserted_at` per
+        // tab and takes its full-strength arm when there is nothing there.
+        assert!(
+            b.inserted_at.is_empty(),
+            "tabs seeded before the first layout must not latch a fade"
+        );
+
+        // Once the strip is on screen, an arrival is an arrival again.
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(86.0, 6.0, 166.0, 34.0),
+        ];
+        b.insert_tab(1, TabDescriptor::new(3, "C"));
+        assert!(
+            b.inserted_at.contains_key(&3),
+            "a tab arriving at a laid-out strip still fades in"
+        );
     }
 
     #[test]

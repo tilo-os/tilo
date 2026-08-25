@@ -3933,6 +3933,23 @@ mod tests {
         (app, doc)
     }
 
+    #[test]
+    fn the_strip_marks_the_open_buffer_active() {
+        // One open buffer is the state the app starts in, and the strip has
+        // to agree with the session about it: an active tab that the strip
+        // thinks is inactive paints its name dim and drops its close mark.
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let node = app.session.active_buffer().expect("the sample opens a file").node;
+        assert_eq!(app.tabs.tabs().len(), 1, "the sample opens exactly one buffer");
+        assert_eq!(
+            app.tabs.active_id(),
+            tab_id(node),
+            "the strip's active tab must be the session's active buffer"
+        );
+    }
+
     fn buffer_lines(doc: &AutoCommit, node: TreeId) -> Vec<String> {
         EditorDoc::read_buffer(doc, node)
             .unwrap()
