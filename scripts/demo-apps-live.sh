@@ -80,6 +80,22 @@ esac
 say() { printf '\033[1m[demo-apps-live]\033[0m %s\n' "$*"; }
 die() { echo "FATAL: $*" >&2; exit 1; }
 
+# One run at a time per output directory.
+#
+# This script empties `$STAGE` before its loop, so two runs sharing an
+# `$OUT` destroy each other: the second one's `rm -rf` takes away the
+# first one's freshly packed `.qpkg` somewhere between `pack` and
+# `install`. That surfaces as `qpkg parse: .qpkg is missing qpkg.toml` --
+# an error about the package format, reported for a package that was
+# fine and is now half deleted. Two agents preparing payloads at once is
+# normal here, so they queue instead of racing.
+mkdir -p "$OUT"
+exec 9>"$OUT/.lock"
+if ! flock -n 9; then
+    say "another run holds $OUT — waiting for it"
+    flock 9
+fi
+
 crates=()
 for app in "${APPS[@]}"; do crates+=(-p "${app#*|}"); done
 
