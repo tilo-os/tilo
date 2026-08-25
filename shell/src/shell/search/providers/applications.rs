@@ -1190,9 +1190,9 @@ mod tests {
         );
         let mine = installed[0].subtitle.clone().expect("installed subtitle");
         let theirs = available[0].subtitle.clone().expect("available subtitle");
-        assert_eq!(mine, "Opens beside · Office · dev.qos.sheets");
+        assert_eq!(mine, "Opens beside · Office");
         assert_eq!(
-            theirs, "Opens beside · Office · dev.qos.sheets · from qOS main",
+            theirs, "Opens beside · Office · from qOS main",
             "the fields an installed row shows, then where this one comes from"
         );
         assert!(
@@ -1208,8 +1208,10 @@ mod tests {
             "provenance must be at the tail, where elision keeps it: {theirs:?}"
         );
 
-        // And with no category declared, where the detail falls back to
-        // id + version.
+        // And with no category declared, where an installed row is the
+        // landing hint on its own and the uninstalled one is that plus
+        // its provenance — see `disambiguate_colliding_titles` for why
+        // neither carries the package id.
         let installed = p.results_for("", vec![app("dev.qos.plain", "Plain")], OpenTarget::Beside);
         let available = p.catalogue_results_for(
             "",

@@ -18959,7 +18959,7 @@ mod tests {
         );
         assert_eq!(
             theirs_sub.as_deref(),
-            Some("Opens beside · Office · dev.qos.elsewhere · from qOS main"),
+            Some("Opens beside · Office · from qOS main"),
         );
 
         // And the two are still one list. The palette draws a header
