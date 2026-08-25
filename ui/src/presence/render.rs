@@ -1067,6 +1067,36 @@ pub fn draw_remote_presence(
         if presence.is_own_identity(&cursor.user_id) {
             continue;
         }
+        // A window may only place a pointer that was measured in its
+        // own coordinates — and that is one question, asked once, for
+        // everything this function draws.
+        //
+        // It used to be asked of the on-screen dot alone, on the
+        // reasoning that the compositor paints a desktop pointer above
+        // this window and painting it here too is the same person
+        // twice, while the band at the edge was nobody else's and so
+        // could stay. That reasoning does not survive contact with what
+        // the band actually claims. A desktop pointer's numbers are a
+        // place on the *desktop*; tested against this window's rect they
+        // are outside it almost always, and "outside my rect" was then
+        // read as "off my top edge" and painted as a 140x44 wayfinding
+        // band hugging that edge, with the peer's name on it. On camera
+        // that is a filled block lying across a file manager's toolbar,
+        // over the breadcrumb and the view switcher, pointing at a
+        // direction the peer is not in — and every open window drew its
+        // own, because every one of them ran this same arithmetic on the
+        // same foreign numbers.
+        //
+        // `PresenceKey::scopes_a_desktop_pointer` already says why that
+        // cannot be salvaged: only the compositor knows where a desktop
+        // pointer is. A window that does not know where somebody is
+        // cannot honestly point at them, and an off-screen indicator for
+        // a desktop pointer belongs to the layer that can place one.
+        // The same holds for a pointer measured in a *different*
+        // window's surface, which is the third ownership case.
+        if !cursor.painted_by_window() {
+            continue;
+        }
         let target = Point::new(cursor.position[0] as f64, cursor.position[1] as f64);
         let peer = peer_of(cursor);
         match super::geom::edge_mist_for(viewport, target) {
@@ -1081,21 +1111,7 @@ pub fn draw_remote_presence(
                     &cursor.label,
                 );
             }
-            // On-screen is where the two layers collided: the
-            // compositor paints a desktop pointer from
-            // `PresenceCtx::pointers` in an overlay above this window,
-            // so painting it here too is the same person twice. Skip
-            // the ones it owns; see [`super::PointerOwner`].
-            //
-            // The off-screen mist above is deliberately *not* skipped.
-            // The overlay drops peers outside its rect rather than
-            // pointing at them, so a wayfinding band was never the
-            // thing being drawn twice, and dropping it here would lose
-            // it entirely. It belongs with the pointer, and should move
-            // to the overlay when that grows an off-screen indicator of
-            // its own.
-            None if cursor.painted_by_window() => on_screen.push(peer),
-            None => {}
+            None => on_screen.push(peer),
         }
     }
     draw_peer_cursors(scene, transform, viewport, text_renderer, theme, &on_screen);
@@ -1868,6 +1884,107 @@ mod tests {
         assert_eq!(
             ctx.hit_test_offscreen_mist(viewport, Point::new(50.0, 50.0)),
             None
+        );
+    }
+
+    /// A window paints presence for a pointer measured in its own
+    /// coordinates, and for no other — the band at its edge included.
+    ///
+    /// A desktop pointer's numbers are a place on the desktop, which only
+    /// the compositor can resolve (`PresenceKey::scopes_a_desktop_pointer`).
+    /// Tested against one window's rect they fall outside it almost
+    /// always, and "outside my rect" was read as "off my edge" and painted
+    /// as a 140x44 band hugging that edge with the peer's name on it. In a
+    /// file manager that lands across the toolbar — a filled block over
+    /// the breadcrumb and the view switcher, pointing in a direction the
+    /// peer is not in, and drawn once per open window because every window
+    /// ran the same arithmetic on the same foreign numbers.
+    #[test]
+    fn a_window_paints_no_band_for_a_pointer_it_cannot_place() {
+        let theme = Theme::default();
+        let mut tr = crate::text_render::TextRenderer::new();
+        let viewport = Rect::new(0.0, 0.0, 320.0, 240.0);
+
+        let mut ctx = PresenceCtx::empty();
+        ctx.set_own_identity(["me"]);
+        ctx.set_display_name(UserId("peer@7".to_string()), "Xaver");
+        // The frame a room really sends: a pointer keyed by the room,
+        // which is the key the compositor overlay draws desktop pointers
+        // from and the one the broker hands to every app in the room.
+        let _ = ctx.apply_remote_presence(
+            "peer@7".to_string(),
+            crate::presence::PresenceKey::Workspace { id: "room-1".to_string() },
+            crate::collaboration::PresencePayload::Pointer { x: 900.0, y: 512.0 },
+        );
+        assert_eq!(ctx.remote_cursors.len(), 1, "the fixture published no pointer");
+        assert!(
+            !ctx.remote_cursors[0].painted_by_window(),
+            "fixture error: a room-keyed pointer is the compositor's to paint",
+        );
+
+        let mut scene = Scene::new();
+        draw_remote_presence(&mut scene, Affine::IDENTITY, viewport, &mut tr, &theme, &ctx);
+        let mut r = OffscreenRenderer::new(320, 240);
+        let painted = r.render(&scene, Color::WHITE);
+        let mut b = OffscreenRenderer::new(320, 240);
+        let bare = b.render(&Scene::new(), Color::WHITE);
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(&painted, &bare),
+            0,
+            "a window painted something for a pointer it cannot place",
+        );
+
+        // And the click that band used to swallow goes back to whatever
+        // is under it. The hit test is the same rule or the pixels and
+        // the pointer disagree about what is there.
+        assert_eq!(
+            ctx.hit_test_offscreen_mist(viewport, Point::new(318.0, 120.0)),
+            None,
+            "a band nobody can see still answered a click",
+        );
+    }
+
+    /// The half that has to keep working, or the rule above is satisfied
+    /// by never drawing anything: a peer whose pointer *is* measured in
+    /// this window, and has left the visible part of it, still gets the
+    /// band that says which way they went.
+    #[test]
+    fn an_offscreen_peer_in_this_window_still_gets_a_band() {
+        let theme = Theme::default();
+        let mut tr = crate::text_render::TextRenderer::new();
+        let viewport = Rect::new(0.0, 0.0, 320.0, 240.0);
+
+        let mut ctx = PresenceCtx::empty();
+        ctx.set_own_identity(["me"]);
+        ctx.set_display_name(UserId("peer@7".to_string()), "Xaver");
+        // A widget scope is a position in this window's content, so this
+        // window is the only layer that can place it.
+        let _ = ctx.apply_remote_presence(
+            "peer@7".to_string(),
+            crate::presence::PresenceKey::Widget {
+                path: vec![crate::presence::PathSegment::Index(0)],
+            },
+            crate::collaboration::PresencePayload::Pointer { x: 900.0, y: 120.0 },
+        );
+        assert!(
+            ctx.remote_cursors[0].painted_by_window(),
+            "fixture error: a widget-scoped pointer is this window's",
+        );
+
+        let mut scene = Scene::new();
+        draw_remote_presence(&mut scene, Affine::IDENTITY, viewport, &mut tr, &theme, &ctx);
+        let mut r = OffscreenRenderer::new(320, 240);
+        let painted = r.render(&scene, Color::WHITE);
+        let mut b = OffscreenRenderer::new(320, 240);
+        let bare = b.render(&Scene::new(), Color::WHITE);
+        assert!(
+            OffscreenRenderer::pixels_differing_beyond_aa(&painted, &bare) > 200,
+            "a peer off the right edge of this window was not pointed at",
+        );
+        assert_eq!(
+            ctx.hit_test_offscreen_mist(viewport, Point::new(318.0, 120.0)),
+            Some("peer@7".to_string()),
+            "the band that was painted does not answer a click on it",
         );
     }
 }

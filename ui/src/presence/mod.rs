@@ -913,6 +913,25 @@ impl PresenceCtx {
     /// *replaced* wholesale by [`Self::set_own_identity`], so a room
     /// address merged into it would be dropped the next time a caller
     /// restated what this process publishes as.
+    ///
+    /// **And so does the room's own *name* for it**, which is the
+    /// spelling a locally published frame actually comes back under.
+    /// The broker stamps traffic leaving a local application with what
+    /// the room calls this machine (`LocalIdentity::resolve`), while the
+    /// row it announces about that same participant carries the address
+    /// (`LocalIdentity::self_row`) — one participant, two strings, on
+    /// the same socket. A session whose account is `quinten` and whom
+    /// the host invited as `Xaver` therefore received its own pointer
+    /// stamped `Xaver`, matched nothing, and was painted: the person's
+    /// own name over the person's own window, in a place they were not
+    /// pointing, because the position was measured in a different one
+    /// of their windows.
+    ///
+    /// Matching the name cannot swallow a real peer. A participant on
+    /// another machine is only ever minted as `peer@<handle>`
+    /// (`remote_participant_id`), so no remote id is ever a bare name,
+    /// and two people the room happens to call the same thing stay two
+    /// people here.
     pub fn is_own_identity(&self, user_id: &str) -> bool {
         if user_id.trim().is_empty() {
             return false;
@@ -920,7 +939,7 @@ impl PresenceCtx {
         if self
             .self_participant
             .as_ref()
-            .is_some_and(|(id, _)| id.0 == user_id)
+            .is_some_and(|(id, name)| id.0 == user_id || name.trim() == user_id.trim())
         {
             return true;
         }
@@ -1363,6 +1382,15 @@ impl PresenceCtx {
         point: vello::kurbo::Point,
     ) -> Option<String> {
         for cursor in &self.remote_cursors {
+            // Exactly the bands `draw_remote_presence` paints, which
+            // means exactly the peers it will paint one for: this
+            // window's own, and never itself. A hit test that answered
+            // for a band nobody can see hands a click to a peer the
+            // clicker was not aiming at, and the pixels it claimed were
+            // a toolbar.
+            if self.is_own_identity(&cursor.user_id) || !cursor.painted_by_window() {
+                continue;
+            }
             let target = vello::kurbo::Point::new(
                 cursor.position[0] as f64,
                 cursor.position[1] as f64,

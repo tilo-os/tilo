@@ -86,6 +86,13 @@ fn wait_for_socket(path: &PathBuf) -> UnixStream {
 /// An app joined to the broker the way the launcher joins a sandboxed
 /// one: a connected fd in `QOS_SVC_COLLAB_FD`.
 fn session_on(path: &PathBuf) -> App {
+    session_on_surface(path, SURFACE)
+}
+
+/// [`session_on`] for a second window of the same session, drawing
+/// different content — which is what makes its pointer unplaceable in
+/// the first one's coordinates.
+fn session_on_surface(path: &PathBuf, surface: &str) -> App {
     let fd = wait_for_socket(path).into_raw_fd();
     // SAFETY: every test here carries `#[serial_test::serial]`, which is
     // the same lock `peer_pointer_tests` takes for the same three
@@ -94,7 +101,7 @@ fn session_on(path: &PathBuf) -> App {
     unsafe {
         std::env::set_var("QOS_SVC_COLLAB_FD", fd.to_string());
         std::env::set_var("QOS_WORKSPACE_ID", ROOM);
-        std::env::set_var("QOS_PACKAGE_ID", SURFACE);
+        std::env::set_var("QOS_PACKAGE_ID", surface);
         std::env::remove_var("QUICK_COLLAB_SOCK");
     }
     App::new(State::new(), Box::new(Container::new()))
@@ -227,5 +234,101 @@ fn an_unnamed_participant_still_learns_its_address() {
         Some(me.0.as_str()),
         "an address is not a name; handing the id back as one is how a \
          routing hash ends up rendered where a name belongs"
+    );
+}
+
+/// Two windows of one person are still one participant — under the
+/// spelling the broker actually stamps their traffic with.
+///
+/// The row this machine announces about its own participant carries the
+/// *address* other machines use for it, `peer@<handle>`
+/// ([`LocalIdentity::self_row`]). What it stamps on traffic leaving a
+/// local application is the room's *name* for that same participant
+/// ([`LocalIdentity::resolve`]). One participant, two strings, on one
+/// socket — and only the first had ever been handed to an application,
+/// so a session whose account is `quinten` and whom the host invited as
+/// `Xaver` got its own pointer back stamped `Xaver`, matched nothing,
+/// and painted it.
+///
+/// What that looks like is not a stray cursor. The position was measured
+/// in a *different* window, so in this one it lands outside the viewport
+/// and comes out as the off-screen wayfinding band — a 140x44 block in
+/// the peer's colour hugging an edge, name tag and all, lying across a
+/// file manager's toolbar.
+///
+/// The stamp is read from the same [`LocalIdentity`] the broker is
+/// holding rather than written down here, so this cannot pass by
+/// asserting on a spelling the broker has stopped using.
+#[test]
+#[serial_test::serial]
+fn a_second_window_of_this_session_is_not_a_peer() {
+    let (json, capnp) = unique_paths("two-windows");
+    let identity = room_calls_me("Xaver");
+    let _broker = spawn_full_with_identity(
+        json,
+        Some(capnp.clone()),
+        None,
+        Arc::clone(&identity),
+    )
+    .expect("the broker binds");
+
+    let mut files = session_on_surface(&capnp, "dev.qos.file-explorer");
+    let mut words = session_on_surface(&capnp, "dev.qos.word-processor");
+    speak(&mut files);
+    speak(&mut words);
+    pump_until(&mut files, &|a| a.presence_ctx().self_id().is_some());
+    pump_until(&mut words, &|a| a.presence_ctx().self_id().is_some());
+
+    // What a frame leaving one of these windows is stamped with, asked
+    // of the resolver the broker is using.
+    let route = crate::shell::collab_broker::CrdtRoute::cluster(ROOM.to_string());
+    let stamp = identity.resolve(Some(&route), None);
+    assert_eq!(
+        stamp, "Xaver",
+        "the fixture no longer exercises the spelling it exists for",
+    );
+    assert!(
+        files.presence_ctx().is_own_identity(&stamp),
+        "a frame this session publishes comes back stamped `{stamp}`, and \
+         this window does not recognise it as its own",
+    );
+
+    // The person moves their mouse in the word processor.
+    words.broadcast_presence(
+        PresenceKey::Pointer {
+            space: ui::presence::PointerSpace::Surface {
+                surface: "dev.qos.word-processor".to_string(),
+            },
+        },
+        PresencePayload::Pointer { x: 900.0, y: 512.0 },
+    );
+
+    // Pump the file manager until the frame has demonstrably reached it,
+    // so an empty overlay cannot be a rig that delivered nothing.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut delivered = false;
+    while Instant::now() < deadline {
+        delivered |= files.pump_collab_presence();
+        if delivered && Instant::now() > deadline - Duration::from_secs(4) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        delivered,
+        "nothing crossed between the two windows, so this proves nothing",
+    );
+    assert!(
+        files.presence_ctx().remote_cursors.is_empty(),
+        "the file manager took this person's own pointer — measured in \
+         another of their windows — for a peer's: {:?}",
+        files.presence_ctx().remote_cursors,
+    );
+    assert!(
+        !files.presence_ctx().names.contains_key(&ui::permissions::UserId(
+            stamp.clone(),
+        )),
+        "this session's own participant was given a roster name, which is \
+         what every chip and pill is labelled from",
     );
 }
