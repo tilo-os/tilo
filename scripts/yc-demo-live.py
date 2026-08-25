@@ -1443,14 +1443,34 @@ class Live:
     def mind_the_wait(self) -> None:
         """Take the camera down once a wait has been established.
 
-        Only ever after the agent has been spoken to. Before that the
-        person at xaver's keyboard may still be reaching for the mouse --
-        under `--no-instruction` that gesture is a hand, not a script --
-        and a camera that comes down on somebody working is not an edit,
-        it is a missing shot.
+        Only ever once the instruction has provably gone. Before that
+        the person at xaver's keyboard may still be reaching for the
+        mouse -- under `--no-instruction` that gesture is a hand, not a
+        script -- and a camera that comes down on somebody working is not
+        an edit, it is a missing shot.
         """
-        if self.recorder is None or self.quiet_since is None:
+        if self.recorder is None:
             return
+        if self.quiet_since is None:
+            # Two ways to know the wait is the agent's and not a
+            # person's, and both are needed.
+            #
+            # `spoken_to_at` is the agent's own word for it and is the
+            # better one, but only the summons carried by a message
+            # reaches the code that logs it: an instruction written as a
+            # line in the document is read by `act_in_document`, which
+            # says nothing anywhere. That path would leave the camera up
+            # through the whole wait, which is the state this is here to
+            # end.
+            #
+            # So the rig's own gesture counts too — but only when the rig
+            # made it. Under `--no-instruction` `instruction_sent` means
+            # "xaver's window was handed to a person", who has not typed
+            # anything yet, and a camera that comes down on somebody
+            # working is a missing shot rather than an edit.
+            if not (self.args.instruct and self.instruction_sent):
+                return
+            self.quiet_since = time.time()
         # Tied to the same switch that already says whether this take may
         # be edited at all. A camera that comes down leaves the picture
         # shorter than the take, which is exactly what `--max-hold 0`
