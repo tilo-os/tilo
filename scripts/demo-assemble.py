@@ -37,6 +37,14 @@ import tempfile
 #: unchanged in everything but container framing.
 WIDTH, HEIGHT, FPS = 1920, 1080, 30
 
+# The film is 1:50, bumper included. That number has been a sentence in a
+# docstring for as long as it has existed, and a sentence cannot fail: every
+# take so far could have run long and this script would have printed its
+# length and exited 0. So it is a check now. Over the cap is an error, not a
+# note -- the finished file is still written, because a film you can watch is
+# how you decide what to cut, but the command says no.
+CAP_S = 110.0
+
 
 def probe(path: pathlib.Path) -> dict:
     """Duration, size and frame rate of `path`, or raise with what ffprobe said."""
@@ -113,8 +121,17 @@ def main() -> int:
         print(f"{c.name:<44} {i['width']}x{i['height']:<5} {i['fps']:>6.1f} "
               f"{i['duration']:>8.2f}{note}")
     print(f"{'':<44} {'':>11} {'':>6} {total:>8.2f}  total")
+    print(f"{'':<44} {'':>11} {'':>6} {CAP_S:>8.2f}  cap "
+          f"({total - CAP_S:+.2f})")
 
     if args.dry_run:
+        # Say it here too. The dry run is what you use while deciding which
+        # take to assemble, and that is the cheapest moment to learn it is
+        # too long.
+        if total > CAP_S:
+            print(f"\nover the cap by {total - CAP_S:.2f}s before joining.",
+                  file=sys.stderr)
+            return 1
         return 0
 
     # Normalise each segment separately, then concatenate the results. Doing
@@ -199,6 +216,12 @@ def main() -> int:
             print(f"WARNING: expected about {total:.2f}s from the segments but the "
                   f"joined file is {got['duration']:.2f}s — a segment may be short.",
                   file=sys.stderr)
+        if got["duration"] > CAP_S:
+            print(f"\nover the cap: {got['duration']:.2f}s against {CAP_S:.0f}s, "
+                  f"by {got['duration'] - CAP_S:.2f}s.\n"
+                  f"The file above is watchable — decide what comes out of it.",
+                  file=sys.stderr)
+            return 1
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
