@@ -8170,11 +8170,9 @@ impl Widget for ShellOverlayHost {
             // which reads as tearing rather than as an object that has
             // gone off the side. Fade it out over the last of its travel
             // so the frame never cuts anything solid.
-            let visible_w = (sidebar.rect.x1 - self.rect.x0).max(0.0);
-            let a = crate::shell::sidebar_wheel_disc::pan_off_opacity(
-                visible_w,
-                sidebar.rect.width(),
-            );
+            let wheel = ui::Widget::get_rect(&**sidebar);
+            let visible_w = (wheel.x1 - self.rect.x0).max(0.0);
+            let a = crate::shell::sidebar_wheel_disc::pan_off_opacity(visible_w, wheel.width());
             if a >= 0.999 {
                 sidebar.draw(scene, transform, text_renderer, theme, presence);
             } else if a > 0.0 {
