@@ -80,6 +80,17 @@ mount keyed on an iroh ticket with no mapping from a `RoomId` to a subtree.
 Until something derives a directory from a room, "the room's folder" is a
 grant two machines happen to agree about, and the demo should not claim more.
 
+This one has narration written against it. `plan/yc-demo.md` beat 1 has the
+presenter say *"This folder is the workspace's shared directory — a FUSE
+mount. What you see immediately is metadata that arrived over gossip; bytes
+are fetched the first time something is opened."* Three claims, none of them
+currently true on the rig: no mount, no gossip, no hydration. Either `fs/`
+joins the session setup — which needs `QOS_IDENTITY_ROOT` per peer, a serve
+and a mount in the rig's lifecycle, and a decision about iroh's n0 preset
+publishing node addresses to public DNS during a recording — or that line
+has to change. Saying it over a plain directory is the one failure mode this
+file exists to catch: a beat that passes while the sentence over it is false.
+
 **A document change does not say who made it.** `CollabEvent::CRDTIncremental`
 has no user field, and the capnp broker stamps unsigned frames with an
 explicitly empty `from_user_id`; only `SignedCRDTIncremental` carries an id.
