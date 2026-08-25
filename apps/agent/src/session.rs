@@ -1825,7 +1825,12 @@ impl Session {
         // what differs is only where it lands.
         if let Some(app) = surface::opens(&address) {
             let app = app.to_string();
-            return self.open_app(&app, what.as_deref());
+            // The content the open was bound to, which is the ordinary
+            // carried argument and reaches here by the ordinary route: the
+            // survey said this operation collects content, so the dispatcher
+            // put the previous step's product in it and nothing else could
+            // have.
+            return self.open_app(&app, what.as_deref(), argument);
         }
         let namespace = surface::app_of(&address.resource).to_string();
         // The caret goes on the line that asked, so the room can see which
@@ -1914,7 +1919,12 @@ impl Session {
     ///   reason is the session's (see [`CollabEvent::AppOpenRefused`]);
     /// * [`OPENING`] passes — said as what it is, a wait that ran out, naming
     ///   the application and the length of it.
-    fn open_app(&mut self, namespace: &str, what: Option<&str>) -> Result<Result<(), String>> {
+    fn open_app(
+        &mut self,
+        namespace: &str,
+        what: Option<&str>,
+        with: Option<&str>,
+    ) -> Result<Result<(), String>> {
         let Some(contract) = surface::for_namespace(namespace) else {
             // Unreachable through an offer, which is built from the contracts.
             // Reachable from an address a model composed, which is exactly the
@@ -1938,9 +1948,10 @@ impl Session {
         self.refused_open = None;
         self.link.send(&CollabRequest::OpenApp {
             app_id: contract.app_id.to_string(),
+            with: with.map(str::to_string),
         })?;
         tracing::info!(
-            app = %contract.app_id,
+            app = %contract.app_id, onto = ?with,
             "asked this session to open an application, and waiting for it"
         );
         let started = Instant::now();
@@ -2005,6 +2016,44 @@ impl Session {
         (contract.product)(view, doc)
     }
 
+    /// What the room denotes before anything has been done to it.
+    ///
+    /// [`Self::product`] answers "what did the step that just ran leave
+    /// behind", and that is the whole of what a carried argument used to be
+    /// able to come from — so the *first* step of a sequence could never
+    /// collect content, because nothing had run yet. That is exactly the
+    /// shape of "make this square and put it in the open document": the thing
+    /// the request is about is already in the room, sitting in a document,
+    /// and the first step is the one that needs it.
+    ///
+    /// So a sequence starts with whatever the room already denotes. It is the
+    /// same question asked of the same `product`, one turn earlier: no new
+    /// vocabulary, and nothing an app did not say about itself.
+    ///
+    /// **One, or none.** A room where two applications each denote something
+    /// answers `None`, and a step bound to it is refused rather than handed
+    /// whichever came first. "This" is only unambiguous when there is one
+    /// thing it could mean, and cropping the wrong picture into somebody's
+    /// document is worse than saying it could not tell which was meant.
+    fn already_denoted(&self) -> Option<(String, surface::Product)> {
+        let view = self.view(None, 0);
+        let mut found: Option<(String, surface::Product)> = None;
+        for (contract, doc) in self.held() {
+            let Some(product) = (contract.product)(&view, doc) else {
+                continue;
+            };
+            if found.is_some() {
+                tracing::debug!(
+                    "more than one application here denotes something; a first \
+                     step that collects content is refused rather than aimed"
+                );
+                return None;
+            }
+            found = Some((contract.namespace.to_string(), product));
+        }
+        found
+    }
+
     /// Carry out an instruction's steps, in order, and stop where it cannot.
     ///
     /// Three rules, and each is there because its opposite is a way of
@@ -2057,7 +2106,14 @@ impl Session {
         // back to the step that produced it. Keeping the pair is what lets
         // the crossing between the two applications be reported rather than
         // guessed from two documents changing near each other.
-        let mut carried: Option<(String, surface::Product)> = None;
+        let mut carried: Option<(String, surface::Product)> = self.already_denoted();
+        if let Some((app, _)) = carried.as_ref() {
+            tracing::info!(
+                app = %app,
+                "the room already denotes something, so a first step that \
+                 collects content has it to work with"
+            );
+        }
         let mut done: Vec<String> = Vec::new();
 
         let total = plan.steps.len();
