@@ -31,3 +31,6 @@ russh = "0.54"
 tokio.workspace = true
 vte = "0.15.0"
 des = "0.8"
+
+[dev-dependencies]
+serial_test.workspace = true
