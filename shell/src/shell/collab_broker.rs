@@ -960,18 +960,34 @@ impl PeerTable {
     /// the capnp subscription queues that the same route addresses (if
     /// a [`CapnpBrokerState`] is attached) so both transports observe
     /// the same routing.
-    pub(crate) fn fanout_to_route(&self, event: &CollabEvent, except: u64, route: &CrdtRoute) {
+    /// Fan `event` out along `route`, and say how many connections took
+    /// it.
+    ///
+    /// The count is the point. A fan-out to nobody and a fan-out that
+    /// worked are the same statement otherwise, and one caller -- the
+    /// remark surface -- turns a request into an action that only exists
+    /// if some app applies it. With no such app connected the request
+    /// was addressed to an empty room and the person who wrote it saw
+    /// their compose box close, which is what "I pressed Enter and
+    /// literally nothing happened" looks like from the other side.
+    pub(crate) fn fanout_to_route(
+        &self,
+        event: &CollabEvent,
+        except: u64,
+        route: &CrdtRoute,
+    ) -> usize {
         if route.cluster_id.is_empty() {
             tracing::debug!(
                 "collab_broker: dropping event with an unaddressed route \
                  (sender never announced a cluster)"
             );
-            return;
+            return 0;
         }
         let bytes = match serde_json::to_vec(event) {
             Ok(b) => b,
-            Err(_) => return,
+            Err(_) => return 0,
         };
+        let mut delivered = 0usize;
         let mut dead: Vec<u64> = Vec::new();
         for peer in self.snapshot() {
             if peer.id == except {
@@ -988,6 +1004,8 @@ impl PeerTable {
             }
             if write_frame(&peer.writer, &bytes).is_err() {
                 dead.push(peer.id);
+            } else {
+                delivered += 1;
             }
         }
         for id in dead {
@@ -996,11 +1014,22 @@ impl PeerTable {
         for sub in self.local_subs() {
             if sub.wants(route) {
                 (sub.sink)(event, route);
+                delivered += 1;
             }
         }
         if let Some(capnp) = self.capnp_state() {
+            // The capnp side keeps its own table and does not report a
+            // count. Its subscriber tally is the honest approximation:
+            // it says whether anyone over there could have taken this.
+            // The capnp side keeps its own table and reports no count,
+            // so a delivery over there is invisible here. Counted as one
+            // rather than zero: the caller uses this to distinguish "no
+            // audience at all" from "sent", and claiming an empty room
+            // when a capnp app is attached would be the worse error.
             capnp.fanout_to_route(event, except, route);
+            delivered += 1;
         }
+        delivered
     }
 
     /// Send `event` to exactly one peer by id. Used by the Phase 6
