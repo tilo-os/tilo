@@ -39,20 +39,26 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 /// into a shared document never arrived on the page.
 ///
 /// `QOS_USER_ID` is the session's own identity and is distinct by
-/// construction, which also makes the actor readable in a history. The
-/// pid-and-nanos tail is only for a bare process with no session around it,
-/// where two starting in the same nanosecond is not a thing that happens.
-fn distinct_actor(prefix: &str) -> String {
+/// construction, which also makes the actor readable in a history. It is not
+/// reachable from inside a sandbox, though — the launcher builds an app's
+/// environment from an allowlist and this is not on it — so in the product it
+/// is the tail below that actually runs, and the tail has to be sound on its
+/// own.
+///
+/// `store` is the actor `ui::persist::open` has already put on the document:
+/// `app_state::DocStore` mints one at random per state directory, persists it
+/// in an `actor` sidecar and takes a lock so a second instance cannot claim
+/// it. That is precisely the guarantee this needs, and the app used to throw
+/// it away. Prefixing keeps the readable half without inventing the unique
+/// half, and it is *stable across restarts*, which a clock reading is not.
+fn distinct_actor(prefix: &str, store: &automerge::ActorId) -> String {
     if let Ok(user) = std::env::var("QOS_USER_ID") {
         if !user.is_empty() {
             return format!("{prefix}-{user}");
         }
     }
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or_default();
-    format!("{prefix}-{}-{nanos}", std::process::id())
+    let hex = store.to_hex_string();
+    format!("{prefix}-{}", &hex[..hex.len().min(12)])
 }
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -145,8 +151,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `actions.rs`), so concurrent edits have to be attributable to tell
     // them apart. A missing `QUICK_APP_ID` falls back to a per-process id
     // so two un-configured instances still get distinct actors.
-    let app_id =
-        std::env::var("QUICK_APP_ID").unwrap_or_else(|_| distinct_actor("files"));
+    let app_id = std::env::var("QUICK_APP_ID")
+        .unwrap_or_else(|_| distinct_actor("files", state.doc.get_actor()));
+    // Said once, at startup. Two replicas sharing an actor is a failure with
+    // no other symptom — the frames are simply refused and the change never
+    // crosses — so the one thing that makes it diagnosable is each replica
+    // having said out loud who it thinks it is.
+    // `eprintln!` and not `tracing`: whether an `info!` is printed depends on
+    // a filter this app does not control, and evidence that is only there
+    // when the environment agrees is not evidence.
+    eprintln!("file-explorer: automerge actor {app_id}");
     state
         .doc
         .set_actor(automerge::ActorId::from(app_id.as_bytes()));

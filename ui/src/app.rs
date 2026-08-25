@@ -1549,7 +1549,22 @@ impl App {
     /// edit either, and marking on it would put the reader case back.
     fn apply_remote_delta(&mut self, data: &[u8]) -> bool {
         let before = self.state.doc.get_heads();
-        if self.state.load_incremental(data).is_err() {
+        if let Err(e) = self.state.load_incremental(data) {
+            // Said out loud, because this is where a change stops existing.
+            //
+            // The error used to be discarded. A delta that Automerge refuses
+            // is gone — it is not queued, not retried, and nothing upstream
+            // finds out — so an edit somebody made on another machine simply
+            // never appeared here, and the two ends looked identical to every
+            // check that asked either of them. That is how two replicas
+            // sharing an actor id (`duplicate seq 1 found for actor …`) cost
+            // a day: the only account of it anywhere was the shell's own
+            // mirror warning about its own copy.
+            tracing::warn!(
+                bytes = data.len(),
+                "a change from another replica was refused and is lost for \
+                 this document: {e}",
+            );
             return false;
         }
         let after = self.state.doc.get_heads();
@@ -2212,7 +2227,17 @@ impl App {
                         crate::diag!("[app] recv CRDTUpdate {}B", data.len());
                     }
                     if let Ok(mut incoming) = State::load(&data) {
-                        let _ = self.state.doc.merge(&mut incoming.doc);
+                        // Reported for the same reason the incremental path
+                        // above is: a whole document that will not merge is a
+                        // peer this replica has silently stopped agreeing
+                        // with, and nothing else on either end says so.
+                        if let Err(e) = self.state.doc.merge(&mut incoming.doc) {
+                            tracing::warn!(
+                                bytes = data.len(),
+                                "another replica's whole document would not \
+                                 merge into this one: {e}",
+                            );
+                        }
                         self.needs_sync = true;
                         // A remote change can grow the widget tree (new
                         // page/block), so force a relayout before the next
@@ -2269,7 +2294,12 @@ impl App {
                         crate::diag!("[app] recv ScrollbackBatch ({} ops)", ops.len());
                     }
                     for envelope in ops {
-                        let _ = self.state.load_incremental(&envelope.payload);
+                        // Through the same door as a live delta, so a refused
+                        // one is reported here too. Scrollback is where a
+                        // replica catches up on history it never saw, and a
+                        // batch that silently half-applied is a document that
+                        // will disagree with everybody else's for good.
+                        self.apply_remote_delta(&envelope.payload);
                     }
                     self.needs_sync = true;
                     self.layout_dirty = true;
@@ -2336,15 +2366,24 @@ impl App {
             }
             CollabEvent::CRDTIncremental { data } => {
                 // Mirror the production path so tests can exercise the
-                // incremental-merge wiring without a real event loop.
-                let _ = self.state.load_incremental(&data);
+                // incremental-merge wiring without a real event loop. Through
+                // the production function rather than alongside it: a mirror
+                // that swallows what the original reports is a mirror a test
+                // can pass in front of.
+                self.apply_remote_delta(&data);
                 self.needs_sync = true;
             }
             CollabEvent::CRDTUpdate { data } => {
                 // MERGE (not replace) — see the production handler in
                 // `run`'s about_to_wait loop for the rationale.
                 if let Ok(mut incoming) = crate::state::State::load(&data) {
-                    let _ = self.state.doc.merge(&mut incoming.doc);
+                    if let Err(e) = self.state.doc.merge(&mut incoming.doc) {
+                        tracing::warn!(
+                            bytes = data.len(),
+                            "another replica's whole document would not merge \
+                             into this one: {e}",
+                        );
+                    }
                     self.needs_sync = true;
                 }
             }
@@ -2353,7 +2392,7 @@ impl App {
                 // toolkit trusts the envelope at this point and feeds
                 // the payload into the same incremental-merge path the
                 // legacy variant uses.
-                let _ = self.state.load_incremental(&envelope.payload);
+                self.apply_remote_delta(&envelope.payload);
                 self.needs_sync = true;
             }
             _ => {}

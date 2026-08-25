@@ -65,6 +65,35 @@ mod i18n_pin {
     }
 }
 
+/// An Automerge actor id that is actually distinct from every other replica's.
+///
+/// `format!("{prefix}-{pid}")` was not. Every application here runs in its own
+/// PID namespace, so every instance sees itself as pid 2 and every session
+/// wrote under the *same* actor — and Automerge refuses a frame whose actor
+/// already used that sequence number:
+///
+///     blob_relay: a document frame did not parse; it is lost for this replica
+///     error=duplicate seq 1 found for actor 66696c65732d32     ("files-2")
+///
+/// Frames dropped, silently, in the one direction that matters: a change made
+/// on one machine never reaching another. It is why a picture an agent placed
+/// into a shared document never arrived on the page.
+///
+/// `have` is the actor the document already carries — minted at random by
+/// Automerge for every `AutoCommit`, or by `app_state::DocStore` and persisted
+/// per state directory for an app that opened through `ui::persist`. Either
+/// way it is distinct by construction, which is the property the old id only
+/// looked like it had. The prefix keeps the readable half.
+fn distinct_actor(prefix: &str, have: &automerge::ActorId) -> String {
+    if let Ok(user) = std::env::var("QOS_USER_ID") {
+        if !user.is_empty() {
+            return format!("{prefix}-{user}");
+        }
+    }
+    let hex = have.to_hex_string();
+    format!("{prefix}-{}", &hex[..hex.len().min(12)])
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
 
@@ -220,20 +249,29 @@ fn main() -> Result<(), Box<dyn Error>> {
         // in its own PID namespace, so `wp-{pid}` was `wp-2` in every session
         // and two replicas wrote under one actor — which Automerge refuses:
         // `duplicate seq 1 found for actor`. The frame is dropped and the
-        // change never crosses. `QOS_USER_ID` is the session's own identity,
-        // distinct by construction and readable in a history.
-        let app_id = std::env::var("QUICK_APP_ID").unwrap_or_else(|_| {
-            match std::env::var("QOS_USER_ID") {
-                Ok(user) if !user.is_empty() => format!("wp-{user}"),
-                _ => {
-                    let nanos = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.subsec_nanos())
-                        .unwrap_or_default();
-                    format!("wp-{}-{nanos}", std::process::id())
-                }
-            }
-        });
+        // change never crosses.
+        //
+        // `QOS_USER_ID` is the session's own identity and reads well in a
+        // history, but it does not reach a sandboxed app: the launcher builds
+        // an app's environment from an allowlist and this is not on it. So the
+        // branch below it is the one that actually runs in the product, and it
+        // has to be sound on its own rather than nearly-sound.
+        //
+        // It takes the unique half from the actor the document already has.
+        // Automerge mints one at random for every `AutoCommit`, so it is
+        // distinct by construction — which is the property that was missing —
+        // and the prefix keeps the readable half without inventing the unique
+        // half. A clock reading would have been unique only by argument.
+        let app_id = std::env::var("QUICK_APP_ID")
+            .unwrap_or_else(|_| distinct_actor("wp", state.doc.get_actor()));
+        // Said once, at startup. Two replicas sharing an actor is a failure
+        // with no other symptom — the frames are refused and the change never
+        // crosses — so what makes it diagnosable is each replica having said
+        // out loud who it thinks it is.
+        // `eprintln!` and not `tracing`: this app installs no subscriber, and
+        // a line that depends on one being configured is exactly the kind of
+        // evidence that turns out to be absent on the run that needed it.
+        eprintln!("word-processor: automerge actor {app_id}");
         state
             .doc
             .set_actor(automerge::ActorId::from(app_id.as_bytes()));
