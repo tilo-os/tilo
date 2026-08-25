@@ -98,8 +98,10 @@ const BLANKET_DENIES: &[libc::c_long] = &[
 ///
 /// The only thing the name currently decides is whether the app may create
 /// memory that is writable and executable at the same time. That is a
-/// per-package question and not a per-user one, which is why it is answered by
-/// the signed manifest rather than by a runtime grant.
+/// per-package question and not a per-user one, which is why it is not a
+/// runtime grant — but it is not the manifest's answer either. The manifest
+/// asks; the image's entitlement list decides. See [`resolve_profile`], and
+/// prefer it to [`Self::parse`] anywhere a real launch is being confined.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SeccompProfile {
     /// `qos-default` — write-xor-execute enforced. An app cannot turn data it
@@ -139,6 +141,92 @@ impl SeccompProfile {
     /// at once.
     pub fn allows_dynamic_code(self) -> bool {
         matches!(self, Self::QosJit)
+    }
+}
+
+/// Image-owned list of package ids that may run without write-xor-execute.
+///
+/// One entry per line. `#` starts a comment. A trailing `*` makes the entry a
+/// prefix match. Same format and same reading as
+/// [`crate::hardening::POLICY_PATH`], and read with the same matcher, so the
+/// two image-owned policies cannot drift into different syntaxes.
+pub const JIT_POLICY_PATH: &str = "/usr/lib/qos/jit-entitled.conf";
+
+/// Environment variable that overrides [`JIT_POLICY_PATH`]. Exists so a test
+/// can point at a fixture; production reads the image's file.
+pub const JIT_POLICY_PATH_ENV: &str = "QOS_JIT_ENTITLED_FILE";
+
+/// Fallback when [`JIT_POLICY_PATH`] is absent — the packages in this tree
+/// that genuinely compile code at run time.
+///
+/// One entry, and it should stay that way. The browser ships a web engine
+/// whose JavaScript tier emits machine code into a mapping it then executes;
+/// nothing else here does, and an app that thinks it needs this almost
+/// certainly wants a write-then-flip JIT instead, which the strict profile
+/// already allows.
+pub const BUILTIN_JIT_ENTITLED: &[&str] = &["dev.qos.browser"];
+
+/// Whether the image lets `package_id` run without write-xor-execute.
+///
+/// Read from the image's policy file, falling back to
+/// [`BUILTIN_JIT_ENTITLED`] when there isn't one — the same shape as
+/// [`crate::hardening::for_package`], and for the same reason: a missing
+/// file must degrade to the known set rather than to "nobody", which would
+/// leave the browser unable to render a page on any machine whose image did
+/// not ship the file.
+pub fn entitled_to_dynamic_code(package_id: &str) -> bool {
+    let policy_path = std::env::var_os(JIT_POLICY_PATH_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(JIT_POLICY_PATH));
+    match std::fs::read_to_string(&policy_path) {
+        Ok(list) => crate::hardening::policy_matches(&list, package_id),
+        Err(_) => BUILTIN_JIT_ENTITLED.contains(&package_id),
+    }
+}
+
+/// What a manifest asked for, and what it is actually going to get.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileDecision {
+    /// The profile that will be compiled and installed.
+    pub applied: SeccompProfile,
+    /// The name the manifest wrote, verbatim.
+    pub requested: String,
+    /// Set when the manifest named a real, weaker profile it is not
+    /// entitled to. Distinct from a typo, which is
+    /// [`SeccompProfile::parse`]'s business and already resolves strict.
+    pub refused: bool,
+}
+
+/// Decide the syscall profile for one launch.
+///
+/// The manifest names a profile and the **image** decides whether this
+/// package may have it. That order is the whole point. Eleven lines above
+/// the sibling mechanism, `sandbox.rs` states the rule for runtime
+/// hardening: it is *"decided from the package id against an image-owned
+/// policy, not from anything the manifest can ask for — an app must not be
+/// able to opt itself out of protection."* Write-xor-execute is protection
+/// of exactly that kind, and it was the one thing a package could switch off
+/// by writing a string about itself. A `.qpkg` carries its own manifest, so
+/// "the package asked for it" is not an authority — it is the applicant
+/// filling in their own permit.
+///
+/// Fail-closed twice over: an unrecognised name resolves strict (see
+/// [`SeccompProfile::parse`], which a typo must not be able to route
+/// around), and a recognised weaker name resolves strict too unless the
+/// image says this package id may have it.
+pub fn resolve_profile(requested: &str, package_id: &str) -> ProfileDecision {
+    let asked = SeccompProfile::parse(requested);
+    if !asked.allows_dynamic_code() || entitled_to_dynamic_code(package_id) {
+        return ProfileDecision {
+            applied: asked,
+            requested: requested.to_string(),
+            refused: false,
+        };
+    }
+    ProfileDecision {
+        applied: SeccompProfile::QosDefault,
+        requested: requested.to_string(),
+        refused: true,
     }
 }
 
@@ -441,6 +529,252 @@ mod tests {
             0,
             "10 = W+X was allowed, 11 = an ordinary mapping was refused, \
              12 = the filter would not install"
+        );
+    }
+
+    /// Point the entitlement lookup at a fixture for the duration of a test.
+    struct JitPolicy {
+        _dir: tempfile::TempDir,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl JitPolicy {
+        fn listing(entries: &str) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("jit-entitled.conf");
+            std::fs::write(&file, entries).unwrap();
+            let previous = std::env::var_os(JIT_POLICY_PATH_ENV);
+            // SAFETY: every caller is in the `process_env` serial group, and
+            // `Drop` restores what was there.
+            unsafe { std::env::set_var(JIT_POLICY_PATH_ENV, &file) };
+            Self { _dir: dir, previous }
+        }
+
+        /// A path that does not exist, so the compiled-in fallback decides.
+        fn missing() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let previous = std::env::var_os(JIT_POLICY_PATH_ENV);
+            // SAFETY: as above.
+            unsafe {
+                std::env::set_var(JIT_POLICY_PATH_ENV, dir.path().join("does-not-exist.conf"))
+            };
+            Self { _dir: dir, previous }
+        }
+    }
+
+    impl Drop for JitPolicy {
+        fn drop(&mut self) {
+            // SAFETY: as above.
+            unsafe {
+                match self.previous.take() {
+                    Some(v) => std::env::set_var(JIT_POLICY_PATH_ENV, v),
+                    None => std::env::remove_var(JIT_POLICY_PATH_ENV),
+                }
+            }
+        }
+    }
+
+    /// A package cannot lift write-xor-execute off itself by saying so.
+    ///
+    /// `sandbox.rs` states the rule for the sibling mechanism: hardening is
+    /// decided from the package id against an image-owned policy, "not from
+    /// anything the manifest can ask for — an app must not be able to opt
+    /// itself out of protection". A `.qpkg` carries its own manifest, so a
+    /// package naming `qos-jit` was the applicant filling in their own
+    /// permit.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_package_the_image_does_not_entitle_gets_the_strict_profile() {
+        let _policy = JitPolicy::listing("dev.qos.browser\n");
+
+        let decision = resolve_profile("qos-jit", "com.example.evil");
+
+        assert_eq!(
+            decision.applied,
+            SeccompProfile::QosDefault,
+            "a manifest asking for qos-jit without entitlement must be confined \
+             by the strict profile"
+        );
+        assert!(
+            decision.refused,
+            "the launcher has to be able to say a request was refused, or the \
+             log cannot tell a typo from an app trying to weaken itself"
+        );
+        assert_eq!(
+            decision.requested, "qos-jit",
+            "what was asked for is reported verbatim"
+        );
+    }
+
+    /// The refusal reaches the kernel, not just the enum.
+    ///
+    /// The profile an unentitled request resolves to is compiled and
+    /// installed in a real process, which then tries to map a page writable
+    /// and executable. A test that compared two enum values would pass on a
+    /// launcher that resolved strictly and compiled the other one.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn an_unentitled_request_is_refused_by_the_running_filter() {
+        let _policy = JitPolicy::listing("dev.qos.browser\n");
+
+        let applied = resolve_profile("qos-jit", "com.example.evil").applied;
+        assert!(
+            !applied.allows_dynamic_code(),
+            "fixture sanity: the resolved profile must be the strict one, or \
+             the probe below proves nothing"
+        );
+        assert_eq!(
+            probe_mappings_under(applied),
+            0,
+            "the filter an unentitled qos-jit request resolves to must refuse \
+             W+X in the kernel. 10 = it was allowed, 11 = an ordinary mapping \
+             was refused, 12 = the filter would not install"
+        );
+    }
+
+    /// The legitimate case still works. Entitlement is a gate, not a ban:
+    /// the browser's JavaScript tier emits machine code into a mapping it
+    /// then runs, and a rule that broke that would take the browser off the
+    /// system rather than harden it.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_package_the_image_entitles_still_gets_what_it_asked_for() {
+        let _policy = JitPolicy::listing("dev.qos.browser\n");
+
+        let decision = resolve_profile("qos-jit", "dev.qos.browser");
+
+        assert_eq!(decision.applied, SeccompProfile::QosJit);
+        assert!(!decision.refused);
+    }
+
+    /// Entitlement alone grants nothing. A package the image would allow to
+    /// generate code, but whose manifest asks for the strict profile, gets
+    /// the strict profile — the two have to agree, and the list is a
+    /// ceiling rather than a setting.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn entitlement_without_a_request_changes_nothing() {
+        let _policy = JitPolicy::listing("dev.qos.browser\n");
+
+        let decision = resolve_profile("qos-default", "dev.qos.browser");
+
+        assert_eq!(
+            decision.applied,
+            SeccompProfile::QosDefault,
+            "being on the list must not weaken a package that did not ask"
+        );
+        assert!(!decision.refused);
+    }
+
+    /// A typo is still a typo, and still resolves strict — including for an
+    /// entitled package, which must not be able to reach a weaker profile by
+    /// misspelling one.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_misspelt_profile_resolves_strict_for_everyone() {
+        let _policy = JitPolicy::listing("dev.qos.browser\n");
+
+        for id in ["dev.qos.browser", "com.example.evil"] {
+            for name in ["qos-jitt", "QOS-JIT", "", "anything"] {
+                let decision = resolve_profile(name, id);
+                assert_eq!(
+                    decision.applied,
+                    SeccompProfile::QosDefault,
+                    "{id} asking for {name:?} must not reach a weaker profile"
+                );
+                assert!(
+                    !decision.refused,
+                    "{name:?} is an unrecognised name, not a refused \
+                     entitlement; the two read differently in the log"
+                );
+            }
+        }
+    }
+
+    /// An image whose policy file names nobody entitles nobody — including
+    /// the package the compiled-in fallback would have allowed. A present
+    /// file replaces the fallback rather than adding to it.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_policy_file_replaces_the_builtin_list() {
+        let _policy = JitPolicy::listing("# nobody\n");
+
+        assert_eq!(
+            resolve_profile("qos-jit", "dev.qos.browser").applied,
+            SeccompProfile::QosDefault,
+            "the image's own file decides; the fallback must not add to it"
+        );
+    }
+
+    /// With no policy file the compiled-in list still applies. A missing
+    /// file must degrade to "the browser renders pages" rather than to
+    /// "nothing may generate code", which would be a browser that cannot
+    /// open a page on any image that lost the file.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn with_no_policy_file_the_builtin_entitlement_still_applies() {
+        let _policy = JitPolicy::missing();
+
+        assert_eq!(
+            resolve_profile("qos-jit", "dev.qos.browser").applied,
+            SeccompProfile::QosJit,
+            "fallback list lost the browser"
+        );
+        assert_eq!(
+            resolve_profile("qos-jit", "com.example.evil").applied,
+            SeccompProfile::QosDefault,
+            "the fallback must entitle the browser and nobody else"
+        );
+    }
+
+    /// The manifest's own accessor goes through the same gate. A caller
+    /// reaching for `Sandbox::seccomp_profile` must not be a way around
+    /// [`resolve_profile`].
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_manifest_accessor_consults_the_entitlement_policy() {
+        let _policy = JitPolicy::listing("dev.qos.browser\n");
+        let sandbox = crate::manifest::Sandbox {
+            seccomp: "qos-jit".to_string(),
+            ..crate::manifest::Sandbox::default()
+        };
+
+        assert_eq!(
+            sandbox.seccomp_profile("com.example.evil"),
+            SeccompProfile::QosDefault,
+            "the manifest accessor must not hand out what the image refused"
+        );
+        assert_eq!(
+            sandbox.seccomp_profile("dev.qos.browser"),
+            SeccompProfile::QosJit
+        );
+    }
+
+    /// The file the image ships says what the compiled-in fallback says.
+    ///
+    /// Two lists that can disagree is a machine whose confinement depends on
+    /// whether a file was copied, and the disagreement would only ever show
+    /// up as a browser that behaves differently on one image than another.
+    #[test]
+    fn the_shipped_policy_file_and_the_builtin_list_agree() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../os/usr/lib/qos/jit-entitled.conf");
+        let shipped = std::fs::read_to_string(&repo).unwrap_or_else(|e| {
+            panic!(
+                "the image's entitlement list must be in the tree at {}: {e}",
+                repo.display()
+            )
+        });
+        for id in BUILTIN_JIT_ENTITLED {
+            assert!(
+                crate::hardening::policy_matches(&shipped, id),
+                "{id} is in the compiled-in fallback but not in the file the \
+                 image ships"
+            );
+        }
+        assert!(
+            !crate::hardening::policy_matches(&shipped, "com.example.evil"),
+            "the shipped list must not entitle an arbitrary package"
         );
     }
 }

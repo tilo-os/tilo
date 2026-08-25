@@ -792,15 +792,31 @@ pub fn run_with(
         resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
     let binds = to_service_binds(&resolved);
 
-    // 2. Seccomp baseline → tmpfile → fd. The manifest names the profile;
-    // an unrecognised name resolves to the strict one, so log what was asked
-    // for alongside what was applied when the two differ.
-    let profile = manifest.sandbox.seccomp_profile();
-    if profile.as_str() != manifest.sandbox.seccomp {
+    // 2. Seccomp baseline → tmpfile → fd. The manifest *asks* for a profile
+    // and the image decides whether this package may have it; both ways of
+    // not getting what was asked for are worth a line, and they are
+    // different lines. An unrecognised name is a packaging mistake. A
+    // recognised weaker name from a package the image does not entitle is an
+    // app trying to lift a protection off itself, which is worth saying out
+    // loud whether it was an accident or not.
+    let decision =
+        crate::seccomp::resolve_profile(&manifest.sandbox.seccomp, &manifest.package_id);
+    let profile = decision.applied;
+    if decision.refused {
+        eprintln!(
+            "qos-launcher: {} asked for seccomp profile {:?}, which the image does not \
+             entitle it to; applying {} (write-xor-execute enforced). Entitlement is \
+             decided by {}, not by the package.",
+            manifest.package_id,
+            decision.requested,
+            profile.as_str(),
+            crate::seccomp::JIT_POLICY_PATH,
+        );
+    } else if profile.as_str() != decision.requested {
         eprintln!(
             "qos-launcher: manifest asked for seccomp profile {:?}, which is not one we know; \
              applying {} (write-xor-execute enforced)",
-            manifest.sandbox.seccomp,
+            decision.requested,
             profile.as_str()
         );
     }
@@ -1293,8 +1309,11 @@ pub fn run_with_captured(
     let resolved = resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
     let binds = to_service_binds(&resolved);
 
-    // Seccomp baseline, same manifest-named profile as `run_with`.
-    let seccomp_blob = compile_baseline(manifest.sandbox.seccomp_profile())?;
+    // Seccomp baseline, resolved against the image's entitlement policy
+    // exactly as `run_with` does. Two paths reaching different conclusions
+    // about the same package would make the capture path a way to run under
+    // a filter the launch path refuses.
+    let seccomp_blob = compile_baseline(manifest.sandbox.seccomp_profile(&manifest.package_id))?;
     let seccomp_fd: OwnedFd = stage_seccomp_blob(&seccomp_blob)?;
     const SECCOMP_CHILD_FD: i32 = 16;
 
