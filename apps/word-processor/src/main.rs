@@ -84,14 +84,64 @@ mod i18n_pin {
 /// per state directory for an app that opened through `ui::persist`. Either
 /// way it is distinct by construction, which is the property the old id only
 /// looked like it had. The prefix keeps the readable half.
+///
+/// Deliberately reads no environment: the whole failure was an id that was a
+/// function of things two replicas share, and a function of its arguments is
+/// the only shape that can be tested for it.
 fn distinct_actor(prefix: &str, have: &automerge::ActorId) -> String {
-    if let Ok(user) = std::env::var("QOS_USER_ID") {
-        if !user.is_empty() {
-            return format!("{prefix}-{user}");
-        }
-    }
     let hex = have.to_hex_string();
     format!("{prefix}-{}", &hex[..hex.len().min(12)])
+}
+
+/// The name this replica is given, if anything has named it.
+///
+/// `QUICK_APP_ID` is how a dev run points two instances at one shell and gets
+/// a history it can read. `QOS_USER_ID` is the session's own identity and
+/// would be the best of both — it does not reach a sandboxed app, because the
+/// launcher builds an app's environment from an allowlist and it is not on
+/// it, so in the product neither of these answers and the actor comes from
+/// [`distinct_actor`].
+fn named_actor(prefix: &str) -> Option<String> {
+    if let Ok(id) = std::env::var("QUICK_APP_ID") {
+        if !id.is_empty() {
+            return Some(id);
+        }
+    }
+    match std::env::var("QOS_USER_ID") {
+        Ok(user) if !user.is_empty() => Some(format!("{prefix}-{user}")),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod actor_tests {
+    use super::distinct_actor;
+
+    /// The regression, stated as the property it broke.
+    ///
+    /// Both ids below are minted inside one process, so anything derived from
+    /// the process — a pid, which is 2 in every sandbox on this system —
+    /// produces the same string twice. Automerge then refuses the second
+    /// replica's frames with `duplicate seq 1 found for actor`, and a change
+    /// made on one machine never reaches the other.
+    #[test]
+    fn two_replicas_in_one_process_do_not_share_an_actor() {
+        let a = automerge::AutoCommit::new();
+        let b = automerge::AutoCommit::new();
+        assert_ne!(
+            distinct_actor("wp", a.get_actor()),
+            distinct_actor("wp", b.get_actor()),
+            "two replicas were given the same actor id, which is the failure \
+             that silently drops one of them's changes",
+        );
+    }
+
+    /// And it still says what it is, so a history can be read.
+    #[test]
+    fn the_actor_still_names_the_application() {
+        let doc = automerge::AutoCommit::new();
+        assert!(distinct_actor("wp", doc.get_actor()).starts_with("wp-"));
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -262,16 +312,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         // distinct by construction — which is the property that was missing —
         // and the prefix keeps the readable half without inventing the unique
         // half. A clock reading would have been unique only by argument.
-        let app_id = std::env::var("QUICK_APP_ID")
-            .unwrap_or_else(|_| distinct_actor("wp", state.doc.get_actor()));
+        let app_id = named_actor("wp")
+            .unwrap_or_else(|| distinct_actor("wp", state.doc.get_actor()));
         // Said once, at startup. Two replicas sharing an actor is a failure
         // with no other symptom — the frames are refused and the change never
         // crosses — so what makes it diagnosable is each replica having said
         // out loud who it thinks it is.
-        // `eprintln!` and not `tracing`: this app installs no subscriber, and
-        // a line that depends on one being configured is exactly the kind of
+        // `diag!` and not `tracing`: this app installs no subscriber, and a
+        // line that depends on one being configured is exactly the kind of
         // evidence that turns out to be absent on the run that needed it.
-        eprintln!("word-processor: automerge actor {app_id}");
+        ui::diag!("word-processor: automerge actor {app_id}");
         state
             .doc
             .set_actor(automerge::ActorId::from(app_id.as_bytes()));

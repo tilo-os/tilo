@@ -1560,10 +1560,16 @@ impl App {
             // sharing an actor id (`duplicate seq 1 found for actor …`) cost
             // a day: the only account of it anywhere was the shell's own
             // mirror warning about its own copy.
-            tracing::warn!(
-                bytes = data.len(),
-                "a change from another replica was refused and is lost for \
-                 this document: {e}",
+            //
+            // Through `diag!` rather than `tracing`, because two of the apps
+            // in this tree install no subscriber and one of them is the word
+            // processor — evidence that is only there when the environment
+            // agrees is not evidence. `diag!` is also the one stderr write
+            // that cannot take the process down with it.
+            crate::diag!(
+                "[collab] a change from another replica was refused and is \
+                 lost for this document ({}B): {e}",
+                data.len(),
             );
             return false;
         }
@@ -2232,10 +2238,10 @@ impl App {
                         // peer this replica has silently stopped agreeing
                         // with, and nothing else on either end says so.
                         if let Err(e) = self.state.doc.merge(&mut incoming.doc) {
-                            tracing::warn!(
-                                bytes = data.len(),
-                                "another replica's whole document would not \
-                                 merge into this one: {e}",
+                            crate::diag!(
+                                "[collab] another replica's whole document \
+                                 would not merge into this one ({}B): {e}",
+                                data.len(),
                             );
                         }
                         self.needs_sync = true;
@@ -2378,10 +2384,10 @@ impl App {
                 // `run`'s about_to_wait loop for the rationale.
                 if let Ok(mut incoming) = crate::state::State::load(&data) {
                     if let Err(e) = self.state.doc.merge(&mut incoming.doc) {
-                        tracing::warn!(
-                            bytes = data.len(),
-                            "another replica's whole document would not merge \
-                             into this one: {e}",
+                        crate::diag!(
+                            "[collab] another replica's whole document would \
+                             not merge into this one ({}B): {e}",
+                            data.len(),
                         );
                     }
                     self.needs_sync = true;
