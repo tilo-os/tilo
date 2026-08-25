@@ -2271,10 +2271,16 @@ class Recorder:
         or make a frame show for longer than its session held it — the
         frame before a pause is capped by `max_hold` like any other.
         """
+        # Read before the camera goes down, not after. Taken afterwards
+        # this was always None, so "the session changed while we were
+        # off" was true of every stretch and the dwell below was paid for
+        # a cut that had not happened — a second added to the film each
+        # time, and a second before the picture comes back to whatever
+        # made it come back.
         with self._lock:
+            was = self._live
             self._off += 1
             self._live = None
-        was = self._live
         try:
             yield
         finally:
