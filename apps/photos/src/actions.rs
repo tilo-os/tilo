@@ -177,6 +177,17 @@ impl ResourceProvider for PhotosResources {
                     .with_description("Turn the photograph a quarter turn anticlockwise"),
             )
             .with_action(
+                spec(
+                    "crop-square",
+                    "Crop to a square",
+                    edits.cropped_from_view(square_of(w, h, measure_subject(&image.path))),
+                )
+                .with_description(
+                    "Keep the largest square of what is currently shown, placed \
+                     over the detail rather than the middle",
+                ),
+            )
+            .with_action(
                 ActionSpec::prompted(
                     "crop",
                     "Crop",
@@ -285,7 +296,7 @@ fn subject_of(path: &str) -> Option<String> {
             return hit.clone();
         }
     }
-    let answer = measure_subject(path);
+    let answer = measure_subject(path).map(|(cx, cy)| subject_sentence(cx, cy));
     if let Ok(mut seen) = cache.lock() {
         seen.insert(path.to_string(), answer.clone());
     }
@@ -294,7 +305,7 @@ fn subject_of(path: &str) -> Option<String> {
 
 /// The measurement itself, without the remembering. Separated so the cache
 /// above has one thing to cache and this has one thing to be right about.
-fn measure_subject(path: &str) -> Option<String> {
+fn measure_subject(path: &str) -> Option<(f64, f64)> {
     const GRID: u32 = 24;
     let img = image::open(path).ok()?.to_luma8();
     let (w, h) = img.dimensions();
@@ -331,6 +342,11 @@ fn measure_subject(path: &str) -> Option<String> {
     }
     let cx = (mx / total + 0.5) / f64::from(GRID);
     let cy = (my / total + 0.5) / f64::from(GRID);
+    Some((cx, cy))
+}
+
+/// The measurement, said in words, for the child resource that carries it.
+fn subject_sentence(cx: f64, cy: f64) -> String {
     let where_across = if cx < 0.42 {
         "left of centre"
     } else if cx > 0.58 {
@@ -345,10 +361,40 @@ fn measure_subject(path: &str) -> Option<String> {
     } else {
         "level"
     };
-    Some(format!(
+    format!(
         "most of the detail is {where_across} and sits {where_down}, around \
          x={cx:.2} y={cy:.2} of the frame"
-    ))
+    )
+}
+
+/// The largest square that fits the picture, slid over the detail.
+///
+/// Expressed in the same normalized coordinates the prompted crop takes, so
+/// the two operations mean the same thing by a rectangle.
+///
+/// This exists so that "make it square" needs no argument. A square is a
+/// property of the *picture*, and the picture is the one thing the agent
+/// cannot see: it would have to be handed the pixel dimensions, work out an
+/// aspect ratio and write a rect, and every one of those steps is a place for
+/// it to pass nothing at all — which is what happened, and the prompted crop
+/// is written to leave the photograph untouched rather than guess, so it
+/// reported success over an unchanged picture. An operation that takes no
+/// argument cannot be invoked without one.
+pub fn square_of(w: u32, h: u32, subject: Option<(f64, f64)>) -> Rect01 {
+    if w == 0 || h == 0 {
+        return Rect01::FULL;
+    }
+    let (wf, hf) = (f64::from(w), f64::from(h));
+    let side = wf.min(hf);
+    // The square as a fraction of each axis. On the short axis it is the
+    // whole of it, which is what makes this the largest square available.
+    let (sw, sh) = (side / wf, side / hf);
+    // Centre it on the detail when there is any, on the middle when there is
+    // not, then slide it back inside the frame.
+    let (cx, cy) = subject.unwrap_or((0.5, 0.5));
+    let x = (cx - sw / 2.0).clamp(0.0, 1.0 - sw);
+    let y = (cy - sh / 2.0).clamp(0.0, 1.0 - sh);
+    Rect01 { x, y, w: sw, h: sh }
 }
 
 pub fn resource_id(path: &str) -> String {
