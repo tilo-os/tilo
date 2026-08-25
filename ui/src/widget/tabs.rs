@@ -3071,6 +3071,110 @@ mod tests {
         )
     }
 
+    /// Two applications in one tab bar have to be two pictures.
+    ///
+    /// This is the arrangement the window model exists for and the one a
+    /// viewer is likeliest to mistake for a browser, so the pills cannot
+    /// differ only in their words. They used to: an app kind has five
+    /// variants and every app outside them took one fallback, which put
+    /// the same cog on a word processor and a photo editor sitting side
+    /// by side.
+    #[test]
+    fn a_pill_wears_its_own_application_mark_not_its_category() {
+        use crate::icons::Icon;
+
+        let with_id = |id: &str, kind: Option<AppKind>| TabDescriptor {
+            id: 1,
+            title: "t".into(),
+            app_kind: kind,
+            app_id: Some(id.to_string()),
+        };
+
+        // The four the film opens, by package id.
+        assert_eq!(
+            with_id("dev.qos.word-processor", None).leading_glyph(),
+            Some(PillGlyph::App(Icon::FileText)),
+        );
+        assert_eq!(
+            with_id("dev.qos.photos", None).leading_glyph(),
+            Some(PillGlyph::App(Icon::Image)),
+        );
+        assert_eq!(
+            with_id("dev.qos.chat", None).leading_glyph(),
+            Some(PillGlyph::App(Icon::MessageSquare)),
+        );
+        assert_eq!(
+            with_id("dev.qos.file-explorer", None).leading_glyph(),
+            Some(PillGlyph::App(Icon::Folder)),
+        );
+
+        // All four are distinct marks, which is the whole property.
+        let marks: Vec<_> = [
+            "dev.qos.word-processor",
+            "dev.qos.photos",
+            "dev.qos.chat",
+            "dev.qos.file-explorer",
+        ]
+        .iter()
+        .map(|id| with_id(id, None).leading_glyph())
+        .collect();
+        for i in 0..marks.len() {
+            for j in (i + 1)..marks.len() {
+                assert_ne!(marks[i], marks[j], "two apps share one glyph");
+            }
+        }
+
+        // The app-id wins over the category: a foreign client the shell
+        // could only classify as "some other app" is still that app.
+        assert_eq!(
+            with_id("dev.qos.photos", Some(AppKind::Settings)).leading_glyph(),
+            Some(PillGlyph::App(Icon::Image)),
+            "the id names one program; the kind names a shelf of them",
+        );
+
+        // An id nothing knows falls back to the category rather than to a
+        // generic mark — the category is still more than "an application".
+        assert_eq!(
+            with_id("com.example.Unknown", Some(AppKind::Terminal)).leading_glyph(),
+            Some(PillGlyph::Kind(AppKind::Terminal)),
+        );
+        // And with neither, the pill has no leading slot at all.
+        assert_eq!(TabDescriptor::new(1, "t").leading_glyph(), None);
+
+        // The compositor's own id for an app it draws in-process, and the
+        // one it mints from a display label, reach the same glyph as the
+        // package id does. Three spellings, one program, one picture.
+        assert_eq!(
+            with_id("org.nirios.Files", None).leading_glyph(),
+            with_id("dev.qos.file-explorer", None).leading_glyph(),
+        );
+        assert_eq!(
+            with_id("org.nirios.Word Processor", None).leading_glyph(),
+            with_id("dev.qos.word-processor", None).leading_glyph(),
+        );
+    }
+
+    /// The layout reserves the leading slot on exactly the condition the
+    /// paint fills it on. If those two disagree the title lands on top of
+    /// the glyph, so they read the same predicate.
+    #[test]
+    fn leading_zone_follows_the_glyph_the_pill_will_actually_paint() {
+        let mut b = TabBar::new("g", vec![TabDescriptor::new(1, "A")], 1);
+        assert_eq!(b.leading_zone(0), 0.0, "no kind, no id, no accent");
+
+        b.tabs_mut()[0].app_id = Some("dev.qos.photos".into());
+        assert_eq!(
+            b.leading_zone(0),
+            ICON_W + ICON_GAP,
+            "an id the table knows earns the slot",
+        );
+
+        // An id nothing knows is not a glyph, so it must not reserve room
+        // the paint will leave empty.
+        b.tabs_mut()[0].app_id = Some("com.example.Unknown".into());
+        assert_eq!(b.leading_zone(0), 0.0);
+    }
+
     #[test]
     fn remove_tab_drops_it_and_picks_neighbour_when_active() {
         let mut b = bar();
@@ -3489,6 +3593,7 @@ mod tests {
                 id: 1,
                 title: "A".into(),
                 app_kind: Some(AppKind::Terminal),
+                app_id: None,
             }],
             1,
         );
