@@ -46,6 +46,7 @@ pub use collab_capnp::cursor_stream::Client as CursorStreamClient;
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
 pub use collab_capnp::blob_stream::Client as BlobStreamClient;
 pub use collab_capnp::action_stream::Client as ActionStreamClient;
+pub use collab_capnp::invocation_stream::Client as InvocationStreamClient;
 pub use collab_capnp::stream::Client as StreamClient;
 
 /// Try to dial the qOS collab broker via the launcher-supplied
@@ -274,6 +275,92 @@ impl ChannelHandle {
         Ok(ActionStream { inner: Rc::new(stream) })
     }
 
+    /// Tell this session what this application currently has open and what
+    /// may be done to it.
+    ///
+    /// Level-triggered: each call replaces this connection's whole published
+    /// surface, so a resource that has closed stops being addressable rather
+    /// than lingering as an address that resolves to something gone.
+    ///
+    /// What crosses is inert. An [`ExportedAction`] carries ids and labels;
+    /// the closure an `ActionSpec` holds never leaves the process that built
+    /// it, so nothing published here can be fired by whoever reads it — they
+    /// have to come back through [`ChannelHandle::subscribe_invocations`] and
+    /// ask this process to do it.
+    pub async fn publish_actions(
+        &self,
+        app_id: &str,
+        actions: &[ExportedAction],
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_actions_request();
+        {
+            let mut b = req.get();
+            b.set_app_id(app_id);
+            let mut list = b.init_actions(actions.len() as u32);
+            for (i, a) in actions.iter().enumerate() {
+                let mut row = list.reborrow().get(i as u32);
+                row.set_resource(&a.resource);
+                row.set_action(&a.action);
+                row.set_resource_kind(&a.resource_kind);
+                row.set_resource_label(&a.resource_label);
+                row.set_action_label(&a.action_label);
+                row.set_description(a.description.as_deref().unwrap_or(""));
+                let mut input = row.init_input();
+                match &a.input {
+                    ExportedInput::None => input.set_none(()),
+                    ExportedInput::Text {
+                        prompt,
+                        placeholder,
+                        wants_content,
+                    } => {
+                        let mut t = input.init_text();
+                        t.set_prompt(prompt);
+                        t.set_placeholder(placeholder);
+                        t.set_wants_content(*wants_content);
+                    }
+                }
+            }
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Open a server-pulled stream of invocations the session has addressed to
+    /// *this* application.
+    ///
+    /// Distinct from [`Self::subscribe_actions`], which is a room-wide
+    /// fan-out: an invocation names one connection, because it is an
+    /// instruction to one application to perform one operation it published.
+    pub async fn subscribe_invocations(&self) -> Result<InvocationStream, NotAvailable> {
+        let req = self.inner.subscribe_invocations_request();
+        let reply = req.send().promise.await?;
+        let stream = reply.get()?.get_stream()?;
+        Ok(InvocationStream { inner: Rc::new(stream) })
+    }
+
+    /// Report what became of an invocation.
+    ///
+    /// An empty `code` means it ran. Anything else is a refusal, and the
+    /// session reports it to whoever asked rather than swallowing it: a caller
+    /// that cannot see the screen has no other way to tell a completed
+    /// operation from one that quietly did nothing.
+    pub async fn complete_invocation(
+        &self,
+        id: u64,
+        code: &str,
+        message: &str,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.complete_invocation_request();
+        {
+            let mut b = req.get();
+            b.set_id(id);
+            b.set_code(code);
+            b.set_message(message);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Fetch a page of previously-validated signed ops with
     /// `seq < before_seq`. See [`ScrollbackBatch`] for the response
     /// shape.
@@ -456,6 +543,94 @@ impl ActionStream {
             .map_err(|e| capnp::Error::failed(format!("invalid utf8 attribution: {e}")))?
             .to_owned();
         Ok(ActionEvent { type_id, payload, from_user_id })
+    }
+}
+
+/// What one exported action's invocation must carry, as it crosses the wire.
+///
+/// The transport-side twin of `qos_actions::door::InputSpec`. Kept here rather
+/// than depending on `qos-actions` so this crate stays what it is — a client
+/// for one socket — and an app that wants the richer type converts at its own
+/// edge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExportedInput {
+    /// Takes nothing.
+    None,
+    /// Takes one text argument, in the app's own words.
+    Text {
+        prompt: String,
+        placeholder: String,
+        /// Whether that text names content already in this machine's store
+        /// rather than words somebody says.
+        wants_content: bool,
+    },
+}
+
+/// One operation an application exports, as inert data.
+///
+/// Everything a caller needs to decide whether to perform it, and nothing that
+/// could perform it — read-only is the shape of this struct, not a promise
+/// about how it is used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportedAction {
+    pub resource: String,
+    pub action: String,
+    pub resource_kind: String,
+    pub resource_label: String,
+    pub action_label: String,
+    pub description: Option<String>,
+    pub input: ExportedInput,
+}
+
+/// One invocation off an [`InvocationStream`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Invocation {
+    /// Echoed back on `complete_invocation`, so the session can match an
+    /// answer to the question it asked.
+    pub id: u64,
+    pub resource: String,
+    pub action: String,
+    /// `None` when the caller supplied none. Separate from the empty string so
+    /// an action that legitimately takes `""` can still say it was given one.
+    pub argument: Option<String>,
+    /// Who asked, as the session resolved them. An attribution the resulting
+    /// change commits under — not an authority; the session already decided
+    /// this may happen.
+    pub actor: String,
+}
+
+/// Client-pulled stream of invocations addressed to this application.
+#[derive(Clone)]
+pub struct InvocationStream {
+    inner: Rc<InvocationStreamClient>,
+}
+
+impl InvocationStream {
+    /// Pull the next invocation addressed to this application.
+    pub async fn read(&self) -> Result<Invocation, NotAvailable> {
+        let req = self.inner.read_request();
+        let reply = req.send().promise.await?;
+        let r = reply.get()?;
+        let text = |t: capnp::text::Reader<'_>, what: &str| {
+            t.to_str()
+                .map(|s| s.to_owned())
+                .map_err(|e| capnp::Error::failed(format!("invalid utf8 {what}: {e}")))
+        };
+        let resource = text(r.get_resource()?, "invocation resource")?;
+        let action = text(r.get_action()?, "invocation action")?;
+        let actor = text(r.get_actor()?, "invocation actor")?;
+        let argument = if r.get_has_argument() {
+            Some(text(r.get_argument()?, "invocation argument")?)
+        } else {
+            None
+        };
+        Ok(Invocation {
+            id: r.get_id(),
+            resource,
+            action,
+            argument,
+            actor,
+        })
     }
 }
 

@@ -166,6 +166,141 @@ interface ChannelHandle {
   # ordinary action once it is written; asking for the panel is not.
   composeRemark @13 (reference :Text, x :Float32, y :Float32,
                      w :Float32, h :Float32) -> ();
+
+  # Tell this session what this application currently has open, and
+  # what may be done to it.
+  #
+  # The second verb here addressed to the session rather than to the
+  # room, and for the same reason `composeRemark` is: what an app has
+  # on screen is a fact about this machine, and the thing that has to
+  # know it is the compositor that draws the other windows.
+  #
+  # An application already describes its open resources and their
+  # operations to its own command palette. Nothing outside the process
+  # could read that description, so a participant that was not the app
+  # -- a person driving another window, an agent, a script -- could
+  # open an application and not touch what was inside it. This is the
+  # door: the app says what it exports, in the app's own ids, and the
+  # session puts it in the one catalogue everything else is addressed
+  # through.
+  #
+  # `appId` is the application's stable id, and it is the app's claim
+  # about itself; the session pairs it with the connection that made it
+  # and gates on the pairing rather than on the claim alone.
+  #
+  # What crosses is inert. An `ExportedAction` carries ids and labels
+  # and no way to fire anything -- the closure an `ActionSpec` holds
+  # never leaves the process that built it. That is a property of this
+  # struct's shape, not a promise: there is nothing here to invoke.
+  #
+  # Level-triggered, not a delta: each call replaces this connection's
+  # whole published surface. A surface that is only ever added to
+  # accumulates addresses for resources that have since closed, and an
+  # address that resolves to something gone is worse than one that
+  # resolves to nothing.
+  publishActions @14 (appId :Text, actions :List(ExportedAction)) -> ();
+
+  # Subscribe to invocations the session has addressed to THIS
+  # application. Client-pull like every stream here.
+  #
+  # Unlike `subscribeActions`, which is a room-wide fan-out any app may
+  # read, this stream carries only what was addressed to this
+  # connection: an invocation is an instruction to one application to
+  # perform one of the operations it published, and delivering it to
+  # the room would let any app in it act on another's behalf.
+  #
+  # The session performs its capability check before anything reaches
+  # this stream. An application therefore never sees an invocation it
+  # was not permitted -- which is also why an app must not treat
+  # arrival as authority for anything beyond the operation named.
+  subscribeInvocations @15 () -> (stream :InvocationStream);
+
+  # Report what became of an invocation.
+  #
+  # `id` echoes `InvocationStream.read`'s. An empty `code` means it
+  # ran; otherwise `code` is one of the door's refusal codes
+  # (`unknown_action`, `invalid_arguments`, `action_failed`) and
+  # `message` says why in the app's own words.
+  #
+  # Required rather than optional: the caller on the other end asked a
+  # machine to do something it cannot see the result of, and silence
+  # and success must not look alike to it. A session that hears nothing
+  # times the invocation out and says so.
+  completeInvocation @16 (id :UInt64, code :Text, message :Text) -> ();
+}
+
+# One operation an application exports, as inert data.
+#
+# Mirrors `qos_actions::door::ActionDescriptor`. Kept as a native capnp
+# struct rather than opaque bytes for the reason `PresencePayload` is:
+# this is the surface a non-Rust participant would read to find out
+# what a window can do, and it should not need a postcard decoder to
+# do it.
+struct ExportedAction {
+  # The app's own id for the thing being acted on
+  # (`word-processor.document`, `files.entry:/var/workspace/plan.md`).
+  # Never a screen position and never an index into a rendered list:
+  # the same address names the same operation across layouts, themes
+  # and resolutions, which is what makes this drivable by something
+  # that cannot see.
+  resource      @0 :Text;
+  # The app's own id for the operation, unique within the resource.
+  action        @1 :Text;
+  # The resource's stable kind tag, shared with the OS-wide type
+  # registry so the same kind means the same thing across apps.
+  resourceKind  @2 :Text;
+  # Human labels, in the app's words -- the same ones its own palette
+  # would show a person.
+  resourceLabel @3 :Text;
+  actionLabel   @4 :Text;
+  # Empty when the app supplied none. An absent description and an
+  # empty one are the same fact here, so there is no separate flag.
+  description   @5 :Text;
+  # What an invocation must carry.
+  input         @6 :ActionInput;
+}
+
+# What one exported action's invocation must supply.
+#
+# Advertised rather than discovered by trying, because enumeration is
+# the only thing a caller that cannot see the screen has to work from:
+# an argument nobody described could only be guessed at.
+struct ActionInput {
+  union {
+    # Takes nothing. The majority.
+    none @0 :Void;
+    # Takes one text argument.
+    text :group {
+      # The app's own words for what it wants.
+      prompt      @1 :Text;
+      placeholder @2 :Text;
+      # Whether that text is the content hash of bytes already in this
+      # machine's store rather than words somebody says. The
+      # difference matters to a caller: words can be quoted out of a
+      # request and a content hash cannot -- it exists only because
+      # some earlier operation produced the content it names.
+      wantsContent @3 :Bool;
+    }
+  }
+}
+
+interface InvocationStream {
+  # Pull the next invocation addressed to this application.
+  #
+  # `resource` / `action` are the app's own ids, echoed back from
+  # `publishActions`. `argument` is meaningful only when
+  # `hasArgument` -- an action that takes text and was invoked without
+  # any is refused by the session before it reaches here, and the two
+  # fields are separate so an action that legitimately takes the empty
+  # string can still say so.
+  #
+  # `actor` is who asked, as the session resolved them. The app commits
+  # the resulting change under it, so an edit made through this door is
+  # attributed in the document's history exactly like one somebody
+  # typed. It is an attribution, not an authority: the session already
+  # decided this invocation may happen.
+  read @0 () -> (id :UInt64, resource :Text, action :Text,
+                 argument :Text, hasArgument :Bool, actor :Text);
 }
 
 interface ActionStream {

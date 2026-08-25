@@ -253,6 +253,25 @@ pub fn pump(relay: &mut MemoryRelay) {
                  {into_app:?}) from {from}: this relay hosts no windows, so a \
                  crossing between two applications has nowhere to be drawn."
             ),
+            // Same reading again: a compose surface is drawn by the session
+            // that owns the desktop, and this relay owns none.
+            CollabRequest::ComposeRemark { reference, .. } => panic!(
+                "MemoryRelay::pump got ComposeRemark({reference:?}) from \
+                 {from}: this relay draws no windows, so there is nowhere for \
+                 a compose surface to sit."
+            ),
+            // What an app can do is published into a session's catalogue, and
+            // this relay keeps none. A test that wants to assert on a
+            // published surface should drive the shell's broker, where the
+            // catalogue actually is.
+            CollabRequest::PublishActions { app_id, .. } => panic!(
+                "MemoryRelay::pump got PublishActions({app_id:?}) from \
+                 {from}: this relay has no catalogue to publish into."
+            ),
+            CollabRequest::CompleteInvocation { id, .. } => panic!(
+                "MemoryRelay::pump got CompleteInvocation({id}) from {from}: \
+                 nothing on this relay can have asked for one."
+            ),
         }
     }
 }

@@ -785,6 +785,72 @@ pub struct ComposeRemarkRequest {
 /// hand the request to a queue and return.
 pub type RemarkComposer = Box<dyn Fn(ComposeRemarkRequest) + Send + Sync>;
 
+/// One operation an application published through `publishActions`, as it
+/// reached the broker.
+///
+/// The transport's own shape, not `qos_actions::door::ActionDescriptor`: this
+/// module knows sockets and rooms, and translating into the action vocabulary
+/// is the session's job, one layer up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WireExportedAction {
+    pub resource: String,
+    pub action: String,
+    pub resource_kind: String,
+    pub resource_label: String,
+    pub action_label: String,
+    pub description: Option<String>,
+    /// `None` when the operation takes no argument. `Some` carries the app's
+    /// own words for the one it wants, and whether that text names content
+    /// rather than words.
+    pub text_input: Option<WireTextInput>,
+}
+
+/// The prompt an operation that collects text advertises.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WireTextInput {
+    pub prompt: String,
+    pub placeholder: String,
+    pub wants_content: bool,
+}
+
+/// One invocation on its way from the session to the application that
+/// published the operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WireInvocation {
+    /// Matched against the `completeInvocation` that answers it.
+    pub id: u64,
+    pub resource: String,
+    pub action: String,
+    pub argument: Option<String>,
+    /// Who asked, as the session resolved them.
+    pub actor: String,
+}
+
+/// What a session does with an application's published operations.
+///
+/// The broker holds the door and does not decide what comes through it,
+/// exactly as with [`AppOpener`] and [`RemarkComposer`]: it knows sockets,
+/// rooms and connection ids, and nothing about capabilities, catalogues or
+/// which window is in front.
+///
+/// Every method runs on the thread that decoded the frame. Keep them short --
+/// record and return.
+pub trait AppActionListener: Send + Sync {
+    /// An application replaced its whole published surface.
+    ///
+    /// `app_id` is the connection's *own* announced application, taken from
+    /// the route it joined on rather than from anything in the call: an
+    /// application that could name itself could publish operations that look
+    /// like another application's.
+    fn published(&self, peer: u64, app_id: &str, room: &str, actions: Vec<WireExportedAction>);
+
+    /// A connection went away. Everything it published stops being offered.
+    fn gone(&self, peer: u64);
+
+    /// An application answered an invocation. An empty `code` means it ran.
+    fn completed(&self, id: u64, code: &str, message: &str);
+}
+
 pub struct PeerTable {
     peers: Mutex<Vec<Arc<Peer>>>,
     /// Monotonic id source. Shared with the capnp listener so a
@@ -805,6 +871,11 @@ pub struct PeerTable {
     /// installed none — a broker with no desktop behind it — and the request is
     /// then dropped with a line saying so, rather than in silence.
     remark_composer: Mutex<Option<Arc<RemarkComposer>>>,
+    /// Where an application's published operations go, and where the answer
+    /// to an invocation comes back to. `None` in a broker with no desktop
+    /// behind it, in which case a `publishActions` is recorded nowhere and
+    /// says so once rather than in silence.
+    app_actions: Mutex<Option<Arc<dyn AppActionListener>>>,
 }
 
 /// A subscriber inside the shell process, addressed by room.
@@ -865,6 +936,7 @@ impl PeerTable {
             local_subs: Mutex::new(Vec::new()),
             app_opener: Mutex::new(None),
             remark_composer: Mutex::new(None),
+            app_actions: Mutex::new(None),
         }
     }
 
@@ -1048,6 +1120,27 @@ impl PeerTable {
 
     pub(crate) fn remark_composer(&self) -> Option<Arc<RemarkComposer>> {
         self.remark_composer.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Read the session's app-action listener if one has been installed.
+    pub(crate) fn app_action_listener(&self) -> Option<Arc<dyn AppActionListener>> {
+        self.app_actions.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Hand one invocation to the connection that published the operation.
+    ///
+    /// Addressed to a single peer, never fanned. An invocation is an
+    /// instruction to one application to change a document it owns; delivering
+    /// it to the room would let any app in the room act in another's name, and
+    /// every app sharing the room would perform it once each.
+    ///
+    /// `false` means nothing took it -- the connection has gone, or never
+    /// opened an invocation stream. The caller reports that rather than
+    /// treating an undelivered instruction as a completed one.
+    pub(crate) fn dispatch_invocation(&self, peer: u64, invocation: WireInvocation) -> bool {
+        self.capnp_state()
+            .map(|c| c.dispatch_invocation(peer, invocation))
+            .unwrap_or(false)
     }
 
     fn send_to_peer(&self, peer_id: u64, event: &CollabEvent) -> bool {
@@ -1314,6 +1407,27 @@ fn translate(
                 src_id,
                 "collab_broker: a ComposeRemark reached the fan-out; it has no \
                  audience and was dropped, so no compose surface will appear"
+            );
+            TranslatedAction::Nothing
+        }
+        // Addressed to the session, like the two above, and carried on the
+        // capnp interface where a launched app actually holds its socket. A
+        // legacy JSON peer publishing one has no catalogue behind it, and is
+        // told so rather than left believing it is reachable.
+        CollabRequest::PublishActions { app_id, .. } => {
+            tracing::warn!(
+                src_id, %app_id,
+                "collab_broker: an application published its operations on the \
+                 legacy transport, which has no catalogue to put them in; \
+                 nothing outside that process can reach them"
+            );
+            TranslatedAction::Nothing
+        }
+        CollabRequest::CompleteInvocation { id, .. } => {
+            tracing::warn!(
+                src_id, id,
+                "collab_broker: an invocation was answered on the legacy \
+                 transport, which never carried one"
             );
             TranslatedAction::Nothing
         }
@@ -2111,6 +2225,29 @@ impl BrokerHandle {
         if let Ok(mut guard) = self.peers.remark_composer.lock() {
             *guard = Some(Arc::new(composer));
         }
+    }
+
+    /// Install the listener for "here is what my application can do".
+    ///
+    /// The counterpart to [`Self::set_remark_composer`]: both carry a request
+    /// addressed to the session rather than to the room, and a broker with no
+    /// desktop behind it installs neither.
+    pub fn set_app_action_listener(&self, listener: Arc<dyn AppActionListener>) {
+        if let Ok(mut guard) = self.peers.app_actions.lock() {
+            *guard = Some(listener);
+        }
+    }
+
+    /// Hand one invocation to the connection that published the operation.
+    /// `false` means nothing took it -- see [`PeerTable::dispatch_invocation`].
+    pub fn dispatch_invocation(&self, peer: u64, invocation: WireInvocation) -> bool {
+        self.peers.dispatch_invocation(peer, invocation)
+    }
+
+    /// A weak handle on the peer table, for a session-side holder that needs
+    /// to reach connections and must not keep the broker alive to do it.
+    pub(crate) fn peer_table_weak(&self) -> std::sync::Weak<PeerTable> {
+        Arc::downgrade(&self.peers)
     }
 
     /// Tell the connection that asked that its application will not be opened.

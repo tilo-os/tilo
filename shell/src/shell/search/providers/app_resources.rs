@@ -16,9 +16,26 @@
 //! `actions_enumerate` / `actions_invoke` reach an app's operations exactly
 //! as they reach the shell's.
 //!
+//! ## Two halves, one catalogue
+//!
+//! An app compiled into the compositor is a widget, and its tree is read
+//! straight off it. Every *packaged* qOS app is a separate process, and a
+//! widget walk finds nothing at all in one — which is why, on a real desktop,
+//! this provider published an empty tree every time and the palette's hundred
+//! offered operations included none from a running application.
+//!
+//! The out-of-process half arrives over the socket the app already holds and
+//! is held by [`RemoteAppActions`](crate::shell::app_action_wire::RemoteAppActions).
+//! Both halves are surveyed into the same [`ActionDescriptor`], carry the same
+//! address shape and pass the same capability gate. What differs is only who
+//! runs the operation: a widget's action is dispatched here against the
+//! document this pass carries, and a packaged app's is carried back to the app,
+//! which performs it on its own document. See that module for why it must be.
+//!
 //! ## Which app
 //!
-//! The focused one, read against its **own** document: a hosted tab is
+//! For the in-process half, the focused one, read against its **own**
+//! document: a hosted tab is
 //! redirected onto its record, so the document a frame carries is not the
 //! one the app reads, and a survey taken against that one would describe an
 //! empty document belonging to nobody. This is the same scoping
@@ -26,6 +43,14 @@
 //! `ui::App`'s own resource collection already use: the resources of the
 //! thing in front of you. A caller that wants a different app's surface
 //! focuses that tab first, by address, and asks again.
+//!
+//! The out-of-process half is every connected application at once, not the
+//! focused one. There is no widget to walk and so no notion of "in front"
+//! here, and the addresses are app-namespaced anyway — which makes answering
+//! for all of them the honest reading of "what can be done on this desktop"
+//! rather than a widening of scope. It is also the case the whole thing is
+//! for: a caller reaching across two applications should not have to focus
+//! each in turn to find out what they offer.
 //!
 //! ## Addresses
 //!
@@ -50,12 +75,16 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use qos_actions::door::{self, ActionAddress, ActionDescriptor, InputSpec};
 use qos_actions::{ActionRegistry as ActionTypeRegistry, LocalTransport, Resource};
 use ui::record::{RecordId, RecordStore};
 
+use crate::shell::app_action_wire::RemoteAppActions;
+
 use crate::shell::search::action_api::{ActionError, ActionParam, ParamType};
+use crate::shell::state::ResourceRef;
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
 /// The provider id every app-exported operation is addressed under.
@@ -208,14 +237,29 @@ pub struct AppResourcesProvider {
     /// on trust — the same decoder a replaying peer would use is the one
     /// that reconstructs it here.
     types: Rc<ActionTypeRegistry>,
+    /// What the applications that are not in this process currently offer.
+    ///
+    /// Empty in a shell with no broker behind it, which is the honest answer
+    /// there: no app has connected, so none has published anything.
+    remote: Arc<RemoteAppActions>,
     kinds: Vec<ResourceKind>,
 }
 
 impl AppResourcesProvider {
     pub fn new(surfaces: AppSurfaces, types: Rc<ActionTypeRegistry>) -> Self {
+        Self::with_remote(surfaces, types, Arc::new(RemoteAppActions::new()))
+    }
+
+    /// The same provider, serving the connected applications' surfaces too.
+    pub fn with_remote(
+        surfaces: AppSurfaces,
+        types: Rc<ActionTypeRegistry>,
+        remote: Arc<RemoteAppActions>,
+    ) -> Self {
         Self {
             surfaces,
             types,
+            remote,
             kinds: vec![app_action_kind()],
         }
     }
@@ -250,6 +294,111 @@ fn matches(needle: &str, d: &ActionDescriptor) -> bool {
         || d.resource_kind.to_lowercase().contains(&n)
 }
 
+/// Build one row for an operation a connected application published.
+///
+/// The gate runs inside the row's own callback rather than when the row is
+/// built, for the reason invocation re-resolves at all: a catalogue is built
+/// once and acted on later, and a capability revoked in between must take
+/// effect on the act, not on the last survey.
+fn remote_row(
+    remote: &Arc<RemoteAppActions>,
+    entry: crate::shell::app_action_wire::RemoteAction,
+    kind: ResourceKind,
+) -> SearchResult {
+    let d = entry.descriptor;
+    let params = params_for(&d.input);
+    let collects_content = d.input.wants_content();
+    let address = d.address.clone();
+    let app = app_of(&address.resource).to_string();
+    let remote = Arc::clone(remote);
+    SearchResult {
+        kind,
+        provider_id: PROVIDER_ID.to_string(),
+        id: encode_address(&d.address),
+        title: d.action_label.clone(),
+        subtitle: Some(format!("{} — {}", d.resource_label, d.resource_kind)),
+        score: 0,
+        fetch_source: None,
+        params,
+        on_open: Rc::new(move |_doc, _root, chrome, args| {
+            let argument = args.text("text");
+            // The capability check. Nothing below this line can be reached
+            // without passing it: `invoke` performs no check of its own and
+            // this is the only caller of it in the tree.
+            let caller = {
+                let st = chrome.borrow();
+                let tree = st.tree();
+                let Some(workspace) = tree.active_workspace() else {
+                    // A session that cannot resolve a workspace cannot resolve
+                    // a capability either, and a gate that opens when it
+                    // cannot find its policy is not a gate.
+                    return Err(ActionError::Refused(
+                        "no active workspace to resolve capabilities against".into(),
+                    ));
+                };
+                let actor = workspace.actor_for_person(&st.local_user_id);
+                let target = ResourceRef::Action {
+                    app: app.clone(),
+                    action: address.action.clone(),
+                };
+                let outcome = remote.check(workspace, &actor, &app, &address.action, &target);
+                if !outcome.is_permitted() {
+                    // A caller who may not act never gets this far: the
+                    // catalogue's own visibility gate leaves the row out, so
+                    // the address resolves to nothing and the refusal is
+                    // `unknown_action` before anything is built. Reaching here
+                    // means the answer changed between that build and this
+                    // act -- a capability revoked, or the app republished --
+                    // and saying so plainly is right, because this caller was
+                    // shown the address a moment ago and learns nothing from
+                    // being told it has since lost it.
+                    return Err(ActionError::Refused(format!(
+                        "({}, {}) is no longer permitted to {}",
+                        PROVIDER_ID,
+                        encode_address(&address),
+                        st.local_user_id
+                    )));
+                }
+                st.local_user_id.clone()
+            };
+            // Sent, not waited for. The thread running this is the one that
+            // serves the application's own connection, so waiting here for the
+            // application to answer would be waiting for something this thread
+            // is preventing. The answer is picked up by
+            // `RemoteAppActions::settle` from the loop that paints, and a
+            // caller waiting on the control socket has its reply held until
+            // then -- see `shell::app_action_wire`.
+            remote
+                .dispatch(&address, argument, &caller)
+                .map(|_id| {
+                    // Noted on the ask rather than on the answer. The
+                    // crossing is what a person is shown, and the operation
+                    // that carries it is one this session already decided may
+                    // happen; withholding the animation until an out-of-process
+                    // reply lands would show it a frame or two after the
+                    // picture it is about.
+                    if collects_content {
+                        if let Some(hash) = argument {
+                            crate::shell::action_flight::note_flight(
+                                &caller,
+                                hash.trim(),
+                                app_of(&address.resource),
+                            );
+                        }
+                    }
+                })
+                .map_err(|e| match e.code() {
+                    "invalid_arguments" => ActionError::Arguments(
+                        crate::shell::search::action_api::ArgError::Missing {
+                            name: e.to_string(),
+                        },
+                    ),
+                    _ => ActionError::Refused(e.to_string()),
+                })
+        }),
+    }
+}
+
 impl SearchProvider for AppResourcesProvider {
     fn id(&self) -> &str {
         PROVIDER_ID
@@ -269,6 +418,12 @@ impl SearchProvider for AppResourcesProvider {
             return Vec::new();
         }
         let mut out = Vec::new();
+        for entry in self.remote.survey() {
+            if !matches(ctx.needle, &entry.descriptor) {
+                continue;
+            }
+            out.push(remote_row(&self.remote, entry, kind.clone()));
+        }
         for d in self.surfaces.survey() {
             if !matches(ctx.needle, &d) {
                 continue;
