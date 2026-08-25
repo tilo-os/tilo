@@ -3425,12 +3425,15 @@ def main() -> int:
 
         # Cuts now raise the window of whoever the film cut to, so the
         # person narrating always sees the screen being recorded.
-        if not args.dry_run:
+        # Cuts raise the window of whoever the film cut to, so a person
+        # narrating always sees the screen being recorded. With no windows
+        # there is nothing to raise and nobody watching, so this stays off.
+        if not (args.dry_run or args.no_windows):
             yc.SHOW_ON_SCREEN = ins.raise_window
 
         quinten.start()
         quinten.wait_ready(timeout=180.0)
-        if not args.dry_run:
+        if not (args.dry_run or args.no_windows):
             wid = ins.find_window(quinten.proc.pid)
             quinten.wid = wid
             if wid is None:
