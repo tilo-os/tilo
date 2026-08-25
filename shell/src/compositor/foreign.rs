@@ -2412,12 +2412,14 @@ mod tests {
             .iter_mut()
             .find(|w| w.id == elsewhere)
             .expect("the other workspace");
-        let group = ws
-            .strips
-            .first_mut()
-            .and_then(|s| s.window_groups.first_mut())
-            .expect("the other workspace has a group");
-        group.tabs.push(moved);
+        let strip = ws.strips.first_mut().expect("the other workspace's strip");
+        strip.window_groups.push(crate::shell::state::WindowGroup {
+            id: crate::shell::state::next_id(),
+            active_tab: moved.id,
+            tabs: vec![moved],
+            width: crate::shell::state::WindowWidth::Normal,
+            maximized: false,
+        });
 
         reconcile_foreign_tabs(&source, &mut rendered);
         assert_eq!(
