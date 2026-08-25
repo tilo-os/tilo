@@ -463,6 +463,18 @@ pub struct ShellOverlayHost {
     /// so the first poll always rebuilds, even when chrome boots
     /// with `revision: 0`.
     last_chrome_revision: u64,
+    /// How many tabs the most recent [`Self::resync_strips_from_tree`]
+    /// swapped the contents of.
+    ///
+    /// A content swap throws away a running app and builds another one:
+    /// a terminal's PTY is re-forked, a file pane re-reads its
+    /// directory, an editor loses what it had open. It is correct
+    /// exactly once per tab — when a card that announced a window
+    /// becomes the window — and a bug every other time, but it leaves
+    /// no trace afterwards because the rebuilt widget has the same
+    /// shape as the one it replaced. Counting the swaps is what makes
+    /// the difference observable at all.
+    last_resync_content_swaps: usize,
     /// What each live tab was last built to show, keyed by tab id.
     ///
     /// The revision counter says *something* in the tree moved; this says
@@ -1593,6 +1605,7 @@ impl ShellOverlayHost {
             remark_peer: None,
             remark_dismissals: Vec::new(),
             last_chrome_revision: u64::MAX,
+            last_resync_content_swaps: 0,
             tab_tiles: std::collections::HashMap::new(),
             deferred_tile_swaps: std::collections::HashSet::new(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
@@ -2749,6 +2762,49 @@ impl ShellOverlayHost {
         self
     }
 
+    /// Record what every tab of `tree` is already showing, so the first
+    /// resync knows the widget tree is up to date.
+    ///
+    /// `tab_tiles` memoises "the widget for this tab is already showing
+    /// this tile", and it was only ever written by the resync — so on
+    /// the first frame after boot it was empty, every restored tab
+    /// looked like a tab whose contents had changed, and the resync
+    /// rebuilt all of them. Every terminal re-forked its shell, every
+    /// file pane re-read its directory, on the render thread, in the
+    /// frame the user is waiting to see.
+    ///
+    /// The widget tree was built from this same tree, so the honest
+    /// memo is "all of it".
+    pub fn with_seeded_tab_tiles(mut self, tree: &crate::shell::state::WorkspaceTree) -> Self {
+        self.seed_tab_tiles_from(tree);
+        self
+    }
+
+    /// Fill [`Self::tab_tiles`] from the tree the content was just built
+    /// out of. Shared by the boot builder and the workspace-content
+    /// rebuild, which are the two places a row is made from a snapshot
+    /// rather than reconciled towards one.
+    fn seed_tab_tiles_from(&mut self, tree: &crate::shell::state::WorkspaceTree) {
+        self.tab_tiles.clear();
+        let Some(ws) = tree.active_workspace() else {
+            return;
+        };
+        for tab in ws
+            .strips
+            .iter()
+            .flat_map(|s| s.window_groups.iter())
+            .flat_map(|g| g.tabs.iter())
+        {
+            self.tab_tiles.insert(tab.id, tile_signature(&tab.tile));
+        }
+    }
+
+    /// How many tabs the last strip resync rebuilt the contents of. See
+    /// [`Self::last_resync_content_swaps`].
+    pub fn last_resync_content_swaps(&self) -> usize {
+        self.last_resync_content_swaps
+    }
+
     /// Swap the workspace-scoped content when the active workspace
     /// changes, or when it grows a strip the content has no row for.
     /// On either the content root and the strip pointer map are
@@ -2809,6 +2865,11 @@ impl ShellOverlayHost {
         self.content = root;
         self.group_row_ptrs = ptrs;
         self.content_built_for_ws = Some(snapshot.active.raw());
+        // The new rows were built from this snapshot, so they are
+        // already showing it. Without saying so, the resync that runs
+        // straight after this rebuilds the contents of every tab in the
+        // workspace the user just switched to.
+        self.seed_tab_tiles_from(&snapshot);
         // Per-strip memos of the old workspace die with its rows.
         self.last_scrolled_active_group.clear();
         true
@@ -2938,6 +2999,10 @@ impl ShellOverlayHost {
         // Every tab this walk reached, so a debt can be carried forward
         // only for a tab that is still somewhere this pass can settle it.
         let mut seen_tabs: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        // A swap leaves no trace afterwards — the rebuilt widget has the
+        // same shape as the one it replaced — so they are counted, which
+        // is what makes "nothing was rebuilt this frame" observable.
+        let mut swaps = 0_usize;
         let st = chrome.borrow();
         let records = st.records().clone();
         let tree = st.tree();
@@ -2974,8 +3039,20 @@ impl ShellOverlayHost {
                         any_change = true;
                     }
                 }
-                // Drop any groups the tree no longer carries.
+                // Drop any groups the tree no longer carries — except
+                // one that is still fading out. A group whose last tab
+                // was just closed leaves the tree immediately and the
+                // widget over the next few frames; yanking it here on a
+                // revision bump that lands inside that window replaces
+                // the shrink the user is watching with a pop.
                 for id in live_ids.difference(&tree_ids) {
+                    let fading = row
+                        .groups
+                        .iter()
+                        .any(|g| g.id == *id && g.close_in_flight());
+                    if fading {
+                        continue;
+                    }
                     if row.remove_group_by_id(*id) {
                         any_change = true;
                     }
@@ -3030,6 +3107,7 @@ impl ShellOverlayHost {
                                     host.replace_content(crate::shell::to_ui_tile(&tab.tile));
                                     tab_tiles.insert(tab.id, signature);
                                     deferred.remove(&tab.id);
+                                    swaps += 1;
                                     any_change = true;
                                 }
                             } else {
@@ -3080,6 +3158,7 @@ impl ShellOverlayHost {
         // longer here is not something a later pass can settle.
         deferred.retain(|id| seen_tabs.contains(id));
         self.deferred_tile_swaps = deferred;
+        self.last_resync_content_swaps = swaps;
         self.last_chrome_revision = current_rev;
         any_change
     }
@@ -3471,13 +3550,17 @@ impl ShellOverlayHost {
                     Some(id) => g.request_close_tab(id),
                     None => g.request_close_active_tab(),
                 };
-                // Deliberately no `bump()`. A revision bump makes the
-                // strip resync rebuild this row from the persisted tree,
-                // and the tree still lists the tab: closing a tab is a
-                // live-widget operation with no tree-side counterpart
-                // (there is no `doc_remove_tab`), exactly as a `✕` click
-                // is. Bumping here re-spliced the tab straight back and
-                // the chord looked like a no-op.
+                if closed {
+                    // Take the tab out of the tree in the same tick the
+                    // widget started fading it. The two layers have to
+                    // agree before anything bumps the revision, or the
+                    // resync reads a tab the tree still lists and
+                    // splices it straight back — which is what made this
+                    // chord look like a no-op, and what left a closed
+                    // window in the room document for peers to keep
+                    // seeing.
+                    self.harvest_closed_tabs_into_tree();
+                }
                 return closed;
             }
         }
@@ -3559,6 +3642,65 @@ impl ShellOverlayHost {
             "the tree moved tab {tab_id} into group {dest_gid}, but no \
              laid-out strip held both; the strip will resync"
         ))
+    }
+
+    /// Take every tab the widget layer just closed out of the persisted
+    /// [`crate::shell::state::WorkspaceTree`].
+    ///
+    /// Closing was widget-only: `WindowGroup::request_close_tab` starts
+    /// a fade and nothing told the tree. The tab therefore survived in
+    /// the tree, and any of the revision bumps the shell makes for
+    /// unrelated reasons put it back on screen through
+    /// [`Self::resync_strips_from_tree`] — as did a restart, and a peer
+    /// sharing the workspace never saw the window go away at all.
+    ///
+    /// Deliberately *not* gated on the chrome revision, unlike
+    /// [`Self::harvest_widget_only_groups_into_tree`]. That guard exists
+    /// so a widget-side *inference* ("the tree doesn't have this group,
+    /// so it must be new") can't fight a tree change that landed in the
+    /// same tick. A close is not an inference — it is a one-shot the
+    /// user's gesture published — so it is correct to apply whatever
+    /// else happened to the tree, and draining it under a guard that
+    /// might bail would throw the close away.
+    ///
+    /// No `bump()`: the widget already shows the tab gone, so there is
+    /// nothing for a resync to carry back. The doc write inside
+    /// [`crate::shell::state::WorkspaceTree::remove_tab`] is what
+    /// reaches peers, and it happens either way.
+    fn harvest_closed_tabs_into_tree(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let mut closed: Vec<u64> = Vec::new();
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in row.groups.iter_mut() {
+                closed.extend(g.take_closed_tabs());
+            }
+        }
+        if closed.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        for tab_id in closed {
+            tree.remove_tab(tab_id);
+            // The memo that says "this tab's widget already shows this
+            // tile" is about a tab that no longer exists. Leaving it
+            // would make a later tab reusing the id skip its content
+            // swap.
+            self.tab_tiles.remove(&tab_id);
+        }
+    }
+
+    /// Test hook for the close harvest — mirrors the per-frame call the
+    /// update / layout paths make.
+    pub fn tick_closed_tab_harvest_for_tests(&mut self) {
+        self.harvest_closed_tabs_into_tree();
     }
 
     fn harvest_pending_width_changes(&mut self) {
@@ -5542,6 +5684,20 @@ impl ShellOverlayHost {
         {
             let st = chrome.borrow();
             let tree = st.tree();
+            // Every tab the tree already knows, by id. A tab that was
+            // dragged out of one group into another is not a new tab —
+            // it is this tab, somewhere else — and the widget layer
+            // kept only its id, title and app kind. Looking the real
+            // `Tab` up is what stops the rebuild below from inventing a
+            // lesser one in its place.
+            let known: std::collections::HashMap<u64, crate::shell::state::Tab> = tree
+                .workspaces
+                .iter()
+                .flat_map(|w| w.strips.iter())
+                .flat_map(|s| s.window_groups.iter())
+                .flat_map(|g| g.tabs.iter())
+                .map(|t| (t.id, t.clone()))
+                .collect();
             let Some(ws) = tree.workspaces.iter().find(|w| w.id == tree.active) else {
                 return;
             };
@@ -5555,9 +5711,18 @@ impl ShellOverlayHost {
                 // accessor.
                 let row: &GroupRow = unsafe { &*ptr };
                 for (idx, wg) in row.groups.iter().enumerate() {
-                    if !tree_ids.contains(&wg.id) {
-                        writes.push((strip.id, idx, build_state_group_from_widget(wg)));
+                    if tree_ids.contains(&wg.id) {
+                        continue;
                     }
+                    // A group on its way out is not a group the tree is
+                    // missing. Its last tab has already been removed
+                    // from the tree; re-adding it here would put an
+                    // empty group back and, a frame later, a window the
+                    // user closed.
+                    if wg.close_in_flight() || wg.tab_count() == 0 {
+                        continue;
+                    }
+                    writes.push((strip.id, idx, build_state_group_from_widget(wg, &known)));
                 }
             }
         }
@@ -5574,6 +5739,112 @@ impl ShellOverlayHost {
                 }
             }
         }
+    }
+
+    /// Mirror where the widget rows say each tab lives into the tree.
+    ///
+    /// [`Self::harvest_widget_only_groups_into_tree`] mirrors a *group*
+    /// the widget grew; this mirrors a *tab* the widget moved. Dropping
+    /// a tab on a sibling group's tab bar, on its tile, or tearing it
+    /// out beside its neighbours all mutate `GroupRow::groups` and
+    /// nothing else, and the tree's own tab-move refuses a move that
+    /// stays inside one strip. So the drop worked on screen right up
+    /// until the next revision bump rebuilt the row from a tree that
+    /// still had the tab in the group it came from.
+    ///
+    /// Runs after the group harvest, so a tab torn into a brand-new
+    /// group has somewhere to be placed — and so the copy that harvest
+    /// leaves behind in the tab's old group is collapsed here rather
+    /// than left to be read as a second window.
+    ///
+    /// Conservative in one direction on purpose: it only speaks for
+    /// tabs a live row is currently holding. A tab the tree has that no
+    /// row shows is left alone, because that is what a window opened by
+    /// a peer looks like in the frames before this machine builds a row
+    /// for it.
+    fn harvest_widget_tab_placement_into_tree(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        // Same revision guard as the group harvest, for the same
+        // reason: a tree that changed since the last resync is the
+        // newer story, and the widget is about to be rebuilt from it.
+        {
+            let cur_rev = chrome.borrow().revision;
+            if cur_rev != self.last_chrome_revision {
+                return;
+            }
+        }
+        // Only the tabs the two layers disagree about. Quiescent frames
+        // are the overwhelming majority and this runs on every one of
+        // them, so the disagreement is found with one walk of each side
+        // rather than a tree scan per tab.
+        let mut moves: Vec<(u64, GroupId, usize)> = Vec::new();
+        {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            // Where the tree has each tab, and how many times. More
+            // than once is itself a disagreement worth settling.
+            let mut placed: std::collections::HashMap<u64, (GroupId, usize, usize)> =
+                std::collections::HashMap::new();
+            for group in tree
+                .workspaces
+                .iter()
+                .flat_map(|w| w.strips.iter())
+                .flat_map(|s| s.window_groups.iter())
+            {
+                for (idx, tab) in group.tabs.iter().enumerate() {
+                    placed
+                        .entry(tab.id)
+                        .and_modify(|e| e.2 += 1)
+                        .or_insert((group.id, idx, 1));
+                }
+            }
+            let Some(ws) = tree.workspaces.iter().find(|w| w.id == tree.active) else {
+                return;
+            };
+            for strip in &ws.strips {
+                let Some(&ptr) = self.group_row_ptrs.get(&strip.id) else {
+                    continue;
+                };
+                // SAFETY: same contract as every other `group_row_ptrs`
+                // accessor.
+                let row: &GroupRow = unsafe { &*ptr };
+                for wg in row.groups.iter() {
+                    if wg.close_in_flight() {
+                        continue;
+                    }
+                    for (idx, desc) in wg.tabs().iter().enumerate() {
+                        // A tab the tree has never heard of is the
+                        // group harvest's business, not this one's.
+                        let Some(&(gid, at, count)) = placed.get(&desc.id) else {
+                            continue;
+                        };
+                        if count == 1 && gid == wg.id && at == idx {
+                            continue;
+                        }
+                        moves.push((desc.id, wg.id, idx));
+                    }
+                }
+            }
+        }
+        if moves.is_empty() {
+            return;
+        }
+        let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        for (tab_id, group_id, idx) in moves {
+            tree.place_tab(tab_id, group_id, idx);
+        }
+    }
+
+    /// Test hook for the tab-placement harvest — mirrors the per-frame
+    /// call the update / layout paths make.
+    pub fn tick_tab_placement_harvest_for_tests(&mut self) {
+        self.harvest_widget_tab_placement_into_tree();
     }
 
     /// Snapshot the `(strip_id, group_id, rect)` triples from the live
@@ -6996,6 +7267,10 @@ impl Widget for ShellOverlayHost {
         // Workspace switch first: everything below walks
         // `group_row_ptrs`, and a switch replaces the whole row set.
         let ws_swapped = self.resync_workspace_content();
+        // A tab the user closed since the last frame has to leave the
+        // tree before the resync reads it, or the resync splices the
+        // closed window straight back in.
+        self.harvest_closed_tabs_into_tree();
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Mirror the compositor's live fullscreen state onto the strip rows
         // before the children update, so a promotion/restore is reflected in
@@ -9862,7 +10137,56 @@ impl Widget for ShellOverlayHost {
     /// children clear their own flags this tick — short-circuiting
     /// would leave a stale flag pending in whichever subtree we
     /// skipped.
+    ///
+    /// # The order of the reconcilers below is load-bearing
+    ///
+    /// Four things reconcile the widget rows against the persisted tree,
+    /// and they are not independent. Changing the order, or dropping one,
+    /// does not produce a compile error — it produces a window that comes
+    /// back after being closed, or a live application replaced by a card.
+    ///
+    /// 1. [`Self::harvest_closed_tabs_into_tree`] — tabs the user closed
+    ///    leave the tree. Both reconcilers after it compare widget
+    ///    against tree, and until this runs a closed tab is gone from one
+    ///    and not the other: the group harvest reads that as a group that
+    ///    shrank, and the resync reads it as a tab to splice back.
+    /// 2. [`Self::harvest_widget_only_groups_into_tree`] — groups the
+    ///    widget grew (a tab dragged out into its own window) reach the
+    ///    tree. Before the resync, or it would see "widget has X, tree
+    ///    does not" and evict the group the user just made.
+    /// 3. [`Self::harvest_widget_tab_placement_into_tree`] — which group
+    ///    each tab sits in. After 2, because a tab torn into a brand-new
+    ///    group needs the group to exist before it can be placed in it.
+    /// 4. [`Self::resync_strips_from_tree`] — the tree back onto the
+    ///    rows. Last: everything above is the widget's side of the story,
+    ///    and this is the step that acts on the settled tree.
+    ///
+    /// Between 2 and 3 the tree lists a moved tab **twice** — intact where
+    /// it started, and again in the group it moved to. Step 2 carries the
+    /// real [`crate::shell::state::Tab`] across rather than rebuilding it
+    /// from a widget descriptor (a descriptor has no wayland surface id,
+    /// no terminal session, no document), and that is what makes the
+    /// duplicate harmless: `WorkspaceTree::place_tab` in step 3 keeps
+    /// whichever copy it meets first in tree order, and with step 2 doing
+    /// its job both copies say the same thing. Take that away and which
+    /// copy survives depends on which side of its old neighbours the tab
+    /// was dropped — tear one out to the left and the rebuilt copy is
+    /// first, so the live client is discarded in favour of a stub card.
+    /// `cross_strip_drag::a_tab_dragged_into_its_own_group_keeps_what_was_inside_it`
+    /// pins exactly that arrangement.
+    ///
+    /// [`Self::deferred_tile_swaps`] rides on top of 4 and needs no place
+    /// in this order: it makes the resync run again on a frame where the
+    /// revision did not move, and the swap it is waiting on is gated on
+    /// the tab's recorded signature, which steps 1–3 have already settled
+    /// by the time it is read.
     fn take_structure_dirty(&mut self) -> bool {
+        // Take closed tabs out of the tree first. Both reconcilers
+        // below compare the widget against the tree, and a tab the user
+        // just closed is gone from one and not the other until this
+        // runs — which reads to the group harvest as a group that
+        // shrank and to the resync as a tab to splice back.
+        self.harvest_closed_tabs_into_tree();
         // Mirror any widget-only groups (produced by
         // `GroupRow::split_tab_into_new_group` on drag-detach) back
         // into the persisted tree before `resync_strips_from_tree`
@@ -9870,6 +10194,10 @@ impl Widget for ShellOverlayHost {
         // and evicts X, which was the 2026-07-09 "window group
         // disappears after Ctrl+K" repro.
         self.harvest_widget_only_groups_into_tree();
+        // …then where each tab sits inside those groups. Second,
+        // because a tab torn into a brand-new group needs the group to
+        // exist before it can be placed in it.
+        self.harvest_widget_tab_placement_into_tree();
         // Pump the chrome-revision diff here too — the shots driver's
         // `relayout()` path skips `update()` entirely (it only takes
         // structure_dirty + reruns the layout pass), so the resync
@@ -10687,14 +11015,25 @@ fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f32, t
 /// resolves a group that only exists widget-side (a fresh drag-detach
 /// whose writeback to the tree hasn't landed yet).
 ///
-/// Each tab is reconstructed as a `TileContent::AppPlaceholder` — good
-/// enough for the persisted tree's structural view (id, title,
-/// per-tab `active_tab` pointer). If the underlying kind was
-/// already `AppKind::Other(name)`, we keep the name; anything else
-/// becomes `AppKind::Other(String::new())`, matching the format the
-/// tree's automerge codec already writes for foreign / stub tabs.
+/// A tab the tree already knows is carried over whole, from `known`.
+/// That is the case that matters: a group made by dragging a tab out of
+/// another one is full of tabs the tree has had all along, and what is
+/// *in* them — a wayland client's `surface_id`, the terminal's session,
+/// the document a hosted editor has open — is not recoverable from a
+/// widget-side tab descriptor. Rebuilding from the descriptor turned a
+/// live client into a stub card, re-forked a terminal, and demoted any
+/// hosted app whose tab shows a document name instead of the app's.
+///
+/// Only a tab the tree has never seen is reconstructed, as a
+/// `TileContent::AppPlaceholder` — good enough for the tree's
+/// structural view (id, title, per-tab `active_tab` pointer). If the
+/// underlying kind was already `AppKind::Other(name)`, we keep the
+/// name; anything else becomes `AppKind::Other(String::new())`,
+/// matching the format the tree's automerge codec already writes for
+/// foreign / stub tabs.
 fn build_state_group_from_widget(
     widget: &ui::widget::WindowGroup,
+    known: &std::collections::HashMap<u64, crate::shell::state::Tab>,
 ) -> crate::shell::state::WindowGroup {
     use crate::shell::state::{
         AppKind, Tab, TileContent, WindowGroup as StateGroup, WindowWidth as StateWidth,
@@ -10703,6 +11042,15 @@ fn build_state_group_from_widget(
         .tabs()
         .iter()
         .map(|desc| {
+            if let Some(existing) = known.get(&desc.id) {
+                // The tab moved; it did not become something else. Keep
+                // the tile, take the title from the widget — a pill the
+                // user renamed is a widget-side fact.
+                return Tab {
+                    title: desc.title.clone(),
+                    ..existing.clone()
+                };
+            }
             // Carry the widget-side AppKind hint into the tree so
             // `owns_tab` predicates (Notes / Files / …) can still
             // classify the tab. Fallback to an empty `AppKind::Other`

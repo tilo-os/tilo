@@ -41,6 +41,14 @@
 //! resolved" recovery) or (b) splice it into a new group on the source
 //! strip via `gap_index_for` — both of which silently lose the user's
 //! intent of "move this tab to the OTHER strip".
+//!
+//! The same harness covers the rest of the widget/tree mirror, because
+//! every case is that one seam seen from a different angle: the widget
+//! tree and the persisted tree have to agree about which tabs exist,
+//! which group each one is in, and what is inside it. Every assertion
+//! below is made against **the tree**, not the widget — a widget-only
+//! assertion is what let closing a window look like it worked while the
+//! tree kept the tab and put the window back on the next revision bump.
 
 use std::collections::HashMap;
 
@@ -419,5 +427,757 @@ fn drag_outside_every_strip_returns_tab_to_source_row() {
     assert!(
         dragged_present,
         "dragged tab id {dragged} must remain on strip A on the no-valid-target fallback path"
+    );
+}
+
+/// Every tab id the persisted tree carries, across every workspace,
+/// strip and group. The tree is the thing under test in the assertions
+/// below: the widget can be made to look right by a fade while the tree
+/// still lists a window the user closed.
+fn tree_tab_ids(chrome: &shell::shell::chrome_state::Chrome) -> Vec<u64> {
+    let st = chrome.borrow();
+    let tree = st.tree();
+    tree.workspaces
+        .iter()
+        .flat_map(|ws| ws.strips.iter())
+        .flat_map(|s| s.window_groups.iter())
+        .flat_map(|g| g.tabs.iter())
+        .map(|t| t.id)
+        .collect()
+}
+
+/// Every tab id currently in a live widget row.
+fn widget_tab_ids(host: &ShellOverlayHost) -> Vec<u64> {
+    host.groups_per_strip()
+        .into_iter()
+        .flat_map(|(_, groups)| groups.into_iter())
+        .flat_map(|(_, tabs)| tabs.into_iter())
+        .collect()
+}
+
+/// The id of the group at `idx` in `strip`'s live row.
+fn widget_group_id(host: &ShellOverlayHost, strip: StripId, idx: usize) -> u64 {
+    host.groups_per_strip()
+        .into_iter()
+        .find(|(s, _)| *s == strip)
+        .expect("strip row")
+        .1[idx]
+        .0
+}
+
+/// Closing a tab has to take it out of the persisted tree, not just
+/// fade it off screen.
+///
+/// The close used to be widget-only, and the shell went out of its way
+/// not to bump the chrome revision afterwards because bumping made the
+/// resync splice the still-listed tab straight back — the workaround
+/// that hid the real defect. So this test does exactly what the
+/// workaround was avoiding: it closes a tab and then bumps, which is
+/// what any of the shell's many unrelated `bump()` callers does within
+/// a second of the user closing a window.
+#[test]
+fn closing_a_tab_removes_it_from_the_tree_and_a_bump_does_not_bring_it_back() {
+    let (tree, s_a, _s_b, a_tabs, _b_tabs) = two_strip_two_tab_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+
+    let closed = a_tabs[0];
+    let group_id = widget_group_id(&host, s_a, 0);
+    assert!(
+        tree_tab_ids(&chrome).contains(&closed),
+        "precondition: the tree lists the tab we are about to close"
+    );
+
+    // The production route a tab context menu and the close chord both
+    // take.
+    assert!(
+        host.close_tab_in_group(group_id, Some(closed)),
+        "close_tab_in_group must report the close it started"
+    );
+
+    assert!(
+        !tree_tab_ids(&chrome).contains(&closed),
+        "closing a tab must remove it from the persisted tree; tree still has {:?}",
+        tree_tab_ids(&chrome)
+    );
+
+    // Something else bumps the revision — a width harvest, a peer
+    // arriving, a workspace rename. The resync rebuilds the row from
+    // the tree, and before the tree-side removal existed that is where
+    // the closed window came back.
+    chrome.borrow_mut().bump();
+    let _ = host.take_structure_dirty();
+
+    assert!(
+        !tree_tab_ids(&chrome).contains(&closed),
+        "the tab must stay out of the tree across a revision bump"
+    );
+    assert!(
+        !widget_tab_ids(&host).contains(&closed),
+        "the closed window must not be re-spliced into the widget row by the resync"
+    );
+}
+
+/// The same contract for the route the pointer takes. A click on a
+/// pill's close chip never reaches the shell — it is handled inside
+/// `WindowGroup` — so the tree-side removal has to be harvested at the
+/// frame boundary rather than written by whoever called a shell method.
+/// `take_structure_dirty` is that frame boundary in production.
+#[test]
+fn a_close_started_inside_the_widget_is_harvested_into_the_tree() {
+    let (tree, s_a, _s_b, a_tabs, _b_tabs) = two_strip_two_tab_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+
+    let closed = a_tabs[1];
+    {
+        // Exactly what the close chip's handler does, one layer down.
+        let g = host
+            .group_at_for_tests(s_a, 0)
+            .expect("strip A group 0 widget");
+        assert!(g.request_close_tab(closed));
+    }
+    assert!(
+        tree_tab_ids(&chrome).contains(&closed),
+        "precondition: the widget-side close has not been harvested yet"
+    );
+
+    // One frame boundary.
+    let _ = host.take_structure_dirty();
+
+    assert!(
+        !tree_tab_ids(&chrome).contains(&closed),
+        "the frame-boundary harvest must carry a widget-side close into the tree"
+    );
+
+    chrome.borrow_mut().bump();
+    let _ = host.take_structure_dirty();
+    assert!(
+        !widget_tab_ids(&host).contains(&closed),
+        "and the closed tab must not return on the next bump"
+    );
+}
+
+/// Closing the last tab of a group empties the group in the tree, but
+/// the group is still on screen shrinking out. A revision bump landing
+/// inside that fade must not yank it: the resync's "the tree dropped
+/// this group" rule has to make an exception for a group that is
+/// mid-close, and the widget-only-group harvest has to not write the
+/// empty husk back into the tree.
+#[test]
+fn a_group_closing_its_last_tab_keeps_its_fade_and_is_not_written_back() {
+    let (tree, s_a, _s_b, a_tabs, _b_tabs) = two_strip_two_tab_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+
+    let group_id = widget_group_id(&host, s_a, 0);
+    for tab in a_tabs {
+        assert!(host.close_tab_in_group(group_id, Some(tab)));
+    }
+
+    chrome.borrow_mut().bump();
+    let _ = host.take_structure_dirty();
+
+    // Tree: strip A has no groups left — both its tabs are closed.
+    {
+        let st = chrome.borrow();
+        let t = st.tree();
+        let strip = t.workspaces[0]
+            .strips
+            .iter()
+            .find(|s| s.id == s_a)
+            .expect("strip A in tree");
+        assert!(
+            strip.window_groups.is_empty(),
+            "the tree must drop a group whose last tab was closed, got {:?}",
+            strip
+                .window_groups
+                .iter()
+                .map(|g| (g.id, g.tabs.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // Widget: the group is still present, playing its close fade, and
+    // it holds no tabs.
+    let widget_a = host
+        .groups_per_strip()
+        .into_iter()
+        .find(|(s, _)| *s == s_a)
+        .expect("strip A")
+        .1;
+    assert_eq!(
+        widget_a.len(),
+        1,
+        "the closing group must stay on screen for its fade, not pop out"
+    );
+    assert!(
+        widget_a[0].1.is_empty(),
+        "the closing group must be empty — its tabs are closed"
+    );
+}
+
+/// One strip, one group, two tabs whose contents cannot be recovered
+/// from a tab descriptor: a live wayland client (identified only by its
+/// `surface_id`) and a hosted app whose pill shows the document's name
+/// rather than the app's, so the title-matching table has nothing to
+/// match on.
+///
+/// Both are the shapes the widget→tree harvest used to guess at, and
+/// both guesses are wrong in a way the user sees.
+fn foreign_and_document_titled_tree() -> (WorkspaceTree, StripId, GroupId, u64, u64, u64) {
+    let ws_id = WorkspaceId::new();
+    let strip_id = StripId::new();
+    let group: GroupId = 1001;
+    let foreign_tab: u64 = 31;
+    let hosted_tab: u64 = 32;
+    let surface: u64 = 4242;
+
+    let strip = Strip {
+        id: strip_id,
+        name: "Strip".into(),
+        window_groups: vec![WindowGroup {
+            id: group,
+            tabs: vec![
+                Tab {
+                    id: foreign_tab,
+                    title: "Inkscape".into(),
+                    tile: TileContent::Foreign {
+                        app_id: "org.inkscape.Inkscape".into(),
+                        surface_id: surface,
+                    },
+                },
+                Tab {
+                    id: hosted_tab,
+                    // The pill shows what the app has open, which is
+                    // what the title-matching recovery cannot invert.
+                    title: "Meeting notes".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Notes".into()),
+                        label: "Notes".into(),
+                    },
+                },
+            ],
+            active_tab: foreign_tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+        }],
+    };
+    let ws = Workspace {
+        strips: vec![strip],
+        ..Workspace::test_default(ws_id, "Test")
+    };
+    let mut active_strip = HashMap::new();
+    active_strip.insert(ws_id, strip_id);
+    let mut active_group = HashMap::new();
+    active_group.insert(strip_id, group);
+    let tree = WorkspaceTree {
+        workspaces: vec![ws],
+        active: ws_id,
+        active_strip,
+        active_group,
+        collaborators: vec![],
+        ..Default::default()
+    };
+    (tree, strip_id, group, foreign_tab, hosted_tab, surface)
+}
+
+/// Every persisted tile the tree holds under `tab_id`.
+///
+/// Plural on purpose. A tab should appear once, and the assertions
+/// below check every copy rather than the first one found — reading
+/// only the first is how a rebuilt-and-wrong copy hides behind an
+/// intact one the reconciler forgot to remove.
+fn tree_tiles(chrome: &shell::shell::chrome_state::Chrome, tab_id: u64) -> Vec<TileContent> {
+    let st = chrome.borrow();
+    let tree = st.tree();
+    tree.workspaces
+        .iter()
+        .flat_map(|ws| ws.strips.iter())
+        .flat_map(|s| s.window_groups.iter())
+        .flat_map(|g| g.tabs.iter())
+        .filter(|t| t.id == tab_id)
+        .map(|t| t.tile.clone())
+        .collect()
+}
+
+/// Dragging a tab out into its own group must not change what is inside
+/// it.
+///
+/// The detach hands the live `TileHost` straight to the new group, so
+/// the *widget* is fine for exactly as long as nothing bumps the chrome
+/// revision. What broke it was the writeback: the harvest rebuilt the
+/// tab out of the widget's descriptor — id, title, app kind — and wrote
+/// that back into the tree. A client's `surface_id` and a hosted app's
+/// identity are not in a descriptor, so both were lost, and the next
+/// resync noticed the tree's tile no longer matched what was on screen
+/// and "corrected" the screen: a live window became a stub card.
+///
+/// The tab is torn out to the **left** of the group it came from, and
+/// that is load-bearing. The group harvest writes the new group into
+/// the tree at the widget's index, and until the placement harvest runs
+/// the tree lists the tab twice — once intact where it started, once
+/// rebuilt in the group it was torn into. `WorkspaceTree::place_tab`
+/// then keeps whichever copy it meets first in tree order. Tearing to
+/// the right leaves the intact copy first, so the rebuild is discarded
+/// and this test would pass with the fix removed; tearing to the left
+/// puts the rebuilt copy first, which is the arrangement that actually
+/// exercises what this commit repairs. See the ordering note on
+/// `ShellOverlayHost::take_structure_dirty`.
+#[test]
+fn a_tab_dragged_into_its_own_group_keeps_what_was_inside_it() {
+    let (tree, strip_id, _group, foreign_tab, hosted_tab, surface) =
+        foreign_and_document_titled_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    // One production frame, so the resync's per-tab tile memo is
+    // populated exactly as it is by the time a user gets to drag
+    // anything.
+    let _ = host.take_structure_dirty();
+
+    let bound_to_surface = |tiles: &[TileContent]| {
+        !tiles.is_empty()
+            && tiles.iter().all(
+                |t| matches!(t, TileContent::Foreign { surface_id, .. } if *surface_id == surface),
+            )
+    };
+    assert!(
+        bound_to_surface(&tree_tiles(&chrome, foreign_tab)),
+        "precondition: the tree binds the tab to the client's surface"
+    );
+
+    // Drag the client's tab out into its own window, the way a drop in
+    // the gap between two groups does. Gap 0 — to the left of the group
+    // it came from; see the note above for why that side matters.
+    {
+        let row = host
+            .group_row_mut_for_tests(strip_id)
+            .expect("the strip's live row");
+        assert!(
+            row.split_tab_into_new_group(0, foreign_tab, 0),
+            "the detach itself must succeed"
+        );
+    }
+    // The frame boundary that writes the new group back into the tree.
+    let _ = host.take_structure_dirty();
+
+    assert!(
+        bound_to_surface(&tree_tiles(&chrome, foreign_tab)),
+        "the detached tab must still be bound to the client's surface, got {:?}",
+        tree_tiles(&chrome, foreign_tab)
+    );
+
+    // The hosted tab stayed where it was, and must be untouched too —
+    // the harvest rebuilt every tab of the group it wrote, not just the
+    // one that moved.
+    let hosted = tree_tiles(&chrome, hosted_tab);
+    assert!(
+        !hosted.is_empty()
+            && hosted.iter().all(|t| matches!(
+                t,
+                TileContent::Stub { kind: AppKind::Other(name), .. } if name == "Notes"
+            )),
+        "a tab whose pill shows a document name must keep its app, got {hosted:?}"
+    );
+
+    // Now something bumps the revision. The resync compares each tab's
+    // memoised tile against the tree's, and this is where a tree tile
+    // that had been guessed at reached the screen.
+    chrome.borrow_mut().bump();
+    let _ = host.take_structure_dirty();
+
+    // Nothing was rebuilt. The tile the tree carries is the one the
+    // widget is already showing, so the resync has no swap to make, and
+    // a swap here *is* the defect — it is the step that throws the live
+    // client away and puts a card in its place.
+    assert_eq!(
+        host.last_resync_content_swaps(),
+        0,
+        "the bump must not rebuild the detached window's contents"
+    );
+
+    // And what the tab hosts is still a live app widget rather than a
+    // card standing in for one.
+    //
+    // Asserted by shape, never by name. `TileHost::kind_string` reports
+    // a hosted app's own title, and this client's title is the same word
+    // as its tab's — so the live window and a stub rebuilt from that
+    // tab's descriptor can print the same string, and a name-based
+    // assertion cannot tell the fix from the failure. This assertion
+    // used to read `["App"]`, back when a hosted app reported that
+    // constant instead of its name.
+    let group = host
+        .group_at_for_tests(strip_id, 0)
+        .expect("the detached tab's new group");
+    let hosts_live_app = group
+        .host_for_tab_mut(foreign_tab)
+        .map(|h| matches!(h.content(), ui::widget::TileContent::App(_)))
+        .unwrap_or(false);
+    assert!(
+        hosts_live_app,
+        "the detached window must still be the live client, not a stub card; \
+         the tile reports {:?}",
+        group.tile_kind_labels_for_tests()
+    );
+}
+
+/// Where the tree says `tab_id` is: the id of every group holding a
+/// copy of it, in tree order.
+fn tree_groups_holding(chrome: &shell::shell::chrome_state::Chrome, tab_id: u64) -> Vec<GroupId> {
+    let st = chrome.borrow();
+    let tree = st.tree();
+    tree.workspaces
+        .iter()
+        .flat_map(|ws| ws.strips.iter())
+        .flat_map(|s| s.window_groups.iter())
+        .filter(|g| g.tabs.iter().any(|t| t.id == tab_id))
+        .map(|g| g.id)
+        .collect()
+}
+
+/// Two groups on one strip. Dragging a tab from one into the other has
+/// to move it in the tree, or the drop undoes itself.
+fn one_strip_two_group_tree() -> (WorkspaceTree, StripId, GroupId, GroupId, [u64; 3]) {
+    let ws_id = WorkspaceId::new();
+    let strip_id = StripId::new();
+    let left: GroupId = 1001;
+    let right: GroupId = 1002;
+    let tabs: [u64; 3] = [41, 42, 43];
+
+    let mk_tab = |id: u64, label: &str| Tab {
+        id,
+        title: label.into(),
+        tile: TileContent::Stub {
+            kind: AppKind::Other("Test".into()),
+            label: label.into(),
+        },
+    };
+    let strip = Strip {
+        id: strip_id,
+        name: "Strip".into(),
+        window_groups: vec![
+            WindowGroup {
+                id: left,
+                tabs: vec![mk_tab(tabs[0], "L1"), mk_tab(tabs[1], "L2")],
+                active_tab: tabs[0],
+                width: WindowWidth::Normal,
+                maximized: false,
+            },
+            WindowGroup {
+                id: right,
+                tabs: vec![mk_tab(tabs[2], "R1")],
+                active_tab: tabs[2],
+                width: WindowWidth::Normal,
+                maximized: false,
+            },
+        ],
+    };
+    let ws = Workspace {
+        strips: vec![strip],
+        ..Workspace::test_default(ws_id, "Test")
+    };
+    let mut active_strip = HashMap::new();
+    active_strip.insert(ws_id, strip_id);
+    let mut active_group = HashMap::new();
+    active_group.insert(strip_id, left);
+    let tree = WorkspaceTree {
+        workspaces: vec![ws],
+        active: ws_id,
+        active_strip,
+        active_group,
+        collaborators: vec![],
+        ..Default::default()
+    };
+    (tree, strip_id, left, right, tabs)
+}
+
+/// Moving a tab between two groups of the same strip has to reach the
+/// tree.
+///
+/// It never did: the widget row spliced the tab across on the drop, and
+/// the tree's only tab-move refused a move whose source and destination
+/// strips are the same. So the next revision bump rebuilt the row from
+/// a tree that still had the tab where it started, and the move undid
+/// itself — "works visually at first and then weirdly reverts".
+#[test]
+fn a_tab_moved_between_groups_of_one_strip_stays_moved() {
+    let (tree, strip_id, left, right, tabs) = one_strip_two_group_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    let _ = host.take_structure_dirty();
+
+    let moved = tabs[1];
+    assert_eq!(
+        tree_groups_holding(&chrome, moved),
+        vec![left],
+        "precondition: the tree has the tab in the left group"
+    );
+
+    // The drop itself: `GroupRow`'s sibling-bar and sibling-tile
+    // branches both end in exactly this pair of calls.
+    {
+        let row = host
+            .group_row_mut_for_tests(strip_id)
+            .expect("the strip's live row");
+        let (desc, tile) = row.groups[0]
+            .detach_tab(moved)
+            .expect("the tab must detach from the left group");
+        row.groups[1].insert_detached_tab(0, desc, tile);
+    }
+
+    // One frame boundary carries it into the tree.
+    let _ = host.take_structure_dirty();
+    assert_eq!(
+        tree_groups_holding(&chrome, moved),
+        vec![right],
+        "the move must reach the tree, in exactly one group"
+    );
+
+    // And now the bump that used to undo it.
+    chrome.borrow_mut().bump();
+    let _ = host.take_structure_dirty();
+
+    assert_eq!(
+        tree_groups_holding(&chrome, moved),
+        vec![right],
+        "the tree must still have the tab in the group it was dropped on"
+    );
+    let widget = host
+        .groups_per_strip()
+        .into_iter()
+        .find(|(s, _)| *s == strip_id)
+        .expect("strip row")
+        .1;
+    let widget_holder = widget
+        .iter()
+        .find(|(_, ts)| ts.contains(&moved))
+        .map(|(gid, _)| *gid);
+    assert_eq!(
+        widget_holder,
+        Some(right),
+        "and the resync must not pull it back to the group it came from; row is {widget:?}"
+    );
+}
+
+/// The same contract for a tab torn out into a group of its own beside
+/// its neighbours. The group harvest already wrote the new group into
+/// the tree, but it copied the tab in rather than moving it — so the
+/// tree listed the same tab twice, in the group it came from and the
+/// group it went to, and whichever one a reader happened to find first
+/// decided what the user got.
+#[test]
+fn a_tab_torn_into_its_own_group_leaves_the_group_it_came_from() {
+    let (tree, strip_id, left, _right, tabs) = one_strip_two_group_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    let _ = host.take_structure_dirty();
+
+    let torn = tabs[0];
+    {
+        let row = host
+            .group_row_mut_for_tests(strip_id)
+            .expect("the strip's live row");
+        assert!(
+            row.split_tab_into_new_group(0, torn, 1),
+            "the tear-out itself must succeed"
+        );
+    }
+    let _ = host.take_structure_dirty();
+
+    let holders = tree_groups_holding(&chrome, torn);
+    assert_eq!(
+        holders.len(),
+        1,
+        "a tab exists once; the tree lists it in {holders:?}"
+    );
+    assert_ne!(
+        holders[0], left,
+        "and not in the group it was torn out of"
+    );
+
+    chrome.borrow_mut().bump();
+    let _ = host.take_structure_dirty();
+    assert_eq!(
+        tree_groups_holding(&chrome, torn),
+        holders,
+        "the tear-out must survive a revision bump"
+    );
+}
+
+/// The first frame after boot must not rebuild the app in every
+/// restored tab.
+///
+/// The resync only swaps a tab's contents when its memo disagrees with
+/// the tree, and the memo was written nowhere but the resync itself —
+/// so on the first frame there was no memo for any restored tab and
+/// every one of them was rebuilt. A rebuilt tab is not a cosmetic
+/// problem: the tile is constructed from scratch, which re-forks a
+/// terminal's shell and re-reads a file pane's directory, on the render
+/// thread, in the frame the user is waiting for.
+///
+/// It leaves no trace afterwards — the rebuilt widget has the same
+/// shape as the one it replaced — which is why the assertion is on the
+/// count of swaps the resync performed.
+#[test]
+fn the_first_frame_after_boot_rebuilds_nothing() {
+    let (tree, _s_a, _s_b, _a_tabs, _b_tabs) = two_strip_two_tab_tree();
+    let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+
+    // The first production frame — this is the one that used to rebuild
+    // all four restored tabs.
+    let _ = host.take_structure_dirty();
+
+    assert_eq!(
+        host.last_resync_content_swaps(),
+        0,
+        "the widget rows were built from this very tree; nothing in them has changed yet"
+    );
+}
+
+/// The same for the frame after a workspace switch, which rebuilds the
+/// rows from a snapshot for exactly the same reason and left the memo
+/// describing the workspace the user just left.
+#[test]
+fn switching_workspaces_rebuilds_nothing_in_the_workspace_switched_to() {
+    let (mut tree, _s_a, _s_b, _a_tabs, _b_tabs) = two_strip_two_tab_tree();
+
+    // A second workspace with its own strip and its own open tab.
+    let other_ws = WorkspaceId::new();
+    let other_strip = StripId::new();
+    let other_group: GroupId = 3001;
+    let other_tab: u64 = 51;
+    tree.workspaces.push(Workspace {
+        strips: vec![Strip {
+            id: other_strip,
+            name: "Other".into(),
+            window_groups: vec![WindowGroup {
+                id: other_group,
+                tabs: vec![Tab {
+                    id: other_tab,
+                    title: "O1".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Test".into()),
+                        label: "O1".into(),
+                    },
+                }],
+                active_tab: other_tab,
+                width: WindowWidth::Normal,
+                maximized: false,
+            }],
+        }],
+        ..Workspace::test_default(other_ws, "Other")
+    });
+    tree.active_strip.insert(other_ws, other_strip);
+    tree.active_group.insert(other_strip, other_group);
+
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    let _ = host.take_structure_dirty();
+
+    // Switch. The content root and every row is rebuilt from the tree.
+    {
+        let mut st = chrome.borrow_mut();
+        st.tree_mut().active = other_ws;
+        st.bump();
+    }
+    let _ = host.take_structure_dirty();
+
+    assert_eq!(
+        host.last_resync_content_swaps(),
+        0,
+        "the rows for the new workspace were just built from it; nothing needs rebuilding"
+    );
+}
+
+/// A cross-strip move whose destination strip has gone away must cost
+/// the move, not the window.
+///
+/// The move removed the tab from the source first and only then looked
+/// for the destination. When the destination had gone — a strip closed
+/// between the drag starting and the harvest tick that mirrors it — the
+/// removed tab had nowhere to go and was dropped on the floor. The
+/// comment at the refusal promised a re-attach to the source as a
+/// recovery; there was no re-attach, the synthesised group was simply
+/// let go of, and the window disappeared.
+#[test]
+fn a_cross_strip_move_to_a_strip_that_is_gone_keeps_the_tab() {
+    let (mut tree, s_a, s_b, a_tabs, _b_tabs) = two_strip_two_tab_tree();
+    // The destination went away. This is the state the harvest finds
+    // when a strip is closed while a tab is in flight towards it.
+    tree.workspaces[0].strips.retain(|s| s.id != s_b);
+
+    let moved = a_tabs[0];
+    let before: Vec<u64> = tree.workspaces[0]
+        .strips
+        .iter()
+        .flat_map(|s| s.window_groups.iter())
+        .flat_map(|g| g.tabs.iter())
+        .map(|t| t.id)
+        .collect();
+    assert!(before.contains(&moved), "precondition: the tab is on strip A");
+
+    assert!(
+        !tree.move_tab_across_strips(s_a, s_b, moved),
+        "a move to a strip that no longer exists must be refused"
+    );
+
+    let after: Vec<u64> = tree.workspaces[0]
+        .strips
+        .iter()
+        .flat_map(|s| s.window_groups.iter())
+        .flat_map(|g| g.tabs.iter())
+        .map(|t| t.id)
+        .collect();
+    assert_eq!(
+        after, before,
+        "a refused move must leave every tab exactly where it was"
+    );
+}
+
+/// A cross-strip move has to land in the same place in the room
+/// document as it does in the cache.
+///
+/// It did not. The cache appended a brand-new window group carrying the
+/// moved tab; the doc appended the tab to whatever group happened to be
+/// first on the destination strip. Rebuilding the cache from the doc —
+/// which a restore-from-history does, and which only ever adds — then
+/// put the tab in the first group as well as the one the cache had made
+/// for it, and the same window was open twice.
+#[test]
+fn a_cross_strip_move_lands_in_the_same_group_in_the_document_as_in_the_cache() {
+    let (mut tree, s_a, s_b, a_tabs, _b_tabs) = two_strip_two_tab_tree();
+    tree.seed_doc_from_cache();
+
+    let moved = a_tabs[0];
+    assert!(
+        tree.move_tab_across_strips(s_a, s_b, moved),
+        "the move itself must succeed"
+    );
+
+    let holders = |t: &WorkspaceTree| -> Vec<GroupId> {
+        t.workspaces
+            .iter()
+            .flat_map(|ws| ws.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .filter(|g| g.tabs.iter().any(|tab| tab.id == moved))
+            .map(|g| g.id)
+            .collect()
+    };
+    let after_move = holders(&tree);
+    assert_eq!(
+        after_move.len(),
+        1,
+        "precondition: the cache has the moved tab in exactly one group"
+    );
+
+    // What a restore-from-history does: rewrite the document, then
+    // bring the cache back in line with it.
+    tree.resync_cache_from_doc();
+
+    assert_eq!(
+        holders(&tree),
+        after_move,
+        "reading the document back must not open the same window a second time"
     );
 }
