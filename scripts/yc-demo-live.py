@@ -1457,6 +1457,25 @@ def _the_owners_half(q, shots: str, instruction: str,
     stop.wait(0.4)
 
     mark("Files opens")
+    # Granted before it starts, not asked for after.
+    #
+    # The file manager's sandbox is built at launch, so a capability
+    # granted to a process already running changes the list and not the
+    # mount: the prompt appears, the answer is recorded, and the window
+    # still says "No such file or directory" about a directory that is
+    # right there. Granting first means the bind exists when the process
+    # does.
+    #
+    # And a permission dialog is not this film's subject. The capability
+    # model gets its own beat, with a grant somebody actually watches
+    # being made; a modal in front of the file manager during a different
+    # scene is an interruption that teaches nothing.
+    yc.claim(
+        "the file manager may read the home it is about to show",
+        q.grant(f"app:{yc.FILES_APP}", f"fs:{q.home}", "write")
+         .get("answer", {}).get("granted") is not None,
+        True,
+    )
     files = q.launch(yc.FILES_APP, search="files", via="palette", look=0.45)
     yc.claim("Files opened", files is not None, True)
     stop.wait(0.4)
@@ -1901,6 +1920,20 @@ def main() -> int:
     xaver = by_name.get("xaver")
     agent = by_name.get("Claude")
     yc.SESSIONS = sessions
+
+    # Who types into the window decides its keymap, not who owns it.
+    #
+    # `--self-test` means the rig writes the notes and the instruction
+    # itself, through `type`, which emits one US evdev keycode per
+    # character. Pinned to the operator's German layout, keycode 39 with
+    # shift is `Ö` and keycode 12 is `ß` — so the document filled up with
+    # `ClaudeÖ make this square` and `ß DoorsÖ 18Ö00`, on camera, and the
+    # agent (which matches the literal `claude:`) saw nothing addressed
+    # to it. Under `--no-instruction`, where a person's hands are on the
+    # keys, the operator's layout is exactly right and stays.
+    for s in sessions:
+        if hasattr(s, "typed_by_a_person"):
+            s.typed_by_a_person = not args.self_test
 
     if not args.dry_run:
         area = ins.work_area() or (yc.VIDEO_W, yc.VIDEO_H)

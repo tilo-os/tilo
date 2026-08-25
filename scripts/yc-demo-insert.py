@@ -223,6 +223,20 @@ class WindowedSession(yc.Session):
     #: flight panics the present thread, so the only safe way to record
     #: at the video's own resolution is to open the window at it.
     window_size: str | None = None
+    #: Whether a person's hands are on the keyboard for this session.
+    #:
+    #: Having a window is not the same as being typed into by a human.
+    #: Under `--self-test` the rig types into this very session, and
+    #: `type` emits one US evdev keycode per character — so pinning the
+    #: operator's German layout here turned `Claude:` into `ClaudeÖ` and
+    #: the bullet `-` into `ß`, in the window with the camera on it. The
+    #: agent matches the literal `claude:` and saw no instruction at all;
+    #: nothing errored, the text simply said something else.
+    #:
+    #: So the layout follows *who types*, not *who has a window*. A
+    #: person gets their hardware's map; the rig gets the one
+    #: `evdev_from_char` was written against.
+    typed_by_a_person: bool = True
 
     def start(self) -> None:
         real_popen = subprocess.Popen
@@ -252,7 +266,13 @@ class WindowedSession(yc.Session):
             # a client resolving them through a German map turns
             # `Claude:` into `ClaudeÖ` -- which the agent, matching a
             # literal `claude:`, never recognises. See `yc.pin_keyboard`.
-            yc.pin_keyboard(env)
+            #
+            # And not when the rig is the one typing into this window
+            # either: `--self-test` drives the owner's half itself, which
+            # is the same US keycodes into the same German map, in the
+            # session the camera is pointed at.
+            if self.typed_by_a_person:
+                yc.pin_keyboard(env)
             env["WINIT_UNIX_BACKEND"] = "x11"
             env.pop("WAYLAND_DISPLAY", None)
             if self.bus_address:
