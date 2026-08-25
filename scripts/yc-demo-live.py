@@ -586,6 +586,14 @@ class Live:
         #: first tick that finds it working, rather than on every poll.
         self.marked_agent_wait = False
         self.watched_it_think = False
+        #: When the agent said it had been spoken to, and every state it
+        #: went on to put in the room, as `(at, state)`. The second is
+        #: what the camera is pointed at during the wait and the only
+        #: measure of whether that was worth doing.
+        self.spoken_to_at = 0.0
+        self.chat_posts: list[tuple[float, str]] = []
+        #: Whose screen chat was framed on, or None if it never was.
+        self.framed_chat_on: str | None = None
         self.finished = ""
 
         self.started = time.time()
@@ -1038,12 +1046,44 @@ class Live:
     #: deciding, which is most of the wait and all of the dead air.
     SPOKEN_TO = re.compile(r"\bspoken to in the room\b")
 
+    #: The agent, having put a state in the room. `note_work` logs one
+    #: of these every time it publishes an `AgentWork` into the
+    #: conversation, and only then — a state taken, an operation chosen,
+    #: a row appended to the trace, a refusal written. One line per
+    #: thing a person reading the thread would watch change, which makes
+    #: it both the cue to point the camera at chat and the only honest
+    #: measure of whether chat was worth pointing it at.
+    POSTED = re.compile(r"put the agent's state in the room.*?state: (\w+)")
+
     def check_the_agent(self) -> None:
         """Whether it has done anything, and whether it has finished."""
         fresh = self.agent_tail.read() if self.agent_tail else ""
-        if not self.watched_it_think and self.SPOKEN_TO.search(fresh):
-            self.watched_it_think = True
-            self.watch_it_think()
+        if not self.spoken_to_at and self.SPOKEN_TO.search(fresh):
+            self.spoken_to_at = time.time()
+            self.say("Claude has been spoken to in the room and is deciding")
+        # Counted off the whole log rather than off this poll's chunk. A
+        # read lands wherever the writer had got to, so a line can arrive
+        # in two halves — and half of one of these carries neither the
+        # message nor the state, so it would be lost rather than counted
+        # late. `LogTail.text` is everything read so far, and the line is
+        # whole in it by the next poll.
+        seen = self.POSTED.findall(self.agent_tail.text) if self.agent_tail \
+            else []
+        for state in seen[len(self.chat_posts):]:
+            # Reframed off the first *publish* rather than off "spoken
+            # to", which is a moment earlier and on one path only: the
+            # branch that answers a summons naming an app whose state
+            # has not arrived writes `Waiting` into the room and returns
+            # without ever logging that it was spoken to. Firing here
+            # covers that, and buys the stronger property besides —
+            # nothing points the camera at chat until chat has something
+            # in it that the agent put there.
+            self.chat_posts.append((time.time(), state))
+            self.say(f"Claude put {state} in the room "
+                     f"({len(self.chat_posts)} so far)")
+            if not self.watched_it_think:
+                self.watched_it_think = True
+                self.watch_it_think()
         hit = self.APPLIED.search(fresh)
         if hit and not self.agent_applied:
             self.agent_applied = True
@@ -1052,6 +1092,7 @@ class Live:
             return
         code = self.agent_proc.returncode
         self.agent_done_at = time.time()
+        self.report_the_wait()
         if code == 0:
             yc.claim("the agent answered an instruction written to it "
                      "in the document", self.agent_applied, True)
@@ -1082,33 +1123,102 @@ class Live:
         dead air.
 
         Done here rather than earlier because this is the first moment
-        it is safe: the trigger is the agent's own log saying it was
-        spoken to, so the remark has been written and sent. Reframing
-        any sooner would move a window out from under whoever was still
-        right-clicking in it.
+        it is safe: the trigger is the agent having published a state
+        into the room, so the remark has been written, sent, and
+        answered. Reframing any sooner would move a window out from
+        under whoever was still right-clicking in it -- under
+        `--no-instruction` that gesture is a person's hand, and the
+        agent's process has been running since before they reached for
+        the mouse, so process start is exactly the cue that must not be
+        used.
 
-        The camera is already on xaver -- `his_instruction` cut to him
-        and stays -- so this is a reframe within his strip and not
-        another cut. Losing it costs the shot its subject and nothing
-        else, so a failure here is reported and the take goes on.
+        Whose screen this happens on is asked rather than assumed. It
+        was xaver's, because the one path that reaches here cut to him
+        and stayed -- but the film is on quinten for every take without
+        a second machine in it, and pointing at xaver's chat then
+        reframed a window nobody was looking at while the screen that
+        was on camera went on showing a still page. So the reframe
+        follows the camera, and a screen with no chat window on it is
+        said out loud rather than silently skipped.
+
+        Losing this costs the shot its subject and nothing else, so a
+        failure here is reported and the take goes on.
         """
-        if self.recorder is None or self.x is None:
+        if self.recorder is None:
+            return
+        on = self.recorder.on_camera()
+        if on is None:
             return
         try:
-            if yc.best_tile(self.x, yc.CHAT_APP, yc.VIEWPORT) is None:
-                yc.gap("no chat window is on screen, so the agent's account "
-                       "of what it is doing has nowhere to be read and the "
-                       "wait is filmed as a still page")
+            if yc.best_tile(on, yc.CHAT_APP, yc.VIEWPORT) is None:
+                yc.gap(f"no chat window is on {on.name}'s screen, which is "
+                       f"the one being filmed, so the agent's account of "
+                       f"what it is doing has nowhere to be read and the "
+                       f"wait is filmed as a still page")
                 return
-            yc.frame_one_window(self.x, yc.CHAT_APP)
-            self.say("framing chat — Claude says what it is doing there as "
-                     "it does it")
-            self.x.snapshot(os.path.join(
+            yc.frame_one_window(on, yc.CHAT_APP)
+            self.framed_chat_on = on.name
+            self.say(f"framing chat on {on.name}'s screen — Claude says what "
+                     f"it is doing there as it does it")
+            on.snapshot(os.path.join(
                 self.shots,
                 f"claude-thinking-{int(time.time() - self.started):04d}.png"))
         except Exception as exc:  # noqa: BLE001
             yc.gap(f"the camera could not be pointed at chat for the agent's "
                    f"working period ({type(exc).__name__}: {exc})")
+
+    #: How many things the agent has to put in the room before the
+    #: stretch it spends deciding counts as filled. Three is the least
+    #: that reads as motion rather than as one thing appearing: a state
+    #: taken, what it decided the request was, and how it ended.
+    ENOUGH_TO_WATCH = 3
+
+    def report_the_wait(self) -> None:
+        """What was on screen while the agent decided, and how often it moved.
+
+        The longest stretch in this film and the one nothing will
+        shorten, so the only question a take can answer about it is
+        whether anything changed while it ran. Counted off the agent's
+        own publishes and not off the frames: two frames differ whenever
+        a caret blinks, and a caret blinking is not the agent saying
+        anything.
+
+        Said as a gap rather than a failure when it is thin. The take is
+        still worth having and the readback is still the claim -- but a
+        still page held for half a minute is a defect of the film, and a
+        transcript that does not name it is how it goes on being filmed.
+        """
+        began = self.spoken_to_at or (self.chat_posts[0][0]
+                                      if self.chat_posts else 0.0)
+        if not self.chat_posts:
+            # Worth separating, because the two have different remedies.
+            # An instruction written as a line in the document is read by
+            # `act_in_document`, which opens no record in the room at
+            # all -- so there is nothing for a camera to find in chat,
+            # however well it is pointed. Only a summons carried by a
+            # message (the right-click compose surface, which is the
+            # gesture the film is built on) reaches `carry_out`, and only
+            # `carry_out` narrates.
+            how = ("the instruction reached it as a line in the document, "
+                   "and that path opens no record in the room"
+                   if not self.spoken_to_at else
+                   "it was spoken to and published nothing")
+            yc.gap(f"Claude put nothing in the room while it worked, so its "
+                   f"whole working period was filmed as a still page — "
+                   f"{how}")
+            return
+        span = self.chat_posts[-1][0] - (began or self.chat_posts[0][0])
+        states = ", ".join(s for _t, s in self.chat_posts)
+        self.say(f"Claude's working period carried {len(self.chat_posts)} "
+                 f"change(s) over {span:.0f}s: {states}")
+        if self.framed_chat_on is None:
+            yc.gap("Claude narrated itself in the room and the camera was "
+                   "never pointed at it, so the take has the account and "
+                   "not the shot")
+        if len(self.chat_posts) < self.ENOUGH_TO_WATCH:
+            yc.gap(f"{len(self.chat_posts)} change(s) over {span:.0f}s is "
+                   f"not enough to hold a stretch that long — the frame is "
+                   f"still for most of it")
 
     def read_back_what_it_wrote(self) -> None:
         """Ask the document what is in it, rather than the log what happened.
