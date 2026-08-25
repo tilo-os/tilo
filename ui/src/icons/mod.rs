@@ -748,6 +748,64 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
     }
 }
 
+/// Map an application id to the glyph that stands for it.
+///
+/// Every app qOS ships has an id of the form `dev.qos.<name>`; this
+/// matches on the trailing segment so a fully-qualified id and a bare
+/// name resolve alike. Anything unrecognised — a third-party app, a
+/// host app — falls back to [`Icon::LayoutGrid`], which is already what
+/// "an application" looks like everywhere else in the shell.
+///
+/// A fallback that says *application* is the point. The surface this
+/// was written for painted a flat accent-coloured square for every app
+/// and called it a placeholder, and what reached the screen was a blank
+/// blue rectangle where a program's mark should be: it told the person
+/// being asked for a permission nothing at all about who was asking.
+/// A glyph that is only roughly right still answers that; an empty
+/// square does not.
+///
+/// Several apps share a glyph, deliberately. There is no lucide mark
+/// that distinguishes a spreadsheet from a document better than the
+/// pair here does, and inventing one per app would put 45 hand-drawn
+/// shapes in a table nobody can keep consistent.
+pub fn icon_for_app_id(app_id: &str) -> Icon {
+    let name = app_id.rsplit('.').next().unwrap_or(app_id);
+    match name {
+        "file-explorer" => Icon::Folder,
+        "terminal" => Icon::Terminal,
+        "code-editor" | "hex-editor" => Icon::Code,
+        "snippets" => Icon::FileCode,
+        "word-processor" | "typst-editor" | "pdf-viewer" | "ebook" => Icon::FileText,
+        "notes" => Icon::Pencil,
+        "logs" => Icon::List,
+        "slides" => Icon::Monitor,
+        "containers" | "git-client" => Icon::Layers,
+        "diffmerge" => Icon::Copy,
+        "mail" => Icon::Mail,
+        "chat" => Icon::Reply,
+        "api-tester" => Icon::Send,
+        "feeds" => Icon::Bell,
+        "contacts" | "calendar" => Icon::Calendar,
+        "camera" => Icon::Camera,
+        "photos" => Icon::Image,
+        "music" => Icon::Music,
+        "tube" | "video-player" | "video-editor" => Icon::Film,
+        "weather" => Icon::Sun,
+        "monitor" => Icon::BarChart,
+        "settings" | "themes" => Icon::Settings,
+        "disks" | "imager" | "db-client" => Icon::HardDrive,
+        "backups" => Icon::Archive,
+        "firewall" | "vpn" | "totp" => Icon::Shield,
+        "store" | "software-store" => Icon::CloudDownload,
+        "browser" => Icon::ExternalLink,
+        "remote" => Icon::Monitor,
+        "osk" => Icon::ArrowBigUp,
+        "search" => Icon::Search,
+        "agent" => Icon::Bot,
+        _ => Icon::LayoutGrid,
+    }
+}
+
 /// Map a filesystem entry to the most appropriate [`Icon`].
 ///
 /// Directories always resolve to [`Icon::Folder`]. Files are classified
