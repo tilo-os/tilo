@@ -25,12 +25,21 @@ palette-app-subtitle-remote-plain = { $hint } · from { $registry }
 ## started. Retired when its window appears, or replaced by why it
 ## could not be.
 notice-opening-app = Opening { $app }
+notice-opening-body = Loading…
 notice-fetch-connecting = Contacting { $registry }…
 notice-fetch-downloading = Downloading — { $done } of { $total }
 notice-fetch-downloading-unsized = Downloading — { $done }
 notice-fetch-unpacking = Checking and unpacking…
 notice-fetch-starting = Starting…
 notice-open-failed = Couldn't open { $app }
+
+## How an open ends when no window ever arrived. An indication that
+## simply goes on saying "Loading…" is the same defect as one that
+## never appeared: it reports progress that never resolves, and a
+## launch that failed then looks exactly like one that worked.
+notice-open-gave-up = { $app } didn't open
+notice-open-gave-up-body = It was started, but no window appeared.
+notice-open-stopped-early-body = It started and then stopped without opening a window.
 
 ## The word beside a collaborator who is not a person. Lower-case: it
 ## is a tag next to a name, not a sentence, and it sits beside the

@@ -217,74 +217,63 @@ pub struct TabDescriptor {
     /// text-only pill — used for tests and for any callers that don't
     /// know the tile type at construction time.
     pub app_kind: Option<AppKind>,
-    /// The app-id of whatever this tab is showing, where the shell knows
-    /// it: a packaged app's package id (`dev.qos.photos`), a built-in's
-    /// compositor id (`org.nirios.Files`), or a foreign client's own
-    /// `xdg_toplevel::set_app_id` string.
+    /// The mark of the *particular application* this tab is showing,
+    /// when the caller knows which one it is. Takes precedence over
+    /// [`Self::app_kind`].
     ///
-    /// This is what makes a row of tabs read as a row of *programs*.
-    /// [`Self::app_kind`] can only say which of five sorts of app a tab
-    /// is, and everything it has no name for takes the same fallback —
-    /// so a word processor and a photo editor sharing one tab bar, the
-    /// arrangement this window model exists to make possible, came out
-    /// as two identical glyphs and two words. That is what a browser
-    /// looks like. An id resolves through
-    /// [`crate::icons::known_icon_for_app_id`] to that app's own mark.
-    ///
-    /// `None`, or an id the icon table does not know, falls back to
-    /// `app_kind`.
-    pub app_id: Option<String>,
+    /// Both exist because they answer different questions. `app_kind` is
+    /// five values wide — Terminal, Files, Editor, Browser, Settings —
+    /// and describes the kind of thing in the tile; every application
+    /// this OS did not build a special case for lands on `Settings`, so
+    /// a strip of packaged apps came up as a row of identical cogs, each
+    /// one saying "some app". An app id says which app, and
+    /// [`crate::icons::icon_for_app_id`] is already the single place
+    /// that turns one into a glyph — the same table the permission
+    /// prompt draws its mark from, so a person sees one shape for one
+    /// program wherever they meet it.
+    pub app_icon: Option<icons::Icon>,
 }
 
 impl TabDescriptor {
     /// Construct a descriptor without a typed icon — convenience for the
     /// many test call sites that only care about id + title. Production
-    /// callers (the shell) populate `app_kind` / `app_id` via the struct
-    /// literal so the pill paints the correct leading glyph.
+    /// callers (the shell) populate `app_kind` / `app_icon` via
+    /// [`Self::with_app_icon`] or the struct literal so the pill paints
+    /// the correct leading glyph.
     pub fn new(id: u64, title: impl Into<String>) -> Self {
-        Self { id, title: title.into(), app_kind: None, app_id: None }
+        Self { id, title: title.into(), app_kind: None, app_icon: None }
     }
 
-    /// Which mark this tab's pill paints in its leading slot, if any.
-    ///
-    /// The app's own glyph wins over its category's: an id names one
-    /// program, a kind names a shelf of them.
-    pub(crate) fn leading_glyph(&self) -> Option<PillGlyph> {
-        if let Some(icon) = self
-            .app_id
-            .as_deref()
-            .and_then(crate::icons::known_icon_for_app_id)
-        {
-            return Some(PillGlyph::App(icon));
-        }
-        self.app_kind.map(PillGlyph::Kind)
+    /// This descriptor, wearing `icon` as the application's own mark.
+    pub fn with_app_icon(mut self, icon: icons::Icon) -> Self {
+        self.app_icon = Some(icon);
+        self
     }
 }
 
-/// The two things a pill's leading slot can hold, in the order it
-/// prefers them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PillGlyph {
-    /// This app's own mark, from the shared icon table.
-    App(crate::icons::Icon),
-    /// All the tab knew was which sort of app it is.
-    Kind(AppKind),
-}
-
-impl PillGlyph {
-    /// Paint the mark centred in `rect`, stroked in `color`.
-    fn draw(self, scene: &mut Scene, transform: Affine, rect: Rect, color: vello::peniko::Color) {
-        match self {
-            // Stroked a hair under the shared 1.5 px default: at 14 px a
-            // pill glyph sits beside a semibold title and has to read as
-            // chrome next to it, which is the same call the hand-traced
-            // kind glyphs below already made at 1.1.
-            PillGlyph::App(icon) => {
-                crate::icons::draw_icon(scene, transform, rect, icon, color, 1.25)
-            }
-            PillGlyph::Kind(kind) => draw_app_icon(scene, transform, rect, kind, color),
-        }
+/// Paint a pill's leading mark into `rect`, and say whether anything was
+/// drawn.
+///
+/// One slot, and the app's own mark wins it: a tab that knows which
+/// application it holds should not fall back to the five-shape tile-kind
+/// glyph, which for most of this OS's applications means the
+/// unknown-kind cog.
+fn draw_leading_mark(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    desc: &TabDescriptor,
+    color: vello::peniko::Color,
+) -> bool {
+    if let Some(icon) = desc.app_icon {
+        icons::draw_icon(scene, transform, rect, icon, color, 1.1);
+        return true;
     }
+    if let Some(kind) = desc.app_kind {
+        draw_app_icon(scene, transform, rect, kind, color);
+        return true;
+    }
+    false
 }
 
 pub struct TabBar {
@@ -653,15 +642,20 @@ impl TabBar {
             // shortcut. Pills with no `app_kind` paint as an empty
             // bubble — still distinct from unpinned via width.
             let accent = self.accent_ids.get(&t.id).copied();
-            if let Some(glyph) = t.leading_glyph() {
-                let icon_rect = Rect::new(
-                    r.center().x - 7.0,
-                    r.center().y - 7.0,
-                    r.center().x + 7.0,
-                    r.center().y + 7.0,
-                );
-                glyph.draw(scene, transform, icon_rect, accent.unwrap_or(text_color));
-            } else if let Some(dot) = accent {
+            let icon_rect = Rect::new(
+                r.center().x - 7.0,
+                r.center().y - 7.0,
+                r.center().x + 7.0,
+                r.center().y + 7.0,
+            );
+            let marked = draw_leading_mark(
+                scene,
+                transform,
+                icon_rect,
+                t,
+                accent.unwrap_or(text_color),
+            );
+            if let Some(dot) = accent.filter(|_| !marked) {
                 // No app glyph to tint, so the accent is the whole
                 // marker. Centred like the glyph would have been, so a
                 // pinned strip mixing the two reads as one row.
@@ -675,14 +669,19 @@ impl TabBar {
             // reserves the same width for either — `leading_zone` is the
             // layout side of this same choice and the two must agree, or
             // the title lands on top of the marker.
-            let leading_shift = if let Some(glyph) = t.leading_glyph() {
-                let icon_rect = Rect::new(
-                    icon_x0,
-                    r.center().y - 7.0,
-                    icon_x0 + ICON_W,
-                    r.center().y + 7.0,
-                );
-                glyph.draw(scene, transform, icon_rect, accent.unwrap_or(text_color));
+            let icon_rect = Rect::new(
+                icon_x0,
+                r.center().y - 7.0,
+                icon_x0 + ICON_W,
+                r.center().y + 7.0,
+            );
+            let leading_shift = if draw_leading_mark(
+                scene,
+                transform,
+                icon_rect,
+                t,
+                accent.unwrap_or(text_color),
+            ) {
                 ICON_W + ICON_GAP
             } else if let Some(dot) = accent {
                 let c = vello::kurbo::Circle::new(
@@ -903,19 +902,19 @@ impl TabBar {
         let text_size = theme.tokens.typography.scale.sm;
         let title_weight = TextWeight::Semibold;
         let (_tw, th) = tr.measure_weighted(&c.desc.title, text_size, None, title_weight);
-        let leading_shift = if let Some(glyph) = c.desc.leading_glyph() {
-            let icon_x0 = r.x0 + 10.0;
-            let icon_rect = Rect::new(
-                icon_x0,
-                r.center().y - 7.0,
-                icon_x0 + ICON_W,
-                r.center().y + 7.0,
-            );
-            glyph.draw(scene, transform, icon_rect, text_dim);
-            ICON_W + ICON_GAP
-        } else {
-            0.0
-        };
+        let icon_x0 = r.x0 + 10.0;
+        let icon_rect = Rect::new(
+            icon_x0,
+            r.center().y - 7.0,
+            icon_x0 + 14.0,
+            r.center().y + 7.0,
+        );
+        let leading_shift =
+            if draw_leading_mark(scene, transform, icon_rect, &c.desc, text_dim) {
+                14.0 + 6.0
+            } else {
+                0.0
+            };
         let title_x = r.x0 + 12.0 + leading_shift;
         let title_y = r.center().y - th as f64 / 2.0;
         // Clip the title just before the close glyph — same rule as
@@ -1170,7 +1169,7 @@ impl TabBar {
     /// its titles on one x.
     fn leading_zone(&self, i: usize) -> f64 {
         let t = &self.tabs[i];
-        if t.leading_glyph().is_some() || self.accent_ids.contains_key(&t.id) {
+        if t.app_icon.is_some() || t.app_kind.is_some() || self.accent_ids.contains_key(&t.id) {
             ICON_W + ICON_GAP
         } else {
             0.0
@@ -3071,110 +3070,6 @@ mod tests {
         )
     }
 
-    /// Two applications in one tab bar have to be two pictures.
-    ///
-    /// This is the arrangement the window model exists for and the one a
-    /// viewer is likeliest to mistake for a browser, so the pills cannot
-    /// differ only in their words. They used to: an app kind has five
-    /// variants and every app outside them took one fallback, which put
-    /// the same cog on a word processor and a photo editor sitting side
-    /// by side.
-    #[test]
-    fn a_pill_wears_its_own_application_mark_not_its_category() {
-        use crate::icons::Icon;
-
-        let with_id = |id: &str, kind: Option<AppKind>| TabDescriptor {
-            id: 1,
-            title: "t".into(),
-            app_kind: kind,
-            app_id: Some(id.to_string()),
-        };
-
-        // The four the film opens, by package id.
-        assert_eq!(
-            with_id("dev.qos.word-processor", None).leading_glyph(),
-            Some(PillGlyph::App(Icon::FileText)),
-        );
-        assert_eq!(
-            with_id("dev.qos.photos", None).leading_glyph(),
-            Some(PillGlyph::App(Icon::Image)),
-        );
-        assert_eq!(
-            with_id("dev.qos.chat", None).leading_glyph(),
-            Some(PillGlyph::App(Icon::MessageSquare)),
-        );
-        assert_eq!(
-            with_id("dev.qos.file-explorer", None).leading_glyph(),
-            Some(PillGlyph::App(Icon::Folder)),
-        );
-
-        // All four are distinct marks, which is the whole property.
-        let marks: Vec<_> = [
-            "dev.qos.word-processor",
-            "dev.qos.photos",
-            "dev.qos.chat",
-            "dev.qos.file-explorer",
-        ]
-        .iter()
-        .map(|id| with_id(id, None).leading_glyph())
-        .collect();
-        for i in 0..marks.len() {
-            for j in (i + 1)..marks.len() {
-                assert_ne!(marks[i], marks[j], "two apps share one glyph");
-            }
-        }
-
-        // The app-id wins over the category: a foreign client the shell
-        // could only classify as "some other app" is still that app.
-        assert_eq!(
-            with_id("dev.qos.photos", Some(AppKind::Settings)).leading_glyph(),
-            Some(PillGlyph::App(Icon::Image)),
-            "the id names one program; the kind names a shelf of them",
-        );
-
-        // An id nothing knows falls back to the category rather than to a
-        // generic mark — the category is still more than "an application".
-        assert_eq!(
-            with_id("com.example.Unknown", Some(AppKind::Terminal)).leading_glyph(),
-            Some(PillGlyph::Kind(AppKind::Terminal)),
-        );
-        // And with neither, the pill has no leading slot at all.
-        assert_eq!(TabDescriptor::new(1, "t").leading_glyph(), None);
-
-        // The compositor's own id for an app it draws in-process, and the
-        // one it mints from a display label, reach the same glyph as the
-        // package id does. Three spellings, one program, one picture.
-        assert_eq!(
-            with_id("org.nirios.Files", None).leading_glyph(),
-            with_id("dev.qos.file-explorer", None).leading_glyph(),
-        );
-        assert_eq!(
-            with_id("org.nirios.Word Processor", None).leading_glyph(),
-            with_id("dev.qos.word-processor", None).leading_glyph(),
-        );
-    }
-
-    /// The layout reserves the leading slot on exactly the condition the
-    /// paint fills it on. If those two disagree the title lands on top of
-    /// the glyph, so they read the same predicate.
-    #[test]
-    fn leading_zone_follows_the_glyph_the_pill_will_actually_paint() {
-        let mut b = TabBar::new("g", vec![TabDescriptor::new(1, "A")], 1);
-        assert_eq!(b.leading_zone(0), 0.0, "no kind, no id, no accent");
-
-        b.tabs_mut()[0].app_id = Some("dev.qos.photos".into());
-        assert_eq!(
-            b.leading_zone(0),
-            ICON_W + ICON_GAP,
-            "an id the table knows earns the slot",
-        );
-
-        // An id nothing knows is not a glyph, so it must not reserve room
-        // the paint will leave empty.
-        b.tabs_mut()[0].app_id = Some("com.example.Unknown".into());
-        assert_eq!(b.leading_zone(0), 0.0);
-    }
-
     #[test]
     fn remove_tab_drops_it_and_picks_neighbour_when_active() {
         let mut b = bar();
@@ -3593,7 +3488,7 @@ mod tests {
                 id: 1,
                 title: "A".into(),
                 app_kind: Some(AppKind::Terminal),
-                app_id: None,
+                app_icon: None,
             }],
             1,
         );
@@ -3634,6 +3529,63 @@ mod tests {
         // If A and B both hit the floor, at least verify the call-path
         // is live — i.e. the typed descriptor still computes a rect.
         assert!(width_b > 0.0);
+    }
+
+    /// **The application's own mark takes the pill's leading slot.**
+    ///
+    /// Every window from a process the compositor does not host resolves
+    /// to `AppKind::Settings`, so a strip of packaged applications drew a
+    /// row of identical cogs and no pill said which program it was. A tab
+    /// that knows its app id paints that application's glyph instead.
+    ///
+    /// Asserted on the geometry `draw` emitted, not on the branch it took
+    /// — the failure being guarded against is a mark that is decided and
+    /// then never painted.
+    #[test]
+    fn an_app_icon_takes_the_leading_slot_from_the_unknown_kind_cog() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut painted = |desc: TabDescriptor| {
+            let mut b = TabBar::new("g1", vec![desc], 1);
+            lay_out_at_width_with(&mut b, 600.0, &theme);
+            let mut scene = Scene::new();
+            b.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            scene.encoding().path_data.clone()
+        };
+        let pill = |icon: Option<icons::Icon>| TabDescriptor {
+            id: 1,
+            title: "Chat".into(),
+            // What a foreign toplevel always carries: no kind of its own,
+            // so the shell hands it the catch-all.
+            app_kind: Some(AppKind::Settings),
+            app_icon: icon,
+        };
+
+        let cog = painted(pill(None));
+        let chat = painted(pill(Some(icons::icon_for_app_id("dev.qos.chat"))));
+        let photos = painted(pill(Some(icons::icon_for_app_id("dev.qos.photos"))));
+        let unmarked = painted(TabDescriptor::new(1, "Chat"));
+
+        assert_ne!(
+            cog, chat,
+            "a pill given the chat app's mark drew the same shapes as the \
+             unknown-kind cog — the app icon never reached the scene"
+        );
+        assert_ne!(
+            unmarked, chat,
+            "a pill given an app icon drew no more than one given nothing"
+        );
+        assert_ne!(
+            chat, photos,
+            "two different applications must not share one mark, or the \
+             strip is no more legible than a row of cogs was"
+        );
     }
 
     #[test]

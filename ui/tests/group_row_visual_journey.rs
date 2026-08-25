@@ -45,6 +45,7 @@ fn make_group(id: u64, tabs: &[(u64, &str, AppKind)]) -> WindowGroup {
                     id: *tid,
                     title: (*title).into(),
                     app_kind: Some(*kind),
+                    app_icon: None,
                 },
                 TileContent::Stub {
                     kind: *kind,

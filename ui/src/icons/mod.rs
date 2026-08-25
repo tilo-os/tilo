@@ -792,20 +792,6 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
 /// that distinguishes a spreadsheet from a document better than the
 /// pair here does, and inventing one per app would put 45 hand-drawn
 /// shapes in a table nobody can keep consistent.
-pub fn icon_for_app_id(app_id: &str) -> Icon {
-    known_icon_for_app_id(app_id).unwrap_or(Icon::LayoutGrid)
-}
-
-/// [`icon_for_app_id`] without the fallback: `None` when nothing in the
-/// table names this app.
-///
-/// The fallback is right for a surface that must show *something* —
-/// a permission prompt has to draw a mark next to the name of whoever is
-/// asking. It is wrong for a surface that already has a better answer to
-/// fall back to, and a tab pill does: a tab whose app-id is unknown may
-/// still know what *sort* of app it is hosting, and the sort is more
-/// than "an application".
-///
 /// Matching is on the id's trailing segment, case-folded and with word
 /// separators normalised, so every spelling of one program's name lands
 /// on one glyph: the packaged id (`dev.qos.word-processor`), the
@@ -813,7 +799,7 @@ pub fn icon_for_app_id(app_id: &str) -> Icon {
 /// (`org.nirios.Files`), and the id it mints from a display label when a
 /// tab is rebuilt from its title alone (`org.nirios.Word Processor`).
 /// Two ids for one program must not be two pictures of it.
-pub fn known_icon_for_app_id(app_id: &str) -> Option<Icon> {
+pub fn icon_for_app_id(app_id: &str) -> Icon {
     let name: String = app_id
         .rsplit('.')
         .next()
@@ -824,7 +810,7 @@ pub fn known_icon_for_app_id(app_id: &str) -> Option<Icon> {
             c => c.to_ascii_lowercase(),
         })
         .collect();
-    let icon = match name.as_str() {
+    match name.as_str() {
         "file-explorer" | "files" => Icon::Folder,
         "terminal" => Icon::Terminal,
         "code-editor" | "hex-editor" => Icon::Code,
@@ -859,9 +845,8 @@ pub fn known_icon_for_app_id(app_id: &str) -> Option<Icon> {
         // The compositor draws these in-process and names them under its
         // own prefix; they are the same programs the table already knows.
         "editor" | "word" | "document" => Icon::FileText,
-        _ => return None,
-    };
-    Some(icon)
+        _ => Icon::LayoutGrid,
+    }
 }
 
 /// Map a filesystem entry to the most appropriate [`Icon`].
@@ -1045,6 +1030,77 @@ pub fn draw_icon_layered(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two applications sharing one tab bar have to be two pictures.
+    ///
+    /// This is the arrangement the window model exists for and the one a
+    /// viewer is likeliest to mistake for a browser, so the pills cannot
+    /// differ only in their words. The four the demo opens must therefore
+    /// resolve to four different marks, and each has to be the mark for
+    /// that program rather than a shape that merely differs.
+    #[test]
+    fn the_applications_shown_side_by_side_get_different_marks() {
+        assert_eq!(icon_for_app_id("dev.qos.word-processor"), Icon::FileText);
+        assert_eq!(icon_for_app_id("dev.qos.photos"), Icon::Image);
+        assert_eq!(icon_for_app_id("dev.qos.file-explorer"), Icon::Folder);
+        // A conversation, not the button for one of the things you do in
+        // one: `Reply` is an action's arrow and read as chrome, not as an
+        // application's mark.
+        assert_eq!(icon_for_app_id("dev.qos.chat"), Icon::MessageSquare);
+
+        let marks = [
+            icon_for_app_id("dev.qos.word-processor"),
+            icon_for_app_id("dev.qos.photos"),
+            icon_for_app_id("dev.qos.file-explorer"),
+            icon_for_app_id("dev.qos.chat"),
+        ];
+        for i in 0..marks.len() {
+            for j in (i + 1)..marks.len() {
+                assert_ne!(marks[i], marks[j], "two of the demo's apps share one glyph");
+            }
+        }
+    }
+
+    /// One program, however its id is spelled, is one picture.
+    ///
+    /// An app announces its package id (`dev.qos.file-explorer`); the
+    /// compositor names the same program under its own prefix when it
+    /// draws it in-process (`org.nirios.Files`) and mints an id from a
+    /// display label when a tab is rebuilt from its title alone
+    /// (`org.nirios.Word Processor`). All three reach the tab pill, and a
+    /// person must not be shown three marks for one application.
+    #[test]
+    fn every_spelling_of_one_programs_id_reaches_one_mark() {
+        assert_eq!(
+            icon_for_app_id("org.nirios.Files"),
+            icon_for_app_id("dev.qos.file-explorer"),
+        );
+        assert_eq!(
+            icon_for_app_id("org.nirios.Word Processor"),
+            icon_for_app_id("dev.qos.word-processor"),
+        );
+        // A dev run with no launcher environment announces the bare
+        // binary name, which is the package id's last segment already.
+        assert_eq!(icon_for_app_id("photos"), icon_for_app_id("dev.qos.photos"));
+        assert_eq!(icon_for_app_id("word_processor"), Icon::FileText);
+    }
+
+    /// A browser is a globe. It used to be an outward arrow — the mark
+    /// for "this opens somewhere else", which is a thing a browser does
+    /// rather than a thing a browser is, and which the tab bar had
+    /// already hand-traced a globe for before this table existed.
+    #[test]
+    fn a_browser_is_a_globe() {
+        assert_eq!(icon_for_app_id("dev.qos.browser"), Icon::Globe);
+    }
+
+    /// Anything the table has never heard of still gets a mark that says
+    /// *an application*, because the surfaces that ask for one — a
+    /// permission prompt naming who is asking — must draw something.
+    #[test]
+    fn an_unknown_app_still_gets_an_application_mark() {
+        assert_eq!(icon_for_app_id("com.example.SomeThirdPartyApp"), Icon::LayoutGrid);
+    }
 
     /// Walk a path's elements; returns the count so tests can assert
     /// "non-empty" without matching against internal enum shapes.

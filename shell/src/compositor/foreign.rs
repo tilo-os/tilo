@@ -957,7 +957,7 @@ pub(crate) const OPENING_DELAY: Duration = Duration::from_millis(250);
 /// notification the launch raised is on screen for all of it. Ten
 /// seconds is past every launch observed and still short enough that an
 /// app which is never going to paint stops being a hole in the strip.
-const PRESENT_GRACE: Duration = Duration::from_secs(10);
+pub(crate) const PRESENT_GRACE: Duration = Duration::from_secs(10);
 
 /// How long a newly adopted toplevel may go without its tab being laid
 /// out before the compositor configures it anyway.
