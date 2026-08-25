@@ -3936,12 +3936,30 @@ mod tests {
         let (mut row, _taffy, _root) =
             make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4, 5], &[6], &[7]]);
         // A viewport narrower than the content, so the strip really has
-        // somewhere to pan to.
-        row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
+        // somewhere to pan to — but no narrower than a single group, or
+        // this proves something else entirely. Written at 700 first: the
+        // fixture lays groups out at two thirds of a 1200px display, so
+        // each is 800 wide, and the assertion below failed with the last
+        // group at -100..700. That is `rest_on_a_window_edge` declining
+        // to frame a group wider than the row, which is correct and is
+        // not the question. Hence the width check, which fails loudly if
+        // the fixture's proportions move again.
+        row.set_rect_for_test(Rect::new(0.0, 0.0, FIXTURE_USABLE_PX, 600.0));
         row.set_content_w_for_test(row.content_width());
         assert!(
             row.max_scroll_x() > 0.0,
             "the fixture must overflow its viewport or there is nothing to prove"
+        );
+        let widest = row
+            .laid_spans
+            .iter()
+            .map(|&(_, x0, x1)| x1 - x0)
+            .fold(0.0_f64, f64::max);
+        assert!(
+            widest <= row.rect.width(),
+            "a group wider than the row cannot be framed by any offset, so a \
+             fixture like that proves nothing here: widest {widest}, row {}",
+            row.rect.width(),
         );
 
         let last = *row.group_ids().last().expect("six groups");
