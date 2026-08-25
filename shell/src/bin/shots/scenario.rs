@@ -924,7 +924,8 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             driver.relayout();
             if !driver.open_photograph(path) {
                 eprintln!(
-                    "scenario: no hosted Photos window took {path}; the frames                      after this show an empty viewer",
+                    "scenario: no hosted Photos window took {path}; the frames \
+                     after this show an empty viewer",
                 );
             }
             // And a real pump after, so `sync` decodes the file and the
@@ -968,7 +969,8 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                     driver.relayout();
                 }
                 Err(e) => eprintln!(
-                    "scenario: {id} was not performed ({e}); there is nothing                      for the next frames to draw",
+                    "scenario: {id} was not performed ({e}); there is nothing \
+                     for the next frames to draw",
                 ),
             }
         }
