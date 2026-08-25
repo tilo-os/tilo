@@ -343,14 +343,20 @@ fn remote_row(
                 };
                 let outcome = remote.check(workspace, &actor, &app, &address.action, &target);
                 if !outcome.is_permitted() {
-                    // Refused in the vocabulary the catalogue answers in, and
-                    // deliberately indistinguishable from an address that does
-                    // not exist: a caller must not be able to map what it may
-                    // not reach by reading which refusal it got.
+                    // A caller who may not act never gets this far: the
+                    // catalogue's own visibility gate leaves the row out, so
+                    // the address resolves to nothing and the refusal is
+                    // `unknown_action` before anything is built. Reaching here
+                    // means the answer changed between that build and this
+                    // act -- a capability revoked, or the app republished --
+                    // and saying so plainly is right, because this caller was
+                    // shown the address a moment ago and learns nothing from
+                    // being told it has since lost it.
                     return Err(ActionError::Refused(format!(
-                        "no visible action addressed by ({}, {}) in the current catalogue",
+                        "({}, {}) is no longer permitted to {}",
                         PROVIDER_ID,
-                        encode_address(&address)
+                        encode_address(&address),
+                        st.local_user_id
                     )));
                 }
                 st.local_user_id.clone()
