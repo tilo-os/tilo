@@ -1069,7 +1069,7 @@ impl ChatApp {
         let work = reply.work.as_ref()?;
         let line = work_line(
             work,
-            &self.display_name(&reply.author),
+            &self.agent_label(reply),
             if with_reason { reply.text.trim() } else { "" },
             self.agent_present(&reply.author),
         );
@@ -2511,6 +2511,43 @@ mod tests {
         assert!(
             app.agent_in_flight("u_claude").is_none(),
             "a finished record is not work in flight"
+        );
+    }
+
+    /// A strip must never put a raw participant id in front of a person.
+    ///
+    /// The case it happens in is exactly the case the strip exists for: the
+    /// record is read after the agent has gone, and a name belongs to the
+    /// room, which forgets a participant on leave. What the message that
+    /// summoned it called it is still the room's answer and is still in the
+    /// body, so that is what the strip falls back to.
+    #[test]
+    fn a_departed_agent_is_named_and_never_shown_its_id() {
+        use crate::model::AgentWorkState as S;
+        let mut app = ChatApp::new_ephemeral();
+        let asked = "@Scribe crop the harbour shot";
+        let room = [crate::mention::Participant {
+            id: "agent_scribe".into(),
+            name: "Scribe".into(),
+            is_agent: true,
+        }];
+        let mut summons = reply_with("m_asked", "u_aria", work(S::Taken));
+        summons.parent = None;
+        summons.work = None;
+        summons.text = asked.into();
+        summons.mentions = crate::mention::resolve(asked, &room);
+        assert_eq!(summons.mentions.len(), 1, "the fixture must carry the mention");
+        let record = reply_with("m_rec", "agent_scribe", work(S::Taken));
+        app.messages = vec![summons, record.clone()];
+        // The room lists somebody else, so the agent has left and nothing
+        // anywhere holds a name for it.
+        app.room_names.insert("u_aria".into(), "Aria Chen".into());
+        let name = app.agent_label(&record);
+        assert_eq!(name, "Scribe");
+        let head = work_line(&work(S::Taken), &name, "", false).head;
+        assert!(
+            !head.contains("agent_scribe"),
+            "the strip showed the participant id: {head:?}"
         );
     }
 

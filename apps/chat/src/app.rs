@@ -1435,6 +1435,29 @@ impl ChatApp {
     /// participant the window belongs to, because that is the thing worth
     /// looking at: a mention of you and a mention of somebody else are not
     /// supposed to read the same.
+    /// Who the staged scenario's room contains, as the room would answer it.
+    ///
+    /// Handed to the presence store by the `--shots` entry point rather than
+    /// written into the app, because the roster is the room's answer and the
+    /// app re-reads it from presence on every frame. It is also the only way
+    /// a shot can stage an agent that has *left*: absence is a fact about the
+    /// room, and there is nowhere else to say it.
+    /// Empty for every other scenario, so those frames keep answering from
+    /// the document exactly as they did before this existed. A shot that does
+    /// not turn on who is present has nothing to gain from a roster and
+    /// everything to lose from one — per-peer colour comes from the room too,
+    /// and supplying one would repaint mentions in shots that are about
+    /// mentions.
+    pub fn shot_room(&self) -> Vec<(String, String)> {
+        if self.agent_shot.is_none() {
+            return Vec::new();
+        }
+        self.room_names
+            .iter()
+            .map(|(id, name)| (id.clone(), name.clone()))
+            .collect()
+    }
+
     /// The four states an agent's record passes through, in one channel.
     ///
     /// Seeded through the actions themselves — chat's registry decodes each
@@ -1717,6 +1740,46 @@ impl ChatApp {
             .iter()
             .filter(|r| r.parent.as_deref() == Some(msg) && r.work.is_some())
             .next_back()
+    }
+
+    /// The label a message used for `user`, out of the body it was written in.
+    ///
+    /// The `@name` run a mention locates is the room's own answer at the
+    /// moment the message was sent, kept in the text where it cannot go stale
+    /// with the roster. Offsets are read with `get`, so a run that does not
+    /// line up with the body yields nothing rather than panicking on a slice
+    /// boundary.
+    fn mention_label(asked: &Message, user: &str) -> Option<String> {
+        let run = asked.mentions.iter().find(|x| x.user == user)?;
+        let text = asked.text.get(run.start..run.start.checked_add(run.len)?)?;
+        let label = text.trim().trim_start_matches('@').trim();
+        (!label.is_empty()).then(|| label.to_string())
+    }
+
+    /// What to call the agent that wrote `reply`.
+    ///
+    /// [`Self::display_name`] first, and then one more step this surface
+    /// needs and no other does. A name belongs to the room, so the room
+    /// forgets it when a participant leaves — which is precisely the case an
+    /// agent's record is *for*: the strip that says where an agent stopped is
+    /// read after it has gone, and `display_name` would fall back to the raw
+    /// participant id, an internal token no person should be shown.
+    ///
+    /// So the last resort is what the message that summoned it called it. That
+    /// is still the room's answer, recorded by whoever addressed the agent at
+    /// the moment they addressed it — the same reason a mention carries
+    /// `is_agent` as a snapshot rather than asking the roster again later.
+    pub(crate) fn agent_label(&self, reply: &Message) -> String {
+        let name = self.display_name(&reply.author);
+        if name != reply.author {
+            return name;
+        }
+        reply
+            .parent
+            .as_deref()
+            .and_then(|parent| self.message(parent))
+            .and_then(|asked| Self::mention_label(asked, &reply.author))
+            .unwrap_or(name)
     }
 
     /// Whether `id` is in the room at this moment.
