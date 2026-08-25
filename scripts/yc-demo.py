@@ -4298,10 +4298,25 @@ def say_something_about(session: Session, log: "LogTail", tile: tuple,
     if shots:
         session.snapshot(os.path.join(shots, f"{tag or 'remark'}-open.png"))
 
-    # The field is the upper band of the panel; the destination selector
-    # and the button sit below it. Clicking high inside it lands in the
-    # text rather than on a control.
-    session.click_at(sx + pw * 0.5, sy + ph * 0.28)
+    # Into the field, by its name where there is one.
+    #
+    # The panel's text field carries `test_id` `remark_input`, so when the
+    # *shell* draws the surface it is an ordinary named target and the
+    # harness clicks the middle of the rect the widget itself reports. A
+    # fraction of the panel's height is what this did instead, and it is
+    # only right for as long as the panel keeps its present proportions —
+    # the same kind of number that made the press on the row miss.
+    #
+    # The fraction stays for the app-drawn panel, whose widgets are in no
+    # registry: the field is the upper band, with the destination selector
+    # and the button below it, so clicking high inside lands in the text
+    # rather than on a control.
+    field = session.named_rect("remark_input")
+    if field:
+        fx, fy, fw, fh = field
+        session.click_at(fx + fw * 0.5, fy + fh * 0.5)
+    else:
+        session.click_at(sx + pw * 0.5, sy + ph * 0.28)
     session.settle(0.25)
     session.type_prose(text)
     session.settle(0.4)
