@@ -14,6 +14,18 @@ to it — that flag decides the keyboard layout for both windows, and with it on
 the window you type into is pinned to a US map while your hands are on a
 German one.
 
+Two flags exist that are **wrong for this card and right for an unattended
+take**, and it is worth knowing which is which:
+
+- `--no-windows` films with no window on the desktop at all. Every frame comes
+  off each session's own framebuffer rather than off the screen, so the film is
+  identical — the windows exist only for somebody watching it happen. Use it
+  when nobody is watching; it is incompatible with this card, which needs a
+  window to type into.
+- `--no-image-editor` leaves the photo editor closed so the agent has to open
+  it, which is the claim the film's second half turns on. The tab-bar shot
+  survives on chat as the second application. An attended take wants this too.
+
 ## Before you press return
 
 - **Put the terminal where you can see it.** Your session opens at the full
