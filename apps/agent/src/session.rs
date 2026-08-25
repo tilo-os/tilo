@@ -1606,7 +1606,9 @@ impl Session {
             _ => String::new(),
         };
         let now_offered = self.offers(&view);
-        let _doing = self.say_doing(&plan, &now_offered, &about)?;
+        // The words are not kept here: this path already says what it did in
+        // a sentence of its own below, under the same reply.
+        self.say_doing(&plan, &now_offered, &about)?;
         let ran = self.run_plan(plan, None, &to, &scoped)?;
         // A refusal answers for itself; a success has to be said out loud too.
         // Not politeness: this reply is what records the message as dealt
