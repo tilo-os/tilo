@@ -3013,6 +3013,15 @@ def main() -> int:
                          f"needs")
     ap.add_argument("--windowed", action="store_true",
                     help="do not open the window at the full work area")
+    ap.add_argument("--no-windows", action="store_true",
+                    help="film without opening any window on this desktop. "
+                         "Every frame comes off each session's own "
+                         "framebuffer rather than off the screen, so the "
+                         "film is identical -- the windows exist only for "
+                         "somebody watching it happen, and they take over "
+                         "the screen of whoever is using the machine. Not "
+                         "compatible with driving a beat by hand, which "
+                         "needs a window to type into")
     ap.add_argument("--allow-resampled", action="store_true",
                     help="film even when the session does not render at "
                          "the video's picture area. Refused by default: "
@@ -3274,7 +3283,13 @@ def main() -> int:
         # is taken with a `snapshot` op off each session's own
         # framebuffer, never off the screen, so what is stacked in front
         # of what changes no pixel of the film.
-        cls = (yc.Session if (args.dry_run or name == "Claude")
+        # Windows are for somebody watching, not for the film. Every frame
+        # is taken with a `snapshot` op off the session's own framebuffer,
+        # as the comment above says, so a session that never opens a window
+        # films identically -- and does not take over the screen of whoever
+        # happens to be using this machine.
+        cls = (yc.Session
+               if (args.dry_run or args.no_windows or name == "Claude")
                else ins.WindowedSession)
         sessions.append(cls(
             name, name, run_dir,
