@@ -1503,9 +1503,16 @@ class Session:
                     return found
             time.sleep(0.12)
         if found is not None:
-            note(f"{self.name}: {app_id} drew a frame "
-                 f"{first_frame - began:.1f}s in but never filled its tab; "
-                 f"reporting it as opened anyway")
+            # `first_frame` is set on both paths that set `found`, so it is
+            # never None here -- but the two are only tied together by
+            # reading the loop, and this line runs inside a launch, during
+            # filming, where an AttributeError on a `None` would take the
+            # take down at the worst possible moment. So it says what it
+            # does not know rather than assuming it.
+            since = (f"{first_frame - began:.1f}s"
+                     if first_frame is not None else "an unrecorded time")
+            note(f"{self.name}: {app_id} drew a frame {since} in but never "
+                 f"filled its tab; reporting it as opened anyway")
             return found
         return None
 
@@ -1519,8 +1526,12 @@ class Session:
                       args: dict | None = None) -> dict:
         """Invoke one action by its stable address. Raw response, so a
         refusal is a result rather than an exception."""
-        payload = {"op": "actions_invoke", "provider": provider,
-                   "id": action_id}
+        # Annotated, because the values are not all strings: `args` is a
+        # nested object and the wire is JSON. Inferred from the literal
+        # alone this reads as `dict[str, str]`, and the line below then
+        # looks like a bug in a request that has always been correct.
+        payload: dict[str, object] = {"op": "actions_invoke",
+                                      "provider": provider, "id": action_id}
         if args is not None:
             payload["args"] = args
         return call(self.sock, payload)

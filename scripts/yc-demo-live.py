@@ -40,7 +40,10 @@ depends on work still in flight, the dependency is named under NEEDS.
 and is the one to read at the camera. This block is the same beats with
 their reasons attached, for whoever is changing the rig.
 
-Budget: boot bumper ~3.2s (cut, exists) + ~75s driven. Hard cap 1:40.
+Budget: boot bumper ~3.2s + ~75s driven. Hard cap 1:40. The bumper is
+not recorded here and is gitignored, so a fresh checkout has no copy:
+`films/qos-boot-bumper.mp4`, joined on the front by
+`scripts/demo-assemble.py` (which `scripts/demo.sh` runs for you).
 
 MEASURED, from a full three-session take on 2026-08-24. The per-scene
 budgets below were written without measuring, and two of them are fiction:

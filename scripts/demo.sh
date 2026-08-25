@@ -4,7 +4,23 @@
 #   scripts/demo.sh              # rebuild what changed, then the drivable rig
 #   scripts/demo.sh --scripted   # the unattended rig instead
 #   scripts/demo.sh --no-build   # skip the rebuild entirely
+#   scripts/demo.sh --no-bumper  # do not join the boot bumper afterwards
 #   scripts/demo.sh -- --foo     # everything after `--` goes to the rig
+#
+# ---------------------------------------------------------------------
+# The bumper is joined here, because a manual step is a step that is
+# skipped
+# ---------------------------------------------------------------------
+#
+# Neither rig records the boot: it comes off a QEMU capture, is cut by
+# hand once per OS build, and lives at `films/qos-boot-bumper.mp4`.
+# Joining it was a thing somebody was supposed to remember to run
+# afterwards, which is how it went missing unnoticed once already. So
+# this does it, and says so when it cannot.
+#
+# It is not fatal either way. The take is the expensive artefact and it
+# is already on disk by the time this runs; a missing bumper costs the
+# opening three seconds and nothing else.
 #
 # ---------------------------------------------------------------------
 # Orphans are impossible here, and that is the point
@@ -45,11 +61,13 @@ cd "$(dirname "$0")/.." || exit 1
 
 RIG=live
 BUILD=1
+BUMPER=1
 RIG_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --scripted) RIG=scripted; shift ;;
     --no-build) BUILD=0; shift ;;
+    --no-bumper) BUMPER=0; shift ;;
     --) shift; RIG_ARGS=("$@"); break ;;
     *) RIG_ARGS+=("$1"); shift ;;
   esac
@@ -80,12 +98,40 @@ case "$RIG" in
   scripted) SCRIPT=scripts/yc-demo.py ;;
 esac
 
+# Both rigs write their finished take into `films/`, under a timestamped
+# name. Listing it first is how the one this run produced is identified
+# afterwards without capturing the rig's transcript -- which is on screen
+# while somebody is filming, and is not something to put behind a pipe.
+FILMS="$PWD/films"
+mkdir -p "$FILMS"
+films_before="$(mktemp)"
+trap 'rm -f "$films_before"' EXIT
+ls -1 "$FILMS" 2>/dev/null | sort > "$films_before"
+
 say "starting $SCRIPT in a transient scope"
 systemd-run --user --scope --collect \
   --unit "qos-demo-$$" \
   --description "qOS demo run (everything it spawns dies with it)" \
   -- python3 "$SCRIPT" "${RIG_ARGS[@]}"
 status=$?
+
+# 3b. The bumper, on the front of whatever this run produced.
+took="$(ls -1 "$FILMS" 2>/dev/null | sort | comm -13 "$films_before" - \
+        | grep -E '\.mp4$' | grep -v -- '-with-bumper\.mp4$' | tail -1)"
+if [ "$BUMPER" -eq 1 ] && [ -n "$took" ]; then
+  if [ -f "$FILMS/qos-boot-bumper.mp4" ]; then
+    say "joining the boot bumper on the front of $took"
+    python3 scripts/demo-assemble.py \
+      --out "$FILMS/${took%.mp4}-with-bumper.mp4" \
+      "$FILMS/qos-boot-bumper.mp4" "$FILMS/$took" \
+      || say "the join failed; the take itself is at $FILMS/$took"
+  else
+    say "no films/qos-boot-bumper.mp4, so $took has no boot on the front"
+    say "  cut one from a QEMU capture — see docs/boot-bumper-cut.md"
+  fi
+elif [ "$BUMPER" -eq 1 ]; then
+  say "no new file in films/, so there was nothing to put a bumper on"
+fi
 
 # 4. Say what the scope left behind. It should always be nothing; if it is
 #    not, something started outside the cgroup and that is a real defect
