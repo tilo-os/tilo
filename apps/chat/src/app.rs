@@ -1571,6 +1571,58 @@ impl ChatApp {
     /// user in the workspace paired with the voice channel they're currently in
     /// (if any). Sorted in-call first, then by presence, then by name. Real
     /// projection of the shared user list + voice membership — no placeholders.
+
+    // --- what an agent is doing with a message ---------------------------
+
+    /// The agent's reply carrying its record of what it did with `msg`.
+    ///
+    /// Only an agent ever writes [`Message::work`], so the presence of the
+    /// field is the whole test — there is no second list of which participants
+    /// are software to keep in step with this one. The newest wins, so a room
+    /// with two agents in it shows the one that most recently took the
+    /// message rather than an arbitrary one.
+    pub(crate) fn agent_record(&self, msg: &str) -> Option<&Message> {
+        self.messages
+            .iter()
+            .filter(|r| r.parent.as_deref() == Some(msg) && r.work.is_some())
+            .next_back()
+    }
+
+    /// Whether `id` is in the room at this moment.
+    ///
+    /// The question an agent's unfinished record cannot answer about itself. A
+    /// record says what happened and when; whether anything is still happening
+    /// is a fact about the room, and the room answers it — `room_names` is
+    /// replaced from the roster snapshot every frame and forgets a participant
+    /// the moment they leave.
+    ///
+    /// An empty roster is read as "nothing is known", not as "nobody is here".
+    /// Before any room has spoken there is no evidence either way, and turning
+    /// that into an absence would put "is no longer here" beside an agent that
+    /// is working perfectly well — the same fabrication, in the other
+    /// direction, that this whole surface exists to avoid.
+    pub(crate) fn agent_present(&self, id: &str) -> bool {
+        self.room_names.is_empty() || self.room_names.contains_key(id)
+    }
+
+    /// What an agent in this room has in flight, for the roster row beside its
+    /// name: the newest record it has written that it has not finished.
+    ///
+    /// `None` both when it has nothing in flight and when it is not here —
+    /// this is the *live* half of the surface, and a line that outlived the
+    /// process that wrote it is not live.
+    pub(crate) fn agent_in_flight(&self, id: &str) -> Option<&crate::model::AgentWork> {
+        if !self.agent_present(id) {
+            return None;
+        }
+        self.messages
+            .iter()
+            .filter(|m| m.author == id)
+            .filter_map(|m| m.work.as_ref())
+            .filter(|w| !w.finished())
+            .next_back()
+    }
+
     pub(crate) fn roster_rows(&self) -> Vec<(User, Option<String>)> {
         // user id → the name of the voice channel they're connected to.
         let mut in_voice: HashMap<&str, String> = HashMap::new();

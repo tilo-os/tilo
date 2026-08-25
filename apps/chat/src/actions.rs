@@ -150,6 +150,27 @@ pub enum ChatAction {
         user: String,
         count: i64,
     },
+    /// Record what an agent is doing with the message `msg` replies to, and
+    /// optionally supply the words `msg` did not have when it was posted.
+    ///
+    /// Deliberately not [`ChatAction::EditMessage`]. An agent that took a
+    /// summons posts its reply *before* it has an answer, and the states it
+    /// then passes through are not revisions of a sentence: routing them
+    /// through `EditMessage` would archive each one into the message's edit
+    /// history, flag the reply `edited`, and hang an "(edited) · view
+    /// history" affordance off an outcome nobody had rewritten. The body is
+    /// written once, when there is one; the state is a separate fact with a
+    /// separate field.
+    SetAgentWork {
+        channel: String,
+        msg: String,
+        work: crate::model::AgentWork,
+        /// The agent's words, when it finally has them. Applied only to a
+        /// body that is still empty, so this can never overwrite something
+        /// somebody would want back.
+        #[serde(default)]
+        say: Option<String>,
+    },
 }
 
 impl Action for ChatAction {
@@ -241,6 +262,14 @@ impl Action for ChatAction {
             } => {
                 ChatDoc::set_read_watermark(doc, channel, user, *count);
             }
+            ChatAction::SetAgentWork {
+                channel,
+                msg,
+                work,
+                say,
+            } => {
+                ChatDoc::set_message_work(doc, channel, msg, work, say.as_deref());
+            }
         }
         Ok(())
     }
@@ -291,6 +320,24 @@ pub fn send_message_action(
         attachment,
         mentions,
         reference: None,
+    }
+}
+
+/// Record an agent's progress on the message `msg` replies to.
+///
+/// `say` is the agent's words, and is `None` until it has any — which is the
+/// ordinary case for every state before the last one.
+pub fn set_agent_work_action(
+    channel: &str,
+    msg: &str,
+    work: crate::model::AgentWork,
+    say: Option<&str>,
+) -> ChatAction {
+    ChatAction::SetAgentWork {
+        channel: channel.to_string(),
+        msg: msg.to_string(),
+        work,
+        say: say.map(str::to_string),
     }
 }
 
