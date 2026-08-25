@@ -756,6 +756,15 @@ impl ChatApp {
                 self.call = CallState::default();
                 self.agent_shot = Some(scenario.to_string());
             }
+            // The thread the agent answered in, which is where the record
+            // actually lives: the strip sits on the agent's own reply, above
+            // the sentence it wrote once it had one.
+            "agent-thread" => {
+                self.right_flap.snap(true);
+                self.call = CallState::default();
+                self.agent_shot = Some(scenario.to_string());
+                self.thread_open = Some("m_ask_3".into());
+            }
             "context" => {
                 self.menu = Some(ContextMenu {
                     target: MenuTarget::Channel("c_frontend".into()),
