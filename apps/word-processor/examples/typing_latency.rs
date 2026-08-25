@@ -65,7 +65,7 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
 /// cost attributed to a character here is both `handle_event`s plus **one**
 /// frame's sync / layout / draw, taken from the driver's own per-pass
 /// profiler. That is what the app really spends before the glyph is on screen.
-fn type_and_time(paragraphs: usize, chars: usize) -> Vec<u64> {
+fn type_and_time(paragraphs: usize, chars: usize) -> (Vec<u64>, [u64; 6]) {
     let path = document_with(paragraphs);
     let (state, wp, _fmt) = open_document(&path).expect("the document opens");
     let mut driver = Driver::new(state, Box::new(wp), (1200, 800));
@@ -82,9 +82,12 @@ fn type_and_time(paragraphs: usize, chars: usize) -> Vec<u64> {
 
     driver.begin_profiling();
     let mut per_char = Vec::with_capacity(chars);
+    let mut passes = [0u64; 6];
     for ch in text {
         driver.clear_profile_samples();
+        let t = Instant::now();
         driver.key(&ch.to_string());
+        let wall = t.elapsed().as_micros() as u64;
         let frames = driver.take_profile_samples();
         assert_eq!(
             frames.len(),
@@ -96,6 +99,16 @@ fn type_and_time(paragraphs: usize, chars: usize) -> Vec<u64> {
             + frames[0].build_layout_us
             + frames[0].apply_layout_us
             + frames[0].draw_us;
+        passes[0] += events;
+        passes[1] += frames[0].sync_us;
+        passes[2] += frames[0].build_layout_us;
+        passes[3] += frames[0].apply_layout_us;
+        passes[4] += frames[0].draw_us;
+        // Wall time for the whole keypress. It counts the second frame the
+        // live app does not run, so it is an upper bound — but unlike the
+        // pass sum it also counts what happens *between* passes, which
+        // includes the undo commit. The truth is between the two columns.
+        passes[5] += wall;
         per_char.push(events + paint);
     }
 
@@ -115,7 +128,11 @@ fn type_and_time(paragraphs: usize, chars: usize) -> Vec<u64> {
          {expected}: the harness typed into something that did not keep the text",
     );
 
-    per_char
+    let n = per_char.len().max(1) as u64;
+    for p in passes.iter_mut() {
+        *p /= n;
+    }
+    (per_char, passes)
 }
 
 /// Print the distribution of `per_char`, plus how the cost moves from the start
@@ -281,8 +298,20 @@ fn main() {
          milliseconds\n"
     );
     for paragraphs in [0usize, 1, 4, 16] {
-        let per_char = type_and_time(paragraphs, chars);
+        let (per_char, passes) = type_and_time(paragraphs, chars);
         report(&format!("{paragraphs} paragraph(s) of body"), &per_char);
+        let ms = |us: u64| us as f64 / 1000.0;
+        println!(
+            "{:>28}   mean per character: handle_event {:.2}  sync {:.2}  \
+             build {:.2}  apply {:.2}  draw {:.2}  | whole keypress, wall {:.2}  (ms)",
+            "",
+            ms(passes[0]),
+            ms(passes[1]),
+            ms(passes[2]),
+            ms(passes[3]),
+            ms(passes[4]),
+            ms(passes[5]),
+        );
     }
 
     println!("\ntyping at a person's pace: what reaches the screen, frame by frame\n");

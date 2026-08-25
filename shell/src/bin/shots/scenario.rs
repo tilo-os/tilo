@@ -173,6 +173,9 @@ pub enum Action {
     /// [`Action::SwitchWorkspace`]: this is the pass the compositor makes
     /// every frame, and the one that used to adopt a second time.
     MirrorAgain,
+    /// Open the collaborators dropdown, where the invite affordance lives.
+    /// Without it `collab_invite` has no rect and cannot be clicked by name.
+    OpenCollaborators,
     /// [`Action::OpenWindow`], stopped at the moment before the client
     /// has anything to show.
     ///
@@ -745,6 +748,13 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
         }
         Action::MirrorAgain => {
             mirror_into_chrome(driver);
+            driver.relayout();
+        }
+        Action::OpenCollaborators => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                st.overlays.collaborators = true;
+                st.bump();
+            });
             driver.relayout();
         }
         Action::OpenWindowStillStarting { app_id, surface_id } => {
@@ -2040,6 +2050,8 @@ fn catalogue_rest() -> Vec<Scenario> {
         word_processor_under_overlay(),
         room_activity_from_palette(),
         one_launch_one_window(),
+        a_name_typed_one_letter_at_a_time(),
+        a_name_typed_into_the_invite_card(),
         window_open_beside_selection(),
         window_open_into_tabbed_group(),
         window_open_at_visible_seam(),
@@ -3180,6 +3192,75 @@ fn palette_typing() -> Scenario {
     }
 }
 
+/// A name arriving in a field one letter at a time, one frame per letter.
+///
+/// The beat this exists for is a person typing a collaborator's name, and it
+/// only reads as typing if the half-written states are in the picture. This
+/// captures a frame after each character, so the sequence either shows the
+/// name growing — `C`, `Cl`, `Cla`, … — or shows it appearing whole, and the
+/// count of distinct partial states is the answer.
+///
+/// The field is compositor-drawn chrome, which is what the invite card's name
+/// field is: it takes each key straight off the event's logical key and paints
+/// it from the same overlay pass, so what happens here is what happens there.
+fn a_name_typed_one_letter_at_a_time() -> Scenario {
+    Scenario {
+        name: "a_name_typed_one_letter_at_a_time",
+        description: "A name typed into a compositor-drawn field, captured \
+                      after every character.",
+        actions: vec![
+            Action::OpenPalette,
+            Action::Wait(2),
+            Action::Snapshot("00-empty"),
+            Action::Type("C".into()),
+            Action::Snapshot("01-C"),
+            Action::Type("l".into()),
+            Action::Snapshot("02-Cl"),
+            Action::Type("a".into()),
+            Action::Snapshot("03-Cla"),
+            Action::Type("u".into()),
+            Action::Snapshot("04-Clau"),
+            Action::Type("d".into()),
+            Action::Snapshot("05-Claud"),
+            Action::Type("e".into()),
+            Action::Snapshot("06-Claude"),
+        ],
+    }
+}
+
+/// The same, in the field the film's beat is actually about: the invite
+/// card's "Their name in this room".
+///
+/// The card is where this was reported — it held its empty placeholder while
+/// the compositor's own model already had the name — so the frames have to be
+/// taken here rather than somewhere that merely resembles it.
+fn a_name_typed_into_the_invite_card() -> Scenario {
+    Scenario {
+        name: "a_name_typed_into_the_invite_card",
+        description: "A collaborator's name typed into the invite card, \
+                      captured after every character.",
+        actions: vec![
+            Action::OpenCollaborators,
+            Action::Wait(4),
+            Action::ClickNamed("collab_invite"),
+            Action::Wait(8),
+            Action::Snapshot("00-card-empty"),
+            Action::Type("C".into()),
+            Action::Snapshot("01-C"),
+            Action::Type("l".into()),
+            Action::Snapshot("02-Cl"),
+            Action::Type("a".into()),
+            Action::Snapshot("03-Cla"),
+            Action::Type("u".into()),
+            Action::Snapshot("04-Clau"),
+            Action::Type("d".into()),
+            Action::Snapshot("05-Claud"),
+            Action::Type("e".into()),
+            Action::Snapshot("06-Claude"),
+        ],
+    }
+}
+
 /// Drag a tab pill from a source x-coord to a target x-coord. The exact
 /// pixel positions match the bootstrap tree's first strip's first group
 /// (Notes / Files / Terminal / Browser pills). Coordinates approximate;
@@ -3674,7 +3755,9 @@ fn one_launch_one_window() -> Scenario {
                       opened in — and back again.",
         actions: vec![
             Action::LoneWindow(0),
+            Action::SelectGroup(Some(0)),
             Action::Wait(4),
+            Action::Relayout,
             Action::MirrorWindow {
                 app_id: "dev.qos.word-processor",
                 surface_id: 9401,
