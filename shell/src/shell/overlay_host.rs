@@ -11297,19 +11297,12 @@ fn draw_modal_scrim_at(
 /// dim behind a palette is chrome, and the OS owns what its chrome looks
 /// like. A light theme's scrim is a different colour from a dark theme's,
 /// and neither is `#000`.
+///
+/// The painting itself is [`ui::chrome::fill_scrim`], shared with the
+/// toolkit's own modal frame so a dim behind an app's sheet and a dim
+/// behind the palette are one gesture rather than two that drifted.
 fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f32, theme: &Theme) {
-    let alpha = (strength.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8;
-    if alpha == 0 {
-        return;
-    }
-    let c = theme.tokens.colors.surfaces.scrim.to_rgba8();
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        Color::from_rgba8(c.r, c.g, c.b, alpha),
-        None,
-        &rect,
-    );
+    ui::chrome::fill_scrim(scene, transform, rect, strength, theme);
 }
 
 /// Slate-900 tint at the given alpha. Centralised helper so every overlay
@@ -20031,6 +20024,31 @@ mod tests {
     /// Asserted as a lower bound, matching the modal test's shape: the
     /// requirement is "enough to dim", and pinning an exact float invites
     /// the next person to satisfy the letter of it by re-lowering it.
+    ///
+    /// ## What changed under the second half of this test, and why
+    ///
+    /// The strength is untouched — still 0.45, still the floor above.
+    /// What the scrim *does* with it is not: [`ui::chrome::fill_scrim`]
+    /// now paints a soft-light tone pass and a flat level pass rather
+    /// than one flat wash, because one flat wash removes a fixed share of
+    /// whatever lightness is there and so dims a `bg-white` page and a
+    /// slate desktop by wildly different perceived amounts. Measured off
+    /// a real frame: 39.6 L\* off the page, 1.5 L\* off the desktop.
+    ///
+    /// This test used to model that wash as `255 * (1 - alpha)` and
+    /// require the result be `<= 145`. That arithmetic no longer
+    /// describes anything the shell paints, so keeping it would be
+    /// asserting about a composite that is not there. It is replaced by
+    /// the same requirement asked of the real function — *and* by the
+    /// bound the old one had no way to express: that the page must not be
+    /// dimmed so much harder than everything around it that it reads as
+    /// blanking out, which is what put this on camera twice.
+    ///
+    /// Two-sided is not weaker than one-sided. The floor survives (the
+    /// page must lose real lightness), the ceiling is new, and the third
+    /// clause pins the whole transfer function rather than one endpoint
+    /// of it. The cross-theme and cross-ground properties are asserted
+    /// where the painter lives, in `ui::chrome::shell`'s tests.
     #[test]
     fn palette_scrim_alpha_reads_like_the_blurred_concept() {
         assert!(
@@ -20040,16 +20058,62 @@ mod tests {
              the palette stays bright and the card's edge reads as a hard \
              cut (got {PALETTE_SCRIM_ALPHA})"
         );
-        // What the constant is *for*: the brightest thing the shell
-        // paints must come out clearly darker than the palette surface it
-        // sits behind.
-        let card = 255.0;
-        let dimmed = card * (1.0 - PALETTE_SCRIM_ALPHA);
+
+        fn lstar(v: u8) -> f64 {
+            let s = v as f64 / 255.0;
+            let y = if s <= 0.04045 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            };
+            if y > 0.008856 {
+                116.0 * y.cbrt() - 16.0
+            } else {
+                903.3 * y
+            }
+        }
+
+        let theme = Theme::dark();
+        let dim = |v: u8| ui::chrome::scrim_maps(v, PALETTE_SCRIM_ALPHA, &theme);
+
+        // What the constant is *for*, half one: a bg-white window card
+        // behind the palette must lose real lightness, or the palette is
+        // a card floating on a bright field with no dim behind it.
+        let card = dim(255);
+        let card_drop = lstar(255) - lstar(card);
         assert!(
-            dimmed <= 145.0,
-            "a bg-white window card behind the palette lands at {dimmed} — \
-             still a bright field next to a slate-900 card"
+            card_drop >= 18.0,
+            "a bg-white window card behind the palette lands at {card} — only \
+             {card_drop:.1} L* down, still a bright field next to a slate-900 card"
         );
+
+        // Half two, and the reason the flat wash had to go: it must not
+        // lose so much that it stops being a page. At the old flat 0.45 it
+        // landed at 143 — 39.6 L* down — and read on film as the document
+        // blanking out when a modal opened.
+        assert!(
+            card_drop <= 28.0,
+            "a bg-white window card behind the palette lands at {card}, \
+             {card_drop:.1} L* down; past ~28 the page reads as a grey slab \
+             rather than as a page behind something"
+        );
+
+        // And the dim has to be the *same* dim everywhere, which is the
+        // property neither of the bounds above can see on its own. Every
+        // ground down to mid grey is bright enough to give up what the
+        // scrim is asking for, so every one of them must give up the
+        // same. Below that a ground has less lightness than the scrim
+        // wants and the honest requirement is a different one — asserted
+        // beside the painter, in `ui::chrome::shell`.
+        for ground in [180u8, 128] {
+            let drop = lstar(ground) - lstar(dim(ground));
+            assert!(
+                (card_drop - drop).abs() <= 6.0,
+                "the palette scrim takes {card_drop:.1} L* off a white card and \
+                 {drop:.1} off a ground at {ground}; a scrim that dims by what \
+                 it finds is a different scrim per app"
+            );
+        }
     }
 
     /// The scrim's colour is the theme's, not a literal. Both themes

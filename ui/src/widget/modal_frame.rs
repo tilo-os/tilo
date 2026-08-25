@@ -496,13 +496,10 @@ impl ModalFrame {
         let (ink, _dim) = Self::ink(theme);
 
         // --- scrim -------------------------------------------------
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.scrim.with_alpha_factor(MODAL_SCRIM_ALPHA),
-            None,
-            &layout.scrim,
-        );
+        // Two fills rather than one flat wash — see
+        // [`crate::chrome::fill_scrim`] for why a single alpha erases a
+        // light page and leaves a dark one where it was.
+        crate::chrome::fill_scrim(scene, transform, layout.scrim, MODAL_SCRIM_ALPHA, theme);
 
         // --- card --------------------------------------------------
         let radius = tokens.radii.lg as f64;
