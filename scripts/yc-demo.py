@@ -4758,7 +4758,11 @@ def say_something_about(session: Session, log: "LogTail", tile: tuple,
     # Enter in the field is a send affordance beside the button, and the
     # widget drains both into one place, so they cannot mean different
     # things. It is also what a person does after typing a line.
-    session.key("Return")
+    # "Enter", not "Return": `parse_key_tag` rejects a name it does not know
+    # rather than typing it, deliberately, so that a typo surfaces instead of
+    # being silently swallowed. This one surfaced as the instruction never
+    # being sent, at the beat the whole film turns on.
+    session.key("Enter")
     session.settle(0.8)
 
     sent = log.remark_sent(log.read() + log.text)
