@@ -2220,6 +2220,13 @@ def main() -> int:
                          f"needs")
     ap.add_argument("--windowed", action="store_true",
                     help="do not open the window at the full work area")
+    ap.add_argument("--allow-resampled", action="store_true",
+                    help="film even when the session renders larger than "
+                         "the video's picture area, which scales every "
+                         "frame and puts the caption band over the bottom "
+                         "of the picture. Refused by default: this film is "
+                         "almost entirely text, and resampling is the one "
+                         "thing that softens all of it at once")
     ap.add_argument("--no-record", dest="record", action="store_false",
                     help="drive it without a camera")
     ap.add_argument("--keep", action="store_true",
@@ -2502,18 +2509,46 @@ def main() -> int:
             s.typed_by_a_person = not args.self_test
 
     if not args.dry_run:
-        area = ins.work_area() or (yc.VIDEO_W, yc.VIDEO_H)
+        area = ins.work_area()
         if args.windowed:
             quinten.window_size = None
         else:
-            # The video's own size where the screen has room for it, so
-            # the frames go in 1:1 and the band sits in empty canvas
-            # below them rather than over the bottom of a window. Where
-            # it does not, the largest the window manager will grant
-            # without shrinking it — a shrink is a resize, and a resize
-            # with a frame in flight takes this backend down.
-            quinten.window_size = (f"{min(area[0], yc.VIDEO_W)}"
-                                   f"x{min(area[1], yc.VIDEO_H - yc.BAND_H)}")
+            # The video's own size, asked for outright, so a frame goes
+            # into the film 1:1 and the band sits in empty canvas below
+            # it rather than over the bottom of a window.
+            #
+            # This used to be clamped down to the work area, reasoning
+            # that a window manager shrinks a window asking for more and
+            # a shrink is a resize. The clamp is what made the ask wrong.
+            # A window manager auto-maximizes a *resizable* window whose
+            # request already covers most of the work area, so asking for
+            # 1920x1014 of a 1920x1048 work area — 97% of it — came back
+            # as the whole 1920x1048, granted by being overruled. Every
+            # frame was then thirty-four rows too tall for the picture
+            # area, and the caption band sat over the bottom of it.
+            #
+            # The compositor publishes the requested size as fixed now
+            # (see `NIRIOS_WINIT_SIZE`), and a window that cannot be
+            # resized is neither shrunk nor auto-maximized. So the honest
+            # ask is the size the video needs, and it is granted.
+            quinten.window_size = yc.RECORD_SIZE
+            if area and (area[0] < yc.VIDEO_W
+                         or area[1] < yc.VIDEO_H - yc.BAND_H):
+                # A screen that genuinely cannot show it still gets the
+                # work area: a window the person driving cannot reach is
+                # worse than a smaller picture, and a smaller picture
+                # still goes in unresampled — `Recorder.compose` pads
+                # anything that fits inside the picture area rather than
+                # scaling it up soft. Said here, because a picture with a
+                # border round it is a thing somebody should be told
+                # about before the countdown rather than after the take.
+                quinten.window_size = (f"{min(area[0], yc.VIDEO_W)}"
+                                       f"x{min(area[1], yc.VIDEO_H - yc.BAND_H)}")
+                print(f"  ! this screen's usable area is {area[0]}x{area[1]}, "
+                      f"smaller than the video's {yc.RECORD_SIZE}. Filming at "
+                      f"{quinten.window_size}: the picture goes in 1:1 with a "
+                      f"border round it, which is sharp and small rather than "
+                      f"full-frame and soft.")
 
     print(f"compositor:     {shell_bin}")
     print(f"word processor: {wp_source}")
@@ -2606,10 +2641,45 @@ def main() -> int:
         probe = quinten.snapshot(os.path.join(args.out, "probe.png"))
         rendered = ins.png_size(probe) or (yc.VIDEO_W, yc.VIDEO_H - yc.BAND_H)
         size = f"{rendered[0]}x{rendered[1]}"
-        print(f"  rendering at           {size}"
-              + ("" if rendered == (yc.VIDEO_W, yc.VIDEO_H - yc.BAND_H) else
-                 f"  (not {yc.RECORD_SIZE}: frames are scaled and "
-                 f"letterboxed into the video)"))
+        # Three outcomes, and only one of them used to be said out loud
+        # in a way anybody would act on.
+        #
+        # Exactly the picture area is the one to want: 1:1, band below,
+        # nothing resampled. Smaller than it still goes in unresampled,
+        # with a border — worth a line, not an argument. Bigger than it
+        # is the bad one: every frame is scaled, every glyph in a film
+        # made almost entirely of text is softened, and the band comes
+        # down over the bottom of the picture. That used to be a
+        # parenthesis at the end of a setup line, printed once, minutes
+        # before anybody looked at a frame — so it is a refusal now, and
+        # `--allow-resampled` is there for a take somebody wants anyway.
+        if rendered == (yc.VIDEO_W, yc.VIDEO_H - yc.BAND_H):
+            print(f"  rendering at           {size}")
+        elif (rendered[0] <= yc.VIDEO_W
+              and rendered[1] <= yc.VIDEO_H - yc.BAND_H):
+            print(f"  rendering at           {size}  (smaller than "
+                  f"{yc.RECORD_SIZE}: goes in 1:1 with a border, nothing "
+                  f"resampled)")
+        elif args.allow_resampled:
+            print(f"  rendering at           {size}  (larger than "
+                  f"{yc.RECORD_SIZE}: every frame will be scaled into the "
+                  f"video and the band will sit over the picture)")
+            yc.gap(f"the session renders {size}, larger than the video's "
+                   f"picture area {yc.RECORD_SIZE}, so every frame of this "
+                   f"take is resampled and the caption band covers the "
+                   f"bottom of it")
+        else:
+            raise RuntimeError(
+                f"the session renders {size}; the video's picture area is "
+                f"{yc.RECORD_SIZE}. Every frame would be scaled down into "
+                f"it — soft text in a film that is almost all text — and "
+                f"the caption band would sit over the bottom of the "
+                f"picture instead of below it.\n"
+                f"  The window was asked for at {quinten.window_size} and "
+                f"granted something else, which is a window manager "
+                f"overruling a fixed-size request. Close whatever is "
+                f"reserving screen space, or pass --allow-resampled to "
+                f"film it anyway.")
         for s in sessions:
             if s is not quinten:
                 # The agent's screen is never filmed, so it does not have
