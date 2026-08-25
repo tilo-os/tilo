@@ -423,6 +423,12 @@ const TETHER_AFTER: f64 = 4.0;
 pub(crate) const PILL_PAD_X: f64 = 7.0;
 pub(crate) const PILL_PAD_Y: f64 = 3.0;
 
+/// Space between a pill's leading glyph and its label.
+///
+/// Narrower than the outer padding, so the glyph reads as belonging to the
+/// name rather than as a second thing sharing the pill.
+pub(crate) const PILL_ICON_GAP: f64 = 4.0;
+
 /// Type size for a peer's name, wherever it is drawn.
 ///
 /// `scale.sm`, the same step the HIG gives every other control label —
@@ -443,10 +449,32 @@ pub(crate) fn peer_pill_size(
     theme: &Theme,
     label: &str,
 ) -> (f64, f64) {
+    peer_pill_size_with_icon(text_renderer, theme, label, None)
+}
+
+/// [`peer_pill_size`] for a pill that leads with a glyph.
+///
+/// The glyph is set square at the label's own type size and sits inside
+/// the same padding, so a pill with one and a pill without are the same
+/// height and read as the same object. Measuring it here rather than at
+/// the call site is the point: the painter below reads this function for
+/// where the text starts, so the two cannot disagree about where the
+/// glyph ends.
+pub(crate) fn peer_pill_size_with_icon(
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    label: &str,
+    icon: Option<crate::icons::Icon>,
+) -> (f64, f64) {
     let size = pill_label_size(theme);
     let (tw, _th) = text_renderer.measure(label, size, None);
+    let lead = if icon.is_some() {
+        size as f64 + PILL_ICON_GAP
+    } else {
+        0.0
+    };
     (
-        tw as f64 + PILL_PAD_X * 2.0,
+        tw as f64 + lead + PILL_PAD_X * 2.0,
         size as f64 + PILL_PAD_Y * 2.0,
     )
 }
@@ -728,6 +756,43 @@ pub(crate) fn draw_peer_pill(
     peer: Color,
     alpha: f32,
 ) {
+    draw_peer_pill_with_icon(
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        rect,
+        label,
+        peer,
+        alpha,
+        None,
+    );
+}
+
+/// [`draw_peer_pill`] with a glyph leading the label.
+///
+/// One glyph, at the label's own size and in the same ink, inside the
+/// pill's own padding — the mark and the name are one object, and fade
+/// together with everything else.
+///
+/// What it is for: a participant that is not a person. An agent already
+/// wears [`Icon::Bot`](crate::icons::Icon::Bot) on its avatar in the bar,
+/// and a viewer who has learned that mark once should not have to learn a
+/// second one somewhere else. Passing `None` is a person, which is the
+/// safe way round — claiming somebody is a bot is a worse error than not
+/// saying.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_peer_pill_with_icon(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    label: &str,
+    peer: Color,
+    alpha: f32,
+    icon: Option<crate::icons::Icon>,
+) {
     let pad = (PILL_PAD_X, PILL_PAD_Y);
     let label_size = pill_label_size(theme);
     let radius = theme.tokens.radii.sm as f64;
@@ -747,12 +812,30 @@ pub(crate) fn draw_peer_pill(
         None,
         &pill,
     );
+    let ink = contrast_ink(peer).with_alpha_factor(alpha);
+    let lead = match icon {
+        Some(glyph) => {
+            let g = label_size as f64;
+            let gx = rect.x0 + pad.0;
+            let gy = rect.y0 + (rect.height() - g) / 2.0;
+            crate::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(gx, gy, gx + g, gy + g),
+                glyph,
+                ink,
+                (g / 8.0).max(1.4),
+            );
+            g + PILL_ICON_GAP
+        }
+        None => 0.0,
+    };
     text_renderer.draw_text(
         scene,
         label,
         label_size,
-        contrast_ink(peer).with_alpha_factor(alpha),
-        transform * Affine::translate((rect.x0 + pad.0, rect.y0 + pad.1)),
+        ink,
+        transform * Affine::translate((rect.x0 + pad.0 + lead, rect.y0 + pad.1)),
         None,
     );
 }

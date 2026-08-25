@@ -58,18 +58,19 @@
 //! * **What is being acted on** — hence the mark hugging the resource's own
 //!   rect, not the window's.
 //! * **That it was not the person** — hence the participant's colour and their
-//!   name, the same colour and the same chip vocabulary that already carry
-//!   their pointer, their caret and an object they moved; and, for a
-//!   participant the room says is an agent, the same [`Icon::Bot`] glyph their
-//!   avatar wears in the bar. An agent is already told apart from a person
-//!   there ([`Avatar::draw_agent_at`](crate::widget::Avatar::draw_agent_at)),
+//!   name, in the very pill that already carries their pointer, their caret
+//!   and an object they moved
+//!   ([`draw_peer_pill`](super::render::draw_peer_pill), extended here with a
+//!   leading glyph rather than reimplemented); and, for a participant the room
+//!   says is an agent, the same [`Icon::Bot`](crate::icons::Icon::Bot) glyph
+//!   their avatar wears in the bar. An agent is already told apart from a
+//!   person there ([`Avatar::draw_agent_at`](crate::widget::Avatar::draw_agent_at)),
 //!   and a viewer who has learned that mark once should not have to learn a
 //!   second one here.
 
 use std::time::{Duration, Instant};
 
 use vello::kurbo::{Affine, Line, Rect, RoundedRect, Stroke};
-use vello::peniko::Fill;
 use vello::Scene;
 
 use crate::color_compat::ColorCompat;
@@ -77,7 +78,7 @@ use crate::permissions::UserId;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
-use super::render::{color_for, contrast_ink};
+use super::render::color_for;
 use super::PresenceCtx;
 
 /// How long one touch stays on screen.
@@ -102,6 +103,9 @@ const RELEASE: f64 = 0.22;
 
 /// How far outside the resource the brackets start, in logical pixels.
 const REACH_DISTANCE: f64 = 26.0;
+
+/// Gap between the resource and the pill naming who is touching it.
+const PILL_GAP: f64 = 4.0;
 
 /// Length of one bracket arm, as a fraction of the shorter side, and the
 /// bounds it is clamped into. A bracket that is nearly the whole edge is a
@@ -314,8 +318,15 @@ pub fn draw_action_touch(
         );
     }
 
-    // Who, and what they are doing — in the same chip vocabulary as the name
-    // tag on a peer's pointer and on an object they carried.
+    // Who, and what they are doing — in the pill a peer's pointer and their
+    // caret already wear, painted by the same function that paints those.
+    //
+    // Not a chip of its own. The pill has a measured size, a shadow, a
+    // contrast-picked ink and a type step chosen by looking at frames
+    // (`pill_label_size`: `scale.sm`, because `xs` put people's names on
+    // screen at about eight pixels of glyph). A second implementation here
+    // would start by getting all four of those wrong, and this one is on
+    // camera for longer than any of them.
     if name.is_empty() && action_label.is_empty() {
         return;
     }
@@ -324,57 +335,37 @@ pub fn draw_action_touch(
     } else if action_label.is_empty() {
         name.to_string()
     } else {
+        // Name first, because *who* is the fact a viewer needs before the
+        // sentence means anything. The middle dot rather than a colon: a
+        // colon reads as the app labelling a field, and this is one
+        // participant's name against one operation's name.
         format!("{name} · {action_label}")
     };
-    let label_size = tokens.typography.scale.xs;
-    let (tw, _) = text_renderer.measure(&text, label_size, None);
-    let pad = 6.0_f64;
-    let chip_h = label_size as f64 + pad * 1.5;
-    // The bot glyph leads the chip for an agent, at the text's own size so it
-    // sits on the line rather than beside it. A person's chip has no glyph —
-    // the absence is the distinction, exactly as it is in the avatar cluster.
-    let glyph = if is_agent { chip_h * 0.62 } else { 0.0 };
-    let glyph_gap = if is_agent { 4.0 } else { 0.0 };
-    let chip_w = tw as f64 + pad * 2.0 + glyph + glyph_gap;
-    // Above the resource by preference, below it when the resource is against
-    // the top of its window — a chip drawn off the top of a tile is clipped by
-    // it, which is the one placement guaranteed to be unreadable.
-    let above = b.y0 - chip_h - 4.0;
-    let (y0, y1) = if above > 2.0 {
-        (above, b.y0 - 4.0)
+    // The bot glyph leads the pill for an agent, and a person's pill has
+    // none — the absence is the distinction, exactly as it is in the avatar
+    // cluster in the bar.
+    let glyph = if is_agent {
+        Some(crate::icons::Icon::Bot)
     } else {
-        (b.y1 + 4.0, b.y1 + 4.0 + chip_h)
+        None
+    };
+    let (chip_w, chip_h) =
+        super::render::peer_pill_size_with_icon(text_renderer, theme, &text, glyph);
+    // Above the resource by preference, below it when the resource is against
+    // the top of its window — a pill drawn off the top of a tile is clipped by
+    // it, which is the one placement guaranteed to be unreadable.
+    let above = b.y0 - chip_h - PILL_GAP;
+    let (y0, y1) = if above > 2.0 {
+        (above, b.y0 - PILL_GAP)
+    } else {
+        (b.y1 + PILL_GAP, b.y1 + PILL_GAP + chip_h)
     };
     // Anchored to the resource, not to the brackets: the brackets start
-    // outside it, and a chip that started out there too would be half off the
+    // outside it, and a pill that started out there too would be half off the
     // window while it converged — the one moment it most needs to be readable.
     let chip = Rect::new(rect.x0, y0, rect.x0 + chip_w, y1);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        peer.with_alpha_factor(a),
-        None,
-        &RoundedRect::from_rect(chip, tokens.radii.sm as f64),
-    );
-    let ink = contrast_ink(peer).with_alpha_factor(a);
-    if is_agent {
-        let gy = chip.y0 + (chip.height() - glyph) / 2.0;
-        crate::icons::draw_icon(
-            scene,
-            transform,
-            Rect::new(chip.x0 + pad, gy, chip.x0 + pad + glyph, gy + glyph),
-            crate::icons::Icon::Bot,
-            ink,
-            (glyph / 8.0).max(1.4),
-        );
-    }
-    text_renderer.draw_text(
-        scene,
-        &text,
-        label_size,
-        ink,
-        transform * Affine::translate((chip.x0 + pad + glyph + glyph_gap, chip.y0 + pad * 0.4)),
-        None,
+    super::render::draw_peer_pill_with_icon(
+        scene, transform, text_renderer, theme, chip, &text, peer, a, glyph,
     );
 }
 
