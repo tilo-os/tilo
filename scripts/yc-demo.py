@@ -1496,7 +1496,8 @@ class Session:
     def launch(self, app_id: str, timeout: float = LAUNCH_TIMEOUT_S,
                search: str | None = None,
                via: str | None = None,
-               look: float = 1.0) -> dict | None:
+               look: float = 1.0, read: float = 1.2,
+               watch: float = 0.0) -> dict | None:
         """Start an app by its id and wait for it to present a frame.
 
         The surfaces that already existed are excluded, because every app
@@ -1569,7 +1570,14 @@ class Session:
             # the viewer never sees a query being formed. This is the
             # same per-character path the document uses.
             self.type_prose(search)
-            self.settle(1.2)
+            # And the answer, on screen, before it is taken. `read` is
+            # that beat, and it is the mirror of `look`: the first search
+            # of a session has to be read — the query, and the row that
+            # came back for it — and the fourth does not, because by then
+            # a viewer knows what the box does. Four full-length reads is
+            # five seconds of a hundred-second film spent looking at a
+            # list nobody is choosing from.
+            self.settle(read)
             rows = self.palette().get("rows") or []
             if not any(app_id in json.dumps(r) for r in rows):
                 note(f"{self.name}: no palette row offers {app_id} for "
@@ -1582,70 +1590,93 @@ class Session:
         first_frame: float | None = None
         found: dict | None = None
         widened: set = set()
-        while time.time() < deadline:
-            for f in self.foreign_frames():
-                if f.get("surface_id") in before:
-                    continue
-                # The strip's share, re-applied the instant the group
-                # exists — which is here, before the client has been
-                # configured into its final tab and long before it has
-                # answered with a buffer.
-                #
-                # `set_group_widths` walks the groups that are there when
-                # it is called — so settling it once before filming, on
-                # an empty desktop, set nothing at all, and every group
-                # opened afterwards took the default three-quarters. Two
-                # of those overflow the strip, which is what put a word
-                # processor 514px past the right edge in a shot that was
-                # supposed to hold two windows.
-                #
-                # Applied on sight of the group rather than on its first
-                # frame, and that ordering is the point: a width change
-                # after the client has committed a buffer for the old
-                # tab invalidates it, and the window then holds its
-                # opening card for a second round trip that nobody asked
-                # for. Idempotent, so re-applying it while waiting costs
-                # a message and settles the question of which buffer the
-                # client is working towards.
-                if f.get("surface_id") not in widened:
-                    widened.add(f.get("surface_id"))
-                    self.set_group_width(FILM_GROUP_SHARE)
-                if f.get("frame_seq", 0) > 0 and first_frame is None:
-                    first_frame = time.time()
-                    found = f
-                # `presented` is the compositor's own answer to "is this
-                # window on screen", and it is a different question from
-                # "has the client drawn anything": the first buffer a
-                # client commits is the size it picked before it was
-                # configured, and until one arrives that answers the tab
-                # the strip holds the window's place with a card. A
-                # launch that returned on the first frame reported an app
-                # as open while the person was still looking at a
-                # spinner, which is the gap this closes.
-                if f.get("presented"):
-                    shown = time.time()
-                    if first_frame is None:
-                        first_frame = shown
+        # The wait itself, filmed only as long as it is worth watching.
+        #
+        # An application starting is a sandbox spawning, a wayland
+        # connection, a toolkit coming up and a first buffer, and none of
+        # that is a picture: what is on screen is an unchanged desktop
+        # under an "Opening ..." toast, and then a dark tile with a
+        # spinner in it. Measured on this rig at 2.3s for a warm app and
+        # 5.8s for the first one of a session — twenty-odd seconds of a
+        # hundred-second film, spent on four windows not yet being there.
+        #
+        # `max_hold` cannot help: it collapses runs of byte-identical
+        # frames and the spinner turns, so every frame of the wait is
+        # legitimately different from the last. `patience` can, and this
+        # is the same use `Recorder.patience` was written for. The toast
+        # is filmed — a viewer sees that something was asked for — and
+        # then the camera comes down until the window is really on
+        # screen, which is the frame the beat is about and is filmed
+        # either way. Nothing is skipped and nothing is hurried: the app
+        # takes exactly as long as it takes, and the compositor draws
+        # every frame of it.
+        #
+        # 0 films the whole wait, which is what the nine-beat film does.
+        with patience(watch) if watch > 0 else contextlib.nullcontext():
+            while time.time() < deadline:
+                for f in self.foreign_frames():
+                    if f.get("surface_id") in before:
+                        continue
+                    # The strip's share, re-applied the instant the group
+                    # exists — which is here, before the client has been
+                    # configured into its final tab and long before it has
+                    # answered with a buffer.
+                    #
+                    # `set_group_widths` walks the groups that are there when
+                    # it is called — so settling it once before filming, on
+                    # an empty desktop, set nothing at all, and every group
+                    # opened afterwards took the default three-quarters. Two
+                    # of those overflow the strip, which is what put a word
+                    # processor 514px past the right edge in a shot that was
+                    # supposed to hold two windows.
+                    #
+                    # Applied on sight of the group rather than on its first
+                    # frame, and that ordering is the point: a width change
+                    # after the client has committed a buffer for the old
+                    # tab invalidates it, and the window then holds its
+                    # opening card for a second round trip that nobody asked
+                    # for. Idempotent, so re-applying it while waiting costs
+                    # a message and settles the question of which buffer the
+                    # client is working towards.
+                    if f.get("surface_id") not in widened:
+                        widened.add(f.get("surface_id"))
+                        self.set_group_width(FILM_GROUP_SHARE)
+                    if f.get("frame_seq", 0) > 0 and first_frame is None:
+                        first_frame = time.time()
                         found = f
-                    note(f"{self.name}: {app_id} drew its first frame "
-                         f"{first_frame - began:.1f}s after it was asked "
-                         f"for, and was on screen at "
-                         f"{shown - began:.1f}s")
-                    return found
-            time.sleep(0.12)
-        if found is not None:
-            # `first_frame` is set on both paths that set `found`, so it is
-            # never None here -- but the two are only tied together by
-            # reading the loop, and this line runs inside a launch, during
-            # filming, where an AttributeError on a `None` would take the
-            # take down at the worst possible moment. So it says what it
-            # does not know rather than assuming it.
-            since = (f"{first_frame - began:.1f}s"
-                     if first_frame is not None else "an unrecorded time")
-            note(f"{self.name}: {app_id} drew a frame {since} in but never "
-                 f"filled its tab; reporting it as opened anyway")
-            return found
-        return None
+                    # `presented` is the compositor's own answer to "is this
+                    # window on screen", and it is a different question from
+                    # "has the client drawn anything": the first buffer a
+                    # client commits is the size it picked before it was
+                    # configured, and until one arrives that answers the tab
+                    # the strip holds the window's place with a card. A
+                    # launch that returned on the first frame reported an app
+                    # as open while the person was still looking at a
+                    # spinner, which is the gap this closes.
+                    if f.get("presented"):
+                        shown = time.time()
+                        if first_frame is None:
+                            first_frame = shown
+                            found = f
+                        note(f"{self.name}: {app_id} drew its first frame "
+                             f"{first_frame - began:.1f}s after it was asked "
+                             f"for, and was on screen at "
+                             f"{shown - began:.1f}s")
+                        return found
+                time.sleep(0.12)
+            if found is not None:
+                # `first_frame` is set on both paths that set `found`, so it is
+                # never None here -- but the two are only tied together by
+                # reading the loop, and this line runs inside a launch, during
+                # filming, where an AttributeError on a `None` would take the
+                # take down at the worst possible moment. So it says what it
+                # does not know rather than assuming it.
+                since = (f"{first_frame - began:.1f}s"
+                         if first_frame is not None else "an unrecorded time")
+                note(f"{self.name}: {app_id} drew a frame {since} in but never "
+                     f"filled its tab; reporting it as opened anyway")
+                return found
+            return None
 
     # -- the action API (semantic; no input, no pixels) --------------
 
@@ -2264,10 +2295,16 @@ class Recorder:
         or make a frame show for longer than its session held it — the
         frame before a pause is capped by `max_hold` like any other.
         """
+        # Read before the camera goes down, not after. Taken afterwards
+        # this was always None, so "the session changed while we were
+        # off" was true of every stretch and the dwell below was paid for
+        # a cut that had not happened — a second added to the film each
+        # time, and a second before the picture comes back to whatever
+        # made it come back.
         with self._lock:
+            was = self._live
             self._off += 1
             self._live = None
-        was = self._live
         try:
             yield
         finally:
@@ -2302,6 +2339,20 @@ class Recorder:
         — a viewer sees the result appear — and is only ever reached when
         it is not.
         """
+        # Not on a take that carries a voice.
+        #
+        # Taking the camera down shortens the picture without shortening
+        # the take, and a microphone runs on the wall clock: a stretch
+        # left out of the middle puts the voice ahead of the picture for
+        # everything after it. `--max-hold 0` already means "this take
+        # may not be edited", and this is an edit of exactly the kind it
+        # forbids -- `_check_length` refuses the result, so the honest
+        # place to stop is before making it. True of every caller here,
+        # not only of the newest.
+        if self.max_hold <= 0:
+            yield
+            return
+
         stopped = threading.Event()
         dropped = threading.Event()
 
@@ -4509,7 +4560,7 @@ def dismiss_peer_sync_card(s: Session, what: str) -> None:
           peer_sync_card_up(s), False)
 
 
-def show_collaborators(s: Session) -> str:
+def show_collaborators(s: Session, settle: float = 1.0) -> str:
     """Open the room's people from the affordance on screen.
 
     The top bar's avatar stack is the affordance (`topbar_chrome.rs`
@@ -4528,7 +4579,10 @@ def show_collaborators(s: Session) -> str:
     """
     if s.named_rect("topbar_avatar_stack"):
         s.click_named("topbar_avatar_stack")
-        s.settle(1.0)
+        # A panel sliding out is a thing to watch the first time and a
+        # thing you have already seen the second, so how long it is
+        # given belongs to the beat rather than to the helper.
+        s.settle(settle)
         return "the avatar stack in the top bar"
     gap(f"{s.name}: the top bar published no avatar stack to click, so the "
         f"room's people had to be opened by address rather than by the "
@@ -4538,14 +4592,14 @@ def show_collaborators(s: Session) -> str:
         note(f"{s.name}: collaborators.open refused — "
              f"{json.dumps(resp['err'])[:120]}")
         return "nothing - the panel could not be opened"
-    s.settle(1.0)
+    s.settle(settle)
     return "its address (the avatar stack was not on screen)"
 
 
 def close_collaborators(s: Session) -> None:
     if s.overlays().get("collaborators"):
         s.key("Escape")
-        s.settle(0.4)
+        s.settle(0.3)
 
 
 def say_something_about(session: Session, log: "LogTail", tile: tuple,
@@ -4736,8 +4790,21 @@ def say_something_about(session: Session, log: "LogTail", tile: tuple,
 
 
 def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
-                          tag: str | None = None) -> str | None:
+                          tag: str | None = None,
+                          read: float = 1.0) -> str | None:
     """Invite somebody from the panel a person opened, with the mouse.
+
+    `read` scales the four pauses this card is held for. The film mints
+    two invitations from the same card, and only the first of them is a
+    thing a viewer has to read: the composer asking who, the name going
+    in, the token coming back, the card saying it is on the clipboard.
+    The second says *the same card, a different name* — which is the
+    whole point of showing it twice — and somebody who has just read one
+    reads the second at a glance. Held at full length both times, the
+    pair cost half a minute of a hundred-second film to make one point.
+    Scaled rather than skipped: every gesture still happens, every claim
+    is still asserted, and the card is still on screen long enough to
+    see whose name is on it.
 
     Assumes the collaborators panel is already up — clicking `Invite`
     closes it, because the card carries the question and then the token
@@ -4771,7 +4838,7 @@ def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
         gap("the panel's Invite button would not take a click - "
             f"{json.dumps(clicked['err'])[:120]}")
         return None
-    host.settle(0.8)
+    host.settle(0.8 * read)
 
     step("and it asks who, before it mints anything")
     # The whole reason the composer exists. A button that minted an
@@ -4791,12 +4858,19 @@ def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
     claim("and nothing was minted before it was answered",
           host.chrome()["peer_sync"]["invite_token"], None)
     host.type_prose(name)
-    host.settle(0.5)
+    host.settle(0.5 * read)
     claim(f"the field took the name {name!r}",
           host.chrome()["peer_sync"]["invite_name"], name)
     # Who it is for, on screen, before anything has been minted. One of
     # the four frames this beat exists to let somebody read.
-    read_hold()
+    #
+    # Shorter than the card below and not scaled with it, because what is
+    # on screen here is one word in a field. It was held for as long as a
+    # token, twice, which is four seconds of the finished film spent on a
+    # name a viewer read in half of one — and it is the same length both
+    # times, because the second invitation's whole point is the name in
+    # this field being a different one.
+    read_hold(READ_HOLD_S * 0.6)
     if shots and tag:
         host.snapshot(os.path.join(shots, f"{tag}-naming.png"))
 
@@ -4832,7 +4906,7 @@ def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
     # both screens, and that it is on the clipboard. This is the frame
     # the invitation has flashed past in every previous cut, so it is
     # held for longer than anything else in the film.
-    read_hold(READ_HOLD_S * 1.5)
+    read_hold(READ_HOLD_S * 1.5 * read)
     if shots and tag:
         host.snapshot(os.path.join(shots, f"{tag}-copied.png"))
     # The moment it has been read, and not one beat later: it is a modal
@@ -5873,7 +5947,10 @@ def type_into_the_document(s: Session, wp: dict | None, text: str) -> bool:
         return False
     bx, by, bw, bh = rect
     s.click_at(bx + bw * 0.4, by + bh * 0.35)
-    s.settle(1.0)
+    # Long enough for the click to be taken and the caret drawn where it
+    # landed. This is an input round trip, not a frame the beat is about:
+    # the beat is the words appearing, which starts below.
+    s.settle(0.6)
     # To the end of what is already there, rather than wherever the
     # click happened to land. By this point the document has a sentence
     # and an image in it, and a caret dropped into the middle of that
@@ -5890,9 +5967,11 @@ def type_into_the_document(s: Session, wp: dict | None, text: str) -> bool:
     s.key_down("Control")
     s.key("End")
     s.key_up("Control")
-    s.settle(0.5)
+    s.settle(0.35)
     s.type_prose(text)
-    s.settle(1.0)
+    # And a moment on the finished text before whatever comes next moves
+    # the strip out from under it.
+    s.settle(0.7)
     return True
 
 
@@ -7900,13 +7979,42 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
     # announce themselves to wayland as `app` and an id that names two
     # different programs names neither.
     far = [extras[a] for a in STRIP_EXTRAS if a in extras]
+    # Neighbours, or not at all.
+    #
+    # Only adjacent groups are ever in frame together, so a pair with
+    # something between them cannot be filmed side by side however the
+    # strip is scrolled or however narrow the groups are made. Asking
+    # anyway is not free: `frame_windows` walks the strip to the right
+    # subject, then to the left, measures, and refuses -- and the next
+    # step walks straight back. Every take of this film has paid a few
+    # seconds for that pan and shown nothing at the end of it, because
+    # the two apps `STRIP_EXTRAS` names open first and last with two
+    # more between them.
+    #
+    # The arithmetic is already here for the pair below; it was just
+    # never asked about this one. Said out loud rather than skipped
+    # silently, because a beat that does not film what it claims should
+    # say so in the transcript.
     if len(far) >= 2:
-        step("two of the four are in frame; the other two are past the edges")
-        if frame_windows(quinten, far, VIEWPORT):
-            off = [a.rsplit(".", 1)[-1] for a in (FILES_APP, WORD_PROCESSOR)]
-            note(f"{', '.join(off)} are on the same strip, scrolled off it")
-            quinten.snapshot(os.path.join(shots, "10-strip-right.png"))
-            read_hold(0.5)
+        order_now = strip_order(quinten)
+        at = [group_index_of(quinten, sub, order_now) for sub in far]
+        if None in at:
+            note("one of the two windows at the far end is not on the "
+                 "strip, so there is no pair there to film")
+        elif max(at) - min(at) != len(at) - 1:
+            note(f"the far pair are groups {at} with {max(at) - min(at) - 1} "
+                 f"window(s) between them, so they cannot share a frame; "
+                 f"the strip stays where the launch left it")
+        else:
+            step("two of the four are in frame; the other two are past "
+                 "the edges")
+            if frame_windows(quinten, far, VIEWPORT):
+                off = [a.rsplit(".", 1)[-1]
+                       for a in (FILES_APP, WORD_PROCESSOR)]
+                note(f"{', '.join(off)} are on the same strip, scrolled "
+                     f"off it")
+                quinten.snapshot(os.path.join(shots, "10-strip-right.png"))
+                read_hold(0.4)
     elif far:
         note("only one of the extra applications opened, so the strip "
              "cannot show a pair at its far end")
@@ -7942,7 +8050,7 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
         gap("the strip refused to merge the two windows — "
             + json.dumps(resp["err"])[:160])
         return
-    quinten.settle(0.7)
+    quinten.settle(0.55)
 
     # Read off the tree, which is where a tab group actually is. A shot
     # of a bar with two pills in it would be a picture of the answer, not
@@ -7981,7 +8089,7 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
           sorted(t["surface_id"] for t in merged["tabs"]),
           sorted([int(wp["surface_id"]), int(editor["surface_id"])]))
     quinten.snapshot(os.path.join(shots, "12-tabbed.png"))
-    read_hold(1.0)
+    read_hold(0.7)
 
     step("and the tabs switch between them")
 
@@ -8011,12 +8119,12 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
         for name in ([f"tab:{title}[{merged['id']}]"] if title else []):
             if quinten.named_rect(name):
                 quinten.click_named(name)
-                quinten.settle(0.7)
+                quinten.settle(0.55)
                 if active_tab_surface(quinten, merged["id"]) == int(surface_id):
                     return
         for _ in range(len(merged["tabs"])):
             quinten.scroll(1.0, 0.0)
-            quinten.settle(0.6)
+            quinten.settle(0.5)
             if active_tab_surface(quinten, merged["id"]) == int(surface_id):
                 return
 
@@ -8054,7 +8162,7 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
         claim("and the screen changes with it",
               moved > SCREEN_MOVED_PX, True)
         note(f"{moved} pixels differ between the two tabs")
-    read_hold(1.0)
+    read_hold(0.7)
     claim("every one of those was a person's gesture",
           quinten.input_ops > before, True)
 
