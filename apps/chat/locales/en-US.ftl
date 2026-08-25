@@ -42,3 +42,19 @@ chat-agent-gone = { $agent } took this at { $at } and is no longer here
 
 # Beside an agent in the members list, when it has work in flight.
 chat-roster-agent-working = Working
+
+# One line per operation the agent actually dispatched, under the state line.
+# Each is written from the dispatch itself, so a row means the agent tried
+# this operation on this thing -- never that it said it would.
+
+# It ran and the document did not change. Said out loud rather than shown as
+# a success, which would send a reader looking for an edit nobody made.
+chat-agent-step-unchanged = { $did } · changed nothing
+
+# It did not happen, and the agent's own words for why.
+chat-agent-step-refused = { $did } · { $why }
+
+# The line that opens how the agent decided. Collapsed until asked for: a
+# transcript that showed every one of these at once would be unreadable.
+chat-agent-reasoning-model = How it decided
+chat-agent-reasoning-floor = How it decided · without a model

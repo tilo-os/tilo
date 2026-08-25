@@ -522,6 +522,15 @@ impl ChatApp {
             Hit::CategoryToggle(id) => {
                 ChatDoc::toggle_category_collapsed(doc, &id);
             }
+            // Nothing is written to the room: opening an explanation is a
+            // fact about this screen, and a document write here would put my
+            // reading on everybody else's.
+            Hit::AgentReasoning(id) => {
+                if !self.open_reasoning.remove(&id) {
+                    self.open_reasoning.insert(id);
+                }
+                self.request_relayout();
+            }
             // Left-click on your own message body is a no-op — the edit menu
             // is a right-click affordance (see `on_right_click`).
             Hit::MessageMenu { .. } => {}
