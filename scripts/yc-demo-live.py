@@ -1339,7 +1339,12 @@ class Live:
             log.catch_up()
             said = yc.say_something_about(
                 self.x, log, tuple(tile["rect"]), yc.PHOTO_NAME,
-                yc.expected_listing(self.x.home), self.args.instruction,
+                # The room's workspace, not his home. That is the whole
+                # point of the beat: the object he points at is one the
+                # room carries, reachable because he is in the room,
+                # rather than a copy of it that happens to sit in his own
+                # home under the same name.
+                yc.expected_listing(yc.WORKSPACE_ROOT), self.args.instruction,
                 self.shots, "his-instruction")
         finally:
             # The camera stays on xaver for the rest of the film. He
@@ -1707,16 +1712,19 @@ class Live:
         self.no_refusal(doc)
 
     def the_photograph(self) -> bytes:
-        """The file he right-clicked, as it sits in his home."""
-        for home in (self.x.home if self.x else None, self.q.home):
-            if not home:
-                continue
-            try:
-                with open(os.path.join(home, yc.PHOTO_NAME), "rb") as fh:
-                    return fh.read()
-            except OSError:
-                continue
-        return b""
+        """The file he right-clicked, as it sits in the room's workspace.
+
+        One place to read it from, because there is one of it. This used
+        to try each home in turn and take whichever answered first —
+        which was a sensible thing to write when the picture was staged
+        into every home, and is exactly the arrangement that made the
+        beat provable against the wrong file.
+        """
+        try:
+            with open(os.path.join(yc.WORKSPACE_ROOT, yc.PHOTO_NAME), "rb") as fh:
+                return fh.read()
+        except OSError:
+            return b""
 
     def no_refusal(self, doc: bytes) -> None:
         """That what landed on the page is the work and not a decline.
@@ -1990,6 +1998,28 @@ def _the_owners_half(q, shots: str, live: "Live",
              .get("answer", {}).get("granted") is not None,
             True,
         )
+    # And the workspace the *room* carries — granted once, by the person
+    # who owns the room, on the room.
+    #
+    # This one is not a convenience like the homes above, it is the beat.
+    # A capability recorded on a room is replicated to whoever was
+    # admitted to it (`WorkspaceTreeReplica`), and a peer's window is
+    # launched with the room's own capability list
+    # (`peer_windows::open_for` → `launcher::launch_in_workspace`). So
+    # granting it here, on the host, is what puts the photograph within
+    # xaver's reach later — not a second grant made on his machine, which
+    # he could not make anyway: `Workspace::grant_as` refuses a grantor
+    # who neither owns the room nor holds admin over it, and a guest is
+    # neither. He reaches the object by being in the room.
+    #
+    # Read, not write. Nothing in the film needs to change it, and the
+    # narrower grant is the one that proves the point.
+    yc.claim(
+        "the room carries a workspace its file manager may read",
+        q.grant(f"app:{yc.FILES_APP}", f"fs:{yc.WORKSPACE_ROOT}", "read")
+         .get("answer", {}).get("granted") is not None,
+        True,
+    )
     files = q.launch(yc.FILES_APP, search="files", via="palette", look=0.45)
     yc.claim("Files opened", files is not None, True)
     stop.wait(0.4)
@@ -2804,6 +2834,9 @@ def main() -> int:
                       f"{len(yc.installed_ids(s.apps_dir))} apps installed")
             print(f"  home listed as         "
                   f"{yc.expected_listing(quinten.home)}")
+            print(f"  shared workspace       "
+                  f"{yc.expected_listing(yc.WORKSPACE_ROOT)}  "
+                  f"({yc.WORKSPACE_ROOT})")
             print(f"  frame                  {staged}")
             if not args.self_test:
                 print("\nready: the sessions are up, each has a room of its "

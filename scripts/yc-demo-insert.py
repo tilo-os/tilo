@@ -669,7 +669,7 @@ def select_the_photo(session, log) -> bool:
     files, _ = the_two_tiles(session)
     if not files:
         return False
-    listing = yc.expected_listing(session.home)
+    listing = yc.expected_listing(yc.WORKSPACE_ROOT)
     held = yc.press_the_photo_row(session, log, files, yc.PHOTO_NAME, listing)
     # A press with no travel is a click: the row is selected, and the
     # drag the app armed is disarmed by the release.
@@ -688,7 +688,7 @@ def drag_the_photo(session, log) -> str:
     files, word = the_two_tiles(session)
     if not files or not word:
         return "no-windows"
-    listing = yc.expected_listing(session.home)
+    listing = yc.expected_listing(yc.WORKSPACE_ROOT)
     held = yc.press_the_photo_row(session, log, files, yc.PHOTO_NAME, listing)
     if held is None:
         pointer_button(session, False)
@@ -1058,11 +1058,22 @@ def main() -> int:
             raise_window(terminal)
 
         room = session.active_workspace()["room"]
-        # No grant, and deliberately none. The word processor is never
-        # handed a path into this home — Files reads its own file when
-        # the gesture starts and the bytes cross a pipe the compositor
-        # brokers — so there is nothing here for a capability to permit.
-        # The chooser route needed one; this is what replaced it.
+        # The receiving end is granted nothing, and deliberately so. The
+        # word processor is never handed a path into the workspace —
+        # Files reads its own file when the gesture starts and the bytes
+        # cross a pipe the compositor brokers — so there is nothing on
+        # that side for a capability to permit. The chooser route needed
+        # one; this is what replaced it.
+        #
+        # The *sending* end is a different question and always was. Files
+        # can only offer what it may read, so it is granted read on the
+        # room's workspace and nothing else: not the home, not a path
+        # into anybody's documents, and nothing writable. That was
+        # previously implicit in the photograph being staged inside the
+        # one directory the app opens by default, which is a fact about
+        # staging rather than a permission, and stopped being true when
+        # the picture moved to the workspace the room carries.
+        session.grant(f"app:{yc.FILES_APP}", f"fs:{yc.WORKSPACE_ROOT}", "read")
 
         # Files first, so it is the left-hand window: the gesture reads
         # left to right, and `frame_windows` pans the strip to the pair
@@ -1154,8 +1165,8 @@ def main() -> int:
                   f"{[round(v) for v in files_rect] if files_rect else None}")
             print(f"  document at            "
                   f"{[round(v) for v in wp_rect] if wp_rect else None}")
-            print(f"  home listed as         "
-                  f"{yc.expected_listing(session.home)}")
+            print(f"  workspace listed as    "
+                  f"{yc.expected_listing(yc.WORKSPACE_ROOT)}")
             print(f"  frame                  {shot}")
             ready = bool(files_rect and wp_rect and not clipped
                          and not unpainted and picked)

@@ -982,6 +982,15 @@ pub fn run_with(
                 "a granted bind covers the user's home; telling the app where it is"
             );
         }
+        // And where the room's shared mounts are, on the same terms: only
+        // the roots a grant already bound. A workspace the app cannot read
+        // is not one it should be told about.
+        if let Some(roots) = crate::sandbox::push_workspace_roots(&mut argv, &capabilities) {
+            tracing::debug!(
+                workspace_roots = %roots,
+                "granted binds cover workspace roots; telling the app where they are"
+            );
+        }
         argv.push(entry);
     }
 
