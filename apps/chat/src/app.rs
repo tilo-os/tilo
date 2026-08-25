@@ -2945,6 +2945,56 @@ mod identity_on_screen {
         assert!(!app.room_kind().is_direct());
     }
 
+    /// The name a direct-conversation row carries is *not* the name to
+    /// put on screen.
+    ///
+    /// `participants()` fills `Participant::name` from `display_name`,
+    /// whose last fallback is the raw id — that is deliberate, because
+    /// the picker matches on it and matching on "Someone (…)" would be
+    /// useless. The sidebar row rendered that field directly, so a peer
+    /// the room had not named yet sat in the Direct Messages list as
+    /// `u_345d1c227bde49e2adbe0f6…`, between `Claude` and `quinten`.
+    ///
+    /// Both halves are asserted: the carried name really is the token
+    /// (which is why a row must never render it), and `user_name` — the
+    /// one on-screen resolver — answers with a person instead.
+    #[test]
+    fn a_conversation_row_is_named_by_the_screen_resolver_not_by_its_id() {
+        let mut app = ChatApp::new_ephemeral();
+        let stranger = "u_345d1c227bde49e2adbe0f6a1b2c3d4";
+        app.users.push(model::User {
+            id: stranger.to_string(),
+            // Empty, as a peer that has never been named by the room
+            // arrives: nothing writes its own name into the document.
+            name: String::new(),
+            initials: String::new(),
+            color_idx: 0,
+            status: Presence::Online,
+            is_agent: false,
+        });
+        let convos = app.direct_conversations();
+        let (person, _room) = convos
+            .iter()
+            .find(|(p, _)| p.id == stranger)
+            .expect("an unnamed peer is still somebody you can write to");
+        assert_eq!(
+            person.name, stranger,
+            "the carried name is the routing token — the premise this row \
+             has to be defended against",
+        );
+        let shown = app.user_name(&person.id);
+        assert!(
+            !shown.contains("345d1c22"),
+            "the Direct Messages list showed a routing token as a name: \
+             `{shown}`",
+        );
+        assert!(
+            shown.starts_with("Someone"),
+            "an unresolvable peer should read as somebody unnamed, got \
+             `{shown}`",
+        );
+    }
+
     /// Who you could write to is the roster and nothing else — so a first run,
     /// with nobody else here, offers nobody. Not a placeholder, not an example
     /// person: there is genuinely no one to write to yet.
