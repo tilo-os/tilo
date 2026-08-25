@@ -5141,7 +5141,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // An affordance may have dispatched a `qos_actions` action out-of-band
         // during the last event (the button-driven twin of the Ctrl+K palette).
         // Record one undo boundary bracketing it, so Ctrl+Z reverts it — the same
-        // `record_committed_action` path the palette dispatch takes.
+        // `record_committed_action` path the palette dispatch takes. The entry is
+        // unattributed (a widget reports heads, not identity) and Ctrl+Z undoes
+        // as `local_author`; `UndoLog::claimable_by` is what joins the two.
         // A remark composed during the last event: address it against the room's
         // roster and put it on the wire. Level-triggered here, beside the other
         // per-frame drains, rather than at the send affordance — the widget that

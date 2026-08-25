@@ -187,6 +187,33 @@ impl UndoLog {
         Some(entry)
     }
 
+    /// Whether `author` may revert `entry`.
+    ///
+    /// Their own work, obviously. But also anything **unattributed**, and that
+    /// half is not a convenience — it is what makes an author-scoped undo
+    /// reach the entries the toolkit records for an app's own affordances.
+    ///
+    /// [`UndoLog::record_committed_action`] is the drain behind
+    /// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action)
+    /// — every toolbar button, context-menu item and palette dispatch — and it
+    /// has no author to give: the widget reports heads, not identity. So those
+    /// entries land with `author: None`. Matching only on `Some(a) == author`
+    /// left every one of them permanently unreachable, because the interactive
+    /// Ctrl+Z always carries an author and nothing else pops the stack.
+    ///
+    /// Claiming them is sound rather than merely expedient: an entry only
+    /// reaches these stacks by way of a *local* commit boundary. A peer's ops
+    /// arrive through `State::load_incremental`, which re-baselines without
+    /// pushing anything, so an unattributed entry cannot be somebody else's
+    /// work. An entry that names a different person still belongs to them and
+    /// is still walked past.
+    fn claimable_by(entry: &UndoEntry, author: &UserId) -> bool {
+        match &entry.author {
+            Some(a) => a == author,
+            None => true,
+        }
+    }
+
     pub fn undo_for_author(
         &mut self,
         doc: &mut AutoCommit,
@@ -197,7 +224,7 @@ impl UndoLog {
         let idx = self
             .undo_stack
             .iter()
-            .rposition(|e| matches!(&e.author, Some(a) if a == author))?;
+            .rposition(|e| Self::claimable_by(e, author))?;
         let entry = self.undo_stack.remove(idx);
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
         self.redo_stack.push(UndoEntry {
@@ -254,7 +281,7 @@ impl UndoLog {
         let idx = self
             .redo_stack
             .iter()
-            .rposition(|e| matches!(&e.author, Some(x) if x == a))?;
+            .rposition(|e| Self::claimable_by(e, a))?;
         let entry = self.redo_stack.remove(idx);
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
         self.undo_stack.push(UndoEntry {
