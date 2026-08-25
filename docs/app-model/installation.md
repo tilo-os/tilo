@@ -92,6 +92,25 @@ your own build of a preinstalled app replaces it in the launcher rather
 than producing a duplicate row. `QOS_APPS_SYSTEM_DIR` overrides the
 system path the same way `QOS_APPS_DATA_DIR` overrides the user one.
 
+### A scoped session
+
+`QOS_APPS_DATA_DIR` **without** `QOS_APPS_SYSTEM_DIR` means more than
+"the user store moved". It means *the store is exactly here*: the system
+store is suppressed outright, so the directory named is the whole of the
+session's applications. `registry::store_is_scoped_to_this_session`
+answers that as one question, because surfaces outside packaging need it.
+
+The rule such a surface follows is: **do not enumerate software from
+outside the store.** The palette's host-application provider — which
+reads the `.desktop` files of whatever desktop qOS is nested inside, a
+development affordance and not a qOS feature — stands down for a scoped
+session and is not even registered, so no "Host Apps" chip is offered
+either (`shell::host_apps::available_to_this_session`). A recording rig,
+a fixture, or any session that composes its own registry therefore lists
+its own packages and nothing belonging to the machine underneath it. A
+production desktop sets neither variable, is not scoped, and keeps both
+stores and the affordance.
+
 Being preinstalled grants a package nothing. The sandbox is still built
 from its manifest, the payload is still bound read-only, and the one
 writable directory still comes from `qos-rooms/` — there is no

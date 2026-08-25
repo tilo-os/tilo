@@ -1505,9 +1505,19 @@ impl ShellOverlayHost {
         // Applications qOS did not package. Separate provider and
         // separate chip from the one above: these run unconfined, and
         // the palette is where the user chooses between them.
-        search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::HostApplicationsProvider::new(),
-        ));
+        //
+        // Registered only where the session offers them at all. A chip
+        // is not a free thing to leave behind: it is drawn from the
+        // registered kinds, so a provider that stays registered and
+        // answers nothing paints a "Host Apps" filter over an empty
+        // group — an offer of software this session does not have. See
+        // `host_apps::available_to_this_session` for which sessions
+        // those are and why.
+        if crate::shell::host_apps::available_to_this_session() {
+            search_registry.register(std::rc::Rc::new(
+                crate::shell::search::providers::HostApplicationsProvider::new(),
+            ));
+        }
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::NotesProvider::new(),
         ));
@@ -18191,6 +18201,74 @@ mod overlay_event_absorb_tests {
         );
         h.host.search_available_kinds = kinds.clone();
         kinds
+    }
+
+    /// The kinds a freshly-built palette offers, with `QOS_APPS_DATA_DIR`
+    /// set (or cleared) around the build.
+    ///
+    /// Providers are registered in [`ShellOverlayHost::new`], so the
+    /// variable has to be in place *before* the host exists — which is
+    /// exactly how a session gets it: from the environment it was
+    /// spawned with. `QOS_SHOTS_NO_HOST_APPS` is cleared so the test
+    /// measures the scoping rule and not the harness switch, whatever
+    /// the surrounding environment happens to hold.
+    fn kinds_offered_with_store(
+        data_dir: Option<&str>,
+    ) -> Vec<crate::shell::search::ResourceKind> {
+        let keys = ["QOS_APPS_DATA_DIR", "QOS_SHOTS_NO_HOST_APPS"];
+        let saved: Vec<Option<std::ffi::OsString>> =
+            keys.iter().map(|k| std::env::var_os(k)).collect();
+        let set = |key: &str, value: Option<&std::ffi::OsStr>| {
+            // SAFETY: serialised on `process_env`, so no other thread in
+            // this binary is reading the environment meanwhile.
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        };
+        set("QOS_APPS_DATA_DIR", data_dir.map(std::ffi::OsStr::new));
+        set("QOS_SHOTS_NO_HOST_APPS", None);
+        let log = Rc::new(RefCell::new(Vec::<String>::new()));
+        let host = ShellOverlayHost::new(Box::new(RecordingContent::new(log)));
+        let kinds = host.search_registry.registered_kinds();
+        for (key, value) in keys.iter().zip(saved.iter()) {
+            set(key, value.as_deref());
+        }
+        kinds
+    }
+
+    /// **A session scoped to its own app store is not offered the
+    /// machine's applications, and is not shown a chip promising them.**
+    ///
+    /// The chip strip is built from the registered kinds, so leaving the
+    /// provider registered and answering nothing would still paint a
+    /// "Host Apps" filter over an empty group. Both halves are asserted
+    /// on the registry the production constructor built.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_scoped_session_offers_no_host_applications() {
+        use crate::shell::search::ResourceKind;
+        let scoped = kinds_offered_with_store(Some("/tmp/qos-apps-fixture"));
+        assert!(
+            !scoped.contains(&ResourceKind::HostApplication),
+            "a session whose store is `/tmp/qos-apps-fixture` offered the \
+             machine's own applications: {scoped:?}"
+        );
+        assert!(
+            scoped.contains(&ResourceKind::Application),
+            "the packages installed in the session's own store must still \
+             be searchable, or the palette opens nothing at all: {scoped:?}"
+        );
+
+        let unscoped = kinds_offered_with_store(None);
+        assert!(
+            unscoped.contains(&ResourceKind::HostApplication),
+            "a session with no store of its own keeps the development \
+             affordance; suppressing it everywhere is a different change: \
+             {unscoped:?}"
+        );
     }
 
     /// **Every filter has to be reachable at every width.**

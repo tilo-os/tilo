@@ -967,6 +967,18 @@ class Session:
             # The two stores an app launch cannot do without. The install
             # root is this session's; the runtime bundle is the machine's,
             # because every packaged app pins it and none of them ship it.
+            #
+            # Naming the install root — with no `QOS_APPS_SYSTEM_DIR`
+            # beside it — is also what makes this a *scoped* session:
+            # `launcher::registry::store_is_scoped_to_this_session`. Its
+            # applications are the ones composed into `apps_dir` and
+            # nothing else, so the palette does not additionally
+            # enumerate the machine's own `.desktop` files
+            # (`shell::host_apps::available_to_this_session`). Without
+            # that, a take of a film about a new operating system spent
+            # twelve seconds showing the operator's installed Steam,
+            # Nextcloud and Transmission under a "Host Apps" heading,
+            # package ids and all.
             QOS_APPS_DATA_DIR=self.apps_dir,
             QOS_RUNTIME_BUNDLE_DIR=RUNTIME_BUNDLES,
             # Where the catalogue looks for registries, and where it caches
