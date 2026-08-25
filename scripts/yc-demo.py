@@ -546,7 +546,7 @@ AGENT_BULLET_PROOF = "Sound check"
 #: and therefore works in a chat message and in a document paragraph
 #: alike. The line a person is told to type has to be the one that works
 #: wherever they type it.
-CROP_INSTRUCTION = "Claude: make this square and put it in the open document"
+CROP_INSTRUCTION = "Claude: make this square and put it in the open document once"
 
 # How long to wait for a change to cross between sessions.
 SYNC_TIMEOUT_S = 25.0
