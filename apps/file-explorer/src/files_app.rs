@@ -3020,9 +3020,17 @@ impl Widget for FileExplorerWidget {
         // The body's docked→push / reveal slide must keep the host pumping
         // frames while it settles; the floating status bubble likewise while it
         // lingers / fades.
+        //
+        // A preview still being decoded counts too. The request is made during
+        // `draw` and answered on a worker thread, so its arrival carries no
+        // winit event: without this the host drops back to `Wait` after the
+        // frame that asked, and the picture only appears when some unrelated
+        // input happens to repaint the window. The service reports idle the
+        // moment the pool settles, so the pump stops with it.
         self.nav.needs_animation_frame()
             || self.toolbar.needs_animation_frame()
             || self.status_bubble.needs_frame(std::time::Instant::now())
+            || !self.thumbs.is_idle()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -3931,8 +3939,8 @@ mod responsive_body_tests {
     use taffy::prelude::*;
     use ui::theme::Theme;
 
-    struct H {
-        w: FileExplorerWidget,
+    pub(super) struct H {
+        pub(super) w: FileExplorerWidget,
         taffy: TaffyTree<()>,
         node: NodeId,
         state: ui::State,
@@ -3940,7 +3948,7 @@ mod responsive_body_tests {
     }
 
     impl H {
-        fn new(dir: Option<&std::path::Path>, width: f32, height: f32) -> Self {
+        pub(super) fn new(dir: Option<&std::path::Path>, width: f32, height: f32) -> Self {
             let mut w = FileExplorerWidget::with_persistence(None, None);
             if let Some(d) = dir {
                 w.navigate(d.to_path_buf());
@@ -3962,7 +3970,7 @@ mod responsive_body_tests {
             h
         }
 
-        fn lay_out(&mut self, width: f32, height: f32) {
+        pub(super) fn lay_out(&mut self, width: f32, height: f32) {
             let theme = Theme::dark();
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -4072,7 +4080,7 @@ mod responsive_body_tests {
         /// Run a real draw pass so immediate-mode children (the file view)
         /// publish their per-frame geometry — e.g. the in-place rename field's
         /// rect.
-        fn draw(&mut self) {
+        pub(super) fn draw(&mut self) {
             let theme = Theme::dark();
             let presence = ui::presence::PresenceCtx::empty();
             let permissions = ui::permissions::PermissionContext::permissive();
@@ -4432,6 +4440,66 @@ mod responsive_body_tests {
         assert!(
             h.w.debug_places_open(),
             "wide navigation leaves the docked list in place — nothing to dismiss",
+        );
+    }
+}
+
+#[cfg(test)]
+mod preview_frame_tests {
+    //! Previews are asked for during `draw` and answered on a worker thread,
+    //! so nothing in the windowing system knows one has arrived. What gets a
+    //! decoded picture onto the screen is the widget continuing to ask its
+    //! host for frames until the pool settles.
+    use super::responsive_body_tests::H;
+    use super::*;
+
+    /// Write a solid-colour PNG of the given size to `path`.
+    fn write_photo(path: &std::path::Path, w: u32, h: u32, rgba: [u8; 4]) {
+        let mut buf = image::RgbaImage::new(w, h);
+        for p in buf.pixels_mut() {
+            *p = image::Rgba(rgba);
+        }
+        image::DynamicImage::ImageRgba8(buf).save(path).unwrap();
+    }
+
+    #[test]
+    fn a_preview_still_being_decoded_keeps_the_host_pumping_frames() {
+        // A preview is asked for during `draw` and answered on a worker
+        // thread, so its arrival carries no winit event. If the widget stops
+        // asking for frames when the requesting paint ends, the host drops
+        // back to `Wait` and the picture never reaches the screen — the row
+        // keeps its glyph until some unrelated input happens to repaint the
+        // window.
+        let dir = tempfile::tempdir().unwrap();
+        let photo = dir.path().join("harbour.png");
+        write_photo(&photo, 200, 140, [12, 90, 160, 255]);
+
+        let mut h = H::new(Some(dir.path()), 1000.0, 700.0);
+        h.draw();
+        h.w.prewarm_thumbnails(std::time::Duration::from_secs(10));
+        // Let the transient status bubble finish its linger, so from here the
+        // only thing that can still ask for a frame is a decode.
+        std::thread::sleep(ui::status_bubble::DEFAULT_LINGER + Duration::from_millis(250));
+        assert!(
+            !h.w.needs_animation_frame(),
+            "a settled listing lets the host go back to sleep",
+        );
+
+        // The same row with a different picture behind it: the listing, and so
+        // the status label, is unchanged — but the preview it asks for is new,
+        // because the key carries the file's size.
+        write_photo(&photo, 240, 160, [200, 60, 40, 255]);
+        h.w.refresh();
+        h.lay_out(1000.0, 700.0);
+        h.draw();
+        assert!(
+            h.w.needs_animation_frame(),
+            "a decode still running keeps the host pumping frames",
+        );
+        h.w.prewarm_thumbnails(std::time::Duration::from_secs(10));
+        assert!(
+            !h.w.needs_animation_frame(),
+            "and it goes quiet again the moment the preview has landed",
         );
     }
 }
