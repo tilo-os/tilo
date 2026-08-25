@@ -2346,7 +2346,35 @@ impl Session {
             // true stays true, in the sentence it would have used anyway.
             let (instruction, carries) = match step.instruction {
                 Instruction::Unknown(what) => {
-                    let again = crate::plan::Step::reconsider(&what, &offers);
+                    // Asked of whatever chose in the first place, against the
+                    // survey the previous step produced.
+                    //
+                    // This used to re-read the clause with the deterministic
+                    // floor alone, which is a keyword match — and the reason
+                    // the clause was left unresolved is that it needed an
+                    // application that was not running, not that it was
+                    // simple. "Make this square" is understood by the thing
+                    // that understood it the first time; the floor knows
+                    // `table`, `caption` and `heading` and was never going to
+                    // answer it. So the photo editor opened, exported its
+                    // crop, and the step that wanted it still refused —
+                    // against a room that by then contained exactly what it
+                    // was asking for.
+                    //
+                    // Nothing is widened: same clause, same chooser, and the
+                    // offers are whatever the room exports now. A clause that
+                    // still answers to nothing comes back Unknown and refuses
+                    // below, naming what already stands.
+                    let again = self
+                        .chooser
+                        .choose(&what, &[], &offers)
+                        .plan
+                        .steps
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| {
+                            crate::plan::Step::reconsider(&what, &offers)
+                        });
                     match again.instruction {
                         Instruction::Unknown(_) => {
                             (Instruction::Unknown(what), step.carries)
