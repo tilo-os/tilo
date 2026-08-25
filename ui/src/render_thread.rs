@@ -67,7 +67,8 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
 
 use vello::peniko::Color;
-use vello::util::{RenderContext, RenderSurface};
+use crate::gpu::RenderContext;
+use vello::util::RenderSurface;
 use vello::{RenderParams, Renderer, Scene};
 
 /// A hook run on the render thread *after* vello encodes the frame into its

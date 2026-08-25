@@ -65,7 +65,8 @@ impl From<accesskit_winit::Event> for UserEvent {
 }
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vello::{Scene, Renderer, RendererOptions, util::RenderContext, peniko::Color, kurbo::Affine, kurbo::Rect as KurboRect, kurbo::Point};
+use crate::gpu::RenderContext;
+use vello::{Scene, Renderer, RendererOptions, peniko::Color, kurbo::Affine, kurbo::Rect as KurboRect, kurbo::Point};
 use taffy::{TaffyTree, AvailableSpace, NodeId};
 use crate::state::State;
 use crate::widget::Widget;
