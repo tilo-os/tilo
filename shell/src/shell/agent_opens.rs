@@ -273,6 +273,7 @@ mod tests {
         let chrome = chrome_rc();
         let req = OpenAppRequest {
             app_id: "dev.qos.photos".to_string(),
+            with: None,
             room: "room".to_string(),
             who: "peer-1".to_string(),
             handle: None,

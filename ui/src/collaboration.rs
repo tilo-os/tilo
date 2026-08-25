@@ -257,8 +257,42 @@ pub enum CollabRequest {
         /// The application's package id, as its manifest declares it —
         /// `dev.qos.photos`. The same id the launcher resolves and the same
         /// one an app announces on [`CollabRequest::Hello`], so "did it open"
-        /// and "did I ask for it" are the same name.
+        /// and "did I ever ask for it" are the same name.
         app_id: String,
+        /// The content the application is being opened **onto**, as the
+        /// blake3 hex of bytes in this machine's blob store — or `None` for
+        /// an open that names no object.
+        ///
+        /// # Why a content hash and not an address
+        ///
+        /// "Open the photo editor" and "open the photo editor *with this
+        /// photograph*" are the same act, and until this field existed only
+        /// the first could be said. An open that carried nothing opened an
+        /// empty application, which for the app that was asked for is barely
+        /// an open at all: an empty photo editor publishes no photograph, so
+        /// it exports no operation on one, and the request that wanted the
+        /// picture cropped arrives at a window with nothing in it.
+        ///
+        /// A resource address would be the obvious thing to put here and is
+        /// the wrong one. An address like `word-processor.image:<block>` is
+        /// resolvable only against the document that minted it, so the photo
+        /// editor could not read it without holding the word processor's
+        /// replica and knowing its schema — which is the coupling the
+        /// resource model exists to prevent. A content hash is resolvable by
+        /// anything with a blob store, names the same bytes on every peer,
+        /// and is already what crosses between applications everywhere else
+        /// here: it is what [`CarriedContent`](Self::CarriedContent) reports,
+        /// what [`OfferBlob`](Self::OfferBlob) moves, and what the word
+        /// processor's own `place-image` collects. One currency, both
+        /// directions.
+        ///
+        /// **Naming content grants nothing**, exactly as naming a path in a
+        /// launch grants nothing. The session resolves the hash against its
+        /// own store and decides for itself what the app may read; a hash it
+        /// does not have is a refusal it says out loud, never an app opened
+        /// empty as though the content had been forgotten.
+        #[serde(default)]
+        with: Option<String>,
     },
     /// "I have just carried this content out of one application and into
     /// another."
@@ -2178,7 +2212,7 @@ async fn drive_shovel(
             // going to appear. The schema `runtime-collab` speaks is about
             // documents; opening an application is a session's own door, and
             // the participants that need it reach it on the JSON socket.
-            CollabRequest::OpenApp { app_id } => {
+            CollabRequest::OpenApp { app_id, .. } => {
                 tracing::warn!(
                     %app_id,
                     "collab: this transport cannot open applications; nothing \
@@ -2386,7 +2420,7 @@ async fn drive_relay(
                              presence, not actions; nothing was put in the room",
                         );
                     }
-                    CollabRequest::OpenApp { app_id } => {
+                    CollabRequest::OpenApp { app_id, .. } => {
                         tracing::warn!(
                             %app_id,
                             "collab: this relay session hosts no desktop, so it \
