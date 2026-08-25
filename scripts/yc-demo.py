@@ -4825,7 +4825,14 @@ def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
           host.chrome()["peer_sync"]["invite_name"], name)
     # Who it is for, on screen, before anything has been minted. One of
     # the four frames this beat exists to let somebody read.
-    read_hold(READ_HOLD_S * read)
+    #
+    # Shorter than the card below and not scaled with it, because what is
+    # on screen here is one word in a field. It was held for as long as a
+    # token, twice, which is four seconds of the finished film spent on a
+    # name a viewer read in half of one — and it is the same length both
+    # times, because the second invitation's whole point is the name in
+    # this field being a different one.
+    read_hold(READ_HOLD_S * 0.6)
     if shots and tag:
         host.snapshot(os.path.join(shots, f"{tag}-naming.png"))
 
