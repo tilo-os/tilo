@@ -308,6 +308,58 @@ mod tests {
         set_locale("en-US");
     }
 
+    /// One word is a word, not "1 words". The counter is often the only
+    /// text on a fresh page, so the grammar of the count is the grammar of
+    /// the whole screen.
+    ///
+    /// Also a parse guard: `make_bundle` keeps the entries that parsed and
+    /// drops the ones that did not, so a slip inside a multi-line select
+    /// expression costs the message rather than the build. Asserting on
+    /// the rendered plural catches that — a dropped message renders as the
+    /// bare key.
+    #[test]
+    fn counts_take_the_singular_at_one() {
+        let _g = lock_locale();
+        set_locale("en-US");
+
+        let one = t_args("status-count", &[arg("words", 1), arg("chars", 1)]);
+        assert_eq!(one, "1 word    1 character");
+
+        let many = t_args("status-count", &[arg("words", 2), arg("chars", 12)]);
+        assert_eq!(many, "2 words    12 characters");
+
+        // Zero takes the plural in English, as CLDR has it.
+        let none = t_args("status-count", &[arg("words", 0), arg("chars", 0)]);
+        assert_eq!(none, "0 words    0 characters");
+
+        assert_eq!(
+            t_args("toast-toc-updated", &[arg("n", 1)]),
+            "Table of contents updated (1 entry)"
+        );
+        assert_eq!(
+            t_args("toast-toc-updated", &[arg("n", 4)]),
+            "Table of contents updated (4 entries)"
+        );
+
+        // German has the same one/other split, and `Zeichen` is invariant —
+        // the catalog must not have grown an English-shaped plural for it.
+        set_locale("de");
+        assert_eq!(
+            t_args("status-count", &[arg("words", 1), arg("chars", 1)]),
+            "1 Wort    1 Zeichen"
+        );
+        assert_eq!(
+            t_args("status-count", &[arg("words", 3), arg("chars", 9)]),
+            "3 Wörter    9 Zeichen"
+        );
+        assert_eq!(
+            t_args("toast-toc-updated", &[arg("n", 1)]),
+            "Inhaltsverzeichnis aktualisiert (1 Eintrag)"
+        );
+
+        set_locale("en-US");
+    }
+
     #[test]
     fn unknown_locale_falls_back_to_source() {
         let _g = lock_locale();

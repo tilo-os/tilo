@@ -1083,6 +1083,34 @@ pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
     }
 }
 
+/// Which application a tile is showing, as an app-id, for the tab pill to
+/// draw that application's own mark.
+///
+/// [`tile_app_kind`] answers a coarser question — which of the toolkit's
+/// five app *sorts* this is — and every app it has no variant for takes
+/// the same fallback. That made two different programs side by side in
+/// one tab bar indistinguishable, which is the one arrangement in this
+/// window model a person has to be able to read at a glance.
+///
+/// Every variant here has a real answer:
+///
+/// * a foreign client announced one through `xdg_toplevel::set_app_id`,
+///   and a peer's window carried theirs across the room;
+/// * an app the compositor draws in-process has the canonical id
+///   [`AppKind::app_id`] mints for it, which is already the key its
+///   capability grants live under — so the pill and the permission
+///   prompt name the same program the same way.
+pub(crate) fn tile_app_id(t: &ShellTile) -> Option<String> {
+    match t {
+        ShellTile::Foreign { app_id, .. } | ShellTile::PeerWindow { app_id, .. } => {
+            Some(app_id.clone())
+        }
+        ShellTile::Stub { kind, .. } | ShellTile::AppPlaceholder { kind, .. } => {
+            Some(kind.app_id())
+        }
+    }
+}
+
 pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
     match t {
         ShellTile::Stub { kind, label } => UiTile::Stub {
@@ -1253,6 +1281,7 @@ pub fn to_ui_window_group_reusing(
                 id: t.id,
                 title: t.title.clone(),
                 app_kind: Some(tile_app_kind(&t.tile)),
+                app_id: tile_app_id(&t.tile),
             };
             let host = take_parked(parked, t)
                 .unwrap_or_else(|| ui::widget::TileHost::new(to_ui_tile(&t.tile)));
