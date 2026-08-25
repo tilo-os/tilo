@@ -367,29 +367,12 @@ pub fn draw_action_flight(
     // And a chip that says who, in the same vocabulary as the name tag on a
     // peer's pointer and on the mist at the screen edge.
     if !name.is_empty() {
-        let label_size = tokens.typography.scale.xs;
-        let (tw, _) = text_renderer.measure(name, label_size, None);
-        let pad = 5.0_f64;
-        let chip = Rect::new(
-            rect.x0,
-            rect.y0 - label_size as f64 - pad * 1.5,
-            rect.x0 + tw as f64 + pad * 2.0,
-            rect.y0 - 2.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            peer.with_alpha_factor(a),
-            None,
-            &RoundedRect::from_rect(chip, tokens.radii.sm as f64),
-        );
-        text_renderer.draw_text(
-            scene,
-            name,
-            label_size,
-            contrast_ink(peer).with_alpha_factor(a),
-            transform * Affine::translate((chip.x0 + pad, chip.y0 + pad / 2.0)),
-            None,
+        // The same pill as the one beside a peer's pointer and above their
+        // caret, faded with the object it is riding on.
+        let (cw, ch) = super::render::peer_pill_size(text_renderer, theme, name);
+        let chip = Rect::new(rect.x0, rect.y0 - ch - 2.0, rect.x0 + cw, rect.y0 - 2.0);
+        super::render::draw_peer_pill(
+            scene, transform, text_renderer, theme, chip, name, peer, a,
         );
     }
 }

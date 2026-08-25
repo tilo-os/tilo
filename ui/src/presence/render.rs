@@ -295,31 +295,25 @@ impl PresenceCtx {
         scene.fill(Fill::NonZero, transform, color, None, &caret_rect);
 
         // Chip anchored to the caret's top, mapped into scene space so it
-        // rides with the caret under any transform.
-        let tokens = &theme.tokens;
-        let label_size = tokens.typography.scale.xs;
-        let pad_x = 5.0_f64;
-        let pad_y = 1.5_f64;
-        let (tw, _th) = text_renderer.measure(name, label_size, None);
-        let chip_w = tw as f64 + pad_x * 2.0;
-        let chip_h = label_size as f64 + pad_y * 2.0;
+        // rides with the caret under any transform. The same pill as the
+        // one beside a peer's pointer, at the same size and carrying the
+        // same shadow — a person's name should not change shape according
+        // to which part of them you are looking at.
+        let (chip_w, chip_h) = peer_pill_size(text_renderer, theme, name);
         // Top-left corner of the caret in local space; the chip sits just
         // above it (a 2px gap) and left-aligns to the caret.
         let cx = caret_rect.x0;
         let cy = caret_rect.y0 - chip_h - 2.0;
         let chip_rect = Rect::new(cx, cy, cx + chip_w, cy + chip_h);
-        let chip = RoundedRect::from_rect(chip_rect, tokens.radii.sm as f64);
-        // Solid fill in the peer's colour so the chip reads as "them".
-        scene.fill(Fill::NonZero, transform, color, None, &chip);
-        // Label ink: white or near-black for contrast against the colour.
-        let ink = contrast_ink(color);
-        text_renderer.draw_text(
+        draw_peer_pill(
             scene,
+            transform,
+            text_renderer,
+            theme,
+            chip_rect,
             name,
-            label_size,
-            ink,
-            transform * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
-            None,
+            color,
+            1.0,
         );
     }
 
@@ -415,6 +409,47 @@ const PILL_GAP: f64 = 4.0;
 /// How far a pill is allowed to sit from its own pointer before it stops
 /// being self-evidently that pointer's and gets a tether drawn to it.
 const TETHER_AFTER: f64 = 4.0;
+
+/// Horizontal and vertical padding inside a peer's name pill.
+///
+/// One pair of numbers, because there is one pill. Three call sites used
+/// to size this object by hand — the pointer pill, the caret's chip, and
+/// the chip on an object in flight — and they disagreed on every value
+/// they could: 12 px of label against 10, 7x3 of padding against 5x1.5
+/// against a padding that was partly subtracted back out. On screen that
+/// is two labels for the same person at two sizes, and only one of them
+/// carrying the drop shadow, which at that size reads as a hard outline
+/// the other one lacks.
+pub(crate) const PILL_PAD_X: f64 = 7.0;
+pub(crate) const PILL_PAD_Y: f64 = 3.0;
+
+/// Type size for a peer's name, wherever it is drawn.
+///
+/// `scale.sm`, the same step the HIG gives every other control label —
+/// not `scale.xs`. These are names of people, on camera for the length
+/// of a shared session, and `xs` put them on screen at roughly 34x15 px
+/// with about 8 px of glyph: present, but not readable.
+pub(crate) fn pill_label_size(theme: &Theme) -> f32 {
+    theme.tokens.typography.scale.sm
+}
+
+/// The size a peer's name pill wants for `label`, padding included.
+///
+/// Exported so a caller placing a pill computes its box the same way the
+/// painter does; a caller that measures it its own way is how the three
+/// implementations drifted apart in the first place.
+pub(crate) fn peer_pill_size(
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    label: &str,
+) -> (f64, f64) {
+    let size = pill_label_size(theme);
+    let (tw, _th) = text_renderer.measure(label, size, None);
+    (
+        tw as f64 + PILL_PAD_X * 2.0,
+        size as f64 + PILL_PAD_Y * 2.0,
+    )
+}
 
 /// One peer to paint: where their pointer is, what to call them, and the
 /// colour that is theirs on every screen.
@@ -596,22 +631,11 @@ pub fn draw_peer_cursors(
     if peers.is_empty() {
         return;
     }
-    let tokens = &theme.tokens;
-    let label_size = tokens.typography.scale.sm;
-    let pad_x = 7.0_f64;
-    let pad_y = 3.0_f64;
-
     let requests: Vec<PillRequest> = peers
         .iter()
-        .map(|p| {
-            let (tw, _th) = text_renderer.measure(&p.label, label_size, None);
-            PillRequest {
-                at: p.pos,
-                size: (
-                    tw as f64 + pad_x * 2.0,
-                    label_size as f64 + pad_y * 2.0,
-                ),
-            }
+        .map(|p| PillRequest {
+            at: p.pos,
+            size: peer_pill_size(text_renderer, theme, &p.label),
         })
         .collect();
     let placements = layout_peer_pills(viewport, &requests);
@@ -650,8 +674,7 @@ pub fn draw_peer_cursors(
             place.rect,
             &p.label,
             p.color,
-            (pad_x, pad_y),
-            label_size,
+            1.0,
         );
     }
 }
@@ -691,8 +714,11 @@ fn draw_peer_dot(scene: &mut Scene, transform: Affine, pos: (f64, f64), peer: Co
 /// Filling in the peer's colour rather than in a surface token is what
 /// makes several peers legible at once — the pill *is* the swatch, so a
 /// name and a cursor are matched by colour and not by proximity.
-#[allow(clippy::too_many_arguments)]
-fn draw_peer_pill(
+///
+/// `alpha` fades the whole pill together — fill, shadow and ink — so an
+/// object in flight can carry its owner's name without the shadow
+/// outliving the thing it belongs to.
+pub(crate) fn draw_peer_pill(
     scene: &mut Scene,
     transform: Affine,
     text_renderer: &mut TextRenderer,
@@ -700,25 +726,32 @@ fn draw_peer_pill(
     rect: Rect,
     label: &str,
     peer: Color,
-    pad: (f64, f64),
-    label_size: f32,
+    alpha: f32,
 ) {
+    let pad = (PILL_PAD_X, PILL_PAD_Y);
+    let label_size = pill_label_size(theme);
     let radius = theme.tokens.radii.sm as f64;
     let shadow = RoundedRect::from_rect(rect.inflate(0.5, 0.5) + vello::kurbo::Vec2::new(0.0, 1.0), radius);
     scene.fill(
         Fill::NonZero,
         transform,
-        Color::BLACK.with_alpha_factor(0.20),
+        Color::BLACK.with_alpha_factor(0.20 * alpha),
         None,
         &shadow,
     );
     let pill = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, transform, peer, None, &pill);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        peer.with_alpha_factor(alpha),
+        None,
+        &pill,
+    );
     text_renderer.draw_text(
         scene,
         label,
         label_size,
-        contrast_ink(peer),
+        contrast_ink(peer).with_alpha_factor(alpha),
         transform * Affine::translate((rect.x0 + pad.0, rect.y0 + pad.1)),
         None,
     );
@@ -971,6 +1004,102 @@ mod tests {
     use super::*;
     use crate::offscreen::OffscreenRenderer;
     use crate::permissions::UserId;
+
+    /// A person's name is one object, whichever part of them it labels.
+    ///
+    /// There were three of these and they agreed on nothing: the pill
+    /// beside a pointer took `scale.sm` with 7x3 of padding, the chip
+    /// above a caret took `scale.xs` with 5x1.5, and the chip on an
+    /// object in flight took `scale.xs` with a padding it partly
+    /// subtracted back out. On camera that is the same person labelled
+    /// at two sizes, and only the pointer's carrying the drop shadow —
+    /// which at that size reads as a hard outline the others lack.
+    ///
+    /// Asserted through `peer_pill_size`, which is the thing all three
+    /// now measure with, so this fails if any of them starts measuring
+    /// its own way again.
+    #[test]
+    fn a_peer_name_is_the_same_pill_everywhere() {
+        let theme = Theme::default();
+        let mut tr = crate::text_render::TextRenderer::new();
+
+        // The size is the type scale's control step, not the caption
+        // step below it: these are names of people, on screen for the
+        // length of a shared session.
+        assert_eq!(
+            pill_label_size(&theme),
+            theme.tokens.typography.scale.sm,
+            "a peer's name is a control label, not a caption",
+        );
+
+        // Every caller gets one answer for one label.
+        let (w, h) = peer_pill_size(&mut tr, &theme, "quinten");
+        assert_eq!(
+            (w, h),
+            peer_pill_size(&mut tr, &theme, "quinten"),
+            "peer_pill_size is not stable for one label",
+        );
+
+        // The box is big enough to read. The old chip came out about
+        // 34x15 with roughly 8px of glyph in it; the floor here is what
+        // separates "present" from "readable".
+        assert!(
+            h >= 18.0,
+            "a name pill {h}px tall is the unreadable one this replaced",
+        );
+        assert!(
+            w > h,
+            "a name pill should be wider than it is tall, got {w}x{h}",
+        );
+
+        // A longer name gets a wider pill and the same height — the
+        // height is the type, not the content.
+        let (w2, h2) = peer_pill_size(&mut tr, &theme, "xaver-with-a-long-name");
+        assert!(w2 > w, "a longer name should get a wider pill");
+        assert_eq!(h2, h, "pill height should not depend on the label");
+    }
+
+    /// The caret's chip and the pointer's pill paint the same shadow.
+    ///
+    /// The chip above a caret used to have no shadow at all while the
+    /// pill beside a pointer did, so two labels for two people in one
+    /// frame were styled differently for no reason a viewer could name.
+    /// Sampled just under each one's bottom edge, where a drop shadow
+    /// lands and a flat fill does not.
+    #[test]
+    fn a_caret_chip_carries_the_same_shadow_as_a_pointer_pill() {
+        let theme = Theme::default();
+        let user = UserId("alice".to_string());
+        let ctx = PresenceCtx::empty();
+        let mut tr = crate::text_render::TextRenderer::new();
+        let (w, h) = peer_pill_size(&mut tr, &theme, "alice");
+
+        // The caret chip, drawn via the shared pill.
+        let mut scene = Scene::new();
+        let caret = Rect::new(20.0, 60.0, 22.0, 80.0);
+        ctx.draw_peer_caret_labeled(
+            &mut scene, &theme, &mut tr, Affine::IDENTITY, &user, "alice", caret,
+        );
+        let mut r = OffscreenRenderer::new(160, 160);
+        let rgba = r.render(&scene, Color::WHITE);
+
+        // The chip's own top edge is at caret.y0 - h - 2.
+        let top = 60.0 - h - 2.0;
+        // A pixel inside the chip: opaque peer colour.
+        let (_cr, _cg, _cb, _a) =
+            OffscreenRenderer::sample(&rgba, 160, 24, (top + h / 2.0) as u32);
+        // A pixel just under the chip: the shadow, so darker than the
+        // white ground it is drawn on.
+        let (sr, sg, sb, _sa) =
+            OffscreenRenderer::sample(&rgba, 160, 24, (top + h + 1.0) as u32);
+        assert!(
+            sr < 250 && sg < 250 && sb < 250,
+            "expected a drop shadow under the caret's name chip, got \
+             ({sr},{sg},{sb}) on a white ground — the chip is drawn flat \
+             while the pointer's pill is not",
+        );
+        assert!(w > 0.0);
+    }
 
     /// The round remote pointer paints the peer's color at its center.
     /// "alice" maps to the pinned pink (0xec, 0x48, 0x99), so the dot
