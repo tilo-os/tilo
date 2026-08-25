@@ -3536,6 +3536,23 @@ pub fn run() -> ! {
             // into a gap that narrow is a coin toss, not a fix. Any
             // motion at all — the least contact with a real mouse —
             // puts a position back on the long horizon.
+            // Published where it is in the *workspace*, not on this
+            // screen.
+            //
+            // The pointer arrives in scene space, and scene space moves
+            // when the strip scrolls. Sending it raw meant a peer painted
+            // the dot at a fixed spot on their own display, so scrolling
+            // slid every window out from under it and somebody else's
+            // cursor appeared to follow yours about. Adding this strip's
+            // own offset makes the number mean a place in the workspace,
+            // which is the only thing two machines with different
+            // viewports can agree on; the overlay takes its own offset
+            // back off when it paints. See `ChromeState::strip_scroll_x`.
+            let scroll_x = {
+                let chrome = frame_builder.chrome_handle();
+                let chrome = chrome.borrow();
+                chrome.strip_scroll_x
+            };
             relay.set_cursor_position(
                 state
                     .client_input
@@ -3543,7 +3560,8 @@ pub fn run() -> ! {
                         std::time::Instant::now(),
                         POINTER_IDLE,
                         POINTER_ACTUATED_IDLE,
-                    ),
+                    )
+                    .map(|(x, y)| (x + scroll_x, y)),
             );
             let (rooms, here) = {
                 let chrome = frame_builder.chrome_handle();

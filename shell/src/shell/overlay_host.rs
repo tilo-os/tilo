@@ -11853,6 +11853,14 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Tell the rest of the session how far this strip is scrolled,
+        // before anything reads it.
+        //
+        // The compositor publishes this machine's pointer and cannot see
+        // a `GroupRow`; this can, and both need the same number for a
+        // remote cursor to land on the window it is actually over rather
+        // than on a fixed patch of screen. See `ChromeState`.
+        self.publish_strip_scroll();
         let visible = self.visible_peers(presence);
         ui::presence::draw_peer_cursors(
             scene,
@@ -11862,6 +11870,37 @@ impl ShellOverlayHost {
             theme,
             &visible,
         );
+    }
+
+    /// Record the active strip's scroll offset where the compositor can
+    /// read it.
+    ///
+    /// Cheap and per-frame: one hash lookup and a copy. It has to be
+    /// per-frame because the strip animates -- resting on a stale offset
+    /// would leave every peer's cursor lagging the content by however far
+    /// the last pan travelled.
+    fn publish_strip_scroll(&mut self) {
+        let Some(chrome_rc) = self.chrome.as_ref() else {
+            return;
+        };
+        let active = {
+            let chrome = chrome_rc.borrow();
+            let tree = chrome.tree();
+            tree.workspaces
+                .iter()
+                .find(|w| w.id == tree.active)
+                .and_then(|w| w.strips.first().map(|st| st.id))
+        };
+        let Some(strip_id) = active else { return };
+        let Some(&row_ptr) = self.group_row_ptrs.get(&strip_id) else {
+            return;
+        };
+        // Same discipline as every other use of these pointers here: the
+        // rows outlive the frame that hands them over, and nothing else
+        // holds a borrow while this runs.
+        let row: &GroupRow = unsafe { &*row_ptr };
+        let sx = row.scroll_x();
+        chrome_rc.borrow_mut().strip_scroll_x = sx;
     }
 
     /// Exactly the peers [`Self::draw_real_peers`] is about to paint:
@@ -11903,6 +11942,12 @@ impl ShellOverlayHost {
         let Some(peers) = presence.pointers.get(&key) else {
             return Vec::new();
         };
+        // What arrives is a position in the workspace, not on a screen --
+        // the publisher added its own strip offset before sending. Taking
+        // this one back off puts it where that content sits *here*, which
+        // is why a cursor now stays on the window it is over while this
+        // strip scrolls underneath it.
+        let scroll_x = chrome_rc.borrow().strip_scroll_x;
 
         // Settle the colours over everyone in the room before deciding
         // what is on screen, and include the local user: every host in a
@@ -11919,12 +11964,14 @@ impl ShellOverlayHost {
         peers
             .iter()
             .filter(|(_, pos)| {
+                // Tested where it will be drawn, not where it arrived.
+                let pos = (pos.0 as f64 - scroll_x, pos.1 as f64);
                 // Guard: winit delivers scaled coordinates so the pointer
                 // can, in principle, fall outside this window's rect if
                 // the broadcast came from a peer with a different viewport.
                 // Clip the paint to our content rect so we never trail a
                 // cursor into the top-bar / sidebar chrome.
-                self.rect.contains(Point::new(pos.0 as f64, pos.1 as f64))
+                self.rect.contains(Point::new(pos.0, pos.1))
             })
             .map(|(user, pos)| {
                 // An explicit roster colour is a decision someone made
@@ -11937,7 +11984,7 @@ impl ShellOverlayHost {
                     .or_else(|| assigned.get(user.0.as_str()).copied())
                     .unwrap_or_else(|| presence.color_for(user));
                 ui::presence::PeerCursor {
-                    pos: (pos.0 as f64, pos.1 as f64),
+                    pos: (pos.0 as f64 - scroll_x, pos.1 as f64),
                     // Name the peer rather than their id when the roster
                     // knows one. `display_name` falls back to the id, so a
                     // peer whose session never said who was at it is still
