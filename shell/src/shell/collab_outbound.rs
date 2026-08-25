@@ -102,8 +102,18 @@ pub trait PeerPublishSink: Send + Sync {
     /// one published over JSON are the same bytes on the wire.
     fn app_presence(&self, app_id: String, cluster_id: String, frame: Vec<u8>);
 
-    /// Ask the room whether anyone still holds a range of history.
-    fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16);
+    /// Ask a room whether anyone still holds a range of history.
+    ///
+    /// `cluster_id` is the room to ask. An artifact id names an artifact
+    /// and not a room, so without it the only reachable question is one
+    /// put to everybody.
+    fn scrollback_request(
+        &self,
+        cluster_id: &str,
+        artifact: ArtifactId,
+        before_seq: u64,
+        max: u16,
+    );
 }
 
 impl PeerPublishSink for ShellNetwork {
@@ -141,8 +151,14 @@ impl PeerPublishSink for ShellNetwork {
         self.publish_app_presence(app_id, cluster_id, frame);
     }
 
-    fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16) {
-        self.publish_scrollback_request(artifact, before_seq, max);
+    fn scrollback_request(
+        &self,
+        cluster_id: &str,
+        artifact: ArtifactId,
+        before_seq: u64,
+        max: u16,
+    ) {
+        self.publish_scrollback_request(cluster_id, artifact, before_seq, max);
     }
 }
 
@@ -343,7 +359,7 @@ impl PeerPublisher {
         let Some(sink) = self.ready(route, transport, "scrollback request") else {
             return false;
         };
-        sink.scrollback_request(artifact, before_seq, max);
+        sink.scrollback_request(&route.cluster_id, artifact, before_seq, max);
         true
     }
 
@@ -542,7 +558,13 @@ pub mod recording {
             });
         }
 
-        fn scrollback_request(&self, _artifact: ArtifactId, before_seq: u64, max: u16) {
+        fn scrollback_request(
+            &self,
+            _cluster_id: &str,
+            _artifact: ArtifactId,
+            before_seq: u64,
+            max: u16,
+        ) {
             self.sent
                 .lock()
                 .unwrap()
