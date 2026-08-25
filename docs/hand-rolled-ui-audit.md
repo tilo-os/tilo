@@ -311,7 +311,7 @@ Left for later, with the reason each isn't a clean face-swap:
 | `apps/vpn/src/app.rs:1029` `DetailTab` | vpn | Status/Config/Logs — **raised-subtle active (see status)** | `ToggleGroup` | M |
 | `apps/pdf_viewer/src/app_draw.rs:1215` sidebar tabs | pdf_viewer ✅ | **DONE** — Comments/Contents/Signatures → `ToggleGroup::paint` (Underline) | `ToggleGroup` | M |
 | `apps/software_store/src/app.rs:1126` nav-tab row | software_store ✅ | **DONE** — nav tabs → `ToggleGroup::paint` (Pill, left labels; badge app-owned) | `ToggleGroup` | M |
-| `apps/code_editor/src/tab_bar.rs:37` `TabBar`, `bottom_panel.rs:205` | code_editor | file tabs + panel tabs (closeable, editor-owned) | `ui` `TabBar` | M |
+| ~~`apps/code_editor/src/tab_bar.rs`~~ (deleted), `bottom_panel.rs:205` | code_editor ~ | **file tabs DONE** — on `ui::widget::tabs::TabBar`; the widget grew a per-tab accent + an unsaved mark to carry what the hand-rolled bar had. Panel tabs (Problems/Search/Terminal) still hand-rolled | `ui` `TabBar` | M |
 | `apps/sheets/src/app.rs:185` `tab_rects` | sheets | sheet-tab bar (per-tab color + rename) | `TabBar` (extend) | M |
 | `apps/backups/src/app.rs` view tabs | backups ✅ | **DONE** — Timeline/Sources/Destinations/Schedules → `ToggleGroup::paint` (Pill) | `ToggleGroup` | M |
 | `apps/camera/src/app.rs:992` `segmented` | camera | Photo/Video/Scan mode — **over-media, left (see status)** | `ToggleGroup` | M |
@@ -569,8 +569,9 @@ without a tree rewrite.
 - **Toggles:** firewall ✅, backups ✅ **done**; remaining: camera (over-media),
   vpn (semantic green), remote (icon toggle-buttons).
 - **Tabs/segmented:** disks ✅, backups ✅, diffmerge ✅, software_store ✅,
-  pdf_viewer ✅, firewall ✅ **done**; remaining: vpn (raised-subtle active),
-  code_editor (closeable file tabs), sheets (per-tab colour + rename), camera
+  pdf_viewer ✅, firewall ✅, code_editor file tabs ✅ **done**; remaining: vpn
+  (raised-subtle active), code_editor *panel* tabs, sheets (per-tab colour +
+  rename), camera
   (over-media), video_editor (in export modal), logs (per-priority cumulative
   chips), imager (stepper breadcrumb), word-processor / hex_editor (independent
   toggle-buttons / cycle). See Category 4 status for why each remainder isn't a
@@ -578,6 +579,37 @@ without a tree rewrite.
 - **Menus/popovers:** pdf_viewer (`ContextMenu`), ebook/music/hex_editor
   (`Popover`), typst_editor (overflow), browser (address overlay), slides (fill).
   *(not started)*
+
+#### What `code_editor` needed from `ui::widget::tabs`
+
+The editor's bar was defended on aesthetic grounds — "so the tabs read like an
+IDE rather than generic chips" — and the two affordances behind that claim were
+real: a language-tinted dot and an unsaved-changes mark. Neither existed on the
+shared strip, whose leading glyph is an `AppKind` (a *window*'s kind) and which
+had no concept of modified at all.
+
+Both went in as sidecars keyed by tab id, next to `pinned_ids`, which had
+already established the pattern and the reason: a `TabDescriptor` field ripples
+into every tab constructor in the tree. `set_accent(id, color)` tints the
+leading marker — and *becomes* it, as a dot, where there is no app glyph, in the
+same slot at the same width. `set_modified(id, bool)` holds the close slot open
+at rest and paints a dot there; the close mark returns under the pointer.
+Colours come from the caller's `Theme`; the widget picks none.
+
+`set_show_maximize(false)` was the third: the hover-reveal maximize chip is a
+window control, and a host whose tabs are documents inside one window has
+nothing for it to do.
+
+**`sheets` (per-tab colour + rename) is now mostly unblocked** — per-tab colour
+is `set_accent`. Rename still needs in-pill editing, which the strip has not got.
+
+**Still missing from the shared strip: keyboard.** `tabs.rs` overrides no
+`is_focusable` and handles no `KeyboardInput`; `window_group.rs` routes
+`Ctrl+Shift+P` around it precisely because "the bar isn't focusable", and
+`TabBar::accessibility` honestly reports `focusable: false`. Every adopter
+inherits that gap, so migrating off a hand-rolled bar does not by itself buy
+keyboard-switchable tabs — it buys the a11y tree, the theming and the focus
+handling that follow once the gap is closed in one place.
 
 ### Wave 5b — Controls blocked on a ui gap (MED)
 Extend then migrate: gap **7** (non-CRDT Toggle/Slider binding) → tube Switch,

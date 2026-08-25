@@ -3950,6 +3950,181 @@ mod tests {
         );
     }
 
+    /// Lay the whole app out at a fixed viewport, so a test can press the
+    /// rect the strip really placed rather than a guessed coordinate.
+    fn laid_out(app: &mut CodeApp, doc: &mut AutoCommit) -> (TaffyTree<()>, NodeId) {
+        app.set_width_hint(1280.0);
+        app.sync(doc, &automerge::ROOT);
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let theme = Theme::dark();
+        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1280.0),
+                        height: Dimension::length(800.0),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        taffy
+            .compute_layout(
+                root,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, child, Point::ORIGIN);
+        (taffy, child)
+    }
+
+    #[test]
+    fn pressing_a_pill_switches_the_buffer_behind_it() {
+        // The seam the shared strip introduced: it moves its own active
+        // tab on press and emits nothing, so the app has to read it back.
+        // Drive a real press on the rect the strip actually laid out.
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        let others: Vec<TreeId> = app
+            .session
+            .project
+            .visible_rows()
+            .into_iter()
+            .filter(|id| {
+                matches!(
+                    app.session.project.get(*id).map(|n| &n.kind),
+                    Some(NodeKind::File { .. })
+                )
+            })
+            .take(2)
+            .collect();
+        for id in others {
+            app.open_node(id);
+        }
+        let (taffy, child) = laid_out(&mut app, &mut doc);
+        assert!(app.session.open.len() >= 2, "need more than one tab to switch");
+
+        // Any tab but the one already in front, so the press has to do work.
+        let target_idx = (0..app.session.open.len())
+            .find(|i| Some(*i) != app.session.active)
+            .expect("more than one tab means one of them is not active");
+        let want = app.session.open[target_idx].node;
+        let rect = app.tabs.tab_rects()[target_idx];
+        let at = rect.center();
+
+        let mods = winit::event::Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        for event in [
+            WindowEvent::CursorMoved {
+                device_id: unsafe { winit::event::DeviceId::dummy() },
+                position: winit::dpi::PhysicalPosition::new(at.x, at.y),
+            },
+            WindowEvent::MouseInput {
+                device_id: unsafe { winit::event::DeviceId::dummy() },
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+        ] {
+            app.handle_event(
+                &event, 1.0, &mods, &mut doc, &automerge::ROOT, &mut handled, &mut focus, child,
+                &taffy,
+            );
+        }
+
+        assert_eq!(
+            app.session.active_buffer().map(|b| b.node),
+            Some(want),
+            "pressing a pill must make its buffer the active one"
+        );
+    }
+
+    /// Send one press at `at` through the app's real event path.
+    fn press_at(
+        app: &mut CodeApp,
+        doc: &mut AutoCommit,
+        taffy: &TaffyTree<()>,
+        child: NodeId,
+        at: Point,
+    ) {
+        let mods = winit::event::Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        for event in [
+            WindowEvent::CursorMoved {
+                device_id: unsafe { winit::event::DeviceId::dummy() },
+                position: winit::dpi::PhysicalPosition::new(at.x, at.y),
+            },
+            WindowEvent::MouseInput {
+                device_id: unsafe { winit::event::DeviceId::dummy() },
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+        ] {
+            app.handle_event(
+                &event, 1.0, &mods, doc, &automerge::ROOT, &mut handled, &mut focus, child, taffy,
+            );
+        }
+    }
+
+    #[test]
+    fn a_closed_pill_closes_the_buffer_behind_it() {
+        // The strip reports a close as an id, and the app has to find the
+        // buffer that id stands for. `start_closing` is what the strip's
+        // own press handler calls once it has decided the close mark was
+        // hit — the hit-test itself is the widget's to prove, this is the
+        // mapping back onto the session, which is what the migration
+        // introduced.
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        let extra: Vec<TreeId> = app
+            .session
+            .project
+            .visible_rows()
+            .into_iter()
+            .filter(|id| {
+                matches!(
+                    app.session.project.get(*id).map(|n| &n.kind),
+                    Some(NodeKind::File { .. })
+                )
+            })
+            .take(3)
+            .collect();
+        for id in extra {
+            app.open_node(id);
+        }
+        let (taffy, child) = laid_out(&mut app, &mut doc);
+        let before = app.session.open.len();
+        assert!(before >= 2, "need more than one tab to close one");
+
+        let active = app.session.active.expect("a tab is active");
+        let doomed = app.session.open[active].node;
+        assert!(
+            !app.session.open[active].dirty,
+            "precondition: a clean buffer, so closing needs no prompt"
+        );
+        assert!(
+            app.tabs.start_closing(tab_id(doomed)),
+            "the strip must know the tab it is being asked to close"
+        );
+
+        // Any event drains what the children produced; press somewhere inert.
+        press_at(&mut app, &mut doc, &taffy, child, Point::new(1.0, 799.0));
+
+        assert_eq!(app.session.open.len(), before - 1, "the buffer closed");
+        assert!(
+            !app.session.open.iter().any(|b| b.node == doomed),
+            "the closed buffer is gone, not merely deactivated"
+        );
+        assert!(app.close_prompt.is_none(), "a clean buffer closes without a prompt");
+    }
+
     fn buffer_lines(doc: &AutoCommit, node: TreeId) -> Vec<String> {
         EditorDoc::read_buffer(doc, node)
             .unwrap()
