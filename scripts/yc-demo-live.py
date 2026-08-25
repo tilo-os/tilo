@@ -1580,12 +1580,22 @@ def _the_owners_half(q, shots: str, instruction: str,
     # model gets its own beat, with a grant somebody actually watches
     # being made; a modal in front of the file manager during a different
     # scene is an interruption that teaches nothing.
-    yc.claim(
-        "the file manager may read the home it is about to show",
-        q.grant(f"app:{yc.FILES_APP}", f"fs:{q.home}", "write")
-         .get("answer", {}).get("granted") is not None,
-        True,
-    )
+    # Every session, not just the one being driven. A capability is
+    # per-workspace and each person here has their own, so granting only
+    # quinten's left the guest's file manager asking — and his screen is
+    # the one the camera cuts to. A finished take spent 204 unbroken
+    # seconds, three and a half minutes, framed on an unanswered
+    # "read/write access to /var/tmp/qos/home/xaver" that nobody was ever
+    # going to click, while the beats it was hiding happened off-camera.
+    for s in yc.SESSIONS:
+        if getattr(s, "home", None) is None:
+            continue
+        yc.claim(
+            f"{s.name}'s file manager may read the home it is about to show",
+            s.grant(f"app:{yc.FILES_APP}", f"fs:{s.home}", "write")
+             .get("answer", {}).get("granted") is not None,
+            True,
+        )
     files = q.launch(yc.FILES_APP, search="files", via="palette", look=0.45)
     yc.claim("Files opened", files is not None, True)
     stop.wait(0.4)
