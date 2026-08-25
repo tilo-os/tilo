@@ -907,8 +907,36 @@ pub trait AppActionListener: Send + Sync {
     fn completed(&self, id: u64, code: &str, message: &str);
 }
 
+/// How many recent departures the broker keeps an account of. A
+/// connection ending is rare next to the traffic it carries, so a small
+/// ring holds every one a live session is likely to have seen.
+pub const DEPARTURE_LOG_CAPACITY: usize = 64;
+
+/// A connection that is no longer in the fan-out table, and why.
+///
+/// Kept **beside** the log line rather than instead of it, because the
+/// two fail differently. A log is a stream somebody has to have been
+/// watching, written through a descriptor that can fail — a session
+/// recording to a full filesystem loses lines and says nothing about
+/// having lost them. This is in memory, and a test, or this session
+/// itself, can ask it afterwards.
+#[derive(Clone, Debug)]
+pub struct Departure {
+    /// The connection that left.
+    pub peer: u64,
+    /// The route it had announced, or `None` if it never said `Hello`.
+    pub route: Option<CrdtRoute>,
+    /// Why it left, in the words of whichever path evicted it. Never
+    /// empty: `PeerTable::remove_because` is the only way out of the
+    /// table and it takes the reason as an argument.
+    pub reason: String,
+}
+
 pub struct PeerTable {
     peers: Mutex<Vec<Arc<Peer>>>,
+    /// Why each connection that has left this broker left it, oldest
+    /// first, capped at [`DEPARTURE_LOG_CAPACITY`].
+    departures: Mutex<VecDeque<Departure>>,
     /// Monotonic id source. Shared with the capnp listener so a
     /// capnp-side "peer" and a legacy-side peer are never confused
     /// when the `except` filter runs on fanout.
@@ -987,6 +1015,7 @@ impl PeerTable {
     fn new() -> Self {
         Self {
             peers: Mutex::new(Vec::new()),
+            departures: Mutex::new(VecDeque::new()),
             peer_id_counter: AtomicU64::new(0),
             capnp: Mutex::new(None),
             local_subs: Mutex::new(Vec::new()),
@@ -1060,12 +1089,69 @@ impl PeerTable {
         }
     }
 
-    /// Remove a peer by id. Called when its reader thread observes EOF
-    /// or when a write fails (peer is presumed dead).
-    fn remove(&self, id: u64) {
-        if let Ok(mut guard) = self.peers.lock() {
-            guard.retain(|p| p.id != id);
+    /// Take a peer out of the fan-out, saying why.
+    ///
+    /// The only way out of the table, and the reason is an argument
+    /// rather than a log line at the call site precisely so that it
+    /// cannot be left out. `remove` took an id and nothing else. Of its
+    /// four callers, the reader's own exit wrote a line and a reader
+    /// that could not be started wrote a warning — but the two that drop
+    /// an *established* connection, a failed fan-out write and a failed
+    /// reply, said nothing at all. An app that had stopped receiving
+    /// anything from its room was indistinguishable, from the session's
+    /// side, from a room with nothing happening in it.
+    ///
+    /// Writes to both the log and the ledger. Says whether the peer was
+    /// still in the table, because it can legitimately be called twice
+    /// for one connection: the fan-out evicts a peer whose write failed
+    /// while its reader is still blocked on the read half, and that
+    /// reader then accounts for its own end.
+    fn remove_because(&self, peer: &Arc<Peer>, reason: impl Into<String>) {
+        let reason = reason.into();
+        let route = peer.route();
+        let was_in_the_fanout = match self.peers.lock() {
+            Ok(mut guard) => {
+                let before = guard.len();
+                guard.retain(|p| p.id != peer.id);
+                guard.len() != before
+            }
+            Err(_) => false,
+        };
+        // At `info!`, not `debug!`: a peer leaving is rare and this line
+        // is what a live session has to reason from.
+        tracing::info!(
+            "collab_broker: peer-{} {}, route={}: {}",
+            peer.id,
+            if was_in_the_fanout {
+                "left the fan-out"
+            } else {
+                "was already out of the fan-out"
+            },
+            route
+                .as_ref()
+                .map(|r| format!("{r:?}"))
+                .unwrap_or_else(|| "none (never said Hello)".into()),
+            reason,
+        );
+        if let Ok(mut log) = self.departures.lock() {
+            if log.len() >= DEPARTURE_LOG_CAPACITY {
+                log.pop_front();
+            }
+            log.push_back(Departure {
+                peer: peer.id,
+                route,
+                reason,
+            });
         }
+    }
+
+    /// Why every connection that has left this broker left it, oldest
+    /// first.
+    fn departures(&self) -> Vec<Departure> {
+        self.departures
+            .lock()
+            .map(|g| g.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Snapshot the current peer set so the caller can write without
@@ -1116,7 +1202,7 @@ impl PeerTable {
             Err(_) => return 0,
         };
         let mut delivered = 0usize;
-        let mut dead: Vec<u64> = Vec::new();
+        let mut dead: Vec<(Arc<Peer>, std::io::Error)> = Vec::new();
         for peer in self.snapshot() {
             if peer.id == except {
                 continue;
@@ -1130,14 +1216,17 @@ impl PeerTable {
             if !route.delivers_to(&peer_route) {
                 continue;
             }
-            if write_frame(&peer.writer, &bytes).is_err() {
-                dead.push(peer.id);
-            } else {
-                delivered += 1;
+            match write_frame(&peer.writer, &bytes) {
+                Ok(()) => delivered += 1,
+                // Collected rather than evicted here: `remove_because`
+                // takes the registry lock, and taking it inside the loop
+                // over a snapshot of that registry is how a fan-out
+                // deadlocks against its own bookkeeping.
+                Err(e) => dead.push((peer, e)),
             }
         }
-        for id in dead {
-            self.remove(id);
+        for (peer, err) in dead {
+            self.remove_because(&peer, format!("a fan-out write to it failed: {err}"));
         }
         for sub in self.local_subs() {
             if sub.wants(route) {
@@ -1206,8 +1295,11 @@ impl PeerTable {
         };
         let target = self.snapshot().into_iter().find(|p| p.id == peer_id);
         if let Some(peer) = target {
-            if write_frame(&peer.writer, &bytes).is_err() {
-                self.remove(peer.id);
+            if let Err(e) = write_frame(&peer.writer, &bytes) {
+                self.remove_because(
+                    &peer,
+                    format!("a message addressed to it alone failed to send: {e}"),
+                );
                 return false;
             }
             return true;
@@ -1761,6 +1853,65 @@ fn translate(
     }
 }
 
+/// The account a connection leaves behind, written on the way out of
+/// the reader's stack frame rather than at the end of its loop.
+///
+/// The eviction and the line explaining it were the last two statements
+/// of [`reader_loop`], which is the one place a reader that stops early
+/// never reaches. Every sink a session installs — the app opener, the
+/// compose surface, the action listener — runs on this thread, so a
+/// panic in one of them unwinds straight past both: the peer stays in
+/// the table with nobody reading it, the fan-out goes on writing to it
+/// for the rest of the session, and nothing anywhere says so.
+///
+/// **Which builds this is reachable in.** `panic = "abort"` on the
+/// release profile, and the demo profile inherits it, so on a shipped or
+/// filmed compositor a panic takes the process rather than one thread
+/// and this guard never runs. It is the developer and test profiles that
+/// unwind — which is where the suite runs, and where an unread peer left
+/// in the table is a leak one test can hand to the next.
+///
+/// It runs before the read half is dropped, because locals are destroyed
+/// before parameters: the reason is recorded while the connection is
+/// still open, never after it has gone.
+struct ReaderExit {
+    peer: Arc<Peer>,
+    table: Arc<PeerTable>,
+    opened: Instant,
+    /// Counted so the departure can say whether this connection ever
+    /// got going. "Connected, said nothing, went away" and "served for
+    /// an hour and closed" are the same event without it.
+    frames: u64,
+    /// The end the loop read off the wire, or `None` when the thread
+    /// left without reading one.
+    ended: Option<FrameEnd>,
+}
+
+impl Drop for ReaderExit {
+    fn drop(&mut self) {
+        let why = match self.ended.take() {
+            Some(end) => end.to_string(),
+            // No `FrameEnd` means the loop never handed one over, so
+            // this thread left through an unwind rather than through its
+            // own exit. Reported as the unknown it is: a guessed cause
+            // reads like a fact, and the point here is only that the
+            // reader can no longer take its reason away with it.
+            None => "its reader thread unwound without reading an end of \
+                     stream, which is what a panic on this thread looks \
+                     like from here"
+                .to_string(),
+        };
+        self.table.remove_because(
+            &self.peer,
+            format!(
+                "its reader ended after {:?} and {} frame(s): {why}",
+                self.opened.elapsed(),
+                self.frames,
+            ),
+        );
+    }
+}
+
 /// Handle the read side of one connected peer. Runs until EOF / broken
 /// pipe, then evicts the peer from the table so concurrent writers
 /// stop targeting a dead stream.
@@ -1786,17 +1937,23 @@ fn reader_loop(
     // same reason `remote_participant_id` re-announces a peer for a
     // connection that arrived after its name was said.
     let mut said_self: Option<(String, String, bool)> = None;
-    // Counted so the disconnect line can say whether this connection ever
-    // got going. "Connected, said nothing, went away" and "served for an
-    // hour and closed" are the same event without them.
-    let opened = std::time::Instant::now();
-    let mut frames = 0u64;
+    // The account this connection leaves behind, whatever ends it. Held
+    // across the whole loop below so that every way out of this frame —
+    // including one that skips the rest of it — goes through
+    // `ReaderExit::drop`.
+    let mut exit = ReaderExit {
+        peer: Arc::clone(&peer),
+        table: Arc::clone(&table),
+        opened: Instant::now(),
+        frames: 0,
+        ended: None,
+    };
     let ended = loop {
         let frame = match read_frame(&mut stream) {
             Ok(frame) => frame,
             Err(end) => break end,
         };
-        frames += 1;
+        exit.frames += 1;
         let Ok(req) = serde_json::from_slice::<CollabRequest>(&frame) else {
             tracing::debug!(
                 "collab_broker: dropping malformed frame from peer-{} ({} bytes)",
@@ -2241,21 +2398,10 @@ fn reader_loop(
             }
         }
     };
-    // At `info!`, not `debug!`: a peer leaving is rare and the one line
-    // it writes is what a live session has to reason from. The demo runs
-    // this at info, which is exactly why the old `debug!` line meant a
-    // connection could die with the log showing only that it had opened.
-    tracing::info!(
-        "collab_broker: peer-{} left after {:?} and {} frame(s), route={}: {}",
-        peer.id,
-        opened.elapsed(),
-        frames,
-        peer.route()
-            .map(|r| format!("{r:?}"))
-            .unwrap_or_else(|| "none (never said Hello)".into()),
-        ended,
-    );
-    table.remove(peer.id);
+    // Handed to the guard rather than logged here. Everything this
+    // function knows about how the connection ended leaves by one path,
+    // so the path that runs when it ends some other way is the same one.
+    exit.ended = Some(ended);
 }
 
 /// Public handle returned by [`spawn`]. Owns the listener thread's join
@@ -2319,6 +2465,17 @@ impl BrokerHandle {
             .lock()
             .map(|g| g.iter().filter(|p| p.route().is_some()).count())
             .unwrap_or(0)
+    }
+
+    /// Why every connection that has left this broker left it, oldest
+    /// first.
+    ///
+    /// The log's companion, for the two readers a log cannot serve: a
+    /// test, which cannot scrape a subscriber it does not own, and
+    /// anyone asking a session whose log stream has failed. Bounded at
+    /// [`DEPARTURE_LOG_CAPACITY`].
+    pub fn departures(&self) -> Vec<Departure> {
+        self.peers.departures()
     }
 
     /// How many presence streams the capnp transport has registered.
@@ -2754,7 +2911,10 @@ fn spawn_inner(
                             tracing::warn!(
                                 "collab_broker: failed to spawn reader for peer-{id}: {e}"
                             );
-                            listener_table.remove(id);
+                            listener_table.remove_because(
+                                &peer,
+                                format!("its reader thread could not be started: {e}"),
+                            );
                         }
                     }
                     Err(e) => {
@@ -5166,6 +5326,180 @@ mod tests {
             "and a real room must still deliver to itself, or this rule has \
              broken delivery outright"
         );
+    }
+
+    /// A connection that goes away leaves an account of itself, even
+    /// when the thread reading it never reaches the end of its loop.
+    ///
+    /// The eviction and the line explaining it were the last two
+    /// statements of `reader_loop`, and every sink a session installs
+    /// runs on that thread — so a panic in one of them unwinds past
+    /// both, and the peer stays in the table with nobody reading it
+    /// while the fan-out goes on writing to it. Reachable in the
+    /// profiles that unwind, which is the one this test runs under;
+    /// release and demo set `panic = "abort"` and lose the process
+    /// instead.
+    ///
+    /// Driven through the app opener, which is a real production call
+    /// site on that thread, and asserted against the broker's own record
+    /// rather than log output: a log is a stream this test does not own,
+    /// and one of the two things being closed here is a session whose
+    /// log stream could not be written.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_reader_that_unwinds_still_says_why_the_connection_ended() {
+        let socket_path = temp_sock("unwinding-reader");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+        // A sink of the session's that falls over. The broker documents
+        // these as running on the reader thread, which is exactly why one
+        // failing takes the connection's explanation with it.
+        handle.set_app_opener(Box::new(|_req| {
+            panic!("a sink the session installed fell over")
+        }));
+
+        let mut app = connect_manager_as(&socket_path, "dev.qos.notes", TEST_CLUSTER);
+        wait_for_announced(&handle, 1, Duration::from_millis(500));
+        app.send(CollabRequest::OpenApp {
+            app_id: "dev.qos.photos".to_string(),
+            with: None,
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && handle.departures().is_empty() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let departures = handle.departures();
+        assert_eq!(
+            departures.len(),
+            1,
+            "a connection ended and the broker recorded nothing about why, \
+             which is the whole of the failure being closed here",
+        );
+        assert!(
+            departures[0].reason.contains("unwound"),
+            "the record has to name what happened rather than merely exist, \
+             got {:?}",
+            departures[0].reason,
+        );
+        assert_eq!(
+            handle.peer_count(),
+            0,
+            "and the connection has to leave the fan-out, or the broker goes \
+             on writing to a reader that is not there",
+        );
+
+        drop(app);
+        let _ = std::fs::remove_file(&socket_path);
+        drop(handle);
+    }
+
+    /// The other order: the fan-out drops a peer whose write failed,
+    /// while that peer's reader is still blocked on the read half.
+    ///
+    /// Both orders are driven explicitly rather than left to whichever
+    /// one the machine happens to produce, because a test that only ever
+    /// saw one of them would pass against a broker that accounts for
+    /// that one alone.
+    ///
+    /// It also pins the thing that is easy to assume and is not true:
+    /// taking a peer out of the table does **not** close its socket. The
+    /// reader thread holds its own descriptor for the same connection,
+    /// so the far side notices nothing — which is why the eviction has
+    /// to give its reason there and then, instead of leaving it to
+    /// whatever the reader eventually reports.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_peer_dropped_by_a_failed_write_says_why_and_leaves_the_socket_open() {
+        use std::net::Shutdown;
+
+        let socket_path = temp_sock("write-failure-eviction");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let mut client = UnixStream::connect(&socket_path).expect("client connects");
+        let hello = serde_json::to_vec(&CollabRequest::Hello {
+            app_id: "dev.qos.notes".to_string(),
+            cluster_id: TEST_CLUSTER.parse().expect("a valid cluster uuid"),
+            record: None,
+            handle: None,
+        })
+        .expect("serialize hello");
+        client
+            .write_all(&(hello.len() as u32).to_le_bytes())
+            .expect("write hello length");
+        client.write_all(&hello).expect("write hello");
+        wait_for_announced(&handle, 1, Duration::from_millis(500));
+
+        // Refuse to take anything more. Writes to this connection now
+        // fail, while its reader stays blocked on our still-open write
+        // half — which is the ordering under test.
+        client
+            .shutdown(Shutdown::Read)
+            .expect("half-closing the read side");
+
+        let route = CrdtRoute::app("dev.qos.notes", TEST_CLUSTER);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && handle.peer_count() > 0 {
+            handle.fanout_event(
+                &CollabEvent::CRDTIncremental {
+                    data: b"addressed to a peer that will not take it".to_vec(),
+                },
+                None,
+                &route,
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(
+            handle.peer_count(),
+            0,
+            "a peer whose writes fail has to leave the fan-out",
+        );
+        let departures = handle.departures();
+        assert_eq!(
+            departures.len(),
+            1,
+            "the fan-out dropped a live connection and recorded nothing, \
+             got {departures:?}",
+        );
+        assert!(
+            departures[0].reason.contains("fan-out write"),
+            "the record has to say what failed, got {:?}",
+            departures[0].reason,
+        );
+
+        // The reader still holds a descriptor for this socket, so the
+        // client's end is open and it can still be heard from. An
+        // eviction is not a disconnection, and reading it as one is how
+        // a peer that had merely stopped receiving got reported as gone.
+        client.write_all(&(hello.len() as u32).to_le_bytes()).expect(
+            "taking a peer out of the fan-out must not close its socket — \
+             the reader thread holds a descriptor for the same connection",
+        );
+        client.write_all(&hello).expect("write hello again");
+
+        // …and when the reader does end, that is accounted for too, so
+        // the connection has one record per thing that happened to it
+        // rather than one for the ending nobody watched.
+        drop(client);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && handle.departures().len() < 2 {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let departures = handle.departures();
+        assert_eq!(
+            departures.len(),
+            2,
+            "the reader ended and said nothing about it, got {departures:?}",
+        );
+        assert!(
+            departures[1].reason.contains("its reader ended"),
+            "got {:?}",
+            departures[1].reason,
+        );
+
+        let _ = std::fs::remove_file(&socket_path);
+        drop(handle);
     }
 
     #[test]

@@ -726,7 +726,7 @@ fn start_egress_gate(
 ///
 /// # Safety
 /// Call only from `Command::pre_exec` (post-fork, pre-exec). Uses only
-/// `fcntl` and `dup2`, both async-signal-safe; allocates nothing.
+/// `fcntl`, `dup2` and `close`, all async-signal-safe; allocates nothing.
 unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
     let Some(highest) = pairs.iter().map(|(_, dst)| *dst).max() else {
         return Ok(());
@@ -737,6 +737,12 @@ unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()>
         // every target.
         let moved = unsafe { libc::fcntl(*src, libc::F_DUPFD, floor) };
         if moved >= 0 {
+            // The original number is finished with. The app is told to
+            // read `dst` and nothing else, so a second live descriptor
+            // on the same socket, at a number nobody named, is one the
+            // app has no way to close. `close` is async-signal-safe,
+            // like everything else in here.
+            unsafe { libc::close(*src) };
             *src = moved;
         }
     }
@@ -755,6 +761,15 @@ unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()>
             if flags != -1 {
                 let _ = libc::fcntl(*dst, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
             }
+        }
+    }
+    // And the relocated copies, now that every target holds one. What
+    // the app is handed is one descriptor per service, at the number it
+    // was told to read — rather than the same socket open on three of
+    // them, two of which it has no name for.
+    for (src, dst) in pairs.iter() {
+        if *src != *dst {
+            unsafe { libc::close(*src) };
         }
     }
     Ok(())
@@ -1225,8 +1240,10 @@ pub fn run_with(
     // pre_exec: dup the seccomp blob fd into SECCOMP_CHILD_FD, and put
     // each service socket on the fd number the app was told to read.
     let host_seccomp_fd = seccomp_fd.as_raw_fd();
-    let mut service_fds: Vec<(RawFd, RawFd)> =
-        resolved.iter().map(|r| (r.host_fd, r.child_fd as RawFd)).collect();
+    let mut service_fds: Vec<(RawFd, RawFd)> = resolved
+        .iter()
+        .map(|r| (r.host_fd(), r.child_fd as RawFd))
+        .collect();
     for r in &resolved {
         tracing::info!(
             service = %r.name,
@@ -1293,6 +1310,13 @@ pub fn run_with(
     // Important: keep `seccomp_fd` alive until after `spawn` returns,
     // so its dup2'd copy in the child remains valid. Drop here.
     drop(seccomp_fd);
+    // The same rule, for the same reason, and the one the service
+    // connections never had: the child holds its own copy of each of
+    // these, so the launcher's are dead weight from here — and dead
+    // weight on a socket is a service that cannot tell the app has gone.
+    // Dropped before the wait rather than after it, so the far end
+    // learns of the app's exit from the app.
+    drop(resolved);
     let status = child.wait()?;
     Ok(status)
 }
@@ -1423,8 +1447,10 @@ pub fn run_with_captured(
     cmd.stdout(std::process::Stdio::piped());
 
     let host_seccomp_fd = seccomp_fd.as_raw_fd();
-    let mut service_fds: Vec<(RawFd, RawFd)> =
-        resolved.iter().map(|r| (r.host_fd, r.child_fd as RawFd)).collect();
+    let mut service_fds: Vec<(RawFd, RawFd)> = resolved
+        .iter()
+        .map(|r| (r.host_fd(), r.child_fd as RawFd))
+        .collect();
     unsafe {
         cmd.pre_exec(move || {
             if libc::dup2(host_seccomp_fd, SECCOMP_CHILD_FD) == -1 {
@@ -1441,6 +1467,9 @@ pub fn run_with_captured(
 
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
     drop(seccomp_fd);
+    // As in `run_with`: the child has its own copies, so holding these
+    // open only keeps the service from seeing the app end.
+    drop(resolved);
     let mut buf = Vec::new();
     if let Some(mut so) = child.stdout.take() {
         use std::io::Read;
