@@ -3005,6 +3005,96 @@ mod tests {
         );
     }
 
+    /// Build the inbound event an "I opened this application" publish arrives
+    /// as, on the room's own topic.
+    fn app_open_event(cluster_id: &str, from_peer_hash: u64) -> NetEvent {
+        NetEvent::Msg {
+            room: RoomId::parse(cluster_id).unwrap_or_else(RoomId::nil),
+            peer: libp2p::PeerId::random(),
+            msg: NeighbourMsg::AppOpened {
+                peer: from_peer_hash,
+                cluster_id: cluster_id.to_string(),
+                app_id: "dev.qos.photos".to_string(),
+                with: Some("b3f00d".to_string()),
+                who: "Claude".to_string(),
+            },
+        }
+    }
+
+    /// An application a participant opened reaches this session only for a
+    /// workspace this session is actually in — and never because this session
+    /// heard its own publish come back.
+    ///
+    /// Driven through the real receive path, an event pushed onto the
+    /// actor→shell channel and drained by `tick`, because the claim is about
+    /// what that path admits. The accepted case is not decoration: without it
+    /// an empty-queue assertion passes just as well when nothing is ever
+    /// delivered at all.
+    #[test]
+    fn an_open_reaches_a_peer_in_the_room_and_nobody_else() {
+        let mut tree = WorkspaceTree::default();
+        let local = tree.append_empty_workspace("Mine");
+        let our_room = tree.room_of(local).expect("a minted room");
+        let handle = tree.shared();
+        let us = 0xAAAAu64;
+        let (net, _cmd_rx) = shell_network_for_test(handle, us);
+
+        // A workspace this machine does not hold. Somebody else's room is not
+        // a smaller audience for an open; it is the wrong one.
+        let stranger_room = crate::shell::state::RoomId::new();
+        assert_ne!(stranger_room, our_room);
+        net.event_tx
+            .try_send(app_open_event(&stranger_room.to_string(), 0xBBBBu64))
+            .expect("queue the stranger's open");
+        net.tick();
+        assert!(
+            net.inbound_app_open_handle().lock().unwrap().is_empty(),
+            "an application opened in a workspace this machine is not in must \
+             not reach the session that decides opens",
+        );
+
+        // Our own publish, echoed back by gossipsub. The window is already
+        // open here; opening a second one because we heard ourselves is the
+        // loop this filter exists to stop.
+        net.event_tx
+            .try_send(app_open_event(&our_room.to_string(), us))
+            .expect("queue our own echo");
+        net.tick();
+        assert!(
+            net.inbound_app_open_handle().lock().unwrap().is_empty(),
+            "a session must not open a window because it heard its own open \
+             come back",
+        );
+
+        // A collaborator in the workspace we share. This one has to arrive,
+        // or the two refusals above prove nothing.
+        net.event_tx
+            .try_send(app_open_event(&our_room.to_string(), 0xBBBBu64))
+            .expect("queue the collaborator's open");
+        net.tick();
+        let queued = net.inbound_app_open_handle().lock().unwrap().clone();
+        assert_eq!(
+            queued.len(),
+            1,
+            "an application opened in a workspace this machine shares must \
+             reach the session that decides opens",
+        );
+        let got = &queued[0];
+        assert_eq!(got.app_id, "dev.qos.photos");
+        assert_eq!(got.cluster_id, our_room.to_string());
+        assert_eq!(
+            got.with.as_deref(),
+            Some("b3f00d"),
+            "the content the open was bound to has to survive the crossing, \
+             or the window opens onto nothing",
+        );
+        assert_eq!(
+            got.who, "Claude",
+            "the participant that asked is the subject this session's grants \
+             are matched against, so it has to be the one that crossed",
+        );
+    }
+
     #[test]
     fn accepting_an_invite_joins_the_room_and_asks_it_for_a_catch_up() {
         use crate::network::invite::make_invite_token;
