@@ -107,7 +107,7 @@ still writes the clip; a second abandons it.
 | `frames are resampled to 1920x1048 and letterboxed` | The window manager granted a size the video is not; the film is a rescale, not 1:1. |
 | `WARNING: processes survived the scope` | Only trust this on an idle machine. The check is machine-wide, so anybody else's qOS run — or your own `--keep` session — trips it. |
 
-## Known faults, measured on 2026-08-25
+## Known faults, measured on 2026-08-26
 
 - **A narrated take comes out about twice its real length.** `--max-hold 0`
   turns the trim off but not the composer's one-frame-per-tick floor, and the
@@ -116,9 +116,20 @@ still writes the clip; a second abandons it.
   the film and is progressively early before that. Compare `duration` in the
   closing report against `captured over Ns of demo` two lines above it before
   you trust a narrated take.
-- The agent is refused when it tries to open Photos (`Claude has not been
-  given leave to open Photos in this room`) even though the run reports the
-  grants as accepted, so the crop cannot happen and beat 5 lands as a refusal.
+- **The picture may not arrive on his screen, and the run will not say so.**
+  A document can be left waiting on a change it was never sent — the log
+  says `this document is waiting on N change(s) it was never sent; it will
+  read as the text before the gap until they arrive`, and nothing ever
+  re-asks for it. On screen that is a page holding the typed sentence and
+  no picture, which looks like the agent having done nothing. It has not
+  always happened; when it does, the take is unusable and the only tell is
+  that warning. Check the closing frame before trusting a take.
+- **Judge the ending from the frame, not from the run's own verdict.**
+  `scripts/check-film-ending.py <film.mp4>` finds the page in the last
+  frames and reports how many pictures are on it and what shape each is,
+  failing unless there is exactly one and it is square. The run's own
+  claims have passed over a page carrying two pictures, and over one
+  carrying none.
 - `qos-lv-*.sock` files accumulate in `$XDG_RUNTIME_DIR` from every run that
   did not exit cleanly. Harmless; do not mistake a stale one for a live one.
 - Composing a long take is slow and silent: a 522 s film spent nine minutes in
