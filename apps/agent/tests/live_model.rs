@@ -59,7 +59,7 @@ fn demo_blocks() -> Vec<Block> {
 /// What the room exports, surveyed off the word processor's own tree for the
 /// document this test hands the model. Real addresses, so an answer naming one
 /// passes the same gate a live run's would.
-fn surveyed(blocks: &[qos_agent::plan::Block]) -> Vec<qos_agent::Offer> {
+fn surveyed(blocks: &[qos_agent::plan::Block]) -> qos_agent::surface::Catalogue {
     let mut doc = automerge::AutoCommit::new();
     let c = qdoc::model::init(&mut doc, &automerge::ROOT);
     let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
@@ -78,7 +78,7 @@ fn surveyed(blocks: &[qos_agent::plan::Block]) -> Vec<qos_agent::Offer> {
     }
     doc.commit();
     let wp = &qos_agent::surface::CONTRACTS[0];
-    qos_agent::surface::offers(
+    qos_agent::surface::catalogue(
         &[(wp, &doc)],
         &qos_agent::View::default(),
         &granted("Claude"),
@@ -118,7 +118,7 @@ fn the_model_drafts_a_run_sheet_that_a_split_on_separators_could_not() {
     let offers = surveyed(&blocks);
     let d = chooser().choose("make this a run sheet", &blocks, &offers);
 
-    let Route::Model { why } = &d.route else {
+    let Route::Model { why, .. } = &d.route else {
         panic!(
             "the call did not reach a model, so this proves nothing: {}",
             d.route.detail()
