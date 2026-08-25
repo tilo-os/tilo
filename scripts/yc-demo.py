@@ -6457,6 +6457,17 @@ def run_the_agent(agent: Session, room: str, shots: str,
              "--app", "",
              "--grant", "word-processor", "--grant", "files",
              "--grant", "chat", "--grant", "photos",
+             # Where the file manager on screen is looking, so the agent's
+             # view of the room is the one the request is made from.
+             #
+             # The agent derives this from the request's own subject when a
+             # request carries one, and the crop beat does. A request that
+             # carries none does not, and without it the file manager
+             # publishes no entries at all: the room is then four
+             # applications exporting nothing between them and two ways to
+             # launch something, which is not a room anybody can be asked a
+             # question about.
+             "--directory", WORKSPACE_ROOT,
              "--socket", agent.collab_json_sock, "--once",
              "--pace-ms", "250"],
             stdout=log, stderr=subprocess.STDOUT, cwd=REPO,
