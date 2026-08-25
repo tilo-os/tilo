@@ -175,6 +175,24 @@ pub struct AppContract {
     /// The app's own decoders, so the door can prove what it would run before
     /// running it.
     pub register: fn(&mut ActionRegistry),
+    /// Whether [`Self::recognises`] is a claim on **any** document rather
+    /// than on this app's own.
+    ///
+    /// The word processor's test is "this parses as a rich-text document",
+    /// and every application built on the toolkit has one of those — the
+    /// toolkit seeds it. So that test is true of the photo editor's document
+    /// too, and since [`recognise`] takes the first contract that claims a
+    /// document, the word processor claimed all of them and no other app was
+    /// ever recognised. The photo editor could be launched, could load a
+    /// photograph and could publish it, and the agent still reported that
+    /// nothing came back: its state arrived, was attributed to the word
+    /// processor, and merged into the page.
+    ///
+    /// A contract marked here is tried **last**, so it wins a document only
+    /// when nothing with a test of its own claims it. That is what the word
+    /// processor's claim actually means: "a document, and nobody else's".
+    pub fallback: bool,
+
     /// What this app's document currently *denotes*, as something another
     /// app's operation could be handed — or `None` for an app whose subject is
     /// not transferable.
@@ -466,6 +484,10 @@ pub static CONTRACTS: &[AppContract] = &[
         recognises: |doc| qdoc::model::open(doc, &automerge::ROOT).is_ok(),
         resources: word_processor_resources,
         register: word_processor::actions::register,
+        // Its test is "this parses as a rich-text document", which every
+        // toolkit app's document does. Tried last, so it means "a document,
+        // and nobody else's".
+        fallback: true,
         product: word_processor_product,
     },
     AppContract {
@@ -475,6 +497,7 @@ pub static CONTRACTS: &[AppContract] = &[
         recognises: file_explorer::actions::is_explorer_document,
         resources: file_explorer_resources,
         register: file_explorer::actions::register,
+        fallback: false,
         product: file_explorer_product,
     },
     AppContract {
@@ -484,6 +507,7 @@ pub static CONTRACTS: &[AppContract] = &[
         recognises: chat::actions::is_chat_document,
         resources: chat_resources,
         register: chat::actions::register,
+        fallback: false,
         product: nothing,
     },
     AppContract {
@@ -493,6 +517,7 @@ pub static CONTRACTS: &[AppContract] = &[
         recognises: photos_document,
         resources: photos_resources,
         register: photos::actions::register,
+        fallback: false,
         product: photos_product,
     },
 ];
@@ -510,7 +535,13 @@ fn photos_document(doc: &AutoCommit) -> bool {
 /// The contract for a document, or `None` when nothing in the room's apps
 /// claims it.
 pub fn recognise(doc: &AutoCommit) -> Option<&'static AppContract> {
-    CONTRACTS.iter().find(|c| (c.recognises)(doc))
+    // Two passes, and the order is the whole of it. An app with a test of its
+    // own gets to claim its own document before an app whose test claims
+    // anything shaped like a document at all. See [`AppContract::fallback`].
+    CONTRACTS
+        .iter()
+        .find(|c| !c.fallback && (c.recognises)(doc))
+        .or_else(|| CONTRACTS.iter().find(|c| c.fallback && (c.recognises)(doc)))
 }
 
 /// The contract whose resource ids start with `namespace`.
