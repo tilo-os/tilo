@@ -4834,7 +4834,13 @@ def say_something_about(session: Session, log: "LogTail", tile: tuple,
     # The right-click, on the row now known to be under the pointer.
     step(f"{session.name} right-clicks it")
     session.right_click_at(x, y)
-    session.settle(0.8)
+    # Long enough for the panel to actually arrive. The app hands the
+    # request to the shell over a socket, and that took ~1s on the take of
+    # 2026-08-25: the panel appeared at 38.59s while a 0.8s settle expired
+    # at 38.4s. So the lookup below found nothing, took its fallback
+    # branch, and aimed the next press at coordinates the panel was not at
+    # -- which is how the surface came to live a tenth of a second.
+    session.settle(1.5)
 
     # Where the panel is, asked of whoever drew it.
     #
