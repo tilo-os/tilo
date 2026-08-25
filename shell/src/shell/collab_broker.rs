@@ -4294,6 +4294,195 @@ mod tests {
     /// and the receiving host has to rebuild it. This drives the real inbound
     /// path: a frame queued as if it had just arrived off gossipsub, picked up
     /// by the broker's drain thread, routed by what the sender stamped.
+    /// An application a participant asks for here is opened here **and**
+    /// announced to the workspace.
+    ///
+    /// The second half is the one that did not exist. A workspace carries its
+    /// own collaborators, so an application opened in a shared one is the
+    /// workspace's; opening it only in the session whose socket the request
+    /// happened to reach left the other collaborator looking at a workspace
+    /// that was missing the window — an agent asked to crop a photograph
+    /// worked where nobody could see it.
+    ///
+    /// Asserted against the real reader loop and the real outbound path: the
+    /// request goes in over the socket an application dials, and what comes
+    /// out is what would have gone onto the wire.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn an_open_asked_for_here_reaches_the_whole_workspace() {
+        use crate::shell::collab_outbound::recording::{RecordingSink, Sent};
+        use crate::shell::collab_outbound::{PeerPublishSink, PeerPublisher};
+
+        let socket_path = temp_sock("open-reaches-workspace");
+        let sink = std::sync::Arc::new(RecordingSink::default());
+        let publisher = PeerPublisher::new(sink.clone() as Arc<dyn PeerPublishSink>);
+        let handle =
+            spawn_with_publisher(socket_path.clone(), None, publisher).expect("broker should bind");
+
+        // A desktop behind the broker. Without one every open is refused
+        // before anything else happens, which is a different test.
+        let opened: Arc<Mutex<Vec<OpenAppRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let seen = Arc::clone(&opened);
+            handle.set_app_opener(Box::new(move |req| {
+                if let Ok(mut g) = seen.lock() {
+                    g.push(req);
+                }
+            }));
+        }
+
+        // SAFETY: every test in this module is
+        // `#[serial_test::serial(collab_broker)]`, so nothing else reads this
+        // between the set and the removal below.
+        unsafe {
+            std::env::set_var("QOS_PRESENCE_HANDLE", "Claude");
+        }
+        let mut agent = connect_manager_as(&socket_path, "dev.qos.agent", TEST_CLUSTER);
+        wait_for_peers(&handle, 1, Duration::from_millis(500));
+        wait_for_announced(&handle, 1, Duration::from_millis(500));
+        let _ = agent.poll();
+
+        agent.send(CollabRequest::OpenApp {
+            app_id: "dev.qos.photos".to_string(),
+            with: Some("b3f00d".to_string()),
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let seen = loop {
+            let seen = sink.snapshot();
+            if !seen.is_empty() || std::time::Instant::now() > deadline {
+                break seen;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        unsafe {
+            std::env::remove_var("QOS_PRESENCE_HANDLE");
+        }
+
+        assert_eq!(
+            seen,
+            vec![Sent::AppOpened {
+                app_id: "dev.qos.photos".to_string(),
+                cluster_id: TEST_CLUSTER.to_string(),
+                with: Some("b3f00d".to_string()),
+                who: "Claude".to_string(),
+            }],
+            "an open in a shared workspace has to reach the workspace, \
+             carrying the content it was bound to and the participant that \
+             asked — a peer given neither cannot decide it",
+        );
+
+        // And the session that took the request still opens it locally: the
+        // announcement is in addition to the window, not instead of it.
+        let here = opened.lock().unwrap().clone();
+        assert_eq!(here.len(), 1, "the session that was asked opens it too");
+        assert_eq!(here[0].app_id, "dev.qos.photos");
+        assert!(
+            matches!(here[0].origin, OpenOrigin::Connection(_)),
+            "a request that arrived on this session's socket has somebody \
+             waiting on the answer",
+        );
+
+        drop(agent);
+        drop(handle);
+    }
+
+    /// An open that arrived **from** the room is decided here, and never
+    /// relayed back out.
+    ///
+    /// Two things at once, because they are two halves of one rule. The
+    /// session opens the window, through the same door a local request uses,
+    /// so its own workspace's capabilities decide it. And it publishes
+    /// nothing: an announcement that produced an announcement would put a
+    /// window on every peer per round trip, for ever.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn an_open_from_the_room_is_decided_here_and_never_relayed_back() {
+        use crate::shell::collab_outbound::recording::RecordingSink;
+        use crate::shell::collab_outbound::{PeerPublishSink, PeerPublisher};
+
+        let socket_path = temp_sock("open-from-the-room");
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
+        let (net, _cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0xB0BAu64);
+        let net = std::sync::Arc::new(net);
+        let sink = std::sync::Arc::new(RecordingSink::default());
+        let publisher = PeerPublisher::new(sink.clone() as Arc<dyn PeerPublishSink>);
+        // The inbound drain and the recording outbound half at once — the
+        // whole question here is what the one does to the other.
+        let identity = LocalIdentity::from_network(Some(Arc::clone(&net)));
+        let handle = spawn_inner(
+            socket_path.clone(),
+            None,
+            Some(Arc::clone(&net)),
+            identity,
+            publisher,
+        )
+        .expect("broker should bind");
+
+        let opened: Arc<Mutex<Vec<OpenAppRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let seen = Arc::clone(&opened);
+            handle.set_app_opener(Box::new(move |req| {
+                if let Ok(mut g) = seen.lock() {
+                    g.push(req);
+                }
+            }));
+        }
+
+        // Queued exactly as `ShellNetwork::tick` queues a received
+        // `AppOpened`; the drain thread takes it from here.
+        net.handle_app_open_message(
+            0xFACEu64,
+            "dev.qos.photos".to_string(),
+            TEST_CLUSTER.to_string(),
+            Some("b3f00d".to_string()),
+            "Claude".to_string(),
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let here = loop {
+            let here = opened.lock().unwrap().clone();
+            if !here.is_empty() || std::time::Instant::now() > deadline {
+                break here;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(
+            here.len(),
+            1,
+            "an application a collaborator opened in this workspace has to \
+             reach the session that decides opens here",
+        );
+        assert_eq!(here[0].app_id, "dev.qos.photos");
+        assert_eq!(here[0].room, TEST_CLUSTER);
+        assert_eq!(here[0].with.as_deref(), Some("b3f00d"));
+        assert_eq!(
+            here[0].handle.as_deref(),
+            Some("Claude"),
+            "the participant that asked is what this workspace's grants are \
+             matched against, so it has to arrive as the subject",
+        );
+        assert_eq!(
+            here[0].origin,
+            OpenOrigin::Room(0xFACEu64),
+            "nobody is waiting on a socket for this one; a refusal belongs in \
+             the log, not addressed to a connection that does not exist",
+        );
+
+        // The half that has to keep being true for as long as this exists.
+        // Given a moment longer than the drain's own cadence, so a relay that
+        // was merely slow would still be caught.
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            sink.snapshot().is_empty(),
+            "a session opening an application because a peer said so must not \
+             tell the room about it — that is a window per round trip: {:?}",
+            sink.snapshot(),
+        );
+
+        drop(handle);
+    }
+
     /// The two transports must publish through the same thing.
     ///
     /// They did not. The JSON reader loop republished every
