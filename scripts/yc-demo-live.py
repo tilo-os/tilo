@@ -689,6 +689,7 @@ class Live:
         self.instruction_at = 0.0
         self.timeline: list[tuple[float, str]] = []
         self.clock: "CrossingClock | None" = None
+        self.chat_clock: "CrossingClock | None" = None
         self.sheet: "ContactSheet | None" = None
         self.agent_session_in = False
         self.wp_seen = False
@@ -1614,8 +1615,19 @@ class Live:
         if not self.args.time_the_crossing or self.clock is not None:
             return
         everyone = {"quinten": self.q, "xaver": self.x, "Claude": self.a}
-        self.clock = CrossingClock(everyone, str(self.room))
+        # Two different arrivals, on two different documents, because
+        # they are two different claims. The narration is what fills the
+        # wait, and it is only filling it on a screen it has reached; the
+        # crop is the ending. A film that measured one and assumed the
+        # other would be timing the half that is not the risk.
+        self.clock = CrossingClock(
+            everyone, str(self.room), yc.WORD_PROCESSOR, "word-processor",
+            yc.picture_references, "the crop")
         self.clock.start()
+        self.chat_clock = CrossingClock(
+            everyone, str(self.room), yc.CHAT_APP, "chat",
+            agent_has_spoken, "the agent's first word in chat")
+        self.chat_clock.start()
         self.sheet = ContactSheet(everyone,
                                   os.path.join(self.shots, "contact-sheet"))
         self.sheet.start()
@@ -1684,8 +1696,9 @@ class Live:
             print(f"    {at - self.instruction_at:7.1f}s  "
                   f"(+{at - last:5.1f}s)  {what}", flush=True)
             last = at
-        if self.clock is not None:
-            self.clock.report(self.instruction_at)
+        for clock in (self.chat_clock, self.clock):
+            if clock is not None:
+                clock.report(self.instruction_at)
 
     def something_is_happening(self) -> None:
         """The film has something to show again: camera up, clock reset.
@@ -2342,6 +2355,28 @@ class Live:
         return self.finished or "you stopped it"
 
 
+def agent_has_spoken(blob: bytes) -> bool:
+    """Whether a chat document holds a state the agent put there.
+
+    `note_work` stores an `AgentWork` as a JSON string under the message
+    it belongs to, so the states arrive in the document as the words
+    `Taken`, `Waiting`, `Doing`, `Done` and `Refused` inside that string
+    — which is what `qos-doc-text` can print and therefore what can be
+    looked for.
+
+    Matched against the decoded strings rather than the blob's bytes:
+    Automerge compresses its columns, so a grep of the bytes answers
+    "absent" for a document that holds it.
+    """
+    for path, text in yc.document_strings(blob):
+        if not path.endswith("work"):
+            continue
+        if any(state in text for state in
+               ("Taken", "Waiting", "Doing", "Done", "Refused")):
+            return True
+    return False
+
+
 class CrossingClock:
     """When the crop first appears in each machine's own copy of the page.
 
@@ -2370,9 +2405,18 @@ class CrossingClock:
     #: resolution and costs nothing but a wakeup.
     TICK_S = 0.25
 
-    def __init__(self, sessions: dict, room: str) -> None:
+    def __init__(self, sessions: dict, room: str, app_id: str, scope: str,
+                 carries, what: str) -> None:
         self.room = room
         self.sessions = {n: s for n, s in sessions.items() if s is not None}
+        self.app_id = app_id
+        self.scope = scope
+        #: `carries(blob) -> bool` — what counts as the thing having
+        #: arrived. Passed in rather than branched on here so the same
+        #: watch can be pointed at a picture on a page or at an agent
+        #: saying something in a conversation.
+        self.carries = carries
+        self.what = what
         self.seen: dict[str, float] = {}
         self.gaps: list[str] = []
         self.stop = threading.Event()
@@ -2390,24 +2434,25 @@ class CrossingClock:
         try:
             reader = yc.DocumentReader(session.collab_json_sock,
                                        self.room, record=None,
-                                       handle="crossing-clock")
+                                       handle="crossing-clock",
+                                       app_id=self.app_id, scope=self.scope)
         except OSError as e:
             self.gaps.append(f"{name}'s session has no broker to watch "
-                             f"({e}), so when the crop reached that machine "
-                             f"was not measured")
+                             f"({e}), so when {self.what} reached that "
+                             f"machine was not measured")
             return
         try:
             while not self.stop.is_set():
                 for blob in reader.documents() + reader.deltas():
                     try:
-                        if yc.picture_references(blob):
+                        if self.carries(blob):
                             self.seen.setdefault(name, time.time())
                             return
                     except yc.CannotDecode as e:
                         self.gaps.append(
                             f"{name}'s document could not be decoded ({e}), "
-                            f"so when the crop reached that machine was not "
-                            f"measured")
+                            f"so when {self.what} reached that machine was "
+                            f"not measured")
                         return
                 self.stop.wait(self.TICK_S)
         finally:
@@ -2419,16 +2464,16 @@ class CrossingClock:
             t.join(timeout=2.0)
 
     def report(self, sent_at: float) -> None:
-        """The four stretches, named separately, against `sent_at`."""
+        """Per machine, against the moment the instruction went out."""
         print()
-        print("  when the crop reached each machine's own copy of the page")
+        print(f"  when {self.what} reached each machine's own copy")
         print("  (measured off that session's app, not off a screenshot)")
         for name in self.sessions:
             at = self.seen.get(name)
             if at is None:
-                yc.gap(f"the crop never appeared in {name}'s copy of the "
-                       f"document while this was watching, so the take "
-                       f"establishes nothing about that machine")
+                yc.gap(f"{self.what} never appeared in {name}'s copy while "
+                       f"this was watching, so the take establishes nothing "
+                       f"about that machine")
             else:
                 print(f"    {at - sent_at:7.1f}s  {name}", flush=True)
         for g in self.gaps:
@@ -3632,8 +3677,9 @@ def main() -> int:
         # their brokers, and a reader whose socket has gone answers
         # nothing.
         if live is not None:
-            if live.clock is not None:
-                live.clock.close()
+            for clock in (live.clock, live.chat_clock):
+                if clock is not None:
+                    clock.close()
             if live.sheet is not None:
                 live.sheet.close()
                 print(f"\n  {live.sheet.taken} evidence frame(s) in "
