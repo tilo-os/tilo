@@ -2329,6 +2329,95 @@ mod tests {
         assert_eq!(payload["actions"][0]["id"], "settings.open");
     }
 
+    /// The announced caller has to survive the whole way from the wire
+    /// to the thing that builds the gate — on **both** ops, and on the
+    /// planned invocation the executor re-resolves through.
+    ///
+    /// A caller carried on `actions_enumerate` and dropped on
+    /// `actions_invoke` is worse than one carried on neither: the agent
+    /// would survey its own surface and then invoke against the
+    /// person's, which is exactly the gap the visibility gate exists to
+    /// close. The fixture echoes what it was handed, so this asserts on
+    /// arrival rather than on the parsed command holding the field.
+    #[test]
+    fn the_announced_caller_reaches_both_ops_and_the_planned_invocation() {
+        let (resp, _) = dispatch_command(
+            &Command::ActionsEnumerate {
+                query: String::new(),
+                agent: Some("Claude".to_string()),
+            },
+            &ActionState,
+        );
+        let Response::Answer(payload) = resp else {
+            panic!("expected Response::Answer, got {resp:?}");
+        };
+        assert_eq!(
+            payload["caller"], "Claude",
+            "enumeration must be answered for the caller that announced itself"
+        );
+
+        let (resp, actions) = dispatch_command(
+            &Command::ActionsInvoke {
+                provider: "shell.actions".to_string(),
+                id: "settings.open".to_string(),
+                args: serde_json::Map::new(),
+                agent: Some("Claude".to_string()),
+            },
+            &ActionState,
+        );
+        let Response::Answer(payload) = resp else {
+            panic!("expected Response::Answer, got {resp:?}");
+        };
+        assert_eq!(
+            payload["caller"], "Claude",
+            "the resolve half must be gated for the same caller enumeration was"
+        );
+        assert_eq!(
+            actions,
+            vec![PlannedAction::InvokeAction {
+                provider: "shell.actions".to_string(),
+                id: "settings.open".to_string(),
+                args: serde_json::Map::new(),
+                agent: Some("Claude".to_string()),
+            }],
+            "the executor rebuilds the catalogue before anything runs; a plan \
+             that forgot who asked would hand an agent the person's surface at \
+             exactly the moment something happens"
+        );
+    }
+
+    /// The field is optional on the wire, and its absence is the person
+    /// — the harnesses that drive this socket as the person at the
+    /// keyboard send no `agent` and must keep working unchanged.
+    #[test]
+    fn the_caller_is_optional_on_the_wire_and_parses_when_present() {
+        let named = parse_command(
+            r#"{"op":"actions_enumerate","query":"terminal","agent":"Claude"}"#,
+        )
+        .expect("actions_enumerate should parse with an agent");
+        assert_eq!(
+            named,
+            Command::ActionsEnumerate {
+                query: "terminal".to_string(),
+                agent: Some("Claude".to_string()),
+            }
+        );
+
+        let named_invoke = parse_command(
+            r#"{"op":"actions_invoke","provider":"p","id":"i","agent":"Claude"}"#,
+        )
+        .expect("actions_invoke should parse with an agent");
+        assert_eq!(
+            named_invoke,
+            Command::ActionsInvoke {
+                provider: "p".to_string(),
+                id: "i".to_string(),
+                args: serde_json::Map::new(),
+                agent: Some("Claude".to_string()),
+            }
+        );
+    }
+
     /// A known address resolves, reports what it names, and plans
     /// exactly one invocation carrying that same address.
     #[test]
