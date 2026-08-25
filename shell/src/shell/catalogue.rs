@@ -444,6 +444,22 @@ pub fn pending_notices() -> Vec<(String, u64)> {
         .clone()
 }
 
+/// The notice `package_id`'s open raised, if that open is still
+/// outstanding. A peek for one package, where [`pending_notices`] is a
+/// peek at all of them.
+///
+/// The question it answers is "is this open still unaccounted for?",
+/// which is what separates a process exiting after its window came and
+/// went from one exiting without ever showing a window.
+pub fn pending_notice_for(package_id: &str) -> Option<u64> {
+    PENDING_NOTICES
+        .lock()
+        .expect("PENDING_NOTICES poisoned")
+        .iter()
+        .find(|(id, _)| id == package_id)
+        .map(|(_, notice)| *notice)
+}
+
 /// Take the notification raised for `package_id`, if one is still
 /// outstanding. Called on the frame thread when the launch resolves,
 /// so the "opening" toast is retired by the app appearing rather than

@@ -1048,6 +1048,25 @@ pub fn draw_remote_presence(
     // possible once the whole set is known.
     let mut on_screen: Vec<PeerCursor> = Vec::new();
     for cursor in &presence.remote_cursors {
+        // Nobody is a peer of themselves.
+        //
+        // The rule is `scripts/headless-examples/no-pill-for-yourself-proof.py`
+        // and it was enforced only at the two doors state arrives by —
+        // `apply_remote_presence` and `upsert_remote_cursor_owned`. Both
+        // guards depend on the ingesting side having been told what to
+        // call itself, and there are several spellings of that (a
+        // participant id, a handle, an app id, a `peer@…` address off
+        // the wire); an entry that came in under one nobody had seeded
+        // walked straight past both. On camera that is somebody's own
+        // name floating in the middle of their own empty pane, pointing
+        // at nothing.
+        //
+        // Checked here as well, because this is the last place the
+        // question can be asked and the only one that catches every
+        // door at once. Cheap — a set lookup per cursor per frame.
+        if presence.is_own_identity(&cursor.user_id) {
+            continue;
+        }
         let target = Point::new(cursor.position[0] as f64, cursor.position[1] as f64);
         let peer = peer_of(cursor);
         match super::geom::edge_mist_for(viewport, target) {
