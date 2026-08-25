@@ -49,6 +49,10 @@ const BUTTON_HEIGHT: f64 = 36.0;
 /// Width of the leading app icon square.
 const ICON_SIZE: f64 = 36.0;
 
+/// How far the app's glyph sits inside its backplate, so the mark reads
+/// as sitting *on* the square rather than being cropped by it.
+const GLYPH_INSET: f64 = 8.0;
+
 /// User's response to a [`PermissionPrompt`]. Mirrors the variants of
 /// [`crate`]'s consumer-facing `GrantScope` (the shell's
 /// `quick_shell::shell::state::GrantScope`) plus an explicit
@@ -329,10 +333,14 @@ impl Widget for PermissionPrompt {
             &shape,
         );
 
-        // App icon — flat rounded square pulled from the accent ramp.
-        // The portal layer (Task 4.3) will surface real icons via the
-        // app's desktop-file metadata; for v1 we paint a placeholder
-        // so the bar is visually balanced.
+        // App icon — the app's own mark on an accent backplate.
+        //
+        // The backplate alone used to be the whole icon, described in a
+        // comment as a placeholder until real icons arrived. They did not,
+        // and a bar that asks "may this program read your files?" was
+        // answering "which program?" with a blank blue square. The glyph
+        // comes from the shared table so the same app carries the same
+        // mark here as in the palette and the window chips.
         let icon_x = self.rect.x0 + PADDING_X;
         let icon_y = self.rect.y0 + (PROMPT_HEIGHT - ICON_SIZE) / 2.0;
         let icon_rect = Rect::new(icon_x, icon_y, icon_x + ICON_SIZE, icon_y + ICON_SIZE);
@@ -343,6 +351,20 @@ impl Widget for PermissionPrompt {
             theme.tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX],
             None,
             &icon_shape,
+        );
+        // Ink measured against the accent rather than assumed white: the
+        // accent is a light lilac on some palettes and white-on-white is
+        // how the backplate would go back to being featureless.
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            icon_rect.inset(-GLYPH_INSET),
+            crate::icons::icon_for_app_id(&self.app_id),
+            theme
+                .tokens
+                .colors
+                .on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST),
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
 
         // App-id label (left cluster, beneath the icon's right edge).
