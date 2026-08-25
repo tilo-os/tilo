@@ -136,9 +136,12 @@ class Session:
         home = os.path.expanduser("~")
         env = {
             **os.environ,
-            # The host is de_DE and bwrap does not clear the environment,
-            # so without this the app's chrome comes up in German and a
-            # screenshot cannot be read by whoever it is for.
+            # The host is de_DE. The sandbox clears the environment and
+            # rebuilds it, carrying the locale across explicitly
+            # (`sandbox::INHERITED_ENV`), so setting it here is what
+            # decides the language inside the app. Without it the chrome
+            # comes up in German and a screenshot cannot be read by
+            # whoever it is for.
             "LC_ALL": "en_US.UTF-8",
             "LANG": "en_US.UTF-8",
             "QOS_TEST_CONTROL": self.socket,

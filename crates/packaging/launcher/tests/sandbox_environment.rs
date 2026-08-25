@@ -242,7 +242,18 @@ fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
         "QOS_WORKSPACE_ID".to_string(),
         "QOS_PARTICIPATION".to_string(),
         "QOS_CLI_COMMAND".to_string(),
+        // The egress gate, and the proxy variables that name it. Absent for
+        // this fixture, which declares `net = "off"`, but part of the
+        // documented set.
         "QOS_NET_GATE".to_string(),
+        "HTTPS_PROXY".to_string(),
+        "HTTP_PROXY".to_string(),
+        "ALL_PROXY".to_string(),
+        "https_proxy".to_string(),
+        "http_proxy".to_string(),
+        "all_proxy".to_string(),
+        "NO_PROXY".to_string(),
+        "no_proxy".to_string(),
         "HOME".to_string(),
         "XDG_DATA_HOME".to_string(),
         "XDG_STATE_HOME".to_string(),
