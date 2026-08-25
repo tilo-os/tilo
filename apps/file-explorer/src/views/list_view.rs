@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use crate::command::CommandSink;
 use crate::model::{Entry, SortBy, SortOrder, ViewMode};
-use crate::views::file_view::{DropTargets, FileView, ThumbCtx};
+use crate::views::file_view::{EntryRows, FileView, ThumbCtx};
 use ui::widget::Widget;
 use ui::SelectionModel;
 use vello::kurbo::{Point, Rect};
@@ -34,7 +34,7 @@ pub fn build_list(
     renaming: Option<usize>,
     rename_rect: Rc<Cell<Option<Rect>>>,
     cursor: Point,
-    drop_targets: DropTargets,
+    entry_rows: EntryRows,
     thumbs: Option<ThumbCtx>,
 ) -> Box<dyn Widget> {
     Box::new(
@@ -44,7 +44,7 @@ pub fn build_list(
             .with_sort(sort_by, sort_order)
             .with_rename(renaming, rename_rect)
             .with_cursor(cursor)
-            .with_drop_targets(drop_targets)
+            .with_entry_rows(entry_rows)
             .with_thumbs(thumbs),
     )
 }

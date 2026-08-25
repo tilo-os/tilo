@@ -212,10 +212,13 @@ pub struct FileExplorerWidget {
     /// The folder currently under the cursor during a drag (a valid drop
     /// target), so it can be highlighted. `None` when over no target.
     drag_hover: Option<PathBuf>,
-    /// Folder rows the file view publishes each layout, so a drag's drop point
-    /// can be resolved to the folder it lands on (the view never sees the
-    /// release — the app captures the pointer for the duration of the drag).
-    drop_targets: crate::views::file_view::DropTargets,
+    /// The rows the file view publishes each layout. Read twice: a drag's drop
+    /// point is resolved to the folder it lands on (the view never sees the
+    /// release — the app captures the pointer for the duration of the drag),
+    /// and [`Widget::resource_rects`] answers out of the same list, so an
+    /// address arriving from outside this process resolves to the row a person
+    /// can see.
+    entry_rows: crate::views::file_view::EntryRows,
     /// The content pane's live scroll position, owned here so it survives the
     /// per-frame rebuild. Each rebuilt list/grid `Scrollable` binds to this
     /// cell (see [`ui::widget::Scrollable::with_persisted_offset`]); without
@@ -358,7 +361,7 @@ impl FileExplorerWidget {
             drag_seed: Vec::new(),
             drag_origin_is_dir: false,
             drag_hover: None,
-            drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
+            entry_rows: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
             thumbs,
             thumb_imgs: Rc::new(RefCell::new(HashMap::new())),
@@ -446,7 +449,7 @@ impl FileExplorerWidget {
                 self.renaming,
                 self.rename_rect.clone(),
                 self.last_cursor,
-                self.drop_targets.clone(),
+                self.entry_rows.clone(),
                 self.thumb_ctx(),
             ),
             ViewMode::Grid => crate::views::grid_view::build_grid(
@@ -457,7 +460,7 @@ impl FileExplorerWidget {
                 self.renaming,
                 self.rename_rect.clone(),
                 self.last_cursor,
-                self.drop_targets.clone(),
+                self.entry_rows.clone(),
                 self.thumb_ctx(),
             ),
         };
@@ -1330,10 +1333,10 @@ impl FileExplorerWidget {
     #[doc(hidden)]
     pub fn debug_begin_move_drag(&mut self, srcs: Vec<PathBuf>, over: PathBuf) -> bool {
         let rect = self
-            .drop_targets
+            .entry_rows
             .borrow()
             .iter()
-            .find(|t| t.path == over)
+            .find(|t| t.is_dir && t.path == over)
             .map(|t| t.rect);
         let Some(rect) = rect else { return false };
         self.pin_drag = srcs.first().cloned();
@@ -1348,7 +1351,12 @@ impl FileExplorerWidget {
     /// tests / the shots demo to pick a real target.
     #[doc(hidden)]
     pub fn debug_folder_targets(&self) -> Vec<(PathBuf, vello::kurbo::Rect)> {
-        self.drop_targets.borrow().iter().map(|t| (t.path.clone(), t.rect)).collect()
+        self.entry_rows
+            .borrow()
+            .iter()
+            .filter(|t| t.is_dir)
+            .map(|t| (t.path.clone(), t.rect))
+            .collect()
     }
 
     /// The Up nav button's rect — the drop target that moves carried items into
@@ -1403,8 +1411,13 @@ impl FileExplorerWidget {
     /// the cursor (never one of the dragged items), else the parent directory
     /// when the cursor is over the Up affordance. `None` over anything else.
     fn folder_target_at(&self, pt: Point) -> Option<PathBuf> {
-        for t in self.drop_targets.borrow().iter() {
-            if t.rect.contains(pt) && !self.drag_paths.contains(&t.path) {
+        for t in self.entry_rows.borrow().iter() {
+            // The view publishes every row it drew, because two different
+            // readers want them. Here only a folder is a target: you cannot
+            // drop a file *into* a file, and a release over one must fall
+            // through to the Up affordance below rather than move the carried
+            // items onto it.
+            if t.is_dir && t.rect.contains(pt) && !self.drag_paths.contains(&t.path) {
                 return Some(t.path.clone());
             }
         }
@@ -1739,10 +1752,10 @@ impl FileExplorerWidget {
         // A row target carries its published rect; the parent (Up) target uses
         // the Up button's rect.
         let rect = self
-            .drop_targets
+            .entry_rows
             .borrow()
             .iter()
-            .find(|t| &t.path == hover)
+            .find(|t| t.is_dir && &t.path == hover)
             .map(|t| t.rect)
             .or_else(|| {
                 (Some(hover.as_path()) == self.current_path.parent())
@@ -3020,6 +3033,37 @@ impl Widget for FileExplorerWidget {
         v.push(&self.toolbar);
         v.push(&self.nav);
         v
+    }
+
+    /// Where each listed entry's row is on screen right now, under the same
+    /// address [`crate::actions::provide_resources`] publishes it as.
+    ///
+    /// Answered here rather than in the view because the view is rebuilt every
+    /// frame by a stateless host and is not reachable through
+    /// [`Widget::children`]; it republishes its laid-out rows into
+    /// `entry_rows`, and this reads them. Ids are minted the one way — through
+    /// [`crate::reference::entry_reference`], the same call the compose surface
+    /// puts into a remark — so an address that arrives back here from a message
+    /// resolves against the row it was minted from rather than against a second
+    /// spelling of the same path.
+    ///
+    /// Only what is drawn. A directory of a thousand files publishes the
+    /// twenty-odd rows on screen, because "where is it" has no answer for the
+    /// rest.
+    fn resource_rects(&self) -> Vec<(String, vello::kurbo::Rect)> {
+        self.entry_rows
+            .borrow()
+            .iter()
+            .map(|row| {
+                (
+                    crate::reference::entry_reference(&row.path)
+                        .resource_id()
+                        .as_str()
+                        .to_string(),
+                    row.rect,
+                )
+            })
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {

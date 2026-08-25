@@ -75,19 +75,29 @@ const GRID_CELL_H: f64 = 104.0;
 const GRID_ICON: f64 = 46.0;
 const GRID_GAP: f64 = 16.0;
 
-/// A folder drop target the view publishes each layout: a directory row's
-/// absolute on-screen rect and path. The host owns the drag (it captures the
-/// pointer once a drag begins, so the view never sees the release), so it needs
-/// the view to tell it where each folder sits to resolve what a drop lands on.
+/// One entry row the view publishes each layout: its path, its absolute
+/// on-screen rect, and whether it is a directory.
+///
+/// Two readers want the same fact for different reasons. The host owns a drag
+/// — it captures the pointer once one begins, so the view never sees the
+/// release — and needs to know where each *folder* sits to resolve what a drop
+/// lands on. And the app answers
+/// [`Widget::resource_rects`](ui::widget::Widget::resource_rects) out of this,
+/// which is how anything outside this process finds out where the row for a
+/// given `files.entry:` address is drawn. So the view publishes every row it
+/// laid out, and each reader takes the ones it is about.
 #[derive(Clone, Debug)]
-pub struct FolderDropTarget {
+pub struct EntryRow {
     pub path: PathBuf,
     pub rect: Rect,
+    /// Whether this row is a directory. Only folders are drop targets — you
+    /// can't drop a file *into* a file.
+    pub is_dir: bool,
 }
 
-/// Shared, host-owned sink the view republishes its folder rows into each
-/// layout (cleared + refilled), analogous to the rename-rect channel.
-pub type DropTargets = Rc<RefCell<Vec<FolderDropTarget>>>;
+/// Shared, host-owned sink the view republishes its rows into each layout
+/// (cleared + refilled), analogous to the rename-rect channel.
+pub type EntryRows = Rc<RefCell<Vec<EntryRow>>>;
 
 /// A list column the header exposes for click-to-sort. `sort_col` is the index
 /// the app's `SortColumn` command understands (1 = name, 2 = size, 3 = date).
@@ -132,9 +142,10 @@ pub struct FileView {
     /// threshold (begins a drag — to move the row onto a folder, or to pin a
     /// folder to the sidebar).
     pressed_row: Option<(Point, PathBuf, bool)>,
-    /// Host-owned sink for this view's folder rows, republished each layout so
-    /// the host can resolve which folder a drag is dropped onto.
-    drop_targets: Option<DropTargets>,
+    /// Host-owned sink for this view's rows, republished each layout so the
+    /// host can resolve which folder a drag is dropped onto and where any
+    /// entry's row is being drawn.
+    entry_rows: Option<EntryRows>,
     /// The shared thumbnail service + peniko memo. `None` disables previews (the
     /// view falls back to type glyphs/badges), which keeps the widget usable in
     /// contexts without a thumbnail service.
@@ -164,15 +175,16 @@ impl FileView {
             renaming: None,
             rename_rect: None,
             pressed_row: None,
-            drop_targets: None,
+            entry_rows: None,
             thumbs: None,
         }
     }
 
-    /// Bind the host's folder-drop-target sink; the view republishes its folder
-    /// rows into it each layout so the host can hit-test a drag's drop point.
-    pub fn with_drop_targets(mut self, sink: DropTargets) -> Self {
-        self.drop_targets = Some(sink);
+    /// Bind the host's row sink; the view republishes the rows it laid out
+    /// into it each layout, so the host can hit-test a drag's drop point and
+    /// answer where an addressed entry is on screen.
+    pub fn with_entry_rows(mut self, sink: EntryRows) -> Self {
+        self.entry_rows = Some(sink);
         self
     }
 
@@ -273,21 +285,36 @@ impl FileView {
         Rect::new(self.rect.x0, y0, self.rect.x1, y0 + self.row_h())
     }
 
-    /// Republish the absolute rect of every folder row into the host's drop-
-    /// target sink, so the host can resolve which folder a drag is released
-    /// over. Only directories are targets — you can't drop a file *into* a file.
-    fn publish_drop_targets(&self) {
-        let Some(sink) = &self.drop_targets else { return };
+    /// Republish the absolute rect of every row this layout put on screen.
+    ///
+    /// Rows scrolled out of the enclosing `Scrollable`'s viewport are left
+    /// out, by the same [`cull`] the draw uses. That is not an optimisation:
+    /// both readers of this sink are asking where something *is*, and a row
+    /// two thousand pixels below the window has an answer that would be a lie
+    /// in either reading — nothing can be dropped on it, and nothing can be
+    /// pointed at it.
+    ///
+    /// The viewport is the one the last *draw* was given, so on the first
+    /// layout after a rebuild it is a frame stale. It changes only when the
+    /// window resizes, and both readers check what they got against the app
+    /// itself rather than trusting the rect, so a stale frame costs a
+    /// correction and never a wrong answer.
+    fn publish_entry_rows(&self) {
+        let Some(sink) = &self.entry_rows else { return };
         let mut out = Vec::new();
         for (i, entry) in self.entries.iter().enumerate() {
-            if !entry.is_dir {
-                continue;
-            }
             let rect = match self.mode {
                 ViewMode::List => self.list_row_rect(i),
                 ViewMode::Grid => self.cell_rect(i),
             };
-            out.push(FolderDropTarget { path: entry.path.clone(), rect });
+            if cull(self.last_vp, rect) {
+                continue;
+            }
+            out.push(EntryRow {
+                path: entry.path.clone(),
+                rect,
+                is_dir: entry.is_dir,
+            });
         }
         *sink.borrow_mut() = out;
     }
@@ -886,7 +913,7 @@ impl Widget for FileView {
         if self.mode == ViewMode::Grid {
             self.columns = self.columns_for_width(self.rect.width());
         }
-        self.publish_drop_targets();
+        self.publish_entry_rows();
     }
 
     fn draw(
@@ -1521,16 +1548,19 @@ mod tests {
     }
 
     #[test]
-    fn apply_layout_publishes_folder_rows_as_drop_targets() {
-        // The host resolves a drop against the folder rects the view publishes,
-        // so only directories must appear, at their laid-out positions.
+    fn apply_layout_publishes_every_row_at_its_laid_out_position() {
+        // Two readers, one sink. The host resolves a drop against the *folder*
+        // rows, and the app answers "where is this entry drawn" for every row —
+        // so each row must appear, at its laid-out position, saying which of the
+        // two kinds it is. The drop side's "only folders" now lives where the
+        // decision is actually made (`folder_target_at`), asserted there.
         let sink = new_sink();
         let sel = SelectionModel::new();
         let mut entries = items(5); // f0..f4 are files
         entries[1] = ent("docs", true);
         entries[3] = ent("music", true);
-        let targets: super::DropTargets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let mut v = FileView::new(&entries, &sel, &sink).with_drop_targets(targets.clone());
+        let rows: super::EntryRows = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut v = FileView::new(&entries, &sel, &sink).with_entry_rows(rows.clone());
         let mut tree = TaffyTree::<()>::new();
         let node = tree.new_leaf(taffy::Style {
             size: taffy::Size { width: Dimension::length(600.0), height: Dimension::length(600.0) },
@@ -1541,11 +1571,69 @@ mod tests {
             height: taffy::AvailableSpace::Definite(600.0),
         }).unwrap();
         v.apply_layout(&tree, node, Point::ZERO);
-        let published = targets.borrow();
+        let published = rows.borrow();
         let names: Vec<String> = published.iter().map(|t| t.path.file_name().unwrap().to_string_lossy().into_owned()).collect();
-        assert_eq!(names, vec!["docs".to_string(), "music".to_string()], "only folders, in row order");
-        // Each target's rect sits on its row (row 1 above row 3).
-        assert!(published[0].rect.y0 < published[1].rect.y0, "row order preserved in geometry");
+        assert_eq!(
+            names,
+            vec!["f0", "docs", "f2", "music", "f4"],
+            "every laid-out row, in row order",
+        );
+        let folders: Vec<&str> = published
+            .iter()
+            .filter(|t| t.is_dir)
+            .map(|t| t.path.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert_eq!(folders, vec!["docs", "music"], "and the folders are marked as such");
+        // Geometry follows the rows: each published rect sits below the one before
+        // it, and every rect is one row tall.
+        for pair in published.windows(2) {
+            assert!(pair[0].rect.y0 < pair[1].rect.y0, "row order preserved in geometry");
+        }
+        for t in published.iter() {
+            assert!(
+                (t.rect.height() - v.row_h()).abs() < 0.5,
+                "a published rect is the row it names, not a band around it",
+            );
+        }
+    }
+
+    /// A row scrolled out of the enclosing viewport is not published. Both
+    /// readers ask where something *is*; a row below the window has no
+    /// answer either of them could use.
+    #[test]
+    fn rows_outside_the_viewport_are_not_published() {
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        let entries = items(40);
+        let rows: super::EntryRows = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut v = FileView::new(&entries, &sel, &sink).with_entry_rows(rows.clone());
+        // The viewport the last draw was given: a short band at the top.
+        v.last_vp = Some(Rect::new(0.0, 0.0, 600.0, 200.0));
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(taffy::Style {
+            size: taffy::Size { width: Dimension::length(600.0), height: Dimension::length(2000.0) },
+            ..Default::default()
+        }).unwrap();
+        tree.compute_layout(node, taffy::Size {
+            width: taffy::AvailableSpace::Definite(600.0),
+            height: taffy::AvailableSpace::Definite(2000.0),
+        }).unwrap();
+        v.apply_layout(&tree, node, Point::ZERO);
+        let published = rows.borrow();
+        assert!(!published.is_empty(), "the rows on screen are published");
+        assert!(
+            published.len() < entries.len(),
+            "and the ones below the window are not: {} of {}",
+            published.len(),
+            entries.len(),
+        );
+        for t in published.iter() {
+            assert!(
+                t.rect.y0 <= 200.0 + v.row_h(),
+                "nothing published sits well below the viewport: {:?}",
+                t.rect,
+            );
+        }
     }
 
     #[test]
