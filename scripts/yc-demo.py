@@ -1997,6 +1997,15 @@ class Recorder:
     def start(self, first: str) -> None:
         os.makedirs(os.path.join(self.dir, "frames"), exist_ok=True)
         self._live = self._wanted = self.by_name[first]
+        # The clock starts before the microphone check, not after it.
+        # Tried the other way, on the theory that the third of a second
+        # `_start_narration` spends proving ffmpeg is alive was time the
+        # take was being charged for and nothing was being recorded — and
+        # it is not: ffmpeg opens the source and is capturing well inside
+        # that window, which is the whole reason the probe can tell a live
+        # microphone from a dead one. Starting the clock afterwards puts
+        # `started_at` a third of a second past the first sample, which
+        # plays the voice early rather than late. Measured, then put back.
         self.started_at = time.time()
         self._start_narration()
         self._thread = threading.Thread(target=self._capture, name="capture",
@@ -2232,6 +2241,15 @@ class Recorder:
             time.sleep(self.dwell_s)
 
     def stop(self) -> None:
+        # Idempotent, because it is called twice on purpose: once where
+        # the take ends and again from a `finally` that cannot know
+        # whether it did. `stopped_at` is one end of the window every
+        # duration is now measured against, so a second call moving it
+        # would charge the picture for the readbacks and reports that ran
+        # after the camera stopped — a film that looked short of a take
+        # that had already finished.
+        if self.stopped_at:
+            return
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=30)
@@ -2373,9 +2391,18 @@ class Recorder:
         # take really was. Both tracks opened and closed on the same two
         # statements, so these are the same number when nothing went
         # wrong — and when they are not, the difference is the distance
-        # the voice will sit from the picture. A headset that drops at
-        # minute one leaves a wav that ends there, and `apad` fills the
-        # rest with silence without anybody being told.
+        # the voice will sit from the picture, for the whole film. The
+        # mux cannot see it: `apad` makes up the missing seconds with
+        # silence at the end, so a wav that is a second short arrives as
+        # a film whose voice is a second late and whose last second is
+        # quiet, and nothing anywhere says so.
+        #
+        # Measured on this machine: on an idle one the two agree to about
+        # a tenth of a second. At a load average near ninety — seven
+        # other builds — pulse took about a second to start delivering
+        # samples, with the camera not even running. So this fires when
+        # the machine is too busy to film on, which is a thing worth
+        # being told before the take rather than after it.
         heard = probe_audio_seconds(wav)
         took = self.stopped_at - self.started_at
         if heard is None:
@@ -2387,10 +2414,14 @@ class Recorder:
               f"{took:.1f}s of take ({off:+.1f}s)")
         if abs(off) > WALL_CLOCK_TOL_S:
             FAILURES.append(
-                f"the narration is {heard:.1f}s but the take was "
-                f"{took:.1f}s ({off:+.1f}s). The microphone did not run for "
-                f"the whole take, so the voice does not line up with the "
-                f"picture no matter how the two are muxed.")
+                f"the narration is {heard:.1f}s of audio for a {took:.1f}s "
+                f"take ({off:+.1f}s), so the voice sits that far from the "
+                f"picture for the whole film — the mux pads the difference "
+                f"with silence and cannot tell you. A short wav is usually "
+                f"the source taking that long to start delivering samples "
+                f"under load; this machine is at "
+                f"{os.getloadavg()[0]:.0f}. A headset that dropped mid-take "
+                f"looks the same from here.")
 
     # -- what actually happened --------------------------------------
 
