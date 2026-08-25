@@ -2405,6 +2405,73 @@ mod tests {
         assert_eq!(payload["actions"][0]["id"], "settings.open");
     }
 
+    /// The address a remark carries has to reach the room whole.
+    ///
+    /// An app mints a file's address as `files.entry:<path>` — kind, then
+    /// the same kind again inside the id — and it is the *id* the agent
+    /// resolves against what the room exports. A dispatch that split the
+    /// address on its colon and kept the tail would produce a reference
+    /// naming nothing, and the agent's answer would be an honest "I
+    /// cannot act on that" about an object that is right there. So this
+    /// asserts on what is planned, not on what was sent.
+    #[test]
+    fn a_remark_carries_the_whole_address_it_was_given() {
+        let address = "files.entry:/var/tmp/qos/workspace/harbour.png";
+        let (resp, actions) = dispatch_command(
+            &Command::Remark {
+                text: "Claude: make this square".to_string(),
+                kind: "files.entry".to_string(),
+                id: address.to_string(),
+                label: None,
+            },
+            &ActionState,
+        );
+        assert!(
+            matches!(resp, Response::Ok { .. }),
+            "expected the remark to be accepted, got {resp:?}"
+        );
+        let [PlannedAction::Remark { remark }] = actions.as_slice() else {
+            panic!("expected one planned remark, got {actions:?}");
+        };
+        assert_eq!(remark.reference.resource_id().as_str(), address);
+        assert_eq!(remark.reference.kind, "files.entry");
+        // The chip's label, derived rather than carried: a person reading
+        // it should see the file, never the address.
+        assert_eq!(remark.reference.label, "harbour.png");
+        assert_eq!(remark.text, "Claude: make this square");
+    }
+
+    /// Nothing is planned for a remark with no text or no address.
+    ///
+    /// `RemarkCompose::submit` refuses both by returning, which is right
+    /// and is invisible. Over a socket it has to be said: a caller that
+    /// cannot see the screen would otherwise read "sent, and the room
+    /// ignored it" off a run where nothing was ever sent.
+    #[test]
+    fn an_empty_remark_is_refused_out_loud() {
+        for (text, kind, id) in [
+            ("", "files.entry", "files.entry:/x.png"),
+            ("   ", "files.entry", "files.entry:/x.png"),
+            ("Claude: crop it", "files.entry", ""),
+            ("Claude: crop it", "", "files.entry:/x.png"),
+        ] {
+            let (resp, actions) = dispatch_command(
+                &Command::Remark {
+                    text: text.to_string(),
+                    kind: kind.to_string(),
+                    id: id.to_string(),
+                    label: None,
+                },
+                &ActionState,
+            );
+            assert!(actions.is_empty(), "nothing may be planned for {text:?}");
+            let Response::Err { code, .. } = resp else {
+                panic!("expected a refusal for {text:?}/{id:?}, got {resp:?}");
+            };
+            assert_eq!(code, "invalid_remark");
+        }
+    }
+
     /// The announced caller has to survive the whole way from the wire
     /// to the thing that builds the gate — on **both** ops, and on the
     /// planned invocation the executor re-resolves through.
