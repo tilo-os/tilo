@@ -1248,6 +1248,23 @@ class Live:
         # answer a handshake either.
         self.wait_for_his_screen()
 
+        # His groups, now that they exist.
+        #
+        # `establish_strip` sets every group in a strip to the film's share,
+        # and it runs during setup -- when his strip is empty. `launch()`
+        # re-applies it on sight of each new group, but he never launches
+        # anything: his windows arrive by replication from the room, down a
+        # path that has no launch to hang it off. So they kept the default
+        # three-quarters, and the cut that opens the film's second half
+        # landed on a word processor hanging 1596px past the right edge.
+        #
+        # Here specifically, because the camera is already down for the
+        # crossing and he is not on screen yet. A width change after a
+        # client has committed its buffer costs it another round trip --
+        # cheap now, a visible re-layout if it were done after the cut.
+        yc.establish_strip(self.x)
+        self.x.settle(0.4)
+
         if proof is None:
             yc.gap("quinten's document holds nothing anyone wrote, so the "
                    "film hands over on a page with nothing of his on it "
