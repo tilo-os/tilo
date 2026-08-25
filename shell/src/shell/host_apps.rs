@@ -85,6 +85,55 @@ impl HostApp {
     }
 }
 
+/// Whether this session offers the machine's own applications at all.
+///
+/// Enumerating them means reading the `.desktop` files of whatever
+/// desktop qOS happens to be nested inside, and that is a **development
+/// affordance**: on a workstation it puts the programs already
+/// installed there within reach of a compositor being worked on. It is
+/// not a property of qOS, and it is not something every session should
+/// inherit merely by running on a machine that has other software.
+///
+/// Two sessions say so, and both say it about themselves rather than
+/// about which applications exist:
+///
+/// * A session handed an app store of its own — `QOS_APPS_DATA_DIR`
+///   with no `QOS_APPS_SYSTEM_DIR`, which
+///   [`launcher::registry::store_is_scoped_to_this_session`] already
+///   defines as "the store is exactly here". Having been told which
+///   applications it has, it does not then go looking for more on the
+///   surrounding machine. This is what a scoped session — a demo rig, a
+///   recording, a test fixture — gets without asking for it, and it is
+///   why the palette of such a session lists the packages installed in
+///   its own registry and nothing else.
+/// * `QOS_SHOTS_NO_HOST_APPS`, set by the screenshot harness, which has
+///   no store of its own to be scoped by. Kept as its own switch
+///   because the harness photographs a machine that is not the
+///   viewer's and needs the answer regardless of how its store is
+///   configured.
+///
+/// Deliberately narrow: this governs what the *palette offers*. The
+/// scan itself stays available, so [`find`] and [`app_for_window_id`]
+/// still name a foreign toplevel that arrives anyway — a window on
+/// screen with a name is not the same thing as a menu of programs to
+/// start.
+///
+/// [`launcher::registry::store_is_scoped_to_this_session`]:
+///     launcher::registry::store_is_scoped_to_this_session
+pub fn available_to_this_session() -> bool {
+    if launcher_registry_is_scoped() {
+        return false;
+    }
+    !std::env::var_os("QOS_SHOTS_NO_HOST_APPS").is_some_and(|v| !v.is_empty())
+}
+
+/// [`launcher::registry::store_is_scoped_to_this_session`], named here
+/// so the rule above reads as one sentence and the dependency on the
+/// packaging crate is a single call.
+fn launcher_registry_is_scoped() -> bool {
+    ::launcher::registry::store_is_scoped_to_this_session()
+}
+
 /// Every launchable host application, memoised by the scanner.
 pub fn host_apps() -> Vec<HostApp> {
     desktop_entry::cache::cached_scan()
@@ -215,6 +264,94 @@ pub fn search_path() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Set the three variables that decide the answer, run `f`, and put
+    /// back whatever was there. They are process-wide, so every test
+    /// that uses this is on the `process_env` serial group.
+    fn with_env<T>(
+        data_dir: Option<&str>,
+        system_dir: Option<&str>,
+        no_host_apps: Option<&str>,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        let keys = [
+            "QOS_APPS_DATA_DIR",
+            "QOS_APPS_SYSTEM_DIR",
+            "QOS_SHOTS_NO_HOST_APPS",
+        ];
+        let saved: Vec<Option<std::ffi::OsString>> =
+            keys.iter().map(|k| std::env::var_os(k)).collect();
+        let set = |key: &str, value: Option<&std::ffi::OsStr>| {
+            // SAFETY: serialised on `process_env`, so no other thread in
+            // this binary is reading the environment meanwhile.
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        };
+        for (key, value) in keys.iter().zip([data_dir, system_dir, no_host_apps]) {
+            set(key, value.map(std::ffi::OsStr::new));
+        }
+        let out = f();
+        for (key, value) in keys.iter().zip(saved.iter()) {
+            set(key, value.as_deref());
+        }
+        out
+    }
+
+    /// A workstation running qOS nested keeps the affordance: nothing
+    /// has said which applications this session has, so the machine's
+    /// are within reach.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn an_unscoped_session_offers_the_machines_applications() {
+        assert!(with_env(None, None, None, available_to_this_session));
+    }
+
+    /// A session handed a store of its own has already been told what
+    /// it has, and the machine around it is not part of the answer.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_session_scoped_to_its_own_store_does_not() {
+        assert!(
+            !with_env(
+                Some("/tmp/qos-apps-fixture"),
+                None,
+                None,
+                available_to_this_session
+            ),
+            "a session told `the store is exactly here` must not go on to \
+             enumerate the surrounding machine's applications"
+        );
+    }
+
+    /// `QOS_APPS_SYSTEM_DIR` beside it means "read both stores", which
+    /// is a machine-wide reading and not a scoped session — so the
+    /// affordance stays.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn naming_the_system_store_too_is_not_a_scoped_session() {
+        assert!(with_env(
+            Some("/tmp/qos-apps-fixture"),
+            Some("/tmp/qos-apps-system"),
+            None,
+            available_to_this_session
+        ));
+    }
+
+    /// The screenshot harness has no store of its own to be scoped by,
+    /// and still must not photograph the operator's applications.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_shots_switch_stands_the_scan_down_on_its_own() {
+        assert!(!with_env(None, None, Some("1"), available_to_this_session));
+        assert!(
+            with_env(None, None, Some(""), available_to_this_session),
+            "an empty value is not a switch somebody set"
+        );
+    }
 
     fn app(desktop_id: &str, name: &str, identities: &[&str]) -> HostApp {
         HostApp {
