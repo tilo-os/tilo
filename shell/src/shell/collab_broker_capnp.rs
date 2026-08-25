@@ -2732,6 +2732,270 @@ mod tests {
         drop(handle);
     }
 
+    /// An `Arrived` sent on the JSON socket has to reach an application on the
+    /// Cap'n Proto one.
+    ///
+    /// This is how an application that started late gives its state to
+    /// somebody who was already connected. Nobody volunteers a whole document:
+    /// peers answer an `Arrived` with theirs, and the arriving side sends
+    /// nothing. So a participant that connected *before* the application can
+    /// only ask, and it asks on the transport it has — while a sandboxed
+    /// application is on the other one. If the ask does not cross the dialect
+    /// boundary, that application is invisible to it for as long as both are
+    /// running, which is what a participant waiting on an app it had just
+    /// asked to be opened would see: an open that produced a window and never
+    /// produced any state.
+    ///
+    /// The two ends are deliberately addressed differently, the way the real
+    /// ones are: the asking participant announces no application, because it
+    /// is not one — it is in the room rather than in an app — and the app
+    /// dials a channel naming itself.
+    #[test]
+    fn an_arrived_on_the_json_socket_reaches_an_app_on_capnp() {
+        let (json_path, capnp_path) = unique_paths("arrived-crosses");
+        let handle =
+            spawn_full(json_path.clone(), Some(capnp_path.clone()), None).expect("spawn broker");
+
+        let cluster = uuid::Uuid::new_v4();
+        let channel_id = format!("{cluster}#app:dev.qos.photos");
+        // Stands for the document the application holds — the photograph it
+        // was opened onto. Recognisable bytes, so "the state came back" cannot
+        // be satisfied by any other frame on the socket.
+        const APP_STATE: &[u8] = b"the-photograph-this-app-has-open";
+
+        let (presence_tx, presence_rx) =
+            std::sync::mpsc::channel::<(String, Vec<u8>, runtime_collab::PresencePayload)>();
+        let capnp_path_sub = capnp_path.clone();
+        let channel_id_sub = channel_id.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&rt, async move {
+                let (client, _driver) = dial_capnp_for_test(capnp_path_sub)
+                    .await
+                    .expect("dial capnp (the application)");
+                let sdk = runtime_collab::CollabClient::from_raw(client);
+                let channel = sdk
+                    .join_channel(&channel_id_sub, b"identity-app")
+                    .await
+                    .expect("join channel");
+                let ph = channel.presence().await.expect("presence");
+                let ps = ph.subscribe_all().await.expect("subscribe_all");
+                while let Ok(evt) = ps.read().await {
+                    let arrived = matches!(evt.payload, runtime_collab::PresencePayload::Arrived);
+                    if presence_tx
+                        .send((evt.user_id, evt.key_bytes, evt.payload))
+                        .is_err()
+                    {
+                        break;
+                    }
+                    // What `ui::App` does with one: somebody has just joined
+                    // holding nothing, so hand over the whole document. This
+                    // is the half that has to come back out to the asker.
+                    if arrived {
+                        channel
+                            .send_unsigned_snapshot(APP_STATE)
+                            .await
+                            .expect("answer the arrival with the whole document");
+                    }
+                }
+            });
+        });
+
+        // Presence is live and never replayed, so the application has to be
+        // listening before the ask goes out. The real one re-asks on a timer
+        // for exactly this reason; the test does not need to.
+        std::thread::sleep(Duration::from_millis(400));
+
+        let mut asking = wait_for_json_broker(&json_path);
+        write_json_frame(
+            &mut asking,
+            &CollabRequest::Hello {
+                app_id: String::new(),
+                cluster_id: cluster,
+                record: None,
+                handle: Some("Claude".into()),
+            },
+        );
+        write_json_frame(
+            &mut asking,
+            &CollabRequest::Presence {
+                key: PresenceKey::Workspace {
+                    id: "word-processor".into(),
+                },
+                payload: ui::collaboration::PresencePayload::Arrived,
+            },
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut arrived = None;
+        while Instant::now() < deadline {
+            match presence_rx.recv_timeout(Duration::from_millis(200)) {
+                Ok((user, key_bytes, runtime_collab::PresencePayload::Arrived)) => {
+                    arrived = Some((user, key_bytes));
+                    break;
+                }
+                Ok(_) => continue,
+                Err(_) => continue,
+            }
+        }
+        let (_who, key_bytes) = arrived.expect(
+            "a participant asking the room for its state must be heard by an \
+             application on the other transport — otherwise an app that \
+             started after it can never hand over what it holds",
+        );
+
+        // And it has to arrive as the key it was sent under. The toolkit
+        // decodes these bytes and substitutes a *tab* key when they will not
+        // decode, which quietly changes what the arrival means: an arrival on
+        // a tab key moves a dot between pages, and only an arrival on any
+        // other key is the one an application answers with its whole document
+        // (`ui::presence`). So a key that does not survive this crossing is
+        // not a cosmetic loss — it is the difference between the participant
+        // being sent the document and being ignored.
+        let key: PresenceKey = postcard::from_bytes(&key_bytes)
+            .expect("the key an application receives must decode as the one that was sent");
+        assert_eq!(
+            key,
+            PresenceKey::Workspace {
+                id: "word-processor".into()
+            },
+            "the asking participant's key has to cross intact; a tab key here \
+             is read as a page switch and answered with nothing",
+        );
+
+        // And the answer has to come back. Hearing the ask is only half of
+        // it: what the participant is waiting for is the document, and an
+        // answer that stops at the dialect boundary leaves it waiting exactly
+        // as long as an ask that never arrived.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut state_back = None;
+        while Instant::now() < deadline {
+            match read_json_event(&mut asking, Duration::from_millis(200)) {
+                Some(ui::collaboration::CollabEvent::CRDTUpdate { data }) => {
+                    state_back = Some(data);
+                    break;
+                }
+                Some(_) | None => continue,
+            }
+        }
+        assert_eq!(
+            state_back.as_deref(),
+            Some(APP_STATE),
+            "the application's whole document has to reach the participant \
+             that asked for it, as a document and not as a delta — a delta \
+             names history a replica holding nothing has never seen, and is \
+             dropped on arrival",
+        );
+
+        drop(asking);
+        drop(handle);
+    }
+
+    /// The same handshake, run into the race it actually meets: the
+    /// participant asks first, and the application is not listening yet.
+    ///
+    /// An application is joined to its channel before its presence stream is
+    /// open — the subscription is opened afterwards, from another thread — and
+    /// presence is live and never replayed. So the first ask, and any ask
+    /// landing in that window, reaches nobody and never will. What makes that
+    /// survivable is that the asking side repeats itself; what this pins is
+    /// that repeating actually works, because if the window were permanent
+    /// (an ask consumed, a peer marked as already told) an application that
+    /// started late would be silent for as long as it ran.
+    #[test]
+    fn an_ask_that_arrives_before_the_app_is_listening_is_answered_on_the_next_one() {
+        let (json_path, capnp_path) = unique_paths("arrived-races-the-app");
+        let handle =
+            spawn_full(json_path.clone(), Some(capnp_path.clone()), None).expect("spawn broker");
+
+        let cluster = uuid::Uuid::new_v4();
+        let channel_id = format!("{cluster}#app:dev.qos.photos");
+        const APP_STATE: &[u8] = b"the-photograph-this-app-has-open";
+
+        let mut asking = wait_for_json_broker(&json_path);
+        write_json_frame(
+            &mut asking,
+            &CollabRequest::Hello {
+                app_id: String::new(),
+                cluster_id: cluster,
+                record: None,
+                handle: Some("Claude".into()),
+            },
+        );
+        let ask = CollabRequest::Presence {
+            key: PresenceKey::Workspace {
+                id: "word-processor".into(),
+            },
+            payload: ui::collaboration::PresencePayload::Arrived,
+        };
+        // Into the window: nothing is listening on the other transport yet.
+        write_json_frame(&mut asking, &ask);
+
+        let capnp_path_sub = capnp_path.clone();
+        let channel_id_sub = channel_id.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&rt, async move {
+                let (client, _driver) = dial_capnp_for_test(capnp_path_sub)
+                    .await
+                    .expect("dial capnp (the application)");
+                let sdk = runtime_collab::CollabClient::from_raw(client);
+                let channel = sdk
+                    .join_channel(&channel_id_sub, b"identity-app")
+                    .await
+                    .expect("join channel");
+                let ph = channel.presence().await.expect("presence");
+                let ps = ph.subscribe_all().await.expect("subscribe_all");
+                while let Ok(evt) = ps.read().await {
+                    if matches!(evt.payload, runtime_collab::PresencePayload::Arrived) {
+                        channel
+                            .send_unsigned_snapshot(APP_STATE)
+                            .await
+                            .expect("answer the arrival with the whole document");
+                    }
+                }
+            });
+        });
+
+        // The participant does not give up after one. This is the re-ask the
+        // real one makes on a timer while it waits for an app it has asked
+        // for, and it is the only thing that closes the window above.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut state_back = None;
+        while Instant::now() < deadline && state_back.is_none() {
+            write_json_frame(&mut asking, &ask);
+            let until = Instant::now() + Duration::from_millis(400);
+            while Instant::now() < until {
+                match read_json_event(&mut asking, Duration::from_millis(100)) {
+                    Some(ui::collaboration::CollabEvent::CRDTUpdate { data }) => {
+                        state_back = Some(data);
+                        break;
+                    }
+                    Some(_) | None => continue,
+                }
+            }
+        }
+        assert_eq!(
+            state_back.as_deref(),
+            Some(APP_STATE),
+            "an application that came up after the participant was already \
+             connected has to answer one of its asks; if the first one being \
+             early were the end of it, the app would hold its document for as \
+             long as both of them ran",
+        );
+
+        drop(asking);
+        drop(handle);
+    }
+
     /// Capnp `publishCursor(x, y)` fans out to legacy peers as
     /// `RemoteCursorMoved`; the pointer_default key bytes route on
     /// the capnp presence-all stream.
