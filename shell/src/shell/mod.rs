@@ -53,6 +53,7 @@ pub mod mpris;
 pub mod network;
 pub mod notes_app;
 pub mod notification;
+pub mod open_identity;
 pub mod overlay_host;
 pub mod osd;
 pub mod peer_presence;
