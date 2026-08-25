@@ -24,7 +24,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use vello::peniko::Color;
-use vello::util::{RenderContext, RenderSurface};
+// `ui::gpu`'s context, not `vello::util`'s: the difference is that the
+// device is asked for with a memory hint sized for a shared integrated
+// GPU. vello's own builds it with `..Default::default()`, which is
+// `MemoryHints::Performance` -- 128 MB allocator blocks growing to
+// 256 MB, in the one process that is always running and draws the whole
+// screen. See the header of `ui/src/gpu.rs`.
+use ui::gpu::RenderContext;
+use vello::util::RenderSurface;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;

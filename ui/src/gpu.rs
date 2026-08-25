@@ -175,7 +175,27 @@ impl RenderContext {
                 // the default is `Performance`, which reserves in 128MB
                 // chunks and grows to 512MB, and a dozen clients doing
                 // that on a shared integrated GPU is the machine.
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                //
+                // `MemoryUsage` is the right shape and still not small
+                // enough, because the block size *doubles* with every
+                // block a process opens: `min << active_general_blocks`,
+                // capped at the maximum. One idle application held
+                //
+                //     4 + 8 + 16 + 32 + 64 MB  =  124 MB of blocks
+                //
+                // to suballocate about 50 MB of buffers out of. The
+                // padding, not the buffers, was the larger half.
+                //
+                // Fixed 4 MB blocks stop the doubling. Anything larger
+                // than a block gets a dedicated allocation of its own
+                // exact size instead (`gpu_allocator`'s
+                // `requires_personal_block`), so the big buffers cost
+                // what they are and the small ones share a block, and
+                // neither is rounded up to a power of two nobody asked
+                // for. 4 MB is the floor wgpu clamps to.
+                memory_hints: wgpu::MemoryHints::Manual {
+                    suballocated_device_memory_block_size: (4 << 20)..(4 << 20),
+                },
                 ..Default::default()
             })
             .await
