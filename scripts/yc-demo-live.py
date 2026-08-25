@@ -681,6 +681,14 @@ class Live:
         #: reached it, so a run where this is False and the agent
         #: did something is a run where something else provoked it.
         self.instruction_sent = False
+        #: When it went out, and every thing the agent did afterwards
+        #: with the second it happened on. Kept because "the agent's half
+        #: takes about half a minute" is not a number anybody can cut a
+        #: film against: the four stretches inside it have different
+        #: owners and only one of them is a network.
+        self.instruction_at = 0.0
+        self.timeline: list[tuple[float, str]] = []
+        self.clock: "CrossingClock | None" = None
         self.agent_session_in = False
         self.wp_seen = False
         self.agent_proc: subprocess.Popen | None = None
@@ -1564,6 +1572,9 @@ class Live:
                        "room's half of the beat and nothing about the "
                        "compose surface that normally writes one")
                 self.instruction_sent = said
+                if said:
+                    self.instruction_at = time.time()
+                    self.start_the_clock()
                 yc.claim("a remark about the photograph he is holding "
                          "reached the room, from his machine", said, True)
                 return said
@@ -1585,9 +1596,37 @@ class Live:
             self.say("staying on xaver — he watches it happen, and the "
                      "film does not leave him again")
         self.instruction_sent = said
+        if said:
+            self.instruction_at = time.time()
+            self.start_the_clock()
         yc.claim("the instruction came from the person holding the thing, "
                  "on another machine", said, True)
         return said
+
+    def start_the_clock(self) -> None:
+        """Watch every machine's copy of the page for the crop.
+
+        Started with the instruction rather than with the agent's first
+        change: the thing being measured is how long a person waits, and
+        a person starts waiting when they press Send.
+        """
+        if not self.args.time_the_crossing or self.clock is not None:
+            return
+        self.clock = CrossingClock(
+            {"quinten": self.q, "xaver": self.x, "Claude": self.a},
+            str(self.room))
+        self.clock.start()
+
+    #: Lines in the agent's log worth a row on the timing sheet, each
+    #: naming the moment one owner handed off to the next. Substrings
+    #: rather than patterns: these are whole phrases the agent writes,
+    #: and a phrase either appeared or it did not.
+    WATCHED = (
+        ("asked this session to open an application",
+         "it asks for the photo editor"),
+        ("it opened, and its state is here",
+         "the photo editor is open and answering"),
+    )
 
     #: The agent, having changed the document: `applied splice text
     #: (+76 -29)`. On a word boundary, because the same log carries
@@ -1611,6 +1650,39 @@ class Live:
     POSTED = re.compile(r"put the agent's state in the room.*?state: (\w+)")
 
     # -- filming a wait without filming all of it ---------------------
+
+    def note_beat(self, what: str) -> None:
+        """Charge this second to `what`, once.
+
+        Resolution is the poll interval, which is half a second: nothing
+        here is read the instant it happens, it is read the next time the
+        log is looked at. That is fine for a budget — the stretches being
+        weighed are seconds each — and it is not fine for anything
+        finer, so nothing finer is claimed off it.
+        """
+        if any(w == what for _t, w in self.timeline):
+            return
+        self.timeline.append((time.time(), what))
+
+    def timing_sheet(self) -> None:
+        """Where the agent's half of the film went, stretch by stretch.
+
+        Separated rather than totalled. The last stretch is a document
+        crossing between machines and the others are not, so a total
+        hides the one number that decides whether the film can end where
+        the script ends it.
+        """
+        if not self.instruction_at:
+            return
+        print()
+        print("  the agent's half, from the instruction reaching the room")
+        last = self.instruction_at
+        for at, what in self.timeline:
+            print(f"    {at - self.instruction_at:7.1f}s  "
+                  f"(+{at - last:5.1f}s)  {what}", flush=True)
+            last = at
+        if self.clock is not None:
+            self.clock.report(self.instruction_at)
 
     def something_is_happening(self) -> None:
         """The film has something to show again: camera up, clock reset.
@@ -1721,8 +1793,18 @@ class Live:
     def check_the_agent(self) -> None:
         """Whether it has done anything, and whether it has finished."""
         fresh = self.agent_tail.read() if self.agent_tail else ""
+        # The stretches inside the agent's half, off its own log. Each is
+        # a different owner -- the room's delivery, the model, the
+        # session's launcher, the photo editor -- and a film that has to
+        # lose seconds needs to know which one to ask.
+        for needle, what in self.WATCHED:
+            if needle in fresh:
+                self.note_beat(what)
+        for hit in self.APPLIED.finditer(fresh):
+            self.note_beat(f"applied {hit.group(0).strip()[8:80]}")
         if not self.spoken_to_at and self.SPOKEN_TO.search(fresh):
             self.spoken_to_at = time.time()
+            self.note_beat("the agent has the instruction")
             self.say("Claude has been spoken to in the room and is deciding")
             # And the wait starts here, not at process start: everything
             # before this is somebody's hand on a mouse.
@@ -2257,6 +2339,99 @@ class Live:
         return self.finished or "you stopped it"
 
 
+class CrossingClock:
+    """When the crop first appears in each machine's own copy of the page.
+
+    The film ends on the crop being on xaver's screen, and that is a
+    *second* crossing: the agent changes the document through its own
+    session, and the change has to reach the two others the way any
+    document change does. The first crossing — a few words quinten
+    typed — has been measured at tens of seconds, so whether the film
+    can end at all is a question about this number and nothing else.
+
+    So it is measured, per machine, rather than inferred from one
+    readback. Each thread holds one late-join attachment open on one
+    session's broker and watches for the first frame carrying a picture
+    reference. What that timestamps is the moment **that session's own
+    app** was holding the picture, which is what a person looking at
+    that screen would be looking at.
+
+    Costs the take one attachment per session, announcing no record, so
+    nothing is added to anybody's roster. It is off unless asked for:
+    a take that is being filmed rather than measured should not carry
+    three extra readers.
+    """
+
+    #: How often each watcher asks. Every ask is local — the frames are
+    #: already in the reader's buffer — so this is the measurement's
+    #: resolution and costs nothing but a wakeup.
+    TICK_S = 0.25
+
+    def __init__(self, sessions: dict, room: str) -> None:
+        self.room = room
+        self.sessions = {n: s for n, s in sessions.items() if s is not None}
+        self.seen: dict[str, float] = {}
+        self.gaps: list[str] = []
+        self.stop = threading.Event()
+        self.threads: list[threading.Thread] = []
+
+    def start(self) -> None:
+        for name, session in self.sessions.items():
+            t = threading.Thread(target=self._watch, args=(name, session),
+                                 name=f"crossing-{name}", daemon=True)
+            t.start()
+            self.threads.append(t)
+
+    def _watch(self, name: str, session) -> None:
+        reader = None
+        try:
+            reader = yc.DocumentReader(session.collab_json_sock,
+                                       self.room, record=None,
+                                       handle="crossing-clock")
+        except OSError as e:
+            self.gaps.append(f"{name}'s session has no broker to watch "
+                             f"({e}), so when the crop reached that machine "
+                             f"was not measured")
+            return
+        try:
+            while not self.stop.is_set():
+                for blob in reader.documents() + reader.deltas():
+                    try:
+                        if yc.picture_references(blob):
+                            self.seen.setdefault(name, time.time())
+                            return
+                    except yc.CannotDecode as e:
+                        self.gaps.append(
+                            f"{name}'s document could not be decoded ({e}), "
+                            f"so when the crop reached that machine was not "
+                            f"measured")
+                        return
+                self.stop.wait(self.TICK_S)
+        finally:
+            reader.close()
+
+    def close(self) -> None:
+        self.stop.set()
+        for t in self.threads:
+            t.join(timeout=2.0)
+
+    def report(self, sent_at: float) -> None:
+        """The four stretches, named separately, against `sent_at`."""
+        print()
+        print("  when the crop reached each machine's own copy of the page")
+        print("  (measured off that session's app, not off a screenshot)")
+        for name in self.sessions:
+            at = self.seen.get(name)
+            if at is None:
+                yc.gap(f"the crop never appeared in {name}'s copy of the "
+                       f"document while this was watching, so the take "
+                       f"establishes nothing about that machine")
+            else:
+                print(f"    {at - sent_at:7.1f}s  {name}", flush=True)
+        for g in self.gaps:
+            yc.gap(g)
+
+
 # --------------------------------------------------------------------
 # the half a person does, done without one
 # --------------------------------------------------------------------
@@ -2576,6 +2751,13 @@ def main() -> int:
                          "admitted, the agent is started -- so what you take "
                          "over is the gesture the beat is about and nothing "
                          "else")
+    ap.add_argument("--time-the-crossing", action="store_true",
+                    help="watch every machine's own copy of the document and "
+                         "report when the crop reached each. Costs the take "
+                         "one late-join attachment per session, announcing "
+                         "no record, so nothing appears on anybody's roster "
+                         "-- but it is three readers a filmed take does not "
+                         "need")
     ap.add_argument("--instruction-via", choices=("gesture", "room"),
                     default="gesture",
                     help="how the instruction gets into the room. `gesture` "
@@ -3013,6 +3195,7 @@ def main() -> int:
     session_ends: list[tuple[str, str]] = []
     rc = 0
     hands = None
+    live = None
     real_stdout = None
     stop = threading.Event()
 
@@ -3369,6 +3552,13 @@ def main() -> int:
         # compositor crash.
         session_ends = [(sn.name, session_exit.how_it_ended(sn.proc))
                         for sn in sessions]
+        # Before the sessions are stopped: the watchers are attached to
+        # their brokers, and a reader whose socket has gone answers
+        # nothing.
+        if live is not None:
+            if live.clock is not None:
+                live.clock.close()
+            live.timing_sheet()
         # Before teardown either way: the capture thread talks to the
         # sessions, and `--keep` is about the sessions, not the camera.
         if recorder is not None:
