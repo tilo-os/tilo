@@ -1867,8 +1867,15 @@ class Live:
         the middle puts the two out of step for the rest of the film.
 
         Pair with `camera_back_up` when this returns True.
+
+        A run with no camera has nothing to take down, which is not the
+        same as having a camera that will not come down: without the
+        first test, `--no-record` reached the handover and died there on
+        `NoneType has no attribute max_hold` — at the one beat somebody
+        verifying the rig without filming is most likely to be aiming at.
         """
-        if self.recorder.max_hold <= 0 or self.camera_down is not None:
+        if self.recorder is None or self.recorder.max_hold <= 0 \
+                or self.camera_down is not None:
             return False
         stack = contextlib.ExitStack()
         stack.enter_context(self.recorder.hold_off())
