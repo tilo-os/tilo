@@ -414,24 +414,49 @@ impl ApplicationHandler for Inner {
             return;
         }
         let (want_w, want_h) = initial_size();
-        // Undecorated when a size was asked for, because otherwise the
-        // host will not give it.
+        // Undecorated *and* fixed when a size was asked for, because
+        // otherwise the host will not give it. Both are needed, and they
+        // answer two different refusals.
         //
         // `with_inner_size` asks for the client area, so a title bar
         // should cost nothing — but a decorated window is clamped to the
         // work area, and the work area is the display minus the host's
         // own panels. Asking for 1920x1014 on a 1920x1080 screen came
-        // back as 1920x1011: three pixels short, and enough that every
-        // frame of a recording is resampled and letterboxed rather than
-        // going in one to one.
+        // back as 1920x1011: three pixels short.
+        //
+        // Undecorated alone then came back *larger*: 1920x1048, the whole
+        // work area. A window manager auto-maximizes a resizable window
+        // whose request already covers most of the work area — measured
+        // against this desktop's, the threshold is somewhere between 76%
+        // and 86% of its height, and 1014 of 1048 is 97%. So the request
+        // was granted by being overruled, and the difference is not three
+        // pixels but thirty-four.
+        //
+        // What thirty-four costs is every frame of the film. The camera's
+        // composer fits whatever it is handed into the height the video
+        // can show, so a render at the size asked for goes in at a scale
+        // of exactly one and anything else is resampled: 1920x1048 comes
+        // out as 1856x1014, which at 4x is visibly soft stems on a panel
+        // heading, in a film that is almost entirely text.
+        //
+        // `with_resizable(false)` publishes equal minimum and maximum
+        // sizes, which is how a client says the size is not the window
+        // manager's to choose. The auto-maximize does not apply to a
+        // window that cannot be resized, and the request is granted
+        // exactly. It also states the constraint this backend has always
+        // had and never declared: reconfiguring the surface while a frame
+        // is in flight panics the present thread, so a resize from
+        // outside is not something to survive, it is something to refuse.
         //
         // Only when the size was requested. A compositor opened by hand
-        // for development wants its title bar and its close button; a
-        // session opened to be filmed at an exact size wants the size.
+        // for development wants its title bar, its close button and a
+        // corner to drag; a session opened to be filmed at an exact size
+        // wants the size.
         let sized = std::env::var(SIZE_ENV).is_ok();
         let attrs = WindowAttributes::default()
             .with_title("nirios")
             .with_decorations(!sized)
+            .with_resizable(!sized)
             .with_inner_size(winit::dpi::PhysicalSize::new(want_w, want_h));
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
