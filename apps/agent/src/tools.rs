@@ -383,9 +383,19 @@ fn applications(catalogue: &Catalogue, revealed: &mut Revealed) -> String {
         match opener {
             Some(o) => {
                 revealed.reveal(o.id());
-                s.push_str(&format!(
+                // Two different sentences, because being here and having
+                // something to work on are two different facts. An
+                // application present but exporting nothing is not absent —
+                // it is empty, and saying "not open" of it would be wrong in
+                // the one direction that costs a request its answer.
+                s.push_str(if open {
                     ". Nothing is open in it, so none of what it can do is here to be \
-                     named yet — opening it is what puts its operations on the list: `{}`",
+                     named yet"
+                } else {
+                    ". None of what it can do is here to be named yet"
+                });
+                s.push_str(&format!(
+                    " — opening it is what puts its operations on the list: `{}`",
                     o.id()
                 ));
                 if o.wants_content() {
