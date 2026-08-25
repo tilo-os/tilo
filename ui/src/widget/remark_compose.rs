@@ -454,6 +454,29 @@ impl RemarkCompose {
             // reference with no point to it.
             return;
         }
+        // The surface's own account of what it just sent, written the instant
+        // the sentence is finished and before the remark leaves for the host.
+        // The address travels as a field of its own — never folded into the
+        // prose — which is the property that lets a reader (or a harness) tell
+        // a send from a panel that merely closed. The host logs the same event
+        // again when it puts it on the wire; the two claims are deliberately
+        // independent, one from the app and one from the toolkit, and only the
+        // second means it left. `to` is a compact tag, not the Debug form,
+        // because the destination carries spaces that a keyed field must not.
+        let about = reference.resource_id().as_str().to_string();
+        let to = match &destination {
+            Destination::Channel { id, .. } => format!("channel:{id}"),
+            Destination::Participant { id, is_agent, .. } => {
+                format!("{}:{id}", if *is_agent { "agent" } else { "participant" })
+            }
+        };
+        tracing::info!(
+            target: "ui::remark",
+            to = %to,
+            about = %about,
+            text = %text,
+            "remark sent"
+        );
         self.sent = Some(Remark::new(text, reference, destination));
         self.open = false;
         self.reference = None;

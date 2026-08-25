@@ -1732,8 +1732,23 @@ class Session:
         self.input_ops += 1
         ok(call(self.sock, {"op": "key_up", "key": name}))
 
-    def type_prose(self, text: str, pace: bool | None = None) -> None:
+    def type_prose(self, text: str, pace: bool | None = None,
+                   chrome: bool = False) -> None:
         """Type `text` into a *client* so that it arrives as written.
+
+        `chrome=True` types into a compositor-drawn surface — the palette,
+        the invite card, the "say something" compose box — rather than an
+        app. Chrome does not resolve keycodes through xkb; it reads the
+        event's *logical key* (`test_control.rs`). That is why letters were
+        taken out of `SHIFTED_KEYS`: a Shift-held `c` arrives at chrome as a
+        lowercase `c`, not a capital. The punctuation left in the table has
+        exactly the same failure there — a Shift-held `;` is read as `;`,
+        not `:`, so `Claude:` reached the compose box as `Claude;` and the
+        agent, matching the literal prefix `claude:`, saw no instruction at
+        all. So under `chrome` the Shift dance is skipped for punctuation
+        too, and every character goes through the direct `type` path, which
+        is the one chrome reads correctly (the palette's `Launch Plan: ok!`
+        is typed exactly this way).
 
         `type` alone does not. It emits one keycode per character, and a
         client resolves a keycode through the seat's xkb state — which
@@ -1784,7 +1799,7 @@ class Session:
                 if ch == "\n":
                     flush()
                     self.key("Enter")
-                elif ch in SHIFTED_KEYS:
+                elif ch in SHIFTED_KEYS and not chrome:
                     flush()
                     self.key_down("Shift")
                     self.key(SHIFTED_KEYS[ch])
@@ -1797,7 +1812,7 @@ class Session:
         for ch in text:
             if ch == "\n":
                 self.key("Enter")
-            elif ch in SHIFTED_KEYS:
+            elif ch in SHIFTED_KEYS and not chrome:
                 self.key_down("Shift")
                 self.key(SHIFTED_KEYS[ch])
                 self.key_up("Shift")
@@ -3612,7 +3627,14 @@ class LogTail:
     #: the same event, which is what makes it worth reading separately: the
     #: app saying it composed a message and the toolkit saying it sent one are
     #: two claims, and only the second one means it left.
-    ON_THE_WIRE = re.compile(r"sending a remark into the room\s+message=(\S+)")
+    #:
+    #: The id is captured off its `m_` prefix, not a `message=` key: the host
+    #: logs it through a tracing field literally named `message`, which the fmt
+    #: subscriber renders as a bare value with no key at all — so the line reads
+    #: "...into the room m_ab12... about=..." and a pattern expecting `message=`
+    #: matches nothing. That mismatch stayed invisible for as long as the
+    #: app-side claim above aborted this beat before anything read this line.
+    ON_THE_WIRE = re.compile(r"sending a remark into the room\s+(m_\S+)")
     #: Any `ui` app, having laid out the resources it publishes: a map from
     #: **resource address** to the rect that address is being drawn at, in
     #: that window's own coordinates. Written by
@@ -4839,7 +4861,10 @@ def say_something_about(session: Session, log: "LogTail", tile: tuple,
     else:
         session.click_at(sx + pw * 0.5, sy + ph * 0.28)
     session.settle(0.25)
-    session.type_prose(text)
+    # The compose box is compositor chrome, not an app: it reads logical
+    # keys, so a Shift-held ';' would land as ';' and break the `claude:`
+    # the agent matches on. `chrome=True` types the punctuation straight.
+    session.type_prose(text, chrome=True)
     session.settle(0.4)
     if shots:
         session.snapshot(os.path.join(shots, f"{tag or 'remark'}-typed.png"))
