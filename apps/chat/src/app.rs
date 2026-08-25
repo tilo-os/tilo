@@ -3044,7 +3044,7 @@ mod identity_on_screen {
             name: String::new(),
             initials: String::new(),
             color_idx: 0,
-            status: Presence::Online,
+            status: model::Presence::Online,
             is_agent: false,
         });
         let convos = app.direct_conversations();
