@@ -37,6 +37,18 @@ notice-open-failed = Couldn't open { $app }
 ## role tag on the same rows.
 roster-kind-agent = agent
 
+## The one question first boot asks about the person rather than about
+## the key. Wording lifted verbatim from the identity form in
+## `ui::widget::identity_flow::create_identity`, which asked exactly this
+## and never shipped — so the two surfaces say the same thing rather than
+## inventing a second phrasing for one question.
+onboarding-name-label = Display name
+onboarding-name-placeholder = Your name…
+## Why it is being asked, in the terms the rest of the screen uses:
+## collaborators, and what they see. Not a warning, and not optional-ness
+## theatre — the field opens filled in.
+onboarding-name-hint = This is what collaborators see beside your changes. You can change it later.
+
 ## The workspace-invite card. The composer asks one question, and the
 ## field's own hint carries what the name is for — the card used to
 ## spell that out in a sentence underneath, which is one more line to

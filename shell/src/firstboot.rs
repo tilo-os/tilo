@@ -129,7 +129,11 @@ pub fn run_as(
     // subsequent enrolment / rotation goes through the identity-flow
     // ceremony in `ui::widget::identity_flow`.
     if let Some(identity_dir) = resolve_identity_dir(xdg_config_home, home) {
-        match ensure_primary_identity(&identity_dir) {
+        // This path never gets to ask — it runs before any screen exists,
+        // for a session that will not see the ceremony. The account name is
+        // the best true answer available to it, and it is a far better one
+        // than the empty string that used to go here.
+        match ensure_primary_identity(&identity_dir, &crate::onboarding::account_name()) {
             Ok(ProvisionOutcome::Existing) => {
                 tracing::info!(
                     "firstboot: identity already present at {}",
@@ -221,7 +225,19 @@ fn ensure_dirs(config_dir: &Path) -> std::io::Result<()> {
 ///
 /// Idempotent: an existing file is returned as
 /// [`ProvisionOutcome::Existing`] with no modification.
-pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, io::Error> {
+///
+/// `display_name` is what the person is called. It used to be `""` here,
+/// unconditionally, and nothing ever filled it in: every reader of the
+/// record — Room Activity, the word processor's history panel, the
+/// author directory — turned that empty string into
+/// [`ui::history_source::UNKNOWN_AUTHOR_NAME`], so a person's own changes
+/// were attributed to "Unknown participant" on their own machine. Callers
+/// pass what the ceremony asked for, or
+/// [`crate::onboarding::account_name`] on the paths that never get to ask.
+pub fn ensure_primary_identity(
+    identity_dir: &Path,
+    display_name: &str,
+) -> Result<ProvisionOutcome, io::Error> {
     fs::create_dir_all(identity_dir)?;
     #[cfg(unix)]
     {
@@ -243,7 +259,7 @@ pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, 
     let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
     let record = IdentityRecord::from_threshold_identity(
         &identity,
-        "",
+        display_name.trim(),
         [128, 128, 128],
         std::time::SystemTime::now(),
     )
@@ -427,7 +443,7 @@ mod tests {
         let tmp = TmpDir::new("outcome");
         let dir = tmp.path().join("qos").join("identity");
         // Fresh run creates.
-        match ensure_primary_identity(&dir).expect("provision ok") {
+        match ensure_primary_identity(&dir, "Ada Lovelace").expect("provision ok") {
             ProvisionOutcome::Created { pubkey_hex } => {
                 assert_eq!(pubkey_hex.len(), 64, "hex of 32 bytes is 64 chars");
             }
@@ -435,7 +451,7 @@ mod tests {
         }
         // Second run leaves it alone.
         assert_eq!(
-            ensure_primary_identity(&dir).expect("provision ok (2nd)"),
+            ensure_primary_identity(&dir, "Ada Lovelace").expect("provision ok (2nd)"),
             ProvisionOutcome::Existing
         );
     }
