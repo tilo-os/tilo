@@ -105,6 +105,13 @@ pub struct ShellOverlayHost {
     /// immediately before a catalogue is built, so a caller enumerates
     /// what the app has open *now* rather than at some earlier frame.
     app_surfaces: crate::shell::search::providers::AppSurfaces,
+    /// What the applications on the far side of a socket currently offer.
+    ///
+    /// The out-of-process half of the same surface, held here rather than in
+    /// the provider because the session has to hand it to a broker before it
+    /// can hold anything: publishing arrives on the broker's reader threads
+    /// and an invocation leaves the same way.
+    remote_app_actions: std::sync::Arc<crate::shell::app_action_wire::RemoteAppActions>,
     /// The result list backing the current palette entries. Indexed in
     /// lock-step with `palette.entries` so an Enter/click resolves the
     /// row by ordinal into this vec and calls the stored `on_open`.
@@ -1471,14 +1478,22 @@ impl ShellOverlayHost {
         let mut app_types = qos_actions::ActionRegistry::new();
         word_processor::actions::register(&mut app_types);
         file_explorer::actions::register(&mut app_types);
+        // And the same for the applications that are *not* in this process,
+        // which on a real desktop is all of them. They publish over the socket
+        // they already hold; this holds what they published. Empty until the
+        // session attaches it to a broker, which is the honest answer for a
+        // shell nothing has connected to.
+        let remote_app_actions = std::sync::Arc::new(crate::shell::app_action_wire::RemoteAppActions::new());
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::AppResourcesProvider::new(
+            crate::shell::search::providers::AppResourcesProvider::with_remote(
                 app_surfaces.clone(),
                 std::rc::Rc::new(app_types),
+                std::sync::Arc::clone(&remote_app_actions),
             ),
         ));
         Self {
             app_surfaces,
+            remote_app_actions,
             rect: Rect::ZERO,
             content,
             sidebar: None,
@@ -5814,6 +5829,14 @@ impl ShellOverlayHost {
         // place is the difference between "this app exports nothing" and
         // "here is a stale address that resolves to somebody else's tab".
         self.app_surfaces.publish(caller.as_str(), Vec::new(), None);
+    }
+
+    /// The connected applications' published surface, so the session can
+    /// point it at the broker their publishing arrives on.
+    pub fn remote_app_actions(
+        &self,
+    ) -> &std::sync::Arc<crate::shell::app_action_wire::RemoteAppActions> {
+        &self.remote_app_actions
     }
 
     pub fn action_catalog(

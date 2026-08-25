@@ -2194,6 +2194,12 @@ impl BrokerHandle {
         self.peers.dispatch_invocation(peer, invocation)
     }
 
+    /// A weak handle on the peer table, for a session-side holder that needs
+    /// to reach connections and must not keep the broker alive to do it.
+    pub(crate) fn peer_table_weak(&self) -> std::sync::Weak<PeerTable> {
+        Arc::downgrade(&self.peers)
+    }
+
     /// Tell the connection that asked that its application will not be opened.
     ///
     /// Addressed to the one peer, never fanned: a refusal is an answer to a

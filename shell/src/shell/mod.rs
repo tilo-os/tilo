@@ -21,6 +21,7 @@
 
 pub mod action_flight;
 pub mod actions;
+pub mod app_action_wire;
 pub mod browser_stub;
 pub mod catalogue;
 pub mod chrome_state;
