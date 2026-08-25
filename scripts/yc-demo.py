@@ -5313,6 +5313,29 @@ class DocumentReader:
             self.err = str(e)
 
     def close(self) -> None:
+        """Actually release the socket, rather than only promising to.
+
+        `socket.close()` on its own did not. The reader thread below holds
+        a `makefile("rb")`, and CPython's socket object defers the real
+        close until every file object it handed out is gone -- so all this
+        used to do was set a flag, while the thread stayed parked in
+        `read(4)` holding the descriptor open.
+
+        Nothing woke that thread either: the reader announces itself to
+        the room, so the broker treats it as a live member and keeps the
+        connection fed, and the 10s timeout never fires.
+
+        The attended run opens one of these every three seconds to ask
+        whether he has written anything. Measured: 42 connections live on
+        one broker at the end of a single take, the count rising by one
+        every 3.00s and never falling. `shutdown()` first is what ends the
+        thread's read, which is what lets the close be a close.
+        """
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            # Already gone, or never connected. Closing is still correct.
+            pass
         try:
             self.sock.close()
         except OSError:
