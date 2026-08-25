@@ -5129,6 +5129,18 @@ impl ShellOverlayHost {
         std::mem::take(&mut self.remark_outbox)
     }
 
+    /// Put a remark in the outbox that was not written in the panel.
+    ///
+    /// The one caller is the control socket, so a harness that cannot make
+    /// the gesture can still ask the question the gesture leads to. It joins
+    /// at the same point the panel does — a finished [`qos_reference::Remark`]
+    /// waiting for the next frame — so everything the room does with one is
+    /// the same code either way, and nothing about the surface is claimed by
+    /// a run that came through here.
+    pub fn push_remark(&mut self, remark: qos_reference::Remark) {
+        self.remark_outbox.push(remark);
+    }
+
     /// The display `x` falls on, as a rect to keep the panel inside.
     ///
     /// `self.rect` is the bounding box of every display, so on a two-monitor

@@ -1533,6 +1533,41 @@ class Live:
                        f"none of them is {yc.PHOTO_NAME}; if it published "
                        f"none at all it was granted nothing and is showing "
                        f"its own sandbox directory. See {self.x.log_path}")
+            if self.args.instruction_via == "room":
+                # The room's half alone, because the gesture that reaches
+                # it is unavailable. Everything above still ran — his file
+                # manager is on his screen, drawing that photograph, out of
+                # the room's workspace — so the address handed over is the
+                # one his app published for the row he would have
+                # right-clicked, rather than a path written here.
+                #
+                # What this run therefore does not establish: that the
+                # right-click opens a compose surface, that the surface
+                # carries the address, that a destination can be picked in
+                # it, or that pressing Send produces a remark. Those are
+                # the surface's claims and no run through here makes them.
+                if not from_the_room:
+                    yc.gap("no address for the photograph came out of his "
+                           "file manager, so there is nothing to hand the "
+                           "room and this beat did not happen")
+                    return False
+                address = from_the_room[0]
+                self.say(f"handing the room a remark about {address}, "
+                         f"without the gesture that writes one")
+                resp = self.x.remark(self.args.instruction, address)
+                said = "err" not in resp
+                if not said:
+                    yc.gap(f"the session refused the remark: "
+                           f"{json.dumps(resp)[:200]}")
+                yc.gap("the instruction went into the room through the "
+                       "control socket, so this take establishes the "
+                       "room's half of the beat and nothing about the "
+                       "compose surface that normally writes one")
+                self.instruction_sent = said
+                yc.claim("a remark about the photograph he is holding "
+                         "reached the room, from his machine", said, True)
+                return said
+
             said = yc.say_something_about(
                 self.x, log, tuple(tile["rect"]), yc.PHOTO_NAME,
                 # The room's workspace, not his home. That is the whole
@@ -2541,6 +2576,18 @@ def main() -> int:
                          "admitted, the agent is started -- so what you take "
                          "over is the gesture the beat is about and nothing "
                          "else")
+    ap.add_argument("--instruction-via", choices=("gesture", "room"),
+                    default="gesture",
+                    help="how the instruction gets into the room. `gesture` "
+                         "is the beat: he right-clicks the photograph and "
+                         "writes a sentence in the compose surface beside "
+                         "it. `room` skips the surface and hands the room "
+                         "the finished remark over the control socket -- "
+                         "for asking what the agent does with one while the "
+                         "surface that writes one is unavailable. A take "
+                         "recorded that way is not the film: it establishes "
+                         "nothing about the gesture, and says so in its own "
+                         "report")
     ap.add_argument("--no-agent", dest="agent", action="store_false",
                     help="no agent in the room at all")
     ap.add_argument("--no-agent-model", dest="agent_model",

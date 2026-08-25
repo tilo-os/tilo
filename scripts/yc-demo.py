@@ -1215,6 +1215,34 @@ class Session:
         return call(self.sock, {"op": "grant", "subject": subject,
                                 "scope": scope, "verb": verb})
 
+    def remark(self, text: str, address: str) -> dict:
+        """Put a remark in the room without the gesture that writes one.
+
+        The gesture is a right-click and a sentence typed beside the
+        object; it produces a finished remark, and the session's frame
+        loop carries that into the room. This asks the session for the
+        second half only, so a run can reach the room's side of the beat
+        while the surface that writes one is unavailable.
+
+        **It proves nothing about the compose surface.** The panel is not
+        opened, no destination list is filled, nothing is typed and
+        `submit` never runs. What it does exercise is everything a
+        finished remark meets: the roster is read, the mention is
+        resolved against it, the message is minted and encoded as chat's
+        own action, and it goes out over the broker into the room's
+        conversation.
+
+        `address` is `kind:id` — the same string the app publishes each
+        resource under, so the thing named here and the thing a person
+        would have right-clicked are one object rather than two that
+        agree.
+        """
+        kind, _, ident = address.partition(":")
+        if not ident:
+            raise ValueError(f"a resource address is kind:id, got {address!r}")
+        return call(self.sock, {"op": "remark", "text": text,
+                                "kind": kind, "id": ident})
+
     # -- synthetic input, continued (all counted) --------------------
 
     def click_at(self, x: float, y: float) -> None:
