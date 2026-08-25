@@ -2433,6 +2433,55 @@ impl CodeApp {
         self.palette.seed_query(query);
     }
 
+    /// Stage a multi-buffer tab strip, one buffer edited but not saved.
+    ///
+    /// The strip is the app's most-looked-at chrome and, until this existed,
+    /// the only frame that could be captured of it held a single clean tab —
+    /// which is why a hand-rolled bar went a long time without anyone being
+    /// able to see what it did. This opens one buffer per language the tree
+    /// offers, edits one of them through the real edit path so the unsaved
+    /// mark is earned rather than set, and leaves a *different* tab active,
+    /// so the frame has to show all three things the strip says at once.
+    ///
+    /// Must run *before* the first layout pass. The strip seeds each tab's
+    /// reveal settled the first time it lays it out, so a tab that is active
+    /// then and inactive after carries its close mark into the capture for
+    /// the length of a fade the still frame never advances.
+    pub fn shots_tabs(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+        let mut seen: Vec<crate::model::Language> = Vec::new();
+        let mut pick: Vec<TreeId> = Vec::new();
+        for id in self.session.project.visible_rows() {
+            let Some(node) = self.session.project.get(id) else {
+                continue;
+            };
+            let NodeKind::File { language, .. } = node.kind else {
+                continue;
+            };
+            if seen.contains(&language) {
+                continue;
+            }
+            seen.push(language);
+            pick.push(id);
+            if pick.len() == 4 {
+                break;
+            }
+        }
+        for id in pick.iter().copied() {
+            self.open_node(id);
+        }
+        // Bind the editor to the last-opened buffer before editing it.
+        self.sync(doc, root);
+        self.editor.duplicate_lines(doc, true);
+        // Hand focus back to the first tab, so the strip is saying
+        // "unsaved" about a tab the user is not currently looking at.
+        if let Some(first) = pick.first().copied() {
+            self.open_node(first);
+        }
+        // Dirty is recomputed against the bytes on disk during sync, so the
+        // mark only appears if the edit really changed the buffer.
+        self.sync(doc, root);
+    }
+
     /// Stage the "save changes before closing?" prompt for the active buffer.
     pub fn shots_close_prompt(&mut self) {
         if let Some(buf) = self.session.active_buffer() {
