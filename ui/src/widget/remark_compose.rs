@@ -442,16 +442,45 @@ impl RemarkCompose {
     /// mentions once at send. The host calls
     /// [`Remark::with_mentions`](qos_reference::Remark::with_mentions) with its
     /// own resolver before dispatching.
+    ///
+    /// Every way of giving up says which precondition was missing. This used to
+    /// be a `let ... else { return }` that wrote nothing anywhere, and the panel
+    /// went the same way whether the sentence left or was dropped: somebody
+    /// typed a line, pressed Enter, watched the box close and had no way to tell
+    /// which had happened. A failure nothing can observe is indistinguishable
+    /// from a success, and this one cost several attempts before anybody could
+    /// say which half was absent.
+    ///
+    /// The panel deliberately stays open on a refusal. The unsent sentence is
+    /// the person's, and throwing it away would compound the failure with the
+    /// loss of what they wrote.
     pub fn submit(&mut self) {
-        let (Some(reference), Some(destination)) =
-            (self.reference.clone(), self.destination().cloned())
-        else {
-            return;
+        let (reference, destination) = match (self.reference.clone(), self.destination().cloned()) {
+            (Some(reference), Some(destination)) => (reference, destination),
+            (reference, destination) => {
+                tracing::warn!(
+                    target: "ui::remark",
+                    has_reference = reference.is_some(),
+                    has_destination = destination.is_some(),
+                    destinations_offered = self.options.len(),
+                    "a remark could not be built and was not sent: a compose \
+                     surface with no address to be about, or nowhere to send to, \
+                     cannot produce a message",
+                );
+                return;
+            }
         };
         let text = self.input.value().trim().to_string();
         if text.is_empty() {
             // Nothing was said. Sending an empty remark would post a bare
-            // reference with no point to it.
+            // reference with no point to it. Said at debug rather than warn:
+            // pressing Enter in an empty field is an ordinary thing to do by
+            // accident, not a fault to report.
+            tracing::debug!(
+                target: "ui::remark",
+                about = %reference.resource_id().as_str(),
+                "a remark was sent with nothing written in it; nothing left",
+            );
             return;
         }
         // The surface's own account of what it just sent, written the instant

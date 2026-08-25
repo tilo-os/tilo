@@ -290,6 +290,16 @@ impl RemarkHost {
         if !self.compose.is_open() || !self.compose.text().trim().is_empty() {
             return false;
         }
+        // Said out loud, because a panel that goes on its own is the hardest
+        // thing here to account for afterwards. It has been read off a film
+        // frame by frame — present for three frames, gone before anybody could
+        // type — and a log line is what turns that into "closed at T, by a
+        // click away from it" instead of an afternoon with a video.
+        tracing::info!(
+            target: "ui::remark",
+            "the compose surface was dismissed by a press aimed away from it, \
+             with nothing written in it",
+        );
         self.compose.close();
         true
     }

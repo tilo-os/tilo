@@ -5123,6 +5123,15 @@ impl ShellOverlayHost {
         let dismissed = self.remark_was_open && !self.remark.is_open();
         self.remark_was_open = self.remark.is_open();
         if dismissed {
+            // The other half of "compose surface opened above the windows", so
+            // a session's log carries how long the panel was actually up. It
+            // has been measured off a film instead — three frames, gone before
+            // anybody could type into it — and the pair of lines is what makes
+            // that readable without the video.
+            tracing::info!(
+                target: "shell::remark",
+                "the compose surface closed",
+            );
             // The socket case. An application in its own process is told the
             // same thing as one hosted here, by the only route there is to it.
             if let Some(peer) = self.remark_peer.take() {
@@ -5231,6 +5240,16 @@ impl ShellOverlayHost {
         // there was no position inside it that was not cut off.
         let bounds = self.output_bounds_at(neighbour.x0);
         if !self.remark.open_reference_beside(reference, neighbour, bounds) {
+            // An application right-clicked, asked for a surface, and got
+            // nothing. Said out loud: the person is looking at a context menu
+            // with no compose box beside it, and the only way to tell that
+            // apart from a gesture that was never made is a line here.
+            tracing::warn!(
+                target: "shell::remark",
+                destinations = self.remark.has_destinations(),
+                "an application asked for a compose surface and none was \
+                 opened; there is nowhere for a remark to be sent",
+            );
             return false;
         }
         self.remark_neighbour = neighbour;
