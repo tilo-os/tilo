@@ -332,6 +332,13 @@ pub struct Session {
     /// Cleared when a summons is taken, so one turn's rows never appear
     /// under the next one's record.
     open_steps: Vec<AgentStep>,
+    /// Operations already carried out in this turn.
+    ///
+    /// A clause is left over only because the plan answering it could not
+    /// finish, and re-asking it against a room that has since moved can
+    /// come back with work that is already done. "Put it in the open
+    /// document" answered twice put the same picture on the page twice.
+    applied_ids: std::collections::HashSet<String>,
     /// How the current turn was decided, once something has decided it.
     ///
     /// Held separately from [`Self::last_route`], which survives across turns
@@ -784,6 +791,7 @@ impl Session {
             open_record: None,
             opened: BTreeSet::new(),
             open_steps: Vec::new(),
+            applied_ids: std::collections::HashSet::new(),
             open_reasoning: None,
             asked_at: Instant::now(),
             reask_every: REASK_EVERY,
@@ -2230,6 +2238,7 @@ impl Session {
                 // subject of the next request to something never touched.
                 self.last_action =
                     Some(LastAction::new(address.resource.clone(), now_secs()));
+                self.applied_ids.insert(id.to_string());
                 tracing::info!(%id, "performed an operation the room exports");
                 AgentStepOutcome::Applied
             }
@@ -2743,6 +2752,24 @@ impl Session {
                     // crop, place. Keeping the head and dropping the tail
                     // performed the open and called the request done.
                     let mut rest = decision.plan.steps;
+                    // What this clause asks for may already have happened:
+                    // the plan that stalled had performed some of it before
+                    // it stalled. Dropping those is the difference between
+                    // answering the clause and doing its work a second time.
+                    rest.retain(|s| match &s.instruction {
+                        Instruction::Perform { id, .. } => {
+                            let done = self.applied_ids.contains(id);
+                            if done {
+                                tracing::info!(
+                                    %id,
+                                    clause = %what,
+                                    "already carried out in this turn; not doing it again"
+                                );
+                            }
+                            !done
+                        }
+                        _ => true,
+                    });
                     let again = if rest.is_empty() {
                         crate::plan::Step::reconsider(&what, &offers)
                     } else {
@@ -3042,6 +3069,7 @@ impl Session {
     /// next request's record, which is the same lie as inventing them.
     fn begin_turn(&mut self) {
         self.open_steps.clear();
+        self.applied_ids.clear();
         self.open_reasoning = None;
     }
 
