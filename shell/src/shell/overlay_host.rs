@@ -4209,6 +4209,20 @@ impl ShellOverlayHost {
         if crate::shell::action_touch::pending_len() == 0 {
             return;
         }
+        // Which packaged application is showing which address, so a window
+        // that is not a widget can still say it is the one showing the thing
+        // being touched. Taken here, on the frame a mark arrives, because the
+        // survey copies every connected app's descriptors and nothing reads
+        // this on a frame with no mark on it.
+        let mut by_app: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for action in self.remote_app_actions.survey() {
+            let ids = by_app.entry(action.app).or_default();
+            if !ids.iter().any(|id| id == &action.descriptor.address.resource) {
+                ids.push(action.descriptor.address.resource);
+            }
+        }
+        crate::shell::action_touch::set_published_resources(by_app);
         let Some(chrome) = self.chrome.clone() else {
             return;
         };

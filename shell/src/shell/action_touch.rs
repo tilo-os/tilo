@@ -39,12 +39,60 @@
 //! the property that makes the mark evidence rather than decoration: it cannot
 //! be shown for work that did not happen.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use ui::permissions::UserId;
 use ui::presence::ActionTouch;
+
+/// Which resource addresses each connected application is currently
+/// publishing, by the app id it announced.
+///
+/// The out-of-process half of resolving an address to a place on screen, and
+/// a deliberately coarser answer than the in-process one.
+///
+/// An app compiled into the compositor answers *exactly*, because it is a
+/// widget: [`Widget::resource_rects`](ui::widget::Widget::resource_rects) hands
+/// back the photograph's own rect, letterbox bands excluded. A packaged app is
+/// a separate process, and the socket it holds carries what it can do
+/// (`publishActions`) and no way at all to say where it drew any of it. So the
+/// finest true statement available about a packaged app's resource is **the
+/// window that published it** — which is what this index gives, and what the
+/// mark is drawn on.
+///
+/// It is a real answer and not a stand-in: the window is where that object is
+/// being shown, and a viewer looking at a marked window is looking at the thing
+/// that changed. It is simply not the tighter answer, and it will not become
+/// one until an application can tell the session where inside its window an
+/// address is drawn — which needs a field on the wire and not a change here.
+///
+/// Refreshed from the published surface on the frames a mark needs it, rather
+/// than kept in step continuously: the survey copies every connected app's
+/// descriptors, and nothing is looking at this for the vast majority of frames.
+static PUBLISHED: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
+
+fn published() -> &'static Mutex<HashMap<String, Vec<String>>> {
+    PUBLISHED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Replace the whole index. Level-triggered, like the publish it is built
+/// from: an app that has closed a document stops answering for it rather than
+/// leaving an address pointing at a window that is no longer showing it.
+pub fn set_published_resources(by_app: HashMap<String, Vec<String>>) {
+    if let Ok(mut p) = published().lock() {
+        *p = by_app;
+    }
+}
+
+/// The addresses `app_id` is publishing, for a window that wants to say it is
+/// the one showing them.
+pub fn resources_of(app_id: &str) -> Vec<String> {
+    published()
+        .lock()
+        .map(|p| p.get(app_id).cloned().unwrap_or_default())
+        .unwrap_or_default()
+}
 
 /// How many un-drawn touches are kept.
 ///
@@ -211,6 +259,9 @@ pub fn reset() {
     }
     if let Ok(mut l) = live().lock() {
         l.clear();
+    }
+    if let Ok(mut p) = published().lock() {
+        p.clear();
     }
 }
 
