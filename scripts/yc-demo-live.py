@@ -1852,6 +1852,16 @@ def main() -> int:
     # So it is not a warning. Left to its default, narrating turns the
     # trim off; asked for explicitly, the run refuses rather than
     # quietly overriding what somebody typed.
+    #
+    # Refusing here is necessary and was never sufficient. Trimming is
+    # only one of the ways a picture can stop being the length of its
+    # take — a frame floor in `_timeline` doubled one while this check
+    # sat satisfied, because the take genuinely had been recorded at
+    # `--max-hold 0`. What a setting is at the start of a take is a
+    # weaker claim than what the file is at the end of one, so
+    # `Recorder._check_length` reads the finished film back and refuses
+    # it on the measurement. This check survives because it fails before
+    # the countdown instead of after the filming.
     asked_for_hold = args.max_hold is not None
     if args.max_hold is None:
         args.max_hold = DEFAULT_MAX_HOLD_S
@@ -1871,6 +1881,15 @@ def main() -> int:
         print("narrating, so --max-hold is 0 for this take: the picture "
               "stays on the wall\nclock, because trimming it would leave "
               "the voice behind.")
+    elif args.narrate is not None:
+        # Typing the right thing used to be the one way to be told
+        # nothing. The confirmation above only printed when the setting
+        # was *inferred*, so `--max-hold 0` — the value this rig wants,
+        # asked for explicitly — was accepted in silence, and the
+        # operator got no more acknowledgement of the setting in force
+        # than if he had misspelled the flag.
+        print("narrating at --max-hold 0: the picture stays on the wall "
+              "clock, which is\nwhat the voice needs.")
 
     # ---- preflight -------------------------------------------------
     #
@@ -2504,6 +2523,20 @@ def main() -> int:
               f"snapshot cost {mean_ms:.0f} ms mean / {worst_ms:.0f} ms worst")
         print("             every frame is a real render of that session, in "
               "capture order; none repeated, none interpolated")
+        # The number the last broken take never printed. `compose` now
+        # refuses a narrated film that is not the length of its take, so
+        # reaching this line is itself the proof — but the operator
+        # should be able to read the agreement rather than infer it from
+        # the absence of a complaint.
+        if recorder.trimmed > yc.WALL_CLOCK_TOL_S:
+            print(f"             {recorder.trimmed:.1f}s of still picture "
+                  f"trimmed from {recorder.wall_s:.1f}s of take")
+        else:
+            print(f"             {video['duration']:.1f}s of picture for "
+                  f"{recorder.wall_s:.1f}s of take"
+                  + (f", {video['audio']:.1f}s of voice"
+                     if video.get("audio") else "")
+                  + ": the film runs on the wall clock")
     return rc
 
 

@@ -1876,6 +1876,16 @@ SYNC_CAPTURE_YIELD = 0.25
 # trip. The old figure here was 150, for the days when the event loop
 # also did the encoding.
 SNAPSHOT_BUDGET_MS = 45.0
+# How far the finished film may sit from the take it is a film of, in
+# seconds, before `Recorder._check_length` refuses it.
+#
+# Small on purpose. The only honest sources of difference are the tail of
+# the last frame landing on the container's frame grid and the rounding
+# in the concat list, and both are milliseconds; a tolerance wide enough
+# to swallow a real drift is a check that reports success for the same
+# reason the old one did. Half a second is already generous against a
+# take of four minutes, and the failure it was written for was 252.
+WALL_CLOCK_TOL_S = 0.5
 
 
 def _pick_font(candidates: tuple[str, ...]) -> str:
@@ -1944,8 +1954,20 @@ class Recorder:
         self.cut_dwell_s = cut_dwell
         # The longest one unchanged frame is shown for. See `_timeline`.
         self.max_hold = max_hold
-        # How much still picture the cap took out, filled in at compose.
+        # How far the finished picture is from the wall clock, measured
+        # at compose: the take's span less the screen time the timeline
+        # hands out. Positive is a shorter video than the take. Zero is
+        # what a narrated take needs, and what `--max-hold 0` is for.
         self.trimmed = 0.0
+        # The two halves of that subtraction, kept so a run that drifts
+        # can say which of them moved.
+        self.wall_s = 0.0
+        self.timeline_s = 0.0
+        # …and how much of `trimmed` the still-picture cap accounts for.
+        # Separate from `trimmed` on purpose: when the two disagree, the
+        # length moved for a reason nothing here knows about, which is
+        # the failure this pair exists to name.
+        self.capped = 0.0
         # (taken_at, relative path, session name, deliberately held) in
         # capture order. The last field marks a frame taken while the
         # demo was holding on purpose, which is what exempts it from the
@@ -2215,6 +2237,13 @@ class Recorder:
             self._thread.join(timeout=30)
             self._thread = None
         self.stopped_at = time.time()
+        # The microphone closes with the camera, not after it. Draining
+        # the deferred encoders below takes seconds on a long take, and
+        # every one of them used to be recorded — a tail of room noise
+        # past the end of the picture, which `-shortest` then cut off
+        # again, taking the last words spoken with it. Both tracks now
+        # end on `stopped_at`, which is the instant the picture ends too.
+        self._stop_narration()
         # Frames are encoded off the compositor's event loop, so the last
         # of them are still being written when the camera stops. Every
         # session that was filmed gets the barrier, because the count
@@ -2241,7 +2270,6 @@ class Recorder:
             self.errors.append(
                 f"{len(missing)} captured frame(s) never reached the disk, "
                 f"first {missing[0]}")
-        self._stop_narration()
 
     # -- narration ---------------------------------------------------
     #
@@ -2339,8 +2367,30 @@ class Recorder:
                 f"the narration recorded {size} bytes -- under a second of "
                 f"audio. The film has no voice on it."
                 + (f" ffmpeg said: {said}" if said else ""))
-        else:
-            print(f"  narration              ~{size / 96_000:.0f}s captured")
+            return
+
+        # How long it really is, read off the file, against how long the
+        # take really was. Both tracks opened and closed on the same two
+        # statements, so these are the same number when nothing went
+        # wrong — and when they are not, the difference is the distance
+        # the voice will sit from the picture. A headset that drops at
+        # minute one leaves a wav that ends there, and `apad` fills the
+        # rest with silence without anybody being told.
+        heard = probe_audio_seconds(wav)
+        took = self.stopped_at - self.started_at
+        if heard is None:
+            print(f"  narration              ~{size / 96_000:.0f}s captured "
+                  f"(length unreadable)")
+            return
+        off = heard - took
+        print(f"  narration              {heard:.1f}s captured against "
+              f"{took:.1f}s of take ({off:+.1f}s)")
+        if abs(off) > WALL_CLOCK_TOL_S:
+            FAILURES.append(
+                f"the narration is {heard:.1f}s but the take was "
+                f"{took:.1f}s ({off:+.1f}s). The microphone did not run for "
+                f"the whole take, so the voice does not line up with the "
+                f"picture no matter how the two are muxed.")
 
     # -- what actually happened --------------------------------------
 
@@ -2420,9 +2470,25 @@ class Recorder:
     # -- composition -------------------------------------------------
 
     def _window(self) -> tuple[float, float]:
+        """The take, as the microphone heard it: from the statement that
+        started the camera to the one that stopped it.
+
+        Not the first and last frame. The camera opens a moment after
+        the recorder starts and the last frame lands a moment before it
+        stops, so a picture spanning only the frames is that much
+        shorter than the voice recorded beside it — and a narrated take
+        is only usable while the two spans are the same span.
+
+        Falls back to the frames when the recorder was never started or
+        stopped, which is the state a test constructing frames by hand
+        is in.
+        """
         if not self.frames:
             raise RuntimeError("no frames were captured")
-        return self.frames[0][0], self.frames[-1][0]
+        first, last = self.frames[0][0], self.frames[-1][0]
+        start = self.started_at if 0.0 < self.started_at <= first else first
+        end = self.stopped_at if self.stopped_at >= last else last
+        return start, end
 
     def _timeline(self, t_start: float, t_end: float,
                   fps: int) -> list[tuple[str, str, float]]:
@@ -2450,16 +2516,33 @@ class Recorder:
         tick = 1.0 / fps
         cap = self.max_hold if self.max_hold > 0 else float("inf")
         out: list[tuple[str, str, float]] = []
-        self.trimmed = 0.0
 
         # How long each frame was the live state, before any editing.
+        #
+        # Its real lived time, and nothing else. This used to floor every
+        # frame at one tick of `--fps`, which is harmless only while the
+        # camera is the slower of the two. It is not: at 55 frames/s
+        # against `--fps 30` the floor gave every frame a 33 ms slot for
+        # the 18 ms it actually held the screen, and a four-and-a-half
+        # minute take composed to nearly nine. A silent film merely ran
+        # slow. A narrated one put the voice half a film ahead of the
+        # picture, and reported `trimmed 0` while doing it.
+        #
+        # The container rate is a property of the file, not of the demo.
+        # Resampling to it is the `fps=` filter's job in `compose`, where
+        # a surplus frame is dropped and the timing survives, rather than
+        # this loop's, where padding a frame stretches the take.
         lived: list[float] = []
         for i, (t, _rel, _name, _held) in enumerate(frames):
             begins = t_start if i == 0 else t
-            # The last frame was the live state until the camera stopped;
-            # it is shown for one tick and the video ends.
-            ends = frames[i + 1][0] if i + 1 < len(frames) else t_end + tick
-            lived.append(max(tick, ends - begins))
+            # The last frame was the live state until the camera stopped.
+            ends = frames[i + 1][0] if i + 1 < len(frames) else t_end
+            # These telescope to exactly `t_end - t_start`, which is what
+            # makes the picture the length of the take. `max(0.0, …)`
+            # guards a clock that stepped backwards mid-run and gives up
+            # that exactness if one did — which is why the total below is
+            # measured rather than assumed.
+            lived.append(max(0.0, ends - begins))
 
         # Runs of *identical* frames are the dead air, and capping a
         # single frame's screen time never touched them: the camera takes
@@ -2493,7 +2576,9 @@ class Recorder:
             runs.append((i, j - i))
             i = j
 
-        for start, count in runs:
+        self.capped = 0.0
+        last_run = len(runs) - 1
+        for idx, (start, count) in enumerate(runs):
             _t, rel, name, held = frames[start]
             was_live = sum(lived[start:start + count])
             # A frame the demo deliberately stopped on is shown for as
@@ -2501,8 +2586,51 @@ class Recorder:
             # picture — a session waiting — and cannot tell the two apart
             # by looking at the pixels, so it is told.
             shown = was_live if held else min(was_live, max(tick, cap))
-            self.trimmed += was_live - shown
-            out.append((rel, name, shown))
+            self.capped += was_live - shown
+
+            # The concat demuxer ignores the duration written for the
+            # *last* entry and shows that frame for as long as the entry
+            # before it — measured here against ffmpeg 8.1.2, and it is
+            # the slideshow gotcha in ffmpeg's own wiki.
+            #
+            # That lands on the worst possible frame. This demo ends on a
+            # deliberate hold, a hold is a run of identical frames, and a
+            # run collapses to one entry — so the payoff shot was the
+            # last entry, inheriting whatever its neighbour got, and the
+            # film stopped dead on the thing it was built to reach.
+            #
+            # So the tail is spelled out instead of collapsed: the final
+            # run hands over its last two frames as entries of one tick
+            # each, and the ignored duration inherits a tick. Both are
+            # real frames from that same run, in capture order, shown for
+            # less time than they were live — the run is written out at
+            # its end rather than summarised, and nothing is repeated or
+            # invented to do it.
+            if idx == last_run and count >= 3 and shown > 2 * tick:
+                out.append((rel, name, shown - 2 * tick))
+                out.append((frames[start + count - 2][1], name, tick))
+                out.append((frames[start + count - 1][1], name, tick))
+            else:
+                out.append((rel, name, shown))
+
+        # What the video costs against the wall clock, *measured* — the
+        # take's own span, less the screen time this timeline actually
+        # hands out.
+        #
+        # It used to be `self.capped`: the sum of the edits this loop
+        # knew it was making. That is only the same number while nothing
+        # else changes the length, and something else did — the frame
+        # floor above doubled the picture underneath this accounting, so
+        # the one figure whose job is to say "this is no longer wall
+        # clock" reported 0 through a take that had drifted by four
+        # minutes. A difference is not the sum of the causes you thought
+        # of, so it is subtracted rather than accumulated: anything that
+        # ever changes the length again lands here whether or not this
+        # loop was told about it. Negative means the video came out
+        # *longer* than the take, which nothing is allowed to do.
+        self.timeline_s = sum(seconds for _rel, _n, seconds in out)
+        self.wall_s = t_end - t_start
+        self.trimmed = self.wall_s - self.timeline_s
         return out
 
     def _digest(self, rel: str) -> str | None:
@@ -2523,7 +2651,13 @@ class Recorder:
         lines = ["ffconcat version 1.0"]
         for rel, _name, seconds in timeline:
             lines.append(f"file '{rel}'")
-            lines.append(f"duration {seconds:.4f}")
+            # Microseconds, not tenths of a millisecond. A frame now
+            # carries the time it really lived rather than a rounded tick,
+            # and a take is fifteen thousand of them: rounding each to
+            # 1e-4 can bias the total by up to three quarters of a second,
+            # which is the same size as the tolerance the readback check
+            # allows. 1e-6 puts that error two orders below the check.
+            lines.append(f"duration {seconds:.6f}")
         with open(os.path.join(self.dir, "track.txt"), "w") as f:
             f.write("\n".join(lines) + "\n")
         return "track.txt"
@@ -2627,17 +2761,30 @@ class Recorder:
         # same statement, so they *start* aligned and the audio rides
         # along from there.
         #
-        # They stay aligned only while nothing shortens the picture, and
-        # `max_hold` shortens it: `_timeline` collapses runs of identical
-        # frames and reports what it removed as `trimmed`. A live
-        # microphone cannot be trimmed to match, so every second taken
-        # out of the video is a second the voice arrives late for, and
-        # the drift accumulates across the take. This comment used to say
-        # the two "need no syncing", which is true at `max_hold == 0` and
-        # at no other setting. `yc-demo-live.py` will not start a
-        # narrated take with trimming on, which is where that is
-        # enforced; nothing about the mux can rescue a take recorded with
-        # both.
+        # They stay aligned only while the picture is the same length as
+        # the take, and two separate things have broken that.
+        #
+        # `max_hold` breaks it on purpose: `_timeline` collapses runs of
+        # identical frames, and a live microphone cannot be collapsed to
+        # match, so every second taken out of the video is a second the
+        # voice arrives late for. `yc-demo-live.py` refuses to start a
+        # narrated take with trimming on.
+        #
+        # The frame floor broke it by accident, and that is the more
+        # instructive half. `_timeline` used to give every frame at least
+        # one tick of `--fps`, so a camera running faster than the
+        # container rate stretched the film — 4:30 of take composed to
+        # 8:41 — while the refusal above sat there satisfied, because the
+        # take really had been recorded at `--max-hold 0`. This comment
+        # said the two tracks "need no syncing", qualified as true at
+        # `max_hold == 0`; the qualification was the wrong one, and being
+        # written down is what made it survive.
+        #
+        # So the invariant is now checked rather than reasoned about:
+        # `_check_length` reads the finished file back and refuses any
+        # narrated take whose picture is not the length of its take,
+        # whatever made it that way. Nothing about the mux can rescue a
+        # film that is already the wrong length.
         #
         # It is padded with silence first, and that is not a detail. The
         # two tracks are the same length only when nothing goes wrong;
@@ -2671,7 +2818,100 @@ class Recorder:
         if done.returncode != 0:
             raise RuntimeError(
                 f"ffmpeg failed ({done.returncode}):\n{done.stderr.strip()}")
-        return probe_video(os.path.abspath(out_path))
+        info = probe_video(os.path.abspath(out_path))
+        self._check_length(info, fps)
+        return info
+
+    def _check_length(self, info: dict, fps: int) -> None:
+        """Does the finished file last as long as the take did?
+
+        The loop this closes: every number the rig printed about the last
+        broken take was true, and none of them was this one. The frame
+        rate was real, the frame count was real, `probe_video` read the
+        duration back off the file rather than trusting ffmpeg — and
+        nothing ever put that duration beside the wall clock, so a take
+        that composed to twice its length passed every check the rig had
+        and was found by watching it.
+
+        Four comparisons, because they fail for different reasons and
+        because a check that can only see through this recorder's own
+        bookkeeping is a check that goes blind whenever the bookkeeping
+        is what broke — which is what happened.
+        """
+        # A frame or three: the `fps=` filter quantises the tail of the
+        # last frame to the container's grid, which is real and bounded
+        # and about a tick wide. Anything larger is a length that moved.
+        tol = max(WALL_CLOCK_TOL_S, 3.0 / max(1, fps))
+
+        # 1. The file against the cut we handed ffmpeg. Catches the
+        #    composer: a concat list ffmpeg read differently than it was
+        #    written, an `fps=` filter doing something other than
+        #    resampling.
+        drift = info["duration"] - self.timeline_s
+        if abs(drift) > tol:
+            raise RuntimeError(
+                f"the composed file is {info['duration']:.1f}s but the "
+                f"timeline it was built from is {self.timeline_s:.1f}s "
+                f"({drift:+.1f}s). ffmpeg did not write the cut it was "
+                f"given; the frames and {self.dir}/track.txt are on disk.")
+
+        # 2. The file against the clock on the wall, in the one direction
+        #    that is structurally impossible.
+        #
+        #    A film can be shorter than its take — that is what
+        #    `--max-hold` is for. It cannot be longer. Every frame is
+        #    shown for at most the time it was live, a hold is shown for
+        #    exactly that, and the lot of them span the take; there is no
+        #    setting, no cap and no argument that makes the sum come out
+        #    over. So a film that runs long is not a film of this take,
+        #    whatever produced it.
+        #
+        #    This is the check that needed no help from anything above.
+        #    Both the numbers it reads are measurements — one off the
+        #    finished file, one off the clock — so it survives being
+        #    wrong about the timeline, which is the state the rig was
+        #    actually in.
+        over = info["duration"] - self.wall_s
+        if over > tol:
+            raise RuntimeError(
+                f"the film is {info['duration']:.1f}s but the take it is a "
+                f"film of was {self.wall_s:.1f}s ({over:+.1f}s). A picture "
+                f"cannot outlast the thing it filmed: every frame is shown "
+                f"for at most the time it was live. Something stretched it "
+                f"— at {len(self.frames)} frames over "
+                f"{self.wall_s:.1f}s the camera ran at "
+                f"{self.rate():.1f}/s, and a container rate below that is "
+                f"the usual cause. The file is at {info['path']}.")
+
+        # 3. What the trim meant to remove against what the length
+        #    actually lost. `capped` is the sum of the edits the timeline
+        #    knew it was making; `trimmed` is the difference it measured.
+        #    They agree unless something else moved the clock — which is
+        #    the shape of the bug this was written for.
+        stray = self.trimmed - self.capped
+        if abs(stray) > tol:
+            raise RuntimeError(
+                f"the picture is {self.timeline_s:.1f}s against "
+                f"{self.wall_s:.1f}s of take, and the still-picture cap "
+                f"only accounts for {self.capped:.1f}s of that — "
+                f"{stray:+.1f}s came from somewhere else. Every frame's "
+                f"screen time should be the time it was live.")
+
+        # 4. And a narrated take, both ways. Short is a fault here too:
+        #    a live microphone cannot be trimmed to match a shortened
+        #    picture, so every second taken out of the video is a second
+        #    the voice arrives late for, and it accumulates.
+        if info.get("audio") is None:
+            return
+        off = info["duration"] - self.wall_s
+        if abs(off) > tol:
+            raise RuntimeError(
+                f"a narrated take has to run on the wall clock, and this "
+                f"one does not: {info['duration']:.1f}s of picture against "
+                f"{self.wall_s:.1f}s of take ({off:+.1f}s). The voice was "
+                f"recorded live and cannot be stretched to match, so it "
+                f"drifts further behind the further in you get. The file "
+                f"is at {info['path']} and the frames are in {self.dir}.")
 
 
 def probe_video(path: str) -> dict:
@@ -2698,7 +2938,32 @@ def probe_video(path: str) -> dict:
         "duration": float(s["duration"]),
         "codec": s["codec_name"],
         "bytes": os.path.getsize(path),
+        # None when the file is silent, which is a state and not a fault:
+        # only a narrated take is required to be wall-clock.
+        "audio": probe_audio_seconds(path),
     }
+
+
+def probe_audio_seconds(path: str) -> float | None:
+    """How long the audio in a file really is, or None if it has none.
+
+    Same habit as `probe_video`, applied to the other track: the length
+    of a recording is a fact about the file, and the only way to have it
+    is to read the file.
+    """
+    done = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=duration", "-of", "json", path],
+        capture_output=True, text=True)
+    if done.returncode != 0:
+        return None
+    streams = json.loads(done.stdout or "{}").get("streams") or []
+    if not streams or "duration" not in streams[0]:
+        return None
+    try:
+        return float(streams[0]["duration"])
+    except (TypeError, ValueError):
+        return None
 
 
 # --------------------------------------------------------------------
@@ -7870,12 +8135,15 @@ def main() -> int:
               f"one snapshot cost {mean_ms:.0f} ms mean / {worst_ms:.0f} ms worst")
         print(f"             every frame is a real render, in capture order; "
               f"none repeated, none interpolated")
-        if RECORDER.trimmed > 0.5:
-            span = RECORDER.stopped_at - RECORDER.started_at
+        if RECORDER.trimmed > WALL_CLOCK_TOL_S:
             print(f"             {RECORDER.trimmed:.0f}s of still picture "
-                  f"trimmed from {span:.0f}s of demo — waits on sandbox "
-                  f"spawns and network hops, held at most "
+                  f"trimmed from {RECORDER.wall_s:.0f}s of demo — waits on "
+                  f"sandbox spawns and network hops, held at most "
                   f"{args.record_max_hold:.1f}s each")
+        else:
+            print(f"             {video['duration']:.1f}s of picture for "
+                  f"{RECORDER.wall_s:.1f}s of demo: the film runs on the "
+                  f"wall clock")
     return rc
 
 
