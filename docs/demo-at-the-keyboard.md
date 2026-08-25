@@ -43,22 +43,25 @@ five-second countdown.
   else. Miss it and you get `only one invitation was minted, so the agent
   redeems xaver's`, and the agent's chip reads `peer@<n>` instead of a name.
 
-**2 · Xaver crosses the room.** Nothing to do. Eight seconds after the token
-exists his half runs itself, and the camera visits his screen for four seconds
-once windows from the room have reached it.
-
-- Wrong: `xaver's screen still showed nothing after 12s` — the cut is of an
-  empty desktop. A poor shot, not a lost take.
+**2 · Xaver crosses the room.** Nothing to do, and nothing to see: eight
+seconds after the token exists his half runs itself, off camera. The film
+stays on your screen.
 
 **3 · Claude's session is admitted.** Nothing to do; off camera, a block of
 `[PASS]` lines about grants.
 
-**4 · Open the word processor and write in it.** Type the bullets — a run of
-real list items is what the agent converts. The rig waits here indefinitely
-(`he opens the word processor`) and moves on the moment a word-processor
-surface paints. Then: `Claude is in the room, watching the document`.
+**4 · Open the word processor and write a few words in it.** Anything — a
+sentence is plenty. Nothing is addressed to the agent and nothing is typed to
+it; what the beat shows is that the document is shared. The rig waits here
+(`he writes a few words in the document`) and moves the moment your words turn
+up in xaver's own copy, which is the frame it cuts on.
 
-**5 · The handover.** The rig raises **xaver's** window and prints, into the
+- Wrong: `xaver's screen still showed nothing after 12s`, or `his app answered
+  … and none of it is` — the cut lands on a page with nothing of yours on it.
+  A poor shot, not a lost take.
+
+**5 · The handover.** The camera moves to **xaver's** screen and stays there
+for the rest of the film. The rig raises his window and prints, into the
 terminal now behind it:
 
 ```
@@ -67,18 +70,18 @@ terminal now behind it:
       Claude: make this square and put it in the open document
 ```
 
-Be quick. From this moment the camera is on xaver's screen and **does not cut
-back** until the agent has finished — so every second you spend finding the
-window and typing is filmed as a still of the other machine. In the measured
-run this beat took 87% of the finished film.
+Be quick. The camera **never comes back** — so every second you spend finding
+the window and typing is filmed as a still of the other machine. In the
+measured run this beat took 87% of the finished film.
 
 - Wrong, and it looks exactly like a hang: a workspace on screen, nothing
-  happening, the counter stuck on `Claude waits for a line addressed to it`.
-  That is the rig waiting for **you**. Nothing announces it but the terminal.
+  happening, the counter stuck on `Claude waits to be spoken to`. That is the
+  rig waiting for **you**. Nothing announces it but the terminal.
 
-**6 · It ends itself.** `Claude acted — applied …`, three seconds for the
-network, a cut to xaver, a six-second hold, then the clip. One Ctrl-C ends the
-take early and still writes the clip; a second abandons it.
+**6 · It ends itself.** `Claude acted — applied …`, the camera moves to the
+document on the screen you are already watching, three seconds for the
+network, a six-second hold, then the clip. One Ctrl-C ends the take early and
+still writes the clip; a second abandons it.
 
 ## What a bad take looks like from the terminal
 
@@ -87,7 +90,7 @@ take early and still writes the clip; a second abandons it.
 | `refusing to record: the compositor … is older than N source file(s)` | `--no-build` against an edited tree. Rebuild, or `--allow-stale`. |
 | `the microphone did not open` and a list of sources | Pass one of the listed names to `--narrate`. |
 | stuck on `he mints an invite` | Nothing reached the clipboard or the card. Press Create invite again. |
-| stuck on `Claude waits for a line addressed to it` | Beat 5 was never performed, or what you typed does not begin `Claude:`. |
+| stuck on `Claude waits to be spoken to` | Beat 5 was never performed, or what you wrote in the remark does not begin `Claude:`. |
 | `the agent answered … was that it could not do what was asked` | It refused on the page. The take is finished and unusable. |
 | `frames are resampled to 1920x1048 and letterboxed` | The window manager granted a size the video is not; the film is a rescale, not 1:1. |
 | `WARNING: processes survived the scope` | Only trust this on an idle machine. The check is machine-wide, so anybody else's qOS run — or your own `--keep` session — trips it. |

@@ -1,6 +1,6 @@
 # The demo
 
-The film we are building. Five beats, two machines, one agent. Everything
+The film we are building. Two machines, one agent, one cut. Everything
 below is what a viewer sees, in order; anything not here is not in the film.
 `scripts/yc-demo-live.py` drives it, and its module docstring carries these
 same beats with their reasons attached; `docs/demo-shape.md` is the earlier
@@ -8,9 +8,10 @@ seven-beat shape, kept as a record and not to be shot from.
 `docs/demo-at-the-keyboard.md` is the other half of this one: what the person
 filming actually types, in the order the rig asks for it.
 
-Total: **1:40 maximum.** The boot bumper is 3.2s of it, cut and concatenated
-in front rather than recorded with the rest; the driven take is ~75s. A beat
-that cannot be done inside its share is cut, not hurried.
+Total: **1:50 maximum**, and that is a requirement rather than an aspiration.
+The boot bumper is 3.2s of it, cut and concatenated in front rather than
+recorded with the rest. A beat that cannot be done inside its share is cut,
+not hurried.
 
 The film must be drivable two ways, and both must work:
 
@@ -49,18 +50,45 @@ Xaver, then Claude. Both admitted the same way: by holding a capability in
 the same list. Claude is marked as an agent so nobody has to infer which is
 which.
 
-Xaver's screen is only shown **once the applications have loaded on it** —
-a cut taken the instant he joins shows an empty desktop, which argues the
-opposite of what the beat claims. What the beat claims is that the
-workspace is the shared thing, so joining it brings what is in it.
+Xaver's screen is not shown here. He redeems his invitation on his own
+machine, off camera; a cut taken the instant he joins shows a desktop with
+nothing on it yet, which argues the opposite of what the beat claims. That
+the workspace is the shared thing — so joining it brings what is in it — is
+shown later, and shown rather than asserted.
 
-## 4 — Cut to xaver: one instruction, from the person holding the thing
+## 4 — The image editor opens, and two applications share one tab bar
+
+A tab bar everywhere else belongs to its app, because the app draws it. Here
+it is a frame primitive the compositor owns, so a document and a photograph
+sit on one bar. It is the one gesture in the film a viewer cannot mistake for
+a browser.
+
+## 5 — Quinten types a few words
+
+Anything; a sentence is plenty. The beat proves the document is shared, and a
+few words prove that exactly as well as a page does.
+
+Nothing typed here is addressed to anybody. Notes, a run of bullets and a line
+reading `Claude: …` used to go in at this point, because the agent read its
+instruction out of the page — and asking an agent for something by writing its
+name into a shared document reads as a workaround for not having a way to ask.
+It has one; see beat 7.
+
+## 6 — Cut to xaver, and stay there
+
+The only cut in the film, taken on the frame his own word processor answers
+with quinten's words in it. What a viewer sees when the camera arrives is a
+page he did not open, carrying a sentence he did not type. Everything after
+this is his screen and the film does not come back.
+
+## 7 — Still on xaver's screen: one instruction, from the person holding the thing
 
 Xaver **right-clicks the image in Files** and writes:
 
 > `Claude: make this square and put it in the open document`
 
-One instruction. Not two, not one per app. The rig prints this line for
+One instruction. Not two, not one per app, and it is said about the
+photograph rather than typed onto a page. The rig prints this line for
 whoever is at xaver's keyboard, out of `CROP_INSTRUCTION` in
 `scripts/yc-demo.py`, so what is on the terminal and what is in this file
 cannot drift apart.
@@ -77,16 +105,17 @@ description of where it sat on his screen — so the agent works on the
 thing he pointed at, and the sentence still means the same thing in a
 session opened tomorrow.
 
-## 5 — Still on xaver's screen: and he watches it happen
+## 8 — Still on xaver's screen: and he watches it happen
 
 Claude opens the image editor, does the work, and the picture makes a
 visible crossing into the word processor — a smooth hand-off, not two
 windows independently changing.
 
-On **xaver's** screen, not the owner's. He asked for it, so he sees it
-land, on a machine where he owns nothing and opened nothing. That is a
-stronger claim than watching it arrive where it was already going, and it
-costs a cut rather than adding one.
+On **xaver's** screen, not the owner's, and with no cut to get there: the
+camera has been on him since beat 6. He asked for it, so he sees it land, on
+a machine where he owns nothing and opened nothing. That is a stronger claim
+than watching it arrive where it was already going, and by this point it
+costs nothing at all.
 
 Between the instruction landing and the first change appearing is the model
 deciding, and it has been measured at some twenty-eight seconds. That is not
@@ -126,12 +155,12 @@ its arrival is a chip in the roster. There is no shot of its "view"
 because there is nothing to shoot — and that absence is the demonstration.
 The run asserts zero frames come from its session, and fails if any do.
 
-**Cut sparingly, and only where the cut proves something.** Beats 4 and 5
-are both on xaver's screen: he instructs, and he watches it happen. One
-cut, held. An earlier version switched at nearly every step, and a viewer
-spends each of those re-orienting rather than watching; a later one cut
-back for beat 5, which asked the viewer to change seats in the middle of
-the payoff.
+**One cut, and it proves something.** Everything from beat 6 on is xaver's
+screen: quinten's words arrive on it, he instructs, he watches it happen. The
+cut is taken on the frame the words land, so the change of seats is itself the
+collaboration claim. Earlier versions cut three times — he joins, he
+instructs, the work reaches him — with quinten's screen between each pair, and
+a viewer spends every one of those re-orienting rather than watching.
 
 **The boot bumper ends where the desktop arrives**, not after it. The film
 opens on an empty desktop, so holding one first shows the same picture on

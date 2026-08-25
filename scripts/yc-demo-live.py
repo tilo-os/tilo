@@ -40,37 +40,29 @@ depends on work still in flight, the dependency is named under NEEDS.
 and is the one to read at the camera. This block is the same beats with
 their reasons attached, for whoever is changing the rig.
 
-Budget: boot bumper ~3.2s + ~75s driven. Hard cap 1:40. The bumper is
-not recorded here and is gitignored, so a fresh checkout has no copy:
+Budget: boot bumper ~3.2s + the driven take. **Hard cap 1:50**, which
+is a requirement and not an aspiration. The bumper is not recorded here
+and is gitignored, so a fresh checkout has no copy:
 `films/qos-boot-bumper.mp4`, joined on the front by
 `scripts/demo-assemble.py` (which `scripts/demo.sh` runs for you).
 
-MEASURED, from a full three-session take on 2026-08-24. The per-scene
-budgets below were written without measuring, and two of them are fiction:
+Two things this cut is built around, both of them findings from takes
+rather than plans.
 
-    0-15s    minting two invitations
-    15-22s   xaver crosses the room
-    22-37s   xaver pastes the code and joins
-    37-40s   the agent admitted
-    40-62s   the word processor opens, the owner types
-    62-90s   Claude waits for its line, then works
-    90-106s  the edit crossing, and the excursion
-                                    -> 106.6s, 6.6s over the cap
+Setup used to cost forty seconds against fifteen planned, and over half
+a budget spent on setup is where a demo loses the room. So the opening
+is three applications opened the way a person opens them and two
+invitations, and nothing else: no fourth search, no notes, no
+instruction typed on a page.
 
-Two findings worth acting on rather than re-budgeting around.
+Claude's working period is model latency and will not shrink. It is
+dead air unless something else is on screen, and the answer is not to
+interleave somebody else's typing over it -- that was tried, and it
+made the film cut between two machines while both were mid-gesture.
+What is on screen instead is the agent saying what it is doing, in
+chat, in the room, as it does it.
 
-Scene 1 costs 40s against 15s planned. Two invitations and two
-redemptions are more real gesture than 15s holds, and spending over half
-the budget on setup is where a demo loses the room.
-
-Claude's 28s is model latency and will not shrink. It is dead air unless
-something else is on screen, which is what "the owner keeps typing
-throughout" is for -- but in this take the typing finished at 62s and
-Claude worked from 62 to 90, so the overlap the plan claims did not
-happen. Interleaving those is worth more than any second trimmed from a
-hold, because it removes a wait rather than shortening one.
-
-    BEAT 0  the machine boots                                   ~3.2s
+    BEAT 1  the machine boots                                   ~3.2s
         Not recorded here. `films/qos-boot-bumper.mp4`, concatenated
         in front by `scripts/demo-assemble.py`. Console, greeter,
         filled form, cut before the desktop -- see
@@ -78,79 +70,104 @@ hold, because it removes a wait rather than shortening one.
         once and a routine reclaim deleted it, and a recorded boot is
         the one asset here that cannot be regenerated on demand.
 
-    BEAT 1  a workspace, and the people in it                    ~15s
-        YOU     open the collaborators panel, invite xaver, invite
-                Claude. Both invitations outstanding at once -- this
-                used to lose the second name (fixed).
-        SCRIPT  xaver redeems after ~8s; Claude joins when launched.
-        SHOWS   an agent admitted the same way a person is: by holding
-                a capability in the same list, marked as an agent so
-                nobody has to infer which is which.
+    BEAT 2  an empty desktop
+        Nothing open, so the strip has somewhere to come from.
 
-    BEAT 2  four applications, two in frame                      ~10s
-        YOU     open Files, chat, the word processor. The image editor
-                arrives in beat 3.
-        YOU     scroll the strip; put two of them in one tab group.
-        SHOWS   tabs are a frame primitive the compositor owns, so a
-                tab group holds *different applications*. Every other
+    BEATS 3-5  three applications, each opened through the search
+        YOU     chat, then Files, then the word processor. Conversation
+                first, because that is where work is agreed.
+        SHOWS   the desktop has one way in rather than a menu per
+                application. The first search is the one a viewer reads;
+                the rest are the same gesture by somebody who now knows
+                where it is.
+
+    BEATS 6-7  inviting xaver, then inviting Claude
+        YOU     the collaborators panel, twice, on the same card.
+        SCRIPT  xaver redeems ~8s later, on his own machine, off camera.
+                Claude's session redeems its own.
+        SHOWS   an agent admitted the way a person is -- the same card,
+                the same list, holding a capability -- and marked as an
+                agent rather than arriving as a second person. Both
+                invitations outstanding at once; this used to lose the
+                second name (fixed).
+
+    BEAT 8  the image editor opens, and two applications share one tab bar
+        SHOWS   tabs are a frame primitive the compositor owns, so one
+                tab bar holds *different applications*. Every other
                 desktop has per-app tabs; this is the one gesture that
                 cannot be mistaken for a browser.
 
-    SCENE 3  one instruction, from the person holding the thing   ~15s
-        SCRIPT  xaver, in **Files**, right-clicks harbour.png and writes:
-                    "@claude make square and put in open document"
-                One sentence, from him, carrying the file's address. He
-                does not describe the photograph and the agent does not
-                go looking for it.
-        YOU     keep typing in the word processor throughout.
-        SHOWS   an instruction that arrives as (text, address, capability)
-                rather than as a description of a screen.
+    BEAT 9  quinten types a few words
+        YOU     write anything. `yc.SHARED_TEXT` when this is driving.
+        SHOWS   the document is shared. That is the entire claim, and a
+                few words make it exactly as well as a page does -- so
+                what used to be typed here (prose, a run of bullets and
+                a paragraph addressed to the agent by name) is gone,
+                along with the thirteen seconds of typing it cost.
+
+    BEAT 10  cut to xaver -- and stay there
+        The only cut in the film. It is taken on the frame his own app
+        answers with quinten's words in it, so what a viewer sees when
+        the camera arrives is a page he did not open carrying a sentence
+        he did not type. Everything after this is his screen; the film
+        does not come back.
+
+        There were three cuts here once -- he joins, he gives the
+        instruction, the work reaches him -- with quinten's screen
+        between each pair. Six times over, a viewer who has never seen
+        this system had to work out whose desktop they were looking at,
+        for a story that changes hands exactly once.
+
+    BEAT 11  he right-clicks harbour.png and says what he wants
+        SCRIPT  xaver, in **Files**, on his own machine:
+                    "Claude: make this square and put it in the open
+                     document"
+        SHOWS   an instruction that arrives as (text, address,
+                capability) rather than as a description of a screen. He
+                is not the host, he opened none of this, and he can
+                still hand an object to an agent.
+
+                It is a remark on the photograph and nothing types it
+                anywhere. Addressing an agent by writing its name into a
+                shared document is a thing this rig used to do, and it
+                reads as a workaround for not having a way to ask.
         NEEDS   right-click compose in the file explorer  (landed)
                 one instruction, several actions  (in flight)
 
-    SCENE 4  and he watches it happen                             ~20s
-        HOLD    on xaver. He asked for it, so he sees it land -- on a
-                machine where he owns nothing and opened nothing,
-                which is a stronger claim than watching a result
-                arrive where it was already going. This said `CUT
-                back to your screen` while the code stayed where it
-                was; `his_instruction` never cuts back, and
-                docs/demo-script.md agrees with the code.
-        SHOWS   Claude **opens the image editor itself**, crops the
-                photograph, and the result travels visibly into the word
-                processor's document.
+    BEATS 12-13  Claude works, and it lands where he is watching
+        SHOWS   the agent narrates itself in chat -- `Taken`, `Doing`,
+                `Done` -- as each thing actually happens, so the wait is
+                filled by the thing doing the waiting. Then it **opens
+                the image editor itself**, crops the photograph, and the
+                result travels into the word processor's document.
 
                 This is the whole film. Not that an agent edited a
-                document -- every word processor now ships something that
-                does. That an agent *used the desktop*: it opened an
-                application because it decided it needed one, acted on an
-                object in it, and put the result in a second application,
-                owning neither, having been granted the right to touch
-                each. Two applications that contain no AI, addressable
-                because the system made them so.
+                document -- every word processor now ships something
+                that does. That an agent *used the desktop*: it opened
+                an application because it decided it needed one, acted
+                on an object in it, and put the result in a second
+                application, owning neither, having been granted the
+                right to touch each. Two applications that contain no
+                AI, addressable because the system made them so.
 
                 The motion matters and is not decoration. An action that
-                only appears as a changed document has to be narrated; one
-                you can watch does not. It is also what makes attribution
-                legible -- the object travels in the acting participant's
-                colour, so it reads as *Claude did this*.
-
+                only appears as a changed document has to be narrated;
+                one you can watch does not. It is also what makes
+                attribution legible -- the object travels in the acting
+                participant's colour, so it reads as *Claude did this*.
         NEEDS   the agent may open an application  (in flight)
                 an agent's cross-app action is visible  (in flight)
                 crop by address  (landed, proven to the pixels)
 
-    SCENE 5  and it is undoable                          ~5s, CUTTABLE
-        YOU     Ctrl+Z.
-        SHOWS   `undo_for_author` walks back the last change belonging to
-                *that* actor and leaves everyone else's alone -- which is
-                why an agent may be allowed to write at all.
-        This scene is deliberately expendable. It is the strongest
-        architectural claim in the stack and it wants thirty seconds it
-        does not have here, so it is filmed last and cut without
-        argument if it does not read clearly.
+    BEAT 14  done, on the screen he was already watching
+        No cut, because there is nowhere to cut from: he asked for it,
+        and it arrived on a machine where he owns nothing and opened
+        nothing. There is no more, on purpose -- the point has been made
+        and every further scene dilutes it.
 
-    CLOSE   there is no more, on purpose: the point has been made and
-            every further scene dilutes it.
+    CUT, and not to be rebuilt: undo. `undo_for_author` walking back one
+    actor's last change is the strongest architectural claim in the
+    stack and it wants thirty seconds this film does not have.
 
 WHERE YOU ARE ON THE STRIP, AND HOW YOU GOT THERE
 --------------------------------------------------
@@ -206,9 +223,9 @@ person until it carried a mark. Before filming any beat above, ask what
 is on screen that would be different if the capability were absent. If
 the answer is "nothing", the beat is not ready.
 
-The camera is on your screen throughout and steps out to xaver's twice
-— once when he arrives, once when the agent's work lands on it — for a
-few seconds each.
+The camera is on your screen for the first half and on xaver's for the
+second, and it changes hands once: on the frame where what you wrote
+turns up in his document. It does not come back.
 
     scripts/yc-demo-live.py                # you drive; it records
     scripts/yc-demo-live.py --dry-run      # stage it all headless, prove the wiring
@@ -292,8 +309,10 @@ session_exit = _load("session_exit", "session_exit.py")
 # be somebody reading a short code off one screen and walking to
 # another; short enough that nobody watching wonders whether it worked.
 XAVER_DELAY_S = 8.0
-# How long each excursion to xaver's screen lasts. Two of them, and both
-# are an interruption of the screen the story is on, so they are short.
+# How long a hold on xaver's screen lasts, at the handover and again at
+# the payoff. Not an excursion any more: the film cuts to him once and
+# stays, so these are pauses to read what is on his screen rather than
+# interruptions of somebody else's.
 EXCURSION_S = 4.0
 # Given to the network between the agent saying it applied something and
 # the camera being pointed at the machine that has to have received it.
@@ -303,6 +322,12 @@ SYNC_GRACE_S = 3.0
 DEFAULT_DWELL_S = 6.0
 # The outside limit on one unattended take.
 DEFAULT_DURATION_S = 900.0
+# How long the film waits for somebody to write something in the document
+# before handing over without it. The handover is the one place a take
+# can wait for ever -- everything after it hangs off the writing having
+# crossed -- and a rig that stalls silently there reads exactly like a
+# rig that has hung.
+HANDOVER_GRACE_S = 120.0
 # Longest one unchanged frame is shown for. Trimming is the one edit the
 # composer makes, and it is why a narrated take cannot have it: see the
 # note in `main` where the two are reconciled.
@@ -337,25 +362,27 @@ def mark(title: str) -> None:
     """
     yc.BEAT_MARKS.append((title, time.time()))
 
-# What to tell him to write, per agent mode — and they are not
-# interchangeable.
-#
-# The film's instruction is `yc.CROP_INSTRUCTION`: he is holding a
-# photograph, and what he asks for takes two applications to answer.
-# Composing that is a judgement, so it needs the model.
+# There is one instruction in this film, and it is `yc.CROP_INSTRUCTION`:
+# xaver is holding a photograph, and what he asks for takes two
+# applications to answer. Composing that is a judgement, so it needs the
+# model.
 #
 # `--no-agent-model` does not have one. Its floor matches the
 # instruction's own words against the words the *apps* put on their
 # operations, plus a handful of named recipes (`apps/agent/src/plan.rs`)
 # — and given "make this square and put it in the open document" it
-# finds no clear winner and answers, on the page, in front of
+# finds no clear winner and answers, in the room, in front of
 # everybody, that it cannot. Which is honest, is the right behaviour,
 # and is not what anybody wants filmed.
 #
-# So that mode asks for the thing it can actually do, and the readback
-# after it asserts *that* outcome rather than the crop's. One
-# instruction per mode, and the mode decides both ends.
-KEYWORD_INSTRUCTION = "Claude: turn the bullets into a table"
+# That mode used to be handed a different instruction — "turn the
+# bullets into a table" — with a readback of its own. Both are gone with
+# the notes they acted on: nobody types a run of bullets into this
+# document any more, so an instruction about bullets is one no document
+# in this film can answer, and a readback asserting a table would be
+# asserting a beat the film does not have. The flag still turns the
+# model off; what it no longer does is quietly film a different
+# argument.
 
 # What the film calls each session, under its name on the band. Quinten
 # is whoever is running this; the band says so in the third person
@@ -581,7 +608,20 @@ class Live:
         self.agent_log = os.path.join(shots, "agent.log")
         self.agent_applied = False
         self.agent_done_at = 0.0
-        self.visited_after_agent = False
+        #: Set once the camera has moved to the word processor to watch
+        #: the crop arrive, so the reframe happens on the first change
+        #: and not on every poll after it.
+        self.watched_it_land = False
+        #: And separately, whether the closing hold has been played. Kept
+        #: apart from the reframe above on purpose: the reframe fires
+        #: mid-work, and sharing one flag with the ending meant a take
+        #: that filmed the crop arriving never reached its own last beat
+        #: and ran to the duration cap.
+        self.showed_the_ending = False
+        #: Quinten has written something, and it has reached xaver. The
+        #: whole second half hangs off this: it is the moment the film
+        #: cuts, and after it the camera never comes back.
+        self.handed_over = False
         #: So the mark charging the agent's latency is laid once, at the
         #: first tick that finds it working, rather than on every poll.
         self.marked_agent_wait = False
@@ -605,6 +645,18 @@ class Live:
         # opens three apps and wonders why nothing is happening is a run
         # where the terminal should already have told him.
         self.first_wait = "he mints an invite — all of this waits on it"
+        #: Under `--self-test` the owner's half sets this the moment it
+        #: has finished typing, so the handover waits for a fact rather
+        #: than for a document poll to notice one. Hands-on there is
+        #: nobody to set it and the document is asked instead.
+        self.typed = threading.Event()
+        #: When the run first had everything the handover needs except
+        #: the writing, so waiting for the writing can be bounded rather
+        #: than open-ended: a driving half that died leaves this event
+        #: unset for ever, and a take that never reaches its second half
+        #: is a lost afternoon.
+        self.ready_at = 0.0
+        self.asked_if_he_wrote = 0.0
         self._last_status = 0.0
         self.stop = threading.Event()
 
@@ -633,39 +685,40 @@ class Live:
     def say(self, text: str) -> None:
         print(f"  {text}", flush=True)
 
-    # -- an excursion to the other machine ---------------------------
+    # -- xaver's screen, once the film reaches it --------------------
 
-    def visit_xaver(self, why: str, frame_app: str | None) -> None:
-        """Put xaver's screen on camera for a few seconds, and come back.
+    def look_at_xaver(self, why: str, frame_app: str | None) -> None:
+        """Hold on whatever is on xaver's screen, and name why.
+
+        No cut and no coming back: by the time anything calls this the
+        film is already on him and stays there. This used to be
+        `visit_xaver`, which cut over, held, and cut home again, and was
+        called three times — he joins, he gives the instruction, the work
+        reaches him — with quinten's screen between each pair. Three
+        round trips is six times a viewer who has never seen this system
+        has to work out whose desktop they are looking at, for a story
+        that changes hands exactly once.
 
         Only while recording: with no camera there is nobody to show it
-        to, and every second spent here is a second the person driving is
-        not being filmed.
+        to, and the seconds are the film's rather than the run's.
         """
         if self.recorder is None or self.args.excursion <= 0 or self.x is None:
             return
-        self.say(f"cutting to xaver — {why}")
-        yc.cut("xaver")
+        self.say(f"holding on xaver — {why}")
         try:
             if frame_app:
                 yc.frame_one_window(self.x, frame_app)
-            else:
-                yc.show_collaborators(self.x)
             yc.read_hold(self.args.excursion)
             self.x.snapshot(os.path.join(
                 self.shots,
                 f"xaver-{int(time.time() - self.started):04d}.png"))
-            if not frame_app:
-                yc.close_collaborators(self.x)
         except Exception as exc:  # noqa: BLE001
-            # An excursion is a shot, not a claim. Losing one costs the
-            # cut a few seconds of the other machine; taking the run down
-            # for it would lose the whole film, most of which is of a
-            # person who was not doing anything wrong.
-            yc.gap(f"the excursion to xaver's screen failed "
+            # A hold is a shot, not a claim. Losing one costs the cut a
+            # few seconds of framing; taking the run down for it would
+            # lose the whole film, most of which is of a person who was
+            # not doing anything wrong.
+            yc.gap(f"the hold on xaver's screen failed "
                    f"({type(exc).__name__}: {exc})")
-        finally:
-            yc.cut("quinten")
 
     # -- the things that fire ----------------------------------------
 
@@ -674,7 +727,7 @@ class Live:
 
         Asks his own session what it is showing rather than assuming the
         replication is done: a window group on his side is evidence the
-        workspace crossed, and it is the thing the excursion is for.
+        workspace crossed, and it is what the cut to him is for.
         """
         if self.x is None:
             return
@@ -756,19 +809,17 @@ class Live:
         if self.xaver_in:
             yc.claim("and his session holds the room the token named",
                      self.x.active_workspace()["room"], self.room)
-            # Not before his screen has something on it.
+            # And that is all that happens here on camera: nothing.
             #
-            # The excursion exists to show that the room reached him, and
-            # a cut taken the instant he joins shows an empty desktop --
-            # which argues the opposite. The applications are opened
-            # before anybody is invited now, so what this waits for is
-            # them arriving on *his* machine, which is the claim: the
-            # workspace is the shared thing, so joining it brings what is
-            # in it. Bounded, because a cut to a bare screen is a poor
-            # shot and a stalled take is no shot at all.
-            self.wait_for_his_screen()
-            mark("cut to xaver: he is in the room")
-            self.visit_xaver("he is in the room now", None)
+            # His joining used to be a cut of its own -- over to his
+            # screen, a hold on the collaborators panel, back to quinten
+            # -- placed the instant he redeemed the token. It showed a
+            # desktop with nothing on it yet and cost the film a round
+            # trip to say something the roster on quinten's own screen
+            # already said. The room reaching him is proven at the
+            # handover instead, by his own app answering with quinten's
+            # words in it, which is the same claim with a picture
+            # attached.
 
     def bring_the_agent_session_in(self) -> None:
         """Admit the session the agent speaks through, by address.
@@ -940,11 +991,181 @@ class Live:
         self.agent_tail = yc.LogTail(self.agent_log)
         decides = "a model decides" if self.args.agent_model \
             else "keyword vocabulary, no network"
-        self.say(f"Claude is in the room, watching the document "
-                 f"(pid {self.agent_proc.pid}, {decides})")
-        self.say("Claude is watching; xaver is about to give it something "
-                 "to do")
-        mark("cut to xaver: his instruction")
+        self.say(f"Claude is in the room, watching (pid "
+                 f"{self.agent_proc.pid}, {decides})")
+        # Started early and left waiting, which is the point of
+        # `--await-document-ms 0`: connecting, announcing itself and
+        # taking the room's state are seconds that would otherwise be
+        # spent after xaver has already asked for something. Nothing here
+        # gives it anything to do. That happens at the handover, and the
+        # handover happens when quinten has written something and it has
+        # crossed.
+        self.say("Claude is in the room and waiting to be spoken to")
+
+    #: How long the handover waits for quinten's words to turn up on
+    #: xaver's machine before cutting anyway. Long enough for a document
+    #: to cross a real network twice over; short enough that a take does
+    #: not sit on an unchanging page while the person driving wonders
+    #: whether the rig has died.
+    CROSSING_BUDGET_S = 45.0
+
+    #: The shortest run of characters, with a space in it, that this is
+    #: willing to call "something a person wrote". Schema tokens -- block
+    #: ids, style names, an app's own keys -- are single words, so a
+    #: phrase with a space in it is his and not the document's own
+    #: furniture. That distinction is the whole point: a needle taken
+    #: from the schema would be found on the far side of any two attached
+    #: apps, which is a claim that cannot fail.
+    WROTE_MIN_CHARS = 8
+
+    def he_has_written(self) -> str | None:
+        """A phrase out of quinten's own document, or None if there is none.
+
+        Hands-on, nothing here saw him type and nothing knows what he
+        chose to write, so the phrase the crossing is checked on has to
+        come out of his document rather than out of this file. Under
+        `--self-test` it is known (`yc.SHARED_PROOF`) and this is not
+        used.
+
+        None means "he has not written yet", which is what the handover
+        waits on. It is also what a document holding nothing but its own
+        schema returns, and that is the same answer for the purpose: an
+        empty page has not been written in.
+        """
+        reader = None
+        try:
+            reader = yc.DocumentReader(self.q.collab_json_sock,
+                                       str(self.room), record=None,
+                                       handle="control")
+            doc, _ = reader.await_document(
+                "", 1.0,
+                predicate=lambda blob, _n: bool(self._phrases(blob)))
+        except (OSError, yc.CannotDecode):
+            return None
+        finally:
+            if reader is not None:
+                reader.close()
+        phrases = self._phrases(doc) if doc else []
+        return max(phrases, key=len) if phrases else None
+
+    def _phrases(self, blob: bytes | None) -> list[str]:
+        if not blob:
+            return []
+        try:
+            strings = yc.document_strings(blob)
+        except yc.CannotDecode:
+            return []
+        return [t.strip() for _p, t in strings
+                if " " in t.strip() and len(t.strip()) >= self.WROTE_MIN_CHARS]
+
+    def the_handover(self) -> None:
+        """Cut to xaver, once, on the frame where quinten's words reach him.
+
+        The hinge of the film and the only cut in it. Everything before
+        this is quinten's screen -- his applications, his invitations,
+        his few words -- and everything after it is xaver's, without
+        coming back.
+
+        What makes it a cut worth making rather than a scene change is
+        *what is already there when the camera arrives*: he opened none
+        of these applications and typed none of this, and the sentence
+        quinten finished a second ago is on his page. That is the
+        collaboration claim, and it is made by looking rather than by
+        being narrated -- which is why the wait for it happens on
+        quinten's screen, where the typing is, and the cut happens on
+        the frame it lands.
+
+        Asked of xaver's *app*, in the app's own protocol, not of the
+        wire and not of a screenshot: a late joiner on his broker gets
+        the word processor's whole document back, so an answer carrying
+        the words is his running app holding them. Three outcomes, kept
+        apart, because a rig that reports "not there" for "could not
+        look" is the defect this file keeps finding in itself.
+        """
+        self.handed_over = True
+        if self.x is None:
+            yc.gap("nobody joined, so there is nobody to hand the film "
+                   "over to and no second machine for anything to cross to")
+            return
+
+        # What he wrote, and where the rig learned it. Driven, this file
+        # typed it and knows it exactly. Hands-on, nobody here watched
+        # him type, so it comes out of his own document -- and if his
+        # page is still empty there is nothing to hand over yet, which is
+        # the state `tick` is holding this call back for.
+        if self.typed.is_set():
+            proof = yc.SHARED_PROOF
+        else:
+            proof = self.he_has_written()
+            if proof is not None:
+                yc.note(f"the words were written by hand, so the crossing "
+                        f"is checked on a phrase out of quinten's own "
+                        f"document ({proof!r}) rather than on one this rig "
+                        f"chose")
+
+        self.waiting = "quinten's words reaching xaver's machine"
+        self.status(force=True)
+        # The room reaching his machine at all, before anything is asked
+        # of the app on it. A cut to a bare desktop argues the opposite
+        # of what the cut is for, and an app that has not arrived cannot
+        # answer a handshake either.
+        self.wait_for_his_screen()
+
+        if proof is None:
+            yc.gap("quinten's document holds nothing anyone wrote, so the "
+                   "film hands over on a page with nothing of his on it "
+                   "and this run establishes nothing about the crossing")
+        else:
+            carried, doc = False, None
+            reader = None
+            try:
+                reader = yc.DocumentReader(self.x.collab_json_sock,
+                                           str(self.room), record=None)
+                doc, carried = reader.await_document(
+                    proof, self.CROSSING_BUDGET_S)
+            except OSError as e:
+                yc.gap(f"xaver's session has no JSON broker to ask ({e}), "
+                       f"so whether quinten's words reached him was not "
+                       f"established — looked at {self.x.collab_json_sock}")
+            except yc.CannotDecode as e:
+                yc.gap(f"{e} — so whether quinten's words reached him was "
+                       f"not established, which is not the same as their "
+                       f"not having")
+            finally:
+                if reader is not None:
+                    reader.close()
+            # Three outcomes, kept apart. A document that came back
+            # without the words is a question asked and answered, and the
+            # claim is allowed to fail; silence establishes nothing
+            # either way and is a gap. Reporting the second as the first
+            # is the defect this file keeps finding in itself.
+            if doc is not None:
+                yc.claim("what quinten wrote is in xaver's own document, "
+                         "on his machine", carried, True)
+                if not carried:
+                    yc.gap(f"his app answered with {len(doc)} bytes and "
+                           f"none of it is {proof!r}: the two apps are "
+                           f"attached and answer each other's handshake, "
+                           f"and their documents are still two documents. "
+                           f"The film hands over to a page with nothing of "
+                           f"quinten's on it")
+            else:
+                yc.gap(f"no app in xaver's session answered the late-join "
+                       f"handshake within {self.CROSSING_BUDGET_S:.0f}s, so "
+                       f"the crossing was never read back — see "
+                       f"{self.x.log_path}")
+
+        mark("cut to xaver — quinten's words are already on his screen")
+        yc.cut("xaver")
+        try:
+            yc.frame_one_window(self.x, yc.WORD_PROCESSOR)
+        except Exception as exc:  # noqa: BLE001
+            yc.gap(f"xaver's word processor could not be framed for the "
+                   f"handover ({type(exc).__name__}: {exc}); the strip is "
+                   f"left where it is")
+        self.look_at_xaver("he did not open this or type this, and it is "
+                           "on his page", None)
+        mark("he right-clicks the photograph and says what he wants")
         self.his_instruction()
 
     def his_instruction(self) -> bool:
@@ -965,16 +1186,19 @@ class Live:
         `open_remark_for_selection` was written for it, said so in its
         own documentation, and was never called by it.
 
-        Driven on camera during an excursion, so the audience sees who
-        did it. Returns False rather than raising -- a take that reaches
-        the end and names what was missing is worth more than one that
-        dies at its best moment.
+        Driven on camera, on the screen the film has just handed over
+        to, so the audience sees who did it. Returns False rather than
+        raising -- a take that reaches the end and names what was
+        missing is worth more than one that dies at its best moment.
         """
         if self.x is None or not self.xaver_in:
             yc.gap("xaver never joined, so nobody was there to give the "
                    "instruction")
             return False
-        self.say("cutting to xaver — he has the image")
+        # Already his screen: `the_handover` cut here and does not cut
+        # back. Named anyway, because a `cut` to the session on camera is
+        # a no-op and this is the one line in the transcript that says
+        # whose hands the next gesture belongs to.
         yc.cut("xaver")
         try:
             # Aimed at a pixel, not at a name. A client application's
@@ -1024,11 +1248,12 @@ class Live:
                 yc.expected_listing(self.x.home), self.args.instruction,
                 self.shots, "his-instruction")
         finally:
-            # The camera stays on xaver. He asked for it, so he sees it
-            # land -- on a machine where he owns nothing and opened
-            # nothing, which is a stronger claim than watching a result
-            # arrive where it was already going.
-            self.say("staying on xaver — he watches it happen")
+            # The camera stays on xaver for the rest of the film. He
+            # asked for it, so he sees it land -- on a machine where he
+            # owns nothing and opened nothing, which is a stronger claim
+            # than watching a result arrive where it was already going.
+            self.say("staying on xaver — he watches it happen, and the "
+                     "film does not leave him again")
         self.instruction_sent = said
         yc.claim("the instruction came from the person holding the thing, "
                  "on another machine", said, True)
@@ -1088,6 +1313,10 @@ class Live:
         if hit and not self.agent_applied:
             self.agent_applied = True
             self.say(f"Claude acted — {hit.group(0).strip()[:110]}")
+            # The change is going into the document *now*, so the
+            # document is what the camera should be on. Anything later
+            # films a page that is already holding it.
+            self.the_work_lands()
         if self.agent_proc.poll() is None:
             return
         code = self.agent_proc.returncode
@@ -1167,6 +1396,49 @@ class Live:
             yc.gap(f"the camera could not be pointed at chat for the agent's "
                    f"working period ({type(exc).__name__}: {exc})")
 
+    def the_work_lands(self) -> None:
+        """Point the camera back at the document as the crop arrives in it.
+
+        `watch_it_think` framed chat, because for most of the agent's
+        working period chat is the only thing changing. The last thing
+        that happens is not in chat: the photo editor opens in the room,
+        the crop is exported, and the picture appears on the page. Framed
+        when the agent's log first says it applied something, so the
+        arrival is filmed rather than discovered afterwards on a page
+        that was already holding it.
+
+        A reframe, not a cut — the camera has been on xaver since the
+        handover and does not leave him. Follows whoever is on camera
+        for the same reason `watch_it_think` does: a take with no second
+        machine in it is filmed on quinten throughout, and reframing the
+        screen nobody is looking at is how a beat gets lost.
+
+        Losing this costs the shot its subject and nothing else, so a
+        failure is reported and the take goes on.
+        """
+        if self.watched_it_land or self.recorder is None:
+            return
+        on = self.recorder.on_camera()
+        if on is None:
+            return
+        self.watched_it_land = True
+        try:
+            if yc.best_tile(on, yc.WORD_PROCESSOR, yc.VIEWPORT) is None:
+                yc.gap(f"no word processor is on {on.name}'s screen, which "
+                       f"is the one being filmed, so the picture the agent "
+                       f"was told to put in the open document has nowhere "
+                       f"to be seen arriving")
+                return
+            yc.frame_one_window(on, yc.WORD_PROCESSOR)
+            self.say(f"framing the document on {on.name}'s screen — the "
+                     f"crop arrives there")
+            on.snapshot(os.path.join(
+                self.shots,
+                f"it-landed-{int(time.time() - self.started):04d}.png"))
+        except Exception as exc:  # noqa: BLE001
+            yc.gap(f"the camera could not be pointed at the document for "
+                   f"the crop's arrival ({type(exc).__name__}: {exc})")
+
     #: The longest the frame may go without changing before the stretch
     #: stops being watchable. Eight seconds is about where a viewer who
     #: has never seen this system decides the picture is frozen; it is
@@ -1192,16 +1464,18 @@ class Live:
         began = self.spoken_to_at or (self.chat_posts[0][0]
                                       if self.chat_posts else 0.0)
         if not self.chat_posts:
-            # Worth separating, because the two have different remedies.
-            # An instruction written as a line in the document is read by
-            # `act_in_document`, which opens no record in the room at
-            # all -- so there is nothing for a camera to find in chat,
-            # however well it is pointed. Only a summons carried by a
-            # message (the right-click compose surface, which is the
-            # gesture the film is built on) reaches `carry_out`, and only
-            # `carry_out` narrates.
-            how = ("the instruction reached it as a line in the document, "
-                   "and that path opens no record in the room"
+            # Only a summons carried by a message -- the right-click
+            # compose surface, which is the gesture this film is built on
+            # -- reaches `carry_out`, and only `carry_out` narrates. An
+            # instruction written as a line in a document goes to
+            # `act_in_document` instead, which opens no record in the
+            # room at all, so there is nothing for a camera to find in
+            # chat however well it is pointed. Nothing in this film types
+            # one any more; a run that lands here without ever being
+            # spoken to reached the agent by some other route, and which
+            # one is worth knowing before pointing a camera anywhere.
+            how = ("it was never spoken to at all, so whatever provoked "
+                   "it did not arrive as a message"
                    if not self.spoken_to_at else
                    "it was spoken to and published nothing")
             yc.gap(f"Claude put nothing in the room while it worked, so its "
@@ -1250,13 +1524,13 @@ class Live:
         refused beside them, and an agent that wrote nothing at all
         refuses nothing.
 
-        Which outcome that is comes from `args.outcome`, set beside the
-        instruction so the two cannot drift apart.
+        There is one outcome to look for, because there is one
+        instruction. It used to be chosen by `args.outcome`, which
+        travelled beside a second instruction picked by
+        `--no-agent-model` — and the other half of that pair asserted a
+        table carrying a bullet out of notes this film no longer types.
         """
-        if self.args.outcome == "crop":
-            self.read_back_the_crop()
-        else:
-            self.read_back_the_run_sheet()
+        self.read_back_the_crop()
 
     def read_back_the_crop(self) -> None:
         """The picture, and whether it is square.
@@ -1350,40 +1624,6 @@ class Live:
                 continue
         return b""
 
-    def read_back_the_run_sheet(self) -> None:
-        """The table, and the bullets' own words in its cells."""
-        reader = None
-        try:
-            reader = yc.DocumentReader(self.q.collab_json_sock, str(self.room),
-                                       record=None)
-            # In a *cell*, not merely on the page. The phrase looked for
-            # is one of the bullets the agent was asked to replace, so
-            # the loose test is answered by the agent's own input: it
-            # passed on a run where the agent refused outright and built
-            # no table, because the bullet saying it was still sitting
-            # there untouched.
-            doc, carried = reader.await_document(
-                yc.AGENT_BULLET_PROOF, 20.0,
-                predicate=yc.carries_text_in_a_table)
-        except OSError as e:
-            yc.gap(f"the document could not be read back ({e}), so what is "
-                   f"on the page was not established")
-            return
-        except yc.CannotDecode as e:
-            yc.gap(f"{e} -- so what is on the page was not established, "
-                   f"which is not the same as the page being empty")
-            return
-        finally:
-            if reader is not None:
-                reader.close()
-        if doc is None:
-            yc.gap("no app answered with the document, so what is on the "
-                   "page was not established")
-            return
-        yc.claim("and the run sheet's own content is in the table's cells",
-                 carried, True)
-        self.no_refusal(doc)
-
     def no_refusal(self, doc: bytes) -> None:
         """That what landed on the page is the work and not a decline.
 
@@ -1456,12 +1696,46 @@ class Live:
             self.start_the_agent()
             return
 
+        # The film changes hands here, and only here.
+        #
+        # This used to be inside `start_the_agent`, which fires the
+        # moment a word processor appears -- so the cut to xaver happened
+        # while quinten was still opening the image editor, and his
+        # typing beat was filmed on a machine the story had already left.
+        # Waiting for what he wrote to reach xaver puts the cut where the
+        # script puts it, and makes the crossing the reason for it.
+        if not self.handed_over:
+            if not self.ready_at:
+                self.ready_at = now
+            self.waiting = "he writes a few words in the document"
+            late = now > self.ready_at + HANDOVER_GRACE_S
+            if not self.typed.is_set() and not late:
+                # Driven, the owner's half says so; by hand, his own
+                # document is asked, and not on every tick -- each ask is
+                # a socket and a second, and this is the one branch that
+                # can sit here for a minute while somebody types.
+                if self.args.self_test:
+                    return
+                if now - self.asked_if_he_wrote < 3.0:
+                    return
+                self.asked_if_he_wrote = now
+                if self.he_has_written() is None:
+                    return
+            if late and not self.typed.is_set():
+                yc.gap(f"nothing was written in the document within "
+                       f"{HANDOVER_GRACE_S:.0f}s of everything being ready "
+                       f"for it, so the film hands over anyway and the "
+                       f"beat it hands over on did not happen")
+            self.status(force=True)
+            self.the_handover()
+            return
+
         if self.agent_proc is not None and not self.agent_done_at:
             if not self.marked_agent_wait:
                 self.marked_agent_wait = True
                 mark("Claude reads the room, decides, and works")
             self.waiting = ("Claude is working" if self.agent_applied
-                            else "Claude waits for a line addressed to it")
+                            else "Claude waits to be spoken to")
             self.check_the_agent()
             return
 
@@ -1469,11 +1743,18 @@ class Live:
             if now < self.agent_done_at + SYNC_GRACE_S:
                 self.waiting = "the edit crossing to the other machine"
                 return
-            if not self.visited_after_agent:
-                self.visited_after_agent = True
-                mark("cut to xaver: the agent's work reached him")
-                self.visit_xaver("the agent's work is on his screen too",
-                                 yc.WORD_PROCESSOR)
+            if not self.showed_the_ending:
+                self.showed_the_ending = True
+                # No cut. The camera has been on him since the handover,
+                # so the payoff arrives on the screen he was already
+                # watching -- which is the ending the script asks for and
+                # is a stronger one than being shown a second machine to
+                # prove it happened there too.
+                mark("the crop lands, on the screen he was already watching")
+                self.the_work_lands()
+                self.look_at_xaver("the picture he pointed at, square, in "
+                                   "a document he never opened",
+                                   None)
                 if self.args.stop_after == "agent":
                     self.say(f"holding {self.args.dwell:.0f}s, then stopping")
                     self.stop.wait(self.args.dwell)
@@ -1507,7 +1788,7 @@ class Live:
 # --------------------------------------------------------------------
 
 
-def the_owners_half(q, shots: str, instruction: str,
+def the_owners_half(q, shots: str, live: "Live",
                     stop: threading.Event) -> None:
     """Everything you would do, driven from here.
 
@@ -1520,7 +1801,7 @@ def the_owners_half(q, shots: str, instruction: str,
     first self-test of this file.
     """
     try:
-        _the_owners_half(q, shots, instruction, stop)
+        _the_owners_half(q, shots, live, stop)
     except Exception as exc:  # noqa: BLE001 — a dead thread must be loud
         import traceback
         traceback.print_exc()
@@ -1529,7 +1810,7 @@ def the_owners_half(q, shots: str, instruction: str,
             f"{type(exc).__name__}: {exc}")
 
 
-def _the_owners_half(q, shots: str, instruction: str,
+def _the_owners_half(q, shots: str, live: "Live",
                      stop: threading.Event) -> None:
     """The steps themselves.
 
@@ -1646,7 +1927,7 @@ def _the_owners_half(q, shots: str, instruction: str,
     # member like any other. Raised again on an empty field -- the
     # composer used to keep the previous answer, so a second invitation
     # came out addressed to "XaverXaver".
-    mark("inviting Claude — the same card, a different name")
+    mark("inviting Claude — the same card, admitted as an agent")
     yc.show_collaborators(q)
     agent_token = yc.invite_from_the_panel(q, "Claude", shots, "live-invite-2")
     yc.claim("a second invitation was minted, for the agent",
@@ -1674,7 +1955,7 @@ def _the_owners_half(q, shots: str, instruction: str,
     # app draws it; here it is a frame primitive the compositor owns, so a
     # file manager and a document and a photograph sit on one bar. That is
     # the one gesture in the film a viewer cannot mistake for a browser.
-    mark("the image editor, and the applications sharing one tab bar")
+    mark("the image editor opens, and two applications share one tab bar")
     extras: dict[str, dict] = {}
     if photos is None:
         photos = q.launch(yc.IMAGE_EDITOR,
@@ -1694,14 +1975,27 @@ def _the_owners_half(q, shots: str, instruction: str,
                    f"({type(exc).__name__}: {exc})")
     stop.wait(0.8)
 
-    # A run of real list items, a line of prose that disagrees with them,
-    # and then the instruction — in that order, because the agent
-    # converts the bullets immediately above the paragraph addressed to
-    # it.
-    mark("he writes the notes, and the line addressed to Claude")
-    typed = yc.type_into_the_document(
-        q, wp, yc.AGENT_PROSE + yc.AGENT_BULLETS + instruction + "\n")
+    # A few words, and that is the whole beat.
+    #
+    # What it has to show is that the document is *shared*: he writes,
+    # and it is on somebody else's screen. Three lines of prose, a run of
+    # bullets and a paragraph addressed to the agent by name showed that
+    # no better and took thirteen seconds to type, and they were there
+    # for a reason that has gone -- the agent used to read its
+    # instruction out of the page. It does not. What it answers is a
+    # remark xaver makes on the photograph, so nothing typed here is
+    # addressed to anybody, and addressing an agent through a document
+    # was the weakest thing in the cut besides.
+    mark("quinten types a few words")
+    typed = yc.type_into_the_document(q, wp, yc.SHARED_TEXT)
     yc.claim("the document was written into", typed, True)
+    if typed:
+        # The handover waits on this. Set only when the keystrokes
+        # actually went somewhere: with no laid-out tile to aim a caret
+        # into, nothing was typed, and a cut to xaver claiming quinten's
+        # words are on his screen would be a cut to a page that has
+        # nothing on it.
+        live.typed.set()
     print("\n  [ --self-test: the owner's half is done ]", flush=True)
 
 
@@ -1760,8 +2054,9 @@ def main() -> int:
                          "be watched moving")
 
     ap.add_argument("--excursion", type=float, default=EXCURSION_S, metavar="S",
-                    help=f"seconds spent on xaver's screen per cut, twice "
-                         f"(default {EXCURSION_S:.0f}; 0 never leaves yours)")
+                    help=f"seconds held on xaver's screen at the handover, "
+                         f"and again when the crop lands (default "
+                         f"{EXCURSION_S:.0f}; 0 never cuts to him at all)")
     ap.add_argument("--stop-after", choices=("agent", "never"),
                     default="agent",
                     help="'agent' ends the take once the agent's work has "
@@ -1815,26 +2110,29 @@ def main() -> int:
                          "window, no X server, no recording — so it runs "
                          "over ssh and cannot put anything on your screen")
     ap.add_argument("--self-test", action="store_true",
-                    help="drive the owner's half too: open Files, mint an "
-                         "invitation, open the word processor, write the "
-                         "instruction. Proves the whole rig with no hands")
+                    help="drive the owner's half too: open Files, mint two "
+                         "invitations, open the word processor and write a "
+                         "few words in it. Proves the whole rig with no "
+                         "hands")
     args = ap.parse_args()
 
-    # The instruction the terminal will tell him to write — and, under
-    # `--self-test`, the one that actually gets written. It is only ever
-    # advice: the agent reads whatever is in the document, and he can
-    # write anything he likes.
+    # The sentence xaver says about the photograph. Not typed anywhere:
+    # it is what the remark he opens on `harbour.png` carries, and under
+    # `--no-instruction` it is what the terminal tells him to write
+    # there. Nothing in this film puts an instruction on a page.
     #
-    # `args.outcome` travels with it and decides what is read back
-    # afterwards. The two were separate once: whichever instruction was
-    # picked, the readback asserted a table with the run sheet's words
-    # in its cells — so a take of the crop would have failed a claim
-    # about a beat it was not filming, and a take of the run sheet
-    # passed one about an instruction it had not been given.
-    if args.agent_model:
-        args.instruction, args.outcome = yc.CROP_INSTRUCTION, "crop"
-    else:
-        args.instruction, args.outcome = KEYWORD_INSTRUCTION, "table"
+    # One instruction, one readback, and no branch between them. There
+    # were two of each once, chosen by `--no-agent-model`, and the
+    # pairing was the whole difficulty: whichever instruction was picked,
+    # the readback asserted a table with a run sheet's words in its
+    # cells, so a take of the crop failed a claim about a beat it was
+    # not filming.
+    args.instruction = yc.CROP_INSTRUCTION
+    if not args.agent_model:
+        yc.gap("--no-agent-model has no answer for the instruction this "
+               "film gives — its vocabulary is table, caption and "
+               "heading, and it will say so in the room rather than crop "
+               "anything")
 
     # ---- narration and trimming cannot both be on ------------------
     #
@@ -2330,18 +2628,22 @@ def main() -> int:
             if args.xaver:
                 print(f"      -> xaver redeems it "
                       f"{args.xaver_delay:.0f}s later, on his own machine")
-            print("  - open the word processor and write in it; drag "
-                  f"{yc.PHOTO_NAME} out of Files onto the page")
+            print("  - open the word processor and write a few words in "
+                  "it — anything; a sentence is plenty")
+            print("      -> the film cuts to xaver the moment they reach "
+                  "his machine, and stays there")
             if args.agent:
-                print(f'      -> once it is open, Claude joins the room and '
-                      f'waits. Write "{args.instruction}"')
-                print("         under a run of bullets and it will do it"
-                      + ("" if args.agent_model else
-                         " (keyword mode: it only knows"
-                         " table, caption and heading)"))
+                print("      -> Claude is already in the room, waiting to "
+                      "be spoken to. Nothing is typed to it: xaver "
+                      f"right-clicks {yc.PHOTO_NAME} on his own screen "
+                      f'and writes "{args.instruction}"')
+                if not args.agent_model:
+                    print("         (keyword mode: it only knows table, "
+                          "caption and heading, so it will decline that "
+                          "one — in the room, on camera)")
             if args.stop_after == "agent" and args.agent:
-                print("  - the take ends by itself once that has landed on "
-                      "the other machine")
+                print("  - the take ends by itself once the crop has "
+                      "landed in the document he is watching")
             else:
                 print("  - Ctrl-C in this terminal ends the take and writes "
                       "the clip")
@@ -2355,7 +2657,8 @@ def main() -> int:
                       "answer.")
             ins.countdown(max(0, args.countdown),
                           "Open Files, invite somebody from the "
-                          "collaborators panel, open the word processor.",
+                          "collaborators panel, open the word processor "
+                          "and write a few words in it.",
                           quiet=args.self_test)
             if wid is not None:
                 ins.raise_window(wid)
@@ -2364,10 +2667,10 @@ def main() -> int:
         # same `snapshot` op off a headless session as off a windowed
         # one, so recording here is what makes `--dry-run --self-test` a
         # rehearsal of the whole rig rather than of its first half: the
-        # cuts, the two excursions to xaver's screen and the compose all
-        # run, on a machine with no X server and with nothing on
-        # anybody's desktop. Without it, three of the things most likely
-        # to be broken on the night are the three never exercised.
+        # handover, the hold on xaver's screen and the compose all run,
+        # on a machine with no X server and with nothing on anybody's
+        # desktop. Without it, three of the things most likely to be
+        # broken on the night are the three never exercised.
         if args.record:
             os.makedirs(record_dir, exist_ok=True)
             recorder = yc.Recorder(sessions, record_dir, interval=0.0,
@@ -2386,16 +2689,21 @@ def main() -> int:
         # in the `finally` below, before anything reports.
         real_stdout, sys.stdout = sys.stdout, Console(sys.stdout)
 
-        if args.self_test:
-            hands = threading.Thread(
-                target=the_owners_half,
-                args=(quinten, shots, args.instruction, stop),
-                name="hands", daemon=True)
-            hands.start()
-
+        # Built before the driving half starts, because that half now
+        # reports into it: the film's one cut waits for quinten to have
+        # written something, and under `--self-test` the thread doing the
+        # writing is the only thing that knows when it has.
         print()
         live = Live(quinten, xaver, agent, args, shots, recorder)
         live.stop = stop
+
+        if args.self_test:
+            hands = threading.Thread(
+                target=the_owners_half,
+                args=(quinten, shots, live, stop),
+                name="hands", daemon=True)
+            hands.start()
+
         outcome = live.run()
 
     except KeyboardInterrupt:
