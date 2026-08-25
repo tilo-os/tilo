@@ -996,9 +996,9 @@ class Live:
                 yc.note(f"{yc.AGENT_SUBJECT} holds {here or 'nothing'} on "
                         f"quinten's machine, {there or 'nothing'} on its own")
                 if f"app:{yc.IMAGE_EDITOR}" not in here:
-                    why = ("the grant is gone from the machine that made "
-                           "it, so it was undone at the source rather "
-                           "than lost on the way")
+                    why = ("the grantor does not hold it either, so it "
+                           "was never made or was undone at the source "
+                           "rather than lost on the way")
                 elif yc.anyone_may_open(self.a, yc.IMAGE_EDITOR):
                     why = ("the row is reachable on that session, so what "
                            "is missing is the grant reaching it")
