@@ -58,6 +58,13 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
 
 /// Type `chars` characters into a document of `paragraphs` paragraphs, timing
 /// each character end to end. Returns the per-character costs in order typed.
+///
+/// The driver runs a frame per event and a keypress is two events, so its wall
+/// clock counts the layout-and-draw work twice. The live app dispatches both
+/// events and then paints once — winit coalesces the redraw requests. So the
+/// cost attributed to a character here is both `handle_event`s plus **one**
+/// frame's sync / layout / draw, taken from the driver's own per-pass
+/// profiler. That is what the app really spends before the glyph is on screen.
 fn type_and_time(paragraphs: usize, chars: usize) -> Vec<u64> {
     let path = document_with(paragraphs);
     let (state, wp, _fmt) = open_document(&path).expect("the document opens");
@@ -73,11 +80,23 @@ fn type_and_time(paragraphs: usize, chars: usize) -> Vec<u64> {
         .take(chars)
         .collect();
 
+    driver.begin_profiling();
     let mut per_char = Vec::with_capacity(chars);
     for ch in text {
-        let t = Instant::now();
+        driver.clear_profile_samples();
         driver.key(&ch.to_string());
-        per_char.push(t.elapsed().as_micros() as u64);
+        let frames = driver.take_profile_samples();
+        assert_eq!(
+            frames.len(),
+            2,
+            "a keypress should produce exactly the press and release frames",
+        );
+        let events: u64 = frames.iter().map(|f| f.handle_event_us).sum();
+        let paint = frames[0].sync_us
+            + frames[0].build_layout_us
+            + frames[0].apply_layout_us
+            + frames[0].draw_us;
+        per_char.push(events + paint);
     }
 
     // Prove the characters actually landed: a harness that measured an editor
@@ -132,18 +151,130 @@ fn report(label: &str, per_char: &[u64]) {
         over,
         over as f64 * 100.0 / per_char.len() as f64,
     );
+
+    // Where the slow characters fall matters as much as how slow they are. A
+    // stall that recurs on a fixed stride is periodic work on the typing path;
+    // one that creeps upward is cost that grows with the document. The
+    // percentiles cannot tell those two apart, and they need different fixes.
+    let p50 = percentile(&sorted, 50.0).max(1);
+    let spikes: Vec<usize> = per_char
+        .iter()
+        .enumerate()
+        .filter(|(_, &us)| us > p50 * 4)
+        .map(|(i, _)| i)
+        .collect();
+    if !spikes.is_empty() {
+        let gaps: Vec<usize> = spikes.windows(2).map(|w| w[1] - w[0]).collect();
+        let shown: Vec<String> = spikes.iter().take(12).map(|i| i.to_string()).collect();
+        println!(
+            "{:>28}   {} characters cost >4× the median, at #{}{}   gaps: {:?}",
+            "",
+            spikes.len(),
+            shown.join(", #"),
+            if spikes.len() > 12 { ", …" } else { "" },
+            &gaps[..gaps.len().min(11)],
+        );
+    }
+}
+
+/// Type at a fixed real-time cadence — a person's hands do not wait for the
+/// app — and record when each character actually finished being processed.
+///
+/// Keys go in on a schedule taken from a clock started before the first one, so
+/// when the editor overruns its slot the following keys are already due and go
+/// straight through with no pause. That is what a keyboard queue does, and it
+/// is what turns a slow character into a visible burst: several characters
+/// complete inside one display frame and land on screen together.
+///
+/// Returns, per 60 Hz display frame, how many characters became visible in it.
+///
+/// Only the key-down is sent. The driver runs a frame per event, and the live
+/// app runs one per *character* — winit coalesces the redraws the press and
+/// release both ask for. Sending the press alone gives one frame per character,
+/// which is the real cadence; the release costs the word processor nothing,
+/// since only a press carries text.
+fn paced_burst_profile(paragraphs: usize, chars: usize, per_second: f64) -> Vec<usize> {
+    use winit::event::ElementState;
+
+    let path = document_with(paragraphs);
+    let (state, wp, _fmt) = open_document(&path).expect("the document opens");
+    let mut driver = Driver::new(state, Box::new(wp), (1200, 800));
+    driver.type_text("warmup");
+
+    let interval = std::time::Duration::from_secs_f64(1.0 / per_second);
+    let text: Vec<char> = "the quick brown fox jumps over the lazy dog "
+        .chars()
+        .cycle()
+        .take(chars)
+        .collect();
+
+    let start = Instant::now();
+    let mut done_at = Vec::with_capacity(chars);
+    for (i, ch) in text.into_iter().enumerate() {
+        // The key is due at `i · interval`. If the editor is already past that,
+        // the key is waiting and goes in immediately.
+        let due = interval.mul_f64(i as f64);
+        if let Some(wait) = due.checked_sub(start.elapsed()) {
+            std::thread::sleep(wait);
+        }
+        let key = winit::keyboard::Key::Character(ch.to_string().into());
+        driver.send(ui::headless::key_event(key, ElementState::Pressed));
+        done_at.push(start.elapsed());
+    }
+
+    let frame = std::time::Duration::from_micros(16_667);
+    let frames = (done_at.last().copied().unwrap_or_default().as_micros() / 16_667) as usize + 1;
+    let mut per_frame = vec![0usize; frames];
+    for t in done_at {
+        let f = ((t.as_micros() / 16_667) as usize).min(frames - 1);
+        per_frame[f] += 1;
+    }
+    let _ = frame;
+    per_frame
+}
+
+/// Print the burst profile as a run of counts, and say how bad the worst clump
+/// is. One character per frame, most frames empty, is what typing should look
+/// like at 8 characters a second on a 60 Hz screen.
+fn report_bursts(label: &str, per_frame: &[usize], per_second: f64) {
+    let typed: usize = per_frame.iter().sum();
+    let busy: Vec<usize> = per_frame.iter().copied().filter(|&n| n > 0).collect();
+    let worst = busy.iter().copied().max().unwrap_or(0);
+    let clumped: usize = busy.iter().filter(|&&n| n > 1).map(|&n| n).sum();
+    println!(
+        "{label:<28} {typed} characters at {per_second:.0}/s over {} frames: \
+         worst frame showed {worst} at once; {clumped} characters ({:.0}%) \
+         arrived in a clump",
+        per_frame.len(),
+        clumped as f64 * 100.0 / typed.max(1) as f64,
+    );
+    // The shape itself, so a burst is legible rather than summarised: one
+    // column per display frame, capped at 9 so a clump reads at a glance.
+    let shape: String = per_frame
+        .iter()
+        .map(|&n| match n {
+            0 => '.',
+            n if n < 10 => char::from_digit(n as u32, 10).unwrap(),
+            _ => '#',
+        })
+        .collect();
+    for line in shape.as_bytes().chunks(120) {
+        println!("      {}", String::from_utf8_lossy(line));
+    }
 }
 
 fn main() {
     ui::i18n::I18nManager::init("en-US");
 
     let args: Vec<String> = std::env::args().collect();
-    let chars = args
-        .iter()
-        .position(|a| a == "--chars")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(300usize);
+    let arg = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let chars = arg("--chars").and_then(|v| v.parse().ok()).unwrap_or(300usize);
+    let rate = arg("--rate").and_then(|v| v.parse().ok()).unwrap_or(8.0f64);
 
     println!(
         "per-character cost, end to end (handle_event + sync + layout + draw), \
@@ -152,5 +283,11 @@ fn main() {
     for paragraphs in [0usize, 1, 4, 16] {
         let per_char = type_and_time(paragraphs, chars);
         report(&format!("{paragraphs} paragraph(s) of body"), &per_char);
+    }
+
+    println!("\ntyping at a person's pace: what reaches the screen, frame by frame\n");
+    for paragraphs in [0usize, 4, 16] {
+        let per_frame = paced_burst_profile(paragraphs, chars.min(120), rate);
+        report_bursts(&format!("{paragraphs} paragraph(s) of body"), &per_frame, rate);
     }
 }
