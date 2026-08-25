@@ -365,9 +365,23 @@ fn word_processor_product(view: &View, doc: &AutoCommit) -> Option<Product> {
 fn photos_product(_view: &View, doc: &AutoCommit) -> Option<Product> {
     let image = photos::doc::PhotosDoc::image(doc)?;
     let edits = photos::doc::PhotosDoc::edits(doc);
-    let bytes = std::fs::read(&image.path)
-        .map_err(|e| tracing::warn!(path = %image.path, "cannot read the photograph: {e}"))
-        .ok()?;
+    // Through the app's own resolver, not `fs::read`, because the path in a
+    // shared document is true on exactly one machine. The photograph is staged
+    // under a different absolute path in every session that has it, and this
+    // participant has no window and no staging directory of its own — so the
+    // path it reads here is somebody else's, and reading it works only by the
+    // accident of the demo running three sessions under one uid. On two
+    // machines it is a file that is not there, and what fails is the whole
+    // errand: no bytes, no product, nothing to hand to the document the
+    // picture was going into, and every step still reporting that it applied.
+    let bytes = photos::doc::bytes_of(&image).or_else(|| {
+        tracing::warn!(
+            path = %image.path, content = ?image.content,
+            "cannot get the photograph's bytes: neither the path in the \
+             document nor its content is available to this participant",
+        );
+        None
+    })?;
     let decoded = photos::pixels::decode(&bytes)?;
     let rendered = photos::pixels::render(&decoded, edits.crop, edits.rotate_quarters);
     let png = photos::pixels::encode_png(&rendered)?;
@@ -1552,6 +1566,62 @@ mod tests {
                 .iter()
                 .map(Offer::id)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// The picture a participant was asked to work on is one it can get the
+    /// bytes of, whoever opened it.
+    ///
+    /// A participant with no window has no staging directory of its own: the
+    /// path in the shared document belongs to whichever session opened the
+    /// photograph, and this one is not it. Reading that path is the failure
+    /// that ends the whole errand quietly — no bytes, no product, nothing to
+    /// hand to the document the picture was going into, and every step still
+    /// reporting that it applied. The content hash is the same word in every
+    /// session, so it is what this resolves through.
+    #[test]
+    fn a_photograph_is_rendered_from_its_content_and_not_from_somebody_elses_path() {
+        // The bytes, as the room holds them: in the content store, addressed
+        // by their hash, exactly as they reach a participant that never
+        // touched the file.
+        let png = ::photos::pixels::encode_png(&::photos::shots_pattern(64, 32))
+            .expect("the fixture encodes");
+        let hash = qdoc::blobstore::put(&png);
+
+        // The document, as this participant receives it: a path under another
+        // session's runtime directory, which is not a path here.
+        let theirs = format!("/run/user/1000/qlvx-another-session/qos-opened/{hash}.png");
+        assert!(
+            std::fs::read(&theirs).is_err(),
+            "the stand-in for another session's path is readable here, so it \
+             is not standing in for one"
+        );
+        let mut doc = automerge::AutoCommit::new();
+        ::photos::doc::PhotosDoc::seed(&mut doc);
+        ::photos::doc::PhotosDoc::set_image(
+            &mut doc,
+            Some(&::photos::model::OpenImage::from_path(&theirs, 64, 32).with_content(&hash)),
+        );
+        // And an edit in force, because the product is the picture *as asked
+        // for* — a crop nobody can render is the same failure one step later.
+        ::photos::doc::PhotosDoc::set_edits(
+            &mut doc,
+            &::photos::model::Edits::default().rotated_right(),
+        );
+        doc.commit();
+
+        let product = photos_product(&View::default(), &doc)
+            .expect("a participant holding the content can render what it was asked for");
+        let Product::Content { hash: made } = product;
+        assert_ne!(
+            made, hash,
+            "the product has to be the edited picture, not the original \
+             handed straight back"
+        );
+        assert!(
+            qdoc::blobstore::get(&made).is_some(),
+            "the product names content this participant does not hold, so \
+             the document it is placed into would reference a permanent hole"
         );
     }
 
