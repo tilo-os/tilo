@@ -182,6 +182,27 @@ def app_document(json_sock: str, room: str, tries: int = 25) -> list[bytes]:
         reader.close()
 
 
+def spawn_app(wp_bin: str, app_env: dict, collab_sock: str,
+              wayland: str, log) -> subprocess.Popen:
+    """Start the application the way the launcher would.
+
+    The launcher dials the broker, hands the child the connected fd by number,
+    and then **closes its own copy**. That last step is not tidiness: a socket
+    is open while anyone holds it, so a parent that kept its copy would leave
+    the RPC session alive after the application had exited -- and the session
+    would go on offering operations for a process that is gone. Which is
+    exactly what this harness did until it closed the fd here.
+    """
+    conn = dial(collab_sock)
+    env = dict(app_env)
+    env["QOS_SVC_COLLAB_FD"] = str(conn.fileno())
+    env["WAYLAND_DISPLAY"] = wayland
+    app = subprocess.Popen([wp_bin], env=env, stdout=log,
+                           stderr=subprocess.STDOUT, pass_fds=(conn.fileno(),))
+    conn.close()
+    return app
+
+
 def dial(path: str, tries: int = 100) -> socket.socket:
     """A connected socket to the session broker, inheritable by a child.
 
@@ -250,7 +271,6 @@ def main() -> int:
     comp = subprocess.Popen([shell_bin, "--backend", "headless"], env=env,
                             stdout=shell_log, stderr=subprocess.STDOUT)
     app: subprocess.Popen | None = None
-    conn: socket.socket | None = None
     try:
         print("\n1. a compositor, and the word processor beside it")
         for _ in range(200):
@@ -276,18 +296,13 @@ def main() -> int:
         # The one thing the launcher would otherwise do: hand the app a
         # *connected* fd to the broker. Everything downstream of this is the
         # ordinary path a packaged app takes.
-        conn = dial(collab_sock)
         app_env = dict(env)
         app_env.update({
-            "WAYLAND_DISPLAY": wayland,
             "QOS_PACKAGE_ID": APP_ID,
-            "QOS_SVC_COLLAB_FD": str(conn.fileno()),
             "HOME": os.path.join(run_dir, "app-home"),
         })
         os.makedirs(app_env["HOME"], exist_ok=True)
-        app = subprocess.Popen([wp_bin], env=app_env, stdout=app_log,
-                               stderr=subprocess.STDOUT,
-                               pass_fds=(conn.fileno(),))
+        app = spawn_app(wp_bin, app_env, collab_sock, wayland, app_log)
         note(f"word processor started as pid {app.pid}, "
              f"a separate process on {wayland}")
 
@@ -408,13 +423,7 @@ def main() -> int:
                  .get("workspace_tree") or {})
         note(f"this session is sitting at the same desktop as `stranger`")
 
-        conn.close()
-        conn = dial(collab_sock)
-        app_env["QOS_SVC_COLLAB_FD"] = str(conn.fileno())
-        app_env["WAYLAND_DISPLAY"] = wayland
-        app = subprocess.Popen([wp_bin], env=app_env, stdout=app_log,
-                               stderr=subprocess.STDOUT,
-                               pass_fds=(conn.fileno(),))
+        app = spawn_app(wp_bin, app_env, collab_sock, wayland, app_log)
         note(f"the word processor is running again, pid {app.pid}, and "
              f"publishing to this session")
         # Give it as long as the successful run took to publish, so an
@@ -423,7 +432,9 @@ def main() -> int:
         for _ in range(80):
             time.sleep(0.25)
             j = call(stranger_control, {"op": "state_dump"})
-            if "workspace_tree" in j or "answer" in j:
+            # A state dump answers `{"state": {...}}` -- the response envelope
+            # is externally tagged, so the payload's own keys are one level in.
+            if "state" in j or "answer" in j:
                 answering = True
                 break
         claim(answering, "the second session is answering")
@@ -472,13 +483,8 @@ def main() -> int:
             if os.path.exists(display_file):
                 break
             time.sleep(0.1)
-        conn.close()
-        conn = dial(collab_sock)
-        app_env["QOS_SVC_COLLAB_FD"] = str(conn.fileno())
-        app_env["WAYLAND_DISPLAY"] = open(display_file).read().strip()
-        app = subprocess.Popen([wp_bin], env=app_env, stdout=app_log,
-                               stderr=subprocess.STDOUT,
-                               pass_fds=(conn.fileno(),))
+        app = spawn_app(wp_bin, app_env, collab_sock,
+                        open(display_file).read().strip(), app_log)
         back = False
         for _ in range(80):
             time.sleep(0.25)
@@ -518,8 +524,6 @@ def main() -> int:
                     p.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     p.kill()
-        if conn is not None:
-            conn.close()
         shell_log.close()
         app_log.close()
 

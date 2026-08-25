@@ -149,9 +149,13 @@ pub struct InvokeAnswer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InvokeError {
     /// Nothing published this address, or the connection that did has gone.
+    ///
+    /// A refusal by the capability model is deliberately not a variant here.
+    /// This module never decides authority -- the gate runs before anything
+    /// reaches [`RemoteAppActions::dispatch`], and giving a denial its own
+    /// shape here would invite a caller to treat this type as the place the
+    /// question is answered.
     Unknown,
-    /// The capability model refused it.
-    Denied(String),
     /// It was sent and the application never answered.
     TimedOut,
     /// The application answered with a refusal of its own.
@@ -162,10 +166,10 @@ impl InvokeError {
     /// The wire code, in the vocabulary `actions_invoke` already answers in.
     pub fn code(&self) -> &str {
         match self {
-            // A denial and an unknown address deliberately share a code: a
-            // caller must not be able to map what it may not reach by probing
-            // for a different error.
-            InvokeError::Unknown | InvokeError::Denied(_) => "unknown_action",
+            // The same code an address that does not exist gets: a caller
+            // must not be able to map what it may not reach by probing for a
+            // different error.
+            InvokeError::Unknown => "unknown_action",
             InvokeError::TimedOut => "action_failed",
             InvokeError::Refused { code, .. } => code,
         }
@@ -176,7 +180,6 @@ impl std::fmt::Display for InvokeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InvokeError::Unknown => write!(f, "no application currently offers that operation"),
-            InvokeError::Denied(why) => write!(f, "{why}"),
             InvokeError::TimedOut => write!(
                 f,
                 "the application was asked and did not answer within {}s; \
