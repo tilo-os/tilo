@@ -240,7 +240,16 @@ STRIP_SEARCH = {
 # that is the real user's home and is not ours to write into. See the
 # note in `stage_home`, and `docs/demo-todo.md` for the app-side fix
 # that would make the path stop mattering.
-HOMES_ROOT = "/var/tmp/qos/home"
+#
+# `QOS_DEMO_STATE_ROOT` moves both this and the workspace below, together.
+# A run wipes and re-stages them before it starts, so two runs sharing the
+# default destroy each other's staging mid-take — which is exactly what
+# happens when a take is being filmed on the same machine that somebody is
+# proving a fix on. The default is unchanged, so a film that sets nothing
+# films the same paths it always did.
+STATE_ROOT = os.environ.get("QOS_DEMO_STATE_ROOT") or "/var/tmp/qos"
+
+HOMES_ROOT = os.path.join(STATE_ROOT, "home")
 
 # The workspace the room carries, and the one directory the photograph
 # lives in.
@@ -273,7 +282,7 @@ HOMES_ROOT = "/var/tmp/qos/home"
 # by being in the room and not by being handed anyone's home. What it
 # does not prove is byte-level P2P hydration, and nothing here says it
 # does.
-WORKSPACE_ROOT = "/var/tmp/qos/workspace"
+WORKSPACE_ROOT = os.path.join(STATE_ROOT, "workspace")
 
 # The photograph beat 8 drags into the document, by the name it wears on
 # screen. Named once because four places have to agree about it: the
