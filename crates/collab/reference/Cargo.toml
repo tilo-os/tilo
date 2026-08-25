@@ -16,3 +16,9 @@ path = "src/lib.rs"
 qos-actions = { path = "../actions" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# A direct room's identity is derived from the pair of people in it, so both
+# ends compute it without negotiating (see `src/direct.rs`). `uuid` renders that
+# derivation in the one shape every room id in the stack is parsed as; `blake3`
+# is the digest — both are already resolved in the workspace lock.
+uuid = { workspace = true }
+blake3 = { workspace = true }
