@@ -2522,6 +2522,16 @@ pub fn run() -> ! {
         pending_composes.install(broker);
     }
 
+    // And what those applications say they can do. Same door, opposite
+    // direction from the two above: an app publishes its operations over this
+    // socket, and one invocation goes back down it to the connection that
+    // published it. Without this the catalogue that `actions_enumerate`
+    // answers from held only the shell's own operations, so a caller could
+    // open a window and not reach anything inside it.
+    if let Some(broker) = collab_broker.as_ref() {
+        frame_builder.host().remote_app_actions().attach(broker);
+    }
+
     // Read the session's own broker for pointer presence, and relay it
     // to the room's other hosts.
     //

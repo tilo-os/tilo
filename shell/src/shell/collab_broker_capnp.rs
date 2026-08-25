@@ -1306,7 +1306,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             // broker's answer to the same question and it is the one the
             // session gates against -- see `AppActionListener::published`.
             let claimed = p.get_app_id()?.to_str().unwrap_or_default().to_owned();
-            let announced = route.app_id.clone().unwrap_or_default();
+            let announced = route.app_id.clone();
             let mut actions = Vec::new();
             for a in p.get_actions()?.iter() {
                 let text = |t: capnp::text::Reader<'_>| t.to_str().unwrap_or_default().to_owned();
