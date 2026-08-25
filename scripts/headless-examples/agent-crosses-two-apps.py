@@ -438,6 +438,16 @@ def main() -> int:
     env = dict(os.environ)
     for k in ("DISPLAY", "WAYLAND_DISPLAY", "QUICK_COLLAB_SOCK"):
         env.pop(k, None)
+    # Keep every process this run starts off the sleeping discrete GPU.
+    #
+    # The film's own function, not a copy of it: this machine has an NVIDIA
+    # card in D3Cold, creating a wgpu instance loads every Vulkan ICD, and
+    # enumerating through that one reaches across PCIe to a powered-down
+    # device. `yc-demo.py` applies this to everything it starts; a harness
+    # driving the same binaries from outside it inherits the problem, which
+    # shows up as `failed to create dri2 screen` and a compositor that renders
+    # nothing a snapshot can read back.
+    env = film.pin_gpu(env)
     env.update({
         "XDG_RUNTIME_DIR": runtime_dir,
         "HOME": home,

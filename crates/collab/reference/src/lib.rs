@@ -49,6 +49,7 @@
 //! See [`Remark::to_chat_action`].
 
 mod delivery;
+mod direct;
 mod reference;
 mod remark;
 
@@ -56,6 +57,7 @@ pub use delivery::{
     Delivery, Destination, DestinationDisplay, Id, MentionRef, RoomMember, Target, deliver,
     resolve_mentions,
 };
+pub use direct::DirectRoom;
 pub use reference::{Referent, ResourceRef, Span, SpanUnit};
 pub use remark::{
     CHAT_ACTION_TYPE, ROOM_CONVERSATION, ReceivedRemark, Remark, Undeliverable, read_chat_action,

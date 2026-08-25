@@ -182,6 +182,13 @@ pub struct Session {
     /// name a file in the folder next to it, because the folder is here
     /// too.
     peers: BTreeMap<&'static str, Editor>,
+    /// The resource the request being answered named, when it named one.
+    ///
+    /// Set for the turn and cleared with it. It reaches the apps through
+    /// [`View::subject`], which is how an app can answer about the object
+    /// somebody actually pointed at rather than about wherever the agent
+    /// happens to be looking.
+    subject: Option<String>,
     /// Decoders for every app the agent speaks to. The door decodes through
     /// this before dispatching, so an action whose type no app registered is
     /// refused rather than run on trust.
@@ -711,6 +718,7 @@ impl Session {
             link,
             editor: None,
             peers: BTreeMap::new(),
+            subject: None,
             registry: surface::registry(),
             handled: HashSet::new(),
             pending: None,
@@ -766,6 +774,7 @@ impl Session {
             target_blocks: focus_block.iter().cloned().collect(),
             focus_block,
             focus_offset,
+            subject: self.subject.clone(),
             directory: self.cfg.directory.clone(),
         }
     }
@@ -1456,6 +1465,10 @@ impl Session {
         }
         self.addressed_seen = true;
         self.handled.insert(summons.message.clone());
+        // What this turn is about, for as long as the turn lasts. Every survey
+        // and every product taken below is asked with it, so an app answers
+        // about the object that was pointed at.
+        self.subject = summons.subject.resource().map(str::to_string);
         tracing::info!(
             message = %summons.message,
             channel = %summons.channel,
@@ -1481,9 +1494,30 @@ impl Session {
         // parsing "this", and how a request about one thing cannot come out
         // as an operation on another.
         let scoped: Vec<Offer> = match summons.subject.resource() {
+            // Plus the opens, always. An open names an **application**, not a
+            // resource, so it is never the "operation on another thing" this
+            // narrowing exists to prevent — and dropping it made the
+            // commonest request in this system impossible to answer.
+            //
+            // The gesture that carries a subject is right-clicking an object
+            // and saying something about it, so the subject is that object's
+            // address: a photograph in the file manager, say. Everything the
+            // *room* could do with that photograph then lives in an
+            // application that is not running, and the only offer that could
+            // bring one in was filtered out for naming something other than
+            // the photograph. What was left was that file's own operations —
+            // rename it, delete it — so "make this square" could only ever
+            // come back as "nothing here does that".
+            //
+            // Narrowing what may be *acted on* is the claim, and it still
+            // holds: an open performs nothing to any resource. It changes
+            // what the next survey contains, and that survey is scoped again.
             Some(resource) => offers
                 .iter()
-                .filter(|o| o.address().resource == resource)
+                .filter(|o| {
+                    o.address().resource == resource
+                        || surface::opens(o.address()).is_some()
+                })
                 .cloned()
                 .collect(),
             None => offers.clone(),
@@ -2340,27 +2374,35 @@ impl Session {
             // true stays true, in the sentence it would have used anyway.
             let (instruction, carries) = match step.instruction {
                 Instruction::Unknown(what) => {
-                    // Asked of the model, not only of the keyword floor.
+                    // Asked of whatever chose in the first place, against the
+                    // survey the previous step produced.
                     //
-                    // The floor matches an instruction's words against the
-                    // labels apps put on their operations and insists on a
-                    // clear winner. That is the right rule for a short
-                    // request naming one thing, and it cannot read the case
-                    // this path exists for: "make this square" is not the
-                    // label of the crop, and the sentence that produced this
-                    // clause was the half of an instruction the room could
-                    // not answer *yet*. Resolving it with the floor meant
-                    // the one case reconsider was written for was the one
-                    // case it could not resolve.
+                    // This used to re-read the clause with the deterministic
+                    // floor alone, which is a keyword match — and the reason
+                    // the clause was left unresolved is that it needed an
+                    // application that was not running, not that it was
+                    // simple. "Make this square" is understood by the thing
+                    // that understood it the first time; the floor knows
+                    // `table`, `caption` and `heading` and was never going to
+                    // answer it. So the photo editor opened, exported its
+                    // crop, and the step that wanted it still refused —
+                    // against a room that by then contained exactly what it
+                    // was asking for.
                     //
-                    // `choose` falls back to the floor by itself on every
-                    // unhappy path, so this is strictly wider: the survey is
-                    // the one retaken above, and a clause that answers to
-                    // nothing still comes back Unknown.
-                    let again = self.chooser.choose(&what, &[], &offers);
-                    let again = again.plan.steps.into_iter().next().unwrap_or(
-                        crate::plan::Step::reconsider(&what, &offers),
-                    );
+                    // Nothing is widened: same clause, same chooser, and the
+                    // offers are whatever the room exports now. A clause that
+                    // still answers to nothing comes back Unknown and refuses
+                    // below, naming what already stands.
+                    let again = self
+                        .chooser
+                        .choose(&what, &[], &offers)
+                        .plan
+                        .steps
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| {
+                            crate::plan::Step::reconsider(&what, &offers)
+                        });
                     match again.instruction {
                         Instruction::Unknown(_) => {
                             (Instruction::Unknown(what), step.carries)
@@ -2451,11 +2493,19 @@ impl Session {
                 // name — an agent that answers "I can do these four things"
                 // while holding a hundred addresses is wrong about itself.
                 Instruction::Unknown(what) => {
-                    let reply = format!(
-                        "{name}: I can't \"{what}\" here. {}{}",
+                    // What already stands, first. A clause can now reach this
+                    // point with earlier steps applied — an open that
+                    // succeeded and a clause after it that still answers to
+                    // nothing — and a refusal that mentioned only the failure
+                    // would be describing a room it had already changed. When
+                    // nothing has been done `refusal` says exactly what it
+                    // said before.
+                    let why = format!(
+                        "I can't \"{what}\" here. {}{}",
                         describe_offers(scope),
                         self.could_have_opened(&what),
                     );
+                    let reply = refusal(&name, &done, None, why.trim_end_matches('.'));
                     self.reply(to, &reply, Outcome::Refused)?;
                     return Ok(Ran::Said);
                 }

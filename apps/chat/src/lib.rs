@@ -34,6 +34,10 @@ pub mod audio;
 #[cfg(feature = "live-media")]
 pub mod video;
 pub mod call;
+// A direct message, as a room with two people in it — never a second kind of
+// message beside the ordinary ones. See the module docs for why nothing about
+// it is stored in this app's document.
+pub mod direct;
 pub mod doc;
 pub mod emoji;
 pub mod events;
@@ -71,6 +75,8 @@ pub fn app_root() -> Box<dyn Widget> {
 /// * `"narrow"` — collapse both flaps for the responsive overlay capture.
 /// * `"compact"` — medium window: channels docked, members summoned on demand.
 /// * `"starter"` — the real first-run empty workspace (no demo content).
+/// * `"direct"` — a window on a room with two people in it: a direct
+///   conversation, which is an ordinary room and an ordinary conversation.
 /// * `"context"` — open a channel context menu.
 /// * `"attach"` — open the workspace file picker over the composer.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {

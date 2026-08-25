@@ -58,3 +58,22 @@ chat-agent-step-refused = { $did } · { $why }
 # transcript that showed every one of these at once would be unreadable.
 chat-agent-reasoning-model = How it decided
 chat-agent-reasoning-floor = How it decided · without a model
+
+# --- Direct conversations --------------------------------------------------
+#
+# A direct message is a room with two people in it, not a second kind of
+# message. These strings label that room where it would otherwise be labelled
+# with a workspace name it does not have.
+
+# Section header in the sidebar, above this window's direct conversations.
+chat-direct-section = Direct messages
+
+# Under the person's name at the top of a direct conversation's sidebar, so a
+# person can see at a glance that the room they are writing into holds two
+# people and not a team.
+chat-direct-subtitle = Just the two of you
+
+# The sidebar's presence pill in a direct conversation, where "N online" would
+# be telling somebody the size of a room they can already see the whole of.
+chat-direct-both-here = Both here
+chat-direct-away = Away

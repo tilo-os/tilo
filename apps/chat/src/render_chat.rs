@@ -270,24 +270,60 @@ impl ChatApp {
         let side = self.sidebar_rect();
         fill_rect(scene, tf, side, c.surfaces.raised);
 
-        // workspace title header
-        let ws_name = self
-            .workspaces
-            .iter()
-            .find(|w| w.id == self.active_ws)
-            .map(|w| w.name.clone())
-            .unwrap_or_default();
+        // The header names the room. A direct conversation *is* a room — one
+        // with two people in it — so this is where that shows: the person you
+        // are talking to, rather than a workspace name a two-member room does
+        // not have. Nothing else about the surface changes, because nothing
+        // else about the room is different.
+        let direct_with = self.room_kind().direct_peer().map(str::to_string);
+        crate::i18n::ensure();
         let header = Rect::new(side.x0, side.y0, side.x1, side.y0 + 52.0);
-        let ws_title = truncate_to(tr, &ws_name, 16.0, side.width() - 60.0);
-        label(scene, tr, tf, &ws_title, 16.0, c.text_primary, side.x0 + 16.0, side.y0 + 17.0);
-        // a tiny "presence count" pill
-        let online = self.users.iter().filter(|u| u.status == Presence::Online).count();
-        let pill_txt = format!("{online} online");
-        let (pw, _) = tr.measure(&pill_txt, 10.5, None);
-        let pill = Rect::new(side.x1 - pw as f64 - 28.0, side.y0 + 16.0, side.x1 - 12.0, side.y0 + 34.0);
-        fill_round(scene, tf, pill, 9.0, c.surface_white_10);
-        fill_circle(scene, tf, Point::new(pill.x0 + 10.0, pill.center().y), 3.0, c.semantic.success);
-        label(scene, tr, tf, &pill_txt, 10.5, c.text_dim, pill.x0 + 17.0, pill.center().y - 7.0);
+        match &direct_with {
+            Some(them) => {
+                let name = self.user_name(them);
+                let title = truncate_to(tr, &name, 16.0, side.width() - 100.0);
+                label(scene, tr, tf, &title, 16.0, c.text_primary, side.x0 + 16.0, side.y0 + 10.0);
+                let sub = crate::i18n::t("chat-direct-subtitle");
+                let sub = truncate_to(tr, &sub, 10.5, side.width() - 100.0);
+                label(scene, tr, tf, &sub, 10.5, c.text_dim, side.x0 + 16.0, side.y0 + 30.0);
+                // "N online" in a room of two is telling somebody the size of a
+                // room they can see the whole of. Whether the other person is
+                // here is the question that actually has an answer.
+                let here = self
+                    .user(them)
+                    .map(|u| u.status == Presence::Online)
+                    .unwrap_or(false);
+                let pill_txt = crate::i18n::t(if here {
+                    "chat-direct-both-here"
+                } else {
+                    "chat-direct-away"
+                });
+                let (pw, _) = tr.measure(&pill_txt, 10.5, None);
+                let pill = Rect::new(side.x1 - pw as f64 - 28.0, side.y0 + 16.0, side.x1 - 12.0, side.y0 + 34.0);
+                fill_round(scene, tf, pill, 9.0, c.surface_white_10);
+                let dot = if here { c.semantic.success } else { c.text_dim };
+                fill_circle(scene, tf, Point::new(pill.x0 + 10.0, pill.center().y), 3.0, dot);
+                label(scene, tr, tf, &pill_txt, 10.5, c.text_dim, pill.x0 + 17.0, pill.center().y - 7.0);
+            }
+            None => {
+                let ws_name = self
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == self.active_ws)
+                    .map(|w| w.name.clone())
+                    .unwrap_or_default();
+                let ws_title = truncate_to(tr, &ws_name, 16.0, side.width() - 60.0);
+                label(scene, tr, tf, &ws_title, 16.0, c.text_primary, side.x0 + 16.0, side.y0 + 17.0);
+                // a tiny "presence count" pill
+                let online = self.users.iter().filter(|u| u.status == Presence::Online).count();
+                let pill_txt = format!("{online} online");
+                let (pw, _) = tr.measure(&pill_txt, 10.5, None);
+                let pill = Rect::new(side.x1 - pw as f64 - 28.0, side.y0 + 16.0, side.x1 - 12.0, side.y0 + 34.0);
+                fill_round(scene, tf, pill, 9.0, c.surface_white_10);
+                fill_circle(scene, tf, Point::new(pill.x0 + 10.0, pill.center().y), 3.0, c.semantic.success);
+                label(scene, tr, tf, &pill_txt, 10.5, c.text_dim, pill.x0 + 17.0, pill.center().y - 7.0);
+            }
+        }
         hline(scene, tf, side.x0 + 12.0, side.x1 - 12.0, header.y1, c.border_standard);
 
         // "+ category" affordance below the workspace title.
@@ -334,6 +370,46 @@ impl ChatApp {
 
             if !cat.collapsed {
                 y = self.draw_channel_group(scene, tf, tr, theme, side, Some(&cat.id), y, hits);
+            }
+            y += 6.0;
+        }
+
+        // Direct conversations, below the channels and deliberately not among
+        // them. A direct message is a room, not a channel — putting it in the
+        // channel tree would be the second parallel concept this whole design
+        // exists to avoid, and would suggest the workspace can read it.
+        //
+        // One row per person in the room, because the room you would share
+        // with each of them already exists as far as addressing is concerned:
+        // its id is derived from the pair, so there is nothing to create and
+        // nothing to find. An empty roster draws no rows and no empty-state
+        // invention — with nobody else here there is genuinely nobody to write
+        // to, and saying so with a placeholder person would be worse.
+        let convos = self.direct_conversations();
+        if !convos.is_empty() && y <= body_bottom {
+            let head = crate::i18n::t("chat-direct-section");
+            text(scene, tr, tf, &head.to_uppercase(), 10.5, c.text_dim, side.x0 + 12.0, y + 5.0, TextWeight::Semibold, None);
+            y += 26.0;
+            for (person, _room) in convos {
+                if y > body_bottom {
+                    break;
+                }
+                let row = Rect::new(side.x0 + 8.0, y, side.x1 - 8.0, y + 28.0);
+                let status = self.user(&person.id).map(|u| u.status);
+                draw_avatar(
+                    scene,
+                    tf,
+                    tr,
+                    theme,
+                    Point::new(row.x0 + 18.0, row.center().y),
+                    10.0,
+                    &self.initials_for(&person.id),
+                    self.user(&person.id).map(|u| u.color_idx).unwrap_or(0),
+                    status,
+                );
+                let name = truncate_to(tr, &person.name, 12.5, row.width() - 44.0);
+                label(scene, tr, tf, &name, 12.5, c.text_primary, row.x0 + 34.0, row.center().y - 8.0);
+                y += 30.0;
             }
             y += 6.0;
         }
