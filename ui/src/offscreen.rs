@@ -227,7 +227,13 @@ impl OffscreenRenderer {
             device,
             RendererOptions {
                 use_cpu: false,
-                antialiasing_support: AaSupport::all(),
+                // Only `Area` is ever asked for at render time (see the
+                // `antialiasing_method` below), and `all()` builds the msaa8
+                // and msaa16 pipelines too -- shaders, bind groups and the
+                // buffers behind them -- for two modes nothing selects. On a
+                // machine where a dozen clients share one integrated GPU that
+                // is paid per client, per process.
+                antialiasing_support: AaSupport::area_only(),
                 num_init_threads: None,
                 pipeline_cache: None,
             },
