@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Read a recorded demo back — the pixels, not the assertions.
 
-`scripts/yc-demo.py --record` writes a run directory and composes
-`qos-demo.mp4` from it. Everything in that run is a claim until someone
-looks at the frames, and a claim that passes every byte-level check can
-still be a peer's caret hovering over an empty page. This script is the
-looking: it finds where each beat lives in the finished video and cuts
+Either rig writes a run directory and composes a film out of it into
+`films/`. Everything in that run is a claim until someone looks at the
+frames, and a claim that passes every byte-level check can still be a
+peer's caret hovering over an empty page. This script is the looking: it
+finds where each section of the film lives in the finished video and cuts
 the frames out of it so they can be read.
 
 It changes nothing and it re-derives everything from artifacts:
@@ -13,12 +13,22 @@ It changes nothing and it re-derives everything from artifacts:
   track.txt      which source frame is on screen, and for how long
   frames/*.png   the frames themselves, and their capture times
   captions/*.txt every string the band draws, verbatim
-  qos-demo.mp4   what actually shipped
+  the .mp4       what actually shipped
 
-The transcript supplies the clock. Run the recorder through a stamper so
-each line carries the wall-clock second it was printed:
+**Both rigs, and they divide the film differently.** `yc-demo.py --record`
+prints numbered beat banners, so a frame can be attributed to beat 7 and
+the sections are beats. `yc-demo-live.py` is driven by a person and has no
+step list to print, so it prints no banners — and this script used to die
+on that with "was it stamped?", which is a true statement about a log that
+was stamped and misdiagnoses the run somebody is most likely to be
+verifying. With no banners the sections are the camera spans instead, off
+the `[ on camera: … ]` lines both rigs print, and the transcript says
+which of the two it did.
 
-    python3 -u scripts/yc-demo.py --record 2>&1 \
+The transcript supplies the clock. Run the rig through a stamper so each
+line carries the wall-clock second it was printed:
+
+    python3 -u scripts/yc-demo-live.py 2>&1 \
       | python3 -c 'import sys,time
 for line in sys.stdin:
     sys.stdout.write(f"{time.time():.3f} {line}"); sys.stdout.flush()' \
@@ -28,8 +38,8 @@ then
 
     scripts/demo-verify.py <record-dir> --log run.log --out frames-out
 
-Beat windows come from matching those stamps against frame mtimes, so a
-frame attributed to beat 7 is a frame that was captured while beat 7 was
+Section windows come from matching those stamps against frame mtimes, so a
+frame attributed to a beat is one that was captured while that beat was
 running — not one that a hand-written timestamp guessed at.
 """
 from __future__ import annotations
@@ -112,9 +122,13 @@ def read_log(path: str) -> tuple[list[dict], list[dict]]:
 
 
 def windows(beats: list[dict], frames: list[dict]) -> list[dict]:
-    """Each beat's span in video time, via the frames captured inside it."""
-    if not beats:
-        raise SystemExit("no beat banners in the log; was it stamped?")
+    """Each beat's span in video time, via the frames captured inside it.
+
+    An empty list of beats is an empty list of windows, not an error: a
+    live take prints no banners, and the caller says so and falls back to
+    the camera spans. Refusing here reported a stamped log as unstamped
+    and killed the verification of the one take somebody actually films.
+    """
     out: list[dict] = []
     for i, beat in enumerate(beats):
         start = beat["at"]
@@ -128,6 +142,39 @@ def windows(beats: list[dict], frames: list[dict]) -> list[dict]:
                    if inside else None),
         })
     return out
+
+
+def find_video(directory: str) -> str | None:
+    """The film this run directory produced, if it can be found without asking.
+
+    `<directory>/qos-demo.mp4` was the old place and is still honoured.
+    Both rigs now write a timestamped file into `films/` at the top of the
+    checkout instead, so that is where this looks next — newest first, and
+    skipping the boot bumper and anything already joined to one, because a
+    bumper on the front shifts every timestamp in this file by its own
+    length and every window below would be wrong by that much.
+
+    Returns None rather than guessing wildly; `--video` is the answer when
+    there is more than one candidate and this picked the wrong one.
+    """
+    legacy = os.path.join(directory, "qos-demo.mp4")
+    if os.path.isfile(legacy):
+        return legacy
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    films = os.path.join(repo, "films")
+    if not os.path.isdir(films):
+        return None
+    best, best_at = None, 0.0
+    for name in os.listdir(films):
+        if not name.endswith(".mp4"):
+            continue
+        if name.startswith("qos-boot-bumper") or "-with-bumper" in name:
+            continue
+        path = os.path.join(films, name)
+        at = os.path.getmtime(path)
+        if at > best_at:
+            best, best_at = path, at
+    return best
 
 
 def cut_spans(cuts: list[dict], frames: list[dict]) -> list[dict]:
@@ -246,12 +293,20 @@ def main() -> int:
                     help="where to write the extracted frames "
                          "(default <directory>/verify)")
     ap.add_argument("--video", default=None,
-                    help="the composed file (default <directory>/qos-demo.mp4)")
+                    help="the composed file (default: <directory>/qos-demo.mp4 "
+                         "if it is there, else the newest take in films/)")
     ap.add_argument("--per-beat", type=int, default=4,
-                    help="frames to cut out of each beat (default 4)")
+                    help="frames to cut out of each section (default 4)")
     args = ap.parse_args()
 
-    video = args.video or os.path.join(args.directory, "qos-demo.mp4")
+    video = args.video or find_video(args.directory)
+    if not video or not os.path.isfile(video):
+        raise SystemExit(
+            "no composed film to read back. Both rigs write a timestamped "
+            "file into films/ at the top of the checkout; name it with "
+            "--video.")
+    if not args.video:
+        print(f"film     {video} (found; --video overrides)")
     out = args.out or os.path.join(args.directory, "verify")
     os.makedirs(out, exist_ok=True)
 
@@ -292,36 +347,74 @@ def main() -> int:
         print(f"  {span['from']:6.2f}–{span['to']:6.2f}s  {span['session']:8} "
               f"{span['frames']:4d} frames")
 
-    print("\nbeats:")
+    # How the film gets divided up for the extraction below.
+    #
+    # A scripted take prints numbered banners, so a section is a beat and
+    # a frame belongs to the beat that was running when it was captured.
+    # A live take has no step list to print -- it is driven by a person --
+    # so its sections are the stretches one session was on camera, off the
+    # `[ on camera: ... ]` lines both rigs print. Saying which of the two
+    # this is, out loud, is the point: this used to exit here with "was it
+    # stamped?", which is a false statement about a stamped log and
+    # stopped the verification of the take somebody actually films.
+    if beat_windows:
+        sections = [{"label": f"{b['n']}. {b['title']}",
+                     "slug": f"beat{b['n']}",
+                     "from": b["from"], "to": b["to"],
+                     "frames": len(b["frames"]),
+                     "beat": b["n"], "title": b["title"]}
+                    for b in beat_windows]
+        print(f"\nbeats:   {len(sections)} numbered banners in the log")
+    else:
+        sections = [{"label": f"on {c['session']}'s screen",
+                     "slug": f"cam{i + 1}-{c['session']}",
+                     "from": c["from"], "to": c["to"],
+                     "frames": c["frames"],
+                     "beat": None, "title": c["session"]}
+                    for i, c in enumerate(spans)]
+        print("\nbeats:   none. This log has no numbered banners, which is "
+              "what a take driven\n         by a person looks like -- "
+              "yc-demo-live.py has no fixed step list\n         to print. "
+              "Everything above is checked either way; the frames\n"
+              "         below are cut off the camera spans instead of off "
+              "beats.")
+        if not sections:
+            print("         ! and no camera cuts either, so there is nothing "
+                  "to cut frames out\n           of. Was the log the rig's "
+                  "own stdout, and was it stamped?")
+
+    print("\nsections:")
     index: list[dict] = []
-    for beat in beat_windows:
-        if beat["from"] is None:
-            print(f"  {beat['n']}. {beat['title']}\n"
-                  f"     ! no frames captured in this beat")
+    n = max(1, args.per_beat)
+    for section in sections:
+        if section["from"] is None:
+            print(f"  {section['label']}\n"
+                  f"     ! no frames captured here")
             continue
-        print(f"  {beat['n']}. {beat['title']}\n"
-              f"     {beat['from']:.2f}–{beat['to']:.2f}s "
-              f"({len(beat['frames'])} frames)")
-        span = beat["to"] - beat["from"]
-        n = max(1, args.per_beat)
+        print(f"  {section['label']}\n"
+              f"     {section['from']:.2f}–{section['to']:.2f}s "
+              f"({section['frames']} frames)")
+        span = section["to"] - section["from"]
         cut_paths = []
         for i in range(n):
-            # Inside the beat rather than on its edges: the first
-            # moment of a beat is usually still the previous screen.
-            at = beat["from"] + span * (i + 1) / (n + 1)
-            name = f"beat{beat['n']}-{i + 1}-t{at:.1f}.png"
-            path = os.path.join(out, name)
+            # Inside the section rather than on its edges: the first
+            # moment of one is usually still the previous screen.
+            at = section["from"] + span * (i + 1) / (n + 1)
+            path = os.path.join(out, f"{section['slug']}-{i + 1}-t{at:.1f}.png")
             if extract(video, at, path):
                 cut_paths.append(path)
                 print(f"     {path}")
             else:
                 print(f"     ! could not extract at {at:.2f}s")
-        index.append({"beat": beat["n"], "title": beat["title"],
-                      "from": beat["from"], "to": beat["to"],
+        index.append({"beat": section["beat"], "title": section["title"],
+                      "label": section["label"],
+                      "from": section["from"], "to": section["to"],
                       "frames": cut_paths})
 
     with open(os.path.join(out, "index.json"), "w") as handle:
-        json.dump({"video": video, "stream": stream, "beats": index,
+        json.dump({"video": video, "stream": stream,
+                   "divided_by": "beats" if beat_windows else "camera",
+                   "beats": index, "sections": index,
                    "camera": spans, "band": band, "stills": runs},
                   handle, indent=2)
     print(f"\nindex: {os.path.join(out, 'index.json')}")
