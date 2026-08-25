@@ -10,8 +10,8 @@ it stops itself when the picture lands.
     ./scripts/yc-demo-insert.py --self-test  # it drags, to prove the rig
     ./scripts/yc-demo-insert.py --dry-run    # staging only, headless
 
-What you do: one drag. Files is already open on a home with
-`harbour.png` in it, the row is already selected, the document beside it
+What you do: one drag. Files is already open on the room's shared
+workspace with `harbour.png` in it, the row is already selected, the document beside it
 already has a line in it, and the window comes to the front after a
 countdown. Press on the highlighted row, pull it across onto the page,
 let go. The counter runs while you do it and the take ends on its own a
