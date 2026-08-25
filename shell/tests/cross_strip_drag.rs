@@ -1052,3 +1052,48 @@ fn switching_workspaces_rebuilds_nothing_in_the_workspace_switched_to() {
         "the rows for the new workspace were just built from it; nothing needs rebuilding"
     );
 }
+
+/// A cross-strip move whose destination strip has gone away must cost
+/// the move, not the window.
+///
+/// The move removed the tab from the source first and only then looked
+/// for the destination. When the destination had gone — a strip closed
+/// between the drag starting and the harvest tick that mirrors it — the
+/// removed tab had nowhere to go and was dropped on the floor. The
+/// comment at the refusal promised a re-attach to the source as a
+/// recovery; there was no re-attach, the synthesised group was simply
+/// let go of, and the window disappeared.
+#[test]
+fn a_cross_strip_move_to_a_strip_that_is_gone_keeps_the_tab() {
+    let (mut tree, s_a, s_b, a_tabs, _b_tabs) = two_strip_two_tab_tree();
+    // The destination went away. This is the state the harvest finds
+    // when a strip is closed while a tab is in flight towards it.
+    tree.workspaces[0].strips.retain(|s| s.id != s_b);
+
+    let moved = a_tabs[0];
+    let before: Vec<u64> = tree.workspaces[0]
+        .strips
+        .iter()
+        .flat_map(|s| s.window_groups.iter())
+        .flat_map(|g| g.tabs.iter())
+        .map(|t| t.id)
+        .collect();
+    assert!(before.contains(&moved), "precondition: the tab is on strip A");
+
+    assert!(
+        !tree.move_tab_across_strips(s_a, s_b, moved),
+        "a move to a strip that no longer exists must be refused"
+    );
+
+    let after: Vec<u64> = tree.workspaces[0]
+        .strips
+        .iter()
+        .flat_map(|s| s.window_groups.iter())
+        .flat_map(|g| g.tabs.iter())
+        .map(|t| t.id)
+        .collect();
+    assert_eq!(
+        after, before,
+        "a refused move must leave every tab exactly where it was"
+    );
+}
