@@ -39,6 +39,7 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TARGET = os.environ.get("CARGO_TARGET_DIR") or os.path.join(REPO, "target")
@@ -203,6 +204,43 @@ def spawn_app(wp_bin: str, app_env: dict, collab_sock: str,
     return app
 
 
+def png_has_content(path: str) -> bool | None:
+    """Whether a PNG holds more than one colour. `None` if it cannot be read.
+
+    A compositor whose GL cannot open a screen -- `failed to create dri2
+    screen`, which is this machine's state and several CI machines' -- still
+    answers a snapshot, and answers it with a uniform frame. A check that took
+    the file's existence for evidence would pass on every one of them and
+    report a rendered palette nobody rendered. So the pixels are looked at, and
+    a blank one is said out loud.
+    """
+    try:
+        raw = open(path, "rb").read()
+    except OSError:
+        return None
+    if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return None
+    idat, i = b"", 8
+    while i + 8 <= len(raw):
+        n = int.from_bytes(raw[i:i + 4], "big")
+        kind = raw[i + 4:i + 8]
+        if kind == b"IDAT":
+            idat += raw[i + 8:i + 8 + n]
+        elif kind == b"IEND":
+            break
+        i += 12 + n
+    if not idat:
+        return None
+    try:
+        flat = zlib.decompress(idat)
+    except zlib.error:
+        return None
+    # Sampled rather than counted in full: a 1920x1080 frame is 8 MB of
+    # scanline and the question only needs two different values.
+    seen = set(flat[::997])
+    return len(seen) > 2
+
+
 def dial(path: str, tries: int = 100) -> socket.socket:
     """A connected socket to the session broker, inheritable by a child.
 
@@ -351,6 +389,33 @@ def main() -> int:
 
         target = "word-processor.document#insert-table"
         claim(target in ids, f"the address to invoke is offered: {target}")
+
+        # And the same rows a person sees. The catalogue enumeration above and
+        # the command palette are one registry, so this is not a second
+        # rendering of the same list -- it is the evidence that they are the
+        # same list, in a picture somebody can check.
+        shot = os.path.join(run_dir, "palette-with-app-actions.png")
+        call(control, {"op": "modifiers", "logo": True})
+        call(control, {"op": "key", "key": "k"})
+        call(control, {"op": "modifiers"})
+        time.sleep(0.6)
+        call(control, {"op": "type", "text": "table"})
+        time.sleep(0.8)
+        call(control, {"op": "snapshot", "path": shot})
+        drawn = png_has_content(shot)
+        if drawn:
+            claim(True,
+                  f"the palette, with the application's operations in it: {shot}")
+        else:
+            # Not a failure about the product: enumeration above already read
+            # the same rows out of the same registry. It is a failure to be
+            # able to look, and those are different things.
+            note(f"GAP: the snapshot at {shot} came back blank, so the palette "
+                 f"could not be looked at here. This compositor's GL reports "
+                 f"`failed to create dri2 screen`; `shots --mode offscreen` "
+                 f"renders on a different path and is unaffected.")
+        call(control, {"op": "key", "key": "Escape"})
+        time.sleep(0.4)
 
         # 3. invoking it changes the application's document ----------------
         print("\n3. invoking one, and reading the result out of the app")
@@ -530,7 +595,8 @@ def main() -> int:
     if FAIL:
         print(f"\n{len(FAIL)} claim(s) failed; logs in {run_dir}")
         return 1
-    print(f"\nevery claim above was read back. logs in {run_dir}")
+    print(f"\nevery claim above was read back. logs and the palette \
+snapshot are in {run_dir}")
     if not args.keep:
         shutil.rmtree(run_dir, ignore_errors=True)
     return 0
