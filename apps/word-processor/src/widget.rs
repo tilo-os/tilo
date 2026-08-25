@@ -2100,6 +2100,39 @@ enum RecoveryAction {
 /// run on literally every keystroke.
 const AUTOSAVE_EDIT_THRESHOLD: u32 = 24;
 
+/// Whether `QOS_WP_DRAW_STATS` asked for the draw breakdown. Read once.
+fn draw_stats_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("QOS_WP_DRAW_STATS").is_some())
+}
+
+/// Report what `draw` spent, every 120 frames, while `QOS_WP_DRAW_STATS` is set.
+///
+/// The editor lays out and paginates the whole document inside `draw` — there is
+/// no measuring pass to put it in — so `draw` is most of what a keystroke costs
+/// and `ui`'s per-pass profiler cannot see inside it. Without this the only
+/// honest thing to say about that cost is its total.
+fn note_draw_stats(total_us: u64, toolbar_us: u64, blocks: usize) {
+    use std::sync::Mutex;
+    static ACC: Mutex<(u32, u64, u64)> = Mutex::new((0, 0, 0));
+    let Ok(mut a) = ACC.lock() else { return };
+    a.0 += 1;
+    a.1 += total_us;
+    a.2 += toolbar_us;
+    if a.0 == 120 {
+        let (n, total, toolbar) = (a.0 as f64, a.1 as f64, a.2 as f64);
+        eprintln!(
+            "word-processor draw over {} frames ({blocks} blocks): total {:.2} ms, \
+             of which toolbar {:.2} ms, everything else {:.2} ms",
+            a.0,
+            total / n / 1000.0,
+            toolbar / n / 1000.0,
+            (total - toolbar) / n / 1000.0,
+        );
+        *a = (0, 0, 0);
+    }
+}
+
 /// Height of the crash-recovery banner (drawn just under the toolbar, like the
 /// Find bar).
 const RECOVERY_BANNER_H: f64 = 40.0;
@@ -4828,9 +4861,12 @@ impl Widget for WordProcessorWidget {
         // actual (possibly multi-row) height so the canvas top sits below it and
         // no control is clipped. `draw_toolbar` re-derives the same packing, so
         // the reserved band and the drawn rows always agree.
+        let t_draw = draw_stats_enabled().then(std::time::Instant::now);
         let tb_h = self.toolbar_height(full.width());
         let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + tb_h);
+        let t_toolbar = t_draw.map(|_| std::time::Instant::now());
         self.draw_toolbar(scene, transform, text_renderer, theme, tb);
+        let toolbar_us = t_toolbar.map(|t| t.elapsed().as_micros() as u64);
 
         // No bottom status strip: its readout floats as a transient bubble (see
         // `draw_status_bubble`), so the content spans down to the layout bar and
@@ -6261,6 +6297,10 @@ impl Widget for WordProcessorWidget {
         // composites over the page; contextual menus/toasts (in `draw_overlay`)
         // still stack above it.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
+
+        if let (Some(t), Some(toolbar_us)) = (t_draw, toolbar_us) {
+            note_draw_stats(t.elapsed().as_micros() as u64, toolbar_us, self.blocks.len());
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &Modifiers, state: &mut AutoCommit, _path: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
