@@ -119,7 +119,6 @@ fn render_shot_to_png(
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
-    let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -128,6 +127,17 @@ fn render_shot_to_png(
     let mut state = ui::State::new();
     app.sync(&mut state.doc, &state.root);
     app.prewarm_images();
+
+    // The room, on the same path a live session gets it: the broker sends a
+    // roster and `adopt_room` reads it off the presence store every frame. A
+    // scenario that only wrote names into the app would have them wiped by
+    // that very read — and the surfaces that ask *who is here* would then be
+    // answered by a fixture instead of by the room. Built after `sync`,
+    // because that is where a scenario stages its room.
+    let mut presence = PresenceCtx::empty();
+    for (id, name) in app.shot_room() {
+        presence.set_display_name(ui::permissions::UserId(id), name);
+    }
     let widget: &mut dyn Widget = &mut app;
 
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);

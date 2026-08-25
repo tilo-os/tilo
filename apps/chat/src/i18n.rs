@@ -42,6 +42,17 @@ pub fn t(key: &str) -> String {
     I18nManager::lookup(key, None)
 }
 
+/// Resolve a Chat string key that interpolates variables.
+///
+/// The values are the app's own words — an operation's label, a participant's
+/// name — so the *sentence* around them stays in the catalogue and only the
+/// nouns are substituted. Building the line with `format!` instead would put
+/// English word order in the source and leave nothing to translate.
+pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
+    ensure();
+    I18nManager::format(key, args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

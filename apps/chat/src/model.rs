@@ -276,6 +276,81 @@ pub struct EditRecord {
     pub text: String,
 }
 
+/// What an agent in this room has done with a message addressed to it.
+///
+/// Written by the agent onto its own threaded reply, and updated in place as
+/// the work proceeds. It is deliberately **not** the reply's body: replacing a
+/// body four times would archive three revisions into the message's edit
+/// history and flag it `(edited)`, claiming somebody reworded a sentence
+/// nobody wrote yet, and burying the outcome under a trail of states.
+///
+/// Every variant is written at the moment the thing it names actually happens
+/// — a summons taken, an operation chosen, an action applied, a refusal
+/// written. None of them is a guess about what is about to happen, and none is
+/// produced by a timer. That is the whole property: a reader who sees
+/// [`AgentWorkState::Doing`] is reading a decision the agent has already made,
+/// not an animation covering the fact that it has not.
+///
+/// It says what happened and when, never that anything is happening *now*.
+/// Liveness is a different question with a different answer — whether the
+/// agent is still in the room, which presence answers — because a process that
+/// dies mid-instruction cannot retract a record, and a record that claimed to
+/// be live would go on claiming it forever.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWork {
+    pub state: AgentWorkState,
+    /// Epoch seconds at which the agent entered `state`.
+    pub since: i64,
+}
+
+impl AgentWork {
+    pub fn new(state: AgentWorkState, since: i64) -> Self {
+        Self { state, since }
+    }
+
+    /// Whether the agent has stopped. A finished record is the end of the
+    /// story; an unfinished one is the agent's last word on it, which is not
+    /// the same as a promise that more is coming.
+    pub fn finished(&self) -> bool {
+        matches!(
+            self.state,
+            AgentWorkState::Done { .. } | AgentWorkState::Refused
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AgentWorkState {
+    /// The summons was taken. The agent has read it and nothing is decided.
+    Taken,
+    /// The agent cannot act on it yet: the request names something owned by an
+    /// app whose state has not reached this agent.
+    ///
+    /// A room arrives one document at a time, so this is a claim about timing
+    /// and is spelled as one. It used to be a `tracing::debug!` line and
+    /// nothing else, which made a wait indistinguishable from being ignored.
+    Waiting {
+        /// The app being waited on, as the room names it.
+        app: String,
+    },
+    /// What the agent decided the request was — in the app's own words, not
+    /// the address it dispatched by, because this line is read by a person.
+    Doing {
+        /// The operation, as the app labels it.
+        did: String,
+        /// What it is about, or empty when the request named no subject.
+        about: String,
+    },
+    /// The operation was applied.
+    Done {
+        /// The operation that was applied, as the app labels it.
+        did: String,
+    },
+    /// The agent will not act. The reply's body says why, in its own words.
+    Refused,
+}
+
 #[derive(Clone, Debug)]
 pub struct Message {
     pub id: Id,
@@ -303,6 +378,13 @@ pub struct Message {
     /// Pinned messages are flagged in the shared document so every peer sees the
     /// same pins. A plain scalar flag toggled by an action.
     pub pinned: bool,
+    /// An agent's record of what it did with the message this one replies to.
+    ///
+    /// Present only on a reply an agent authored when it took a summons, and
+    /// updated in place by that agent as the work proceeds. `None` on every
+    /// ordinary message, which is what keeps it honest as "an agent took this
+    /// on" rather than a field every message carries an empty version of.
+    pub work: Option<AgentWork>,
 }
 
 impl Message {
@@ -445,6 +527,7 @@ mod tests {
             reference: None,
             attachment: None,
             pinned: false,
+            work: None,
         }
     }
 

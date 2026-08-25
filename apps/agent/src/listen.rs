@@ -257,12 +257,48 @@ pub fn asked_of(message: &Message, me: &str, name: &str, address: Address) -> St
 /// A reply is the agent's own message whose `parent` is the message it
 /// answers — including the replies that say it is *not* going to act, because
 /// a refusal is an answer and re-deciding it would produce a second one.
+///
+/// It also includes a reply the agent posted when it *took* the summons and
+/// has not finished. That is deliberate, and it is the conservative reading:
+/// an agent that stopped halfway may already have changed a document, and a
+/// restart that treated an unfinished record as untouched work would apply
+/// the same operation twice. What the room shows in that case is where the
+/// agent stopped, which is true, rather than a second attempt at it.
+///
+/// The one state that is **not** an answer is
+/// [`AgentWorkState::Waiting`](chat::model::AgentWorkState::Waiting). Nothing
+/// has been dispatched, nothing has changed, and the record exists precisely
+/// to say that there is no answer yet — treating it as one would make a wait
+/// permanent the moment it became visible.
 pub fn answered(messages: &[Message], me: &str) -> HashSet<String> {
     messages
         .iter()
         .filter(|m| m.author == me)
+        .filter(|m| !waiting(m))
         .filter_map(|m| m.parent.clone())
         .collect()
+}
+
+/// Whether `m` is a record that says the agent has not started.
+fn waiting(m: &Message) -> bool {
+    matches!(
+        m.work.as_ref().map(|w| &w.state),
+        Some(chat::model::AgentWorkState::Waiting { .. })
+    )
+}
+
+/// The agent's own reply standing under `parent`, if it has already posted
+/// one.
+///
+/// What [`answered`] finds, but the other way round: the id of the message to
+/// go on writing into rather than the set of questions to skip. Without it an
+/// agent that answers a summons over several turns — a wait, then the work —
+/// leaves one message per turn under the same question.
+pub fn record_of<'a>(messages: &'a [Message], me: &str, parent: &str) -> Option<&'a Message> {
+    messages
+        .iter()
+        .filter(|m| m.author == me && m.parent.as_deref() == Some(parent))
+        .next_back()
 }
 
 /// The next thing in the room addressed to the agent that it has not answered.
@@ -354,6 +390,7 @@ mod tests {
             reference: None,
             attachment: None,
             pinned: false,
+            work: None,
         }
     }
 

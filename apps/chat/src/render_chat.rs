@@ -751,6 +751,14 @@ impl ChatApp {
         // The chip stays up while the body is being edited: what a message is
         // about does not change because its wording is being reworked.
         let ref_h = if m.reference.is_some() { REF_CHIP_H } else { 0.0 };
+        // The strip belongs to the message that was *addressed*, not to the
+        // agent's reply: what a person needs to see is that the sentence they
+        // just typed was picked up, and they are looking at their own sentence
+        // in the timeline, not at a thread they have not opened.
+        let work_h = match self.agent_record(&m.id) {
+            Some(reply) => self.work_strip_height(tr, reply, text_w, true),
+            None => 0.0,
+        };
         RowM {
             idx_id: m.id.clone(),
             show_header,
@@ -759,6 +767,7 @@ impl ChatApp {
             react_h,
             edited_h,
             ref_h,
+            work_h,
             thread_h,
             editing,
             edit_ctrl_h,
@@ -847,6 +856,13 @@ impl ChatApp {
         if let Some(att) = &m.attachment {
             self.draw_attachment(scene, tf, tr, theme, att, text_x, *y, text_w);
             *y += rm.att_h;
+        }
+
+        if rm.work_h > 0.0 {
+            if let Some(reply) = self.agent_record(&m.id) {
+                self.draw_work_strip(scene, tf, tr, theme, reply, text_x, *y, text_w, true);
+                *y += rm.work_h;
+            }
         }
 
         if !m.reactions.is_empty() {
@@ -1032,6 +1048,106 @@ impl ChatApp {
         fill_round(scene, tf, pill, 10.0, fill);
         stroke_round(scene, tf, pill, 10.0, edge, 1.0);
         label(scene, tr, tf, &s, REF_CHIP_SIZE, ink, pill.x0 + pad, pill.center().y - 8.0);
+    }
+
+
+    /// The wording of `reply`'s record and the exact box it occupies.
+    ///
+    /// One function so the measure pass and the draw pass cannot disagree
+    /// about the height — the fault that clips a row's last line.
+    ///
+    /// `with_reason` is false where the reply's own body is already on screen
+    /// — inside the thread, the strip sits directly under the sentence it
+    /// would otherwise repeat.
+    fn work_strip_of(
+        &self,
+        tr: &mut TextRenderer,
+        reply: &Message,
+        text_w: f32,
+        with_reason: bool,
+    ) -> Option<(WorkLine, f64, f64)> {
+        let work = reply.work.as_ref()?;
+        let line = work_line(
+            work,
+            &self.agent_label(reply),
+            if with_reason { reply.text.trim() } else { "" },
+            self.agent_present(&reply.author),
+        );
+        let inner = (text_w as f64 - WORK_PAD_X * 2.0).max(40.0) as f32;
+        let detail_h = if line.detail.is_empty() {
+            0.0
+        } else {
+            tr.measure(&line.detail, WORK_TEXT_SIZE, Some(inner)).1 as f64 + 3.0
+        };
+        let total = WORK_PAD_Y * 2.0 + WORK_HEAD_H + detail_h + WORK_GAP;
+        Some((line, detail_h, total))
+    }
+
+    /// Height reserved for `reply`'s record, or zero when it has none.
+    fn work_strip_height(
+        &self,
+        tr: &mut TextRenderer,
+        reply: &Message,
+        text_w: f32,
+        with_reason: bool,
+    ) -> f64 {
+        self.work_strip_of(tr, reply, text_w, with_reason)
+            .map(|(_, _, h)| h)
+            .unwrap_or(0.0)
+    }
+
+    /// Draw what an agent did with a message: a strip in the tone of the state
+    /// it is in, and its own words underneath when it refused.
+    ///
+    /// Read beneath the message that summoned the agent, so the person who
+    /// typed the instruction sees it picked up without opening anything. The
+    /// same strip is drawn on the agent's own reply inside the thread, because
+    /// that is the message the record actually belongs to.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_work_strip(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reply: &Message,
+        x: f64,
+        y: f64,
+        text_w: f32,
+        with_reason: bool,
+    ) {
+        let Some((line, detail_h, total)) = self.work_strip_of(tr, reply, text_w, with_reason)
+        else {
+            return;
+        };
+        let ground = theme.tokens.colors.surfaces.base;
+        let (fill, edge, ink) = work_strip_colors(theme, ground, line.tone);
+        let box_h = total - WORK_GAP;
+        let strip = Rect::new(x, y, x + text_w as f64, y + box_h);
+        fill_round(scene, tf, strip, WORK_RADIUS, fill);
+        stroke_round(scene, tf, strip, WORK_RADIUS, edge, 1.0);
+        // A bar down the leading edge in the tone's own colour, so the state
+        // is answerable from the shape at a glance and never from the colour
+        // alone — the wash is deliberately mostly ground, which is not enough
+        // to tell four states apart, and would be nothing at all to a reader
+        // who cannot separate them by hue.
+        let rail = Rect::new(x, y, x + WORK_RAIL_W, y + box_h);
+        fill_round(scene, tf, rail, WORK_RAIL_W / 2.0, edge);
+
+        let tx = x + WORK_PAD_X;
+        let inner = (text_w as f64 - WORK_PAD_X * 2.0).max(40.0) as f32;
+        let head = truncate_to(tr, &line.head, WORK_TEXT_SIZE, inner as f64);
+        text(
+            scene, tr, tf, &head, WORK_TEXT_SIZE, ink,
+            tx, y + WORK_PAD_Y, TextWeight::Semibold, None,
+        );
+        if detail_h > 0.0 {
+            text(
+                scene, tr, tf, &line.detail, WORK_TEXT_SIZE, ink,
+                tx, y + WORK_PAD_Y + WORK_HEAD_H + 3.0,
+                TextWeight::Regular, Some(inner),
+            );
+        }
     }
 
     pub(crate) fn draw_attachment(
@@ -1365,6 +1481,13 @@ impl ChatApp {
             text(scene, tr, tf, &m.text, 14.0, c.text_primary, tx, yy, TextWeight::Regular, Some(tw));
             yy += h + 4.0;
         }
+        // The record on the agent's own reply, where it belongs. The
+        // timeline draws the same strip under the message that summoned it —
+        // one fact, rendered where each reader is looking.
+        if m.work.is_some() {
+            self.draw_work_strip(scene, tf, tr, theme, m, tx, yy, tw, false);
+            yy += self.work_strip_height(tr, m, tw, false);
+        }
         if let Some(att) = &m.attachment {
             self.draw_attachment(scene, tf, tr, theme, att, tx, yy, tw);
             yy += match att {
@@ -1451,9 +1574,22 @@ impl ChatApp {
             };
             let name = truncate_to(tr, &display, 14.0, panel.x1 - nx - 14.0);
             text(scene, tr, tf, &name, 14.0, c.text_primary, nx, avc.y - 14.0, TextWeight::Semibold, None);
-            let (status_txt, col) = match voice {
-                Some(ch) => (format!("🔊 In voice · {ch}"), c.semantic.success),
-                None => (presence_label(u.status).to_string(), c.text_dim),
+            // What an agent has in flight outranks its presence word, and
+            // only an agent ever has any: this is the live half of the
+            // surface, so it is drawn from a record that has not finished
+            // *and* a participant the room still lists. The durable half —
+            // what was taken, decided and done — is in the thread, which is
+            // where HIG 9.12 says the fact has to remain available when this
+            // line has moved on.
+            let (status_txt, col) = match (voice, self.agent_in_flight(&u.id)) {
+                (Some(ch), _) => (format!("🔊 In voice · {ch}"), c.semantic.success),
+                (None, Some(work)) => (
+                    work_line(work, &u.name, "", true).head,
+                    // Accent, for the same reason the strip uses it: work in
+                    // flight is state nobody chose and everybody should see.
+                    legible_on(c.accent[5], c.surfaces.raised, ROSTER_WORK_CONTRAST, c.text_primary),
+                ),
+                (None, None) => (presence_label(u.status).to_string(), c.text_dim),
             };
             let status_txt = truncate_to(tr, &status_txt, 11.5, panel.x1 - nx - 14.0);
             label(scene, tr, tf, &status_txt, 11.5, col, nx, avc.y + 2.0);
@@ -1567,6 +1703,9 @@ struct RowM {
     /// Height of the "written about ..." chip, or zero for an ordinary
     /// message that points at nothing.
     ref_h: f64,
+    /// Height of the strip showing what an agent did with this message, or
+    /// zero when no agent has taken it.
+    work_h: f64,
     thread_h: f64,
     /// This row is the message currently being edited inline — its body is
     /// replaced by the editor box (extra padding) plus a controls row.
@@ -1590,6 +1729,7 @@ impl RowM {
             + body
             + self.edited_h
             + self.att_h
+            + self.work_h
             + self.react_h
             + self.thread_h
             + 4.0
@@ -1732,14 +1872,225 @@ fn reference_chip_label(r: &qos_reference::ResourceRef) -> String {
     label.to_string()
 }
 
+
+// --------------------------------------------------------------- agent work
+
+/// AA floor for the working line beside an agent in the members list. The
+/// accent is a colour picked to *mean* "live", which on a light theme lands
+/// close enough to the raised surface to be a line you can see and not read.
+pub(crate) const ROSTER_WORK_CONTRAST: f64 = 4.5;
+
+/// Geometry of the strip an agent's record is drawn in.
+const WORK_PAD_X: f64 = 12.0;
+const WORK_PAD_Y: f64 = 6.0;
+/// One line of head text at [`WORK_TEXT_SIZE`].
+const WORK_HEAD_H: f64 = 16.0;
+/// Gap under the strip, before whatever the row draws next.
+const WORK_GAP: f64 = 6.0;
+const WORK_RADIUS: f64 = 8.0;
+/// Width of the bar down the leading edge that carries the state's tone.
+const WORK_RAIL_W: f64 = 3.0;
+const WORK_TEXT_SIZE: f32 = 11.5;
+/// The strip is context around a sentence, so it keeps mostly the ground it
+/// sits on — the same reasoning, and the same numbers, as the reference chip.
+const WORK_FILL_MIX: f64 = 0.86;
+const WORK_EDGE_MIX: f64 = 0.45;
+pub(crate) const WORK_TEXT_CONTRAST: f64 = 4.5;
+pub(crate) const WORK_EDGE_CONTRAST: f64 = 3.0;
+
+/// How an agent's record reads.
+///
+/// Four tones rather than a colour per state, because the distinction a reader
+/// needs is coarser than the record is: is something in flight, did it finish,
+/// did it stop, or is nothing happening.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkTone {
+    /// Taken, waiting or working, by an agent that is in the room.
+    Live,
+    /// Applied.
+    Done,
+    /// Refused — an outcome the agent chose and stated.
+    Stopped,
+    /// A record that stopped moving and an agent that is not here to move it.
+    Silent,
+}
+
+impl WorkTone {
+    /// The colour this tone starts from, before it is floored against whatever
+    /// ground it lands on.
+    fn seed(self, theme: &Theme) -> Color {
+        let c = &theme.tokens.colors;
+        match self {
+            // HIG 9.4: accent is reserved for state the user did not choose
+            // and should notice — "a sync in flight" is the given example, and
+            // an agent that has taken your instruction is the same kind of
+            // fact about the same kind of moment.
+            WorkTone::Live => c.accent[5],
+            WorkTone::Done => c.semantic.success,
+            // Warning, not danger. A refusal is a decision the agent made and
+            // said out loud, not a fault; painting it in the danger colour
+            // would make an honest "I'm not allowed to do that here" look
+            // like something broke.
+            WorkTone::Stopped => c.semantic.warning,
+            // Nothing is happening, and the strip must not suggest otherwise.
+            WorkTone::Silent => c.text_dim,
+        }
+    }
+}
+
+/// The wash, edge and ink an agent's strip is painted in on `ground`.
+///
+/// Derived exactly the way [`reference_chip_colors`] is, and for the same
+/// reason: a tone is a colour picked to *mean* something, which is never
+/// automatically a colour that can be read on whatever the theme puts behind
+/// it. The label is floored against the wash it sits on; the edge is floored
+/// against the surface, because the edge is what makes the strip legible as a
+/// container at all.
+pub(crate) fn work_strip_colors(
+    theme: &Theme,
+    ground: Color,
+    tone: WorkTone,
+) -> (Color, Color, Color) {
+    let seed = tone.seed(theme);
+    let fill = mix(seed, ground, WORK_FILL_MIX);
+    let edge = band_at_least(
+        mix(seed, ground, WORK_EDGE_MIX),
+        seed,
+        ground,
+        WORK_EDGE_CONTRAST,
+    );
+    let ink = legible_on(
+        theme.tokens.colors.text_primary,
+        fill,
+        WORK_TEXT_CONTRAST,
+        theme.tokens.colors.text_primary,
+    );
+    (fill, edge, ink)
+}
+
+/// One line of an agent's record, ready to draw.
+pub(crate) struct WorkLine {
+    /// Who, and what state they are in.
+    pub head: String,
+    /// The agent's own words, when the caller asked for them and there are
+    /// any. Empty otherwise.
+    pub detail: String,
+    pub tone: WorkTone,
+}
+
+/// Word an agent's record for a reader.
+///
+/// `present` is whether the agent is in the room **now**. It is the only thing
+/// that distinguishes a record from a claim: every state below says what the
+/// agent did and when, and none of them says anything is happening at this
+/// moment — so an unfinished record left behind by an agent that has gone is
+/// worded as exactly that, and painted in the tone of nothing happening.
+///
+/// This is the whole reason liveness is asked separately. A process that dies
+/// mid-instruction cannot retract what it wrote, so a record that claimed to
+/// be live would go on claiming it for as long as the channel exists.
+pub(crate) fn work_line(
+    work: &model::AgentWork,
+    agent: &str,
+    reason: &str,
+    present: bool,
+) -> WorkLine {
+    use model::AgentWorkState as S;
+    let at = model::clock(work.since);
+    // An unfinished record with nobody behind it is not a state the agent is
+    // in; it is where the agent stopped. Said in those words, and never in
+    // the present tense.
+    if !work.finished() && !present {
+        return WorkLine {
+            head: crate::i18n::t_args(
+                "chat-agent-gone",
+                &[("agent", agent.into()), ("at", at.into())],
+            ),
+            detail: String::new(),
+            tone: WorkTone::Silent,
+        };
+    }
+    match &work.state {
+        S::Taken => WorkLine {
+            head: crate::i18n::t_args(
+                "chat-agent-took",
+                &[("agent", agent.into()), ("at", at.into())],
+            ),
+            detail: String::new(),
+            tone: WorkTone::Live,
+        },
+        S::Waiting { app } => WorkLine {
+            head: crate::i18n::t_args(
+                "chat-agent-waiting",
+                &[
+                    ("agent", agent.into()),
+                    ("app", app.as_str().into()),
+                    ("at", at.into()),
+                ],
+            ),
+            detail: String::new(),
+            tone: WorkTone::Live,
+        },
+        S::Doing { did, about } => WorkLine {
+            head: if about.is_empty() {
+                crate::i18n::t_args(
+                    "chat-agent-working",
+                    &[
+                        ("agent", agent.into()),
+                        ("did", did.as_str().into()),
+                        ("at", at.into()),
+                    ],
+                )
+            } else {
+                crate::i18n::t_args(
+                    "chat-agent-working-about",
+                    &[
+                        ("agent", agent.into()),
+                        ("did", did.as_str().into()),
+                        ("about", about.as_str().into()),
+                        ("at", at.into()),
+                    ],
+                )
+            },
+            detail: String::new(),
+            tone: WorkTone::Live,
+        },
+        S::Done { did } => WorkLine {
+            head: crate::i18n::t_args(
+                "chat-agent-done",
+                &[
+                    ("agent", agent.into()),
+                    ("did", did.as_str().into()),
+                    ("at", at.into()),
+                ],
+            ),
+            detail: String::new(),
+            tone: WorkTone::Done,
+        },
+        // The reason travels with the refusal. A person reading the channel
+        // has to be able to see *why* without opening the thread — a strip
+        // that only said "stopped" would replace one silence with another.
+        S::Refused => WorkLine {
+            head: crate::i18n::t_args(
+                "chat-agent-stopped",
+                &[("agent", agent.into()), ("at", at.into())],
+            ),
+            detail: reason.to_string(),
+            tone: WorkTone::Stopped,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         body_spans, file_chip_meta, human_size, mention_colors, reference_chip_colors,
-        reference_chip_label, MENTION_BAND_CONTRAST, MENTION_TEXT_CONTRAST,
-        REF_CHIP_EDGE_CONTRAST, REF_CHIP_TEXT_CONTRAST,
+        reference_chip_label, work_line, work_strip_colors, WorkTone, MENTION_BAND_CONTRAST,
+        MENTION_TEXT_CONTRAST, REF_CHIP_EDGE_CONTRAST, REF_CHIP_TEXT_CONTRAST,
+        WORK_EDGE_CONTRAST, WORK_TEXT_CONTRAST,
     };
     use crate::app::ChatApp;
+    use crate::model::Message;
     use ui::theme::Theme;
     use ui::ColorCompat;
 
@@ -1967,6 +2318,7 @@ mod tests {
             reference: None,
             attachment: None,
             pinned: false,
+            work: None,
         };
         assert_eq!(m.mentions.len(), 2);
         let spans = body_spans(&app, &m, &theme, theme.tokens.colors.surfaces.base);
@@ -1993,6 +2345,229 @@ mod tests {
             1,
             "the stale reference is dropped, the sound one kept"
         );
+    }
+
+    // ------------------------------------------------------ agent work strip
+
+    fn work(state: crate::model::AgentWorkState) -> crate::model::AgentWork {
+        crate::model::AgentWork::new(state, 50_400)
+    }
+
+    /// The strip must be readable in every theme, for the same reason the
+    /// reference chip's colours are measured rather than eyeballed: a tone is
+    /// a colour chosen to *mean* something, and none of the four was chosen to
+    /// be read on whatever ground the theme puts behind it.
+    #[test]
+    fn the_work_strip_is_readable_in_every_tone_and_every_theme() {
+        use ui::a11y::contrast_ratio;
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = theme.tokens.colors.surfaces.base;
+            for tone in [WorkTone::Live, WorkTone::Done, WorkTone::Stopped, WorkTone::Silent] {
+                let (fill, edge, ink) = work_strip_colors(&theme, ground, tone);
+                let text = contrast_ratio(ink, fill);
+                assert!(
+                    text >= WORK_TEXT_CONTRAST,
+                    "{} / {tone:?}: the strip's label is {text:.2}:1 on its own wash",
+                    theme.name
+                );
+                let border = contrast_ratio(edge, ground);
+                assert!(
+                    border >= WORK_EDGE_CONTRAST,
+                    "{} / {tone:?}: the strip's edge is {border:.2}:1 on the surface",
+                    theme.name
+                );
+                println!(
+                    "work strip — {} / {tone:?}: label {text:.2}:1, edge {border:.2}:1",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    /// An unfinished record whose author has left the room must not read as
+    /// work in progress.
+    ///
+    /// The failure this exists to prevent is the whole reason liveness is a
+    /// separate question: an agent that is killed mid-instruction cannot
+    /// retract what it wrote, so a strip that said "is working" would go on
+    /// saying it for as long as the channel exists — a spinner that lies,
+    /// which is worse than the silence it replaced.
+    #[test]
+    fn a_record_nobody_is_behind_never_claims_to_be_working() {
+        use crate::model::AgentWorkState as S;
+        for state in [
+            S::Taken,
+            S::Waiting { app: "Photos".into() },
+            S::Doing { did: "crop".into(), about: "the harbour".into() },
+        ] {
+            let w = work(state.clone());
+            let live = work_line(&w, "Claude", "", true);
+            let gone = work_line(&w, "Claude", "", false);
+            assert_eq!(
+                live.tone,
+                WorkTone::Live,
+                "{state:?} with the agent present should read as in flight"
+            );
+            assert_eq!(
+                gone.tone,
+                WorkTone::Silent,
+                "{state:?} with the agent gone must not read as in flight"
+            );
+            assert_ne!(
+                live.head, gone.head,
+                "{state:?} must not be worded the same whether or not anybody is behind it"
+            );
+            assert!(
+                !gone.head.contains("is working") && !gone.head.contains("is reading"),
+                "a record nobody is behind said {:?}, which is the present tense",
+                gone.head
+            );
+        }
+    }
+
+    /// A finished record says the same thing whether or not the agent that
+    /// wrote it is still here. What happened, happened.
+    #[test]
+    fn a_finished_record_does_not_depend_on_the_agent_still_being_here() {
+        use crate::model::AgentWorkState as S;
+        for state in [S::Done { did: "crop".into() }, S::Refused] {
+            let w = work(state.clone());
+            assert_eq!(
+                work_line(&w, "Claude", "why not", true).head,
+                work_line(&w, "Claude", "why not", false).head,
+                "{state:?} was reworded by the agent leaving"
+            );
+        }
+    }
+
+    /// A refusal has to carry its reason where the channel can be read without
+    /// opening the thread. A strip that only said "stopped" would replace one
+    /// silence with another.
+    #[test]
+    fn a_refusal_carries_its_reason_into_the_timeline() {
+        let w = work(crate::model::AgentWorkState::Refused);
+        let why = "Claude: I'm not allowed to crop here";
+        assert_eq!(work_line(&w, "Claude", why, true).detail, why);
+        // …and not where the reply's own body is already on screen beside it.
+        assert!(work_line(&w, "Claude", "", true).detail.is_empty());
+    }
+
+    /// Every wording the strip can show has to come out of the catalogue. A
+    /// key with no entry resolves to itself, which ships the key to a screen.
+    #[test]
+    fn every_state_the_strip_can_show_resolves_to_a_real_string() {
+        use crate::model::AgentWorkState as S;
+        let states = [
+            S::Taken,
+            S::Waiting { app: "Photos".into() },
+            S::Doing { did: "crop".into(), about: String::new() },
+            S::Doing { did: "crop".into(), about: "the harbour".into() },
+            S::Done { did: "crop".into() },
+            S::Refused,
+        ];
+        for state in states {
+            for present in [true, false] {
+                let head = work_line(&work(state.clone()), "Claude", "", present).head;
+                assert!(
+                    head.starts_with("Claude"),
+                    "{state:?}/{present}: {head:?} did not interpolate the agent's name"
+                );
+                assert!(
+                    !head.contains("chat-agent-"),
+                    "{state:?}/{present}: {head:?} is an unresolved catalogue key"
+                );
+                assert!(
+                    head.contains("14:00"),
+                    "{state:?}/{present}: {head:?} does not say when"
+                );
+            }
+        }
+    }
+
+    /// The record belongs to the agent that wrote it, and the roster's live
+    /// line only shows work that is genuinely in flight.
+    #[test]
+    fn the_roster_line_shows_only_unfinished_work_by_an_agent_that_is_here() {
+        use crate::model::AgentWorkState as S;
+        let mut app = ChatApp::new_ephemeral();
+        app.messages = vec![
+            reply_with("m_1", "u_claude", work(S::Done { did: "crop".into() })),
+            reply_with("m_2", "u_claude", work(S::Doing { did: "crop".into(), about: String::new() })),
+        ];
+        // No roster yet: nothing is known about who is here, so an in-flight
+        // record is shown rather than denied.
+        assert!(app.agent_in_flight("u_claude").is_some());
+        // The room answers, and it does not list the agent.
+        app.room_names.insert("u_someone".into(), "Someone".into());
+        assert!(
+            app.agent_in_flight("u_claude").is_none(),
+            "an agent the room does not list has nothing in flight"
+        );
+        // The room lists it again.
+        app.room_names.insert("u_claude".into(), "Claude".into());
+        assert!(app.agent_in_flight("u_claude").is_some());
+        // A finished record is not in flight.
+        app.messages[1].work = Some(work(S::Refused));
+        assert!(
+            app.agent_in_flight("u_claude").is_none(),
+            "a finished record is not work in flight"
+        );
+    }
+
+    /// A strip must never put a raw participant id in front of a person.
+    ///
+    /// The case it happens in is exactly the case the strip exists for: the
+    /// record is read after the agent has gone, and a name belongs to the
+    /// room, which forgets a participant on leave. What the message that
+    /// summoned it called it is still the room's answer and is still in the
+    /// body, so that is what the strip falls back to.
+    #[test]
+    fn a_departed_agent_is_named_and_never_shown_its_id() {
+        use crate::model::AgentWorkState as S;
+        let mut app = ChatApp::new_ephemeral();
+        let asked = "@Scribe crop the harbour shot";
+        let room = [crate::mention::Participant {
+            id: "agent_scribe".into(),
+            name: "Scribe".into(),
+            is_agent: true,
+        }];
+        let mut summons = reply_with("m_asked", "u_aria", work(S::Taken));
+        summons.parent = None;
+        summons.work = None;
+        summons.text = asked.into();
+        summons.mentions = crate::mention::resolve(asked, &room);
+        assert_eq!(summons.mentions.len(), 1, "the fixture must carry the mention");
+        let record = reply_with("m_rec", "agent_scribe", work(S::Taken));
+        app.messages = vec![summons, record.clone()];
+        // The room lists somebody else, so the agent has left and nothing
+        // anywhere holds a name for it.
+        app.room_names.insert("u_aria".into(), "Aria Chen".into());
+        let name = app.agent_label(&record);
+        assert_eq!(name, "Scribe");
+        let head = work_line(&work(S::Taken), &name, "", false).head;
+        assert!(
+            !head.contains("agent_scribe"),
+            "the strip showed the participant id: {head:?}"
+        );
+    }
+
+    fn reply_with(id: &str, author: &str, w: crate::model::AgentWork) -> Message {
+        Message {
+            id: id.into(),
+            channel: "c_general".into(),
+            author: author.into(),
+            ts: 50_400,
+            text: String::new(),
+            edited: false,
+            history: vec![],
+            parent: Some("m_asked".into()),
+            reactions: vec![],
+            mentions: vec![],
+            reference: None,
+            attachment: None,
+            pinned: false,
+            work: Some(w),
+        }
     }
 }
 
