@@ -1958,19 +1958,22 @@ fn new_tab_from_the_plus_chip() -> Scenario {
 // =====================================================================
 
 /// Frames to let the eased focus travel settle before a snapshot — the
-/// snap curve is 200 ms of real wall time, and a frame sleeps 16 ms.
-const PAN_SETTLE_FRAMES: u32 = 16;
+/// snap curve is 300 ms of real wall time, and a frame sleeps 16 ms.
+const PAN_SETTLE_FRAMES: u32 = 24;
 
 /// Window width the strip is held at, in per-mille of the display's
 /// usable width. Half a screen each puts two windows in view with a
 /// third clipped at the edge.
 const HALF_WIDTH_PERMILLE: u16 = 500;
 
-/// Points along the viewport's 200 ms travel worth photographing.
+/// Points along the viewport's 300 ms travel worth photographing.
 /// Endpoints plus enough of the middle to tell a journey from a cut:
 /// a strip that moved in one frame shows the destination at every one
 /// of these, a strip that travelled shows a different place at each.
-const PAN_SAMPLES: &[u64] = &[0, 40, 80, 120, 160, 200];
+/// The early samples are also where a hard snap gives itself away — a
+/// curve that leaves at full speed is already most of the way there by
+/// the second frame.
+const PAN_SAMPLES: &[u64] = &[0, 60, 120, 180, 240, 300];
 
 /// The strip travelling, photographed while it is still moving.
 ///

@@ -1444,6 +1444,12 @@ impl TabBar {
     /// how `WindowGroup::bar_for_tests` is gated.
     #[cfg(any(test, debug_assertions))]
     pub fn max_rects(&self) -> &[Rect] { &self.max_rects }
+    /// Test-only accessor for the per-tab close-chip hit rects, gated
+    /// exactly like [`Self::max_rects`]. The pair is what lets a test
+    /// press the `×` a pill is *actually showing* rather than a
+    /// coordinate derived from layout constants that drift.
+    #[cfg(any(test, debug_assertions))]
+    pub fn close_rects(&self) -> &[Rect] { &self.close_rects }
 
     /// Compute an insertion index for a drop at `release_point`. Returns
     /// an index in `[0, tab_rects.len()]` — `0` means "before the first
@@ -2066,8 +2072,28 @@ impl Widget for TabBar {
             };
             let chip_y0 = r.y0 + 4.0;
             let chip_y1 = r.y1 - 4.0;
-            let close_x0 = r.x1 - close_w - close_inset;
-            let max_x0 = close_x0 - max_w - ACTION_GAP;
+            // The cluster is anchored to the *leading* edge of the
+            // trailing zone and fills rightward from there, clamped —
+            // while the zone is still narrower than the close chip's own
+            // tier — to stay inside the pill it belongs to.
+            //
+            // Anchoring it to the pill's right edge instead is what made
+            // the close button unreliable in the hand. A pill grows at
+            // its right edge as it opens, by exactly one action slot, so
+            // a cluster hung off that edge travels a whole slot right —
+            // and the slot the close mark vacates is precisely the one
+            // the maximize chip arrives in. The pointer that opened the
+            // pill is still sitting in it and has not moved, so the
+            // control underneath it changes identity mid-hover: press
+            // before the reveal lands and the tab closes, press after
+            // and the window maximizes.
+            //
+            // Anchored here, the chips hold their place for the whole
+            // reveal and the width the pill gains becomes room to their
+            // right for the chip that is arriving.
+            let close_x0 =
+                (r.x1 - effective + TITLE_CHIP_GAP).min(r.x1 - close_inset - close_w);
+            let max_x0 = close_x0 + close_w + ACTION_GAP;
             let (close, max_rect) = if is_pinned {
                 (Rect::ZERO, Rect::ZERO)
             } else {
@@ -2689,7 +2715,20 @@ impl Widget for TabBar {
                         self.hover_idx = None;
                         return;
                     };
-                    let origin = pill.center();
+                    // Where the press actually landed, which is what
+                    // [`DRAG_START_THRESHOLD_PX`] is a threshold on.
+                    // Anchoring on the pill's *centre* instead made the
+                    // threshold meaningless for every press that was not
+                    // dead-centre: a press near a pill's edge starts out
+                    // tens of pixels from the centre, so the first
+                    // pointer sample after it already clears the
+                    // threshold and lifts the pill into a drag. A hand
+                    // that is not perfectly still then loses its click
+                    // to a gesture it never made — the pill leaves the
+                    // bar, and the release either puts it back (the
+                    // click did nothing) or somewhere else (the windows
+                    // reordered themselves).
+                    let origin = self.last_cursor;
                     self.press_origin = Some((idx, origin));
                     // Cache the grab offset within the pill. `DragPayload::Tab`
                     // doesn't carry this, but `draw` needs it to position

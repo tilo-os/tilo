@@ -1054,19 +1054,10 @@ fn e2e_open_quick_settings() {
 // == true`. Mirrors `e2e_tab_drag_reorder`'s pattern (standalone group
 // rather than `build_nirios_overlay_host_with_chrome`) because:
 //
-//   1. `max_rects` has no public accessor on `TabBar`, so the only way
-//      to hit the maximize glyph from a click-coordinate is to derive
-//      its position from `tab_rects()[active_idx]` + the inset offsets
-//      defined inside `TabBar::apply_layout` (close_w = 18, close_inset
-//      = 4, max_w = 16, 2 px gap between close and max → max_rect.x0 =
-//      tab.x1 - 40, max_rect.x1 = tab.x1 - 24). Deriving those against
-//      the live shell's full widget tree would work, but:
-//
-//   2. The post-click assertion needs to observe `WindowGroup.maximized
-//      == true`. That field is `pub` on the concrete type, but behind
-//      the `Box<dyn Widget>` the shell builds there's no public walker
-//      to fish out a specific group. Adding one would require a new
-//      widget accessor, which the task explicitly disallows.
+//   The post-click assertion needs to observe `WindowGroup.maximized
+//   == true`. That field is `pub` on the concrete type, but behind the
+//   `Box<dyn Widget>` the shell builds there's no public walker to fish
+//   out a specific group.
 //
 // The standalone-group approach gives direct access to
 // `.maximized`, and still exercises the full tabs.rs click pipeline
@@ -1089,7 +1080,11 @@ fn e2e_maximized_tile_floating_controls() {
     group.set_strip_usable_px(960.0);
     assert!(!group.maximized, "group starts un-maximized");
 
-    let theme = Theme::dark();
+    // Reduce motion so the hovered pill's reveal lands in one layout
+    // pass. The curve runs on wall time, and this test steps layout
+    // rather than pumping frames, so without it the pill is still
+    // opening when the click arrives and carries no chip to click.
+    let theme = Theme::dark().with_reduce_motion(true);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let child = group.build_layout(&mut taffy, &theme, &mut node_map);
@@ -1133,21 +1128,6 @@ fn e2e_maximized_tile_floating_controls() {
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    // Derive the active tab's Maximize2 rect from its pill rect +
-    // the hover-cluster offsets baked into `TabBar::apply_layout`
-    // (see comment on this test for the arithmetic).
-    let tab_rects = probe_tab_rects();
-    let active_idx = 0usize;
-    let pill = tab_rects[active_idx];
-    // close_w=18, close_inset=4 → close_x0 = pill.x1 - 22
-    // max_w=16, 2 px gap → max_x0 = close_x0 - 18 = pill.x1 - 40
-    let max_rect =
-        vello::kurbo::Rect::new(pill.x1 - 40.0, pill.y0 + 4.0, pill.x1 - 24.0, pill.y1 - 4.0);
-    let max_center = Point::new(
-        (max_rect.x0 + max_rect.x1) / 2.0,
-        (max_rect.y0 + max_rect.y1) / 2.0,
-    );
-
     // Synthesise the click: CursorMoved (populates `last_cursor` + the
     // hover_max_idx cache), then press+release at the same spot.
     let mut doc = AutoCommit::new();
@@ -1174,6 +1154,29 @@ fn e2e_maximized_tile_floating_controls() {
             &taffy,
         );
     };
+    // A pill carries no maximize chip until it has opened to make room
+    // for one, so hover it first — the move a user has to make to see
+    // the chip at all — and let the frame loop lay the bar out again.
+    let pill = group.bar_for_tests().tab_rects()[0];
+    pump_ev(
+        &mut group,
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(pill.center().x, pill.center().y),
+        },
+    );
+    group.apply_layout(&taffy, child, Point::ORIGIN);
+
+    // Aim at the chip the bar actually placed. Deriving the rect from
+    // layout constants instead is how this test came to be pressing a
+    // spot the cluster had long since moved off.
+    let max_rect = group.bar_for_tests().max_rects()[0];
+    assert!(
+        max_rect.area() > 0.0,
+        "an opened pill must carry a maximize chip to click",
+    );
+    let max_center = max_rect.center();
+
     pump_ev(
         &mut group,
         WindowEvent::CursorMoved {
