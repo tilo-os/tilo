@@ -1496,7 +1496,7 @@ class Session:
     def launch(self, app_id: str, timeout: float = LAUNCH_TIMEOUT_S,
                search: str | None = None,
                via: str | None = None,
-               look: float = 1.0) -> dict | None:
+               look: float = 1.0, read: float = 1.2) -> dict | None:
         """Start an app by its id and wait for it to present a frame.
 
         The surfaces that already existed are excluded, because every app
@@ -1569,7 +1569,14 @@ class Session:
             # the viewer never sees a query being formed. This is the
             # same per-character path the document uses.
             self.type_prose(search)
-            self.settle(1.2)
+            # And the answer, on screen, before it is taken. `read` is
+            # that beat, and it is the mirror of `look`: the first search
+            # of a session has to be read — the query, and the row that
+            # came back for it — and the fourth does not, because by then
+            # a viewer knows what the box does. Four full-length reads is
+            # five seconds of a hundred-second film spent looking at a
+            # list nobody is choosing from.
+            self.settle(read)
             rows = self.palette().get("rows") or []
             if not any(app_id in json.dumps(r) for r in rows):
                 note(f"{self.name}: no palette row offers {app_id} for "
@@ -4509,7 +4516,7 @@ def dismiss_peer_sync_card(s: Session, what: str) -> None:
           peer_sync_card_up(s), False)
 
 
-def show_collaborators(s: Session) -> str:
+def show_collaborators(s: Session, settle: float = 1.0) -> str:
     """Open the room's people from the affordance on screen.
 
     The top bar's avatar stack is the affordance (`topbar_chrome.rs`
@@ -4528,7 +4535,10 @@ def show_collaborators(s: Session) -> str:
     """
     if s.named_rect("topbar_avatar_stack"):
         s.click_named("topbar_avatar_stack")
-        s.settle(1.0)
+        # A panel sliding out is a thing to watch the first time and a
+        # thing you have already seen the second, so how long it is
+        # given belongs to the beat rather than to the helper.
+        s.settle(settle)
         return "the avatar stack in the top bar"
     gap(f"{s.name}: the top bar published no avatar stack to click, so the "
         f"room's people had to be opened by address rather than by the "
@@ -4538,14 +4548,14 @@ def show_collaborators(s: Session) -> str:
         note(f"{s.name}: collaborators.open refused — "
              f"{json.dumps(resp['err'])[:120]}")
         return "nothing - the panel could not be opened"
-    s.settle(1.0)
+    s.settle(settle)
     return "its address (the avatar stack was not on screen)"
 
 
 def close_collaborators(s: Session) -> None:
     if s.overlays().get("collaborators"):
         s.key("Escape")
-        s.settle(0.4)
+        s.settle(0.3)
 
 
 def say_something_about(session: Session, log: "LogTail", tile: tuple,
@@ -4736,8 +4746,21 @@ def say_something_about(session: Session, log: "LogTail", tile: tuple,
 
 
 def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
-                          tag: str | None = None) -> str | None:
+                          tag: str | None = None,
+                          read: float = 1.0) -> str | None:
     """Invite somebody from the panel a person opened, with the mouse.
+
+    `read` scales the four pauses this card is held for. The film mints
+    two invitations from the same card, and only the first of them is a
+    thing a viewer has to read: the composer asking who, the name going
+    in, the token coming back, the card saying it is on the clipboard.
+    The second says *the same card, a different name* — which is the
+    whole point of showing it twice — and somebody who has just read one
+    reads the second at a glance. Held at full length both times, the
+    pair cost half a minute of a hundred-second film to make one point.
+    Scaled rather than skipped: every gesture still happens, every claim
+    is still asserted, and the card is still on screen long enough to
+    see whose name is on it.
 
     Assumes the collaborators panel is already up — clicking `Invite`
     closes it, because the card carries the question and then the token
@@ -4771,7 +4794,7 @@ def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
         gap("the panel's Invite button would not take a click - "
             f"{json.dumps(clicked['err'])[:120]}")
         return None
-    host.settle(0.8)
+    host.settle(0.8 * read)
 
     step("and it asks who, before it mints anything")
     # The whole reason the composer exists. A button that minted an
@@ -4791,12 +4814,12 @@ def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
     claim("and nothing was minted before it was answered",
           host.chrome()["peer_sync"]["invite_token"], None)
     host.type_prose(name)
-    host.settle(0.5)
+    host.settle(0.5 * read)
     claim(f"the field took the name {name!r}",
           host.chrome()["peer_sync"]["invite_name"], name)
     # Who it is for, on screen, before anything has been minted. One of
     # the four frames this beat exists to let somebody read.
-    read_hold()
+    read_hold(READ_HOLD_S * read)
     if shots and tag:
         host.snapshot(os.path.join(shots, f"{tag}-naming.png"))
 
@@ -4832,7 +4855,7 @@ def invite_from_the_panel(host: Session, name: str, shots: str | None = None,
     # both screens, and that it is on the clipboard. This is the frame
     # the invitation has flashed past in every previous cut, so it is
     # held for longer than anything else in the film.
-    read_hold(READ_HOLD_S * 1.5)
+    read_hold(READ_HOLD_S * 1.5 * read)
     if shots and tag:
         host.snapshot(os.path.join(shots, f"{tag}-copied.png"))
     # The moment it has been read, and not one beat later: it is a modal
@@ -5873,7 +5896,10 @@ def type_into_the_document(s: Session, wp: dict | None, text: str) -> bool:
         return False
     bx, by, bw, bh = rect
     s.click_at(bx + bw * 0.4, by + bh * 0.35)
-    s.settle(1.0)
+    # Long enough for the click to be taken and the caret drawn where it
+    # landed. This is an input round trip, not a frame the beat is about:
+    # the beat is the words appearing, which starts below.
+    s.settle(0.6)
     # To the end of what is already there, rather than wherever the
     # click happened to land. By this point the document has a sentence
     # and an image in it, and a caret dropped into the middle of that
@@ -5890,9 +5916,11 @@ def type_into_the_document(s: Session, wp: dict | None, text: str) -> bool:
     s.key_down("Control")
     s.key("End")
     s.key_up("Control")
-    s.settle(0.5)
+    s.settle(0.35)
     s.type_prose(text)
-    s.settle(1.0)
+    # And a moment on the finished text before whatever comes next moves
+    # the strip out from under it.
+    s.settle(0.7)
     return True
 
 
@@ -7906,7 +7934,7 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
             off = [a.rsplit(".", 1)[-1] for a in (FILES_APP, WORD_PROCESSOR)]
             note(f"{', '.join(off)} are on the same strip, scrolled off it")
             quinten.snapshot(os.path.join(shots, "10-strip-right.png"))
-            read_hold(0.5)
+            read_hold(0.4)
     elif far:
         note("only one of the extra applications opened, so the strip "
              "cannot show a pair at its far end")
@@ -7942,7 +7970,7 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
         gap("the strip refused to merge the two windows — "
             + json.dumps(resp["err"])[:160])
         return
-    quinten.settle(0.7)
+    quinten.settle(0.55)
 
     # Read off the tree, which is where a tab group actually is. A shot
     # of a bar with two pills in it would be a picture of the answer, not
@@ -7981,7 +8009,7 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
           sorted(t["surface_id"] for t in merged["tabs"]),
           sorted([int(wp["surface_id"]), int(editor["surface_id"])]))
     quinten.snapshot(os.path.join(shots, "12-tabbed.png"))
-    read_hold(1.0)
+    read_hold(0.7)
 
     step("and the tabs switch between them")
 
@@ -8011,12 +8039,12 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
         for name in ([f"tab:{title}[{merged['id']}]"] if title else []):
             if quinten.named_rect(name):
                 quinten.click_named(name)
-                quinten.settle(0.7)
+                quinten.settle(0.55)
                 if active_tab_surface(quinten, merged["id"]) == int(surface_id):
                     return
         for _ in range(len(merged["tabs"])):
             quinten.scroll(1.0, 0.0)
-            quinten.settle(0.6)
+            quinten.settle(0.5)
             if active_tab_surface(quinten, merged["id"]) == int(surface_id):
                 return
 
@@ -8054,7 +8082,7 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
         claim("and the screen changes with it",
               moved > SCREEN_MOVED_PX, True)
         note(f"{moved} pixels differ between the two tabs")
-    read_hold(1.0)
+    read_hold(0.7)
     claim("every one of those was a person's gesture",
           quinten.input_ops > before, True)
 
