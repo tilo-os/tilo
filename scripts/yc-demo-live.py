@@ -2651,7 +2651,16 @@ def _the_owners_half(q, shots: str, live: "Live",
     # the one gesture in the film a viewer cannot mistake for a browser.
     mark("the image editor opens, and two applications share one tab bar")
     extras: dict[str, dict] = {}
-    if photos is None:
+    if photos is None and not live.args.image_editor:
+        # Left closed on purpose. The film's later claim is that the
+        # agent opens the photo editor *because it decided it needed
+        # one*, and an editor already standing in the room is one the
+        # agent can reach without opening anything — so a take that
+        # opens it here cannot ask the question, whatever the agent then
+        # does.
+        yc.gap("the image editor is not opened by hand in this take, so "
+               "the tab-bar beat is not in it")
+    elif photos is None:
         photos = q.launch(yc.IMAGE_EDITOR,
                           search=yc.STRIP_SEARCH.get(yc.IMAGE_EDITOR,
                                                      "photos"),
@@ -2751,6 +2760,13 @@ def main() -> int:
                          "admitted, the agent is started -- so what you take "
                          "over is the gesture the beat is about and nothing "
                          "else")
+    ap.add_argument("--no-image-editor", dest="image_editor",
+                    action="store_false",
+                    help="do not open the photo editor by hand. The tab-bar "
+                         "beat goes with it, and what is left is the "
+                         "question the film's second half turns on: whether "
+                         "the agent opens an application nobody opened for "
+                         "it")
     ap.add_argument("--time-the-crossing", action="store_true",
                     help="watch every machine's own copy of the document and "
                          "report when the crop reached each. Costs the take "
