@@ -44,37 +44,17 @@ cannot see its own namespace's headers. `jobs = 4` lives in `.cargo/config.toml`
 a concurrency cap, it throttles the machine even when idle. `QCARGO_DEBUG=1` prints the
 routing decision, `QCARGO_BYPASS=1` skips the shim.
 
-**Never set `CARGO_TARGET_DIR`. Work in your own worktree and use its own `target/`.**
+**Never set `CARGO_TARGET_DIR` or `CARGO_BUILD_TARGET_DIR`.** sccache hashes every `CARGO_*`
+variable into its Rust cache key, so either gives that builder a private cache namespace
+nothing else can hit — measured at 14.6% Rust hits against 100% for C/C++. One worktree per
+concurrent builder, each on its plain `target/`, which is already private and locked
+independently. Never point two worktrees at one target directory: cargo's artifact key omits
+the package path and you silently get the other one's binary.
 
-sccache folds every `CARGO_*` environment variable into its Rust cache key, excluding
-exactly four (`CARGO_MAKEFLAGS`, `CARGO_REGISTRIES_*`, `CARGO_BUILD_JOBS`,
-`CARGO_ENCODED_RUSTFLAGS`). `CARGO_TARGET_DIR` is not one of them, so setting it gives that
-builder a **private cache namespace that no other builder can ever hit**. Read out of a live
-`rustc`'s own `/proc/<pid>/environ` mid-fleet, with a dozen agents compiling: Rust hit rate
-**14.6%**, against **100%** for C/C++ and assembler, which do not carry the variable in
-their key. Twelve private copies of the same compilations, in a cache pinned at its 100 GiB
-ceiling and evicting.
+**Do not turn incremental back on.** sccache refuses any compilation carrying
+`-C incremental=`; with it on, 79% of this workspace was uncacheable.
 
-The instruction that used to be here had it backwards. It was right that *sharing* one
-target directory between two worktrees is unsafe — cargo's artifact key omits the package
-path, so you silently get the other one's binary — and right that one exclusive lock per
-target directory serialises builders that share one. But per-agent worktrees already solve
-both: a worktree's default `target/` is private to it and locked independently. The
-variable bought nothing that the worktree had not already given, and cost the entire cache.
-
-So: one worktree per concurrent builder, each using its plain `target/`, and no
-`CARGO_TARGET_DIR` anywhere. Do not set `CARGO_BUILD_TARGET_DIR` either — same prefix, same
-key, same result.
-
-What makes the shared cache work at all is `incremental = false` (see the note in the root
-`Cargo.toml`). sccache refuses any compilation carrying `-C incremental=`, so with
-incremental on, 79% of this workspace's compilations were uncacheable. With it off they are
-content-addressed: the first builder to compile a crate pays for it, everyone else gets a
-hit. **Do not turn incremental back on** — it looks like a speed-up for one builder and
-turns the cache off for all of them.
-
-Delete a worktree's `target/` when its branch has landed; the cache keeps the compilations,
-so refilling it is cheap.
+Delete a worktree's `target/` when its branch has landed — the cache keeps the compilations.
 
 The host has none of the native dev libraries and cannot get them (`/usr` is read-only); the
 container pins the build environment. A missing one shows up as `pkg-config exited with

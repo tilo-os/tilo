@@ -58,24 +58,13 @@ rustflags = [
     "-C", "relro-level=full",
     "-C", "link-arg=-Wl,-z,noexecstack",
     "-C", "link-arg=-Wl,-z,shstk",
-    # mold, because linking is the one part of a build no cache can skip.
+    # Linking is the one part of a build sccache cannot skip, and `shell` is a
+    # 410 MB binary the `demo` profile relinks after almost every change.
     #
-    # sccache content-addresses compilations, so a warm tree gets most of its
-    # rustc invocations for free -- and then still pays the link in full, every
-    # time. That bill is large here: `shell` is a 410 MB binary, the `demo`
-    # profile relinks after almost every change, and the container had only GNU
-    # ld on a 16-core machine.
-    #
-    # Added to THIS list rather than a `[target.x86_64-unknown-linux-gnu]`
-    # block on purpose. Per-target `rustflags` REPLACE `build.rustflags` rather
-    # than merging with them, so a target block would have silently dropped
-    # every hardening flag above -- the same trap the comment below records for
-    # the RUSTFLAGS environment variable.
-    #
-    # The three hardening properties were verified to survive it, not assumed:
-    # built both ways with these exact flags, `readelf` reports GNU_RELRO +
-    # BIND_NOW, a non-executable GNU_STACK, and the SHSTK bit in
-    # .note.gnu.property under mold exactly as under GNU ld.
+    # In THIS list, not a `[target.x86_64-unknown-linux-gnu]` block: per-target
+    # `rustflags` replace `build.rustflags` rather than merging, so a target
+    # block silently drops every hardening flag above. Verified that mold keeps
+    # all three — GNU_RELRO + BIND_NOW, non-executable GNU_STACK, SHSTK.
     "-C", "link-arg=-fuse-ld=mold",
     # Reproducible paths for the in-image build, which compiles under /build.
     # This lives here rather than in a RUSTFLAGS environment variable because
