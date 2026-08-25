@@ -72,6 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut file: Option<PathBuf> = None;
     let mut history = false;
     let mut scenario: Option<String> = None;
+    let mut image: Option<PathBuf> = None;
     // Viewport for `--shots`. A shot is only worth as much as the window it is
     // taken in, and the narrow tiled windows where the page has to be fitted to
     // the canvas are exactly the ones the default does not cover.
@@ -100,6 +101,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             "--scenario" => {
                 scenario = args.get(i + 1).cloned();
+                i += 2;
+            }
+            // The picture to place, for `--scenario placed`. A path rather
+            // than anything generated here, so the still can be taken over
+            // the bytes another application actually produced.
+            "--image" => {
+                image = args.get(i + 1).map(PathBuf::from);
                 i += 2;
             }
             a if a.starts_with("--") => i += 1,
@@ -168,6 +176,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         } else {
             wp.arm_status_bubble_for_shots();
         }
+        let mut state = state;
+        // "placed": the document as it stands once a picture another
+        // application produced has been put into it. The last beat of the
+        // cross-application hand-off.
+        //
+        // The bytes come from a file rather than from anything here, and that
+        // is the whole point of the flag: the still is taken over the
+        // photograph the *photo editor* actually produced, so what is on
+        // screen is the outcome of the crop rather than a second crop
+        // computed in this process. Placed through `PlaceImage`, the same
+        // action the agent invokes, which re-hashes the bytes and refuses a
+        // blob it does not hold.
+        if scenario.as_deref() == Some("placed") {
+            match place_image_for_shots(&mut state, image.as_deref()) {
+                Ok(hash) => eprintln!("word-processor: placed {hash}"),
+                Err(e) => eprintln!("word-processor: nothing was placed — {e}"),
+            }
+        }
         render_shot(state, wp, size, Path::new(out), scenario.as_deref())?;
         return Ok(());
     }
@@ -214,6 +240,41 @@ fn main() -> Result<(), Box<dyn Error>> {
         app.run();
     }
     Ok(())
+}
+
+/// Put the picture at `path` into `state`'s document, through the editor's own
+/// `PlaceImage`.
+///
+/// Nothing here writes an image block. The bytes are put in the blob store and
+/// the action is applied through the registry, so the document that comes back
+/// is the one the live path produces — `PlaceImage` re-hashes what it is given
+/// and refuses a hash the store does not hold, and a scenario that set the
+/// attributes itself would photograph past both of those.
+fn place_image_for_shots(
+    state: &mut ui::State,
+    path: Option<&Path>,
+) -> Result<String, Box<dyn Error>> {
+    let path = path.ok_or(
+        "--scenario placed needs --image <png>: the picture is meant to be one \
+         another application produced, and inventing one here would be a \
+         drawing of the hand-off rather than the hand-off",
+    )?;
+    let bytes = std::fs::read(path)?;
+    let hash = qdoc::blobstore::put(&bytes);
+    let blocks = qdoc::model::open(&state.doc, &automerge::ROOT)
+        .ok()
+        .map(|c| qdoc::model::materialize(&state.doc, &c).blocks)
+        .unwrap_or_default();
+    let after = blocks.last().map(|b| b.id.clone()).unwrap_or_default();
+    let action = word_processor::actions::place_image_action(&after, &hash);
+    let mut registry = qos_actions::ActionRegistry::new();
+    word_processor::actions::register(&mut registry);
+    let encoded = word_processor::actions::encode(&action);
+    let decoded = registry
+        .decode(&encoded)
+        .map_err(|_| "the editor registered nothing that can decode its own PlaceImage")?;
+    decoded.apply(&mut state.doc).map_err(|e| e.to_string())?;
+    Ok(hash)
 }
 
 /// Give `widget`'s document a real authored history, so `--shots --history` has
