@@ -4954,6 +4954,19 @@ def say_something_about(session: Session, log: "LogTail", tile: tuple,
         gap(f"{session.name}: the app composed a remark and the toolkit "
             f"never reported sending one. Composed is not delivered.")
         return False
+    # The right-click opened the file manager's own context menu beside the
+    # compose surface. The compose closed on send, but that menu did not, and
+    # the film now holds on the document for the crop — so the menu would sit
+    # over the Files panel through the whole closing half. Escape closes it.
+    # Sent twice, a beat apart, for the same reason `dismiss_peer_sync_card`
+    # retries it: the key reaches the app that drew the menu only once nothing
+    # ahead of it has taken it, and one press can land while focus is still
+    # settling from the send. A click would be surer but there is nothing safe
+    # to click — the menu's own `Open` sits exactly where the row is.
+    session.key("Escape")
+    session.settle(0.3)
+    session.key("Escape")
+    session.settle(0.25)
     return True
 
 
