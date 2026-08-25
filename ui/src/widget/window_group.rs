@@ -329,8 +329,20 @@ pub struct WindowGroup {
 
 impl WindowGroup {
     pub fn new(id: u64, tabs_with_content: Vec<(TabDescriptor, TileContent)>, active_id: u64, width: WindowWidth) -> Self {
-        let descs: Vec<TabDescriptor> = tabs_with_content.iter().map(|(d, _)| d.clone()).collect();
-        let hosts: Vec<(u64, TileHost)> = tabs_with_content.into_iter().map(|(d, c)| (d.id, TileHost::new(c))).collect();
+        let tabs_with_hosts = tabs_with_content.into_iter().map(|(d, c)| (d, TileHost::new(c))).collect();
+        Self::with_hosts(id, tabs_with_hosts, active_id, width)
+    }
+
+    /// As [`Self::new`], but over hosts that already exist.
+    ///
+    /// A group is rebuilt whenever the strip it is in is — and the tab it
+    /// holds may have been on screen a moment ago, hosting a program that
+    /// is still running. That host is handed in here rather than built
+    /// again, so the rebuild is a change of rows and not a change of what
+    /// is in them. See [`Self::take_hosts`] for the other half.
+    pub fn with_hosts(id: u64, tabs_with_hosts: Vec<(TabDescriptor, TileHost)>, active_id: u64, width: WindowWidth) -> Self {
+        let descs: Vec<TabDescriptor> = tabs_with_hosts.iter().map(|(d, _)| d.clone()).collect();
+        let hosts: Vec<(u64, TileHost)> = tabs_with_hosts.into_iter().map(|(d, h)| (d.id, h)).collect();
         Self {
             id,
             bar: TabBar::new(&format!("g{id}"), descs, active_id),
@@ -1062,6 +1074,17 @@ impl WindowGroup {
     /// fade elapses.
     #[cfg(test)]
     pub fn host_count(&self) -> usize { self.hosts.len() }
+    /// Move every hosted tile out of this group, keyed by tab id.
+    ///
+    /// For a group that is about to be dropped with the row it is in,
+    /// when what it hosts must not be dropped with it — a running
+    /// program lives in the host, and only there. The group is left with
+    /// its tabs and nothing behind them; it is not meant to be drawn
+    /// again, only freed.
+    pub fn take_hosts(&mut self) -> Vec<(u64, TileHost)> {
+        std::mem::take(&mut self.hosts)
+    }
+
     /// The tile hosting tab `tab_id`, for a caller that needs to change
     /// what is *in* a tab without disturbing the tab.
     ///

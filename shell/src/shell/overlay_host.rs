@@ -484,6 +484,12 @@ pub struct ShellOverlayHost {
     /// permanently, and every assertion made against the tree passes while
     /// the person is still looking at the old thing.
     tab_tiles: std::collections::HashMap<u64, String>,
+    /// The live widgets of tabs that are not on screen — every tab of
+    /// every workspace other than the active one that has been shown
+    /// once. See [`crate::shell::ParkedTile`]: the rows are rebuilt on
+    /// a workspace switch, and what they host has to survive that, or
+    /// switching workspaces restarts every terminal in them.
+    parked_tiles: crate::shell::ParkedTiles,
     /// Tabs whose contents have changed in the tree but are not being
     /// handed the change yet, because what they would be handed is a
     /// client window that has drawn nothing.
@@ -1416,16 +1422,27 @@ pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
 /// Pinned by `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
 pub const PALETTE_SCRIM_ALPHA: f32 = 0.45;
 
-/// A cheap value that changes exactly when what a tab should be showing
-/// changes.
-///
-/// The serialised tile, because that is the whole of what
-/// [`crate::shell::to_ui_tile`] reads — so two tiles with the same
-/// serialisation build the same widget, and building one to compare
-/// against would be both expensive and, for a tile that spawns a process,
-/// destructive.
-fn tile_signature(tile: &crate::shell::state::TileContent) -> String {
-    serde_json::to_string(tile).unwrap_or_default()
+use crate::shell::tile_signature;
+
+/// Drop parked tiles whose tab is no longer anywhere in `tree` — a tab
+/// closed while its workspace was away. Its host goes, and with it
+/// whatever process the host held; nothing can show it again.
+fn prune_parked_tiles(
+    parked: &mut crate::shell::ParkedTiles,
+    tree: &crate::shell::state::WorkspaceTree,
+) {
+    if parked.is_empty() {
+        return;
+    }
+    let open: std::collections::HashSet<u64> = tree
+        .workspaces
+        .iter()
+        .flat_map(|w| w.strips.iter())
+        .flat_map(|s| s.window_groups.iter())
+        .flat_map(|g| g.tabs.iter())
+        .map(|t| t.id)
+        .collect();
+    parked.retain(|id, _| open.contains(id));
 }
 
 /// Whether `tile` is a client window that has not drawn anything yet.
@@ -1607,6 +1624,7 @@ impl ShellOverlayHost {
             last_chrome_revision: u64::MAX,
             last_resync_content_swaps: 0,
             tab_tiles: std::collections::HashMap::new(),
+            parked_tiles: crate::shell::ParkedTiles::new(),
             deferred_tile_swaps: std::collections::HashSet::new(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
             status_bridge: None,
@@ -2858,13 +2876,24 @@ impl ShellOverlayHost {
             tree.clone()
         };
         let records = chrome.borrow().records().clone();
-        let (root, ptrs) = crate::shell::build_workspace_root(&snapshot, &records, &chrome);
+        // What the old rows host steps out before the rows go, and the
+        // new rows are built over it: a tab that was on screen in the
+        // workspace being switched to keeps the widget — the shell, the
+        // directory — it had when the user last looked at it.
+        self.park_live_tiles();
+        let (root, ptrs) = crate::shell::build_workspace_root(
+            &snapshot,
+            &records,
+            &chrome,
+            &mut self.parked_tiles,
+        );
         // Replace content and pointer map in one step: dropping the old
         // root frees every old GroupRow, and the map must never outlive
         // the rows it points into.
         self.content = root;
         self.group_row_ptrs = ptrs;
         self.content_built_for_ws = Some(snapshot.active.raw());
+        prune_parked_tiles(&mut self.parked_tiles, &snapshot);
         // The new rows were built from this snapshot, so they are
         // already showing it. Without saying so, the resync that runs
         // straight after this rebuilds the contents of every tab in the
@@ -2891,6 +2920,41 @@ impl ShellOverlayHost {
                 .strips
                 .iter()
                 .all(|s| self.group_row_ptrs.contains_key(&s.id))
+    }
+
+    /// Move every hosted tile out of the live rows into
+    /// [`Self::parked_tiles`], ahead of the rows being dropped.
+    ///
+    /// Only a host the resync has written down as showing its tab's
+    /// tile is parked under that tile's signature. One it has not — a
+    /// tab still owed a swap, showing a card the tree has moved on from
+    /// — is not kept: it is showing something the tree no longer says,
+    /// and would be built afresh on screen too.
+    fn park_live_tiles(&mut self) {
+        for &row_ptr in self.group_row_ptrs.values() {
+            // SAFETY: same contract as every other `group_row_ptrs`
+            // accessor — the pointer comes from a `Box<GroupRow>` owned
+            // by the content tree, which is still alive here (it is
+            // replaced only after this returns), and `&mut self` gives
+            // unaliased access for this call.
+            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            for group in row.groups.iter_mut() {
+                for (tab_id, host) in group.take_hosts() {
+                    let Some(signature) = self.tab_tiles.get(&tab_id).cloned() else {
+                        continue;
+                    };
+                    self.parked_tiles
+                        .insert(tab_id, crate::shell::ParkedTile { signature, host });
+                }
+            }
+        }
+    }
+
+    /// Test hook: the tabs whose widgets are parked off screen, sorted.
+    pub fn parked_tab_ids_for_tests(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.parked_tiles.keys().copied().collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// Test hook for the workspace-content reconcile — mirrors the
@@ -2996,6 +3060,7 @@ impl ShellOverlayHost {
         // would alias. Put back before returning.
         let mut tab_tiles = std::mem::take(&mut self.tab_tiles);
         let mut deferred = std::mem::take(&mut self.deferred_tile_swaps);
+        let mut parked = std::mem::take(&mut self.parked_tiles);
         // Every tab this walk reached, so a debt can be carried forward
         // only for a tab that is still somewhere this pass can settle it.
         let mut seen_tabs: std::collections::HashSet<u64> = std::collections::HashSet::new();
@@ -3026,7 +3091,11 @@ impl ShellOverlayHost {
                 // vector and losing it).
                 for (idx, g) in strip.window_groups.iter().enumerate() {
                     if !live_ids.contains(&g.id) {
-                        let mut fresh = crate::shell::to_ui_window_group(g, &records);
+                        // A group arriving from another workspace — a
+                        // window moved here — brings its tabs' widgets
+                        // with it; only a group nobody has shown is built.
+                        let mut fresh =
+                            crate::shell::to_ui_window_group_reusing(g, &records, &mut parked);
                         // A window arriving is worth seeing arrive. The
                         // row's own splice paths (a tab dragged out into
                         // its own group) already run this fade; a window
@@ -3124,8 +3193,10 @@ impl ShellOverlayHost {
                         // document too — an adopted toplevel or a
                         // freshly-opened app is as much an open thing as
                         // one that was there at boot.
-                        let mut host =
-                            ui::widget::TileHost::new(crate::shell::to_ui_tile(&tab.tile));
+                        let mut host = crate::shell::take_parked(&mut parked, tab)
+                            .unwrap_or_else(|| {
+                                ui::widget::TileHost::new(crate::shell::to_ui_tile(&tab.tile))
+                            });
                         host.bind_record(
                             records.clone(),
                             crate::shell::tab_documents::scratch_tab_record(tab.id),
@@ -3150,9 +3221,11 @@ impl ShellOverlayHost {
                 }
             }
         }
+        prune_parked_tiles(&mut parked, &tree);
         drop(tree);
         drop(st);
         self.tab_tiles = tab_tiles;
+        self.parked_tiles = parked;
         // Only tabs this pass actually saw, and still owes a swap, are
         // carried forward — a tab in a strip or workspace that is no
         // longer here is not something a later pass can settle.
