@@ -432,15 +432,12 @@ impl ApplicationHandler for Inner {
         // was granted by being overruled, and the difference is not three
         // pixels but thirty-four.
         //
-        // What thirty-four costs is worth stating precisely, because the
-        // obvious guess is wrong. The recording is not softened: the
-        // composer's scale factor comes out at exactly 1.0 for a frame
-        // that is taller than the caption strip but no taller than the
-        // video, and the filter is then a byte-exact copy. What it costs
-        // is that the frame is letterboxed and the caption band comes
-        // down over the bottom fifty rows of the picture — the clipping
-        // that recording at the video's height less the band exists to
-        // prevent.
+        // What thirty-four costs is every frame of the film. The camera's
+        // composer fits whatever it is handed into the height the video
+        // can show, so a render at the size asked for goes in at a scale
+        // of exactly one and anything else is resampled: 1920x1048 comes
+        // out as 1856x1014, which at 4x is visibly soft stems on a panel
+        // heading, in a film that is almost entirely text.
         //
         // `with_resizable(false)` publishes equal minimum and maximum
         // sizes, which is how a client says the size is not the window

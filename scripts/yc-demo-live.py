@@ -2522,9 +2522,9 @@ def main() -> int:
             # A window manager auto-maximizes a *resizable* window whose
             # request already covers most of the work area, so asking for
             # 1920x1014 of a 1920x1048 work area — 97% of it — came back
-            # as the whole 1920x1048, granted by being overruled. Every
-            # frame was then thirty-four rows too tall for the picture
-            # area, and the caption band sat over the bottom of it.
+            # as the whole 1920x1048, granted by being overruled. The
+            # composer then fits every frame into the picture area, so
+            # thirty-four rows too tall means every frame resampled.
             #
             # The compositor publishes the requested size as fixed now
             # (see `NIRIOS_WINIT_SIZE`), and a window that cannot be
