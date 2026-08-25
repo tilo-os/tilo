@@ -1496,7 +1496,8 @@ class Session:
     def launch(self, app_id: str, timeout: float = LAUNCH_TIMEOUT_S,
                search: str | None = None,
                via: str | None = None,
-               look: float = 1.0, read: float = 1.2) -> dict | None:
+               look: float = 1.0, read: float = 1.2,
+               watch: float = 0.0) -> dict | None:
         """Start an app by its id and wait for it to present a frame.
 
         The surfaces that already existed are excluded, because every app
@@ -1589,70 +1590,93 @@ class Session:
         first_frame: float | None = None
         found: dict | None = None
         widened: set = set()
-        while time.time() < deadline:
-            for f in self.foreign_frames():
-                if f.get("surface_id") in before:
-                    continue
-                # The strip's share, re-applied the instant the group
-                # exists — which is here, before the client has been
-                # configured into its final tab and long before it has
-                # answered with a buffer.
-                #
-                # `set_group_widths` walks the groups that are there when
-                # it is called — so settling it once before filming, on
-                # an empty desktop, set nothing at all, and every group
-                # opened afterwards took the default three-quarters. Two
-                # of those overflow the strip, which is what put a word
-                # processor 514px past the right edge in a shot that was
-                # supposed to hold two windows.
-                #
-                # Applied on sight of the group rather than on its first
-                # frame, and that ordering is the point: a width change
-                # after the client has committed a buffer for the old
-                # tab invalidates it, and the window then holds its
-                # opening card for a second round trip that nobody asked
-                # for. Idempotent, so re-applying it while waiting costs
-                # a message and settles the question of which buffer the
-                # client is working towards.
-                if f.get("surface_id") not in widened:
-                    widened.add(f.get("surface_id"))
-                    self.set_group_width(FILM_GROUP_SHARE)
-                if f.get("frame_seq", 0) > 0 and first_frame is None:
-                    first_frame = time.time()
-                    found = f
-                # `presented` is the compositor's own answer to "is this
-                # window on screen", and it is a different question from
-                # "has the client drawn anything": the first buffer a
-                # client commits is the size it picked before it was
-                # configured, and until one arrives that answers the tab
-                # the strip holds the window's place with a card. A
-                # launch that returned on the first frame reported an app
-                # as open while the person was still looking at a
-                # spinner, which is the gap this closes.
-                if f.get("presented"):
-                    shown = time.time()
-                    if first_frame is None:
-                        first_frame = shown
+        # The wait itself, filmed only as long as it is worth watching.
+        #
+        # An application starting is a sandbox spawning, a wayland
+        # connection, a toolkit coming up and a first buffer, and none of
+        # that is a picture: what is on screen is an unchanged desktop
+        # under an "Opening ..." toast, and then a dark tile with a
+        # spinner in it. Measured on this rig at 2.3s for a warm app and
+        # 5.8s for the first one of a session — twenty-odd seconds of a
+        # hundred-second film, spent on four windows not yet being there.
+        #
+        # `max_hold` cannot help: it collapses runs of byte-identical
+        # frames and the spinner turns, so every frame of the wait is
+        # legitimately different from the last. `patience` can, and this
+        # is the same use `Recorder.patience` was written for. The toast
+        # is filmed — a viewer sees that something was asked for — and
+        # then the camera comes down until the window is really on
+        # screen, which is the frame the beat is about and is filmed
+        # either way. Nothing is skipped and nothing is hurried: the app
+        # takes exactly as long as it takes, and the compositor draws
+        # every frame of it.
+        #
+        # 0 films the whole wait, which is what the nine-beat film does.
+        with patience(watch) if watch > 0 else contextlib.nullcontext():
+            while time.time() < deadline:
+                for f in self.foreign_frames():
+                    if f.get("surface_id") in before:
+                        continue
+                    # The strip's share, re-applied the instant the group
+                    # exists — which is here, before the client has been
+                    # configured into its final tab and long before it has
+                    # answered with a buffer.
+                    #
+                    # `set_group_widths` walks the groups that are there when
+                    # it is called — so settling it once before filming, on
+                    # an empty desktop, set nothing at all, and every group
+                    # opened afterwards took the default three-quarters. Two
+                    # of those overflow the strip, which is what put a word
+                    # processor 514px past the right edge in a shot that was
+                    # supposed to hold two windows.
+                    #
+                    # Applied on sight of the group rather than on its first
+                    # frame, and that ordering is the point: a width change
+                    # after the client has committed a buffer for the old
+                    # tab invalidates it, and the window then holds its
+                    # opening card for a second round trip that nobody asked
+                    # for. Idempotent, so re-applying it while waiting costs
+                    # a message and settles the question of which buffer the
+                    # client is working towards.
+                    if f.get("surface_id") not in widened:
+                        widened.add(f.get("surface_id"))
+                        self.set_group_width(FILM_GROUP_SHARE)
+                    if f.get("frame_seq", 0) > 0 and first_frame is None:
+                        first_frame = time.time()
                         found = f
-                    note(f"{self.name}: {app_id} drew its first frame "
-                         f"{first_frame - began:.1f}s after it was asked "
-                         f"for, and was on screen at "
-                         f"{shown - began:.1f}s")
-                    return found
-            time.sleep(0.12)
-        if found is not None:
-            # `first_frame` is set on both paths that set `found`, so it is
-            # never None here -- but the two are only tied together by
-            # reading the loop, and this line runs inside a launch, during
-            # filming, where an AttributeError on a `None` would take the
-            # take down at the worst possible moment. So it says what it
-            # does not know rather than assuming it.
-            since = (f"{first_frame - began:.1f}s"
-                     if first_frame is not None else "an unrecorded time")
-            note(f"{self.name}: {app_id} drew a frame {since} in but never "
-                 f"filled its tab; reporting it as opened anyway")
-            return found
-        return None
+                    # `presented` is the compositor's own answer to "is this
+                    # window on screen", and it is a different question from
+                    # "has the client drawn anything": the first buffer a
+                    # client commits is the size it picked before it was
+                    # configured, and until one arrives that answers the tab
+                    # the strip holds the window's place with a card. A
+                    # launch that returned on the first frame reported an app
+                    # as open while the person was still looking at a
+                    # spinner, which is the gap this closes.
+                    if f.get("presented"):
+                        shown = time.time()
+                        if first_frame is None:
+                            first_frame = shown
+                            found = f
+                        note(f"{self.name}: {app_id} drew its first frame "
+                             f"{first_frame - began:.1f}s after it was asked "
+                             f"for, and was on screen at "
+                             f"{shown - began:.1f}s")
+                        return found
+                time.sleep(0.12)
+            if found is not None:
+                # `first_frame` is set on both paths that set `found`, so it is
+                # never None here -- but the two are only tied together by
+                # reading the loop, and this line runs inside a launch, during
+                # filming, where an AttributeError on a `None` would take the
+                # take down at the worst possible moment. So it says what it
+                # does not know rather than assuming it.
+                since = (f"{first_frame - began:.1f}s"
+                         if first_frame is not None else "an unrecorded time")
+                note(f"{self.name}: {app_id} drew a frame {since} in but never "
+                     f"filled its tab; reporting it as opened anyway")
+                return found
+            return None
 
     # -- the action API (semantic; no input, no pixels) --------------
 
@@ -2315,6 +2339,20 @@ class Recorder:
         — a viewer sees the result appear — and is only ever reached when
         it is not.
         """
+        # Not on a take that carries a voice.
+        #
+        # Taking the camera down shortens the picture without shortening
+        # the take, and a microphone runs on the wall clock: a stretch
+        # left out of the middle puts the voice ahead of the picture for
+        # everything after it. `--max-hold 0` already means "this take
+        # may not be edited", and this is an edit of exactly the kind it
+        # forbids -- `_check_length` refuses the result, so the honest
+        # place to stop is before making it. True of every caller here,
+        # not only of the newest.
+        if self.max_hold <= 0:
+            yield
+            return
+
         stopped = threading.Event()
         dropped = threading.Event()
 

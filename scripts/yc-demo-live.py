@@ -369,6 +369,21 @@ HANDOVER_GRACE_S = 120.0
 # composer makes, and it is why a narrated take cannot have it: see the
 # note in `main` where the two are reconciled.
 DEFAULT_MAX_HOLD_S = 1.2
+# How long an application is filmed opening before the camera comes down
+# for the rest of it.
+#
+# Long enough to see that something was asked for and is coming: the
+# palette closes, the toast says which app, the strip makes room. Past
+# that the picture stops changing in any way that means anything — a
+# static toast over an unchanged desktop, then a dark tile with a
+# spinner — while the sandbox spawns and a toolkit starts. Three
+# launches were costing twenty-seven seconds of a hundred-second film
+# between them, and almost none of it was a thing to watch.
+#
+# The window arriving is filmed either way: the camera comes back up the
+# moment the compositor says the window is on screen, which is the frame
+# the beat is about.
+WATCH_IT_OPEN_S = 1.6
 # How long a stretch in which nothing happens is filmed before the camera
 # comes down for the rest of it.
 #
@@ -2128,7 +2143,7 @@ def _the_owners_half(q, shots: str, live: "Live",
     # hundred-second film on opening things.
     mark("chat opens, through the search")
     chat = q.launch(yc.CHAT_APP, search="chat", via="palette",
-                    look=0.9, read=1.1)
+                    look=0.9, read=1.1, watch=WATCH_IT_OPEN_S)
     yc.claim("chat opened", chat is not None, True)
     stop.wait(0.15)
 
@@ -2185,7 +2200,7 @@ def _the_owners_half(q, shots: str, live: "Live",
         True,
     )
     files = q.launch(yc.FILES_APP, search="files", via="palette",
-                     look=0.25, read=0.45)
+                     look=0.25, read=0.45, watch=WATCH_IT_OPEN_S)
     yc.claim("Files opened", files is not None, True)
     stop.wait(0.15)
 
@@ -2194,7 +2209,7 @@ def _the_owners_half(q, shots: str, live: "Live",
     mark("the word processor opens")
     q.place_next_window(yc.WORD_PROCESSOR)
     wp = q.launch(yc.WORD_PROCESSOR, search="word", via="palette",
-                  look=0.25, read=0.45)
+                  look=0.25, read=0.45, watch=WATCH_IT_OPEN_S)
     yc.claim("the word processor opened", wp is not None, True)
     if wp is None:
         return
@@ -2270,7 +2285,8 @@ def _the_owners_half(q, shots: str, live: "Live",
         photos = q.launch(yc.IMAGE_EDITOR,
                           search=yc.STRIP_SEARCH.get(yc.IMAGE_EDITOR,
                                                      "photos"),
-                          via="palette", look=0.25, read=0.45)
+                          via="palette", look=0.25, read=0.45,
+                          watch=WATCH_IT_OPEN_S)
         yc.claim("the image editor opened", photos is not None, True)
     if photos is not None:
         extras[yc.IMAGE_EDITOR] = photos
