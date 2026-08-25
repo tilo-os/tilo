@@ -1246,7 +1246,17 @@ class Live:
         # of the app on it. A cut to a bare desktop argues the opposite
         # of what the cut is for, and an app that has not arrived cannot
         # answer a handshake either.
+        #
+        # Timed apart from the document below, and reported apart, because
+        # the two answer different questions and have been read as one
+        # number before: this one is how long xaver's session takes to show
+        # anything at all, and it is spent whether or not a word ever
+        # crosses.
+        screen_began = time.time()
         self.wait_for_his_screen()
+        screen_s = time.time() - screen_began
+        self.say(f"his session had windows up {screen_s:.1f}s after the "
+                 f"handover began")
 
         # His groups, now that they exist.
         #
@@ -1272,11 +1282,19 @@ class Live:
         else:
             carried, doc = False, None
             reader = None
+            # The number this beat is actually about: quinten's words are
+            # already in quinten's own document by now (`he_has_written`
+            # established that above), so this measures the crossing and
+            # nothing else -- not his typing, and not the wait for xaver's
+            # screen that precedes it.
+            doc_began = time.time()
+            doc_s = None
             try:
                 reader = yc.DocumentReader(self.x.collab_json_sock,
                                            str(self.room), record=None)
                 doc, carried = reader.await_document(
                     proof, self.CROSSING_BUDGET_S)
+                doc_s = time.time() - doc_began
             except OSError as e:
                 yc.gap(f"xaver's session has no JSON broker to ask ({e}), "
                        f"so whether quinten's words reached him was not "
@@ -1294,6 +1312,9 @@ class Live:
             # either way and is a gap. Reporting the second as the first
             # is the defect this file keeps finding in itself.
             if doc is not None:
+                if doc_s is not None:
+                    self.say(f"his document answered {doc_s:.1f}s after the "
+                             f"words were already in quinten's")
                 yc.claim("what quinten wrote is in xaver's own document, "
                          "on his machine", carried, True)
                 if not carried:
@@ -1313,6 +1334,15 @@ class Live:
         # is the one a viewer arrives at, and it has to be a real one.
         if crossing_dark:
             self.camera_back_up()
+
+        # The crossing is over, so stop saying it is what is being waited
+        # for. `status` reprints the caption on every later wakeup and
+        # nothing else clears it, so a caption left standing here is
+        # charged with every scene that follows -- the cut, the framing,
+        # the hold on xaver and the whole file-manager sequence. That is
+        # how a crossing that had already succeeded came to be read off
+        # this log as a 27-second sync.
+        self.waiting = "xaver's screen, and what he does with it"
 
         mark("cut to xaver — quinten's words are already on his screen")
         yc.cut("xaver")
