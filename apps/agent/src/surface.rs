@@ -219,6 +219,45 @@ fn nothing(_view: &View, _doc: &AutoCommit) -> Option<Product> {
     None
 }
 
+/// The picture in the directory the agent is browsing, as content another
+/// application could be handed.
+///
+/// A file manager's subject is the filesystem, and a photograph sitting in it
+/// is the commonest thing a request is about: "make this square" is said in a
+/// room where the picture is a file, not yet anything's document. Until the
+/// explorer could hand one over there was no way for that sentence to reach
+/// an application that could crop it — the photo editor would be opened with
+/// nothing in it and export no operation on a photograph it did not have.
+///
+/// The bytes are read through the explorer's own directory listing and put in
+/// the blob store, because a hash is what an operation in another application
+/// collects. Copying them is the point rather than a cost: what the next step
+/// works on is a value, fixed at the moment it was taken, and not a file that
+/// may be moved or rewritten between two steps of one sentence.
+///
+/// # Which picture, when there is more than one
+///
+/// The directory's only one. Several, and it denotes **nothing**: a step
+/// bound to it is refused, which is the honest outcome when "this" could mean
+/// any of them. Hidden files are skipped exactly as the explorer skips them,
+/// so what can be denoted is what a person looking at the window can see.
+fn file_explorer_product(view: &View, _doc: &AutoCommit) -> Option<Product> {
+    let dir = view.directory.as_ref()?;
+    let mut entries = file_explorer::model::read_dir_sync(dir).ok()?;
+    entries.retain(|e| {
+        !e.is_dir && !e.name.starts_with('.') && e.mime.starts_with("image/")
+    });
+    let [only] = entries.as_slice() else {
+        return None;
+    };
+    let bytes = std::fs::read(&only.path)
+        .map_err(|e| tracing::warn!(path = %only.path.display(), "cannot read the picture: {e}"))
+        .ok()?;
+    Some(Product::Content {
+        hash: qdoc::blobstore::put(&bytes),
+    })
+}
+
 /// The picture in the open document, as content another application could be
 /// handed.
 ///
@@ -436,7 +475,7 @@ pub static CONTRACTS: &[AppContract] = &[
         recognises: file_explorer::actions::is_explorer_document,
         resources: file_explorer_resources,
         register: file_explorer::actions::register,
-        product: nothing,
+        product: file_explorer_product,
     },
     AppContract {
         app_id: "dev.qos.chat",

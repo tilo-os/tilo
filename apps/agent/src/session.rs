@@ -1946,6 +1946,42 @@ impl Session {
         }
         // A refusal to an earlier ask must never answer this one.
         self.refused_open = None;
+        // The bytes, before the request that names them.
+        //
+        // A hash is only a name, and the session resolves it against its own
+        // store — a different process from this one, with a different store.
+        // The agent produced this content (an app's `product` put it here),
+        // so the session has never seen it, and an open naming it would be
+        // refused for content that does exist, on the machine that does not
+        // have it. Offering first is the same route every picture takes out
+        // of an app's sandbox, and it is what makes the hash resolvable on
+        // the far side.
+        //
+        // Offered, not required to succeed: a session that already holds the
+        // content answers the open regardless, and one that cannot take it
+        // refuses the open in its own words a moment later.
+        if let Some(hash) = with {
+            match qdoc::blobstore::store().get(hash) {
+                Some(bytes) => {
+                    tracing::info!(
+                        %hash, bytes = bytes.len(),
+                        "handing the session the content the open names"
+                    );
+                    self.link.send(&CollabRequest::OfferBlob {
+                        hash: hash.to_string(),
+                        bytes,
+                    })?;
+                }
+                // Nothing to hand over. Said rather than passed silently: the
+                // open will be refused on the far side for content that is
+                // nowhere, and this names the half that went missing here.
+                None => tracing::warn!(
+                    %hash,
+                    "the open names content this agent does not hold, so there \
+                     is nothing to hand the session"
+                ),
+            }
+        }
         self.link.send(&CollabRequest::OpenApp {
             app_id: contract.app_id.to_string(),
             with: with.map(str::to_string),
