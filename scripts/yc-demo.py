@@ -1522,10 +1522,31 @@ class Session:
             # same per-character path the document uses.
             self.type_prose(search)
             self.settle(1.2)
-            rows = self.palette().get("rows") or []
+            palette = self.palette()
+            rows = palette.get("rows") or []
             if not any(app_id in json.dumps(r) for r in rows):
+                # An empty palette has two quite different causes and one
+                # appearance. Either the search ran and the applications
+                # provider offered nothing — a fact about the registry or
+                # about what this person is allowed to launch — or the
+                # palette never opened, the keystrokes went to whatever
+                # did have focus, and nothing was searched at all. The
+                # second reads as the first, in a line that names the
+                # application and blames it.
+                #
+                # So say what the box itself holds. `visible` false, or a
+                # query that is not what was typed, means nothing was
+                # asked and the row's absence says nothing about the app.
+                shown = palette.get("query")
                 note(f"{self.name}: no palette row offers {app_id} for "
-                     f"{search!r} (rows: {[r.get('id') for r in rows][:6]})")
+                     f"{search!r} (visible={palette.get('visible')}, "
+                     f"query={shown!r}, "
+                     f"rows: {[r.get('id') for r in rows][:6]})")
+                if not palette.get("visible") or (shown or "") != search:
+                    note(f"{self.name}: the palette was not holding "
+                         f"{search!r} when it was read, so this is a "
+                         f"search that did not happen rather than an "
+                         f"application that was not offered")
                 self.key("Escape")
                 return None
             self.key("Enter")
