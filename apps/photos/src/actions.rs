@@ -263,6 +263,38 @@ impl ResourceProvider for PhotosResources {
 /// resource tree is built, which has the path and not the pixels, and a
 /// photograph is read once per publish rather than per frame.
 fn subject_of(path: &str) -> Option<String> {
+    // Once per file, not once per publish.
+    //
+    // `resources()` is rebuilt whenever the document changes -- it is a
+    // function of the document, deliberately, so nothing here is ever stale.
+    // Reading and decoding the photograph inside it made every one of those
+    // rebuilds pay for a full PNG decode, and the app stopped answering:
+    // an agent that opened this editor watched it arrive with its content
+    // and never publish an operation, and gave up after thirty seconds with
+    // `the open did not produce what it promised`.
+    //
+    // The answer only depends on the file, so it is remembered by path. A
+    // failure is remembered too: a file that cannot be read will not become
+    // readable by being decoded again every frame.
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+    let cache = SEEN.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(seen) = cache.lock() {
+        if let Some(hit) = seen.get(path) {
+            return hit.clone();
+        }
+    }
+    let answer = measure_subject(path);
+    if let Ok(mut seen) = cache.lock() {
+        seen.insert(path.to_string(), answer.clone());
+    }
+    answer
+}
+
+/// The measurement itself, without the remembering. Separated so the cache
+/// above has one thing to cache and this has one thing to be right about.
+fn measure_subject(path: &str) -> Option<String> {
     const GRID: u32 = 24;
     let img = image::open(path).ok()?.to_luma8();
     let (w, h) = img.dimensions();
