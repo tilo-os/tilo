@@ -189,15 +189,7 @@ pub fn deliver(chrome: &Chrome, broker: &BrokerHandle, remarks: Vec<Remark>) {
                 // the message on the wire, and it stays true whichever end drew
                 // the panel.
                 //
-                // `to` is the destination's **id**, not the label the selector
-                // shows. The label is localised prose — "the room", "der Raum" —
-                // and anything reading these fields by splitting on whitespace
-                // would take `the` for the whole destination and then fail to
-                // find the field after it.
-                let to = match remark.destination.target() {
-                    qos_reference::Target::Channel(id) => format!("channel:{id}"),
-                    qos_reference::Target::Participant(id) => format!("participant:{id}"),
-                };
+                let to = destination_token(&remark.destination);
                 tracing::info!(
                     target: "shell::remark",
                     %to,
@@ -269,5 +261,58 @@ pub fn deliver(chrome: &Chrome, broker: &BrokerHandle, remarks: Vec<Remark>) {
                 );
             }
         }
+    }
+}
+
+/// Name a destination in one whitespace-free token.
+///
+/// The id, never the label the selector shows. A label is localised prose —
+/// `the room`, `der Raum` — and the send line names the destination in a field
+/// beside two others, so a reader that finds the end of a field by finding a
+/// space takes `the` for the whole destination and then cannot find the field
+/// after it. The id is also the stable half: it does not move when the wording
+/// does, or when the session is running in another language.
+fn destination_token(destination: &qos_reference::Destination) -> String {
+    match destination.target() {
+        qos_reference::Target::Channel(id) => format!("channel:{id}"),
+        qos_reference::Target::Participant(id) => format!("participant:{id}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qos_reference::Destination;
+
+    /// The send line is read field by field by whatever is watching a session,
+    /// and those readers find the end of a field by finding a space. So the
+    /// destination has to survive being written into one.
+    ///
+    /// Asserted against a destination whose *label* has a space in it, because
+    /// that is the real case rather than a hypothetical one: the room's option
+    /// is built from a localised string, and in English it reads `the room`.
+    #[test]
+    fn a_destination_is_one_word_however_its_label_reads() {
+        let room = Destination::channel(qos_reference::ROOM_CONVERSATION, "the room");
+        let token = destination_token(&room);
+        assert!(
+            !token.chars().any(char::is_whitespace),
+            "the room's destination token carried whitespace: {token:?}",
+        );
+        assert!(
+            token.contains(qos_reference::ROOM_CONVERSATION),
+            "the token should name the channel it goes to, got {token:?}",
+        );
+
+        let person = Destination::participant("u_xaver", "Xaver Emmerling", false);
+        let token = destination_token(&person);
+        assert!(
+            !token.chars().any(char::is_whitespace),
+            "a participant's destination token carried whitespace: {token:?}",
+        );
+        assert!(
+            token.contains("u_xaver"),
+            "the token should name the participant it goes to, got {token:?}",
+        );
     }
 }
