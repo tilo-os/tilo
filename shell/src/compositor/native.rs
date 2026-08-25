@@ -4484,10 +4484,14 @@ mod tests {
         );
         assert_eq!(resolved[0].name, launcher::services::COLLAB_SERVICE);
         assert!(
-            resolved[0].host_fd >= 0,
+            resolved[0].host_fd() >= 0,
             "the launcher must hand the app a real connected descriptor"
         );
 
+        // Dropped by name, and before the broker: this is a live
+        // connection to the socket that broker is serving, and a caller
+        // that walks away from one leaks a descriptor per run.
+        drop(resolved);
         drop(broker);
         unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
     }
