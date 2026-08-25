@@ -389,6 +389,15 @@ impl Room {
             .map(|m| m.text)
     }
 
+    /// What the agent recorded it did with `msg`, as another machine reads
+    /// it: out of the shared conversation, through chat's own reader.
+    fn record_for(&self, msg: &str) -> Option<chat::model::AgentWork> {
+        ChatDoc::list_messages(&self.chat_doc, CHANNEL)
+            .into_iter()
+            .find(|m| m.parent.as_deref() == Some(msg) && m.work.is_some())
+            .and_then(|m| m.work)
+    }
+
     /// The resource id that reached dispatch, if an operation was performed.
     fn acted_on(&self) -> Option<String> {
         self.session.last_action().map(|l| l.resource.clone())
@@ -822,5 +831,115 @@ fn an_instruction_it_cannot_fulfil_is_refused_visibly() {
     assert!(
         said.contains(AGENT_NAME),
         "the refusal is signed, so it reads as the agent's answer: {said:?}"
+    );
+}
+
+/// 8. The room can read *what* the agent did, not only that it answered.
+///
+/// The one sentence the agent used to post said "done" and nothing about
+/// which operation, and nothing at all until the work had finished. What the
+/// room holds now is a record on that same reply: the state it ended in, the
+/// app's own word for what it performed, and when. Read here out of the shared
+/// document through chat's own reader, which is the only place another
+/// machine would ever read it from.
+#[test]
+fn what_the_agent_did_is_in_the_room_and_not_only_in_its_log() {
+    use chat::model::AgentWorkState;
+
+    let doc = draft();
+    let section = format!("word-processor.section:{}", headings(&doc)[0]);
+    let mut chat = conversation();
+    mention(
+        &mut chat,
+        "m_ask",
+        "@Claude align centre",
+        now(),
+        Some(ResourceRef::whole("word_processor.section", &section, "Run sheet")),
+    );
+
+    let room = Room::open(chat, Some(doc));
+    assert_eq!(room.acted_on().as_deref(), Some(section.as_str()), "it acted");
+    let work = room
+        .record_for("m_ask")
+        .expect("the reply must carry what the agent did with the message");
+    assert!(
+        work.finished(),
+        "the work is over, so the record must not still read as in flight: {work:?}"
+    );
+    match &work.state {
+        AgentWorkState::Done { did } => assert!(
+            !did.trim().is_empty(),
+            "a record that says 'done' and not what was done says almost nothing"
+        ),
+        other => panic!("an applied operation must be recorded as done, not {other:?}"),
+    }
+    assert!(
+        work.since > 0,
+        "the record has to say when, or nobody can tell a fresh state from a stale one"
+    );
+}
+
+/// 9. A refusal is recorded as a refusal, and never left reading as work in
+/// progress.
+///
+/// The failure this pins is the one the whole surface is built to avoid: a
+/// strip that goes on saying the agent is working after it has stopped. It is
+/// worse than the silence it replaced, because silence at least does not
+/// assert anything.
+#[test]
+fn a_refusal_leaves_a_record_that_says_it_stopped() {
+    use chat::model::AgentWorkState;
+
+    let doc = draft();
+    let mut chat = conversation();
+    mention(&mut chat, "m_no", "@Claude reticulate the splines", now(), None);
+
+    let room = Room::open(chat, Some(doc));
+    assert_eq!(room.acted_on(), None, "nothing was performed");
+    let work = room
+        .record_for("m_no")
+        .expect("a refusal has to be legible in the room, not only in the log");
+    assert_eq!(
+        work.state,
+        AgentWorkState::Refused,
+        "the agent declined, and the record must say so"
+    );
+    assert!(work.finished());
+    let said = room.reply_to("m_no").expect("and it says why");
+    assert!(
+        said.contains(AGENT_NAME),
+        "the refusal is signed, so it reads as the agent's answer: {said:?}"
+    );
+}
+
+/// 10. Taking a summons and answering it leave one message, not two.
+///
+/// The reply goes up when the work starts and is completed in place, so the
+/// thread carries one answer per question. A second message would also make
+/// `listen::answered` read two records for one summons and put two strips
+/// under one sentence.
+#[test]
+fn taking_a_message_on_and_answering_it_leave_one_reply() {
+    let doc = draft();
+    let section = format!("word-processor.section:{}", headings(&doc)[0]);
+    let mut chat = conversation();
+    mention(
+        &mut chat,
+        "m_ask",
+        "@Claude align centre",
+        now(),
+        Some(ResourceRef::whole("word_processor.section", &section, "Run sheet")),
+    );
+
+    let room = Room::open(chat, Some(doc));
+    let answers: Vec<_> = room.replies().into_iter().filter(|(p, _)| p == "m_ask").collect();
+    assert_eq!(
+        answers.len(),
+        1,
+        "one question, one answer — got {answers:?}"
+    );
+    assert!(
+        !answers[0].1.trim().is_empty(),
+        "the reply went up empty and must not have been left that way"
     );
 }
