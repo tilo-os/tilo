@@ -410,6 +410,12 @@ WATCH_IT_OPEN_S = 1.6
 # of its waiting had already been cut. The film has a hard 110s cap and
 # came out at 113.8s. A viewer does not need five seconds of a still
 # screen to understand that something was asked; they need about two.
+#: How long the photo editor stays on camera once the crop has landed
+#: in it. The crop and the placement happen ~300ms apart, so without a
+#: floor here the editor is on screen for a third of a second and the
+#: film never shows the picture becoming square.
+CROP_DWELL_S = 3.0
+
 FILM_THE_WAIT_S = 2.5
 # How often the watcher looks at anything. Every probe is a `state_dump`
 # and blocks the session it is asked of — including, while recording,
@@ -732,6 +738,7 @@ class Live:
         #: Whose screen chat was framed on, or None if it never was.
         self.framed_chat_on: str | None = None
         self.watched_the_crop = False
+        self.framed_editor_at: float | None = None
         #: When the film last had something to show, and the camera it
         #: is holding down until it has something again. See
         #: `FILM_THE_WAIT_S`.
@@ -1971,10 +1978,26 @@ class Live:
             self.watched_the_crop = True
             self.something_is_happening()
             self.the_editor_works()
+            self.framed_editor_at = time.time()
         # And the change is going into the document *now*, so the
         # document is what the camera should be on. Anything later films
         # a page that is already holding it.
         if self.PLACE_OP.search(fresh):
+            # Long enough for the crop to be a shot rather than a flicker.
+            #
+            # The agent crops and places in one breath -- measured at 304ms
+            # apart -- so a camera that moves on the placement arrives at
+            # the editor and leaves again before a viewer has focused on
+            # it. The film then shows a photograph and a page, and never
+            # the moment between them that the whole beat is about.
+            #
+            # Waited here rather than paced in the agent: how long a cut
+            # needs to be is a property of the film, and the agent should
+            # not be made slower to suit one.
+            if self.framed_editor_at is not None:
+                seen_for = time.time() - self.framed_editor_at
+                if seen_for < CROP_DWELL_S:
+                    self.stop.wait(CROP_DWELL_S - seen_for)
             self.the_work_lands()
         if self.agent_proc.poll() is None:
             return
