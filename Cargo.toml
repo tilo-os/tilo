@@ -594,10 +594,18 @@ debug-assertions = true
 [patch.crates-io]
 winit = { path = "vendor/winit" }
 # vello reserves its scratch buffers for a 30,000-path stress scene, per
-# renderer and so per process -- about 180 MB a desktop never touches. Its
+# renderer and so per process -- about 165 MB a desktop never touches. Its
 # own source says as much: "hand picked to accommodate ... paris-30k ...
 # should instead get derived from the scene layout". On an integrated GPU
 # shared by a dozen clients that is the entire memory window, and it froze
-# this machine four times in one evening. The vendored copy differs from
-# upstream 0.9.0 in exactly one hunk, `BufferSizes::new`.
+# this machine four times in one evening.
+#
+# The two vendored copies size those buffers from what frames actually
+# use instead: the GPU already writes the counts into `BumpAllocators`,
+# so the renderer reads them back and grows a `BumpBudget` to fit. That
+# is upstream's own TODO ("apply logic to determine whether we need to
+# rerun coarse") and is meant to go back to them rather than live here.
+# `vendor/vello/src/bump_budget.rs` is the whole of it; the rest of both
+# crates is upstream 0.9.0 with the call sites threaded through.
 vello_encoding = { path = "vendor/vello_encoding" }
+vello = { path = "vendor/vello" }
