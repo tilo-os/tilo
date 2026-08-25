@@ -7916,14 +7916,28 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
     two different programs. Two documents tabbed inside one app would
     have shown nothing.
     """
-    banner("the strip: four applications, and two of them in one window")
+    # Counted rather than asserted. The film opens four applications and
+    # the banner said so; a run where one of them is deliberately left
+    # for the agent to open opens three, and a headline that disagrees
+    # with the strip underneath it is the harness lying about its own
+    # picture.
+    banner(f"the strip: {len(extras) + 2} applications, and two of them "
+           f"in one window")
     cut("quinten")
 
     order = strip_order(quinten)
     note(f"the strip carries {len(order)} window group(s), "
          f"{len(extras) + 2} applications")
 
-    editor = extras.get(IMAGE_EDITOR)
+    # Whichever *other* application is on the strip, not the image editor
+    # specifically. The claim this beat makes is that a tab bar holds two
+    # different programs, and any second program proves it; naming one
+    # made the gesture hostage to a window that, in a run where the agent
+    # is the one who opens the editor, is deliberately not there yet.
+    partner_id = next((a for a in (IMAGE_EDITOR, CHAT_APP) if a in extras),
+                      None)
+    editor = extras.get(partner_id) if partner_id else None
+    partner = partner_id.rsplit(".", 1)[-1] if partner_id else "nothing"
     # Only neighbours are ever in frame together on a strip, so the two
     # windows the merge happens between have to be side by side for it to
     # be watchable. Said here rather than left to be inferred from a
@@ -7932,7 +7946,7 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
         a = group_index_of(quinten, wp, order)
         b = group_index_of(quinten, editor, order)
         if a is not None and b is not None and abs(a - b) != 1:
-            note(f"the word processor is group {a} and the image editor "
+            note(f"the word processor is group {a} and {partner} is "
                  f"group {b}, so they are not neighbours and cannot share "
                  f"a frame")
 
@@ -7956,13 +7970,13 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
              "cannot show a pair at its far end")
 
     if editor is None:
-        gap("the image editor did not open, so there is no second "
-            "application to put in the word processor's window and the "
-            "tabbing is not filmed")
+        gap("no second application is on the strip, so there is nothing "
+            "to put in the word processor's window and the tabbing is "
+            "not filmed")
         return
     if wp is None:
-        gap("the word processor never opened, so there is nothing to tab "
-            "the image editor beside")
+        gap(f"the word processor never opened, so there is nothing to tab "
+            f"{partner} beside")
         return
 
     step("the strip scrolls back one window")
@@ -7970,15 +7984,15 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
     # a window sliding into a tab bar that is off the edge of the screen
     # is a window disappearing.
     if not frame_windows(quinten, [wp, editor], VIEWPORT):
-        gap("the word processor and the image editor are not in frame "
-            "together, so the merge would happen off camera")
+        gap(f"the word processor and {partner} are not in frame "
+            f"together, so the merge would happen off camera")
         return
     quinten.snapshot(os.path.join(shots, "11-strip-pair.png"))
 
     before_groups = len(tab_groups_here(quinten))
     before = quinten.input_ops
 
-    step("the image editor is dropped onto the word processor's tab bar")
+    step(f"{partner} is dropped onto the word processor's tab bar")
     note("in every other desktop a tab belongs to its application. Here "
          "the compositor owns the frame, so this bar holds two programs")
     resp = quinten.merge_into_group(editor["surface_id"], wp["surface_id"])

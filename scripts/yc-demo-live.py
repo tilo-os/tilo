@@ -2125,14 +2125,31 @@ def _the_owners_half(q, shots: str, live: "Live",
     # app draws it; here it is a frame primitive the compositor owns, so a
     # file manager and a document and a photograph sit on one bar. That is
     # the one gesture in the film a viewer cannot mistake for a browser.
-    mark("the image editor opens, and two applications share one tab bar")
+    # The editor is named in this mark only when this half is the one
+    # opening it. With an agent in the room it is not: it stays closed so
+    # the agent can be seen opening it, and a caption promising a window
+    # that never arrives is worse than a plainer one.
+    agent_opens_the_editor = bool(live.args.agent)
+    mark("two applications share one tab bar" if agent_opens_the_editor
+         else "the image editor opens, and two applications share one tab bar")
     extras: dict[str, dict] = {}
-    if photos is None:
+    if photos is None and not agent_opens_the_editor:
         photos = q.launch(yc.IMAGE_EDITOR,
                           search=yc.STRIP_SEARCH.get(yc.IMAGE_EDITOR,
                                                      "photos"),
                           via="palette", look=0.45)
         yc.claim("the image editor opened", photos is not None, True)
+    elif agent_opens_the_editor:
+        # Left closed on purpose, and this is the whole point of the
+        # film rather than a saving. Scene 4 claims Claude *opens the
+        # image editor itself*; opening it here first means the agent
+        # finds it already running, reports "already open in this room"
+        # and never asks — so the one act the film is built to show is
+        # the one act a self-test could never exercise. Every run of it
+        # passed, and the beat had not run once.
+        yc.note("the image editor is left closed: the agent is the one "
+                "that opens it, and a run that opens it first cannot "
+                "watch that happen")
     if photos is not None:
         extras[yc.IMAGE_EDITOR] = photos
     if chat is not None:
