@@ -1368,6 +1368,19 @@ impl ChatApp {
                 return u.name.clone();
             }
         }
+        // Your own name, which this had no way to reach.
+        //
+        // `LocalIdentity::resolve` works one out at startup -- the runtime
+        // identity's display name, or the account name capitalised -- and
+        // puts it on `me`. But `me` is not necessarily a row in `users`:
+        // that list is built from the room document, and a room you have
+        // not spoken in has never heard of you. So the one participant
+        // whose name this process knows for certain was the one it fell
+        // through to `id.to_string()` for, and a person saw their own
+        // routing hash where their name should be.
+        if id == self.me.id && !self.me.name.trim().is_empty() {
+            return self.me.name.clone();
+        }
         id.to_string()
     }
 
@@ -2343,6 +2356,29 @@ mod identity_on_screen {
         assert!(
             shown.contains("2154"),
             "two unnamed peers have to be distinguishable, got `{shown}`",
+        );
+    }
+
+    /// You have a name, and this process knows it.
+    ///
+    /// `LocalIdentity::resolve` derives one at startup and puts it on
+    /// `me`. `display_name` consulted the room document and the roster
+    /// and neither knows you until you have spoken, so the one name that
+    /// was certain was the one it fell through on — and a person saw
+    /// their own routing hash in the roster and in the `@` picker.
+    ///
+    /// This is what "referred to as You" rests on: second-person is a
+    /// rendering choice, not a substitute for having a name.
+    #[test]
+    fn your_own_name_is_known_before_the_room_has_heard_of_you() {
+        let mut app = ChatApp::new_ephemeral();
+        app.me.name = "Quinten".to_string();
+        app.users.clear();
+        app.room_names.clear();
+        assert_eq!(
+            app.display_name(&app.me.id.clone()),
+            "Quinten",
+            "the name this process worked out for itself must be reachable",
         );
     }
 
