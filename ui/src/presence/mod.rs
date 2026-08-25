@@ -806,6 +806,29 @@ impl PresenceCtx {
             .collect();
     }
 
+    /// Add one more spelling of "me" without disturbing the others.
+    ///
+    /// One session answers to several names — a person id where the
+    /// desktop reasons about it, a `peer@<handle>` address where the
+    /// network does, an app id where the broker does — and which one a
+    /// frame comes back under depends on which layer relayed it. The
+    /// setter above replaces the set, so the layer that learns the last
+    /// spelling would otherwise have to know all the earlier ones to
+    /// avoid dropping them. Returns whether anything was new, so a
+    /// caller on the frame path can skip the work when it is not.
+    ///
+    /// Blank is ignored, for the reason [`Self::set_own_identity`]
+    /// gives: an env var forwarded from something that was itself unset
+    /// arrives as `""`, and taking that literally would make every
+    /// unnamed participant "me" and empty the room.
+    pub fn add_own_identity(&mut self, id: impl AsRef<str>) -> bool {
+        let id = id.as_ref().trim();
+        if id.is_empty() {
+            return false;
+        }
+        self.own.insert(UserId(id.to_string()))
+    }
+
     /// Name the surface this process draws, so it can recognise a
     /// content-space pointer measured in it.
     ///

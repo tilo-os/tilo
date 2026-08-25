@@ -469,6 +469,22 @@ impl PeerPresence {
     /// [`Self::pump`] with the clock supplied, so retirement can be
     /// exercised without sleeping.
     pub fn pump_at(&self, presence: &mut PresenceCtx, now: Instant) -> bool {
+        // Teach the store the spelling this session answers to *on the
+        // wire*, before anything off the wire is folded in.
+        //
+        // The compositor seeds its own identity with the person id
+        // (`FrameBuilder::new`), which is what a frame relayed by the
+        // local broker comes back stamped with. A frame that went out
+        // over the network and came back — from a relay that echoes, or
+        // from a second session of the same person — arrives as
+        // `peer@<handle>` instead, and `is_own_identity` had never been
+        // told that was also this session. So the one presence entry the
+        // rule exists to suppress was the one it could not recognise,
+        // and it was painted: the owner's own name, over the owner's own
+        // window.
+        //
+        // Additive, so the person id set at construction survives.
+        presence.add_own_identity(format!("peer@{}", self.net.local_peer_id_hash()));
         // Retire whatever nobody has restated, before folding in what
         // just arrived — so a peer heard from this frame is refreshed by
         // the fold rather than aged out by its own arrival.
