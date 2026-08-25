@@ -2865,12 +2865,23 @@ class Recorder:
         # frame the cut is on rather than the one after it. A caption
         # that changes a frame early is invisible; one that changes a
         # frame late is the defect.
+        # The end is pulled back half a tick as well as floored. Snapping
+        # puts each boundary exactly on a frame time, and `between` is
+        # inclusive at both ends — so two consecutive spans sharing a
+        # boundary would both be enabled on that one frame and draw two
+        # names over each other. Half a tick is inside the gap between
+        # two frames, so it excludes the next span's first frame without
+        # ever excluding this span's last one.
         tick = 1.0 / fps
         snapped = [
-            (name, math.floor(a / tick) * tick, math.floor(b / tick) * tick)
+            (
+                name,
+                math.floor(a / tick) * tick,
+                math.floor(b / tick) * tick - tick / 2.0,
+            )
             for name, a, b in spans
         ]
-        return [s for s in snapped if s[2] - s[1] >= tick]
+        return [s for s in snapped if s[2] - s[1] >= tick / 2.0]
 
     def _frame_ssim(self, rel_a: str, rel_b: str) -> float | None:
         """How alike two captured frames are, 0..1. `None` if unreadable.
