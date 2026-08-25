@@ -5255,6 +5255,27 @@ impl WorkspaceTree {
         let id = ws.grant_as(grantor, cap)?;
         let stored = ws.capabilities.iter().find(|c| c.id == id).cloned()?;
         self.doc_insert_capability(workspace_id, &stored);
+        // And into the *room's* document, here rather than whenever this
+        // machine next exports.
+        //
+        // `apply_room_changes` rebuilds `ws.capabilities` wholesale out
+        // of that document — deliberately, because that is what lets a
+        // peer's revoke reach this machine instead of leaving the grant
+        // alive here forever. The cost is that a grant living only in
+        // the cache is not a grant the next inbound batch will keep: it
+        // is overwritten by a document that predates it, **on the
+        // machine that made it**, while the caller has already been told
+        // it was accepted.
+        //
+        // The window was small enough to look like nothing and wide
+        // enough to swallow the thing the room was granted for: with a
+        // second peer in the room the traffic is continuous, and two
+        // capabilities granted a second apart survived or vanished
+        // depending on whether a batch arrived between them. Projecting
+        // now closes it rather than narrowing it.
+        if !room.is_nil() {
+            self.sync_room_doc(room);
+        }
         self.flush_to_disk();
         Some(id)
     }
@@ -5278,6 +5299,13 @@ impl WorkspaceTree {
             return false;
         }
         self.doc_revoke_capability(workspace_id, cap_id);
+        // The same window as `grant_in_workspace`, and worse in the
+        // direction it fails: a revoke that lives only in the cache is
+        // resurrected by the next inbound batch, so the capability the
+        // owner has just taken away is quietly handed back.
+        if let Some(room) = self.room_of(workspace_id).filter(|r| !r.is_nil()) {
+            self.sync_room_doc(room);
+        }
         self.flush_to_disk();
         true
     }
@@ -8164,6 +8192,103 @@ mod automerge_foundation_tests {
                 "{who} lost one of two simultaneous references",
             );
         }
+    }
+
+    /// A grant survives the next thing a peer says.
+    ///
+    /// `apply_room_changes` rebuilds the workspace's capability list out
+    /// of the room document, which is what makes a revoke replicate. So
+    /// a grant that has only reached the cache is undone by the first
+    /// batch that arrives after it — on the machine that made it, and
+    /// with the caller already told it was accepted.
+    ///
+    /// The batch here says nothing about capabilities and changes no
+    /// governance; it is an ordinary guest projecting an ordinary room.
+    /// That is the point: this is not a peer overriding a grant, it is
+    /// the grant never having been written where the merge could see it.
+    ///
+    /// Asserted through the gate rather than on the list, because what
+    /// broke was an agent being refused an application it had been given
+    /// — the list is the mechanism, `allows` is the claim.
+    #[test]
+    fn a_grant_outlives_the_next_batch_from_a_peer() {
+        use collab_types::caps::{CapOverride, ResourceRef, Scope, Subject, Verb};
+
+        let (mut host, mut guest, room) = two_in_a_room();
+        let ws = host.workspaces[0].id;
+
+        // The guest has been in the room a while and has said something
+        // ordinary, so it holds a copy of the room that predates the
+        // grant below.
+        ship(&mut host, &mut guest, room, 1);
+        guest.set_room_records(room, held(("file:/docs/harbour.png", "image")));
+
+        let granted = host.grant_in_workspace(
+            ws,
+            &"quinten".to_string(),
+            CapOverride::grant(
+                Subject::agent("Claude"),
+                Scope::App("dev.qos.photos".to_string()),
+                Verb::Write,
+            ),
+        );
+        assert!(granted.is_some(), "the room's owner may grant in it");
+
+        let photos = ResourceRef::App("dev.qos.photos".to_string());
+        let actor = host.workspaces[0].actor_for_agent("Claude");
+        assert!(
+            host.workspaces[0].allows(&actor, &photos, Verb::Write),
+            "the grant has to mean something the moment it is made",
+        );
+
+        // And now the guest's copy arrives.
+        ship(&mut guest, &mut host, room, 2);
+
+        let actor = host.workspaces[0].actor_for_agent("Claude");
+        assert!(
+            host.workspaces[0].allows(&actor, &photos, Verb::Write),
+            "a peer saying something unrelated must not undo a grant this \
+             machine made: the agent was refused the application it had \
+             just been given, on the machine that gave it",
+        );
+    }
+
+    /// And a revoke does not come back.
+    ///
+    /// The same window, failing the other way round: a revoke that only
+    /// reached the cache is resurrected by the peer's older copy, so the
+    /// capability the owner has just taken away is handed back.
+    #[test]
+    fn a_revoke_is_not_undone_by_the_next_batch_from_a_peer() {
+        use collab_types::caps::{CapOverride, ResourceRef, Scope, Subject, Verb};
+
+        let (mut host, mut guest, room) = two_in_a_room();
+        let ws = host.workspaces[0].id;
+        let cap = host
+            .grant_in_workspace(
+                ws,
+                &"quinten".to_string(),
+                CapOverride::grant(
+                    Subject::agent("Claude"),
+                    Scope::App("dev.qos.photos".to_string()),
+                    Verb::Write,
+                ),
+            )
+            .expect("the room's owner may grant in it");
+
+        // The guest learns the grant, then the owner takes it back.
+        ship(&mut host, &mut guest, room, 1);
+        assert!(host.revoke_in_workspace(ws, &"quinten".to_string(), &cap));
+
+        ship(&mut guest, &mut host, room, 2);
+
+        let photos = ResourceRef::App("dev.qos.photos".to_string());
+        let actor = host.workspaces[0].actor_for_agent("Claude");
+        assert!(
+            !host.workspaces[0].allows(&actor, &photos, Verb::Write),
+            "a revoked capability must stay revoked here, whatever a peer \
+             still holding the old copy says next",
+        );
     }
 
     /// Re-projecting unchanged state must not manufacture a change, or

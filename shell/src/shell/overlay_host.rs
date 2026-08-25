@@ -5123,6 +5123,15 @@ impl ShellOverlayHost {
         let dismissed = self.remark_was_open && !self.remark.is_open();
         self.remark_was_open = self.remark.is_open();
         if dismissed {
+            // The other half of "compose surface opened above the windows", so
+            // a session's log carries how long the panel was actually up. It
+            // has been measured off a film instead — three frames, gone before
+            // anybody could type into it — and the pair of lines is what makes
+            // that readable without the video.
+            tracing::info!(
+                target: "shell::remark",
+                "the compose surface closed",
+            );
             // The socket case. An application in its own process is told the
             // same thing as one hosted here, by the only route there is to it.
             if let Some(peer) = self.remark_peer.take() {
@@ -5231,6 +5240,16 @@ impl ShellOverlayHost {
         // there was no position inside it that was not cut off.
         let bounds = self.output_bounds_at(neighbour.x0);
         if !self.remark.open_reference_beside(reference, neighbour, bounds) {
+            // An application right-clicked, asked for a surface, and got
+            // nothing. Said out loud: the person is looking at a context menu
+            // with no compose box beside it, and the only way to tell that
+            // apart from a gesture that was never made is a line here.
+            tracing::warn!(
+                target: "shell::remark",
+                destinations = self.remark.has_destinations(),
+                "an application asked for a compose surface and none was \
+                 opened; there is nowhere for a remark to be sent",
+            );
             return false;
         }
         self.remark_neighbour = neighbour;
@@ -5273,6 +5292,18 @@ impl ShellOverlayHost {
     /// handle — see the field doc on [`Self::remark_outbox`].
     pub fn take_remarks(&mut self) -> Vec<qos_reference::Remark> {
         std::mem::take(&mut self.remark_outbox)
+    }
+
+    /// Put a remark in the outbox that was not written in the panel.
+    ///
+    /// The one caller is the control socket, so a harness that cannot make
+    /// the gesture can still ask the question the gesture leads to. It joins
+    /// at the same point the panel does — a finished [`qos_reference::Remark`]
+    /// waiting for the next frame — so everything the room does with one is
+    /// the same code either way, and nothing about the surface is claimed by
+    /// a run that came through here.
+    pub fn push_remark(&mut self, remark: qos_reference::Remark) {
+        self.remark_outbox.push(remark);
     }
 
     /// The display `x` falls on, as a rect to keep the panel inside.
