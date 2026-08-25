@@ -1469,6 +1469,7 @@ pub fn build_nirios_overlay_host_with_records(
         .with_sidebar_top(sidebar_top)
         .with_group_row_ptrs(group_row_ptrs)
         .with_content_workspace(tree.active.raw())
+        .with_seeded_tab_tiles(&tree)
         .with_peer_sync_enabled(enable_peer_sync);
     (host, chrome)
 }
