@@ -651,6 +651,17 @@ impl CapnpBrokerState {
                      was dropped; it is an answer to one connection"
                 );
             }
+            // Same reading. An invocation names the one application that
+            // published the operation, and reaches it through
+            // `dispatch_invocation`; fanning it out would have every app in
+            // the room perform it once, in each other's name.
+            CollabEvent::ActionInvoked { id, resource, action, .. } => {
+                tracing::warn!(
+                    id, %resource, %action,
+                    "capnp fanout: an invocation has no audience and was dropped; \
+                     it is addressed to one connection"
+                );
+            }
         }
     }
 

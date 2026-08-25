@@ -343,6 +343,69 @@ pub enum CollabRequest {
         /// session is what knows where this window is.
         beside: (f64, f64, f64, f64),
     },
+    /// Tell the session what this application currently has open and what may
+    /// be done to it.
+    ///
+    /// **Never fanned out.** Addressed to the session hosting this connection,
+    /// like [`CollabRequest::OpenApp`] and [`CollabRequest::ComposeRemark`]:
+    /// what an app has on screen is a fact about this machine, and the thing
+    /// that needs it is the compositor that draws the other windows.
+    ///
+    /// Level-triggered — each publish replaces the whole surface, so a
+    /// resource that has closed stops being addressable rather than lingering
+    /// as an address that resolves to something gone.
+    ///
+    /// What crosses is inert. A [`PublishedAction`] carries ids and labels;
+    /// the closure an `ActionSpec` holds never leaves this process, which is
+    /// why an invocation has to come back rather than being fired from where
+    /// it was read.
+    PublishActions {
+        /// This application's stable id. Its own claim; the session pairs it
+        /// with the connection that made it and gates on the pairing.
+        app_id: String,
+        actions: Vec<PublishedAction>,
+    },
+    /// Say what became of an invocation.
+    ///
+    /// An empty `code` means it ran; otherwise `code` is one of the door's
+    /// refusal codes and `message` says why. Required rather than optional:
+    /// somebody asked a machine they cannot see to do something, and silence
+    /// and success must not look alike to them.
+    CompleteInvocation {
+        id: u64,
+        code: String,
+        message: String,
+    },
+}
+
+/// One operation this application exports, as it crosses to the session.
+///
+/// The toolkit's mirror of `qos_actions::door::ActionDescriptor`, minus the
+/// parts that cannot cross: there is no closure here and no handle, so what a
+/// session reads off this cannot be fired from where it was read.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct PublishedAction {
+    /// The app's own id for the thing being acted on. Never a screen position.
+    pub resource: String,
+    /// The app's own id for the operation, unique within the resource.
+    pub action: String,
+    pub resource_kind: String,
+    pub resource_label: String,
+    pub action_label: String,
+    pub description: Option<String>,
+    /// `None` when the operation takes no argument.
+    pub text_input: Option<PublishedTextInput>,
+}
+
+/// The prompt an operation that collects text advertises, so a caller that
+/// cannot see the screen is never left guessing an argument from a label.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct PublishedTextInput {
+    pub prompt: String,
+    pub placeholder: String,
+    /// Whether that text is the content hash of bytes already in this
+    /// machine's store rather than words somebody says.
+    pub wants_content: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -401,6 +464,29 @@ pub enum CollabEvent {
         type_id: String,
         payload: Vec<u8>,
         from_user_id: String,
+    },
+    /// The session is asking this application to perform one of the operations
+    /// it published.
+    ///
+    /// Distinct from [`CollabEvent::ActionArrived`], which is a room-wide
+    /// fan-out every app decodes and most drop. This names an address *this*
+    /// app published, and no other connection receives it.
+    ///
+    /// Arrival is not authority for anything beyond the operation named: the
+    /// session ran its capability check before sending, and an app must not
+    /// read "I was asked" as "I may now do other things".
+    ActionInvoked {
+        /// Echoed back on [`CollabRequest::CompleteInvocation`].
+        id: u64,
+        resource: String,
+        action: String,
+        /// `None` when the caller supplied none — separate from the empty
+        /// string, so an operation legitimately invoked with `""` can tell.
+        argument: Option<String>,
+        /// Who asked, as the session resolved them. The resulting change
+        /// commits under it, so an edit made this way is attributed in history
+        /// exactly like one somebody typed.
+        actor: String,
     },
     /// Phase 6: response to a [`CollabRequest::FetchScrollback`].
     /// Carries a page of previously-validated ops (or the empty
@@ -1543,6 +1629,17 @@ pub fn local_user_id() -> crate::permissions::UserId {
     crate::permissions::UserId(auto_hello_env().0)
 }
 
+/// The application this process is, as the launcher named it
+/// (`QOS_PACKAGE_ID`), falling back to `QUICK_APP_ID` for a dev run.
+///
+/// Read from the same place the channel key is built from, deliberately: the
+/// session pairs what an app publishes with the application its connection
+/// announced, so the two have to be one answer rather than two that can
+/// disagree.
+pub fn local_app_id() -> String {
+    auto_hello_env().0
+}
+
 /// Whether a qOS session started this process and is drawing its chrome.
 ///
 /// `QOS_SVC_COLLAB_FD` is the connected broker socket `qos-launcher` hands an
@@ -1840,6 +1937,36 @@ async fn drive_shovel(
                     });
                 }
 
+                // subscribeInvocations(): what the session is asking this app
+                // to do. Opened at join for the same reason as the streams
+                // above -- an app that only looked once it wanted something
+                // would miss what was asked before it looked -- and because
+                // the session refuses an invocation for a connection with no
+                // stream open, so an app that never subscribed is an app
+                // nothing outside it can reach.
+                if let Ok(invocations) = ch.subscribe_invocations().await {
+                    let itx = inbound_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        loop {
+                            let Ok(inv) = invocations.read().await else {
+                                break;
+                            };
+                            if itx
+                                .send(CollabEvent::ActionInvoked {
+                                    id: inv.id,
+                                    resource: inv.resource,
+                                    action: inv.action,
+                                    argument: inv.argument,
+                                    actor: inv.actor,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    });
+                }
+
                 // subscribeContext(): forward roster / permission snapshots.
                 if let Ok(ctx_stream) = ch.subscribe_context().await {
                     let itx = inbound_tx.clone();
@@ -2074,6 +2201,69 @@ async fn drive_shovel(
             // rather than to the room, and the transport a launched app
             // actually holds — so unlike `OpenApp` above it is carried here
             // rather than deferred to the JSON socket.
+            // Addressed to the session, and carried here for the reason
+            // `ComposeRemark` below is: this is the socket a launched app
+            // actually holds, and the session on the other end of it is what
+            // needs to know what this window can do.
+            CollabRequest::PublishActions { app_id, actions } => {
+                let Some(ch) = channel.as_ref() else {
+                    tracing::warn!(
+                        %app_id,
+                        "collab: this app described what can be done to it before it \
+                         joined a channel; nothing outside the process will see it",
+                    );
+                    continue;
+                };
+                let wire: Vec<runtime_collab::ExportedAction> = actions
+                    .into_iter()
+                    .map(|a| runtime_collab::ExportedAction {
+                        resource: a.resource,
+                        action: a.action,
+                        resource_kind: a.resource_kind,
+                        resource_label: a.resource_label,
+                        action_label: a.action_label,
+                        description: a.description,
+                        input: match a.text_input {
+                            None => runtime_collab::ExportedInput::None,
+                            Some(t) => runtime_collab::ExportedInput::Text {
+                                prompt: t.prompt,
+                                placeholder: t.placeholder,
+                                wants_content: t.wants_content,
+                            },
+                        },
+                    })
+                    .collect();
+                if let Err(e) = ch.publish_actions(&app_id, &wire).await {
+                    // Loud, because the visible consequence is a desktop on
+                    // which this application appears to export nothing --
+                    // indistinguishable from one that genuinely does.
+                    tracing::error!(
+                        %app_id, error = ?e,
+                        "collab: publishing this app's operations failed; nothing \
+                         outside the process can reach them",
+                    );
+                }
+            }
+            // The answer to something the session asked. Sent even when the
+            // operation failed: a caller that cannot see the screen has no
+            // other way to tell a refusal from a hang.
+            CollabRequest::CompleteInvocation { id, code, message } => {
+                let Some(ch) = channel.as_ref() else {
+                    tracing::warn!(
+                        id,
+                        "collab: an invocation was answered on a connection that has \
+                         no channel; whoever asked will time out instead",
+                    );
+                    continue;
+                };
+                if let Err(e) = ch.complete_invocation(id, &code, &message).await {
+                    tracing::error!(
+                        id, error = ?e,
+                        "collab: answering an invocation failed; whoever asked will \
+                         time out and be told nobody answered",
+                    );
+                }
+            }
             CollabRequest::ComposeRemark { reference, beside } => {
                 let Some(ch) = channel.as_ref() else {
                     tracing::warn!(
@@ -2214,6 +2404,26 @@ async fn drive_relay(
                     }
                     // Same reason an open is refused here: a relay draws no
                     // windows, so there is no desktop for a panel to sit on.
+                    // A relay is a document channel between machines, not a
+                    // session with a catalogue. There is nothing here to
+                    // publish into, and an app that could not tell would
+                    // believe it was reachable when nothing could reach it.
+                    CollabRequest::PublishActions { app_id, .. } => {
+                        tracing::warn!(
+                            %app_id,
+                            "collab: this relay session has no catalogue to publish \
+                             this app's operations into",
+                        );
+                    }
+                    // Nothing on this transport can have asked, so nothing is
+                    // waiting for the answer.
+                    CollabRequest::CompleteInvocation { id, .. } => {
+                        tracing::warn!(
+                            id,
+                            "collab: an invocation was answered on a relay that never \
+                             carried one",
+                        );
+                    }
                     CollabRequest::ComposeRemark { .. } => {
                         tracing::warn!(
                             "collab: this relay session hosts no desktop, so there \
@@ -2589,6 +2799,12 @@ pub mod broker {
                 CollabRequest::CarriedContent { .. } => continue,
                 // Addressed to a session, and this loopback is two documents
                 // in one process rather than a desktop. Nothing here draws.
+                // Addressed to a session, and this loopback is two documents in
+                // one process rather than a desktop -- so there is no
+                // catalogue for a surface to be published into, and nothing
+                // that could invoke one.
+                CollabRequest::PublishActions { .. } => continue,
+                CollabRequest::CompleteInvocation { .. } => continue,
                 CollabRequest::ComposeRemark { .. } => continue,
             };
 
