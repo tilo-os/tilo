@@ -51,11 +51,17 @@ chat-roster-agent-working = Working
 # a success, which would send a reader looking for an edit nobody made.
 chat-agent-step-unchanged = { $did } · changed nothing
 
+# Handed to the app that owns it, with nothing back yet. The past tense is
+# the point: all that has happened is the asking.
+chat-agent-step-asked = { $did } · asked
+
 # It did not happen, and the agent's own words for why.
 chat-agent-step-refused = { $did } · { $why }
 
-# The line that opens how the agent decided. Collapsed until asked for: a
-# transcript that showed every one of these at once would be unreadable.
+# The line that opens how the agent decided. Shown while the record is still
+# moving -- it is the only readable thing in the strip while the agent works --
+# and folded once it stops, because a transcript of finished turns with every
+# one of these open would be unreadable.
 chat-agent-reasoning-model = How it decided
 chat-agent-reasoning-floor = How it decided · without a model
 

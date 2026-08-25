@@ -1006,6 +1006,13 @@ fn an_operation_that_was_performed_leaves_a_row_saying_so() {
 /// the room has nothing to show. A trace built from the plan, from the
 /// model's answer, or from the sentence the agent wrote would all put a row
 /// here, and each of them would be a claim about work that never happened.
+///
+/// It matters more now that a row goes up when the operation is *handed over*
+/// rather than when it answers. That is precisely the change that would make
+/// a plan-shaped trace look plausible — rows for things not done yet — so
+/// this is the check that says the rows still come from dispatches. The turn
+/// below decides, refuses and answers without reaching one, and the room must
+/// show nothing whatsoever, in any state including "asked".
 #[test]
 fn a_turn_that_dispatched_nothing_shows_no_rows() {
     let doc = draft();
@@ -1025,6 +1032,63 @@ fn a_turn_that_dispatched_nothing_shows_no_rows() {
     );
     // And the agent did answer, so this is not "no rows because no turn".
     assert!(room.reply_to("m_no").is_some(), "it answered in the room");
+}
+
+/// A row goes up when the operation is handed over and is **rewritten** with
+/// what came back — one row per dispatch, from the asking to the answer.
+///
+/// The row is written early so a person watching does not sit through the
+/// slowest part of the work — an application opening takes tens of seconds —
+/// looking at a strip that says nothing. The price of writing it early is
+/// that it can be left behind: a row still reading "asked" after the turn is
+/// over would tell a reader an operation is in flight when the agent has
+/// stopped, which is the same lie in miniature that this whole surface exists
+/// to prevent.
+///
+/// So both halves are pinned here. Exactly one row for the one dispatch — not
+/// a second appended when it answered — and that row carrying the outcome
+/// rather than the asking.
+#[test]
+fn a_row_opened_at_dispatch_is_rewritten_with_what_came_back() {
+    use chat::model::AgentStepOutcome;
+
+    let doc = draft();
+    let section = format!("word-processor.section:{}", headings(&doc)[0]);
+    let mut chat = conversation();
+    mention(
+        &mut chat,
+        "m_ask",
+        "@Claude align centre",
+        now(),
+        Some(ResourceRef::whole("word_processor.section", &section, "Run sheet")),
+    );
+
+    let room = Room::open(chat, Some(doc));
+    assert_eq!(room.acted_on().as_deref(), Some(section.as_str()), "it acted");
+    let work = room.record_for("m_ask").expect("a record reached the room");
+    assert!(work.finished(), "the turn is over: {work:?}");
+    assert_eq!(
+        work.trace.len(),
+        1,
+        "one operation was dispatched, so there is one row — a row opened at \
+         the dispatch and a second appended at the outcome would be the same \
+         operation claimed twice: {:?}",
+        work.trace
+    );
+    for row in &work.trace {
+        assert_ne!(
+            row.outcome,
+            AgentStepOutcome::Asked,
+            "the turn has finished and this row still says the operation was \
+             only asked for — a reader would be watching for an answer that \
+             is never coming: {row:?}"
+        );
+    }
+    assert_eq!(
+        work.trace[0].outcome,
+        AgentStepOutcome::Applied,
+        "the operation changed the document, so its row must end applied"
+    );
 }
 
 /// How the agent decided travels with the record, and says which path
