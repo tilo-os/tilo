@@ -527,6 +527,7 @@ mod tests {
             reference: None,
             attachment: None,
             pinned: false,
+            work: None,
         }
     }
 
