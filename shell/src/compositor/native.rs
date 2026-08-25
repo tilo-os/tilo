@@ -752,8 +752,8 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         let chrome_handle = self.fb.chrome_handle();
         let catalog = with_action_gate(&chrome_handle, agent, |chrome, gate| {
             self.fb
-            .host()
-            .action_catalog_as("", chrome, doc, root, gate, agent)
+                .host()
+                .action_catalog_as("", chrome, doc, root, gate, agent)
         })
         .map_err(test_control::ActionRefusal::unknown)?;
         let resource = ResourceRef::new(provider, id);
