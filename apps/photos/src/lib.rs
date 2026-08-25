@@ -101,6 +101,51 @@ pub fn shots_pattern(w: u32, h: u32) -> pixels::Rgba {
     pixels::Rgba::new(w, h, bytes).expect("generated pattern is well formed")
 }
 
+/// Perform the app's exported `crop` on `doc`, over `region`.
+///
+/// Resolved by address out of the resource tree the app publishes, encoded by
+/// the action's own closure, and applied through the registry every other
+/// caller goes through. The point of the indirection is that the scenario
+/// cannot pose a result the live path would not produce: if `crop` stops
+/// being exported, or its argument stops being `x,y,w,h`, this stops working
+/// rather than quietly painting the old picture.
+fn square_through_the_exported_action(doc: &mut automerge::AutoCommit, region: Rect01) {
+    use qos_actions::{ResourceProvider, door};
+
+    let resources = crate::actions::PhotosResources.resources(doc);
+    let Some(descriptor) = door::survey(&resources)
+        .into_iter()
+        .find(|d| d.address.action == "crop")
+    else {
+        eprintln!("photos: the app exports no crop, so there is nothing to photograph");
+        return;
+    };
+    let argument = format!("{},{},{},{}", region.x, region.y, region.w, region.h);
+    // The action's own closure turns that string into the change. Encoding
+    // through the tree rather than constructing a `PhotosAction` here is the
+    // whole point: the argument is parsed by the code the socket path parses
+    // it with.
+    let encoded = match door::encode(&resources, &descriptor.address, Some(&argument)) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("photos: the exported crop would not take the region: {e}");
+            return;
+        }
+    };
+    let mut registry = qos_actions::ActionRegistry::new();
+    crate::actions::register(&mut registry);
+    let action = match registry.decode(&encoded) {
+        Ok(a) => a,
+        Err(_) => {
+            eprintln!("photos: nothing registered can decode the crop it exported");
+            return;
+        }
+    };
+    if let Err(e) = action.apply(doc) {
+        eprintln!("photos: the exported crop refused the region: {e}");
+    }
+}
+
 /// Pose the app for one named `--shots` scenario.
 ///
 /// The generated pattern is written to `dir` and opened through the ordinary
@@ -167,6 +212,36 @@ pub fn seed_scenario(
                 .map(ui::widget::DestinationOption::localised)
                 .collect(),
             );
+        }
+        // The photograph squared, through the app's **own exported crop**.
+        //
+        // This is the middle beat of the cross-application hand-off, and what
+        // makes it worth photographing is that nothing here paints the
+        // outcome: the region is handed to `PhotosResources`' `crop` action —
+        // the same address, the same argument shape and the same encoder the
+        // agent invokes over the socket — and the document that comes back is
+        // whatever that action actually wrote. A scenario that called
+        // `set_edits` with a rectangle it had worked out itself would be a
+        // picture of what the crop is supposed to do.
+        //
+        // The region is derived from the photograph rather than written down:
+        // the widest centred square that fits, in the normalised view
+        // coordinates `crop` collects. So the shot shows a square because the
+        // crop made one, and if `cropped_from_view` ever stopped squaring it
+        // the frame would stop being square too.
+        "squared" => {
+            let Some(image) = PhotosDoc::image(doc) else {
+                return;
+            };
+            let (w, h) = (image.width as f64, image.height as f64);
+            let side = w.min(h);
+            let region = Rect01 {
+                x: ((w - side) / 2.0) / w,
+                y: ((h - side) / 2.0) / h,
+                w: side / w,
+                h: side / h,
+            };
+            square_through_the_exported_action(doc, region);
         }
         // "opened" and any unknown name: the photograph as it arrived.
         _ => {}
