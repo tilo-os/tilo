@@ -116,6 +116,185 @@ impl ShellDriver {
     pub fn palette_query(&self) -> &str {
         self.fb.host().palette_query()
     }
+
+    /// Run the widget tree's `sync` + `update` pump once, the way the
+    /// compositor's frame loop does.
+    ///
+    /// [`Self::step_frames`] advances animation only — it calls `update` and
+    /// not `sync` — which is enough for a curve and not enough for an app
+    /// whose content comes out of its document. Photos reads the open file's
+    /// path in `sync` and decodes it there, so without this pass the viewer
+    /// stays on its empty state while the document plainly names a file.
+    pub fn pump_apps(&mut self) -> bool {
+        let (state, root) = (&mut self.state, &self.root_obj);
+        self.fb.pump_apps(state, root)
+    }
+
+    /// Put an agent in the room, with the standing to act in it.
+    ///
+    /// A participant the room has never heard of has no capabilities, so the
+    /// gate refuses everything it addresses — and a mark can only name
+    /// somebody the roster can describe. Both halves go through the
+    /// production writers (`grant_in_workspace`, the roster's own
+    /// `Collaborator`), so the scenario depicts a room that could really be in
+    /// this state.
+    pub fn seed_agent(&mut self, id: &str, name: &str, apps: &[&str]) {
+        use shell::shell::state::{CapOverride, Collaborator, Scope, Subject, Verb};
+        let handle = self.chrome_handle();
+        let owner = handle.borrow().local_user_id.clone();
+        {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            let ws_id = tree.active;
+            let room = ws_id.raw().to_string();
+            tree.grant_in_workspace(
+                ws_id,
+                &owner,
+                CapOverride::membership(Subject::agent(id), room, Verb::Write),
+            );
+            // And write on each named application. Membership is what puts an
+            // agent in the room; a scope naming one app is what lets it act
+            // *in* that app, and the gate asks the second question when an
+            // address is reached for. Granting them separately is the model's
+            // own distinction, not a workaround for it.
+            for app in apps {
+                tree.grant_in_workspace(
+                    ws_id,
+                    &owner,
+                    CapOverride::grant(
+                        Subject::agent(id),
+                        Scope::App((*app).to_string()),
+                        Verb::Write,
+                    ),
+                );
+            }
+            if let Some(ws) = tree.active_workspace_mut()
+                && !ws.collaborators.iter().any(|c| c.id == id)
+            {
+                // `as_kind(true)` is the fact every agent-vs-person mark on
+                // this desktop reads — the bar's avatar and, now, the mark on
+                // a resource. Nothing guesses it from the name.
+                ws.collaborators
+                    .push(Collaborator::new(id, name).as_kind(true));
+            }
+        }
+        self.with_chrome(|st: &mut ChromeState| st.bump());
+    }
+
+    /// Perform the operation `id` names, through the production action
+    /// catalogue.
+    ///
+    /// `id` is `<resource id>#<action id>`, spelled exactly as a caller over
+    /// the control socket spells it. `agent` is who is asking, and is the same
+    /// argument the control socket carries: it resolves both the capabilities
+    /// the gate checks and the identity the change is committed under. `None`
+    /// is the person at the keyboard.
+    ///
+    /// This is the same three steps `compositor::native`'s `invoke_action`
+    /// takes for a request off that socket — build a catalogue against the
+    /// live chrome, resolve the address through it, invoke — so a scenario
+    /// cannot reach an operation an agent could not, and cannot skip the
+    /// capability gate on the way.
+    ///
+    /// Returns the refusal as a string, so a scenario can print *why* nothing
+    /// happened rather than capturing frames of a desktop where nothing did.
+    pub fn invoke_app_action(
+        &mut self,
+        id: &str,
+        argument: Option<&str>,
+        agent: Option<&str>,
+    ) -> Result<(), String> {
+        use shell::shell::search::action_api::{ActionArgs, ArgValue, ResourceRef};
+        use shell::shell::search::visibility::CapabilityVisibility;
+
+        let chrome_handle = self.fb.chrome_handle();
+        let catalog = {
+            let chrome = chrome_handle.borrow();
+            // The guard has to outlive the gate: `CapabilityVisibility` borrows
+            // the workspace out of it, and the catalogue is built through both.
+            let tree = chrome.tree();
+            let workspace = tree
+                .active_workspace()
+                .ok_or_else(|| "no active workspace".to_string())?;
+            let actor = match agent {
+                Some(name) => workspace.actor_for_agent(name),
+                None => workspace.actor_for_person(&chrome.local_user_id),
+            };
+            let gate = CapabilityVisibility::new(workspace, actor);
+            self.fb.host().action_catalog_as(
+                "",
+                &chrome,
+                &self.state,
+                &self.root_obj,
+                &gate,
+                agent,
+            )
+        };
+        let resource = ResourceRef::new("app", id);
+        let selected = catalog.select(&resource).ok_or_else(|| {
+            format!("no visible action addressed by (app, {id}) in the current catalogue")
+        })?;
+        let args: Vec<(String, ArgValue)> = match argument {
+            Some(text) => vec![("text".to_string(), ArgValue::Text(text.to_string()))],
+            None => Vec::new(),
+        };
+        let _ = ActionArgs::bind(selected.params(), args.clone());
+        selected
+            .invoke(&mut self.state, &self.root_obj, &chrome_handle, args)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Show `path` in a hosted Photos tab, the way opening a file does.
+    ///
+    /// Straight through the app's own [`photos::PhotosApp::open_path`], which
+    /// is the method the toolbar's Open and a command-line argument both call:
+    /// it writes the path into the document and the next `sync` decodes it. A
+    /// scenario that poked the decoded pixels in directly would be depicting a
+    /// state the app cannot actually reach.
+    ///
+    /// Returns whether a hosted Photos tab was found to open it in.
+    pub fn open_photograph(&mut self, path: &str) -> bool {
+        let mut opened = false;
+        let state = &mut self.state;
+        for row in self.fb.host_mut().group_rows_mut_for_tests() {
+            for group in row.groups.iter_mut() {
+                let Some(host) = group.active_host_mut() else {
+                    continue;
+                };
+                // A hosted tab is redirected onto its own record, so the
+                // document the frame carries is not the one the app reads.
+                // Writing into the wrong one leaves the viewer empty with no
+                // error anywhere — which is exactly what it did. Same
+                // redirection `TileHost::sync` and `refresh_app_surfaces`
+                // make, taken here for the same reason.
+                let binding = host.record_binding();
+                let ui::widget::TileContent::App(app) = host.content_mut() else {
+                    continue;
+                };
+                let Some(photos) = app
+                    .as_any_mut()
+                    .and_then(|a| a.downcast_mut::<photos::PhotosApp>())
+                else {
+                    continue;
+                };
+                match binding {
+                    Some((store, id)) => {
+                        if store
+                            .with(&id, |doc| photos.open_path(doc, path))
+                            .is_some()
+                        {
+                            opened = true;
+                        }
+                    }
+                    None => {
+                        photos.open_path(state, path);
+                        opened = true;
+                    }
+                }
+            }
+        }
+        opened
+    }
     pub fn viewport(&self) -> (f64, f64) {
         self.fb.viewport()
     }

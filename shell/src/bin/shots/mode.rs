@@ -49,6 +49,21 @@ pub mod offscreen {
                 // first render_to_texture call).
                 qos_startup_metrics::mark("first-paint");
                 self.first_paint_seen = true;
+                // Then render the same scene again, over the same file.
+                //
+                // Vello sizes its per-frame buffers from what frames have
+                // measurably used, so the very first render is the one that
+                // can find them too small. An overflow is silent — geometry is
+                // dropped and the PNG is written anyway, which is how a
+                // scenario's opening frame came out an empty white rectangle
+                // while every later frame in the same run was correct. The
+                // reservation has grown by now, so this second pass writes the
+                // frame that was asked for.
+                //
+                // Only after the first, and after the mark: the metric has to
+                // measure the cold render including pipeline compile, and once
+                // the reservation has settled a second pass is pure cost.
+                self.renderer.render_png(&scene, Color::TRANSPARENT, &path);
             }
             println!("  wrote {}", path.display());
         }

@@ -309,6 +309,7 @@ fn remote_row(
     let params = params_for(&d.input);
     let collects_content = d.input.wants_content();
     let address = d.address.clone();
+    let action_label = d.action_label.clone();
     let app = app_of(&address.resource).to_string();
     let remote = Arc::clone(remote);
     SearchResult {
@@ -371,6 +372,17 @@ fn remote_row(
             remote
                 .dispatch(&address, argument, &caller)
                 .map(|_id| {
+                    // The resource this addressed, marked on screen. Noted on
+                    // the ask for the same reason the crossing below is: the
+                    // capability gate above has already decided this may
+                    // happen, and holding the mark until an out-of-process
+                    // reply lands would show it a frame or two after the
+                    // change it is about.
+                    crate::shell::action_touch::note_touch(
+                        &caller,
+                        &address.resource,
+                        &action_label,
+                    );
                     // Noted on the ask rather than on the answer. The
                     // crossing is what a person is shown, and the operation
                     // that carries it is one this session already decided may
@@ -436,6 +448,11 @@ impl SearchProvider for AppResourcesProvider {
             // that merely takes a string.
             let collects_content = d.input.wants_content();
             let address = d.address.clone();
+            // The app's own word for this operation, carried into the mark so
+            // the chip reads `Claude · Crop` rather than `Claude · crop`. The
+            // shell never rewords it: a label it reworded would stop matching
+            // the operation a caller enumerated.
+            let action_label = d.action_label.clone();
             let surfaces = self.surfaces.clone();
             let types = Rc::clone(&self.types);
             out.push(SearchResult {
@@ -465,6 +482,21 @@ impl SearchProvider for AppResourcesProvider {
                             &mut transport,
                         )
                         .map(|_| {
+                            // What was acted on, marked where it is on
+                            // screen. Every invocation gets this, not only
+                            // the ones that carried content: the address
+                            // names a resource, so there is always something
+                            // to point at, and an agent's work is otherwise
+                            // provable only by reading the document.
+                            //
+                            // After the dispatch, for the same reason the
+                            // crossing below is: a refused operation must
+                            // leave no trace.
+                            crate::shell::action_touch::note_touch(
+                                caller,
+                                &address.resource,
+                                &action_label,
+                            );
                             // The operation succeeded, so if it carried
                             // content here from somewhere else there is now
                             // something worth showing. Noted *after* the

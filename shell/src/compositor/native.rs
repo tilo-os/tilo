@@ -701,7 +701,9 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         // results outright (no borrow of `doc` is retained), so the
         // catalogue outlives the guards it was built through.
         let catalog = with_action_gate(&chrome_handle, agent, |chrome, gate| {
-            self.fb.host().action_catalog(query, chrome, doc, root, gate)
+            self.fb
+                .host()
+                .action_catalog_as(query, chrome, doc, root, gate, agent)
         })?;
         let actions: Vec<serde_json::Value> = catalog
             .enumerate()
@@ -749,7 +751,9 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
             .ok_or_else(|| test_control::ActionRefusal::unknown("control state has no live document"))?;
         let chrome_handle = self.fb.chrome_handle();
         let catalog = with_action_gate(&chrome_handle, agent, |chrome, gate| {
-            self.fb.host().action_catalog("", chrome, doc, root, gate)
+            self.fb
+            .host()
+            .action_catalog_as("", chrome, doc, root, gate, agent)
         })
         .map_err(test_control::ActionRefusal::unknown)?;
         let resource = ResourceRef::new(provider, id);
@@ -1307,8 +1311,14 @@ fn execute_planned_action(
             // an agent the person's surface at exactly the moment
             // something runs.
             let catalog = match with_action_gate(&chrome_handle, agent.as_deref(), |chrome, gate| {
-                fb.host()
-                    .action_catalog("", chrome, &ctx.doc, &ctx.root_obj, gate)
+                fb.host().action_catalog_as(
+                    "",
+                    chrome,
+                    &ctx.doc,
+                    &ctx.root_obj,
+                    gate,
+                    agent.as_deref(),
+                )
             }) {
                 Ok(catalog) => catalog,
                 Err(why) => {
