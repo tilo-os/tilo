@@ -1227,6 +1227,42 @@ class Session:
         return call(self.sock, {"op": "grant", "subject": subject,
                                 "scope": scope, "verb": verb})
 
+    def remark(self, text: str, address: str) -> dict:
+        """Put a remark in the room without the gesture that writes one.
+
+        The gesture is a right-click and a sentence typed beside the
+        object; it produces a finished remark, and the session's frame
+        loop carries that into the room. This asks the session for the
+        second half only, so a run can reach the room's side of the beat
+        while the surface that writes one is unavailable.
+
+        **It proves nothing about the compose surface.** The panel is not
+        opened, no destination list is filled, nothing is typed and
+        `submit` never runs. What it does exercise is everything a
+        finished remark meets: the roster is read, the mention is
+        resolved against it, the message is minted and encoded as chat's
+        own action, and it goes out over the broker into the room's
+        conversation.
+
+        `address` is the whole string the app publishes the resource
+        under — `files.entry:/var/tmp/qos/workspace/harbour.png` — so the
+        thing named here and the thing a person would have right-clicked
+        are one object rather than two that agree.
+
+        The address is the **id**, in full, and the kind is its first
+        segment repeated: `entry_reference` mints
+        `ResourceRef::whole(kind, format!("{kind}:{path}"), label)`, so an
+        id with the prefix stripped off addresses nothing. That is the
+        one thing here worth getting wrong slowly rather than quickly —
+        the agent resolves the address against what the room exports, and
+        a near-miss reads as an agent declining to act.
+        """
+        kind, _, rest = address.partition(":")
+        if not rest:
+            raise ValueError(f"a resource address is kind:id, got {address!r}")
+        return call(self.sock, {"op": "remark", "text": text,
+                                "kind": kind, "id": address})
+
     # -- synthetic input, continued (all counted) --------------------
 
     def click_at(self, x: float, y: float) -> None:
@@ -5200,15 +5236,22 @@ class DocumentReader:
     SCOPE = "word-processor"
 
     def __init__(self, sock_path: str, room: str, record: str | None,
-                 handle: str = "readback") -> None:
+                 handle: str = "readback", app_id: str | None = None,
+                 scope: str | None = None) -> None:
+        # Which app is being asked, for the callers that ask a different
+        # one. The pair has to move together — the announced `app_id` is
+        # what the broker routes by and the presence scope is what the
+        # toolkit answers on — so they are one argument in two halves
+        # rather than two settings that can disagree.
         self.frames: list[dict] = []
         self.err: str | None = None
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(10.0)
         self.sock.connect(sock_path)
-        self._send({"Hello": {"app_id": WORD_PROCESSOR, "cluster_id": room,
+        self._send({"Hello": {"app_id": app_id or WORD_PROCESSOR,
+                              "cluster_id": room,
                               "record": record, "handle": handle}})
-        self._send({"Presence": {"key": {"Workspace": {"id": self.SCOPE}},
+        self._send({"Presence": {"key": {"Workspace": {"id": scope or self.SCOPE}},
                                  "payload": "Arrived"}})
         threading.Thread(target=self._read, daemon=True).start()
 

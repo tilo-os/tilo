@@ -365,6 +365,39 @@ pub enum Command {
         #[serde(default)]
         agent: Option<String>,
     },
+    /// Put a finished remark in the room, as though one had just been
+    /// written in the compose surface and sent.
+    ///
+    /// **A harness door, not a product path.** The gesture a person makes
+    /// is right-click an object and write a sentence beside it; that
+    /// produces a [`qos_reference::Remark`] out of
+    /// `RemarkCompose::submit`, and the frame loop carries it into the
+    /// room. This command joins that path at the same place `submit` does
+    /// — the host's outbox — and everything downstream of a finished
+    /// remark runs unchanged: the roster is read, mentions are resolved,
+    /// the message is minted and encoded as chat's own action, and it
+    /// goes out over the broker.
+    ///
+    /// What it therefore does *not* exercise is the surface: the request
+    /// arriving from an application, the panel opening beside the menu,
+    /// the destination list being filled from the roster, the text being
+    /// typed, and `submit` assembling the value. A run driven through
+    /// here proves the room's half and says nothing about those.
+    Remark {
+        /// What is said. The mention text is resolved against the room's
+        /// roster downstream, exactly as a typed one is.
+        text: String,
+        /// The address of the thing being talked about — `files.entry`,
+        /// `word_processor.block`. Same vocabulary an app publishes its
+        /// resources under.
+        kind: String,
+        /// The resource's id in that app's vocabulary.
+        id: String,
+        /// The chip's human label. Never the address; defaults to the id's
+        /// last path segment when it is left out.
+        #[serde(default)]
+        label: Option<String>,
+    },
 }
 
 /// Top-level response envelope. Either an `ok` payload (per-command
@@ -718,6 +751,11 @@ pub enum PlannedAction {
     /// permille. Applied against the widget tree because that is where
     /// the laid-out width lives.
     SetGroupWidth { permille: u16 },
+    /// Hand one finished remark to the host's outbox, where the compose
+    /// surface puts the ones a person writes. Planned rather than done in
+    /// `dispatch_command` because the outbox lives on the widget tree,
+    /// which dispatch only holds immutably.
+    Remark { remark: qos_reference::Remark },
     /// Move the tab drawing `surface_id` onto the bar of the group
     /// drawing `into_surface_id`. Planned rather than executed in
     /// `dispatch_command` because it mutates both the widget tree and
@@ -1266,6 +1304,48 @@ pub fn dispatch_command<S: ControlState>(
                     },
                     Vec::new(),
                 ),
+            }
+        }
+        Command::Remark {
+            text,
+            kind,
+            id,
+            label,
+        } => {
+            let text = text.trim();
+            if text.is_empty() || id.is_empty() || kind.is_empty() {
+                // The same three refusals `submit` makes by returning, said
+                // out loud. A caller that cannot see the screen has no other
+                // way to tell "nothing was sent" from "sent and ignored".
+                (
+                    Response::Err {
+                        code: "invalid_remark".to_string(),
+                        message: "a remark needs text and a kind:id address"
+                            .to_string(),
+                    },
+                    Vec::new(),
+                )
+            } else {
+                let label = label.clone().unwrap_or_else(|| {
+                    id.rsplit(['/', ':'])
+                        .next()
+                        .unwrap_or(id.as_str())
+                        .to_string()
+                });
+                let reference =
+                    qos_reference::ResourceRef::whole(kind.clone(), id.clone(), label);
+                // The room's conversation, which is what the surface opens
+                // showing and what a remark to an agent has to use anyway:
+                // an instruction that will change a shared document must be
+                // readable by the people sharing it.
+                let destination = ui::widget::remark_compose::room_destination()
+                    .destination;
+                (
+                    Response::Ok { frame: 0 },
+                    vec![PlannedAction::Remark {
+                        remark: qos_reference::Remark::new(text, reference, destination),
+                    }],
+                )
             }
         }
     }
@@ -2327,6 +2407,73 @@ mod tests {
         assert_eq!(payload["count"], 1);
         assert_eq!(payload["actions"][0]["provider"], "shell.actions");
         assert_eq!(payload["actions"][0]["id"], "settings.open");
+    }
+
+    /// The address a remark carries has to reach the room whole.
+    ///
+    /// An app mints a file's address as `files.entry:<path>` — kind, then
+    /// the same kind again inside the id — and it is the *id* the agent
+    /// resolves against what the room exports. A dispatch that split the
+    /// address on its colon and kept the tail would produce a reference
+    /// naming nothing, and the agent's answer would be an honest "I
+    /// cannot act on that" about an object that is right there. So this
+    /// asserts on what is planned, not on what was sent.
+    #[test]
+    fn a_remark_carries_the_whole_address_it_was_given() {
+        let address = "files.entry:/var/tmp/qos/workspace/harbour.png";
+        let (resp, actions) = dispatch_command(
+            &Command::Remark {
+                text: "Claude: make this square".to_string(),
+                kind: "files.entry".to_string(),
+                id: address.to_string(),
+                label: None,
+            },
+            &ActionState,
+        );
+        assert!(
+            matches!(resp, Response::Ok { .. }),
+            "expected the remark to be accepted, got {resp:?}"
+        );
+        let [PlannedAction::Remark { remark }] = actions.as_slice() else {
+            panic!("expected one planned remark, got {actions:?}");
+        };
+        assert_eq!(remark.reference.resource_id().as_str(), address);
+        assert_eq!(remark.reference.kind, "files.entry");
+        // The chip's label, derived rather than carried: a person reading
+        // it should see the file, never the address.
+        assert_eq!(remark.reference.label, "harbour.png");
+        assert_eq!(remark.text, "Claude: make this square");
+    }
+
+    /// Nothing is planned for a remark with no text or no address.
+    ///
+    /// `RemarkCompose::submit` refuses both by returning, which is right
+    /// and is invisible. Over a socket it has to be said: a caller that
+    /// cannot see the screen would otherwise read "sent, and the room
+    /// ignored it" off a run where nothing was ever sent.
+    #[test]
+    fn an_empty_remark_is_refused_out_loud() {
+        for (text, kind, id) in [
+            ("", "files.entry", "files.entry:/x.png"),
+            ("   ", "files.entry", "files.entry:/x.png"),
+            ("Claude: crop it", "files.entry", ""),
+            ("Claude: crop it", "", "files.entry:/x.png"),
+        ] {
+            let (resp, actions) = dispatch_command(
+                &Command::Remark {
+                    text: text.to_string(),
+                    kind: kind.to_string(),
+                    id: id.to_string(),
+                    label: None,
+                },
+                &ActionState,
+            );
+            assert!(actions.is_empty(), "nothing may be planned for {text:?}");
+            let Response::Err { code, .. } = resp else {
+                panic!("expected a refusal for {text:?}/{id:?}, got {resp:?}");
+            };
+            assert_eq!(code, "invalid_remark");
+        }
     }
 
     /// The announced caller has to survive the whole way from the wire
