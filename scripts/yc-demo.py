@@ -5113,15 +5113,22 @@ class DocumentReader:
     SCOPE = "word-processor"
 
     def __init__(self, sock_path: str, room: str, record: str | None,
-                 handle: str = "readback") -> None:
+                 handle: str = "readback", app_id: str | None = None,
+                 scope: str | None = None) -> None:
+        # Which app is being asked, for the callers that ask a different
+        # one. The pair has to move together — the announced `app_id` is
+        # what the broker routes by and the presence scope is what the
+        # toolkit answers on — so they are one argument in two halves
+        # rather than two settings that can disagree.
         self.frames: list[dict] = []
         self.err: str | None = None
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(10.0)
         self.sock.connect(sock_path)
-        self._send({"Hello": {"app_id": WORD_PROCESSOR, "cluster_id": room,
+        self._send({"Hello": {"app_id": app_id or WORD_PROCESSOR,
+                              "cluster_id": room,
                               "record": record, "handle": handle}})
-        self._send({"Presence": {"key": {"Workspace": {"id": self.SCOPE}},
+        self._send({"Presence": {"key": {"Workspace": {"id": scope or self.SCOPE}},
                                  "payload": "Arrived"}})
         threading.Thread(target=self._read, daemon=True).start()
 
