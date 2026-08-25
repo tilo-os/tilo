@@ -38,6 +38,11 @@ use qos_actions::{Action, EncodedAction};
 /// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action)
 /// — and records exactly one undo boundary bracketing the event, the same
 /// `record_committed_action` path a Ctrl+K palette dispatch takes.
+///
+/// That boundary carries no author: what crosses this seam is heads, not
+/// identity. It is reachable by the interactive Ctrl+Z only because an
+/// author-scoped undo claims unattributed entries as well as its own — see
+/// `UndoLog::claimable_by`.
 #[derive(Default)]
 pub struct ActionHost {
     /// The document heads captured just before the first action of the current
