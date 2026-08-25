@@ -752,7 +752,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
         }
         Action::OpenCollaborators => {
             driver.with_chrome(|st: &mut ChromeState| {
-                st.collaborators = true;
+                st.overlays.collaborators = true;
                 st.bump();
             });
             driver.relayout();
@@ -3683,7 +3683,9 @@ fn one_launch_one_window() -> Scenario {
                       opened in — and back again.",
         actions: vec![
             Action::LoneWindow(0),
+            Action::SelectGroup(Some(0)),
             Action::Wait(4),
+            Action::Relayout,
             Action::MirrorWindow {
                 app_id: "dev.qos.word-processor",
                 surface_id: 9401,
