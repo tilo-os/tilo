@@ -1451,6 +1451,16 @@ class Live:
         """
         if self.recorder is None or self.quiet_since is None:
             return
+        # Tied to the same switch that already says whether this take may
+        # be edited at all. A camera that comes down leaves the picture
+        # shorter than the take, which is exactly what `--max-hold 0`
+        # exists to forbid: a narrated take records a voice on the wall
+        # clock, and a minute taken out of the middle of the picture puts
+        # the voice a minute ahead of it for the rest of the film.
+        # `Recorder._check_length` would refuse the result; refusing to
+        # make it is better than composing it and being told.
+        if self.recorder.max_hold <= 0:
+            return
         if self.camera_down is not None:
             return
         if time.time() - self.quiet_since < FILM_THE_WAIT_S:
