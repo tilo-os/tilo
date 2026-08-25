@@ -152,6 +152,27 @@ pub enum Action {
         app_id: &'static str,
         surface_id: u64,
     },
+    /// Open a window the way the running compositor really does: adopt the
+    /// toplevel into the *protocol* tree, then mirror that tree into the
+    /// chrome's with `foreign::reconcile_foreign_tabs`.
+    ///
+    /// [`Action::OpenWindow`] writes straight into the chrome's tree, so it
+    /// depicts where a window lands but never exercises the mirror. The two
+    /// trees are the thing worth photographing: they move their active
+    /// workspace independently, and the mirror deciding what "already
+    /// adopted" means across that gap is what once put a second copy of an
+    /// application on a desktop nobody had opened it twice on.
+    ///
+    /// The protocol tree persists across the actions of one scenario, as the
+    /// compositor's does across a session.
+    MirrorWindow {
+        app_id: &'static str,
+        surface_id: u64,
+    },
+    /// Run the mirror again with no new window. Pair it with
+    /// [`Action::SwitchWorkspace`]: this is the pass the compositor makes
+    /// every frame, and the one that used to adopt a second time.
+    MirrorAgain,
     /// [`Action::OpenWindow`], stopped at the moment before the client
     /// has anything to show.
     ///
@@ -452,6 +473,33 @@ impl SnapshotSink for NullSink {
     fn capture(&mut self, _driver: &mut ShellDriver, _name: &str) {}
 }
 
+/// The compositor's protocol-side workspace tree, for the scenarios that
+/// exercise the mirror between it and the chrome's.
+///
+/// One tree for the process, as the compositor has one for the session.
+fn protocol_tree<R>(f: impl FnOnce(&mut shell::shell::state::WorkspaceTree) -> R) -> R {
+    thread_local! {
+        static PROTOCOL: RefCell<shell::shell::state::WorkspaceTree> =
+            RefCell::new(shell::shell::state::WorkspaceTree::bootstrap_default());
+    }
+    PROTOCOL.with(|t| f(&mut t.borrow_mut()))
+}
+
+/// Run the production mirror once, protocol tree into chrome tree, bumping
+/// the chrome when it changed anything — the two calls the compositor's
+/// frame loop makes, in the order it makes them.
+fn mirror_into_chrome(driver: &mut ShellDriver) {
+    driver.with_chrome(|st: &mut ChromeState| {
+        let changed = protocol_tree(|protocol| {
+            let mut rendered = st.tree_mut();
+            shell::compositor::foreign::reconcile_foreign_tabs(protocol, &mut rendered)
+        });
+        if changed {
+            st.bump();
+        }
+    });
+}
+
 /// Run a scenario through `driver`, sending each `Snapshot` to `sink`.
 /// Resets modifiers between snapshots so chord state doesn't leak.
 pub fn run<S: SnapshotSink>(driver: &mut ShellDriver, scenario: &Scenario, sink: &mut S) {
@@ -528,7 +576,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             driver.relayout();
             let mut rects: Vec<Rect> = driver
                 .host()
-                .group_hit_candidates_for_tests()
+                .group_hit_candidates_for_capture()
                 .into_iter()
                 .map(|(_, _, r)| r)
                 .filter(|r| r.area() > 0.0)
@@ -656,6 +704,48 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                     h,
                 );
             }
+        }
+        Action::MirrorWindow { app_id, surface_id } => {
+            let app_id = *app_id;
+            let surface_id = *surface_id;
+            driver.with_chrome(|st: &mut ChromeState| {
+                let tree = st.tree();
+                shell::shell::placement::note_placement_for_launch(
+                    app_id,
+                    &tree,
+                    st.strip_viewport(),
+                );
+            });
+            // The protocol side adopts first — that is where a toplevel
+            // actually arrives — and the mirror carries it across.
+            protocol_tree(|protocol| {
+                shell::compositor::tab_binding::adopt_toplevel(
+                    protocol,
+                    surface_id,
+                    Some(app_id.to_string()),
+                );
+            });
+            mirror_into_chrome(driver);
+            driver.relayout();
+            // Stand in for the client, as `OpenWindow` does: an adopted
+            // toplevel with no process behind it has drawn nothing, and a
+            // window that has drawn nothing is not painted.
+            if let Some((w, h)) = shell::compositor::foreign::store().viewport(surface_id)
+                && w > 0
+                && h > 0
+            {
+                let px = (w as usize) * (h as usize) * 4;
+                shell::compositor::foreign::store().publish_rgba(
+                    surface_id,
+                    &vec![0xF4; px],
+                    w,
+                    h,
+                );
+            }
+        }
+        Action::MirrorAgain => {
+            mirror_into_chrome(driver);
+            driver.relayout();
         }
         Action::OpenWindowStillStarting { app_id, surface_id } => {
             let app_id = *app_id;
@@ -1949,6 +2039,7 @@ fn catalogue_rest() -> Vec<Scenario> {
         word_processor_tile(),
         word_processor_under_overlay(),
         room_activity_from_palette(),
+        one_launch_one_window(),
         window_open_beside_selection(),
         window_open_into_tabbed_group(),
         window_open_at_visible_seam(),
@@ -3558,6 +3649,49 @@ fn workspace_switch() -> Scenario {
             },
             Action::Wait(1),
             Action::Snapshot("03-ws0-again"),
+        ],
+    }
+}
+
+/// One launch, one window — photographed across a workspace switch, which is
+/// where a second one used to appear.
+///
+/// The window is opened through the mirror between the compositor's protocol
+/// tree and the chrome's, because that is where the duplicate was made: the
+/// two trees hold their own idea of which workspace is active, and the mirror
+/// asked "is this surface in the one on screen?" when the question it needed
+/// answered was "does this surface have a tab at all?". Walking to the next
+/// workspace therefore adopted the same window again, and the desktop carried
+/// a word processor nobody had opened.
+///
+/// The second frame is the one that matters: it is the workspace the user
+/// never opened anything in, and it has to be empty.
+fn one_launch_one_window() -> Scenario {
+    Scenario {
+        name: "one_launch_one_window",
+        description: "A word processor opened through the compositor's tab \
+                      mirror, then the next workspace — which nothing was \
+                      opened in — and back again.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::Wait(4),
+            Action::MirrorWindow {
+                app_id: "dev.qos.word-processor",
+                surface_id: 9401,
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::MoveCursor(Point::new(900.0, 620.0)),
+            Action::Wait(8),
+            Action::Snapshot("01-opened"),
+            // The frame loop keeps mirroring while the user walks around.
+            Action::SwitchWorkspace(1),
+            Action::MirrorAgain,
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::Snapshot("02-next-workspace-is-untouched"),
+            Action::SwitchWorkspace(0),
+            Action::MirrorAgain,
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::Snapshot("03-back-to-the-one-window"),
         ],
     }
 }
