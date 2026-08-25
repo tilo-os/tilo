@@ -855,6 +855,25 @@ impl Recipe {
     }
 }
 
+/// What a composition would be called in a sentence a person reads.
+///
+/// The recipes are the one thing the agent does that no app exports a label
+/// for — they are compositions *of* exported actions — so the words have to be
+/// written down here beside the recipes themselves. `None` for anything that
+/// is not a composition, including an instruction that answers to nothing: a
+/// request the agent could not read has no honest short name, and inventing
+/// one would put a confident phrase in front of a person over an operation
+/// that is not going to happen.
+pub fn recipe_label(instruction: &Instruction) -> Option<&'static str> {
+    match instruction {
+        Instruction::Table => Some("turn the bullets into a table"),
+        Instruction::Caption => Some("caption the image"),
+        Instruction::Heading => Some("make a heading"),
+        Instruction::RunSheet(_) => Some("write a run sheet"),
+        Instruction::Perform { .. } | Instruction::Unknown(_) => None,
+    }
+}
+
 /// The actions a recipe dispatches, built with the word processor's own
 /// builders — the same calls [`crate::session`] makes to carry the work out.
 /// The arguments are placeholders; only the shape of the action matters.

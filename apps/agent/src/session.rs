@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use chat::model::{AgentWork, AgentWorkState};
 use qos_actions::ActionRegistry;
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::permissions::PermissionContext;
@@ -32,12 +33,44 @@ use crate::wire::Link;
 enum Answer {
     /// Rewrite the paragraph that asked, in the word-processor document.
     Block { id: String, chars: usize },
-    /// Post a threaded reply under the message that asked.
+    /// Complete the threaded reply already standing under the message that
+    /// asked.
     ///
-    /// The reply is also the record that the message has been dealt with —
-    /// see [`crate::listen::answered`] — so this is not decoration that can
-    /// be skipped when there is nothing interesting to say.
-    Message { channel: String, parent: String },
+    /// The reply is posted when the summons is *taken*, not when it is
+    /// finished — see [`Session::take_on`] — so by the time an answer exists
+    /// there is a message waiting for it, and `record` is its id. That reply
+    /// is also the record that the message has been dealt with (see
+    /// [`crate::listen::answered`]), so this is not decoration that can be
+    /// skipped when there is nothing interesting to say.
+    Message {
+        channel: String,
+        parent: String,
+        record: String,
+    },
+}
+
+/// How a piece of work ended.
+///
+/// Passed in rather than inferred from the wording of the answer. What the
+/// agent achieved is known at the site that achieved it; recovering it
+/// afterwards by reading its own sentence would be the agent guessing about
+/// itself, and a wrong guess here is a room told an operation was applied
+/// when it was refused.
+#[derive(Clone, Debug)]
+enum Outcome {
+    /// An operation was applied. `did` is the app's own label for it.
+    Done { did: String },
+    /// The agent will not act, or could not finish what it started.
+    Refused,
+}
+
+impl Outcome {
+    fn state(self) -> AgentWorkState {
+        match self {
+            Outcome::Done { did } => AgentWorkState::Done { did },
+            Outcome::Refused => AgentWorkState::Refused,
+        }
+    }
 }
 
 impl Answer {
@@ -254,6 +287,14 @@ pub struct Session {
     /// Distinct from how many it composed: the gap between the two is an
     /// agent that thinks it replied and a person who saw nothing.
     answers_sent: usize,
+    /// The record in the room that says the agent is working, while it is.
+    ///
+    /// `(channel, message id)` of the reply posted when a summons was taken,
+    /// cleared the moment a terminal state reaches the room. It exists so the
+    /// one thing that must never happen cannot: a strip left saying "working"
+    /// on somebody else's screen with nothing left in this process that will
+    /// ever change it.
+    open_record: Option<(String, String)>,
     /// What the agent last acted on, and when.
     ///
     /// The one piece of state proximity needs: it is what lets "do that
@@ -642,6 +683,7 @@ impl Session {
             refused_open: None,
             acted: false,
             answers_sent: 0,
+            open_record: None,
             asked_at: Instant::now(),
             reask_every: REASK_EVERY,
             addressed_seen: false,
@@ -1325,6 +1367,21 @@ impl Session {
                     message = %summons.message,
                     "addressed, but that app's state is not here yet — waiting"
                 );
+                // Said in the room, not only here. This branch is the reason
+                // a person can mention the agent about a photograph and watch
+                // nothing happen for as long as the room takes to arrive: the
+                // summons is deliberately left unconsumed, so every turn took
+                // this path and every turn was silent. A wait is a state, and
+                // the honest one — the agent has heard, and cannot answer yet.
+                //
+                // Written under the same reply it will go on to finish in, so
+                // the wait and its outcome are one message and not two.
+                let app = surface::for_namespace(namespace)
+                    .map(|c| c.title.to_string())
+                    .unwrap_or_else(|| namespace.to_string());
+                self.addressed_seen = true;
+                let record = self.take_on(&summons, AgentWorkState::Waiting { app })?;
+                self.open_record = Some((summons.channel.clone(), record));
                 return Ok(false);
             }
         }
@@ -1361,9 +1418,15 @@ impl Session {
                 .collect(),
             None => offers.clone(),
         };
+        // The room is told it has been picked up before anything is decided.
+        // Deciding is a call that takes seconds, and until now that wait was
+        // indistinguishable from an agent that never heard.
+        let record = self.take_on(&summons, AgentWorkState::Taken)?;
+        self.open_record = Some((summons.channel.clone(), record.clone()));
         let to = Answer::Message {
             channel: summons.channel.clone(),
             parent: summons.message.clone(),
+            record,
         };
         // A subject that exports nothing the agent may perform is refused
         // outright rather than widened back to the room. Falling back to
@@ -1377,7 +1440,7 @@ impl Session {
                 self.cfg.name
             );
             tracing::warn!(%what, "refused: the subject exports nothing available");
-            self.reply(&to, &reply)?;
+            self.reply(&to, &reply, Outcome::Refused)?;
             return Ok(true);
         }
         let Decision { mut plan, route } = self.chooser.choose(&summons.asked, &[], &scoped);
@@ -1419,6 +1482,42 @@ impl Session {
             Some(Instruction::Perform { id, .. }) if single => Some(id.clone()),
             _ => None,
         };
+        // What the agent understood the request to be, in the room, before it
+        // starts. This is the interesting half: that it is busy says almost
+        // nothing, while *which* operation on *what* is the thing a person
+        // would want to stop it over — and the moment to see it is before the
+        // document changes, not after.
+        //
+        // The words are the app's own labels for its own operations, never
+        // the address they dispatch by; an address is machine vocabulary and
+        // this line is read by a person.
+        if let Answer::Message { channel, record, .. } = &to {
+            let offers = self.offers(&view);
+            let did = plan
+                .steps
+                .iter()
+                .filter_map(|s| match &s.instruction {
+                    Instruction::Perform { id, .. } => surface::label_of(&offers, id),
+                    other => plan::recipe_label(other).map(str::to_string),
+                })
+                .collect::<Vec<_>>();
+            if !did.is_empty() {
+                let about = match &summons.subject {
+                    listen::Subject::Carried(r) => r.label.clone(),
+                    _ => String::new(),
+                };
+                let (channel, record) = (channel.clone(), record.clone());
+                self.note_work(
+                    &channel,
+                    &record,
+                    AgentWorkState::Doing {
+                        did: in_sentence(&did).to_lowercase(),
+                        about,
+                    },
+                    None,
+                )?;
+            }
+        }
         let ran = self.run_plan(plan, None, &to, &scoped)?;
         // A refusal answers for itself; a success has to be said out loud too.
         // Not politeness: this reply is what records the message as dealt
@@ -1431,9 +1530,37 @@ impl Session {
                 .map(|l| l.to_lowercase())
                 .unwrap_or_else(|| "that".to_string());
             let reply = format!("{}: done — {did}.", self.cfg.name);
-            self.reply(&to, &reply)?;
+            self.reply(&to, &reply, Outcome::Done { did })?;
         }
+        // Nothing above reached a terminal state, so the record still says
+        // the agent is working and there is nothing left that will change it.
+        // A strip that goes on saying "working" after the work has stopped is
+        // the exact failure this whole surface exists to prevent, and it is
+        // worse than the silence it replaced — so the last thing this path
+        // does is make sure the room was told it ended.
+        self.close_open_record()?;
         Ok(true)
+    }
+
+    /// Make sure the room was told the work stopped.
+    ///
+    /// Every ordinary end writes its own outcome; this catches the ends that
+    /// are not ordinary — a plan with no steps, a branch added later that
+    /// forgets. It says only what it knows: that the agent stopped without
+    /// doing anything, which is true of every path that can reach here.
+    fn close_open_record(&mut self) -> Result<()> {
+        let Some((channel, record)) = self.open_record.clone() else {
+            return Ok(());
+        };
+        tracing::warn!(
+            %record,
+            "the work ended without saying so; recording that it stopped"
+        );
+        let said = format!(
+            "{}: I stopped without doing anything, and I can't tell you why.",
+            self.cfg.name
+        );
+        self.note_work(&channel, &record, AgentWorkState::Refused, Some(&said))
     }
 
     /// Whether `block`, reading `line`, has been written or is still being
@@ -1918,7 +2045,7 @@ impl Session {
                     describe_offers(scope)
                 );
                 tracing::warn!(%part, steps = plan.len(), "refused a sequence whole");
-                self.reply(to, &reply)?;
+                self.reply(to, &reply, Outcome::Refused)?;
                 return Ok(Ran::Said);
             }
         }
@@ -2014,7 +2141,7 @@ impl Session {
                                 "nothing before it produced anything I could place",
                             );
                             tracing::warn!(%id, "refused: the step it carries from produced nothing");
-                            self.reply(to, &reply)?;
+                            self.reply(to, &reply, Outcome::Refused)?;
                             return Ok(Ran::Said);
                         };
                         bound = product.argument().to_string();
@@ -2030,7 +2157,7 @@ impl Session {
                     match self.perform(&id, argument, &view, focus.as_deref(), from_app.as_deref())? {
                         Err(why) => {
                             let reply = refusal(&name, &done, label.as_deref(), &why);
-                            self.reply(to, &reply)?;
+                            self.reply(to, &reply, Outcome::Refused)?;
                             return Ok(Ran::Said);
                         }
                         Ok(()) => {
@@ -2067,7 +2194,7 @@ impl Session {
                         describe_offers(scope),
                         self.could_have_opened(&what),
                     );
-                    self.reply(to, &reply)?;
+                    self.reply(to, &reply, Outcome::Refused)?;
                     return Ok(Ran::Said);
                 }
                 // A composition is defined relative to the line that asked for
@@ -2081,7 +2208,7 @@ impl Session {
                             "{name}: that one rewrites the text around the line that asks \
                              for it, so ask me for it in the document itself."
                         );
-                        self.reply(to, &reply)?;
+                        self.reply(to, &reply, Outcome::Refused)?;
                         return Ok(Ran::Said);
                     };
                     match other {
@@ -2111,7 +2238,8 @@ impl Session {
         // read unless it is said.
         if sequence {
             let reply = format!("{name}: done — {}.", in_sentence(&done));
-            self.reply(to, &reply)?;
+            let did = in_sentence(&done).to_lowercase();
+            self.reply(to, &reply, Outcome::Done { did })?;
         }
         Ok(Ran::All)
     }
@@ -2132,15 +2260,140 @@ impl Session {
     /// silence and refusal look identical from outside, and the whole reason
     /// this agent writes its refusals down is that a person who asked it for
     /// something must be able to tell which one happened.
-    fn reply(&mut self, to: &Answer, text: &str) -> Result<()> {
+    fn reply(&mut self, to: &Answer, text: &str, outcome: Outcome) -> Result<()> {
         match to {
             Answer::Block { id, chars } => self.edit(
                 id,
                 wp::splice_text_action(RegionKind::Body, id, 0, *chars, text),
             ),
-            Answer::Message { channel, parent } => self.say(channel, Some(parent), text),
+            // Not a second message. The reply went up when the summons was
+            // taken, so this is that message being finished: its state
+            // becomes terminal and its body — still empty — is given the
+            // sentence it was always going to carry.
+            Answer::Message {
+                channel, record, ..
+            } => {
+                let (channel, record) = (channel.clone(), record.clone());
+                self.note_work(&channel, &record, outcome.state(), Some(text))?;
+                self.answers_sent += 1;
+                tracing::info!(%channel, %record, "answered in the room");
+                Ok(())
+            }
         }
     }
+
+    /// Say in the room that a message has been picked up, and answer with the
+    /// id of the reply that now says so.
+    ///
+    /// Posted **before** anything is decided, which is the whole point. The
+    /// agent used to write one sentence when it was finished and nothing
+    /// before it, so from the moment somebody pressed Enter to the moment the
+    /// answer arrived there was no difference on screen between an instruction
+    /// in flight, an instruction nobody heard, and an agent that had stopped
+    /// existing. The only record of the difference was a line on this
+    /// process's stderr, on a machine the person who asked is not looking at.
+    ///
+    /// The reply is posted with an empty body on purpose: there is no answer
+    /// yet, and inventing a placeholder sentence would be putting words in the
+    /// agent's mouth that it has not earned. The body is supplied later, once,
+    /// into a message that is still empty — an authoring completion, not an
+    /// edit.
+    ///
+    /// Reuses a record already standing for this summons rather than posting a
+    /// second one. A wait can span many turns (see [`Self::wait_on`]) and each
+    /// one would otherwise leave its own message under the same question.
+    fn take_on(&mut self, summons: &Summons, state: AgentWorkState) -> Result<String> {
+        let me = self.me_in_chat();
+        let messages = self.conversation();
+        if let Some(existing) = listen::record_of(&messages, &me, &summons.message) {
+            let id = existing.id.clone();
+            // A wait spans as many turns as the room takes to arrive, and
+            // this is reached on every one of them. Writing the same state
+            // again would move its timestamp forward each time — the room
+            // would show a wait that always started a moment ago — and would
+            // put a change on the wire several times a second to say that
+            // nothing had changed.
+            if existing.work.as_ref().map(|w| &w.state) != Some(&state) {
+                self.note_work(&summons.channel, &id, state, None)?;
+            }
+            return Ok(id);
+        }
+        let id = format!("m_{}", Uuid::new_v4().simple());
+        let action = chat::actions::send_message_action(
+            &summons.channel,
+            &id,
+            &me,
+            now_secs(),
+            "",
+            Some(summons.message.clone()),
+            None,
+            Vec::new(),
+        );
+        self.publish_to_chat(action)?;
+        self.note_work(&summons.channel, &id, state, None)?;
+        tracing::info!(
+            message = %summons.message,
+            record = %id,
+            "said in the room that this was picked up"
+        );
+        Ok(id)
+    }
+
+    /// Record what the agent is doing with the message `record` replies to.
+    ///
+    /// One shared writer for every state, so a state can only reach the room
+    /// by way of the thing that actually happened. There is no path here that
+    /// a timer could take.
+    fn note_work(
+        &mut self,
+        channel: &str,
+        record: &str,
+        state: AgentWorkState,
+        say: Option<&str>,
+    ) -> Result<()> {
+        let terminal = matches!(
+            state,
+            AgentWorkState::Done { .. } | AgentWorkState::Refused
+        );
+        let work = AgentWork::new(state, now_secs());
+        tracing::info!(record = %record, ?work, "put the agent's state in the room");
+        let action = chat::actions::set_agent_work_action(channel, record, work, say);
+        self.publish_to_chat(action)?;
+        if terminal {
+            self.open_record = None;
+        }
+        Ok(())
+    }
+
+    /// Apply a chat action to the room's conversation and put the change on
+    /// the wire.
+    ///
+    /// The one place a chat write leaves this process, so the warning below is
+    /// said once. It is the shape of the worst bug on this path: an agent that
+    /// believes it has told the room something, holding the sentence, while
+    /// the person who asked sees nothing at all.
+    fn publish_to_chat(&mut self, action: chat::actions::ChatAction) -> Result<()> {
+        let delta = self
+            .peers
+            .get_mut("chat")
+            .context("no conversation in this room to answer in")?
+            .apply_foreign(&action)?;
+        match delta {
+            Some(data) => {
+                self.link.send(&CollabRequest::SyncIncremental { data })?;
+                Ok(())
+            }
+            None => {
+                tracing::warn!(
+                    ?action,
+                    "wrote into the conversation and produced no change to \
+                     send — nobody will see it"
+                );
+                Ok(())
+            }
+        }
+    }
+
 
     /// Post a message into a channel, as the agent.
     ///
