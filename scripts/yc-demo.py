@@ -857,23 +857,25 @@ class Session:
             QOS_FS_ACL_PATH=os.path.join(self.dir, "config", "fs-capabilities.json"),
             QOS_TEST_CONTROL=self.sock,
             NIRIOS_HEADLESS_SIZE=self.size,
-            # `info`, plus the two targets that narrate a cross-client
-            # drag. Beat 8 aims a press at a file row inside a client,
-            # and a client's widgets are not in the compositor's
-            # registry — so the only way to know *which row was grabbed*
-            # is to have the app say so. It does:
+            # `info`, plus the three targets that narrate what happens
+            # inside a client window. Two beats aim a press at a file row
+            # inside one, and a client's widgets are not in the
+            # compositor's registry — so both *where the row is* and
+            # *which row was grabbed* have to come from the app. They do:
             #
+            #   ui::resources        "resources laid out" surface=… at={…}
             #   file_explorer::drag  "drag armed"  path=… at=Point{…}
             #   file_explorer::drag  "drag begins" path=…
             #   shell::selection     "client started a drag"
             #
-            # Both are `debug!`, so at plain `info` the beat would be
-            # aiming blind and could only report on the outcome. An
-            # explicit RUST_LOG in the environment still wins, because
-            # somebody debugging this wants their own filter.
+            # All `debug!`, so at plain `info` the beat would be aiming
+            # blind and could only report on the outcome. An explicit
+            # RUST_LOG in the environment still wins, because somebody
+            # debugging this wants their own filter.
             RUST_LOG=env.get(
                 "RUST_LOG",
-                "info,shell::selection=debug,file_explorer::drag=debug"),
+                "info,shell::selection=debug,file_explorer::drag=debug,"
+                "ui::resources=debug"),
             # A home of this session's own, staged with the demo's files.
             HOME=self.home,
             # The same directory again, under the name `ui::sysdirs`
@@ -3265,6 +3267,19 @@ class LogTail:
     #: app saying it composed a message and the toolkit saying it sent one are
     #: two claims, and only the second one means it left.
     ON_THE_WIRE = re.compile(r"sending a remark into the room\s+message=(\S+)")
+    #: Any `ui` app, having laid out the resources it publishes: a map from
+    #: **resource address** to the rect that address is being drawn at, in
+    #: that window's own coordinates. Written by
+    #: `ui::App::narrate_resource_rects` whenever the map changes, and by
+    #: nothing else — so the last one for a surface is where things are now.
+    #:
+    #: This is the line that makes a client's contents addressable from
+    #: outside it. A file row belongs to a client, so it is in no registry
+    #: the compositor can walk, and a resource address deliberately carries
+    #: no coordinates; between the two there was no way to aim a press at a
+    #: named object and a harness had to hunt for one.
+    RESOURCES = re.compile(
+        r"resources laid out\s+surface=(\S+)\s+at=(\{.*\})\s*$", re.M)
 
     #: `tracing_subscriber::fmt::init()` colours its output whether or
     #: not the sink is a terminal, and the session's log is a file. So a
@@ -3323,6 +3338,51 @@ class LogTail:
         """Destination, address and body of the last remark sent."""
         hits = self.SENT.findall(text)
         return hits[-1] if hits else None
+
+    #: How far back to look for a layout map. It is a *standing* fact rather
+    #: than an event — the app says where things are when that changes and
+    #: then stops — so the answer is often older than anything else this
+    #: reads, and a tail that only covered the current beat would miss it on
+    #: a window nobody has touched.
+    LAYOUT_TAIL_BYTES = 4 << 20
+
+    def resource_rects(self, surface: str) -> dict[str, tuple]:
+        """Where `surface` says it is drawing each thing it publishes.
+
+        Read off the whole log rather than off what arrived since the last
+        `read()`, and deliberately: `catch_up` throws away everything before
+        the gesture so that setup cannot be mistaken for it, and the layout
+        map is exactly the kind of thing that was established during setup
+        and is still true.
+
+        The *last* map a surface published wins, because that is what the
+        word means: each one supersedes the one before it.
+
+        Returns rects in the app's own coordinates — its window's top-left
+        as the origin. `screen_point` converts.
+        """
+        try:
+            with open(self.path, "rb") as fh:
+                try:
+                    fh.seek(-self.LAYOUT_TAIL_BYTES, os.SEEK_END)
+                except OSError:
+                    fh.seek(0)
+                text = self.ANSI.sub("", fh.read().decode(errors="replace"))
+        except OSError:
+            return {}
+        out: dict[str, tuple] = {}
+        for said_by, blob in self.RESOURCES.findall(text):
+            if said_by != surface:
+                continue
+            try:
+                loaded = json.loads(blob)
+            except ValueError:
+                # A line torn in half by a concurrent write. Not fatal and
+                # not worth reporting: the next layout says it again.
+                continue
+            out = {k: tuple(v) for k, v in loaded.items()
+                   if isinstance(v, list) and len(v) == 4}
+        return out
 
 
     def await_line(self, needle: str, timeout: float) -> bool:
@@ -4126,13 +4186,25 @@ def say_something_about(session: Session, log: "LogTail", tile: tuple,
     Everything here is aimed at a pixel, and nothing here is remembered.
     A file row and a compose panel both belong to a *client*, and a
     client's widgets are not in the compositor's registry — there is no
-    name to click and no rect to read, which is what an earlier version
-    of this helper assumed when it opened with
-    `named_rect("file_row:harbour.png")` and could therefore never once
-    have run. So it uses the technique the drag beat already proved:
+    name to click, which is what an earlier version of this helper
+    assumed when it opened with `named_rect("file_row:harbour.png")` and
+    could therefore never once have run. What replaced it swept a band of
+    the window looking for any row and then counted rows to the wanted
+    one, and that is what failed: on a take where the list did not begin
+    where the sweep looked, no press landed, the message was never
+    written, and the beat the film turns on did nothing.
 
-    - the row is found by `press_the_photo_row`, which sweeps a band and
-      checks every press against the app's own account of what it hit;
+    So the pixel is asked for rather than hunted for, and each number
+    comes from the one component that holds it:
+
+    - the row's rect comes from the app — `Widget::resource_rects`, keyed
+      by the file's own **address**, so the thing pressed and the thing
+      the message carries are the same object rather than two things that
+      happened to agree. Nothing here counts rows or knows a row height;
+    - the window's origin comes from the compositor, which is the only
+      thing that knows where a window is;
+    - every press is still checked against the app's own account of what
+      it hit, so a miss stays *known* to be a miss;
     - that press also *measures* the offset between screen and client
       coordinates, from the position the app reports back;
     - the panel's rect comes from the app saying where it laid it out,
@@ -4160,10 +4232,14 @@ def say_something_about(session: Session, log: "LogTail", tile: tuple,
     session.pointer_button(False)
     session.settle(0.35)
     if held is None:
-        gap(f"{session.name}: no press landed on {file_name}. Its rows belong "
-            f"to a client, so there is no name to click and the press has to "
-            f"be aimed at a pixel; none of the band this swept was one of "
-            f"its rows.")
+        drawn = log.resource_rects(FILES_APP)
+        why = ("and the app published no layout at all, so there was nothing "
+               "to aim at and this fell back to hunting for a row"
+               if not drawn else
+               f"even though the app says it is drawing {len(drawn)} row(s) "
+               f"— so either the window moved between the reading and the "
+               f"press, or a press at the rect it named is not reaching it")
+        gap(f"{session.name}: no press landed on {file_name}, {why}.")
         return False
 
     hit = log.armed(log.text)
@@ -6754,25 +6830,89 @@ def expected_listing(home: str) -> list[str]:
     return dirs + files
 
 
+def where_the_app_draws(log: LogTail, surface: str, tile: tuple,
+                        file_name: str) -> tuple | None:
+    """The point on screen where `surface` is drawing `file_name`'s row.
+
+    Two facts, from the only two places that hold them, and no third
+    thing guessed in between.
+
+    The app says where it laid the row out, in its own coordinates —
+    `Widget::resource_rects`, reported per layout by
+    `App::narrate_resource_rects`. It is the app's own answer about its
+    own geometry, so it moves when a font, a scale, a row height, a
+    sidebar or a sort order moves it, and it is keyed by the file's
+    **address**: the same `files.entry:<path>` the remark will carry, so
+    the thing aimed at and the thing sent are the same object by
+    construction rather than by coincidence.
+
+    The compositor says where that window is, in *its* coordinates, and
+    the translation between the two is a subtraction of the tile's
+    origin and nothing else (`client_input::surface_local`, which is
+    also how a pointer position is routed into the client — so aiming
+    this way and pressing agree by the same arithmetic the press itself
+    uses).
+
+    Matched on the file's own name rather than on a path this end built,
+    because the app is the authority on which directory it is showing
+    and on how it spells what is in it. `None` when it is drawing no such
+    row — including when it is drawing it off the bottom of the window,
+    which is a real answer and not a failure to have one.
+
+    `across` is a fraction of the row's width: rows run the full width of
+    the content pane, and a third of the way in is the name column on any
+    metrics rather than the icon at one end or the date at the other.
+    """
+    rects = log.resource_rects(surface)
+    want = file_name.lower()
+    hit = None
+    for address, rect in rects.items():
+        path = address.split(":", 1)[-1]
+        if os.path.basename(path).lower() == want:
+            hit = (address, rect)
+            break
+    if hit is None:
+        return None
+    address, (x0, y0, x1, y1) = hit
+    tx, ty, _tw, _th = tile
+    across = 0.35
+    return (tx + x0 + across * (x1 - x0), ty + (y0 + y1) / 2.0, address)
+
+
 def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
-                        photo_name: str, listing: list[str]) -> tuple | None:
+                        photo_name: str, listing: list[str],
+                        surface: str = FILES_APP) -> tuple | None:
     """Press on the photograph's row and *keep the button down*.
 
-    The whole difficulty of this beat is in this function. A file row
-    belongs to a client, and a client's widgets are not in the
-    compositor's registry, so there is no name to click and no rect to
-    read — the press has to be aimed at a pixel. Aiming at a remembered
-    pixel is what went wrong repeatedly, so nothing here is remembered:
+    A file row belongs to a client, and a client's widgets are not in the
+    compositor's registry, so there is no name to click and the press has
+    to be aimed at a pixel. Which pixel is the whole difficulty, and it is
+    asked of the app rather than worked out here: `where_the_app_draws`
+    resolves the file's address to the rect the app says it laid that row
+    out at, this frame, and the tile's origin from `foreign_frames` turns
+    that into a place on screen.
+
+    Nothing is remembered and nothing is assumed:
 
     - the tile's rect comes from `foreign_frames`, which is the
       placement the compositor is painting right now;
+    - the row's rect comes from the app, which is the only thing that
+      knows where it drew it;
     - every press is checked against the app's own account of what it
       hit (`drag armed path=… at=…`), so a miss is *known* to be a miss
-      rather than assumed to be a hit;
-    - a press that lands on the wrong row is corrected using the
-      client-space y the app just reported, not using arithmetic about
-      where the tile's chrome ends. One press measures the mapping
-      between screen and client coordinates; the second uses it.
+      rather than assumed to be a hit.
+
+    That the aim comes from the app's layout does not make this test
+    agree with itself: whether the row a press *hits* is the row a person
+    *sees* is a claim about paint against hit-testing, and it is proven
+    where it belongs — `scripts/headless-examples/press-lands-where-drawn-proof.py`
+    reads its targets out of a screenshot precisely so that neither this
+    nor any other geometry-aware harness has to.
+
+    A window that has published no layout — an older build of the app —
+    falls back to sweeping a band and correcting by row arithmetic, which
+    is what this did before and which fails when it fails to find any row
+    at all.
 
     Returns the (x, y) the button is held at, or None with the button
     up and nothing selected.
@@ -6786,9 +6926,9 @@ def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
     except ValueError:
         target_index = None
 
-    def press(at_y: float) -> tuple[str, float] | None:
-        """Press at `at_y`; report what the app says it grabbed."""
-        quinten.pointer_move(x, at_y)
+    def press_at(at_x: float, at_y: float) -> tuple[str, float] | None:
+        """Press at (at_x, at_y); report what the app says it grabbed."""
+        quinten.pointer_move(at_x, at_y)
         quinten.settle(0.15)
         log.read()
         quinten.pointer_button(True)
@@ -6800,11 +6940,47 @@ def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
         hit = log.armed(log.read())
         return (hit[0], hit[2]) if hit else None
 
-    # Where to try first. Rows start below the app's toolbar and the
-    # column header, and how much chrome sits above them depends on what
-    # the app stacked there — so this sweeps a band rather than trusting
-    # a single offset. Coarse, because it only has to land on *any* row;
-    # the correction below does the aiming.
+    def press(at_y: float) -> tuple[str, float] | None:
+        return press_at(x, at_y)
+
+    # Ask the app where the row is, and press there.
+    #
+    # Two attempts rather than one, and the second is not a retry of the
+    # same aim: a window that has just been reframed relayouts, and a map
+    # read a few hundred milliseconds before that settles describes the
+    # size it used to be. So a miss re-reads — by then the new map has
+    # been published — and aims again at whatever it now says.
+    for attempt in range(2):
+        aim = where_the_app_draws(log, surface, tile, photo_name)
+        if aim is None:
+            if attempt == 0:
+                # No map yet. Give the window one settle to publish one
+                # before falling back to hunting for the row.
+                quinten.settle(0.5)
+                continue
+            note(f"{surface} published no layout naming {photo_name}; "
+                 f"falling back to sweeping for its row")
+            break
+        aim_x, aim_y, address = aim
+        hit = press_at(aim_x, aim_y)
+        if hit and os.path.basename(hit[0]).lower() == want:
+            note(f"the app draws {address} at y={aim_y:.0f}; pressed there "
+                 f"and it is what answered")
+            return (aim_x, aim_y)
+        quinten.pointer_button(False)
+        quinten.settle(0.3)
+        landed = os.path.basename(hit[0]) if hit else "nothing"
+        note(f"aimed at {address} (y={aim_y:.0f}) and {landed} answered; "
+             f"re-reading the app's layout")
+
+    # Nothing published, or what it published did not answer. Sweep a
+    # band: rows start below the app's toolbar and the column header, and
+    # how much chrome sits above them depends on what the app stacked
+    # there. Coarse, because it only has to land on *any* row; the
+    # correction below does the aiming. This is what the beat did before
+    # the app could be asked, and it is kept for a window running an
+    # older build — it is also what failed, so a run that reaches here
+    # says so above.
     for frac in (0.16, 0.22, 0.10, 0.28, 0.34):
         y = ty + th * frac
         hit = press(y)
