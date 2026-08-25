@@ -155,6 +155,16 @@ pub struct AppSurface {
     /// action commits under, so the edit is attributed in history exactly
     /// like one they typed.
     pub caller: String,
+    /// Whether [`Self::caller`] is an agent rather than the person whose
+    /// session this is.
+    ///
+    /// Carried beside the name because a name alone cannot be resolved back
+    /// into a principal: the workspace has `actor_for_agent` and
+    /// `actor_for_person` and no way to guess which a string wants. The gate
+    /// on the out-of-process path asks that question at the moment of the
+    /// act, and answering it as the person for an agent's call would check
+    /// the person's capabilities and commit the change in their name.
+    pub caller_is_agent: bool,
     /// Where the app's document actually lives.
     ///
     /// A hosted tab is redirected onto its own record, so the document
@@ -182,10 +192,37 @@ impl AppSurfaces {
         resources: Vec<Resource>,
         document: Option<(RecordStore, RecordId)>,
     ) {
+        self.publish_as(caller, false, resources, document);
+    }
+
+    /// [`Self::publish`], saying whether the asker is an agent.
+    ///
+    /// The two travel together because everything downstream needs both:
+    /// the name to attribute the change, and the kind to resolve the
+    /// capabilities it is checked against.
+    pub fn publish_as(
+        &self,
+        caller: impl Into<String>,
+        caller_is_agent: bool,
+        resources: Vec<Resource>,
+        document: Option<(RecordStore, RecordId)>,
+    ) {
         let mut inner = self.0.borrow_mut();
         inner.caller = caller.into();
+        inner.caller_is_agent = caller_is_agent;
         inner.resources = resources;
         inner.document = document;
+    }
+
+    /// Who this catalogue is being built for, and whether they are an agent.
+    ///
+    /// One answer for both halves of the provider. The in-process path takes
+    /// it through [`Self::on_app_document`]; the out-of-process path reads it
+    /// here, so an agent's invocation is gated and attributed the same way
+    /// whichever side of a process boundary the application happens to be on.
+    pub fn asking(&self) -> (String, bool) {
+        let inner = self.0.borrow();
+        (inner.caller.clone(), inner.caller_is_agent)
     }
 
     /// Describe every operation the focused app currently exports.
@@ -302,6 +339,7 @@ fn matches(needle: &str, d: &ActionDescriptor) -> bool {
 /// effect on the act, not on the last survey.
 fn remote_row(
     remote: &Arc<RemoteAppActions>,
+    surfaces: &AppSurfaces,
     entry: crate::shell::app_action_wire::RemoteAction,
     kind: ResourceKind,
 ) -> SearchResult {
@@ -312,6 +350,7 @@ fn remote_row(
     let action_label = d.action_label.clone();
     let app = app_of(&address.resource).to_string();
     let remote = Arc::clone(remote);
+    let surfaces = surfaces.clone();
     SearchResult {
         kind,
         provider_id: PROVIDER_ID.to_string(),
@@ -337,7 +376,25 @@ fn remote_row(
                         "no active workspace to resolve capabilities against".into(),
                     ));
                 };
-                let actor = workspace.actor_for_person(&st.local_user_id);
+                // Whoever this catalogue was built for, which is the agent
+                // when an agent is driving and the person otherwise. Read
+                // from the published surface rather than from the session,
+                // because the session's own id is the person's even while
+                // somebody else is asking — and answering as the person
+                // checks the person's capabilities and commits the change in
+                // their name. That is the exact thing the mark on screen is
+                // there to make impossible to get away with.
+                let (asking, asking_is_agent) = surfaces.asking();
+                let asking = if asking.trim().is_empty() {
+                    st.local_user_id.clone()
+                } else {
+                    asking
+                };
+                let actor = if asking_is_agent {
+                    workspace.actor_for_agent(&asking)
+                } else {
+                    workspace.actor_for_person(&asking)
+                };
                 let target = ResourceRef::Action {
                     app: app.clone(),
                     action: address.action.clone(),
@@ -357,10 +414,10 @@ fn remote_row(
                         "({}, {}) is no longer permitted to {}",
                         PROVIDER_ID,
                         encode_address(&address),
-                        st.local_user_id
+                        asking
                     )));
                 }
-                st.local_user_id.clone()
+                asking
             };
             // Sent, not waited for. The thread running this is the one that
             // serves the application's own connection, so waiting here for the
@@ -434,7 +491,12 @@ impl SearchProvider for AppResourcesProvider {
             if !matches(ctx.needle, &entry.descriptor) {
                 continue;
             }
-            out.push(remote_row(&self.remote, entry, kind.clone()));
+            out.push(remote_row(
+                &self.remote,
+                &self.surfaces,
+                entry,
+                kind.clone(),
+            ));
         }
         for d in self.surfaces.survey() {
             if !matches(ctx.needle, &d) {

@@ -6437,12 +6437,13 @@ impl ShellOverlayHost {
         doc: &automerge::AutoCommit,
         agent: Option<&str>,
     ) {
-        let caller = match agent {
-            Some(name) if !name.trim().is_empty() => name.to_string(),
-            _ => chrome.local_user_id.clone(),
+        let (caller, is_agent) = match agent {
+            Some(name) if !name.trim().is_empty() => (name.to_string(), true),
+            _ => (chrome.local_user_id.clone(), false),
         };
         let Some(active) = chrome.active_tab_id() else {
-            self.app_surfaces.publish(caller.as_str(), Vec::new(), None);
+            self.app_surfaces
+                .publish_as(caller.as_str(), is_agent, Vec::new(), None);
             return;
         };
         for &row_ptr in self.group_row_ptrs.values() {
@@ -6470,7 +6471,7 @@ impl ShellOverlayHost {
                     None => app.resources(doc),
                 };
                 self.app_surfaces
-                    .publish(caller.as_str(), resources, binding);
+                    .publish_as(caller.as_str(), is_agent, resources, binding);
                 return;
             }
         }
@@ -6478,7 +6479,8 @@ impl ShellOverlayHost {
         // Publishing an empty tree rather than leaving the last one in
         // place is the difference between "this app exports nothing" and
         // "here is a stale address that resolves to somebody else's tab".
-        self.app_surfaces.publish(caller.as_str(), Vec::new(), None);
+        self.app_surfaces
+            .publish_as(caller.as_str(), is_agent, Vec::new(), None);
     }
 
     /// The connected applications' published surface, so the session can
