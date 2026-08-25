@@ -238,6 +238,19 @@ the launcher, not from the app.
 Anything relying on `warn!` to surface a problem in app code is
 currently relying on nothing.
 
+**Stale as written — 46 of the 47 apps install one.** `tracing_subscriber::fmt::init()`
+is the first line of `main` in every app but one (`apps/file-explorer/src/main.rs:28`
+among them), and `fmt::init` filters on `RUST_LOG`, which now crosses into the sandbox
+on the launcher's inherited-environment allowlist. What was actually missing was the
+filter, not the subscriber: without `RUST_LOG` the default is errors only, so every
+`warn!` and `debug!` was dropped by a subscriber that existed. Worth correcting rather
+than deleting, because the conclusion it invites is expensive — it makes an app's
+silence look like a missing transport, and sends the next person looking for a wire
+that is not the problem. The `ui::resources` layout map an app publishes is a
+`tracing::debug!` in the app's own process (`ui/src/app.rs`, `narrate_resource_rects`),
+so it reaches the session over the log pipe and not over any packaged-app socket
+field.
+
 ## A proof that forced the transport it was proving
 
 `scripts/headless-examples/photograph-crosses-proof.py` sets

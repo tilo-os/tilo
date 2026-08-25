@@ -1417,6 +1417,23 @@ class Live:
             # reachable because a capability recorded on the room
             # replicated to him, rather than one that happens to sit in a
             # directory of his own.
+            # His screen, at the moment the question is asked of it.
+            #
+            # The claim below reads a log; this is the picture that says
+            # whether the log is describing what a person would see. They
+            # are different kinds of evidence and the beat has been wrong
+            # in both directions — a window the compositor called placed
+            # and painted that was a picture of nothing, and a listing
+            # that was on screen while the map naming it had not been
+            # re-emitted because nothing had moved.
+            his_screen = os.path.join(self.shots, "his-listing.png")
+            try:
+                self.x.snapshot(his_screen)
+                self.say(f"his screen, before anything is aimed at it: "
+                         f"{his_screen}")
+            except Exception as exc:  # noqa: BLE001 — evidence is optional
+                yc.gap(f"could not photograph xaver's screen ({exc}), so "
+                       f"this run has only the log's account of it")
             drawn = log.resource_rects(yc.FILES_APP)
             rows = [a for a in drawn
                     if os.path.basename(a.split(":", 1)[-1]).lower()
