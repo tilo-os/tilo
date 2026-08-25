@@ -1890,7 +1890,17 @@ impl App {
         let mentions = qos_reference::resolve_mentions(&remark.text, &self.remark_room());
         let remark = remark.with_mentions(mentions);
         let id = format!("m_{}", uuid::Uuid::new_v4().simple());
-        let author = self.local_author.0.clone();
+        // The room's address for this app's participant, and the locally
+        // resolved id only when no room has given one. The two are
+        // different strings for the same person -- a roster is keyed by
+        // the first -- so authoring under the second puts a remark in a
+        // conversation under an id nothing in that conversation can
+        // resolve into a name.
+        let author = self
+            .presence_ctx
+            .self_id()
+            .map(|who| who.0.clone())
+            .unwrap_or_else(|| self.local_author.0.clone());
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)

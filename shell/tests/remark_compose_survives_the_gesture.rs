@@ -421,6 +421,120 @@ fn typing_into_the_panel_and_pressing_enter_produces_a_remark() {
 // sends. The send worked and the only evidence of it went with the panel, which
 // looks exactly like a send that gave up.
 
+/// A remark is authored under the address the room knows this machine by.
+///
+/// One participant, two spellings. This end had only ever known the machine's
+/// own name for the person sitting at it — `QOS_USER_ID`, or the account they
+/// logged in as — while every application in the room is keyed by
+/// `peer@<liveness handle>`: the id the broker announces this participant
+/// under, and the id each of their applications authors its own messages
+/// under. A roster is keyed by the second, so a remark minted under the first
+/// arrives in a conversation as a stranger — no name, no monogram, no colour —
+/// beside a member list naming the same person correctly.
+///
+/// The whole gesture is driven, and what left is read off the room through
+/// `subscribe_rooms`, the same subscription the compositor itself uses, so
+/// what is asserted is the payload that actually went out rather than a
+/// re-encoding of it.
+#[test]
+fn a_remark_is_authored_under_the_address_the_room_knows_this_machine_by() {
+    // A real session's handle, so the id is read at the width one occupies.
+    const HANDLE: u64 = 12_662_516_466_563_993_685;
+
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (taffy, host_node) = layout_host(&mut host);
+    let mut doc = automerge::AutoCommit::new();
+
+    let (menu, origin) = menu_and_origin();
+    assert!(host.open_remark(subject(), menu, origin), "the panel opens");
+    type_str(&mut host, &taffy, host_node, &mut doc, "claude: crop this");
+    dispatch(
+        &mut host,
+        &taffy,
+        host_node,
+        &mut doc,
+        &key_event(Key::Named(NamedKey::Enter)),
+    );
+    let written = host.take_remarks();
+    assert_eq!(written.len(), 1, "Enter sent exactly one remark");
+
+    let room = {
+        let st = chrome.borrow();
+        st.tree()
+            .active_workspace()
+            .expect("the fixture has a workspace")
+            .room
+            .to_string()
+    };
+
+    // A broker that knows what the room calls this machine. Without one there
+    // is no room-wide address to prefer, and this would assert the fallback.
+    let (json_path, capnp_path) = broker_socket_paths("remark-author");
+    let identity = shell::shell::collab_broker::LocalIdentity::with_lookup(HANDLE, |_c: &str| {
+        let mut labels = shell::shell::peer_presence::PeerLabels::new();
+        labels.insert(
+            HANDLE,
+            shell::shell::peer_presence::PeerLabel::person("Xaver"),
+        );
+        labels
+    });
+    let broker = shell::shell::collab_broker::spawn_full_with_identity(
+        json_path,
+        Some(capnp_path),
+        None,
+        identity,
+    )
+    .expect("the broker spawns");
+
+    let seen: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&seen);
+    let _subscription = broker.subscribe_rooms(
+        vec![room.clone()],
+        Box::new(move |event, _route| {
+            if let ui::collaboration::CollabEvent::ActionArrived { payload, .. } = event {
+                captured
+                    .lock()
+                    .expect("captured payloads")
+                    .push(payload.clone());
+            }
+        }),
+    );
+
+    shell::shell::remark_surface::deliver(&chrome, &broker, written);
+
+    let payloads = seen.lock().expect("captured payloads").clone();
+    assert_eq!(payloads.len(), 1, "exactly one remark reached the room");
+    let action: serde_json::Value = serde_json::from_slice(&payloads[0])
+        .expect("a remark leaves as chat's own action, encoded as JSON");
+    let author = action["SendMessage"]["author"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the action carries no author: {action}"))
+        .to_string();
+
+    assert_eq!(
+        author,
+        format!("peer@{HANDLE}"),
+        "a remark must be authored under the address the room knows this \
+         machine by; anything else cannot be found in the roster that turns \
+         an author into a name",
+    );
+    assert_eq!(
+        Some(author.clone()),
+        broker.room_participant_id(),
+        "and it must be the string the broker announces this participant \
+         under, because that is the string a roster is keyed by",
+    );
+    assert_ne!(
+        author,
+        shell::shell::state::local_user_id(),
+        "the machine's own name for the person sitting at it is the other \
+         spelling, and it is the one nothing in the room can resolve",
+    );
+
+    println!("a remark left under {author}");
+}
+
 /// A tracing sink that keeps what was written, so a test can read the session's
 /// own account of the gesture rather than a paraphrase of it.
 #[derive(Clone, Default)]

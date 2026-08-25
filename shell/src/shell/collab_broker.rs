@@ -2296,6 +2296,10 @@ pub struct BrokerHandle {
     /// eventual Phase 3.5 bootstrap path mutate the state map to
     /// register role attestations before traffic flows.
     channels: Arc<Mutex<BrokerChannels>>,
+    /// Who this machine is in the rooms it is in — the same instance the
+    /// reader threads stamp arriving traffic with, so anything the
+    /// session itself puts on the wire is attributed identically.
+    identity: Arc<LocalIdentity>,
 }
 
 impl BrokerHandle {
@@ -2331,6 +2335,25 @@ impl BrokerHandle {
             .capnp_state()
             .map(|s| s.presence_subscriber_count())
             .unwrap_or(0)
+    }
+
+    /// The address the room knows this machine's participant by.
+    ///
+    /// The id half of [`LocalIdentity::self_row`] — the row this broker
+    /// announces this machine under — and therefore the only spelling of
+    /// this participant that anything keyed by the roster can resolve.
+    /// The session itself needs it whenever it authors *as* the person
+    /// sitting at it rather than merely relaying for them: what it writes
+    /// then lands beside what their applications write, and two spellings
+    /// of one participant put the same person on screen twice, once
+    /// named and once as a stranger.
+    ///
+    /// `None` for a session with no network, for the reason
+    /// [`LocalIdentity::room_address`] gives: there is no room-wide
+    /// address to hand out, and a locally-minted stand-in would be the
+    /// second source of truth this whole path exists to retire.
+    pub fn room_participant_id(&self) -> Option<String> {
+        self.identity.room_address()
     }
 
     /// Fan a `CollabEvent` to the connected peers `route` addresses.
@@ -3293,6 +3316,7 @@ fn spawn_inner(
         capnp_quit,
         peers: table,
         channels,
+        identity,
     })
 }
 

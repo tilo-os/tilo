@@ -141,7 +141,7 @@ pub fn deliver(chrome: &Chrome, broker: &BrokerHandle, remarks: Vec<Remark>) {
     if remarks.is_empty() {
         return;
     }
-    let (room, author, members) = {
+    let (room, local_id, members) = {
         let st = chrome.borrow();
         let tree = st.tree();
         let room = tree
@@ -162,6 +162,22 @@ pub fn deliver(chrome: &Chrome, broker: &BrokerHandle, remarks: Vec<Remark>) {
         );
         return;
     }
+    // Who the room thinks wrote this.
+    //
+    // A remark is minted here and not by an application, so nothing else
+    // gets to say who its author was — and this end had only ever known
+    // the *machine's* name for the person at it: `QOS_USER_ID`, or the
+    // account they logged in as. Every application in the room is keyed
+    // by the other spelling, `peer@<liveness handle>`, which is what the
+    // broker announces this participant as and what each of their apps
+    // authors under. So a remark arrived in a chat under an id no roster
+    // could resolve: no name, no monogram, no colour, for somebody the
+    // member list beside it was naming correctly.
+    //
+    // The account name stays as the fallback for a session with no room
+    // to be addressed in, which is the one case where there is no other
+    // spelling to prefer.
+    let author = broker.room_participant_id().unwrap_or(local_id);
     for remark in remarks {
         // Resolved before the move: `with_mentions` consumes the remark, so
         // the borrow of its text has to be finished first.
