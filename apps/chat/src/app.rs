@@ -336,6 +336,18 @@ pub struct ChatApp {
     // multi-participant chat attributes and de-duplicates correctly.
     pub(crate) me: LocalIdentity,
 
+    // Ids this session authored under before the room told it which
+    // participant it is. See `adopt_own_participant`: what was already said
+    // under one of these is still this person, so their own earlier lines go
+    // on reading "You" rather than turning into a stranger mid-scroll.
+    pub(crate) former_ids: Vec<Id>,
+
+    // Set when the membership row still stands under a former id. Consumed by
+    // the next `sync`, which is where the document is in hand — without it a
+    // peer that adopted a room address appears in the roster twice, once
+    // named and once as an unresolved handle.
+    pub(crate) rehome_member_from: Option<Id>,
+
     // Engines (call sounds + media transport).
     pub(crate) sound: SoundEngine,
     pub(crate) media: MediaEngine,
@@ -563,6 +575,8 @@ impl ChatApp {
             left_mode: FlapMode::Docked,
             right_mode: FlapMode::Docked,
             me: LocalIdentity::demo(),
+            former_ids: Vec::new(),
+            rehome_member_from: None,
             sound: SoundEngine::new(),
             // Default to the deterministic local bus; the live binary
             // (`ChatApp::new`) upgrades to the real transport. This keeps
@@ -1196,7 +1210,10 @@ impl ChatApp {
         // A person who *has* been named still reads "You" beside their own
         // messages; the roster is where their name belongs, and it appends
         // "(you)" there rather than replacing it.
-        if id == self.me.id {
+        // `is_me` rather than a bare comparison: a peer that has adopted the
+        // room's address for itself still wrote its earlier lines under the
+        // id it resolved at startup, and those are still its own.
+        if self.is_me(id) {
             return "You".to_string();
         }
         let named = self.display_name(id);
@@ -1414,6 +1431,17 @@ impl ChatApp {
 
     // --- who is in the room, and what the room calls them -----------------
 
+    /// The id this app authors under — messages, reactions, read watermarks,
+    /// and its own membership row.
+    ///
+    /// The room's address for this machine's participant once the room has
+    /// said what that is (see [`Self::adopt_room`]), and what
+    /// [`LocalIdentity::resolve`](crate::identity::LocalIdentity::resolve)
+    /// worked out at startup until then.
+    pub fn me_id(&self) -> &str {
+        &self.me.id
+    }
+
     /// Take the room's view of the participants off the presence store.
     ///
     /// Called once per frame from `draw_with_presence`. The presence store is
@@ -1428,6 +1456,7 @@ impl ChatApp {
     /// on offering a departed participant in the `@` picker and painting their
     /// colour behind a mention.
     pub fn adopt_room(&mut self, presence: &PresenceCtx) {
+        self.adopt_own_participant(presence);
         self.room_names.retain(|id, _| {
             presence.names.contains_key(&ui::permissions::UserId(id.clone()))
         });
@@ -1444,6 +1473,70 @@ impl ChatApp {
             // people never collide, and shared with the caret pill and cursor.
             self.room_colors.insert(id.0.clone(), presence.color_for(id));
         }
+    }
+
+    /// Take the room's answer to "which of these participants am I".
+    ///
+    /// Both halves of it come from the `is_self` row of the roster, and
+    /// neither can be worked out on this side.
+    ///
+    /// **The id.** A chat author has to live in the id space the roster is
+    /// keyed by, because resolving an author's name *is* a lookup in that
+    /// roster. There were two spaces and they never met:
+    /// [`LocalIdentity::resolve`](crate::identity::LocalIdentity::resolve)
+    /// mints `u_<hex8>` from the signing key, while every other machine
+    /// addresses this participant as `peer@<liveness handle>` — minted by
+    /// the broker from the publishing machine's libp2p handle, and the only
+    /// spelling that appears in a roster. Authoring under the first meant
+    /// every remote message resolved to nothing and rendered `Someone (…)`,
+    /// permanently, on every screen but the sender's.
+    ///
+    /// The room's spelling wins because it is the only one both sides can
+    /// say. It is stable for the same reasons the local one was — the
+    /// liveness handle is a hash of the machine's persisted libp2p key — and
+    /// it names a *machine's participant*, which is what a roster row, a
+    /// caret and a cursor already name.
+    ///
+    /// **The name.** The host writes a guest's name from the invite that
+    /// admitted them, and it reaches the guest's machine on this row alone.
+    /// Without it everyone else in the room uses the name the host chose
+    /// while the guest's own screen shows their account name.
+    ///
+    /// A session with no room has neither, and keeps what it resolved for
+    /// itself: there is no room-wide address to be had, and nobody else is
+    /// looking.
+    fn adopt_own_participant(&mut self, presence: &PresenceCtx) {
+        if let Some(room_id) = presence.self_id() {
+            if room_id.0 != self.me.id {
+                let former = std::mem::replace(&mut self.me.id, room_id.0.clone());
+                // The colour is derived from the id, so it moves with it —
+                // otherwise this peer's caret and its avatar disagree.
+                self.me.color_idx = crate::identity::color_index_for(room_id.0.as_bytes());
+                // Tidy the membership row on the next frame, which is where
+                // the document is in hand.
+                self.rehome_member_from = Some(former.clone());
+                // What was already said under the old id is still this
+                // person: a message records who spoke, and rewriting
+                // authorship after the fact to tidy an id would be editing
+                // history. Remembering the id instead keeps "You" beside
+                // their own earlier lines.
+                if !self.former_ids.contains(&former) {
+                    self.former_ids.push(former);
+                }
+            }
+        }
+        if let Some(name) = presence.self_name() {
+            if name != self.me.name {
+                self.me.name = name.to_string();
+                self.me.initials = crate::identity::initials_for(name);
+            }
+        }
+    }
+
+    /// Whether `id` is this session's own participant, including any id it
+    /// authored under before the room named it.
+    pub(crate) fn is_me(&self, id: &str) -> bool {
+        id == self.me.id || self.former_ids.iter().any(|f| f == id)
     }
 
     /// What to call `id`: the room's answer first, the document's stored name
@@ -1474,7 +1567,7 @@ impl ChatApp {
         // whose name this process knows for certain was the one it fell
         // through to `id.to_string()` for, and a person saw their own
         // routing hash where their name should be.
-        if id == self.me.id && !self.me.name.trim().is_empty() {
+        if self.is_me(id) && !self.me.name.trim().is_empty() {
             return self.me.name.clone();
         }
         id.to_string()
@@ -1496,7 +1589,7 @@ impl ChatApp {
     /// "(you)".
     pub(crate) fn chrome_name(&self, id: &str) -> String {
         let name = self.display_name(id);
-        if id == self.me.id && name == id {
+        if self.is_me(id) && name == id {
             return "You".to_string();
         }
         name
@@ -2251,6 +2344,12 @@ impl Widget for ChatApp {
             // participant it is; it does not get to say what it is called. The
             // room answers that (see `adopt_room` / `display_name`), which is
             // why two peers can never disagree about a third's name.
+            // The room named this machine's participant after it had already
+            // announced itself under the id it resolved for itself. Move the
+            // one row rather than leaving both standing.
+            if let Some(former) = self.rehome_member_from.take() {
+                ChatDoc::rehome_member(doc, &former, &self.me.id);
+            }
             ChatDoc::ensure_member(doc, &self.me.id, false, model::Presence::Online);
         } else if self.shot_starter {
             // `--shots` capture of the honest first-run empty workspace.

@@ -86,6 +86,8 @@ pub mod workspace_drop;
 pub mod workspace_settings;
 
 #[cfg(test)]
+mod own_participant_tests;
+#[cfg(test)]
 mod peer_pointer_tests;
 
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};

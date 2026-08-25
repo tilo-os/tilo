@@ -905,6 +905,39 @@ impl ChatDoc {
         wrote
     }
 
+    /// Move this machine's own membership row from `from` to `to`.
+    ///
+    /// A peer announces itself the moment it opens the document, under the id
+    /// it resolved for itself; the id the *room* addresses it by arrives
+    /// later, on the roster. Both rows would otherwise stand, and the same
+    /// person appears in the member list twice — once named, once as an
+    /// unresolved handle.
+    ///
+    /// Only membership moves. Messages, reactions and watermarks written
+    /// under the old id keep it: they are a record of what happened, and
+    /// rewriting them to tidy an identifier would be editing history.
+    ///
+    /// Returns whether anything changed, so a caller can run it on a frame
+    /// where it may already have been done without churning the document.
+    pub fn rehome_member(doc: &mut AutoCommit, from: &str, to: &str) -> bool {
+        if from == to || from.is_empty() {
+            return false;
+        }
+        let users = get_or_map(doc, &ROOT, "users");
+        let Ok(Some((_, old))) = doc.get(&users, from) else {
+            return false;
+        };
+        let is_agent = get_bool(doc, &old, "agent");
+        let status = get_str(doc, &old, "status");
+        let new = get_or_map(doc, &users, to);
+        let _ = doc.put(&new, "agent", is_agent);
+        if !status.is_empty() {
+            let _ = doc.put(&new, "status", status);
+        }
+        let _ = doc.delete(&users, from);
+        true
+    }
+
     /// Mark a member as an agent (or not). The seam an automated participant
     /// uses to announce what it is when it joins a room's chat.
     pub fn set_member_is_agent(doc: &mut AutoCommit, id: &str, is_agent: bool) -> bool {
