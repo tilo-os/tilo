@@ -269,7 +269,7 @@ impl Instruction {
     /// [`Refused::NotExported`], and the caller falls back rather than
     /// acting on it.
     pub fn from_id(id: &str, rest: &str, offers: &[Offer]) -> Option<Instruction> {
-        Self::from_answer(id, rest, None, offers).ok()
+        Self::from_answer(id, rest, None, None, offers).ok()
     }
 
     /// The full gate: an id, plus whatever content came with it, checked
@@ -290,6 +290,7 @@ impl Instruction {
     pub fn from_answer(
         id: &str,
         rest: &str,
+        supplied: Option<&str>,
         table: Option<TableDraft>,
         offers: &[Offer],
     ) -> Result<Instruction, Refused> {
@@ -321,12 +322,27 @@ impl Instruction {
         // is the honest result: performing it with an empty string would
         // write a blank where the caller asked for a value.
         if offer.wants_text() {
-            let literal = surface::quoted_literal(rest).ok_or_else(|| {
-                Refused::Unusable(format!(
-                    "{} collects text and the instruction quoted none",
-                    offer.descriptor.action_label
-                ))
-            })?;
+            // A value the answer supplied for *this* operation, else one
+            // quoted in the request.
+            //
+            // Quoting was the only route, and it cannot express a value the
+            // request does not contain. The photo editor's crop asks for a
+            // region; "make this square" contains no region and never could,
+            // so the operation was found, offered, chosen, and then refused
+            // for quoting nothing. The value is computed from what the
+            // application itself publishes — its prompt says the shape, and
+            // its own child resource carries the pixel size — which is the
+            // resource tree being used for what it is for.
+            let literal = supplied
+                .map(str::to_string)
+                .or_else(|| surface::quoted_literal(rest))
+                .ok_or_else(|| {
+                    Refused::Unusable(format!(
+                        "{} collects text and neither the answer nor the \
+                         instruction supplied any",
+                        offer.descriptor.action_label
+                    ))
+                })?;
             return Ok(Instruction::Perform {
                 id: offer.id(),
                 argument: Some(literal),
@@ -631,6 +647,7 @@ impl Plan {
     /// written rather than anywhere in the sentence.
     pub fn from_answer(
         ids: &[String],
+        args: &[Option<String>],
         rest: &str,
         table: Option<TableDraft>,
         offers: &[Offer],
@@ -648,7 +665,7 @@ impl Plan {
             // while the log said the open had been performed.
             return Ok(Plan {
                 steps: vec![Step::bound(
-                    Instruction::from_answer(&ids[0], rest, table, offers)?,
+                    Instruction::from_answer(&ids[0], rest, args.first().and_then(|a| a.as_deref()), table, offers)?,
                     offers,
                 )],
             });
@@ -666,11 +683,57 @@ impl Plan {
             ));
         }
         let parts = clauses(rest);
+        // An open consumes no clause, because the sentence never asked for
+        // one. "Make this square and put it in the open document" is two
+        // clauses and three steps: squaring is the photo editor's work, so
+        // the editor has to be opened first, and nobody wrote that down —
+        // it is implied by where the operation lives.
+        //
+        // Counting it as a clause is what made every step read the whole
+        // sentence. Three ids against two clauses failed the equal-counts
+        // test, so each step fell back to the entire request, and the step
+        // that wanted the crop asked the room for "make this square and put
+        // it in the open document" — a sentence no single operation answers.
+        // The photo editor opened, exported its crop, and the step that
+        // needed it refused against a room holding exactly what it asked for.
+        //
+        // So clauses are dealt to the steps the sentence actually named, in
+        // order, and an open takes the clause it is opening *for* without
+        // spending it. Exact attribution is still required — when what is
+        // left does not line up, every step reads the whole request as
+        // before, because a clause given to the wrong step is worse than a
+        // sentence given to all of them.
+        let named: Vec<&String> = ids
+            .iter()
+            .filter(|id| {
+                surface::decode_address(id)
+                    .as_ref()
+                    .and_then(surface::opens)
+                    .is_none()
+            })
+            .collect();
+        let exact = parts.len() == named.len();
+        let mut next_clause = 0usize;
         let mut steps = Vec::new();
         for (i, id) in ids.iter().enumerate() {
-            let said = parts.get(i).map(String::as_str).unwrap_or(rest);
-            let said = if parts.len() == ids.len() { said } else { rest };
-            let instruction = Instruction::from_answer(id, said, None, offers)?;
+            let is_open = surface::decode_address(id)
+                .as_ref()
+                .and_then(surface::opens)
+                .is_some();
+            let said = if !exact {
+                rest
+            } else if is_open {
+                // The clause this open exists to make answerable, without
+                // advancing past it: the step after this one is the one that
+                // was asked for.
+                parts.get(next_clause).map(String::as_str).unwrap_or(rest)
+            } else {
+                let said = parts.get(next_clause).map(String::as_str).unwrap_or(rest);
+                next_clause += 1;
+                said
+            };
+            let instruction =
+                Instruction::from_answer(id, said, args.get(i).and_then(|a| a.as_deref()), None, offers)?;
             steps.push(Step::bound(instruction, offers));
         }
         Ok(Plan { steps })
@@ -1390,7 +1453,7 @@ mod tests {
             "photos.image:/tmp/harbour.png#crop".to_string(),
             "word-processor.section:b7#place-image".to_string(),
         ];
-        let plan = Plan::from_answer(&good, r#"crop to "0,0,1,1" and place image"#, None, &offers)
+        let plan = Plan::from_answer(&good, &[], r#"crop to "0,0,1,1" and place image"#, None, &offers)
             .expect("both ids are exported");
         assert_eq!(plan.len(), 2);
         assert!(plan.steps[1].carries);
@@ -1402,6 +1465,7 @@ mod tests {
         assert_eq!(
             Plan::from_answer(
                 &bad,
+                &[],
                 r#"crop to "0,0,1,1" and delete everything"#,
                 None,
                 &offers
@@ -1430,7 +1494,7 @@ mod tests {
             "word-processor.section:b7#align-center".to_string(),
         ];
         assert!(matches!(
-            Plan::from_answer(&answered, "draft it and centre it", None, &offers),
+            Plan::from_answer(&answered, &[], "draft it and centre it", None, &offers),
             Err(Refused::Unusable(_))
         ));
     }
@@ -1440,10 +1504,7 @@ mod tests {
     #[test]
     fn an_operation_that_collects_content_is_not_asked_for_words() {
         let offers = two_apps();
-        let answered = Instruction::from_answer(
-            "word-processor.section:b7#place-image",
-            "place image below b7",
-            None,
+        let answered = Instruction::from_answer("word-processor.section:b7#place-image", "place image below b7", None, None,
             &offers,
         );
         assert_eq!(
@@ -1780,7 +1841,7 @@ mod tests {
 
         // Everything the survey turned up is answerable, by its own id.
         for offer in &offers {
-            let answered = Instruction::from_answer(&offer.id(), "asked", None, &offers);
+            let answered = Instruction::from_answer(&offer.id(), "asked", None, None, &offers);
             if offer.wants_content() {
                 // It collects a content hash, which no instruction contains.
                 // Refusing it for having quoted none would refuse it always;
@@ -1821,7 +1882,7 @@ mod tests {
         // An address of the right shape that nothing in this room carries.
         let stale = "word-processor.section:gone-block#align-left";
         assert_eq!(
-            Instruction::from_answer(stale, "asked", None, &offers),
+            Instruction::from_answer(stale, "asked", None, None, &offers),
             Err(Refused::NotExported(stale.to_string())),
             "an address the survey does not carry must not be dispatched"
         );
@@ -1842,13 +1903,13 @@ mod tests {
     fn a_recipe_is_refused_when_its_app_is_not_here() {
         let offers = surveyed();
         assert_eq!(
-            Instruction::from_answer("table", "asked", None, &offers),
+            Instruction::from_answer("table", "asked", None, None, &offers),
             Ok(Instruction::Table)
         );
         // Same answer, empty room: there is no document for it to act on, so
         // it is not exported rather than attempted against nothing.
         assert_eq!(
-            Instruction::from_answer("table", "asked", None, &[]),
+            Instruction::from_answer("table", "asked", None, None, &[]),
             Err(Refused::NotExported("table".into()))
         );
     }
@@ -1870,15 +1931,12 @@ mod tests {
         // gate would then refuse.
         let offers = surveyed();
         for recipe in RECIPES {
-            match Instruction::from_answer(recipe.id, "asked", None, &offers) {
+            match Instruction::from_answer(recipe.id, "asked", None, None, &offers) {
                 Ok(_) => {}
                 Err(Refused::Unusable(_)) => {
                     // It wants content. With content it must work.
                     assert!(
-                        Instruction::from_answer(
-                            recipe.id,
-                            "asked",
-                            Some(sample_draft()),
+                        Instruction::from_answer(recipe.id, "asked", None, Some(sample_draft()),
                             &offers
                         )
                         .is_ok(),
@@ -1922,7 +1980,7 @@ mod tests {
         assert_eq!(drafted.check(), Ok(()));
 
         let Ok(Instruction::RunSheet(written)) =
-            Instruction::from_answer("runsheet", "asked", Some(drafted), &offers)
+            Instruction::from_answer("runsheet", "asked", None, Some(drafted), &offers)
         else {
             panic!("a well-formed draft must still be accepted");
         };
@@ -1953,7 +2011,7 @@ mod tests {
             rows: vec![vec!["".into(), "".into()], vec![" ".into(), " ".into()]],
             note: None,
         };
-        match Instruction::from_answer("runsheet", "asked", Some(empty), &offers) {
+        match Instruction::from_answer("runsheet", "asked", None, Some(empty), &offers) {
             Err(Refused::Unusable(why)) => assert!(
                 why.contains("no rows"),
                 "refused for the wrong reason: {why}"
@@ -1970,7 +2028,7 @@ mod tests {
         let offers = surveyed();
         assert_eq!(ok.check(), Ok(()));
         assert_eq!(
-            Instruction::from_answer("runsheet", "asked", Some(ok.clone()), &offers),
+            Instruction::from_answer("runsheet", "asked", None, Some(ok.clone()), &offers),
             Ok(Instruction::RunSheet(ok.clone()))
         );
         // The header is the first row, so what gets written is the header
@@ -1990,7 +2048,7 @@ mod tests {
             // treated as an id the app does not export — the two send a
             // reader to different places.
             assert!(matches!(
-                Instruction::from_answer("runsheet", "asked", Some(d), &surveyed()),
+                Instruction::from_answer("runsheet", "asked", None, Some(d), &surveyed()),
                 Err(Refused::Unusable(_))
             ));
         };
@@ -2041,7 +2099,7 @@ mod tests {
         // Naming the entry without drafting anything is unusable too: it
         // must not quietly fall through to the deterministic table.
         assert!(matches!(
-            Instruction::from_answer("runsheet", "asked", None, &offers),
+            Instruction::from_answer("runsheet", "asked", None, None, &offers),
             Err(Refused::Unusable(_))
         ));
     }

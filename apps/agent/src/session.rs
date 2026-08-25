@@ -2393,6 +2393,22 @@ impl Session {
                     // offers are whatever the room exports now. A clause that
                     // still answers to nothing comes back Unknown and refuses
                     // below, naming what already stands.
+                    // What the room actually exported at the moment the
+                    // clause was asked again. Without it a refusal here is
+                    // unreadable: "I can't make this square" looks identical
+                    // whether the crop was absent from the survey or present
+                    // and passed over, and those are different defects in
+                    // different components.
+                    tracing::info!(
+                        clause = %what,
+                        offers = offers.len(),
+                        ids = %offers
+                            .iter()
+                            .map(|o| o.id())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        "asking again against what the room exports now"
+                    );
                     let again = self
                         .chooser
                         .choose(&what, &[], &offers)
