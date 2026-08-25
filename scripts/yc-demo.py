@@ -8278,7 +8278,20 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
     note(f"the strip carries {len(order)} window group(s), "
          f"{len(extras) + 2} applications")
 
-    editor = extras.get(IMAGE_EDITOR)
+    # Whichever second application is on the strip, not the image editor
+    # specifically.
+    #
+    # What this beat argues is that a tab bar here is a frame primitive the
+    # compositor owns, so two *different applications* can sit on one — and
+    # any second application makes that argument. Requiring the image
+    # editor made the beat impossible in the take that matters: the film's
+    # second half turns on the agent opening that editor because it decided
+    # it needed one, so a take that leaves it closed has no editor to tab,
+    # and lost both the tab bar and the strip framing that followed it.
+    editor = extras.get(IMAGE_EDITOR) or next(
+        (w for a, w in extras.items() if a != IMAGE_EDITOR and w is not None),
+        None,
+    )
     # Only neighbours are ever in frame together on a strip, so the two
     # windows the merge happens between have to be side by side for it to
     # be watchable. Said here rather than left to be inferred from a
@@ -8340,9 +8353,8 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
              "cannot show a pair at its far end")
 
     if editor is None:
-        gap("the image editor did not open, so there is no second "
-            "application to put in the word processor's window and the "
-            "tabbing is not filmed")
+        gap("no second application is open, so there is nothing to put in "
+            "the word processor's window and the tabbing is not filmed")
         return
     if wp is None:
         gap("the word processor never opened, so there is nothing to tab "
