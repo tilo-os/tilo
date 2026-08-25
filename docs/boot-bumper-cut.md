@@ -8,6 +8,19 @@ exists.** A new OS build shifts every timestamp, so the rules below are
 anchored to what is on screen, with the timings from the 2026-08-22 recording
 given only as an example of the shape.
 
+**`scripts/cut-boot-bumper.py` runs this cut.** Prose was not enough: the
+bumper on disk was 7.5 s of a documented 3.2 s cut, pillarboxed against a
+full-bleed demo, with two stretches of black and a greeter that never moved for
+four seconds — every one of them a rule this file already forbade. A cut nobody
+can re-run drifts from its own description. The script finds the spans in the
+recording rather than hard-coding them, and refuses rather than improvising
+when a landmark is not where the shape says it should be.
+
+```bash
+scripts/cut-boot-bumper.py films/qos-boot-greeter-XXXXXXX.mp4 \
+    --out films/qos-boot-bumper.mp4
+```
+
 ## Where it lives
 
 `films/qos-boot-bumper.mp4` — the cut, **3.2s** (97 frames at 30 fps; the
@@ -41,8 +54,15 @@ Four things, in order, and nothing else:
    recording is faster than that. The recorder does not pre-fill anything: the
    greeter idles with an *empty* form and types both credentials in one burst
    at the very end.
-3. **The filled login form — and end there.** Credentials in, the primary
-   action visible, before anything is submitted.
+3. **The filled login form, and the press.** Credentials in, then the button
+   going down: greyed, `Signing you in…` on it. End there — at the press,
+   before any desktop.
+
+   The cut used to stop one frame short of the press, and the bumper's one
+   action was the one thing it did not show. A viewer saw a form fill and then
+   a hard cut, which reads as cutting *away* from a login rather than as a
+   login that worked. Four frames of the submitted state fixes that, and they
+   are frames the recorder really took.
 
 Roughly **5 seconds** total, and **3.2 seconds is the ceiling** if the
 whole thing has to come in under 1:40. It is a bumper, not a chapter.
@@ -58,22 +78,24 @@ If the demo gets shorter, this gets its five seconds back. Take them in
 the login form rather than the console: a form somebody can read is
 worth more than another second of a log nobody reads.
 
-**Do not show the desktop at all**, and do not run into the authenticating
-state. Two separate reasons, both found by watching the assembled cut rather
-than the pieces:
+**Do not show the desktop at all.** The cut runs into the authenticating state
+and stops there. Two separate reasons were once given for stopping earlier
+still; only the first survives, and it is the one that matters:
 
 - The demo opens on an empty desktop of its own. A bumper that ends on one
   shows the same picture on both sides of a cut, which reads as a stall — and
   worse, the two desktops come from *different builds*, so the design visibly
   changes across the join. Ending before any desktop means the demo's is the
   first one, and the cut reads as the login having worked.
-- The authenticating state is where the old greeter's defects live: the
-  doubled status line and the internal session name. Ending on it makes the
-  worst frame in the recording the last thing anybody sees.
+- ~~The authenticating state is where the old greeter's defects live: the
+  doubled status line and the internal session name.~~ **Gone with the rebuilt
+  greeter**, and checked frame by frame on `fbe59310b` rather than taken on
+  trust: the submitted card is a single greyed `Signing you in…` on the button,
+  no stacked second line, no internal session name. So the cut now ends *on*
+  the press.
 
-Once a recording exists from an image carrying the rebuilt greeter, the second
-reason goes away and the landing can come back if it earns its seconds. The
-first does not: the demo's desktop should still be the first desktop.
+The first reason does not go away: the demo's desktop should still be the first
+desktop, so the bumper stops at the press and never reaches one.
 
 ## What to remove
 
@@ -181,15 +203,36 @@ without the drag that 3× produced on the earlier take.
 
 | output frames | source | treatment | length |
 |---|---|---|---|
-| 0-26 | 410-436 | real speed | 0.900 s console |
+| 0-26 | 387-413 | real speed | 0.900 s console |
 | 27-47 | 724-744 | real speed | 0.700 s greeter idle |
 | 48-87 | 745-764 | `setpts=2.0*PTS` | 1.333 s credentials going in |
-| 88-96 | 764 held | `tpad` clone | 0.300 s filled form |
+| 88-92 | 764 held | `loop` clone | 0.167 s filled form |
+| 93-96 | 765-768 | real speed | 0.133 s **the press** |
 
-1280x800 into 1920x1080 is pillarboxed, not cropped — scaled to 1728x1080 and
-padded 96 px each side. Cropping to 16:9 would fill the frame but throws away
-real screen; and against the black console the bars are invisible anyway, so
-the only shot that shows them is the greeter, where a centred card carries it.
+The press is paid for out of the hold, not out of the budget: cloned frames are
+the least valuable footage in the cut, and the total stays at 97. It is the one
+span that is never stretched or eased — what makes a press read as a press is
+that it happens as fast as it really happened.
+
+The console span is chosen by **densest motion** inside the live console rather
+than fixed at 410-436; on this recording that picks 387-413.
+
+1280x800 into 1920x1080 is **cropped to 16:9 and then scaled**, so the bumper
+is full-bleed 1920 — the film's own geometry.
+
+This reverses what this file said for a long time, and the reversal was
+measured rather than argued. Pillarboxing scaled to 1728x1080 and padded 96 px
+each side, on the grounds that cropping throws away real screen and that
+against a black console the bars are invisible anyway. Both halves are true and
+together they miss the join: the demo the bumper is glued to is full-bleed, so
+at the cut the picture changed geometry mid-shot — 96 px of bar vanished in one
+frame and the whole image resized. A viewer reads that as a stitch, and it is a
+worse cost than the crop.
+
+The crop is centred on the **greeter's own content**, not on the framebuffer:
+the greeter paints about 1280x765 and leaves the rest black, so centring on the
+framebuffer sits the card high and keeps a black strip. What is lost is the top
+and bottom of the console — a second of texture, not text.
 
 At this length the console reads and the form reads, but the greeter gets 0.7 s
 of idle before typing starts, which is the beat that suffers. If the budget ever
