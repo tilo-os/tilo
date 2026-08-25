@@ -943,3 +943,126 @@ fn taking_a_message_on_and_answering_it_leave_one_reply() {
         "the reply went up empty and must not have been left that way"
     );
 }
+
+/// The trace is a record of dispatches, not a summary of intentions.
+///
+/// An operation that went through leaves one row naming the resource it was
+/// addressed to and saying it was applied. The row is read out of the shared
+/// conversation by the peer, which is the only place another machine would
+/// ever read it from.
+#[test]
+fn an_operation_that_was_performed_leaves_a_row_saying_so() {
+    use chat::model::AgentStepOutcome;
+
+    let doc = draft();
+    let section = format!("word-processor.section:{}", headings(&doc)[0]);
+    let mut chat = conversation();
+    mention(
+        &mut chat,
+        "m_ask",
+        "@Claude align centre",
+        now(),
+        Some(ResourceRef::whole("word_processor.section", &section, "Run sheet")),
+    );
+
+    let room = Room::open(chat, Some(doc));
+    assert_eq!(room.acted_on().as_deref(), Some(section.as_str()), "it acted");
+    let work = room.record_for("m_ask").expect("a record reached the room");
+    assert_eq!(
+        work.trace.len(),
+        1,
+        "one operation was dispatched, so the room must show exactly one row: {:?}",
+        work.trace
+    );
+    let row = &work.trace[0];
+    assert_eq!(
+        row.resource, section,
+        "the row must name the resource that was actually addressed"
+    );
+    assert_eq!(
+        row.outcome,
+        AgentStepOutcome::Applied,
+        "the operation changed the document, so the row must say it was applied"
+    );
+    assert!(
+        !row.label.trim().is_empty(),
+        "a row with no words for what was done is not worth drawing"
+    );
+    // The label is the app's own word for the operation, never the address it
+    // dispatched by. An address in this field would be machine vocabulary on
+    // a line a person reads.
+    assert!(
+        !row.label.contains("word-processor.section:"),
+        "the row shows an address instead of a label: {:?}",
+        row.label
+    );
+}
+
+/// **The anti-fabrication property.** A turn that dispatched nothing shows no
+/// rows at all.
+///
+/// This is the one that makes the trace worth reading. The agent was spoken
+/// to, it decided, it answered — and because it never dispatched anything,
+/// the room has nothing to show. A trace built from the plan, from the
+/// model's answer, or from the sentence the agent wrote would all put a row
+/// here, and each of them would be a claim about work that never happened.
+#[test]
+fn a_turn_that_dispatched_nothing_shows_no_rows() {
+    let doc = draft();
+    let mut chat = conversation();
+    mention(&mut chat, "m_no", "@Claude reticulate the splines", now(), None);
+
+    let room = Room::open(chat, Some(doc));
+    assert_eq!(room.acted_on(), None, "nothing was performed");
+    let work = room
+        .record_for("m_no")
+        .expect("a refusal is still recorded in the room");
+    assert!(
+        work.trace.is_empty(),
+        "nothing was dispatched, so the room must show no operations at all — \
+         a row here would be an operation the agent never performed: {:?}",
+        work.trace
+    );
+    // And the agent did answer, so this is not "no rows because no turn".
+    assert!(room.reply_to("m_no").is_some(), "it answered in the room");
+}
+
+/// How the agent decided travels with the record, and says which path
+/// decided.
+///
+/// These sessions run with `model: false`, so every one of them is decided by
+/// the agent's own keyword vocabulary. The record has to say that. A route
+/// that read `Model` on a turn no model was asked about would be the exact
+/// misrepresentation the field exists to prevent — a recording made on the
+/// fallback has to stay findable as one afterwards.
+#[test]
+fn the_record_says_which_path_decided_and_does_not_flatter_it() {
+    use chat::model::AgentRoute;
+
+    let doc = draft();
+    let section = format!("word-processor.section:{}", headings(&doc)[0]);
+    let mut chat = conversation();
+    mention(
+        &mut chat,
+        "m_ask",
+        "@Claude align centre",
+        now(),
+        Some(ResourceRef::whole("word_processor.section", &section, "Run sheet")),
+    );
+
+    let room = Room::open(chat, Some(doc));
+    let work = room.record_for("m_ask").expect("a record reached the room");
+    let reasoning = work
+        .reasoning
+        .as_ref()
+        .expect("a turn that decided something must say how");
+    assert_eq!(
+        reasoning.route,
+        AgentRoute::Floor,
+        "no model was asked on this turn, so the record must not claim one chose"
+    );
+    assert!(
+        !reasoning.why.trim().is_empty(),
+        "the record says a path decided but not why it had to: {reasoning:?}"
+    );
+}

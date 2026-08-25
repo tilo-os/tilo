@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use chat::model::{AgentWork, AgentWorkState};
+use chat::model::{AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
 use qos_actions::ActionRegistry;
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::permissions::PermissionContext;
@@ -295,6 +295,27 @@ pub struct Session {
     /// on somebody else's screen with nothing left in this process that will
     /// ever change it.
     open_record: Option<(String, String)>,
+    /// The operations dispatched so far under [`Self::open_record`].
+    ///
+    /// Appended by [`Self::perform`] and by nothing else, which is the whole
+    /// guarantee this field is here to make. Every row in the room's trace
+    /// comes from this vector, every entry in this vector comes from a
+    /// dispatch that was attempted, and each carries what the attempt
+    /// returned. A model that narrates an operation it never asked for
+    /// therefore cannot put a row on anybody's screen: the narration never
+    /// touches this path.
+    ///
+    /// Cleared when a summons is taken, so one turn's rows never appear
+    /// under the next one's record.
+    open_steps: Vec<AgentStep>,
+    /// How the current turn was decided, once something has decided it.
+    ///
+    /// Held separately from [`Self::last_route`], which survives across turns
+    /// for the status surface: reusing it here would attach the previous
+    /// request's reasoning to a record whose own decision had not been taken
+    /// yet, and the room would read an explanation of the wrong thing. This
+    /// one is cleared when a summons is taken and set when this turn decides.
+    open_reasoning: Option<AgentReasoning>,
     /// What the agent last acted on, and when.
     ///
     /// The one piece of state proximity needs: it is what lets "do that
@@ -356,6 +377,31 @@ fn is_recipe(i: &Instruction) -> bool {
             | Instruction::Heading
             | Instruction::RunSheet(_)
     )
+}
+
+/// The decision, worded for the person who asked rather than the operator.
+///
+/// A straight read of the route the agent actually took. There is no branch
+/// here that invents an explanation: a model's reason is the model's own
+/// sentence, and every other route says which path decided and why it had to.
+/// A turn with nothing to say carries an empty `why` and the reader is shown
+/// only which path decided, which is still true.
+fn reasoning_of(route: &Route) -> AgentReasoning {
+    match route {
+        Route::Model { why } => AgentReasoning {
+            route: AgentRoute::Model,
+            why: why.clone(),
+        },
+        // `detail` is the agent's own account of why it could not ask a
+        // model — no key, switched off, a call that timed out. It is the
+        // honest answer to "how did you decide this", and hiding it would
+        // leave a turn decided on the floor looking exactly like one a model
+        // chose, which is the one thing this field exists to prevent.
+        other => AgentReasoning {
+            route: AgentRoute::Floor,
+            why: other.detail(),
+        },
+    }
 }
 
 /// What running a plan came to.
@@ -684,6 +730,8 @@ impl Session {
             acted: false,
             answers_sent: 0,
             open_record: None,
+            open_steps: Vec::new(),
+            open_reasoning: None,
             asked_at: Instant::now(),
             reask_every: REASK_EVERY,
             addressed_seen: false,
@@ -1380,6 +1428,7 @@ impl Session {
                     .map(|c| c.title.to_string())
                     .unwrap_or_else(|| namespace.to_string());
                 self.addressed_seen = true;
+                self.begin_turn();
                 let record = self.take_on(&summons, AgentWorkState::Waiting { app })?;
                 self.open_record = Some((summons.channel.clone(), record));
                 return Ok(false);
@@ -1402,6 +1451,7 @@ impl Session {
 
     /// Decide what a summons asks for and do it, answering in its channel.
     fn carry_out(&mut self, summons: Summons) -> Result<bool> {
+        self.begin_turn();
         let view = self.view(None, 0);
         let offers = self.offers(&view);
         // The subject narrows *what may be chosen*, never what the choice
@@ -1472,6 +1522,11 @@ impl Session {
             "{}",
             route.detail()
         );
+        // The same decision the log line above records, put where a person
+        // can read it instead of only an operator. It is taken from the route
+        // that was actually returned, so a turn the model never answered
+        // cannot present itself as one the model decided.
+        self.open_reasoning = Some(reasoning_of(&route));
         self.last_route = Some(route);
         // A message is not a line in a document, so there is no place in a
         // page for a composition to act on — `run_plan` says so rather than
@@ -1787,6 +1842,11 @@ impl Session {
     /// sequence sayable. What else has to be said alongside "I could not do
     /// this" depends on what the caller already did — a first step that
     /// stands, a second that did not happen — and only the caller knows that.
+    ///
+    /// Every call also puts exactly one row in the room's trace, whatever it
+    /// returns. That is done by the wrapper below rather than at the seven
+    /// places this can end, so "a dispatch was attempted" and "a row exists"
+    /// are the same event and cannot come apart as this function grows.
     fn perform(
         &mut self,
         id: &str,
@@ -1795,6 +1855,32 @@ impl Session {
         caret: Option<&str>,
         carried_from: Option<&str>,
     ) -> Result<Result<(), String>> {
+        // The resource this names, for the row. Read before dispatching, so a
+        // refusal is still attributed to the thing it was about; an address
+        // that will not parse names nothing, and says so with its own id.
+        let resource = surface::decode_address(id)
+            .map(|a| a.resource)
+            .unwrap_or_else(|| id.to_string());
+        let label = surface::label_of(&self.offers(view), id)
+            .unwrap_or_else(|| id.to_string());
+        let outcome = self.dispatch(id, argument, view, caret, carried_from)?;
+        self.record_step(&resource, &label, outcome.clone());
+        Ok(match outcome {
+            AgentStepOutcome::Refused { why } => Err(why),
+            AgentStepOutcome::Applied | AgentStepOutcome::NoChange => Ok(()),
+        })
+    }
+
+    /// Attempt one operation and say what came of it. See [`Self::perform`],
+    /// which is the only caller and the thing that records the attempt.
+    fn dispatch(
+        &mut self,
+        id: &str,
+        argument: Option<&str>,
+        view: &View,
+        caret: Option<&str>,
+        carried_from: Option<&str>,
+    ) -> Result<AgentStepOutcome> {
         // The app's own words for this operation, for anything said out
         // loud. Taken from the same fresh survey the dispatch resolves
         // against, so the sentence and the action cannot disagree.
@@ -1802,7 +1888,9 @@ impl Session {
         let what = surface::label_of(&known, id).map(|l| l.to_lowercase());
         let Some(address) = surface::decode_address(id) else {
             tracing::warn!(%id, "refused: not an address");
-            return Ok(Err("I couldn't work out what to act on there".to_string()));
+            return Ok(AgentStepOutcome::Refused {
+                why: "I couldn't work out what to act on there".to_string(),
+            });
         };
         // Asked again, at dispatch. The survey filtered on it too, but a
         // survey is a snapshot: a capability that lapsed between the offer
@@ -1810,10 +1898,12 @@ impl Session {
         // the list is built is advisory.
         if !surface::permitted(&self.cfg.permissions, &address) {
             tracing::warn!(%id, "refused: no capability for this operation");
-            return Ok(Err(match &what {
-                Some(w) => format!("I'm not allowed to {w} here"),
-                None => "I'm not allowed to do that here".to_string(),
-            }));
+            return Ok(AgentStepOutcome::Refused {
+                why: match &what {
+                    Some(w) => format!("I'm not allowed to {w} here"),
+                    None => "I'm not allowed to do that here".to_string(),
+                },
+            });
         }
         // Opening is dispatched from here rather than through the door,
         // because there is no replica for the door to resolve against: the app
@@ -1825,7 +1915,10 @@ impl Session {
         // what differs is only where it lands.
         if let Some(app) = surface::opens(&address) {
             let app = app.to_string();
-            return self.open_app(&app, what.as_deref());
+            return Ok(match self.open_app(&app, what.as_deref())? {
+                Ok(()) => AgentStepOutcome::Applied,
+                Err(why) => AgentStepOutcome::Refused { why },
+            });
         }
         let namespace = surface::app_of(&address.resource).to_string();
         // The caret goes on the line that asked, so the room can see which
@@ -1855,12 +1948,14 @@ impl Session {
         };
         let Some(outcome) = outcome else {
             tracing::warn!(%id, %namespace, "refused: that app's state is not here");
-            return Ok(Err(match &what {
-                Some(w) => format!("I can't {w} — that isn't open here"),
-                None => "that isn't open here, so I can't act on it".to_string(),
-            }));
+            return Ok(AgentStepOutcome::Refused {
+                why: match &what {
+                    Some(w) => format!("I can't {w} — that isn't open here"),
+                    None => "that isn't open here, so I can't act on it".to_string(),
+                },
+            });
         };
-        match outcome {
+        let done = match outcome {
             Ok(Some(delta)) => {
                 self.link.send(&CollabRequest::SyncIncremental { data: delta })?;
                 // The operation went through and it took something out of
@@ -1878,17 +1973,24 @@ impl Session {
                 self.last_action =
                     Some(LastAction::new(address.resource.clone(), now_secs()));
                 tracing::info!(%id, "performed an operation the room exports");
+                AgentStepOutcome::Applied
             }
             Ok(None) => {
                 tracing::warn!(%id, "the operation changed nothing");
+                // Not folded into success. The operation ran and the document
+                // is unchanged, and a row that claimed an edit here would send
+                // a reader looking for one that was never made.
+                AgentStepOutcome::NoChange
             }
             Err(e) => {
                 tracing::warn!(%id, code = e.code(), "refused: {e}");
-                return Ok(Err(format!("I couldn't do that - {e}")));
+                return Ok(AgentStepOutcome::Refused {
+                    why: format!("I couldn't do that - {e}"),
+                });
             }
-        }
+        };
         std::thread::sleep(self.cfg.pace);
-        Ok(Ok(()))
+        Ok(done)
     }
 
     /// Ask this session to open an application, and wait for it to arrive.
@@ -2302,6 +2404,54 @@ impl Session {
     /// Reuses a record already standing for this summons rather than posting a
     /// second one. A wait can span many turns (see [`Self::wait_on`]) and each
     /// one would otherwise leave its own message under the same question.
+    /// Start a turn: forget the rows and the explanation of the last one.
+    ///
+    /// Called where a turn actually begins rather than where a record is
+    /// written, because a record is written several times per turn. Without
+    /// it the operations one request dispatched would reappear under the
+    /// next request's record, which is the same lie as inventing them.
+    fn begin_turn(&mut self) {
+        self.open_steps.clear();
+        self.open_reasoning = None;
+    }
+
+    /// Append one dispatched operation to the open record and put the updated
+    /// record in the room.
+    ///
+    /// The only way a row is ever created. It takes an outcome rather than
+    /// producing one, so a caller cannot record a success it did not get.
+    fn record_step(&mut self, resource: &str, label: &str, outcome: AgentStepOutcome) {
+        self.open_steps.push(AgentStep {
+            resource: resource.to_string(),
+            label: label.to_string(),
+            outcome,
+        });
+        // Publishing here is what makes the trace arrive operation by
+        // operation instead of all at once when the turn ends. A run of four
+        // edits that a person can watch land is the difference between a
+        // progress report and a receipt.
+        let Some((channel, record)) = self.open_record.clone() else {
+            return;
+        };
+        let state = self.current_state(&record);
+        if let Err(e) = self.note_work(&channel, &record, state, None) {
+            tracing::warn!(%record, "could not put the dispatched operation in the room: {e}");
+        }
+    }
+
+    /// The state the open record already carries, so appending a row does not
+    /// also move the agent to some other state. Falls back to `Taken`, which
+    /// is true of any record that exists at all.
+    fn current_state(&mut self, record: &str) -> AgentWorkState {
+        let me = self.me_in_chat();
+        self.conversation()
+            .iter()
+            .find(|m| m.id == record && m.author == me)
+            .and_then(|m| m.work.as_ref())
+            .map(|w| w.state.clone())
+            .unwrap_or(AgentWorkState::Taken)
+    }
+
     fn take_on(&mut self, summons: &Summons, state: AgentWorkState) -> Result<String> {
         let me = self.me_in_chat();
         let messages = self.conversation();
@@ -2313,7 +2463,17 @@ impl Session {
             // would show a wait that always started a moment ago — and would
             // put a change on the wire several times a second to say that
             // nothing had changed.
-            if existing.work.as_ref().map(|w| &w.state) != Some(&state) {
+            // The record is rewritten when anything a reader would see has
+            // moved — the state, the rows, or the explanation — and not
+            // otherwise. Comparing the state alone would have gone quiet the
+            // moment a second operation was dispatched without changing which
+            // state the agent was in.
+            let unchanged = existing.work.as_ref().is_some_and(|w| {
+                w.state == state
+                    && w.trace == self.open_steps
+                    && w.reasoning == self.open_reasoning
+            });
+            if !unchanged {
                 self.note_work(&summons.channel, &id, state, None)?;
             }
             return Ok(id);
@@ -2355,7 +2515,13 @@ impl Session {
             state,
             AgentWorkState::Done { .. } | AgentWorkState::Refused
         );
-        let work = AgentWork::new(state, now_secs());
+        // The trace is whatever has actually been dispatched under this
+        // record so far, and the reasoning is this turn's decision if one has
+        // been taken. Both are read from the session rather than passed in,
+        // so no caller can compose a state with a row that did not come from
+        // `perform` — there is no argument here to put one in.
+        let mut work = AgentWork::new(state, now_secs()).with_trace(self.open_steps.clone());
+        work.reasoning = self.open_reasoning.clone();
         tracing::info!(record = %record, ?work, "put the agent's state in the room");
         let action = chat::actions::set_agent_work_action(channel, record, work, say);
         self.publish_to_chat(action)?;
