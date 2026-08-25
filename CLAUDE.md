@@ -171,6 +171,14 @@ For click-and-check work see `docs/headless-testing.md` (the `QOS_TEST_CONTROL` 
 
 Debug overlays need `QUICK_UI_DEBUG` **and** `debug_assertions`.
 
+If a scene renders with pieces missing — or blank — suspect vello's bump buffers before
+suspecting the widget. They are sized from what frames measurably use (`vendor/vello/src/
+bump_budget.rs`), and an overflow drops geometry with no error at all: a tile-allocation
+overflow renders the desktop as an empty white rectangle and writes the PNG normally.
+`VELLO_BUMP_LOG=1` prints per-frame usage against the reservation and the `failed` bits;
+`VELLO_BUMP_BUDGET=upstream` pins vello's original constants, so the same binary can render
+a scene both ways for a pixel comparison.
+
 ## Where to read first
 
 `docs/architecture.md`, `docs/testing.md`, `docs/headless-testing.md`, `ui/HIG.md`, and
