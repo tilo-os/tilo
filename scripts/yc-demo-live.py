@@ -1736,7 +1736,26 @@ def main() -> int:
                  f"letterboxed into the video)"))
         for s in sessions:
             if s is not quinten:
-                s.size = size
+                # The agent's screen is never filmed, so it does not have
+                # to be the size of the film.
+                #
+                # Everything with a surface costs GPU memory in proportion
+                # to its area, and this machine's window onto that memory
+                # is 16404MB of GTT -- shared with the desktop, which
+                # holds about 1.9GB before qOS starts. A run reached
+                # 15643MB and the machine stopped dead: no GPU reset, no
+                # hung task, no OOM, no panic, because an allocation that
+                # can neither be served nor fail takes the box with it.
+                #
+                # Measured at about 600-950MB per client, and a full run
+                # is thirteen of them. Nothing here leaks -- an idle
+                # application held flat for sixty seconds and a hundred
+                # and twenty snapshots moved nothing -- it simply does not
+                # fit. So the one session whose pixels nobody will ever
+                # see renders small, and the two that are on camera keep
+                # every pixel they need.
+                s.size = (yc.AGENT_SIZE if s.name == yc.NEVER_ON_CAMERA
+                          else size)
                 # A window opens at the size it is asked for and is never
                 # resized, so the one to ask for is the size quinten was
                 # actually granted rather than the one requested of it.

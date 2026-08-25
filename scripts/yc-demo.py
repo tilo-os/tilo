@@ -1694,6 +1694,14 @@ BAND_H = 66
 # the band occupies the strip below it. A frame still goes in 1:1 with
 # nothing resampled, and no pixel the compositor drew is hidden.
 RECORD_SIZE = f"{VIDEO_W}x{VIDEO_H - BAND_H}"
+
+#: What the agent's session renders at. It is never on camera -- `cut`
+#: refuses to put it there -- so its only readers are the agent's own
+#: queries, which ask the document rather than the screen. Small because
+#: GPU memory is the binding constraint on this machine: a client costs
+#: roughly 600-950MB of GTT in proportion to its area, and a full run of
+#: thirteen of them against a 16404MB window is what froze it.
+AGENT_SIZE = "800x600"
 BAND_SCRIM = "black@0.72"
 BAND_PAD_X = 52
 
