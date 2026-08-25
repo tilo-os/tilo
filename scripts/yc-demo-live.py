@@ -2682,6 +2682,12 @@ def main() -> int:
     # left from a previous run carries that run's edits into this one's
     # first frame.
     shutil.rmtree(yc.HOMES_ROOT, ignore_errors=True)
+    # And the room's workspace, which lives outside `--out` for the same
+    # reason and is staged once for the whole rig rather than once per
+    # session — that is what makes the photograph one object two people
+    # reach rather than two files that share a name.
+    shutil.rmtree(yc.WORKSPACE_ROOT, ignore_errors=True)
+    yc.stage_workspace()
     shots = os.path.join(args.out, "shots")
     os.makedirs(shots, exist_ok=True)
 

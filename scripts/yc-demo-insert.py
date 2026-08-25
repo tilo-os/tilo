@@ -893,16 +893,22 @@ def main() -> int:
     # which tells a viewer they are looking at a harness, and which
     # tooling built it. `HOMES_ROOT` reads as a machine's own.
     home = yc.stage_home(os.path.join(yc.HOMES_ROOT, "quinten"))
+    # And the workspace the room carries, which is where the photograph
+    # lives now. Cleared first for the same reason the home is: one left
+    # from a previous run carries that run's edits into this one.
+    shutil.rmtree(yc.WORKSPACE_ROOT, ignore_errors=True)
+    workspace = yc.stage_workspace()
 
-    # The photograph, where `stage_home` puts it: at the top of the home,
-    # which is the directory Files opens on, and in Pictures. It has to
-    # be *visible in the window he is dragging out of*, and a file in a
-    # folder he would have to navigate into first is not.
+    # The photograph, where `stage_workspace` puts it: at the top of the
+    # shared workspace, which is the directory Files opens on when a
+    # grant has bound it. It has to be *visible in the window he is
+    # dragging out of*, and a file in a folder he would have to navigate
+    # into first is not.
     #
-    # This used to write its own copy into `home/Demo/`, a directory
-    # `stage_home` does not create — so the run died with a
-    # FileNotFoundError before a window ever appeared.
-    photo = os.path.join(home, yc.PHOTO_NAME)
+    # It used to be staged into the home — two copies of it, and one per
+    # session in the films that have more than one, which made "the
+    # object he is holding" a different file on every machine.
+    photo = os.path.join(workspace, yc.PHOTO_NAME)
     png = open(photo, "rb").read()
 
     # The packaging chain, by path rather than off PATH, so the run uses
