@@ -2249,6 +2249,117 @@ mod tests {
         assert!(me_muted(&doc), "muting is mirrored into the shared voice membership");
     }
 
+    /// The call controls reach the document *through the action host*, not
+    /// around it.
+    ///
+    /// This is the regression guard, and it deliberately asserts on what the
+    /// button did rather than on what the document says: mirroring into the
+    /// voice map was never the thing that was wrong. `voice_set_state` written
+    /// directly produces the same map and the same pixels — and no enumerable
+    /// address, no history entry, no undo bracket. So the assertion is that
+    /// something was *dispatched*, and that it was the call action.
+    ///
+    /// Revert any of these handlers to a bare `ChatDoc::voice_set_*` and this
+    /// fails while every other call test still passes, which is exactly the
+    /// blind spot it exists to cover.
+    #[test]
+    fn every_call_control_dispatches_an_action_rather_than_writing_the_doc() {
+        // The last thing the app dispatched, decoded back to the domain type.
+        // Reading the *payload* rather than only the type id is what lets each
+        // control below be told apart from the join that preceded it.
+        let last = |app: &ChatApp| -> ChatAction {
+            let encoded = app
+                .last_dispatched()
+                .expect("the control dispatched nothing at all");
+            assert_eq!(encoded.type_id, crate::actions::CHAT_ACTION_TYPE);
+            serde_json::from_slice(&encoded.payload).expect("a ChatAction payload")
+        };
+
+        // Joining is itself one.
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+        assert!(app.call.active);
+        assert!(
+            matches!(last(&app), ChatAction::SetCallState { .. } | ChatAction::JoinCall { .. }),
+            "joining a call writes the membership row, so it is an action"
+        );
+
+        let expected: [(&str, Hit, fn(&ChatAction) -> bool); 4] = [
+            ("mute", Hit::CallMute, |a| {
+                matches!(a, ChatAction::SetCallState { muted: true, .. })
+            }),
+            ("deafen", Hit::CallDeafen, |a| {
+                matches!(a, ChatAction::SetCallState { deafened: true, .. })
+            }),
+            ("audio-only", Hit::CallAudioOnly, |a| {
+                matches!(a, ChatAction::SetCallState { audio_only: true, .. })
+            }),
+            ("leave", Hit::CallLeave, |a| {
+                matches!(a, ChatAction::LeaveCall { .. })
+            }),
+        ];
+        for (label, hit, matches_it) in expected {
+            let (mut app, mut doc) = app_with_doc();
+            app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+            app.on_hit(hit, &mut doc);
+            let action = last(&app);
+            assert!(
+                matches_it(&action),
+                "{label} changes what every peer reads, so it must go down the \
+                 one route — enumerable, in the room's history, and undoable. \
+                 The last thing dispatched was {action:?}"
+            );
+        }
+    }
+
+    /// A live app in a call publishes the call, through the provider the
+    /// shell actually calls.
+    ///
+    /// The resource-tree tests build their own context, which proves the
+    /// *builder* and says nothing about whether the running app ever hands it
+    /// a call. That is the shape of check this repository keeps getting caught
+    /// by, so this one starts from a real `ChatApp`, joins a real call, and
+    /// asks it the same question `publish_action_surface` does.
+    #[test]
+    fn an_app_in_a_call_publishes_it_through_the_provider_the_shell_calls() {
+        use ui::Widget as _;
+
+        let (mut app, mut doc) = app_with_doc();
+        let before = ui::Widget::resources(&app, &doc);
+        assert!(
+            !before.iter().any(|r| r.children.iter().any(|c| c.kind == "chat.call")),
+            "nothing to publish before there is a call"
+        );
+
+        app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+        assert!(app.call.active, "precondition: the app is in a call");
+
+        let published = ui::Widget::resources(&app, &doc);
+        let call = published
+            .iter()
+            .flat_map(|r| r.children.iter())
+            .find(|c| c.kind == "chat.call")
+            .expect(
+                "an app in a call must publish it — the operations are only \
+                 addressable if the running app says they exist",
+            );
+        let ids: Vec<&str> = call.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(ids.contains(&"mute"), "{ids:?}");
+        assert!(ids.contains(&"leave"), "{ids:?}");
+
+        // And it is withdrawn on hang-up, level-triggered like everything else
+        // the app publishes: an address that outlives the call it names would
+        // resolve, be invoked, and do nothing.
+        app.on_hit(Hit::CallLeave, &mut doc);
+        assert!(!app.call.active);
+        assert!(
+            !ui::Widget::resources(&app, &doc)
+                .iter()
+                .any(|r| r.children.iter().any(|c| c.kind == "chat.call")),
+            "leaving takes the call's operations with it"
+        );
+    }
+
     // --- screen share (portal seam + presentation stage) ----------------
 
     fn me_sharing(doc: &AutoCommit, channel: &str) -> bool {
