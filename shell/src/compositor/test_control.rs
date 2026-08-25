@@ -1327,9 +1327,13 @@ pub fn dispatch_command<S: ControlState>(
                 )
             } else {
                 let label = label.clone().unwrap_or_else(|| {
-                    id.rsplit(['/', ':']).next().unwrap_or(id).to_string()
+                    id.rsplit(['/', ':'])
+                        .next()
+                        .unwrap_or(id.as_str())
+                        .to_string()
                 });
-                let reference = qos_reference::ResourceRef::whole(kind, id, label);
+                let reference =
+                    qos_reference::ResourceRef::whole(kind.clone(), id.clone(), label);
                 // The room's conversation, which is what the surface opens
                 // showing and what a remark to an agent has to use anyway:
                 // an instruction that will change a shared document must be
