@@ -2220,13 +2220,13 @@ def main() -> int:
                          f"needs")
     ap.add_argument("--windowed", action="store_true",
                     help="do not open the window at the full work area")
-    ap.add_argument("--allow-resampled", action="store_true",
+    ap.add_argument("--allow-oversized", action="store_true",
                     help="film even when the session renders larger than "
-                         "the video's picture area, which scales every "
-                         "frame and puts the caption band over the bottom "
-                         "of the picture. Refused by default: this film is "
-                         "almost entirely text, and resampling is the one "
-                         "thing that softens all of it at once")
+                         "the video's picture area. Refused by default, "
+                         "because the caption band then sits over the "
+                         "bottom rows of every frame rather than below "
+                         "the picture, and a render larger than the video "
+                         "itself is resampled on top of that")
     ap.add_argument("--no-record", dest="record", action="store_false",
                     help="drive it without a camera")
     ap.add_argument("--keep", action="store_true",
@@ -2645,40 +2645,50 @@ def main() -> int:
         # in a way anybody would act on.
         #
         # Exactly the picture area is the one to want: 1:1, band below,
-        # nothing resampled. Smaller than it still goes in unresampled,
+        # nothing covered. Smaller than it still goes in unresampled,
         # with a border — worth a line, not an argument. Bigger than it
-        # is the bad one: every frame is scaled, every glyph in a film
-        # made almost entirely of text is softened, and the band comes
-        # down over the bottom of the picture. That used to be a
-        # parenthesis at the end of a setup line, printed once, minutes
-        # before anybody looked at a frame — so it is a refusal now, and
-        # `--allow-resampled` is there for a take somebody wants anyway.
-        if rendered == (yc.VIDEO_W, yc.VIDEO_H - yc.BAND_H):
+        # is the bad one, and what is bad about it is worth naming
+        # exactly, because the obvious guess is wrong: a render taller
+        # than 1014 but no taller than 1080 is *not* softened. The
+        # composer's scale works out to a factor of 1.0 and the filter
+        # is then a byte-exact copy — measured on a real 1920x1048 take,
+        # both by hashing the picture back out of the composed frame and
+        # by eye at 4x. What it costs is a letterbox and the caption
+        # band coming down over the bottom rows of the picture, which is
+        # precisely the clipping RECORD_SIZE exists to prevent. Text
+        # actually goes soft only past the video's own size.
+        #
+        # Either way it used to be a parenthesis at the end of a setup
+        # line, printed once, minutes before anybody looked at a frame.
+        # So it is a refusal now, and `--allow-oversized` is there for a
+        # take somebody wants anyway.
+        picture = (yc.VIDEO_W, yc.VIDEO_H - yc.BAND_H)
+        covered = min(rendered[1], yc.VIDEO_H) - picture[1]
+        if rendered == picture:
             print(f"  rendering at           {size}")
-        elif (rendered[0] <= yc.VIDEO_W
-              and rendered[1] <= yc.VIDEO_H - yc.BAND_H):
+        elif rendered[0] <= picture[0] and rendered[1] <= picture[1]:
             print(f"  rendering at           {size}  (smaller than "
                   f"{yc.RECORD_SIZE}: goes in 1:1 with a border, nothing "
                   f"resampled)")
-        elif args.allow_resampled:
-            print(f"  rendering at           {size}  (larger than "
-                  f"{yc.RECORD_SIZE}: every frame will be scaled into the "
-                  f"video and the band will sit over the picture)")
-            yc.gap(f"the session renders {size}, larger than the video's "
-                   f"picture area {yc.RECORD_SIZE}, so every frame of this "
-                   f"take is resampled and the caption band covers the "
-                   f"bottom of it")
+        elif args.allow_oversized:
+            print(f"  rendering at           {size}  (does not fit "
+                  f"{yc.RECORD_SIZE}: the band will cover the bottom of "
+                  f"the picture)")
+            yc.gap(f"the session renders {size}, which does not fit the "
+                   f"video's picture area {yc.RECORD_SIZE}: the frame is "
+                   f"letterboxed and the caption band covers the bottom "
+                   f"~{max(0, covered)} rows of every frame")
         else:
             raise RuntimeError(
                 f"the session renders {size}; the video's picture area is "
-                f"{yc.RECORD_SIZE}. Every frame would be scaled down into "
-                f"it — soft text in a film that is almost all text — and "
-                f"the caption band would sit over the bottom of the "
-                f"picture instead of below it.\n"
+                f"{yc.RECORD_SIZE}. The frame would be letterboxed and the "
+                f"caption band would sit over the bottom ~{max(0, covered)} "
+                f"rows of the picture instead of below it — which is the "
+                f"clipping the band was moved below the picture to stop.\n"
                 f"  The window was asked for at {quinten.window_size} and "
                 f"granted something else, which is a window manager "
                 f"overruling a fixed-size request. Close whatever is "
-                f"reserving screen space, or pass --allow-resampled to "
+                f"reserving screen space, or pass --allow-oversized to "
                 f"film it anyway.")
         for s in sessions:
             if s is not quinten:

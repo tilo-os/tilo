@@ -430,8 +430,17 @@ impl ApplicationHandler for Inner {
         // against this desktop's, the threshold is somewhere between 76%
         // and 86% of its height, and 1014 of 1048 is 97%. So the request
         // was granted by being overruled, and the difference is not three
-        // pixels but thirty-four: enough that a recording is letterboxed
-        // and the caption band sits over the bottom of the picture.
+        // pixels but thirty-four.
+        //
+        // What thirty-four costs is worth stating precisely, because the
+        // obvious guess is wrong. The recording is not softened: the
+        // composer's scale factor comes out at exactly 1.0 for a frame
+        // that is taller than the caption strip but no taller than the
+        // video, and the filter is then a byte-exact copy. What it costs
+        // is that the frame is letterboxed and the caption band comes
+        // down over the bottom fifty rows of the picture — the clipping
+        // that recording at the video's height less the band exists to
+        // prevent.
         //
         // `with_resizable(false)` publishes equal minimum and maximum
         // sizes, which is how a client says the size is not the window
