@@ -783,3 +783,186 @@ fn a_tab_dragged_into_its_own_group_keeps_what_was_inside_it() {
         "the detached window must still be the live client, not a stub card"
     );
 }
+
+/// Where the tree says `tab_id` is: the id of every group holding a
+/// copy of it, in tree order.
+fn tree_groups_holding(chrome: &shell::shell::chrome_state::Chrome, tab_id: u64) -> Vec<GroupId> {
+    let st = chrome.borrow();
+    let tree = st.tree();
+    tree.workspaces
+        .iter()
+        .flat_map(|ws| ws.strips.iter())
+        .flat_map(|s| s.window_groups.iter())
+        .filter(|g| g.tabs.iter().any(|t| t.id == tab_id))
+        .map(|g| g.id)
+        .collect()
+}
+
+/// Two groups on one strip. Dragging a tab from one into the other has
+/// to move it in the tree, or the drop undoes itself.
+fn one_strip_two_group_tree() -> (WorkspaceTree, StripId, GroupId, GroupId, [u64; 3]) {
+    let ws_id = WorkspaceId::new();
+    let strip_id = StripId::new();
+    let left: GroupId = 1001;
+    let right: GroupId = 1002;
+    let tabs: [u64; 3] = [41, 42, 43];
+
+    let mk_tab = |id: u64, label: &str| Tab {
+        id,
+        title: label.into(),
+        tile: TileContent::Stub {
+            kind: AppKind::Other("Test".into()),
+            label: label.into(),
+        },
+    };
+    let strip = Strip {
+        id: strip_id,
+        name: "Strip".into(),
+        window_groups: vec![
+            WindowGroup {
+                id: left,
+                tabs: vec![mk_tab(tabs[0], "L1"), mk_tab(tabs[1], "L2")],
+                active_tab: tabs[0],
+                width: WindowWidth::Normal,
+                maximized: false,
+            },
+            WindowGroup {
+                id: right,
+                tabs: vec![mk_tab(tabs[2], "R1")],
+                active_tab: tabs[2],
+                width: WindowWidth::Normal,
+                maximized: false,
+            },
+        ],
+    };
+    let ws = Workspace {
+        strips: vec![strip],
+        ..Workspace::test_default(ws_id, "Test")
+    };
+    let mut active_strip = HashMap::new();
+    active_strip.insert(ws_id, strip_id);
+    let mut active_group = HashMap::new();
+    active_group.insert(strip_id, left);
+    let tree = WorkspaceTree {
+        workspaces: vec![ws],
+        active: ws_id,
+        active_strip,
+        active_group,
+        collaborators: vec![],
+        ..Default::default()
+    };
+    (tree, strip_id, left, right, tabs)
+}
+
+/// Moving a tab between two groups of the same strip has to reach the
+/// tree.
+///
+/// It never did: the widget row spliced the tab across on the drop, and
+/// the tree's only tab-move refused a move whose source and destination
+/// strips are the same. So the next revision bump rebuilt the row from
+/// a tree that still had the tab where it started, and the move undid
+/// itself — "works visually at first and then weirdly reverts".
+#[test]
+fn a_tab_moved_between_groups_of_one_strip_stays_moved() {
+    let (tree, strip_id, left, right, tabs) = one_strip_two_group_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    let _ = host.take_structure_dirty();
+
+    let moved = tabs[1];
+    assert_eq!(
+        tree_groups_holding(&chrome, moved),
+        vec![left],
+        "precondition: the tree has the tab in the left group"
+    );
+
+    // The drop itself: `GroupRow`'s sibling-bar and sibling-tile
+    // branches both end in exactly this pair of calls.
+    {
+        let row = host
+            .group_row_mut_for_tests(strip_id)
+            .expect("the strip's live row");
+        let (desc, tile) = row.groups[0]
+            .detach_tab(moved)
+            .expect("the tab must detach from the left group");
+        row.groups[1].insert_detached_tab(0, desc, tile);
+    }
+
+    // One frame boundary carries it into the tree.
+    let _ = host.take_structure_dirty();
+    assert_eq!(
+        tree_groups_holding(&chrome, moved),
+        vec![right],
+        "the move must reach the tree, in exactly one group"
+    );
+
+    // And now the bump that used to undo it.
+    chrome.borrow_mut().bump();
+    let _ = host.take_structure_dirty();
+
+    assert_eq!(
+        tree_groups_holding(&chrome, moved),
+        vec![right],
+        "the tree must still have the tab in the group it was dropped on"
+    );
+    let widget = host
+        .groups_per_strip()
+        .into_iter()
+        .find(|(s, _)| *s == strip_id)
+        .expect("strip row")
+        .1;
+    let widget_holder = widget
+        .iter()
+        .find(|(_, ts)| ts.contains(&moved))
+        .map(|(gid, _)| *gid);
+    assert_eq!(
+        widget_holder,
+        Some(right),
+        "and the resync must not pull it back to the group it came from; row is {widget:?}"
+    );
+}
+
+/// The same contract for a tab torn out into a group of its own beside
+/// its neighbours. The group harvest already wrote the new group into
+/// the tree, but it copied the tab in rather than moving it — so the
+/// tree listed the same tab twice, in the group it came from and the
+/// group it went to, and whichever one a reader happened to find first
+/// decided what the user got.
+#[test]
+fn a_tab_torn_into_its_own_group_leaves_the_group_it_came_from() {
+    let (tree, strip_id, left, _right, tabs) = one_strip_two_group_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    let _ = host.take_structure_dirty();
+
+    let torn = tabs[0];
+    {
+        let row = host
+            .group_row_mut_for_tests(strip_id)
+            .expect("the strip's live row");
+        assert!(
+            row.split_tab_into_new_group(0, torn, 1),
+            "the tear-out itself must succeed"
+        );
+    }
+    let _ = host.take_structure_dirty();
+
+    let holders = tree_groups_holding(&chrome, torn);
+    assert_eq!(
+        holders.len(),
+        1,
+        "a tab exists once; the tree lists it in {holders:?}"
+    );
+    assert_ne!(
+        holders[0], left,
+        "and not in the group it was torn out of"
+    );
+
+    chrome.borrow_mut().bump();
+    let _ = host.take_structure_dirty();
+    assert_eq!(
+        tree_groups_holding(&chrome, torn),
+        holders,
+        "the tear-out must survive a revision bump"
+    );
+}
