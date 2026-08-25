@@ -2183,6 +2183,18 @@ class Recorder:
     def camera_is_down(self) -> bool:
         return self._off > 0
 
+    def on_camera(self) -> "Session | None":
+        """Whose screen the film is on, or None before it starts.
+
+        The *narrative* subject rather than whatever the capture thread
+        has open this instant: `hold_off` takes the camera down for a
+        beat that is run and proven but not filmed, and `_wanted` is
+        what it comes back up on. Anything deciding where to point a
+        window has to aim at that, or a reframe decided during a hold
+        lands on the screen the hold interrupted.
+        """
+        return self._wanted
+
     def frames_from(self, name: str) -> int:
         return sum(1 for _t, _rel, n, _h in self.frames if n == name)
 
