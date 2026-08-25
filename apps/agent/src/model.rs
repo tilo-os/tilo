@@ -186,7 +186,7 @@ impl Chooser {
             return fallback(Fallback::NoKey);
         };
         match self.ask(key, rest, blocks, offers) {
-            Ok(answer) => match Plan::from_answer(&answer.actions, rest, answer.table, offers) {
+            Ok(answer) => match Plan::from_answer(&answer.actions, &answer.arguments, rest, answer.table, offers) {
                 Ok(mut plan) => {
                     // The half the room could not name yet, kept as a step in
                     // its own words. It is bound like any other clause when
@@ -273,6 +273,13 @@ enum AskError {
 pub struct Answer {
     /// The operations to perform, in order. Usually one.
     pub actions: Vec<String>,
+    /// The value for each operation that collects one, positionally.
+    ///
+    /// Untrusted like everything else here: it is handed to the operation's
+    /// own encoder, which parses it and does nothing when it cannot. It can
+    /// never name a resource — that is `actions`' job and it has already been
+    /// checked against the survey.
+    pub arguments: Vec<Option<String>>,
     pub why: String,
     /// What the instruction still asks for that this room cannot name yet,
     /// in the instruction's own words.
@@ -371,6 +378,38 @@ pub fn request_body(rest: &str, blocks: &[Block], offers: &[Offer]) -> serde_jso
                                  at most {MAX_STEPS}."
                             )
                         },
+                        // The value for an operation that collects one, in the
+                        // same position as the operation it belongs to.
+                        //
+                        // Some operations are prompted: the photo editor's
+                        // crop takes a region, and its own prompt says what
+                        // shape that value has. Until now an answer could only
+                        // supply such a value by quoting it in the request, so
+                        // "make this square" named the crop and was refused
+                        // for having quoted nothing — the operation was found,
+                        // offered, chosen, and could not be carried out.
+                        //
+                        // Bounded the same way everything else here is: the
+                        // application parses it and an unreadable one leaves
+                        // the photograph exactly as it was. It is a value, not
+                        // an address; nothing here can name a different
+                        // resource than `actions` already did.
+                        "arguments": {
+                            "type": "array",
+                            "items": {
+                                "anyOf": [
+                                    { "type": "string" },
+                                    { "type": "null" }
+                                ]
+                            },
+                            "description":
+                                "One entry per entry in `actions`, in the same \
+                                 order. When an operation's prompt asks for a \
+                                 value, put that value here in the shape the \
+                                 prompt describes; the example it gives is the \
+                                 shape, not the answer. `null` for operations \
+                                 that ask for nothing, and for \"none\"."
+                        },
                         "why": { "type": "string" },
                         // The half of an instruction this room cannot name
                         // yet. `actions` is an enum of what is exported
@@ -457,7 +496,7 @@ pub fn request_body(rest: &str, blocks: &[Block], offers: &[Offer]) -> serde_jso
                             ]
                         }
                     },
-                    "required": ["actions", "why", "table", "then"],
+                    "required": ["actions", "arguments", "why", "table", "then"],
                     "additionalProperties": false
                 }
             }
@@ -660,6 +699,23 @@ pub fn parse_answer(body: &str) -> Result<Answer, String> {
     // clause would put a step in the plan whose words are no words — asked
     // of the survey later it can only refuse, in a sentence that says
     // nothing about why.
+    // Positional, and short an entry is the same as a null one — a model that
+    // sends four ids and two arguments has said nothing about the last two
+    // rather than something wrong about them.
+    let arguments: Vec<Option<String>> = answer
+        .get("arguments")
+        .and_then(|a| a.as_array())
+        .map(|a| {
+            a.iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| first_chars(s, 400))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let then = answer
         .get("then")
         .and_then(|t| t.as_str())
@@ -668,6 +724,7 @@ pub fn parse_answer(body: &str) -> Result<Answer, String> {
         .map(|t| first_chars(t, 300));
     Ok(Answer {
         actions,
+        arguments,
         why: first_chars(&why, 200),
         table: answer.get("table").and_then(table_draft),
         then,
@@ -1006,7 +1063,7 @@ mod tests {
         let answer = parse_answer(&body).expect("a null table is a valid answer");
         assert_eq!(answer.table, None);
         assert_eq!(
-            Plan::from_answer(&answer.actions, "x", answer.table, &recipes_available())
+            Plan::from_answer(&answer.actions, &answer.arguments, "x", answer.table, &recipes_available())
                 .map(|p| p.steps[0].instruction.clone()),
             Ok(Instruction::Heading)
         );
@@ -1042,7 +1099,7 @@ mod tests {
         .to_string();
         let answer = parse_answer(&ragged).expect("parsed");
         assert!(matches!(
-            Plan::from_answer(&answer.actions, "x", answer.table, &recipes_available())
+            Plan::from_answer(&answer.actions, &answer.arguments, "x", answer.table, &recipes_available())
                 .map(|p| p.steps[0].instruction.clone()),
             Err(Refused::Unusable(_))
         ));
@@ -1059,6 +1116,7 @@ mod tests {
             parse_answer(&body).unwrap(),
             Answer {
                 actions: vec!["table".to_string()],
+                arguments: Vec::new(),
                 why: "bullets above it".into(),
                 table: None,
                 then: None,

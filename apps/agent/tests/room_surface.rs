@@ -684,7 +684,7 @@ fn without_the_capability_the_operation_is_absent_and_never_performed() {
         offers.iter().map(|o| o.id()).collect::<Vec<_>>()
     );
     assert_eq!(
-        qos_agent::plan::Instruction::from_answer(&real, "centre it", None, &offers),
+        qos_agent::plan::Instruction::from_answer(&real, "centre it", None, None, &offers),
         Err(qos_agent::plan::Refused::NotExported(real.clone())),
         "the gate must refuse an address the agent holds no capability for"
     );
