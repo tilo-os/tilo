@@ -1,7 +1,7 @@
 //! One agent session: join the room, hold the replica, act on instructions.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -389,6 +389,33 @@ pub struct Session {
     /// quiet, which is why "one per turn" survives intact and "the second
     /// request in a conversation" stops depending on somebody else typing.
     acted: bool,
+}
+
+/// The directory a request's own subject lives in.
+///
+/// `--directory` says where the agent is looking, and it is right whenever
+/// somebody has said. Nobody always has — and a request that arrives by
+/// somebody right-clicking a file has said something better: the address of
+/// the file itself, minted by the application that was showing the directory
+/// it is in. Reading the directory back out of that address makes the agent's
+/// view the view the request was made from, rather than no view at all.
+///
+/// It matters more than a piece of view state usually would. Without it the
+/// file manager publishes no entries at all, so `files.entry:…/harbour.png`
+/// resolves to nothing, the survey narrowed to that resource is empty, and the
+/// room a request about a photograph gets decided against is one the
+/// photograph does not appear in: four applications, none of them exporting
+/// anything, and two ways to launch something.
+///
+/// Nothing is widened. Every offer in the resulting survey passes the same
+/// capability check it passed before, and a listing of the directory somebody
+/// pointed the agent into is what the application they pointed from already
+/// has on screen.
+fn directory_of(subject: Option<&str>) -> Option<PathBuf> {
+    // The explorer's own reverse of the id it mints, so the two cannot drift,
+    // and absolute-only for the reason it states there.
+    let path = file_explorer::actions::entry_path(subject?)?;
+    Path::new(&path).parent().map(Path::to_path_buf)
 }
 
 /// Whether this instruction is one of the document compositions — the ones
@@ -793,7 +820,11 @@ impl Session {
             focus_block,
             focus_offset,
             subject: self.subject.clone(),
-            directory: self.cfg.directory.clone(),
+            directory: self
+                .cfg
+                .directory
+                .clone()
+                .or_else(|| directory_of(self.subject.as_deref())),
         }
     }
 
@@ -3702,7 +3733,8 @@ fn describe(action: &WordProcessorAction) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Written, block_key, block_of, written_from};
+    use super::{directory_of, Written, block_key, block_of, written_from};
+    use std::path::PathBuf;
 
     /// The rule the settle window used to stand in for, case by case.
     ///
@@ -3737,6 +3769,26 @@ mod tests {
             Written::StillWriting
         );
         assert_eq!("Claude: make ".len(), 13, "the signature of the fault");
+    }
+
+    /// A request that named a file is decided against the directory that file
+    /// is in — and against nothing else.
+    #[test]
+    fn a_filesystem_subject_says_which_directory_the_request_came_from() {
+        assert_eq!(
+            directory_of(Some("files.entry:/var/pictures/harbour.png")),
+            Some(PathBuf::from("/var/pictures"))
+        );
+        // Not a file, so it says nothing rather than guessing. A document, a
+        // channel and a photograph are all addressed by something that is not
+        // a path, and reading one as a path is how an agent ends up browsing
+        // a directory nobody named.
+        assert_eq!(directory_of(Some("word-processor.document")), None);
+        assert_eq!(directory_of(Some("chat.channel:c_general")), None);
+        assert_eq!(directory_of(None), None);
+        // Relative ids are refused upstream, because an id minted from a real
+        // path is absolute and one that is not did not come from the explorer.
+        assert_eq!(directory_of(Some("files.entry:harbour.png")), None);
     }
 
     /// A block caret key round-trips. The two halves are separate functions
