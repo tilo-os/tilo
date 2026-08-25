@@ -39,6 +39,12 @@ const SNAP_IDLE_MS: u64 = 200;
 /// secondary motions — long enough to read as eased, short enough to
 /// stay out of the user's way if they want to wheel again.
 const SNAP_ANIM_MS: u64 = 200;
+/// How near an in-flight pan's destination a fresh request has to be
+/// before it counts as the same destination and the journey is left
+/// running. A window's own edges land on whole pixels, so anything
+/// inside a pixel is the same target arrived at by two routes; anything
+/// outside it is a genuine change of mind and deserves a new curve.
+const REAIM_EPS_PX: f64 = 1.0;
 /// Duration of the "make space" slide played on the groups a newly
 /// inserted one pushes along. Deliberately the same 420 ms cubic-out as
 /// `window_group.rs`'s spawn fade, which runs on the new group at the
@@ -440,6 +446,13 @@ pub struct GroupRow {
     /// strip stops matching any span, and the framing rule falls back to
     /// its two-sided-cut repair.
     into_view_group: Option<u64>,
+    /// The same escape for the viewport's own travel: when set,
+    /// [`Self::tick_snap_at`] reads the curve at this offset from the
+    /// pan's start instead of from the clock, and does not retire it.
+    /// Only ever set by [`Self::hold_pan_at`], which the capture harness
+    /// uses to photograph a moving strip; always `None` in a running
+    /// shell.
+    pan_hold: Option<Duration>,
 }
 
 /// One display's horizontal extent in the compositor's combined
@@ -491,6 +504,7 @@ impl GroupRow {
             shift_anim: None,
             shift_hold: None,
             into_view_group: None,
+            pan_hold: None,
         }
     }
 
@@ -760,6 +774,28 @@ impl GroupRow {
         true
     }
 
+    /// Freeze the viewport's travel `elapsed` into its curve, so a still
+    /// can be taken of a strip mid-pan.
+    ///
+    /// A pan is 200 ms and a capture costs more than that, so every
+    /// screenshot of a moving strip lands after it stopped: the whole
+    /// question of whether the view travelled or cut is invisible to the
+    /// tool built to answer it. Holding the curve at a chosen point
+    /// photographs the journey. Returns `false` when there is no pan to
+    /// hold, so the harness can say so rather than silently capturing a
+    /// resting strip and calling it a frame of motion.
+    ///
+    /// Deliberately not `debug_assertions`-gated, for the same reason
+    /// [`Self::hold_shift_at`] is not: the `shots` binary walks scenario
+    /// timelines through it and is built in release for the OS image.
+    pub fn hold_pan_at(&mut self, elapsed: Duration) -> bool {
+        if self.snap_anim.is_none() {
+            return false;
+        }
+        self.pan_hold = Some(elapsed);
+        true
+    }
+
     /// Remove the group with id `id`. No-op if absent. Returns
     /// `true` if a group was actually removed (so the caller can
     /// avoid a redundant `structure_dirty` flag set elsewhere).
@@ -866,11 +902,7 @@ impl GroupRow {
         let Some(sx) = self.into_view_target(group_id) else {
             return false;
         };
-        self.snap_anim = Some(SnapAnim {
-            from: self.scroll_x,
-            to: sx,
-            started: now,
-        });
+        self.ease_scroll_to(sx, now);
         self.last_wheel_at = None;
         self.scroll_dirty = true;
         true
@@ -889,6 +921,37 @@ impl GroupRow {
         if self.groups.iter().any(|g| g.id == group_id) {
             self.into_view_group = Some(group_id);
         }
+    }
+
+    /// Start the viewport travelling to `target`, or leave an existing
+    /// journey alone if it is already going there.
+    ///
+    /// The one place `scroll_x` is allowed to acquire a destination, so
+    /// every reason the strip has to move — a window taking focus, a
+    /// window opening and shifting the geometry under the pan, a wheel
+    /// settling onto a group edge — produces the same curve and the
+    /// viewer learns one motion rather than three.
+    ///
+    /// Re-aiming at the destination the strip is *already* travelling to
+    /// would restart the curve from a standstill part-way along it, and
+    /// a pan that decelerates and re-accelerates without changing its
+    /// mind reads as a stutter. Two callers legitimately fire in
+    /// consecutive frames for one event: an insertion moves the strip's
+    /// geometry on the frame the window is spliced in, and the shell's
+    /// focus-follow reconciler pans to the same window on the next frame
+    /// (the first frame it has a laid-out rect to aim at). Same
+    /// destination, one journey.
+    fn ease_scroll_to(&mut self, target: f64, now: Instant) {
+        if let Some(anim) = self.snap_anim
+            && (anim.to - target).abs() <= REAIM_EPS_PX
+        {
+            return;
+        }
+        self.snap_anim = Some(SnapAnim {
+            from: self.scroll_x,
+            to: target,
+            started: now,
+        });
     }
 
     /// Shared target math for [`Self::scroll_group_into_view`] and its
@@ -919,7 +982,121 @@ impl GroupRow {
         let viewport = self.rect.width().max(1.0);
         let upper = self.max_scroll_x().max(viewport * 3.0);
         sx = sx.clamp(0.0, upper);
+        // Already framed — the view has no reason to move, and moving it
+        // anyway is the jiggle.
+        if (sx - self.scroll_x).abs() <= f64::EPSILON {
+            return None;
+        }
+        // Since it is going to move, land it somewhere that says where it
+        // landed.
+        let sx = self.rest_on_a_window_edge(sx, group_id);
         ((sx - self.scroll_x).abs() > f64::EPSILON).then_some(sx)
+    }
+
+    /// Move `sx` to the nearest offset that puts some window's leading
+    /// edge against the viewport's, without pushing `group_id` off it.
+    ///
+    /// Revealing the focused window says nothing about where the *other*
+    /// windows end up, and the offset that just clears its right edge
+    /// routinely leaves the window before it as a finger-wide sliver on
+    /// the left. A sliver is the worst thing a strip can show: too
+    /// little to read, too much to ignore, and indistinguishable from a
+    /// window that is broken rather than scrolled past. Resting on a
+    /// window's edge means the leading window is always whole from its
+    /// start, and anything cut is cut at the trailing edge — where a
+    /// partial window reads as "the strip continues this way", which is
+    /// the one thing it should say.
+    ///
+    /// A window wider than the viewport is left alone: there is no
+    /// offset that frames it, so snapping would only pick between two
+    /// ways of failing.
+    fn rest_on_a_window_edge(&self, sx: f64, group_id: u64) -> f64 {
+        let row_w = self.rect.width().max(1.0);
+        let max = self.max_scroll_x();
+        let upper = max.max(row_w * 3.0);
+        let Some(&(_, gx0, gx1)) = self.laid_spans.iter().find(|(id, _, _)| *id == group_id)
+        else {
+            return sx;
+        };
+        if gx1 - gx0 <= 0.0 || gx1 - gx0 > row_w {
+            return sx;
+        }
+        // The band of offsets that keep the focused window whole: far
+        // enough right to clear its trailing edge, not so far as to cut
+        // its leading one.
+        let lo = (gx1 - row_w).clamp(0.0, upper);
+        let hi = gx0.clamp(0.0, upper);
+        if hi < lo {
+            return sx;
+        }
+        self.nearest_clean_rest(&self.laid_spans, sx, lo, hi)
+    }
+
+    /// Whether resting at `sx` would show some window as a sliver — on
+    /// screen, but too little of it to be read or acted on.
+    ///
+    /// A window narrower than the threshold in the first place is not a
+    /// sliver when it is shown whole; the fault is a window cut down to
+    /// a strip of itself, not a small window.
+    /// Whether resting at `sx` would cut a window with the viewport's
+    /// leading edge.
+    ///
+    /// The two ends of the strip are not the same. A window cut at the
+    /// trailing edge is showing its beginning, and a beginning that runs
+    /// off the screen reads as "this continues" — which is what a strip
+    /// is for. A window cut at the leading edge is showing its middle:
+    /// its text starts somewhere off screen, its controls are severed
+    /// from the edge they were laid out against, and there is nothing in
+    /// the picture to say whether it is scrolled past or broken. That is
+    /// the one a viewer cannot read, so that is the one no resting
+    /// offset may produce.
+    fn cuts_a_window_at_the_leading_edge(&self, spans: &[(u64, f64, f64)], sx: f64) -> bool {
+        let row_w = self.rect.width().max(1.0);
+        spans
+            .iter()
+            .any(|&(_, x0, x1)| x0 < sx - 0.5 && x1 > sx + 0.5 && x1 - x0 <= row_w)
+            && spans.iter().any(|&(_, x0, _)| x0 > sx + 0.5 && x0 < sx + row_w)
+    }
+
+    /// The offset nearest `want`, within `[lo, hi]`, that rests on a
+    /// window's leading edge and severs nothing.
+    ///
+    /// Both framing paths end at the same question — the focus pan
+    /// asking where to land, and the layout pass asking where the strip
+    /// belongs now the windows have moved — so they ask it once, here.
+    /// `want` comes back unchanged when no candidate is clean, which
+    /// keeps a repair that has to happen from turning into a no-op
+    /// because the perfect offset does not exist.
+    fn nearest_clean_rest(
+        &self,
+        spans: &[(u64, f64, f64)],
+        want: f64,
+        lo: f64,
+        hi: f64,
+    ) -> f64 {
+        let max = self.max_scroll_x();
+        let upper = max.max(self.rect.width().max(1.0) * 3.0);
+        let mut best: Option<f64> = None;
+        let mut best_d = f64::MAX;
+        // Every window's leading edge, plus the two ends of the strip,
+        // which are rests for the same reason — the strip's own edge
+        // standing in for a window's.
+        let edges = spans.iter().map(|&(_, x0, _)| x0).chain([0.0, max]);
+        for edge in edges {
+            let c = edge.clamp(0.0, upper);
+            if c < lo - 0.5 || c > hi + 0.5 {
+                continue;
+            }
+            if self.cuts_a_window_at_the_leading_edge(spans, c) {
+                continue;
+            }
+            let d = (c - want).abs();
+            if d < best_d {
+                best_d = d;
+                best = Some(c);
+            }
+        }
+        best.unwrap_or(want)
     }
 
     /// Whether the strip is resting cut on both sides at once: one group
@@ -1056,20 +1233,35 @@ impl GroupRow {
             // Nearest offset that shows it whole — the same "smallest
             // correction" the everything-fits rule uses, over the
             // narrower window of offsets that frames this one group.
-            let lo = (x1 - row_w).clamp(0.0, max);
-            let hi = x0.clamp(0.0, max).max(lo);
-            let target = self.scroll_x.clamp(lo, hi);
+            // Bounded by the strip's *pannable* range rather than by
+            // `max_scroll_x`. Pinning the band to the strip's end is what
+            // leaves no offset to choose but the one that severs the
+            // subject's neighbour: at the end of the strip there is
+            // exactly one place to stand. The row already lets the view
+            // sit past the last window — that is the same affordance the
+            // wheel and the bounds clamp use — and a hand's width of
+            // desktop is a better thing to show than the middle of a
+            // window.
+            let upper = max.max(row_w * 3.0);
+            let lo = (x1 - row_w).clamp(0.0, upper);
+            let hi = x0.clamp(0.0, upper).max(lo);
+            let want = self.scroll_x.clamp(lo, hi);
+            // Framing the subject says nothing about what happens to the
+            // windows either side of it, and the offset that merely
+            // frames it is routinely the one that cuts its neighbour to
+            // a splinter. Same question the focus pan asks, same answer.
+            let target = self.nearest_clean_rest(spans, want, lo, hi);
             if (target - self.scroll_x).abs() > 0.5 {
                 return Some(target);
             }
-            // Already whole: fall through, so a strip that is *also* cut
-            // on both edges still gets its neighbour repair.
+            // Already framed and clean: fall through, so a strip that is
+            // *also* cut on both edges still gets its neighbour repair.
         }
 
         if !self.cut_on_both_edges_at(spans, self.scroll_x) {
             return None;
         }
-        let mut best: Option<f64> = None;
+        let mut best: Option<(f64, bool)> = None;
         for &(_, x0, x1) in spans {
             if x1 - x0 <= 0.0 || x1 - x0 > row_w {
                 continue;
@@ -1079,15 +1271,27 @@ impl GroupRow {
                 if self.cut_on_both_edges_at(spans, candidate) {
                     continue;
                 }
-                let nearer = best.is_none_or(|b: f64| {
-                    (candidate - self.scroll_x).abs() < (b - self.scroll_x).abs()
-                });
-                if nearer {
-                    best = Some(candidate);
+                // A clean offset beats a nearer dirty one; among equals,
+                // nearest still wins. Tracked rather than skipped so the
+                // repair still happens when every offset severs
+                // something.
+                let clean = !self.cuts_a_window_at_the_leading_edge(spans, candidate);
+                let better = match best {
+                    None => true,
+                    Some((b, b_clean)) => match (clean, b_clean) {
+                        (true, false) => true,
+                        (false, true) => false,
+                        _ => (candidate - self.scroll_x).abs() < (b - self.scroll_x).abs(),
+                    },
+                };
+                if better {
+                    best = Some((candidate, clean));
                 }
             }
         }
-        best.filter(|t| (t - self.scroll_x).abs() > 0.5)
+        best
+            .map(|(t, _)| t)
+            .filter(|t| (t - self.scroll_x).abs() > 0.5)
     }
 
     /// True while a snap-to-nearest-group animation is in flight, or
@@ -1227,11 +1431,7 @@ impl GroupRow {
                             // has passed since the gate cleared.
                             let started = last_wheel
                                 + Duration::from_millis(SNAP_IDLE_MS);
-                            self.snap_anim = Some(SnapAnim {
-                                from: self.scroll_x,
-                                to: target,
-                                started,
-                            });
+                            self.ease_scroll_to(target, started);
                         }
                     } else {
                         self.last_wheel_at = None;
@@ -1242,12 +1442,17 @@ impl GroupRow {
         // Active snap (either pre-existing OR freshly kicked off
         // above): advance the cubic-out curve.
         if let Some(anim) = self.snap_anim {
-            let elapsed = now.saturating_duration_since(anim.started);
+            let held = self.pan_hold;
+            let elapsed = held.unwrap_or_else(|| now.saturating_duration_since(anim.started));
             let total = Duration::from_millis(SNAP_ANIM_MS);
             if elapsed >= total {
                 self.scroll_x = anim.to;
-                self.snap_anim = None;
-                self.last_wheel_at = None;
+                // A held pan keeps its curve so the harness can walk
+                // back along it; a live one is done and retires.
+                if held.is_none() {
+                    self.snap_anim = None;
+                    self.last_wheel_at = None;
+                }
             } else {
                 let raw = (elapsed.as_secs_f64() / (SNAP_ANIM_MS as f64 / 1000.0))
                     .clamp(0.0, 1.0);
@@ -2173,13 +2378,26 @@ impl Widget for GroupRow {
         // spans.
         if spans_aligned {
             let geometry_moved = spans != self.laid_spans;
+            // Nothing was on screen before this pass, so there is no
+            // "before" for the viewer to have been looking at and
+            // nothing for a move to be a move *from*. The strip is
+            // placed, not travelled.
+            let first_layout = self.laid_spans.is_empty();
             self.laid_spans = spans;
             let steady = self.snap_anim.is_none()
                 && !self.drag_holds_a_window()
                 && !self.handles.iter().any(|h| h.is_dragging());
             if geometry_moved && steady {
                 if let Some(target) = self.strip_frame_target(&self.laid_spans) {
-                    self.scroll_x = target;
+                    if first_layout {
+                        self.scroll_x = target;
+                    } else {
+                        // Travelled, not cut to. The correction has a
+                        // cause the viewer just watched — a window
+                        // opened, closed or changed width — and showing
+                        // the journey is what connects the two.
+                        self.ease_scroll_to(target, Instant::now());
+                    }
                     self.scroll_dirty = true;
                     self.last_wheel_at = None;
                 }
@@ -4781,6 +4999,21 @@ mod tests {
 
     /// Lay `row` out inside a `viewport_w`-wide viewport through the
     /// real `build_layout` / `apply_layout` pair, rebuilding the taffy
+    /// Run the strip's pan to the end of whatever curve it is on.
+    ///
+    /// The viewport travels rather than cutting, so a single layout pass
+    /// leaves it part-way to where it belongs. Tests about where the
+    /// strip *rests* have to let it arrive first, and they do it through
+    /// the same per-frame tick the compositor calls — handed a clock
+    /// past the end of the curve instead of waiting on a real one.
+    fn settle_pan(row: &mut GroupRow) {
+        row.tick_snap_at(Instant::now() + Duration::from_millis(SNAP_ANIM_MS + SNAP_IDLE_MS + 1));
+        assert!(
+            row.snap_anim.is_none(),
+            "a pan handed a clock past the end of its curve must have arrived",
+        );
+    }
+
     /// tree so a changed width actually takes — the baked length on the
     /// old node is what a stale tree would keep serving.
     fn relayout_strip(row: &mut GroupRow, viewport_w: f64) {
@@ -4833,6 +5066,14 @@ mod tests {
         // and never sees that; a bare row needs the second pass.
         relayout_strip(&mut row, viewport_w);
         relayout_strip(&mut row, viewport_w);
+        // At rest, which is what this helper hands back. A layout pass
+        // that finds the strip mis-framed sets it travelling rather than
+        // moving it outright, so without this the row comes back mid-pan
+        // and every test reading its offset reads a place it is only
+        // passing through.
+        settle_pan(&mut row);
+        relayout_strip(&mut row, viewport_w);
+        settle_pan(&mut row);
         row
     }
 
@@ -4879,6 +5120,14 @@ mod tests {
 
         set_strip_permille(&mut row, 720);
         relayout_strip(&mut row, 1920.0);
+        // The correction is travelled, not cut to: the layout pass that
+        // notices the strip is mis-framed sets it going, and the frames
+        // after it carry the viewport there.
+        assert!(
+            row.snap_anim.is_some(),
+            "the re-frame must start a pan rather than teleport the viewport",
+        );
+        settle_pan(&mut row);
 
         assert!(
             !row.cut_on_both_edges(),
@@ -4921,6 +5170,7 @@ mod tests {
         // Narrowed until the pair fits — every window can now be whole.
         set_strip_permille(&mut row, 580);
         relayout_strip(&mut row, 1920.0);
+        settle_pan(&mut row);
 
         let span = row
             .laid_spans
@@ -4985,6 +5235,10 @@ mod tests {
 
         set_strip_permille(&mut row, 720);
         relayout_strip(&mut row, 1920.0);
+        // The re-frame is travelled rather than cut to, so the strip is
+        // still on its way at the end of the pass that started it. This
+        // test is about where it comes to rest.
+        settle_pan(&mut row);
 
         let overflows = row
             .laid_spans
@@ -5046,6 +5300,315 @@ mod tests {
             row.strip_frame_target(&both),
             None,
             "nor when every group on the strip is wider than the strip",
+        );
+    }
+
+    /// Opening a window moves the viewport, and every pixel of that move
+    /// is on screen.
+    ///
+    /// A strip that re-frames itself in one layout pass is a cut: the
+    /// window the viewer was reading is replaced by a different one
+    /// between two frames, with nothing in between to say the two are
+    /// the same strip seen from two places. Watched frame by frame the
+    /// pan has to advance a bit at a time and arrive.
+    #[test]
+    fn a_window_opening_travels_the_viewport_instead_of_cutting_to_it() {
+        let mut row = strip_at(2, 1600.0, 291.0, 667);
+        row.set_scroll_x_for_test(row.max_scroll_x());
+        settle_pan(&mut row);
+        let before = row.scroll_x();
+
+        // A third window arrives and the strip re-shares its width, the
+        // sequence a window opening actually produces: the group is
+        // spliced in, and every group's edge then moves.
+        let mut fresh = make_group(400, &[9]);
+        fresh.set_width(WindowWidth::Fraction(667));
+        row.insert_group(fresh, 2);
+        set_strip_permille(&mut row, 720);
+        relayout_strip(&mut row, 1600.0);
+
+        let started = row.snap_anim.expect("the arrival sets the viewport travelling");
+        assert!(
+            (started.to - before).abs() > 1.0,
+            "test setup: the arrival has to give the strip somewhere to go \
+             (from {before:.0} to {:.0})",
+            started.to,
+        );
+        assert!(
+            (row.scroll_x() - started.to).abs() > 1.0,
+            "the viewport must not already be at its destination on the \
+             frame the window arrives — that is a cut, not a move",
+        );
+
+        // Walk the curve the way the compositor does, one frame at a
+        // time, and watch it arrive without ever skipping ahead.
+        let step = Duration::from_millis(16);
+        let mut prev = row.scroll_x();
+        let mut biggest = 0.0f64;
+        for i in 1..=(SNAP_ANIM_MS / 16 + 4) {
+            row.tick_snap_at(started.started + step * i as u32);
+            biggest = biggest.max((row.scroll_x() - prev).abs());
+            prev = row.scroll_x();
+        }
+        assert!(
+            (prev - started.to).abs() < 0.5,
+            "the pan has to arrive: wanted {:.1}, rested at {prev:.1}",
+            started.to,
+        );
+        let total = (started.to - before).abs();
+        assert!(
+            biggest < total * 0.75,
+            "no single frame may carry most of the travel — the biggest \
+             step was {biggest:.1} px of a {total:.1} px journey",
+        );
+    }
+
+    /// One event, one journey.
+    ///
+    /// A window opening moves the strip's geometry on the frame it is
+    /// spliced in, and the shell's focus-follow reconciler aims at the
+    /// same window on the next frame — the first one where it has a
+    /// laid-out rect. Both want the viewport in the same place, so the
+    /// second must not restart the curve the first began: a pan that
+    /// eases out and eases back in without changing destination is the
+    /// stutter, not the motion.
+    #[test]
+    fn re_aiming_a_pan_at_where_it_is_already_going_leaves_it_running() {
+        let mut row = strip_at(3, 1600.0, 291.0, 667);
+        let t0 = Instant::now();
+        row.set_scroll_x_for_test(0.0);
+        row.ease_scroll_to(600.0, t0);
+        let first = row.snap_anim.expect("a pan is in flight");
+
+        // Part-way along, and aimed at the same place again.
+        row.tick_snap_at(t0 + Duration::from_millis(SNAP_ANIM_MS / 2));
+        let mid = row.scroll_x();
+        row.ease_scroll_to(600.0, t0 + Duration::from_millis(SNAP_ANIM_MS / 2));
+        let still = row.snap_anim.expect("still in flight");
+        assert_eq!(
+            (still.from, still.started),
+            (first.from, first.started),
+            "re-aiming at the destination the pan already has must leave \
+             the same journey running, not start a fresh one from {mid:.1}",
+        );
+
+        // A genuinely different destination does re-aim, and does it
+        // from wherever the strip had got to rather than from the start.
+        row.ease_scroll_to(200.0, t0 + Duration::from_millis(SNAP_ANIM_MS / 2));
+        let redirected = row.snap_anim.expect("a new destination re-aims");
+        assert_eq!(redirected.to, 200.0, "the new destination takes");
+        assert!(
+            (redirected.from - mid).abs() < 0.5,
+            "a redirect starts from where the viewport is ({mid:.1}), not \
+             from where the old journey began ({:.1})",
+            redirected.from,
+        );
+    }
+
+    /// The narrowest window the viewer can see any of, at `sx`.
+    ///
+    /// Computed here rather than asked of the row, so the assertion is
+    /// about what is on screen and not about the rule that put it there.
+    fn narrowest_on_screen(row: &GroupRow, sx: f64) -> Option<(u64, f64)> {
+        let row_w = row.rect.width().max(1.0);
+        row.laid_spans
+            .iter()
+            .filter_map(|&(id, x0, x1)| {
+                let shown = x1.min(sx + row_w) - x0.max(sx);
+                (shown > 0.5).then_some((id, shown))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
+    /// The window the screen's leading edge falls through, if any, and
+    /// how much of it the viewer is left with.
+    ///
+    /// Computed from the spans rather than asked of the row, so the
+    /// assertion is about what is on screen and not about the rule that
+    /// put it there. A window scrolled wholly past the edge does not
+    /// count — that is the strip working. Only one with part of itself
+    /// on screen and part of itself off the leading end has been severed
+    /// where a viewer cannot tell scrolled-past from broken.
+    fn severed_at_the_leading_edge(row: &GroupRow, sx: f64) -> Option<(u64, f64)> {
+        let row_w = row.rect.width().max(1.0);
+        row.laid_spans
+            .iter()
+            .find(|&&(_, x0, x1)| x0 < sx - 0.5 && x1 > sx + 0.5 && x1 - x0 <= row_w)
+            .map(|&(id, _, x1)| (id, x1 - sx))
+    }
+
+    /// Three windows of unlike widths — a narrow chat, a middling file
+    /// manager, a word processor taking nearly the whole display — which
+    /// is the arrangement that was filmed.
+    fn filmed_three_window_strip() -> GroupRow {
+        let mut row = strip_at(3, 1600.0, 0.0, 500);
+        for (g, permille) in row.groups.iter_mut().zip([250u16, 312, 969]) {
+            g.set_width(WindowWidth::Fraction(permille));
+        }
+        relayout_strip(&mut row, 1600.0);
+        relayout_strip(&mut row, 1600.0);
+        row
+    }
+
+    /// Focusing a window may not leave its neighbour as a sliver.
+    ///
+    /// Filmed on a real desktop: three applications open, and the chat
+    /// window clipped to a strip of itself against the left edge of the
+    /// screen — enough to show a channel name and the corner of a
+    /// message box, not enough to read, and no way to tell from looking
+    /// whether chat was scrolled past or broken.
+    ///
+    /// The offset that produced it is the one that just clears the
+    /// *focused* window's trailing edge, which says nothing about where
+    /// the window before it lands. This pins both halves: that the old
+    /// offset really did sever a window down to nothing, and that the
+    /// strip does not come to rest there.
+    #[test]
+    fn focusing_a_window_never_leaves_its_neighbour_a_sliver_at_the_leading_edge() {
+        let mut row = filmed_three_window_strip();
+        row.set_scroll_x_for_test(0.0);
+        settle_pan(&mut row);
+
+        let row_w = row.rect.width().max(1.0);
+        let &(last, _, last_x1) = row.laid_spans.last().expect("three windows");
+
+        // The premise: revealing the last window's trailing edge — all
+        // the old rule asked for — cuts its neighbour to a splinter.
+        let bare_reveal = last_x1 - row_w;
+        let severed = severed_at_the_leading_edge(&row, bare_reveal);
+        assert!(
+            severed.is_some(),
+            "test setup: the bare reveal offset {bare_reveal:.0} has to be \
+             the one that severs a window at the leading edge — spans {:?}",
+            row.laid_spans,
+        );
+
+        // And the strip does not rest there.
+        assert!(
+            row.scroll_group_into_view_animated(last, Instant::now()),
+            "test setup: the last window starts off the right edge",
+        );
+        settle_pan(&mut row);
+        let sx = row.scroll_x();
+        assert!(
+            (sx - bare_reveal).abs() > 0.5,
+            "the strip came to rest on the offset that severs a window",
+        );
+        assert_eq!(
+            severed_at_the_leading_edge(&row, sx),
+            None,
+            "a window is left cut by the screen's leading edge, showing its \
+             middle — spans {:?} resting at scroll_x {sx:.0} across a \
+             {row_w:.0} px row",
+            row.laid_spans,
+        );
+    }
+
+    /// Widening the windows may not come to rest on a sliver either.
+    ///
+    /// The rule that keeps the window the strip was brought to whole
+    /// says nothing about the windows either side of it, and the offset
+    /// that merely frames the subject is routinely the one that cuts its
+    /// neighbour to a splinter. Captured on the strip re-framing itself
+    /// after a width change: the subject framed exactly as intended, and
+    /// the window before it clipped to a hand's width of unreadable text
+    /// against the screen edge — the same arrangement that was filmed,
+    /// arrived at down a different path.
+    ///
+    /// Nothing here moves focus. The only thing that can move the view
+    /// is the layout pass noticing the geometry changed under it, which
+    /// is the path this pins.
+    #[test]
+    fn re_framing_after_a_width_change_never_rests_on_a_sliver() {
+        // Three windows sharing the display, all of them whole — the
+        // arrangement the capture starts from.
+        let mut row = strip_at(3, 1600.0, 291.0, 333);
+        let last = row.groups.last().expect("three windows").id;
+        row.scroll_group_into_view(last);
+        relayout_strip(&mut row, 1600.0);
+        settle_pan(&mut row);
+
+        // Every window is given half the display. Focus does not move,
+        // so the layout pass noticing its own geometry moved is the only
+        // thing that can move the view.
+        set_strip_permille(&mut row, 500);
+        relayout_strip(&mut row, 1600.0);
+        settle_pan(&mut row);
+        relayout_strip(&mut row, 1600.0);
+        settle_pan(&mut row);
+
+        let row_w = row.rect.width().max(1.0);
+        let sx = row.scroll_x();
+        let overflow = row
+            .laid_spans
+            .last()
+            .zip(row.laid_spans.first())
+            .map(|((_, _, r), (_, l, _))| r - l)
+            .unwrap_or_default();
+        assert!(
+            overflow > row_w,
+            "test setup: three windows at half the display must overflow it, \
+             got {overflow:.0} across {row_w:.0}",
+        );
+        assert_eq!(
+            severed_at_the_leading_edge(&row, sx),
+            None,
+            "the re-frame left a window cut by the screen's leading edge — \
+             spans {:?} resting at scroll_x {sx:.0} across a {row_w:.0} px row",
+            row.laid_spans,
+        );
+    }
+
+    /// Landing on a window edge does not get to hide the window that was
+    /// asked for.
+    ///
+    /// The rule that kills slivers moves the strip away from the offset
+    /// that merely revealed the focused window, so it has to be held to
+    /// the thing it was moving for: after the pan, the window that took
+    /// focus is whole on screen.
+    #[test]
+    fn the_window_that_took_focus_is_whole_on_screen_after_the_pan() {
+        let mut row = strip_at(4, 1600.0, 291.0, 500);
+        row.set_scroll_x_for_test(0.0);
+        settle_pan(&mut row);
+
+        for target in [row.groups[3].id, row.groups[0].id, row.groups[2].id] {
+            // A frame first: a group's screen rect is written by the
+            // layout pass, and the pan the previous round finished moved
+            // every one of them. Aiming off last round's rects is aiming
+            // at where the windows used to be.
+            relayout_strip(&mut row, 1600.0);
+            settle_pan(&mut row);
+            row.scroll_group_into_view_animated(target, Instant::now());
+            settle_pan(&mut row);
+            let row_w = row.rect.width().max(1.0);
+            let sx = row.scroll_x();
+            let &(_, x0, x1) = row
+                .laid_spans
+                .iter()
+                .find(|(id, _, _)| *id == target)
+                .expect("the focused group is laid out");
+            assert!(
+                x0 >= sx - 0.5 && x1 <= sx + row_w + 0.5,
+                "window {target} took focus but rests cut: span ({x0:.0}, \
+                 {x1:.0}) against a viewport of ({sx:.0}, {:.0})",
+                sx + row_w,
+            );
+        }
+    }
+
+    /// The strip's first layout is a placement, not a move.
+    ///
+    /// There is no earlier frame for the viewer to have been looking at,
+    /// so easing in from an offset nothing was ever shown at would be
+    /// motion without a cause — the strip sliding on its own the moment
+    /// the desktop appears.
+    #[test]
+    fn the_first_layout_places_the_strip_without_animating_it() {
+        let row = strip_at(3, 1000.0, 291.0, 667);
+        assert!(
+            row.snap_anim.is_none(),
+            "coming into existence is not something the viewport travels for",
         );
     }
 
