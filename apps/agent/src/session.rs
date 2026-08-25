@@ -16,7 +16,7 @@ use word_processor::reference as wp_reference;
 
 use crate::apply::Editor;
 use crate::listen::{self, LastAction, Summons};
-use crate::model::{Chooser, Decision, Route};
+use crate::model::{Chooser, Decision, Fallback, Route};
 use crate::plan::{self, Block, Instruction, Plan};
 use crate::surface::{self, AppContract, Catalogue, Offer, View};
 use crate::wire::Link;
@@ -873,6 +873,17 @@ impl Session {
     /// Whether the agent is holding the state of the app `namespace` names.
     fn holds(&self, namespace: &str) -> bool {
         self.held().iter().any(|(c, _)| c.namespace == namespace)
+    }
+
+    /// Whether that app is here **and has something to survey**.
+    ///
+    /// [`Self::holds`] answers "its state arrived". This answers "and the tree
+    /// it publishes for that state is not empty", which is the question every
+    /// step that follows an open is actually asking — see
+    /// [`surface::surveyable`], which both this and the survey's own idea of
+    /// "already open" are now asked through.
+    fn surveys(&self, namespace: &str) -> bool {
+        surface::surveyable(&self.held(), &self.view(None, 0), namespace)
     }
 
     /// Everything the room exports right now that the agent may perform.
@@ -2204,13 +2215,20 @@ impl Session {
                 "I don't know an application by that name".to_string()
             ));
         };
-        // Already here. Not an error, and deliberately not a second window:
-        // what was asked for is that the app be open, and it is. The survey
-        // stops offering this the moment its state lands, so the only way to
-        // reach this line is a plan made before it did — which is precisely
-        // the race that would otherwise put two copies of an app on somebody's
-        // screen.
-        if self.holds(namespace) {
+        // Already here, *and holding something*. Not an error and
+        // deliberately not a second window: what was asked for is that the app
+        // be open, and it is. The survey stops offering this the moment the app
+        // has something to work on, so the only way to reach this line is a
+        // plan made before it did — which is precisely the race that would
+        // otherwise put two copies of an app on somebody's screen.
+        //
+        // Asked through the same `surveyable` the survey asks, rather than the
+        // weaker "is its state here". An application present and exporting
+        // nothing is still offered as openable — that is what the offer is for
+        // — and answering that offer with "already open" would open nothing,
+        // perform nothing, and hand the next step exactly the empty room the
+        // offer existed to fill.
+        if self.surveys(namespace) {
             tracing::info!(app = %contract.app_id, "already open in this room");
             return Ok(Ok(()));
         }
@@ -2264,7 +2282,7 @@ impl Session {
         // way the wait ends — including the error path, which is why the
         // outcome is held rather than returned through `?`.
         let waiting = self.say_waiting(contract.title)?;
-        let outcome = self.await_open(contract, namespace, what);
+        let outcome = self.await_open(contract, namespace, what, with.is_some());
         self.stop_waiting(waiting)?;
         outcome
     }
@@ -2279,6 +2297,7 @@ impl Session {
         contract: &'static surface::AppContract,
         namespace: &str,
         what: Option<&str>,
+        onto_content: bool,
     ) -> Result<Result<(), String>> {
         let started = Instant::now();
         let mut asked = Instant::now() - ASK_WHILE_OPENING;
@@ -2296,11 +2315,27 @@ impl Session {
                     None => format!("I can't open {} — {why}", contract.title),
                 }));
             }
-            if self.holds(namespace) {
+            // What the open promised is what this waits for, and the two
+            // opens promise different things. An open that named content said
+            // the application would have that content, and the step after it
+            // asks what the application exports *about* it — so "its state is
+            // here" is the wrong question, because an application can be here
+            // and publishing nothing. An open that named none promised only
+            // that the application would be here, and here is all this may
+            // wait for: an editor with nothing in it is a correct outcome of
+            // that open, and waiting for a tree it will never grow would turn
+            // a success into a timeout.
+            let arrived = if onto_content {
+                self.surveys(namespace)
+            } else {
+                self.holds(namespace)
+            };
+            if arrived {
                 tracing::info!(
                     app = %contract.app_id,
                     waited_ms = started.elapsed().as_millis() as u64,
-                    "it opened, and its state is here"
+                    onto_content,
+                    "it opened, and what it publishes is here"
                 );
                 std::thread::sleep(self.cfg.pace);
                 return Ok(Ok(()));
@@ -2314,17 +2349,36 @@ impl Session {
                 asked = Instant::now();
             }
         }
-        tracing::warn!(
+        // Two ways for this to run out, said apart, because they are faults
+        // in different components and one sentence covering both sends whoever
+        // reads it to the wrong one: nothing came, or something came and
+        // brought nothing with it. At `error` in both cases — a wait that
+        // expired must never reach the room as the clause after it being
+        // declined, which is exactly how this class of failure hides.
+        let here_but_empty = self.holds(namespace);
+        tracing::error!(
             app = %contract.app_id,
-            "asked for it and nothing arrived within {}s",
-            OPENING.as_secs()
-        );
-        Ok(Err(format!(
-            "I asked to open {} and nothing came back within {}s, so I stopped \
-             rather than carry on as though it had opened",
-            contract.title,
+            arrived = here_but_empty,
+            onto_content,
+            "the open did not produce what it promised within {}s",
             OPENING.as_secs(),
-        )))
+        );
+        Ok(Err(if here_but_empty {
+            format!(
+                "I opened {} onto that and waited {}s, and it never published \
+                 anything I could act on — so I stopped rather than carry on \
+                 as though it had",
+                contract.title,
+                OPENING.as_secs(),
+            )
+        } else {
+            format!(
+                "I asked to open {} and nothing came back within {}s, so I \
+                 stopped rather than carry on as though it had opened",
+                contract.title,
+                OPENING.as_secs(),
+            )
+        }))
     }
 
     /// What the app `namespace` names now denotes, as something another
@@ -2511,6 +2565,11 @@ impl Session {
             // genuinely are not there. The clause kept its own words for this
             // purpose, and asking again costs a refusal nothing: one that was
             // true stays true, in the sentence it would have used anyway.
+            // Why a clause that was asked again still names no operation,
+            // when the answer is "the decision did not happen" rather than
+            // "the room does not do that". `None` on every other way into the
+            // refusal below, which then reads exactly as it did before.
+            let mut undecided: Option<String> = None;
             let (instruction, carries) = match step.instruction {
                 Instruction::Unknown(what) => {
                     // Asked of whatever chose in the first place, against the
@@ -2548,9 +2607,28 @@ impl Session {
                             .join(", "),
                         "asking again against what the room exports now"
                     );
-                    let again = self
-                        .chooser
-                        .choose(&what, &[], &catalogue)
+                    let decision = self.chooser.choose_again(&what, &catalogue);
+                    // How it was decided, kept. Dropping it is what let this
+                    // fail invisibly: every unhappy path in `Chooser` lands on
+                    // the keyword vocabulary, that vocabulary knows `table`,
+                    // `caption` and `heading` and nothing else, and the clause
+                    // then refuses in a sentence that reads as the model
+                    // declining. "This room does not do that" and "the
+                    // decision never happened" are different claims, and only
+                    // the first of them was ever being made.
+                    let route = decision.route;
+                    let failed = match &route {
+                        // An answer, whatever it says.
+                        Route::Model { .. } => None,
+                        // The floor was always going to decide this run, and
+                        // its answer is this run's answer.
+                        Route::Keywords(Fallback::NoKey)
+                        | Route::Keywords(Fallback::Disabled) => None,
+                        // A call that timed out, failed, or came back unusable.
+                        // Nothing decided this; the floor filled in.
+                        Route::Keywords(_) => Some(route.detail()),
+                    };
+                    let again = decision
                         .plan
                         .steps
                         .into_iter()
@@ -2560,6 +2638,21 @@ impl Session {
                         });
                     match again.instruction {
                         Instruction::Unknown(_) => {
+                            match &failed {
+                                Some(why) => tracing::error!(
+                                    clause = %what,
+                                    offers = offers.len(),
+                                    "the clause was never decided: {why}"
+                                ),
+                                None => tracing::warn!(
+                                    clause = %what,
+                                    decided_by = route.label(),
+                                    offers = offers.len(),
+                                    "asked again and nothing here answers it: {}",
+                                    route.detail()
+                                ),
+                            }
+                            undecided = failed;
                             (Instruction::Unknown(what), step.carries)
                         }
                         resolved => {
@@ -2567,7 +2660,10 @@ impl Session {
                                 step = n + 1,
                                 of = total,
                                 clause = %what,
-                                "resolved against a room an earlier step changed"
+                                decided_by = route.label(),
+                                "resolved against a room an earlier step \
+                                 changed: {}",
+                                route.detail()
                             );
                             (resolved, again.carries)
                         }
@@ -2655,11 +2751,25 @@ impl Session {
                     // would be describing a room it had already changed. When
                     // nothing has been done `refusal` says exactly what it
                     // said before.
-                    let why = format!(
-                        "I can't \"{what}\" here. {}{}",
-                        describe_offers(scope),
-                        self.could_have_opened(&what),
-                    );
+                    //
+                    // And when the clause was never decided at all, that is
+                    // what is said. "I can't do that here" is a claim about
+                    // the room; a call that timed out or answered outside the
+                    // catalogue is a claim about nothing, and dressing the
+                    // second as the first is how a broken conversation comes
+                    // out sounding like an assistant with an opinion.
+                    let why = match &undecided {
+                        Some(detail) => format!(
+                            "I couldn't work out what \"{what}\" asks for — \
+                             {detail}. That is not this room saying no, so I \
+                             stopped rather than tell you it can't"
+                        ),
+                        None => format!(
+                            "I can't \"{what}\" here. {}{}",
+                            describe_offers(scope),
+                            self.could_have_opened(&what),
+                        ),
+                    };
                     let reply = refusal(&name, &done, None, why.trim_end_matches('.'));
                     self.reply(to, &reply, Outcome::Refused)?;
                     return Ok(Ran::Said);

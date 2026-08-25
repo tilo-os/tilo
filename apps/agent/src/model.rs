@@ -206,6 +206,41 @@ impl Chooser {
     /// slow or broken conversation costs the agent a worse decision, never the
     /// work.
     pub fn choose(&self, rest: &str, blocks: &[Block], catalogue: &Catalogue) -> Decision {
+        self.decide(rest, blocks, catalogue, false)
+    }
+
+    /// Decide a clause **again**, against a room a step of the same request
+    /// has just changed.
+    ///
+    /// Same model, same catalogue, same refusals — and one difference, which
+    /// is the whole of it: the room's survey is in the conversation from the
+    /// first turn.
+    ///
+    /// [`Self::choose`] hands over nothing and makes the model ask, so that
+    /// "what may be named" is never "what fitted in one message". That is
+    /// right for a request arriving cold. Here it produced a failure that
+    /// read as an opinion: this clause is being asked again *because* an
+    /// application was opened for it, the operation that answers it exists
+    /// only since that open, and a conversation that calls [`tools::PLAN`]
+    /// before it lists anything is offered an enum holding the editorial
+    /// changes and "nothing fits" — so it answers that nothing fits, about a
+    /// room holding exactly what was asked for. The refusal that follows is
+    /// indistinguishable from the model declining.
+    ///
+    /// The listing widens nothing. It is `list_operations` answered against
+    /// this survey by that tool's own code, revealing the ids it would have
+    /// revealed had it been asked for them.
+    pub fn choose_again(&self, rest: &str, catalogue: &Catalogue) -> Decision {
+        self.decide(rest, &[], catalogue, true)
+    }
+
+    fn decide(
+        &self,
+        rest: &str,
+        blocks: &[Block],
+        catalogue: &Catalogue,
+        asked_again: bool,
+    ) -> Decision {
         let offers = &catalogue.offers;
         let fallback = |f: Fallback| Decision {
             plan: Plan::from_floor(rest, offers),
@@ -217,7 +252,7 @@ impl Chooser {
         let Some(key) = self.key.as_deref() else {
             return fallback(Fallback::NoKey);
         };
-        match self.ask(key, rest, blocks, catalogue) {
+        match self.ask(key, rest, blocks, catalogue, asked_again) {
             Ok((answer, asked)) => {
                 match Plan::from_answer(
                     &answer.actions,
@@ -273,6 +308,7 @@ impl Chooser {
         rest: &str,
         blocks: &[Block],
         catalogue: &Catalogue,
+        asked_again: bool,
     ) -> Result<(Answer, Vec<String>), AskError> {
         let began = Instant::now();
         // One deadline over the whole conversation rather than one per
@@ -282,10 +318,17 @@ impl Chooser {
         let remaining = || self.timeout.checked_sub(began.elapsed());
 
         let mut revealed = Revealed::new();
+        // The listing, answered before it is asked. Produced by the tool's own
+        // code against this same survey, so the ids in it become nameable by
+        // exactly the route every other id becomes nameable by: a listing
+        // returned them.
+        let listed = asked_again.then(|| {
+            tools::answer(tools::LIST_OPERATIONS, &json!({}), catalogue, &mut revealed)
+        });
         let mut asked: Vec<String> = Vec::new();
         let mut messages: Vec<Value> = vec![json!({
             "role": "user",
-            "content": user_turn(rest, blocks, catalogue),
+            "content": user_turn(rest, blocks, catalogue, listed.as_deref()),
         })];
 
         for round in 0..MAX_ROUNDS {
@@ -542,7 +585,12 @@ Keep \"why\" to one short clause.";
 
 /// The instruction, the document, and the compositions the agent performs
 /// itself. What the *applications* export is asked for.
-fn user_turn(rest: &str, blocks: &[Block], catalogue: &Catalogue) -> String {
+fn user_turn(
+    rest: &str,
+    blocks: &[Block],
+    catalogue: &Catalogue,
+    listed: Option<&str>,
+) -> String {
     let mut s = String::new();
     s.push_str(
         "Editorial changes I can make to this document. Each is several \
@@ -560,13 +608,30 @@ fn user_turn(rest: &str, blocks: &[Block], catalogue: &Catalogue) -> String {
 
     s.push_str(&format!(
         "\nThe room has {} application{} in it and is exporting {} operation{} \
-         I may perform. Ask about them — nothing an application exports is \
-         listed here, and an id no listing returned cannot be named.\n",
+         I may perform.",
         catalogue.held.len(),
         if catalogue.held.len() == 1 { "" } else { "s" },
         catalogue.offers.len(),
         if catalogue.offers.len() == 1 { "" } else { "s" },
     ));
+    match listed {
+        // Asked cold. What an application exports is discovered, and being
+        // returned by a listing is what makes an id nameable.
+        None => s.push_str(
+            " Ask about them — nothing an application exports is listed here, \
+             and an id no listing returned cannot be named.\n",
+        ),
+        // Asked again, after an earlier step of this same request changed the
+        // room. Handed over rather than waited for: the operation that answers
+        // this clause exists only because of that step, and a conversation
+        // that has to rediscover it can answer before it has.
+        Some(listing) => s.push_str(&format!(
+            " An earlier step of this same request changed what is here, and \
+             this is what the room exports now. Ask for more detail if you \
+             need it; an id no listing returned still cannot be named.\n\
+             {listing}\n"
+        )),
+    }
 
     s.push_str("\nThe document as it stands:\n\n");
     if blocks.is_empty() {
@@ -818,6 +883,7 @@ mod tests {
                     "turn the bullets into a table",
                     &[block("list_item", "a - 1")],
                     &catalogue,
+                    None,
                 ),
             })],
             &revealed,
@@ -877,6 +943,75 @@ mod tests {
         assert!(plan_enum(&body).contains(&"word-processor.document#insert-table".to_string()));
     }
 
+    /// **A clause asked again carries the room it is about.**
+    ///
+    /// The cold path deliberately cannot name what an application exports
+    /// until a listing has returned it — the test above this one asserts
+    /// that, and it is right for a request arriving with no history. It is
+    /// wrong for a clause being asked a second time *because* an earlier step
+    /// opened the application that answers it: the enum on the first turn
+    /// then holds the editorial changes and "nothing fits", and a
+    /// conversation that answers before it lists can only say nothing fits —
+    /// about a room holding the crop it was asked for.
+    #[test]
+    fn a_clause_asked_again_can_name_what_the_room_exports_now() {
+        const CROP: &str = "photos.image:/x/harbour.png#crop";
+        let catalogue = Catalogue {
+            held: vec!["word-processor", "photos"],
+            offers: vec![
+                offer("word-processor.document", "place-image", "Place image"),
+                offer("photos.image:/x/harbour.png", "crop", "Crop"),
+            ],
+            facts: Vec::new(),
+        };
+
+        let mut revealed = Revealed::new();
+        let listed = tools::answer(
+            tools::LIST_OPERATIONS,
+            &json!({}),
+            &catalogue,
+            &mut revealed,
+        );
+        let body = turn_body(
+            &[json!({
+                "role": "user",
+                "content": user_turn("make this square", &[], &catalogue, Some(&listed)),
+            })],
+            &revealed,
+            false,
+        );
+        let turn = body["messages"][0]["content"].as_str().expect("a user turn");
+        assert!(
+            turn.contains(CROP),
+            "the operation the earlier step created has to be in the turn: \
+             {turn}"
+        );
+        assert!(
+            plan_enum(&body).contains(&CROP.to_string()),
+            "and nameable, or the only answer available is that nothing fits: \
+             {:?}",
+            plan_enum(&body)
+        );
+
+        // And the cold path is untouched: same clause, same room, no listing.
+        // Asserted here as well as in its own test because the difference
+        // between the two turns is the whole of this.
+        let cold = turn_body(
+            &[json!({
+                "role": "user",
+                "content": user_turn("make this square", &[], &catalogue, None),
+            })],
+            &Revealed::new(),
+            false,
+        );
+        assert!(
+            !plan_enum(&cold).contains(&CROP.to_string()),
+            "discovery is still asked for when nothing has been discovered: \
+             {:?}",
+            plan_enum(&cold)
+        );
+    }
+
     /// The last round forces an answer rather than letting the conversation
     /// trail off into the fallback.
     ///
@@ -899,7 +1034,7 @@ mod tests {
     /// as a choice.
     #[test]
     fn an_empty_room_says_it_is_empty() {
-        let turn = user_turn("do something", &[], &Catalogue::default());
+        let turn = user_turn("do something", &[], &Catalogue::default(), None);
         assert!(turn.contains("0 applications"), "{turn}");
         assert!(turn.contains("0 operations"), "{turn}");
         assert!(turn.contains(plan::NOTHING_FITS), "{turn}");

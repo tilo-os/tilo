@@ -1087,6 +1087,15 @@ fn execute_planned_action(
             tracing::info!("test_control: set {} group(s) to {permille}permille", touched.len());
             fb.with_chrome(|st| st.bump());
         }
+        PlannedAction::Remark { remark } => {
+            tracing::info!(
+                target: "shell::remark",
+                about = %remark.reference.resource_id().as_str(),
+                "test_control: a remark was handed to the outbox the compose \
+                 surface writes into",
+            );
+            fb.host_mut().push_remark(remark.clone());
+        }
         PlannedAction::MergeTabIntoGroup {
             surface_id,
             into_surface_id,
@@ -1424,6 +1433,10 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
         | PlannedAction::Snapshot { .. }
         | PlannedAction::SetGroupWidth { .. }
         | PlannedAction::MergeTabIntoGroup { .. }
+        // Swallowed for the same reason `InvokeAction` is: a remark reaches
+        // the room without a surface being drawn, so letting one through
+        // would put a message in a locked session's conversation.
+        | PlannedAction::Remark { .. }
         | PlannedAction::InvokeAction { .. } => {}
         // Not swallowed, because it is not an input action and shows
         // nothing: it waits for frames captured *before* the lock to
