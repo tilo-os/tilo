@@ -2050,7 +2050,11 @@ fn load_session_tree(
     } else {
         None
     };
-    tree.fs_acl_path = Some(persist::fs_capability_export_path());
+    let acl_path = persist::fs_capability_export_path();
+    // Said once, at startup: a session exporting somewhere the
+    // mount does not read enforces nothing, and does it quietly.
+    persist::warn_if_export_is_not_enforced(&acl_path);
+    tree.fs_acl_path = Some(acl_path);
 
     let roomless = tree.adopt_roomless_workspaces();
     if !roomless.is_empty() {
