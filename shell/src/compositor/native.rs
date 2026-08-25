@@ -63,16 +63,51 @@ fn params_json(
         .collect()
 }
 
+/// Who a call on this socket is gated as.
+///
+/// The rest of the socket is a real input source: it types and clicks on
+/// behalf of the person at the keyboard, so a call that announces nobody
+/// is them. The action ops are the one part of it a program drives on its
+/// own behalf, and a program that says who it is gets the authority of
+/// that name instead — [`Workspace::actor_for_agent`], which carries the
+/// room but no role, so it holds exactly what somebody granted it and
+/// revoking that grant is the whole of taking it back.
+///
+/// Announcing an *empty* name is refused rather than read as "nobody".
+/// `agent_opens::decide` refuses the same thing for the same reason: a
+/// capability names a subject, so asking the workspace about the empty
+/// string is not a question it can answer.
+///
+/// The name is unauthenticated, exactly as the `Hello` handle on the
+/// collaboration socket is. It narrows a grant to the participant it was
+/// written for without proving the caller is that participant — worth
+/// having, and not to be mistaken for identity.
+fn caller_actor(
+    workspace: &crate::shell::state::Workspace,
+    local_user: &crate::shell::state::UserId,
+    agent: Option<&str>,
+) -> Result<crate::shell::state::Actor, String> {
+    match agent {
+        None => Ok(workspace.actor_for_person(local_user)),
+        Some(name) if name.trim().is_empty() => Err("this call announced an empty agent \
+             name — a capability names a subject, so there is no grant that could \
+             cover it"
+            .to_string()),
+        Some(name) => Ok(workspace.actor_for_agent(name)),
+    }
+}
+
 fn with_action_gate<R>(
     chrome_handle: &crate::shell::chrome_state::Chrome,
-    f: impl FnOnce(&crate::shell::chrome_state::ChromeState, &dyn ActionVisibility) -> R,
+    agent: Option<&str>,
+    f: impl FnOnce(&crate::shell::chrome_state::ChromeState, &CapabilityVisibility<'_>) -> R,
 ) -> Result<R, String> {
     let chrome = chrome_handle.borrow();
     let tree = chrome.tree();
     let workspace = tree
         .active_workspace()
         .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?;
-    let actor = workspace.actor_for_person(&chrome.local_user_id);
+    let actor = caller_actor(workspace, &chrome.local_user_id, agent)?;
     let gate = CapabilityVisibility::new(workspace, actor);
     Ok(f(&chrome, &gate))
 }
@@ -649,7 +684,15 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
     /// nothing. No scene is built, no widget is touched, no synthetic
     /// input is generated — which is the entire claim: an action is not
     /// a pixel, so driving the shell does not require seeing it.
-    fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {
+    ///
+    /// `agent` is who is asking. It decides the gate the catalogue is
+    /// built through, so an agent surveying the desktop sees what *it*
+    /// may do rather than what the person whose desktop it is may do.
+    fn enumerate_actions(
+        &self,
+        query: &str,
+        agent: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
         let (doc, root) = self
             .doc
             .ok_or_else(|| "control state has no live document".to_string())?;
@@ -657,7 +700,7 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         // The borrow lives only for the closure. `ActionCatalog` owns its
         // results outright (no borrow of `doc` is retained), so the
         // catalogue outlives the guards it was built through.
-        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
+        let catalog = with_action_gate(&chrome_handle, agent, |chrome, gate| {
             self.fb.host().action_catalog(query, chrome, doc, root, gate)
         })?;
         let actions: Vec<serde_json::Value> = catalog
@@ -699,12 +742,13 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         provider: &str,
         id: &str,
         args: &serde_json::Map<String, serde_json::Value>,
+        agent: Option<&str>,
     ) -> Result<serde_json::Value, test_control::ActionRefusal> {
         let (doc, root) = self
             .doc
             .ok_or_else(|| test_control::ActionRefusal::unknown("control state has no live document"))?;
         let chrome_handle = self.fb.chrome_handle();
-        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
+        let catalog = with_action_gate(&chrome_handle, agent, |chrome, gate| {
             self.fb.host().action_catalog("", chrome, doc, root, gate)
         })
         .map_err(test_control::ActionRefusal::unknown)?;
@@ -1232,7 +1276,12 @@ fn execute_planned_action(
             });
             write_snapshot_png(fb, path, pointer, *defer);
         }
-        PlannedAction::InvokeAction { provider, id, args } => {
+        PlannedAction::InvokeAction {
+            provider,
+            id,
+            args,
+            agent,
+        } => {
             // Re-resolve rather than carrying a handle over from
             // dispatch: the document is mutable between planning and
             // execution, so the catalogue the caller was shown may no
@@ -1244,7 +1293,10 @@ fn execute_planned_action(
             // against. Re-resolving without it would make the gate
             // advisory: a caller who got past `resolve_action` once
             // could keep invoking after their capability was revoked.
-            let catalog = match with_action_gate(&chrome_handle, |chrome, gate| {
+            // Same caller, too — rebuilding it as the person would hand
+            // an agent the person's surface at exactly the moment
+            // something runs.
+            let catalog = match with_action_gate(&chrome_handle, agent.as_deref(), |chrome, gate| {
                 fb.host()
                     .action_catalog("", chrome, &ctx.doc, &ctx.root_obj, gate)
             }) {

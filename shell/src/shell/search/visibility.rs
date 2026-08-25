@@ -194,9 +194,23 @@ pub struct CapabilityVisibility<'a> {
 }
 
 impl<'a> CapabilityVisibility<'a> {
-    /// Gate against `workspace` on behalf of the person `actor`.
+    /// Gate against `workspace` on behalf of `actor` — a person, an app
+    /// or an agent. Which one it is decides the whole surface, so the
+    /// caller that builds this is deciding whose desktop this is.
     pub fn new(workspace: &'a Workspace, actor: Actor) -> Self {
         Self { workspace, actor }
+    }
+
+    /// The actor every `can_see` question is asked about.
+    ///
+    /// Exposed so a test can assert on the principal the gate was
+    /// *actually handed*, rather than on a second description of who it
+    /// should have been. The two have disagreed here before: the socket
+    /// built this with the local person for every caller while the
+    /// capability model had an agent principal ready and reachable from
+    /// one diagnostic op.
+    pub fn actor(&self) -> &Actor {
+        &self.actor
     }
 }
 

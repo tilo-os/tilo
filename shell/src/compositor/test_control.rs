@@ -321,6 +321,20 @@ pub enum Command {
     ActionsEnumerate {
         #[serde(default)]
         query: String,
+        /// Who is asking, when the caller is not the person at the
+        /// keyboard.
+        ///
+        /// Omitted is the person: the rest of this socket types and
+        /// clicks *as* them, and a harness driving their own machine is
+        /// them. Present, it names an agent, and the surface is gated as
+        /// that agent — scoped, revocable, holding no role — the same
+        /// principal `apps/agent` announces on its `Hello` and the same
+        /// one `agent_opens` decides about. It is an announcement, not
+        /// proof: the name is unauthenticated here for exactly the
+        /// reason it is there, and narrowing a grant to the participant
+        /// it was written for is what it buys.
+        #[serde(default)]
+        agent: Option<String>,
     },
     /// Invoke one enumerated action by its stable `(provider, id)`
     /// address, with no window, no scene and no synthetic input.
@@ -343,6 +357,13 @@ pub enum Command {
         id: String,
         #[serde(default)]
         args: serde_json::Map<String, serde_json::Value>,
+        /// Who is invoking. Same meaning as on
+        /// [`Command::ActionsEnumerate`], and it has to be carried on
+        /// both: enumeration filtered for one principal and invocation
+        /// gated for another is the gap the visibility gate exists to
+        /// close.
+        #[serde(default)]
+        agent: Option<String>,
     },
 }
 
@@ -528,7 +549,11 @@ pub trait ControlState {
     /// harness read "this shell exports nothing" out of "this fixture
     /// cannot answer". Those are different facts and must not share a
     /// wire shape.
-    fn enumerate_actions(&self, _query: &str) -> Result<serde_json::Value, String> {
+    fn enumerate_actions(
+        &self,
+        _query: &str,
+        _agent: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
         Err("no live action registry on this control state".to_string())
     }
 
@@ -546,6 +571,7 @@ pub trait ControlState {
         _provider: &str,
         _id: &str,
         _args: &serde_json::Map<String, serde_json::Value>,
+        _agent: Option<&str>,
     ) -> Result<serde_json::Value, ActionRefusal> {
         Err(ActionRefusal::unknown(
             "no live action registry on this control state",
@@ -715,6 +741,11 @@ pub enum PlannedAction {
         provider: String,
         id: String,
         args: serde_json::Map<String, serde_json::Value>,
+        /// The announced caller, carried through to the re-resolution.
+        /// The executor rebuilds the catalogue through the gate, and a
+        /// rebuild that forgot who asked would hand an agent the
+        /// person's surface at exactly the moment something runs.
+        agent: Option<String>,
     },
 }
 
@@ -1198,11 +1229,19 @@ pub fn dispatch_command<S: ControlState>(
             };
             (Response::Clipboard { text }, Vec::new())
         }
-        Command::ActionsEnumerate { query } => (
-            answer_or_err(state.enumerate_actions(query), "enumerate_failed"),
+        Command::ActionsEnumerate { query, agent } => (
+            answer_or_err(
+                state.enumerate_actions(query, agent.as_deref()),
+                "enumerate_failed",
+            ),
             Vec::new(),
         ),
-        Command::ActionsInvoke { provider, id, args } => {
+        Command::ActionsInvoke {
+            provider,
+            id,
+            args,
+            agent,
+        } => {
             // Resolve before planning. An unknown or hidden address, and
             // an argument set that does not fit the action, are both
             // structured refusals here rather than an invocation that
@@ -1210,13 +1249,14 @@ pub fn dispatch_command<S: ControlState>(
             // "that action does not exist for you" and "you passed the
             // wrong thing" must not look alike to a caller that cannot
             // see the screen.
-            match state.resolve_action(provider, id, args) {
+            match state.resolve_action(provider, id, args, agent.as_deref()) {
                 Ok(resolved) => (
                     Response::Answer(resolved),
                     vec![PlannedAction::InvokeAction {
                         provider: provider.clone(),
                         id: id.clone(),
                         args: args.clone(),
+                        agent: agent.clone(),
                     }],
                 ),
                 Err(refusal) => (
@@ -2181,9 +2221,17 @@ mod tests {
             HashMap::new()
         }
 
-        fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {
+        fn enumerate_actions(
+            &self,
+            query: &str,
+            agent: Option<&str>,
+        ) -> Result<serde_json::Value, String> {
             Ok(serde_json::json!({
                 "query": query,
+                // Echoed so a dispatch test can assert the announced
+                // caller *arrived here*, rather than assert that the
+                // command struct held it and hope it was passed on.
+                "caller": agent,
                 "count": 1,
                 "actions": [{
                     "provider": "shell.actions",
@@ -2201,7 +2249,12 @@ mod tests {
             provider: &str,
             id: &str,
             args: &serde_json::Map<String, serde_json::Value>,
+            agent: Option<&str>,
         ) -> Result<serde_json::Value, ActionRefusal> {
+            // Same reason as above: the resolve half has to see the
+            // caller too, or enumeration and invocation would be gated
+            // for two different principals.
+            let caller = agent.map(str::to_string);
             // Two addresses: one nullary, one parameterised. The second
             // is what makes the argument paths below testable at the
             // dispatch layer, without a live registry.
@@ -2222,6 +2275,7 @@ mod tests {
                 "id": id,
                 "kind": "Actions",
                 "title": "Open settings",
+                "caller": caller,
             }))
         }
     }
@@ -2245,6 +2299,7 @@ mod tests {
             provider: "shell.actions".to_string(),
             id: id.to_string(),
             args: args.as_object().cloned().unwrap_or_default(),
+            agent: None,
         }
     }
 
@@ -2257,6 +2312,7 @@ mod tests {
         let (resp, actions) = dispatch_command(
             &Command::ActionsEnumerate {
                 query: String::new(),
+                agent: None,
             },
             &ActionState,
         );
@@ -2292,6 +2348,7 @@ mod tests {
                 provider: "shell.actions".to_string(),
                 id: "settings.open".to_string(),
                 args: serde_json::Map::new(),
+                agent: None,
             }]
         );
     }
@@ -2462,6 +2519,7 @@ mod tests {
         let (resp, actions) = dispatch_command(
             &Command::ActionsEnumerate {
                 query: String::new(),
+                agent: None,
             },
             &state,
         );
@@ -2482,7 +2540,8 @@ mod tests {
         assert_eq!(
             enumerate,
             Command::ActionsEnumerate {
-                query: "settings".to_string()
+                query: "settings".to_string(),
+                agent: None,
             }
         );
 
@@ -2491,7 +2550,8 @@ mod tests {
         assert_eq!(
             bare,
             Command::ActionsEnumerate {
-                query: String::new()
+                query: String::new(),
+                agent: None,
             }
         );
 
@@ -2503,6 +2563,7 @@ mod tests {
                 provider: "p".to_string(),
                 id: "i".to_string(),
                 args: serde_json::Map::new(),
+                agent: None,
             }
         );
 
