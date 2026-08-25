@@ -130,6 +130,9 @@ pub trait PeerPublishSink: Send + Sync {
 
     /// Ask the room for content an app needs and this machine lacks.
     fn want_blob(&self, cluster_id: &str, hash: &str);
+
+    /// Tell a room that a participant opened an application in it.
+    fn app_opened(&self, app_id: String, cluster_id: String, with: Option<String>, who: String);
 }
 
 impl PeerPublishSink for ShellNetwork {
@@ -187,6 +190,10 @@ impl PeerPublishSink for ShellNetwork {
 
     fn want_blob(&self, cluster_id: &str, hash: &str) {
         ShellNetwork::want_blob(self, cluster_id, hash);
+    }
+
+    fn app_opened(&self, app_id: String, cluster_id: String, with: Option<String>, who: String) {
+        self.publish_app_opened(app_id, cluster_id, with, who);
     }
 }
 
@@ -369,6 +376,40 @@ impl PeerPublisher {
             return false;
         };
         sink.app_presence(route.app_id.clone(), route.cluster_id.clone(), frame);
+        true
+    }
+
+    /// Tell a room that a participant opened an application in it.
+    ///
+    /// Addressed to the room and not to a document, so the route is the
+    /// cluster's — an open is a fact about the workspace, the way presence is,
+    /// and the application named in it is the *subject* of the announcement
+    /// rather than the sender of it. That is also why `app_id` is a parameter
+    /// here where every other publish takes it off the route: the connection
+    /// that asked is some other application entirely, most often an agent
+    /// with no window at all.
+    ///
+    /// Returns whether it reached the network, so a caller can say "this
+    /// stayed on one machine" rather than leaving a collaborator wondering
+    /// why their workspace never grew the window.
+    pub fn app_opened(
+        &self,
+        room: &str,
+        transport: Transport,
+        app_id: &str,
+        with: Option<String>,
+        who: &str,
+    ) -> bool {
+        let route = CrdtRoute::cluster(room);
+        let Some(sink) = self.ready(&route, transport, "application open") else {
+            return false;
+        };
+        sink.app_opened(
+            app_id.to_string(),
+            route.cluster_id.clone(),
+            with,
+            who.to_string(),
+        );
         true
     }
 
@@ -570,6 +611,13 @@ pub mod recording {
             cluster_id: String,
             hash: String,
         },
+        /// An application a participant opened in the room.
+        AppOpened {
+            app_id: String,
+            cluster_id: String,
+            with: Option<String>,
+            who: String,
+        },
     }
 
     #[derive(Default)]
@@ -684,6 +732,15 @@ pub mod recording {
             self.sent.lock().unwrap().push(Sent::BlobWanted {
                 cluster_id: cluster_id.to_string(),
                 hash: hash.to_string(),
+            });
+        }
+
+        fn app_opened(&self, app_id: String, cluster_id: String, with: Option<String>, who: String) {
+            self.sent.lock().unwrap().push(Sent::AppOpened {
+                app_id,
+                cluster_id,
+                with,
+                who,
             });
         }
     }
@@ -803,6 +860,57 @@ mod tests {
         assert!(!pubr.document_snapshot(&route, Transport::Capnp, vec![1]));
         assert!(!pubr.presence(&route, Transport::Capnp, vec![1]));
         assert!(!pubr.scrollback_request(&route, Transport::Capnp, ArtifactId(uuid::Uuid::nil()), 5, 3));
+    }
+
+    /// An open is addressed to the room, and names the application it is
+    /// about rather than the one that asked for it.
+    #[test]
+    fn an_open_reaches_the_room_naming_the_application_it_opened() {
+        let (pubr, sink) = wired();
+        let room = "77777777-7777-4777-8777-777777777777";
+        assert!(pubr.app_opened(
+            room,
+            Transport::Json,
+            "dev.qos.photos",
+            Some("b3f00d".to_string()),
+            "Claude",
+        ));
+        assert_eq!(
+            sink.drain(),
+            vec![Sent::AppOpened {
+                app_id: "dev.qos.photos".into(),
+                cluster_id: room.into(),
+                with: Some("b3f00d".into()),
+                who: "Claude".into(),
+            }],
+            "the room, the application, the content it was bound to and who \
+             asked all have to cross — a receiver missing any one of them \
+             cannot decide the open, only guess at it",
+        );
+    }
+
+    /// The same fail-closed rule every other payload gets. A room that does
+    /// not exist is not a smaller audience, it is the wrong one: the nil uuid
+    /// is shared by every workspace whose durable identity is unminted, on
+    /// every machine at once.
+    #[test]
+    fn an_open_in_no_room_reaches_nobody() {
+        let (pubr, sink) = wired();
+        for room in ["", "00000000-0000-0000-0000-000000000000"] {
+            assert!(
+                !pubr.app_opened(room, Transport::Json, "dev.qos.photos", None, "Claude"),
+                "room {room:?} addresses nobody and must not reach the wire",
+            );
+        }
+        assert!(sink.drain().is_empty());
+        let off = PeerPublisher::disabled();
+        assert!(!off.app_opened(
+            "77777777-7777-4777-8777-777777777777",
+            Transport::Json,
+            "dev.qos.photos",
+            None,
+            "Claude",
+        ));
     }
 
     #[test]
