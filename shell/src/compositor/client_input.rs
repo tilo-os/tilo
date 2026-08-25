@@ -937,9 +937,60 @@ pub fn evdev_from_logical(key: &Key) -> Option<u32> {
     named
 }
 
+/// The unshifted key a character sits on, and whether Shift reaches it.
+///
+/// A keycode names a *position*, not a character: 39 is `;` or `:` purely by
+/// whether Shift is held when it is pressed. Letters have always been handled
+/// that way here — `evdev_from_char` lowercases before its lookup, and the
+/// caller holds Shift for a capital. The shifted punctuation marks were not,
+/// and they were not handled some other way either: they simply had no entry,
+/// so `evdev_from_char` answered `None` and the key was never delivered.
+///
+/// That is a silent hole rather than a loud one, and it cost a run of the
+/// cross-application agent proof. A scripted `Claude: make this square` landed
+/// in the document as `Claude make this square` — every letter present, the
+/// colon gone — and `Instruction::addressed`, which matches the literal prefix
+/// `claude:`, therefore never fired. The agent waited its full minute and
+/// reported, correctly, that nothing in the document was addressed to it.
+///
+/// US positions, which is the layout the headless session loads.
+pub(crate) fn unshifted(c: char) -> (char, bool) {
+    let pair = match c {
+        '!' => '1',
+        '@' => '2',
+        '#' => '3',
+        '$' => '4',
+        '%' => '5',
+        '^' => '6',
+        '&' => '7',
+        '*' => '8',
+        '(' => '9',
+        ')' => '0',
+        '_' => '-',
+        '+' => '=',
+        '{' => '[',
+        '}' => ']',
+        ':' => ';',
+        '"' => '\'',
+        '~' => '`',
+        '|' => '\\',
+        '<' => ',',
+        '>' => '.',
+        '?' => '/',
+        _ => {
+            return (c.to_ascii_lowercase(), c.is_ascii_uppercase());
+        }
+    };
+    (pair, true)
+}
+
 /// Single-character → evdev keycode (US layout positions).
+///
+/// Answers about the *position*, so a shifted character resolves to the key
+/// its unshifted twin sits on. Whether Shift is held alongside is the caller's
+/// to say — see [`unshifted`].
 fn evdev_from_char(c: char) -> Option<u32> {
-    let lower = c.to_ascii_lowercase();
+    let (lower, _) = unshifted(c);
     let code = match lower {
         'a' => 30,
         'b' => 48,
@@ -2338,6 +2389,63 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) {
 mod tests {
     use super::*;
     use crate::shell::state::{AppKind, Strip, Workspace, WorkspaceId};
+
+    /// Every printable ASCII character resolves to a key on the board.
+    ///
+    /// The table used to cover the unshifted positions only, and answered
+    /// `None` for every shifted punctuation mark — which is not "typed
+    /// wrongly", it is "not delivered at all". Asserted over the whole
+    /// printable range rather than over the characters somebody thought of,
+    /// because the one that mattered (`:`) was exactly the one nobody had.
+    #[test]
+    fn every_printable_ascii_character_names_a_key() {
+        let missing: Vec<char> = (0x20u8..0x7f)
+            .map(char::from)
+            .filter(|c| evdev_from_char(*c).is_none())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these characters reach a client as nothing at all: {missing:?}",
+        );
+    }
+
+    /// A shifted character names the key its unshifted twin sits on.
+    ///
+    /// A keycode is a position. `:` and `;` are one key, and which of them a
+    /// client sees is decided by Shift, held by the caller — so the mapping
+    /// here must answer with the position and never with a second key.
+    #[test]
+    fn a_shifted_character_shares_its_key_with_the_unshifted_one() {
+        for (shifted, plain) in [
+            (':', ';'),
+            ('"', '\''),
+            ('?', '/'),
+            ('_', '-'),
+            ('+', '='),
+            ('{', '['),
+            ('}', ']'),
+            ('<', ','),
+            ('>', '.'),
+            ('~', '`'),
+            ('|', '\\'),
+            ('!', '1'),
+            (')', '0'),
+        ] {
+            assert_eq!(
+                evdev_from_char(shifted),
+                evdev_from_char(plain),
+                "{shifted:?} and {plain:?} are one key",
+            );
+            assert_eq!(
+                unshifted(shifted),
+                (plain, true),
+                "{shifted:?} is {plain:?} with Shift held",
+            );
+        }
+        assert_eq!(unshifted('a'), ('a', false), "a lowercase letter is bare");
+        assert_eq!(unshifted('A'), ('a', true), "a capital is Shift held");
+    }
+
     use std::time::Duration;
     use winit::event::{DeviceId, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey, SmolStr};
