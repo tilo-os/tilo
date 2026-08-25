@@ -301,6 +301,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import importlib.util
 import json
 import os
@@ -337,18 +338,25 @@ session_exit = _load("session_exit", "session_exit.py")
 # How long after the code exists before xaver redeems it. Long enough to
 # be somebody reading a short code off one screen and walking to
 # another; short enough that nobody watching wonders whether it worked.
-XAVER_DELAY_S = 8.0
+XAVER_DELAY_S = 6.0
 # How long a hold on xaver's screen lasts, at the handover and again at
 # the payoff. Not an excursion any more: the film cuts to him once and
 # stays, so these are pauses to read what is on his screen rather than
-# interruptions of somebody else's.
-EXCURSION_S = 4.0
+# interruptions of somebody else's — and a pause to read one screen is
+# three seconds, not four.
+EXCURSION_S = 3.0
 # Given to the network between the agent saying it applied something and
 # the camera being pointed at the machine that has to have received it.
-SYNC_GRACE_S = 3.0
+# It is a grace, not a beat: the crossing has usually already happened
+# by the time it is asked about, and the readback below fails if it has
+# not, so the seconds bought here are seconds of a screen with nothing
+# on it.
+SYNC_GRACE_S = 2.0
 # Held after the last scripted thing happens, before the take ends by
-# itself. Room either side of the payoff rather than one frame of it.
-DEFAULT_DWELL_S = 6.0
+# itself. Room either side of the payoff rather than one frame of it —
+# three seconds is about two long looks at a finished page, and six was
+# a third of it spent after the film had stopped saying anything.
+DEFAULT_DWELL_S = 3.0
 # The outside limit on one unattended take.
 DEFAULT_DURATION_S = 900.0
 # How long the film waits for somebody to write something in the document
@@ -361,11 +369,39 @@ HANDOVER_GRACE_S = 120.0
 # composer makes, and it is why a narrated take cannot have it: see the
 # note in `main` where the two are reconciled.
 DEFAULT_MAX_HOLD_S = 1.2
+# How long a stretch in which nothing happens is filmed before the camera
+# comes down for the rest of it.
+#
+# The agent's latency is the longest thing in this film and nothing will
+# make it shorter -- but it does not follow that all of it has to be
+# filmed. `Recorder.max_hold` was supposed to take care of it and cannot:
+# it collapses runs of byte-identical frames, and a page with a caret
+# blinking in it is a different page every half second, so a take that
+# waited thirty-nine seconds for a model kept every one of them. Measured
+# on the take of 2026-08-25: 1612 distinct frames over a thirty-nine
+# second stretch whose own transcript called it a still page.
+#
+# `Recorder.patience` is the answer and was written for exactly this,
+# and until now no scene in this file used it. Five seconds is long
+# enough to establish that the machine has been asked for something and
+# is thinking about it; past that a viewer has understood, and every
+# further second is a second of a screen that is not changing. The camera
+# comes back up the instant the agent says or does anything, so what it
+# leaves out is only the silence between.
+FILM_THE_WAIT_S = 5.0
 # How often the watcher looks at anything. Every probe is a `state_dump`
 # and blocks the session it is asked of — including, while recording,
 # the session being filmed — so this is deliberately unhurried. Only one
 # thing is ever polled per tick.
-POLL_S = 0.9
+#
+# It is also the film's latency floor. Nothing in this file happens the
+# instant it becomes possible; it happens at the next tick, and the run
+# reaches its end through some ten of those — xaver seen, the agent
+# admitted, the agent started, the instruction given, the work noticed,
+# the take stopped. At nine tenths of a second each that is most of a
+# beat spent waiting for a poll to come round, on a screen where the
+# thing being waited for has already happened.
+POLL_S = 0.5
 
 
 def mark(title: str) -> None:
@@ -663,6 +699,16 @@ class Live:
         self.chat_posts: list[tuple[float, str]] = []
         #: Whose screen chat was framed on, or None if it never was.
         self.framed_chat_on: str | None = None
+        #: When the film last had something to show, and the camera it
+        #: is holding down until it has something again. See
+        #: `FILM_THE_WAIT_S`.
+        self.quiet_since: float | None = None
+        self.camera_down: contextlib.ExitStack | None = None
+        #: The stretches the camera spent down, `(from, to)`. Kept so
+        #: `report_the_wait` can tell a still page that was filmed from
+        #: one that was not -- the first is a defect of the cut and the
+        #: second is the cut working.
+        self.dark: list[tuple[float, float]] = []
         self.finished = ""
 
         self.started = time.time()
@@ -1379,12 +1425,68 @@ class Live:
     #: measure of whether chat was worth pointing it at.
     POSTED = re.compile(r"put the agent's state in the room.*?state: (\w+)")
 
+    # -- filming a wait without filming all of it ---------------------
+
+    def something_is_happening(self) -> None:
+        """The film has something to show again: camera up, clock reset.
+
+        Called from every place the agent changes what is on screen --
+        a state published into chat, a change applied to the document,
+        its process ending. Ordering matters at the first of those: the
+        camera comes up *before* chat is framed, so the reframe is a
+        thing a viewer watches happen rather than a cut that lands on a
+        window already moved.
+        """
+        self.camera_back_up()
+        self.quiet_since = time.time()
+
+    def mind_the_wait(self) -> None:
+        """Take the camera down once a wait has been established.
+
+        Only ever after the agent has been spoken to. Before that the
+        person at xaver's keyboard may still be reaching for the mouse --
+        under `--no-instruction` that gesture is a hand, not a script --
+        and a camera that comes down on somebody working is not an edit,
+        it is a missing shot.
+        """
+        if self.recorder is None or self.quiet_since is None:
+            return
+        if self.camera_down is not None:
+            return
+        if time.time() - self.quiet_since < FILM_THE_WAIT_S:
+            return
+        stack = contextlib.ExitStack()
+        stack.enter_context(self.recorder.hold_off())
+        self.camera_down = stack
+        self.dark.append((time.time(), 0.0))
+        self.say(f"nothing has changed for {FILM_THE_WAIT_S:.0f}s — the "
+                 f"camera comes down until Claude says or does something")
+
+    def camera_back_up(self) -> None:
+        if self.camera_down is None:
+            return
+        stack, self.camera_down = self.camera_down, None
+        began, _ = self.dark[-1]
+        self.dark[-1] = (began, time.time())
+        stack.close()
+        self.say(f"the camera is back up after {time.time() - began:.0f}s "
+                 f"of waiting")
+
+    def filmed(self, a: float, b: float) -> float:
+        """How much of `a`..`b` the camera was actually up for."""
+        dark = sum(max(0.0, min(b, end or b) - max(a, begin))
+                   for begin, end in self.dark)
+        return max(0.0, (b - a) - dark)
+
     def check_the_agent(self) -> None:
         """Whether it has done anything, and whether it has finished."""
         fresh = self.agent_tail.read() if self.agent_tail else ""
         if not self.spoken_to_at and self.SPOKEN_TO.search(fresh):
             self.spoken_to_at = time.time()
             self.say("Claude has been spoken to in the room and is deciding")
+            # And the wait starts here, not at process start: everything
+            # before this is somebody's hand on a mouse.
+            self.quiet_since = self.spoken_to_at
         # Counted off the whole log rather than off this poll's chunk. A
         # read lands wherever the writer had got to, so a line can arrive
         # in two halves — and half of one of these carries neither the
@@ -1403,6 +1505,7 @@ class Live:
             # nothing points the camera at chat until chat has something
             # in it that the agent put there.
             self.chat_posts.append((time.time(), state))
+            self.something_is_happening()
             self.say(f"Claude put {state} in the room "
                      f"({len(self.chat_posts)} so far)")
             if not self.watched_it_think:
@@ -1411,6 +1514,7 @@ class Live:
         hit = self.APPLIED.search(fresh)
         if hit and not self.agent_applied:
             self.agent_applied = True
+            self.something_is_happening()
             self.say(f"Claude acted — {hit.group(0).strip()[:110]}")
             # The change is going into the document *now*, so the
             # document is what the camera should be on. Anything later
@@ -1420,6 +1524,7 @@ class Live:
             return
         code = self.agent_proc.returncode
         self.agent_done_at = time.time()
+        self.something_is_happening()
         self.report_the_wait()
         if code == 0:
             yc.claim("the agent answered an instruction written to it "
@@ -1596,11 +1701,25 @@ class Live:
         # counting alone calls that well covered. The tail counts too —
         # the frame goes on being held after the last thing was said.
         edges = [began or at[0]] + at + [self.agent_done_at or at[-1]]
-        still = max(b - a for a, b in zip(edges, edges[1:]))
-        if still > self.LONGEST_STILL_S:
+        gaps = list(zip(edges, edges[1:]))
+        still = max(b - a for a, b in gaps)
+        # Asked of the film rather than of the clock. A stretch the agent
+        # did not change is a defect only if it was filmed; the same
+        # stretch with the camera down is the cut doing its job, and
+        # reporting the two the same way is how the remedy would look
+        # like the fault. Both numbers are printed, so a `patience` that
+        # silently stopped working shows up as the pair converging rather
+        # than as a gap that simply stopped being raised.
+        filmed = max(self.filmed(a, b) for a, b in gaps)
+        dark = sum((b - a) - self.filmed(a, b) for a, b in gaps)
+        self.say(f"the longest stretch it changed nothing was {still:.0f}s; "
+                 f"{filmed:.0f}s of it was filmed, {dark:.0f}s of the "
+                 f"waiting was not")
+        if filmed > self.LONGEST_STILL_S:
             yc.gap(f"the longest the frame went without the agent changing "
                    f"it was {still:.0f}s, out of a working period of "
-                   f"{span:.0f}s — that stretch is a still picture")
+                   f"{span:.0f}s, and {filmed:.0f}s of that was filmed — "
+                   f"that stretch is a still picture")
 
     def read_back_what_it_wrote(self) -> None:
         """Ask the document what is in it, rather than the log what happened.
@@ -1844,6 +1963,7 @@ class Live:
             self.waiting = ("Claude is working" if self.agent_applied
                             else "Claude waits to be spoken to")
             self.check_the_agent()
+            self.mind_the_wait()
             return
 
         if self.agent_done_at:
@@ -1871,20 +1991,27 @@ class Live:
         self.waiting = "you — Ctrl-C in this terminal ends the take"
 
     def run(self) -> str:
-        while not self.stop.is_set() and not self.finished:
-            if time.time() > self.deadline:
-                self.finished = f"the {self.args.duration:.0f}s cap"
-                break
-            try:
-                self.tick()
-            except Exception as exc:  # noqa: BLE001 — the report is the product
-                import traceback
-                traceback.print_exc()
-                yc.FAILURES.append(f"{type(exc).__name__}: {exc}")
-                self.finished = f"{type(exc).__name__}: {exc}"
-                break
-            self.status()
-            self.stop.wait(POLL_S)
+        try:
+            while not self.stop.is_set() and not self.finished:
+                if time.time() > self.deadline:
+                    self.finished = f"the {self.args.duration:.0f}s cap"
+                    break
+                try:
+                    self.tick()
+                except Exception as exc:  # noqa: BLE001 — the report is the product
+                    import traceback
+                    traceback.print_exc()
+                    yc.FAILURES.append(f"{type(exc).__name__}: {exc}")
+                    self.finished = f"{type(exc).__name__}: {exc}"
+                    break
+                self.status()
+                self.stop.wait(POLL_S)
+        finally:
+            # However this ends, the camera does not stay down. A take
+            # abandoned mid-wait would otherwise compose whatever was on
+            # screen before the wait as its last frame, and a run that
+            # stopped is a different thing from a run that was edited.
+            self.camera_back_up()
         if isinstance(sys.stdout, Console):
             sys.stdout.status("")
         return self.finished or "you stopped it"
@@ -1936,8 +2063,14 @@ def _the_owners_half(q, shots: str, live: "Live",
     # laying the mark on the far side of it charged those seconds to
     # nothing: a take measured at 114.1s of picture accounted for 111.1s
     # across its beats, and the missing three were this one.
+    #
+    # Long enough to establish that the desktop is empty and no longer,
+    # which is under a second: there is one thing to see and nothing is
+    # moving. Three seconds of it was a thirty-seventh of the whole film
+    # spent on a still picture of nothing, before anybody had touched
+    # the machine.
     mark("an empty desktop")
-    stop.wait(3.0)
+    stop.wait(0.8)
     if stop.is_set():
         return
     print("\n  [ --self-test: driving the owner's half ]", flush=True)
@@ -1964,9 +2097,10 @@ def _the_owners_half(q, shots: str, live: "Live",
     # and truer; four full-length searches in a row spends a minute of a
     # hundred-second film on opening things.
     mark("chat opens, through the search")
-    chat = q.launch(yc.CHAT_APP, search="chat", via="palette", look=1.0)
+    chat = q.launch(yc.CHAT_APP, search="chat", via="palette",
+                    look=0.9, read=1.1)
     yc.claim("chat opened", chat is not None, True)
-    stop.wait(0.4)
+    stop.wait(0.15)
 
     mark("Files opens")
     # Granted before it starts, not asked for after.
@@ -2020,19 +2154,21 @@ def _the_owners_half(q, shots: str, live: "Live",
          .get("answer", {}).get("granted") is not None,
         True,
     )
-    files = q.launch(yc.FILES_APP, search="files", via="palette", look=0.45)
+    files = q.launch(yc.FILES_APP, search="files", via="palette",
+                     look=0.25, read=0.45)
     yc.claim("Files opened", files is not None, True)
-    stop.wait(0.4)
+    stop.wait(0.15)
 
     # Its own group, or the placement rule tabs it in behind what is
     # already there and the strip has one window where the scene wants two.
     mark("the word processor opens")
     q.place_next_window(yc.WORD_PROCESSOR)
-    wp = q.launch(yc.WORD_PROCESSOR, search="word", via="palette", look=0.45)
+    wp = q.launch(yc.WORD_PROCESSOR, search="word", via="palette",
+                  look=0.25, read=0.45)
     yc.claim("the word processor opened", wp is not None, True)
     if wp is None:
         return
-    stop.wait(0.6)
+    stop.wait(0.25)
 
     # The image editor is deliberately *not* in this run. Three
     # applications is the set somebody opens to start work; a fourth
@@ -2049,11 +2185,11 @@ def _the_owners_half(q, shots: str, live: "Live",
     except Exception as exc:  # noqa: BLE001
         yc.gap(f"the two windows could not be framed ({type(exc).__name__}: "
                f"{exc}); the strip is left where it is")
-    stop.wait(0.8)
+    stop.wait(0.3)
 
     # Now the people, into a workspace that already has something in it.
     mark("inviting xaver")
-    yc.show_collaborators(q)
+    yc.show_collaborators(q, settle=0.8)
     token = yc.invite_from_the_panel(q, "xaver", shots, "live-invite")
     yc.claim("an invitation was minted from the panel", bool(token), True)
 
@@ -2061,9 +2197,18 @@ def _the_owners_half(q, shots: str, live: "Live",
     # member like any other. Raised again on an empty field -- the
     # composer used to keep the previous answer, so a second invitation
     # came out addressed to "XaverXaver".
+    # The same card, held for less time. What the second invitation adds
+    # is that an agent is admitted by the mechanism a person is admitted
+    # by — one more name in one more field — and that reads at a glance
+    # off a card a viewer finished reading fifteen seconds ago. Nothing
+    # is skipped: the panel is opened by its own affordance, the composer
+    # still asks who, the token is still minted and still proved to be on
+    # the clipboard, and the name in the field is held for exactly as
+    # long as xaver's was, because that name is what the beat is for.
     mark("inviting Claude — the same card, admitted as an agent")
-    yc.show_collaborators(q)
-    agent_token = yc.invite_from_the_panel(q, "Claude", shots, "live-invite-2")
+    yc.show_collaborators(q, settle=0.4)
+    agent_token = yc.invite_from_the_panel(q, "Claude", shots, "live-invite-2",
+                                           read=0.45)
     yc.claim("a second invitation was minted, for the agent",
              bool(agent_token), True)
     # Both, then distinct -- in that order, and never `a != b` on its own.
@@ -2080,7 +2225,7 @@ def _the_owners_half(q, shots: str, live: "Live",
              bool(token) and bool(agent_token) and agent_token != token,
              True)
     yc.close_collaborators(q)
-    stop.wait(0.8)
+    stop.wait(0.3)
 
     # Four applications, two in frame, and two of them made one window.
     #
@@ -2095,7 +2240,7 @@ def _the_owners_half(q, shots: str, live: "Live",
         photos = q.launch(yc.IMAGE_EDITOR,
                           search=yc.STRIP_SEARCH.get(yc.IMAGE_EDITOR,
                                                      "photos"),
-                          via="palette", look=0.45)
+                          via="palette", look=0.25, read=0.45)
         yc.claim("the image editor opened", photos is not None, True)
     if photos is not None:
         extras[yc.IMAGE_EDITOR] = photos
@@ -2107,7 +2252,7 @@ def _the_owners_half(q, shots: str, live: "Live",
         except Exception as exc:  # noqa: BLE001
             yc.gap(f"the strip scene did not complete "
                    f"({type(exc).__name__}: {exc})")
-    stop.wait(0.8)
+    stop.wait(0.3)
 
     # A few words, and that is the whole beat.
     #
