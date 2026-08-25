@@ -1167,11 +1167,12 @@ class Live:
             yc.gap(f"the camera could not be pointed at chat for the agent's "
                    f"working period ({type(exc).__name__}: {exc})")
 
-    #: How many things the agent has to put in the room before the
-    #: stretch it spends deciding counts as filled. Three is the least
-    #: that reads as motion rather than as one thing appearing: a state
-    #: taken, what it decided the request was, and how it ended.
-    ENOUGH_TO_WATCH = 3
+    #: The longest the frame may go without changing before the stretch
+    #: stops being watchable. Eight seconds is about where a viewer who
+    #: has never seen this system decides the picture is frozen; it is
+    #: not a measurement, and it is a great deal more generous than
+    #: anything a cut would keep.
+    LONGEST_STILL_S = 8.0
 
     def report_the_wait(self) -> None:
         """What was on screen while the agent decided, and how often it moved.
@@ -1207,7 +1208,8 @@ class Live:
                    f"whole working period was filmed as a still page — "
                    f"{how}")
             return
-        span = self.chat_posts[-1][0] - (began or self.chat_posts[0][0])
+        at = [t for t, _s in self.chat_posts]
+        span = at[-1] - (began or at[0])
         states = ", ".join(s for _t, s in self.chat_posts)
         self.say(f"Claude's working period carried {len(self.chat_posts)} "
                  f"change(s) over {span:.0f}s: {states}")
@@ -1215,10 +1217,17 @@ class Live:
             yc.gap("Claude narrated itself in the room and the camera was "
                    "never pointed at it, so the take has the account and "
                    "not the shot")
-        if len(self.chat_posts) < self.ENOUGH_TO_WATCH:
-            yc.gap(f"{len(self.chat_posts)} change(s) over {span:.0f}s is "
-                   f"not enough to hold a stretch that long — the frame is "
-                   f"still for most of it")
+        # The count is not the question a viewer asks; the longest wait
+        # between two of them is. Five changes with four of them in the
+        # first second is a still page with a flurry on the front, and
+        # counting alone calls that well covered. The tail counts too —
+        # the frame goes on being held after the last thing was said.
+        edges = [began or at[0]] + at + [self.agent_done_at or at[-1]]
+        still = max(b - a for a, b in zip(edges, edges[1:]))
+        if still > self.LONGEST_STILL_S:
+            yc.gap(f"the longest the frame went without the agent changing "
+                   f"it was {still:.0f}s, out of a working period of "
+                   f"{span:.0f}s — that stretch is a still picture")
 
     def read_back_what_it_wrote(self) -> None:
         """Ask the document what is in it, rather than the log what happened.
