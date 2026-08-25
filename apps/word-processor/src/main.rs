@@ -189,6 +189,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         // action the agent invokes, which re-hashes the bytes and refuses a
         // blob it does not hold.
         if scenario.as_deref() == Some("placed") {
+            // Sync once first. A fresh `State` holds an *unseeded* document —
+            // no schema and no body — and it is the widget's own `sync` that
+            // brings those into existence. Placing before that ran wrote into
+            // a document with nowhere to write: the action reported success,
+            // the page rendered empty, and the still would have been a
+            // photograph of the hand-off not happening.
+            wp.sync(&mut state.doc, &state.root);
             match place_image_for_shots(&mut state, image.as_deref()) {
                 Ok(hash) => eprintln!("word-processor: placed {hash}"),
                 Err(e) => eprintln!("word-processor: nothing was placed — {e}"),
@@ -266,6 +273,11 @@ fn place_image_for_shots(
         .map(|c| qdoc::model::materialize(&state.doc, &c).blocks)
         .unwrap_or_default();
     let after = blocks.last().map(|b| b.id.clone()).unwrap_or_default();
+    eprintln!(
+        "word-processor: the document has {} block(s) before placing; anchoring after {:?}",
+        blocks.len(),
+        after
+    );
     let action = word_processor::actions::place_image_action(&after, &hash);
     let mut registry = qos_actions::ActionRegistry::new();
     word_processor::actions::register(&mut registry);
@@ -274,6 +286,20 @@ fn place_image_for_shots(
         .decode(&encoded)
         .map_err(|_| "the editor registered nothing that can decode its own PlaceImage")?;
     decoded.apply(&mut state.doc).map_err(|e| e.to_string())?;
+    // What the document holds now, said out loud. A scenario that reported a
+    // placement and rendered an empty page would be the exact failure these
+    // stills exist to rule out.
+    let kinds: Vec<String> = qdoc::model::open(&state.doc, &automerge::ROOT)
+        .ok()
+        .map(|c| {
+            qdoc::model::materialize(&state.doc, &c)
+                .blocks
+                .iter()
+                .map(|b| b.kind.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    eprintln!("word-processor: the document now holds {kinds:?}");
     Ok(hash)
 }
 
