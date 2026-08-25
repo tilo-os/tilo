@@ -11992,6 +11992,7 @@ dependencies = [
  "russh",
  "serde",
  "serde_json",
+ "serial_test",
  "taffy",
  "tokio",
  "tracing",
