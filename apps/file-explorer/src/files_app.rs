@@ -414,6 +414,7 @@ impl FileExplorerWidget {
         self.toolbar.set_context(
             self.current_path.clone(),
             self.home_path.clone(),
+            self.workspace_roots.clone(),
             can_back,
             can_forward,
             can_up,
@@ -4494,6 +4495,7 @@ mod breadcrumb_home_tests {
         let labels: Vec<String> = crate::breadcrumbs::breadcrumb_components(
             &deep,
             widget_home.as_deref(),
+            &[],
         )
         .into_iter()
         .map(|(label, _)| label)

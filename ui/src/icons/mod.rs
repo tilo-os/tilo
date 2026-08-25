@@ -806,13 +806,24 @@ pub fn icon_for_app_id(app_id: &str) -> Icon {
 /// still know what *sort* of app it is hosting, and the sort is more
 /// than "an application".
 ///
-/// Matching is on the id's trailing segment, case-insensitively, so the
-/// compositor's own reverse-DNS ids for the apps it draws in-process
-/// (`org.nirios.Files`) resolve to the same glyph as the packaged ones
-/// (`dev.qos.file-explorer`). Two ids for one program must not be two
-/// pictures of it.
+/// Matching is on the id's trailing segment, case-folded and with word
+/// separators normalised, so every spelling of one program's name lands
+/// on one glyph: the packaged id (`dev.qos.word-processor`), the
+/// compositor's own id for an app it draws in-process
+/// (`org.nirios.Files`), and the id it mints from a display label when a
+/// tab is rebuilt from its title alone (`org.nirios.Word Processor`).
+/// Two ids for one program must not be two pictures of it.
 pub fn known_icon_for_app_id(app_id: &str) -> Option<Icon> {
-    let name = app_id.rsplit('.').next().unwrap_or(app_id).to_ascii_lowercase();
+    let name: String = app_id
+        .rsplit('.')
+        .next()
+        .unwrap_or(app_id)
+        .chars()
+        .map(|c| match c {
+            ' ' | '_' => '-',
+            c => c.to_ascii_lowercase(),
+        })
+        .collect();
     let icon = match name.as_str() {
         "file-explorer" | "files" => Icon::Folder,
         "terminal" => Icon::Terminal,
