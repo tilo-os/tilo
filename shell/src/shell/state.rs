@@ -6400,6 +6400,191 @@ impl WorkspaceTree {
         None
     }
 
+    /// Put `tab_id` in `dest_group` at `dest_index`, taking it out of
+    /// wherever the tree currently has it.
+    ///
+    /// The tree's only tab-move was [`Self::move_tab_across_strips`],
+    /// which refuses a move whose source and destination strips are the
+    /// same — so dropping a tab on a sibling's tab bar, on its tile, or
+    /// tearing it into a new group beside it changed the widget row and
+    /// nothing else. It looked right until the next revision bump, at
+    /// which point the resync rebuilt the row from a tree that still had
+    /// the tab in the group it came from, and the move undid itself.
+    ///
+    /// Removes *every* occurrence of the tab before inserting, so this
+    /// also collapses a tab that ended up listed twice. Prunes a source
+    /// group the move empties, and moves `active_tab` / `active_group`
+    /// off anything that went away. The tab becomes the destination
+    /// group's active tab, which is what the widget's
+    /// `insert_detached_tab` does on the other side of the same
+    /// gesture.
+    ///
+    /// Returns `true` when the tree changed. `false` when the tab is
+    /// already exactly there, when there is no such tab, or when there
+    /// is no such destination group — in the last case nothing is
+    /// removed either, so a destination that disappeared mid-gesture
+    /// costs the move, never the tab.
+    pub fn place_tab(&mut self, tab_id: TabId, dest_group: GroupId, dest_index: usize) -> bool {
+        // Look before leaping: resolve the destination first, so a
+        // missing one is a refusal rather than a deletion.
+        let dest_exists = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .any(|g| g.id == dest_group);
+        if !dest_exists {
+            return false;
+        }
+        let mut payload: Option<Tab> = None;
+        let mut occurrences: Vec<(GroupId, usize)> = Vec::new();
+        for group in self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+        {
+            if let Some(idx) = group.tabs.iter().position(|t| t.id == tab_id) {
+                if payload.is_none() {
+                    payload = Some(group.tabs[idx].clone());
+                }
+                occurrences.push((group.id, idx));
+            }
+        }
+        let Some(tab) = payload else { return false };
+        if occurrences.as_slice() == [(dest_group, dest_index)] {
+            return false;
+        }
+
+        // Take it out of everywhere it currently is.
+        let mut touched: Vec<GroupId> = Vec::new();
+        let mut emptied: Vec<(StripId, GroupId)> = Vec::new();
+        for ws in self.workspaces.iter_mut() {
+            for strip in ws.strips.iter_mut() {
+                let strip_id = strip.id;
+                for group in strip.window_groups.iter_mut() {
+                    let before = group.tabs.len();
+                    group.tabs.retain(|t| t.id != tab_id);
+                    if group.tabs.len() == before {
+                        continue;
+                    }
+                    touched.push(group.id);
+                    if group.active_tab == tab_id {
+                        group.active_tab = group.tabs.first().map(|t| t.id).unwrap_or(0);
+                    }
+                    if group.tabs.is_empty() && group.id != dest_group {
+                        emptied.push((strip_id, group.id));
+                    }
+                }
+            }
+        }
+
+        // And put it where the drop said.
+        if let Some(group) = self
+            .workspaces
+            .iter_mut()
+            .flat_map(|ws| ws.strips.iter_mut())
+            .flat_map(|s| s.window_groups.iter_mut())
+            .find(|g| g.id == dest_group)
+        {
+            let at = dest_index.min(group.tabs.len());
+            group.tabs.insert(at, tab);
+            group.active_tab = tab_id;
+        }
+        if !touched.contains(&dest_group) {
+            touched.push(dest_group);
+        }
+
+        for (strip_id, group_id) in &emptied {
+            for ws in self.workspaces.iter_mut() {
+                if let Some(strip) = ws.strips.iter_mut().find(|s| s.id == *strip_id) {
+                    strip.window_groups.retain(|g| g.id != *group_id);
+                }
+            }
+            if self.active_group.get(strip_id) == Some(group_id) {
+                let fallback = self
+                    .workspaces
+                    .iter()
+                    .flat_map(|ws| ws.strips.iter())
+                    .find(|s| s.id == *strip_id)
+                    .and_then(|s| s.window_groups.last().map(|g| g.id));
+                match fallback {
+                    Some(next) => {
+                        self.active_group.insert(*strip_id, next);
+                    }
+                    None => {
+                        self.active_group.remove(strip_id);
+                    }
+                }
+            }
+        }
+
+        // Mirror into the doc from the cache we just settled, so a peer
+        // and a rebuild-from-doc read the same placement.
+        for (_, group_id) in &emptied {
+            self.doc_remove_group(*group_id);
+        }
+        let surviving: Vec<(GroupId, Vec<Tab>)> = touched
+            .iter()
+            .filter(|gid| !emptied.iter().any(|(_, e)| e == *gid))
+            .filter_map(|gid| {
+                self.workspaces
+                    .iter()
+                    .flat_map(|ws| ws.strips.iter())
+                    .flat_map(|s| s.window_groups.iter())
+                    .find(|g| g.id == *gid)
+                    .map(|g| (g.id, g.tabs.clone()))
+            })
+            .collect();
+        for (group_id, tabs) in surviving {
+            self.doc_rewrite_group_tabs(group_id, &tabs);
+        }
+        true
+    }
+
+    /// Delete `group_id`'s entry from the doc's strip list.
+    ///
+    /// The doc twin of pruning a group out of the cache. Without it a
+    /// group the cache dropped comes back the next time the cache is
+    /// rebuilt from the doc.
+    fn doc_remove_group(&mut self, group_id: GroupId) -> bool {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() else {
+            return false;
+        };
+        for ws_idx in 0..self.doc.length(&workspaces_id) {
+            let Some((_, ws_entry)) = self.doc.get(&workspaces_id, ws_idx).ok().flatten() else {
+                continue;
+            };
+            let Some((_, strips_id)) = self.doc.get(&ws_entry, "strips").ok().flatten() else {
+                continue;
+            };
+            for s_idx in 0..self.doc.length(&strips_id) {
+                let Some((_, strip_entry)) = self.doc.get(&strips_id, s_idx).ok().flatten() else {
+                    continue;
+                };
+                let Some((_, groups_id)) =
+                    self.doc.get(&strip_entry, "window_groups").ok().flatten()
+                else {
+                    continue;
+                };
+                for g_idx in 0..self.doc.length(&groups_id) {
+                    let Some((_, group_entry)) = self.doc.get(&groups_id, g_idx).ok().flatten()
+                    else {
+                        continue;
+                    };
+                    if let Some((Value::Scalar(v), _)) =
+                        self.doc.get(&group_entry, "id").ok().flatten()
+                        && matches!(v.as_ref(), ScalarValue::Uint(id) if *id == group_id)
+                    {
+                        return self.doc.delete(&groups_id, g_idx).is_ok();
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Mirror a cross-strip tab drag-drop into the persisted tree (#151).
     ///
     /// The widget side of the cross-strip drag (`GroupRow::accept_cross_strip_drop`)

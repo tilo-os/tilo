@@ -5674,6 +5674,112 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Mirror where the widget rows say each tab lives into the tree.
+    ///
+    /// [`Self::harvest_widget_only_groups_into_tree`] mirrors a *group*
+    /// the widget grew; this mirrors a *tab* the widget moved. Dropping
+    /// a tab on a sibling group's tab bar, on its tile, or tearing it
+    /// out beside its neighbours all mutate `GroupRow::groups` and
+    /// nothing else, and the tree's own tab-move refuses a move that
+    /// stays inside one strip. So the drop worked on screen right up
+    /// until the next revision bump rebuilt the row from a tree that
+    /// still had the tab in the group it came from.
+    ///
+    /// Runs after the group harvest, so a tab torn into a brand-new
+    /// group has somewhere to be placed — and so the copy that harvest
+    /// leaves behind in the tab's old group is collapsed here rather
+    /// than left to be read as a second window.
+    ///
+    /// Conservative in one direction on purpose: it only speaks for
+    /// tabs a live row is currently holding. A tab the tree has that no
+    /// row shows is left alone, because that is what a window opened by
+    /// a peer looks like in the frames before this machine builds a row
+    /// for it.
+    fn harvest_widget_tab_placement_into_tree(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        // Same revision guard as the group harvest, for the same
+        // reason: a tree that changed since the last resync is the
+        // newer story, and the widget is about to be rebuilt from it.
+        {
+            let cur_rev = chrome.borrow().revision;
+            if cur_rev != self.last_chrome_revision {
+                return;
+            }
+        }
+        // Only the tabs the two layers disagree about. Quiescent frames
+        // are the overwhelming majority and this runs on every one of
+        // them, so the disagreement is found with one walk of each side
+        // rather than a tree scan per tab.
+        let mut moves: Vec<(u64, GroupId, usize)> = Vec::new();
+        {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            // Where the tree has each tab, and how many times. More
+            // than once is itself a disagreement worth settling.
+            let mut placed: std::collections::HashMap<u64, (GroupId, usize, usize)> =
+                std::collections::HashMap::new();
+            for group in tree
+                .workspaces
+                .iter()
+                .flat_map(|w| w.strips.iter())
+                .flat_map(|s| s.window_groups.iter())
+            {
+                for (idx, tab) in group.tabs.iter().enumerate() {
+                    placed
+                        .entry(tab.id)
+                        .and_modify(|e| e.2 += 1)
+                        .or_insert((group.id, idx, 1));
+                }
+            }
+            let Some(ws) = tree.workspaces.iter().find(|w| w.id == tree.active) else {
+                return;
+            };
+            for strip in &ws.strips {
+                let Some(&ptr) = self.group_row_ptrs.get(&strip.id) else {
+                    continue;
+                };
+                // SAFETY: same contract as every other `group_row_ptrs`
+                // accessor.
+                let row: &GroupRow = unsafe { &*ptr };
+                for wg in row.groups.iter() {
+                    if wg.close_in_flight() {
+                        continue;
+                    }
+                    for (idx, desc) in wg.tabs().iter().enumerate() {
+                        // A tab the tree has never heard of is the
+                        // group harvest's business, not this one's.
+                        let Some(&(gid, at, count)) = placed.get(&desc.id) else {
+                            continue;
+                        };
+                        if count == 1 && gid == wg.id && at == idx {
+                            continue;
+                        }
+                        moves.push((desc.id, wg.id, idx));
+                    }
+                }
+            }
+        }
+        if moves.is_empty() {
+            return;
+        }
+        let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        for (tab_id, group_id, idx) in moves {
+            tree.place_tab(tab_id, group_id, idx);
+        }
+    }
+
+    /// Test hook for the tab-placement harvest — mirrors the per-frame
+    /// call the update / layout paths make.
+    pub fn tick_tab_placement_harvest_for_tests(&mut self) {
+        self.harvest_widget_tab_placement_into_tree();
+    }
+
     /// Snapshot the `(strip_id, group_id, rect)` triples from the live
     /// per-strip [`GroupRow`] pointers, in traversal order. Shared by the
     /// click-focus stamp and the file-drop router so both resolve a
@@ -9978,6 +10084,10 @@ impl Widget for ShellOverlayHost {
         // and evicts X, which was the 2026-07-09 "window group
         // disappears after Ctrl+K" repro.
         self.harvest_widget_only_groups_into_tree();
+        // …then where each tab sits inside those groups. Second,
+        // because a tab torn into a brand-new group needs the group to
+        // exist before it can be placed in it.
+        self.harvest_widget_tab_placement_into_tree();
         // Pump the chrome-revision diff here too — the shots driver's
         // `relayout()` path skips `update()` entirely (it only takes
         // structure_dirty + reruns the layout pass), so the resync
