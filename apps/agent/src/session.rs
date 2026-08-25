@@ -182,6 +182,13 @@ pub struct Session {
     /// name a file in the folder next to it, because the folder is here
     /// too.
     peers: BTreeMap<&'static str, Editor>,
+    /// The resource the request being answered named, when it named one.
+    ///
+    /// Set for the turn and cleared with it. It reaches the apps through
+    /// [`View::subject`], which is how an app can answer about the object
+    /// somebody actually pointed at rather than about wherever the agent
+    /// happens to be looking.
+    subject: Option<String>,
     /// Decoders for every app the agent speaks to. The door decodes through
     /// this before dispatching, so an action whose type no app registered is
     /// refused rather than run on trust.
@@ -711,6 +718,7 @@ impl Session {
             link,
             editor: None,
             peers: BTreeMap::new(),
+            subject: None,
             registry: surface::registry(),
             handled: HashSet::new(),
             pending: None,
@@ -766,6 +774,7 @@ impl Session {
             target_blocks: focus_block.iter().cloned().collect(),
             focus_block,
             focus_offset,
+            subject: self.subject.clone(),
             directory: self.cfg.directory.clone(),
         }
     }
@@ -1456,6 +1465,10 @@ impl Session {
         }
         self.addressed_seen = true;
         self.handled.insert(summons.message.clone());
+        // What this turn is about, for as long as the turn lasts. Every survey
+        // and every product taken below is asked with it, so an app answers
+        // about the object that was pointed at.
+        self.subject = summons.subject.resource().map(str::to_string);
         tracing::info!(
             message = %summons.message,
             channel = %summons.channel,
@@ -1481,9 +1494,30 @@ impl Session {
         // parsing "this", and how a request about one thing cannot come out
         // as an operation on another.
         let scoped: Vec<Offer> = match summons.subject.resource() {
+            // Plus the opens, always. An open names an **application**, not a
+            // resource, so it is never the "operation on another thing" this
+            // narrowing exists to prevent — and dropping it made the
+            // commonest request in this system impossible to answer.
+            //
+            // The gesture that carries a subject is right-clicking an object
+            // and saying something about it, so the subject is that object's
+            // address: a photograph in the file manager, say. Everything the
+            // *room* could do with that photograph then lives in an
+            // application that is not running, and the only offer that could
+            // bring one in was filtered out for naming something other than
+            // the photograph. What was left was that file's own operations —
+            // rename it, delete it — so "make this square" could only ever
+            // come back as "nothing here does that".
+            //
+            // Narrowing what may be *acted on* is the claim, and it still
+            // holds: an open performs nothing to any resource. It changes
+            // what the next survey contains, and that survey is scoped again.
             Some(resource) => offers
                 .iter()
-                .filter(|o| o.address().resource == resource)
+                .filter(|o| {
+                    o.address().resource == resource
+                        || surface::opens(o.address()).is_some()
+                })
                 .cloned()
                 .collect(),
             None => offers.clone(),
