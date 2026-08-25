@@ -273,6 +273,10 @@ pub struct App {
     /// which case available space changed and we must recompute. `None` until
     /// the first solve.
     last_layout_px: Option<(u32, u32)>,
+    /// The resource-address → rect map this app last said out loud (see
+    /// [`App::narrate_resource_rects`]). Held so an unchanged layout is
+    /// reported once rather than sixty times a second.
+    last_resource_rects: std::collections::HashMap<String, vello::kurbo::Rect>,
     pub theme: Theme,
     pub debug_mode: bool,
     pub focused_node: Option<NodeId>,
@@ -560,6 +564,7 @@ impl App {
             // fields they depend on (base_theme, a11y, text_scale) exist.
             last_frame_size: None,
             last_layout_px: None,
+            last_resource_rects: std::collections::HashMap::new(),
             theme: Theme::configured(),
             debug_mode: cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
             focused_node: None,
@@ -2372,6 +2377,59 @@ impl App {
     /// undo stack, unreachable by the person who performed it.
     pub fn local_author(&self) -> &crate::permissions::UserId {
         &self.local_author
+    }
+
+    /// Say where this window is currently drawing each of the resources it
+    /// publishes, once per layout that changes it.
+    ///
+    /// The counterpart of the app's resource tree, and the half nothing
+    /// outside this process could otherwise have. An app's widgets are not in
+    /// the compositor's registry — a client's rows are pixels the shell did
+    /// not draw — so an address is the *only* handle anything outside has on
+    /// an object in here, and an address deliberately carries no coordinates.
+    /// This is the app answering the one question the address cannot: "and
+    /// whereabouts is it, right now."
+    ///
+    /// Coordinates are this window's own, its top-left as the origin, the
+    /// same space [`Widget::get_rect`] and the `remark compose opened` line
+    /// use. Adding the window's placement gives a point on the desktop, which
+    /// only the compositor knows. Nothing here is remembered by the reader,
+    /// and nothing here should be: a rect is a fact about one frame.
+    ///
+    /// Emitted only when the map changes. A file manager sitting still says
+    /// this once; one being scrolled says it per settled layout.
+    fn narrate_resource_rects(&mut self) {
+        // The walk is not free on a deep tree, and this is a per-layout path
+        // on every app in the suite. Nobody listening, nobody pays.
+        if !tracing::enabled!(target: "ui::resources", tracing::Level::DEBUG) {
+            return;
+        }
+        let rects = crate::widget::collect_resource_rects(self.root_widget.as_ref());
+        if rects == self.last_resource_rects {
+            return;
+        }
+        self.last_resource_rects = rects;
+        // JSON rather than a field list: a resource id is minted by the app
+        // and a file's is a path, which can hold every separator a homemade
+        // encoding would choose. `[x0, y0, x1, y1]`, matching `Rect`'s own
+        // reading of itself so neither end has to remember which of the four
+        // numbers are sizes.
+        let map: serde_json::Map<String, serde_json::Value> = self
+            .last_resource_rects
+            .iter()
+            .map(|(id, r)| {
+                (
+                    id.clone(),
+                    serde_json::json!([r.x0, r.y0, r.x1, r.y1]),
+                )
+            })
+            .collect();
+        tracing::debug!(
+            target: "ui::resources",
+            surface = %crate::local_surface_id(),
+            at = %serde_json::Value::Object(map),
+            "resources laid out",
+        );
     }
 
     fn update_focusable_order(&mut self) {
@@ -4219,6 +4277,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     if must_compute {
                         app.update_focusable_order();
                     }
+                    app.narrate_resource_rects();
                 }
 
                 let t_draw_start = if perf { Some(std::time::Instant::now()) } else { None };

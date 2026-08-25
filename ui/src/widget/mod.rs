@@ -74,6 +74,36 @@ pub trait Widget {
     /// not addressable.
     fn test_rects(&self) -> Vec<(String, vello::kurbo::Rect)> { Vec::new() }
 
+    /// Where the **resources** this widget publishes are currently drawn.
+    ///
+    /// The companion of [`Widget::resources`]: that one says what this app
+    /// holds and how it is addressed, and this one says whereabouts on the
+    /// glass each of those addresses is at the moment. Keys are resource ids
+    /// — the same strings [`qos_actions::Resource::id`] carries, minted by
+    /// the app — so nothing that reads this has to know anything about the
+    /// widget tree that produced it.
+    ///
+    /// The direction is deliberate. A resource address carries no
+    /// coordinates and must not: it is what keeps meaning the same thing
+    /// across layouts, themes and machines. But a great deal of what a
+    /// desktop wants to do with an address is *point at it* — mark what a
+    /// collaborator is working on, reveal a search hit, aim a press at the
+    /// row a person can see — and the view is the only thing that knows
+    /// where it drew the row. So the view publishes, per frame, and nobody
+    /// caches: cropping a photograph moves the very rect the crop happened
+    /// in.
+    ///
+    /// Rects are in the same logical space as [`Widget::get_rect`] — this
+    /// window's own coordinates, its top-left as the origin. A reader that
+    /// needs a place on the *desktop* adds the window's origin, which only
+    /// the compositor knows.
+    ///
+    /// Opt-in, and empty by default: a widget that publishes no resources
+    /// has no addresses to place, and one that does may still be unable to
+    /// say where — a resource scrolled out of view is honestly absent
+    /// rather than reported at a rect nobody can see.
+    fn resource_rects(&self) -> Vec<(String, vello::kurbo::Rect)> { Vec::new() }
+
     /// Take the room's roster as the places a remark can be sent.
     ///
     /// The host knows who is in the room; an app must not invent a roster,
@@ -971,6 +1001,34 @@ pub use merge_strategy::{
 };
 pub use conflict_banner::ConflictBanner;
 pub use conflict_picker::{ConflictPicker, PickerOutcome};
+
+/// Every resource address `root`'s subtree is currently drawing, and where.
+///
+/// Walked fresh each time rather than cached, for the reason
+/// [`Widget::resource_rects`] gives: the rect is a fact about this frame and
+/// stops being true the moment anything moves. Zero-area rects are dropped,
+/// so a key present here means "on screen now" — a caller can treat absence
+/// as "not showing" without a second question.
+///
+/// First writer wins. A container that republishes a hosted view's addresses
+/// under its own placement is the outer, truer answer; the deeper widget's
+/// own idea of where it sits is discarded rather than allowed to overwrite
+/// it.
+pub fn collect_resource_rects(root: &dyn Widget) -> HashMap<String, vello::kurbo::Rect> {
+    let mut out = HashMap::new();
+    fn walk(w: &dyn Widget, out: &mut HashMap<String, vello::kurbo::Rect>) {
+        for (id, rect) in w.resource_rects() {
+            if rect.area() > 0.0 {
+                out.entry(id).or_insert(rect);
+            }
+        }
+        for child in w.children() {
+            walk(child, out);
+        }
+    }
+    walk(root, &mut out);
+    out
+}
 
 // =====================================================================
 // Tests
