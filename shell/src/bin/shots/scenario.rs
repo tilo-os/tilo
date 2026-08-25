@@ -1972,7 +1972,7 @@ fn remark_compose_takes_a_sentence() -> Scenario {
             Action::Wait(2),
             Action::Snapshot("02-after-a-press-with-no-position"),
             Action::ClickNamed("remark_input"),
-            Action::Type("claude: crop this to the boats"),
+            Action::Type("claude: crop this to the boats".to_string()),
             Action::Wait(2),
             Action::Snapshot("03-typed"),
             Action::Key(Key::Named(NamedKey::Enter)),
