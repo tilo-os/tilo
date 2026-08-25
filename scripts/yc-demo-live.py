@@ -1063,6 +1063,17 @@ class Live:
                 yc.gap("xaver has no file manager window on screen, so "
                        "there is no image for him to right-click")
                 return False
+            # How many of them there are, before one of them is picked.
+            # A session can be showing two windows that are both the file
+            # manager — its own, and a peer's replicated in — and they are
+            # different processes writing to different logs, so a beat that
+            # aims at one and reads the other's account finds nothing and
+            # cannot say why.
+            here = yc.tiles_for(self.x, yc.FILES_APP)
+            self.say(f"xaver's screen has {len(here)} file-manager "
+                     f"window(s): " + ", ".join(
+                         f"surface {t['surface_id']} at "
+                         f"{[round(v) for v in t['rect']]}" for t in here))
             yc.frame_one_window(self.x, yc.FILES_APP)
             # Re-read after framing: it moves and resizes the group, so a
             # rect taken before is the placement of a window that is no
