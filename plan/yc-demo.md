@@ -91,9 +91,19 @@ Files fills the strip. Navigates to `workspace › Demo`: image thumbnails, a cl
 workspace place, `Local`/`Projected` badges on entries (`places_sidebar.rs:128`, `model.rs:20-63`).
 
 **Said.** "Everything starts from search. `Super+Space` is machine-wide, `Ctrl+K` is scoped to
-the app you're in. This folder is the workspace's shared directory — a FUSE mount. What you
-see immediately is metadata that arrived over gossip; bytes are fetched the first time
-something is opened."
+the app you're in. This folder belongs to the workspace rather than to anyone's account — the
+permission to read it travels with the room, so someone admitted later reaches these files by
+being in the room, not by being handed a copy."
+
+> The previous wording said "a FUSE mount… metadata that arrived over gossip; bytes are
+> fetched the first time something is opened". Three claims, and none of them is true on the
+> rig: no mount, no gossip, no hydration. `fs/` is not started by any demo session, so this is
+> one directory the sessions agree about.
+>
+> What replaces it is the half that *is* real and is also the better claim: the owner grants
+> the path on the room, `WorkspaceTreeReplica` replicates the room's capability list to whoever
+> was admitted, and the guest's file manager is launched with the room's grants. A sentence
+> that is true of a plain directory today stays true the day `fs/` does mount it.
 
 ### Beat 2 — Invite (0:40–1:25) · Quinten, then Xaver
 
