@@ -9862,6 +9862,10 @@ mod tests {
         let mut state = ui::State::new();
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
+        // The inspector is a place you go, not a wall a new document opens
+        // beside. What is under test here is what it does once it is up, so
+        // it is opened the way a person opens it.
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
         wp.model_mut().insert_str(&mut state.doc, "para");
         pipeline_draw(&mut wp, &mut state, 1000, 700);
 
@@ -10890,6 +10894,10 @@ mod tests {
         // 800px leaves ~550px of canvas for 820px of paper.
         for (w, h) in [(800_u32, 700_u32), (700, 700), (560, 700)] {
             let (mut state, mut wp) = bound();
+            // The inspector is a place you go, not a wall a new document opens
+            // beside. What is under test here is what it does once it is up, so
+            // it is opened the way a person opens it.
+            wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
             wp.set_focus(true);
             for line in [
                 "The prose says doors at seven but the bullet gives 18:00, and the two cannot both be right.",
@@ -10989,6 +10997,10 @@ mod tests {
     #[test]
     fn a_comfortable_window_renders_at_exactly_the_zoom_it_is_set_to() {
         let (mut state, mut wp) = bound();
+        // The inspector is a place you go, not a wall a new document opens
+        // beside. What is under test here is what it does once it is up, so
+        // it is opened the way a person opens it.
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
         wp.model_mut().insert_str(&mut state.doc, "a window with room to spare");
         pipeline_draw(&mut wp, &mut state, 1500, 900);
 
@@ -11030,6 +11042,10 @@ mod tests {
     fn the_ruler_and_the_page_are_drawn_at_one_scale() {
         for (w, h) in [(760_u32, 700_u32), (1500, 900)] {
             let (mut state, mut wp) = bound();
+            // The ruler is not a band a fresh document wears above the page.
+            // This claim is about the band once it is up, so it is raised the
+            // way a person raises it.
+            wp.apply_tool(&mut state.doc, ToolAction::ToggleRuler);
             wp.model_mut().insert_str(&mut state.doc, "measured against the ruler above it");
             pipeline_draw(&mut wp, &mut state, w, h);
             assert!(wp.ruler_on, "precondition: the ruler band is showing");
@@ -12525,6 +12541,10 @@ mod tests {
     #[test]
     fn dragging_indent_marker_sets_block_indent_and_reflows() {
         let (mut state, mut wp) = bound();
+        // The ruler is not a band a fresh document wears above the page.
+        // This claim is about the band once it is up, so it is raised the
+        // way a person raises it.
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleRuler);
         wp.model_mut().insert_str(&mut state.doc, "indent me");
         pipeline_draw(&mut wp, &mut state, 1200, 760);
         let block = wp.model().caret().block.clone();
@@ -13137,6 +13157,10 @@ mod tests {
             for (user, hue) in [("alice", "pink"), ("charlie", "emerald"), ("bob", "orange"), ("me", "indigo")] {
                 for (aged, when) in [(0u64, "fresh"), (1250, "half-faded")] {
                     let (mut state, mut wp) = populated();
+                    // The inspector is a place you go, not a wall a new document opens
+                    // beside. What is under test here is what it does once it is up, so
+                    // it is opened the way a person opens it.
+                    wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
                     wp.set_focus(true);
                     pipeline_draw(&mut wp, &mut state, 1100, 760);
                     let block = wp
@@ -13940,6 +13964,10 @@ mod tests {
             .clone();
         // Select the image: seat the caret on its block.
         wp.model_mut().set_caret(crate::word_processor::Caret { block: img_id.clone(), offset: 0 });
+        // The inspector is a place you go, not a wall a new document opens
+        // beside. What is under test here is what it does once it is up, so
+        // it is opened the way a person opens it.
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         (wp, state, img_id)
     }
@@ -14871,6 +14899,10 @@ mod opens_ready_to_type {
     #[test]
     fn the_style_inspector_takes_the_keyboard_off_the_page_and_gives_it_back() {
         let (mut state, mut wp) = opened_with_content();
+        // The inspector is a place you go, not a wall a new document opens
+        // beside. What is under test here is what it does once it is up, so
+        // it is opened the way a person opens it.
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
         pipeline_draw(&mut wp, &mut state, W, H);
         assert!(wp.styles_panel_open, "the inspector is up");
 
