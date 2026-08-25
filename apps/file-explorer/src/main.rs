@@ -556,7 +556,42 @@ fn render_shot_to_png(
         .ok()
         .and_then(|n| Theme::named(&n))
         .unwrap_or_else(Theme::dark);
-    let presence = PresenceCtx::empty();
+    let mut presence = PresenceCtx::empty();
+    // `--scenario peer`: somebody else is in this room. Two of them, so
+    // one frame answers both halves of what a window may draw about a
+    // participant.
+    //
+    // The one measured *here* is placeable and is drawn: a dot at the
+    // position with the name beside it, the size a cursor is.
+    //
+    // The one on the desktop is not. `PresenceKey::Workspace` is the
+    // scope the compositor's overlay paints from — the numbers are a
+    // place on the desktop, and only the layer that knows where windows
+    // are can resolve one. A window that tested them against its own
+    // rect found them outside it and painted a 140x44 wayfinding band on
+    // the nearest edge with the name on it, which in this app lands
+    // across the toolbar, over the breadcrumb and the view switcher.
+    // This frame is where that is looked at.
+    if scenario == Some("peer") {
+        presence.set_own_identity(["dev.qos.file-explorer"]);
+        presence.set_surface_id("dev.qos.file-explorer");
+        presence.set_display_name(ui::permissions::UserId("peer@7".into()), "Xaver");
+        presence.set_display_name(ui::permissions::UserId("peer@9".into()), "Ada");
+        presence.apply_remote_presence(
+            "peer@7".into(),
+            ui::presence::PresenceKey::Workspace { id: "room".into() },
+            ui::collaboration::PresencePayload::Pointer { x: 1840.0, y: 96.0 },
+        );
+        presence.apply_remote_presence(
+            "peer@9".into(),
+            ui::presence::PresenceKey::Pointer {
+                space: ui::presence::PointerSpace::Surface {
+                    surface: "dev.qos.file-explorer".into(),
+                },
+            },
+            ui::collaboration::PresencePayload::Pointer { x: 470.0, y: 330.0 },
+        );
+    }
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -679,6 +714,20 @@ fn render_shot_to_png(
     );
     // Composite the overlay layer (context menu + flyout) on top.
     widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text_renderer, &theme, &presence);
+    // And the cross-process peers, last, exactly where `ui::App` draws
+    // them in a live window. Without this pass a shot was a frame the
+    // live binary does not produce: everything a peer contributes was
+    // missing from it, which is the one class of defect these stills
+    // exist to catch. It emits nothing when nobody else is in the room,
+    // so every other scenario is byte-identical.
+    ui::presence::draw_remote_presence(
+        &mut scene,
+        Affine::IDENTITY,
+        ui::vello::kurbo::Rect::new(0.0, 0.0, w as f64, h as f64),
+        &mut text_renderer,
+        &theme,
+        &presence,
+    );
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
