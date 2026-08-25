@@ -581,13 +581,25 @@ pub(crate) fn launch_installed_app_with(
     // It is retired by the window appearing rather than by a timer
     // (`ShellOverlayHost::retire_notices_for_opened_windows`), so the
     // indication covers exactly the wait and ends on something the
-    // person can see.
+    // person can see. If no window ever comes, it is *replaced* by the
+    // reason rather than left standing
+    // (`ShellOverlayHost::settle_overdue_open_notices`) — an open that
+    // never resolves is the same defect as one that says nothing at all.
+    //
+    // Through `i18n` and not `format!`. The fetch path a few hundred
+    // lines up has always used these keys; this one held the same two
+    // sentences as Rust literals, so a German desktop got "Chat wird
+    // geöffnet" for an app it had to fetch and "Opening Chat" for one
+    // it already had.
     let notice = {
         let mut st = chrome.borrow_mut();
         let id = st.push_notification_full(
-            Notification::new(format!("Opening {display_name}"), "Loading…".to_string())
-                .with_app_name("Applications")
-                .with_dismiss_after(std::time::Duration::from_secs(120)),
+            Notification::new(
+                i18n::t_args("notice-opening-app", &[i18n::arg("app", display_name)]),
+                i18n::t("notice-opening-body"),
+            )
+            .with_app_name("Applications")
+            .with_dismiss_after(std::time::Duration::from_secs(120)),
         );
         st.bump();
         id

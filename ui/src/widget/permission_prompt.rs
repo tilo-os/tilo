@@ -2,11 +2,20 @@
 //! active strip when a sandboxed app requests a capability.
 //!
 //! Mirrors the concept's notification-bar pattern: app icon + capability
-//! description + four-action button cluster. Buttons:
+//! description + action button cluster. Buttons:
 //!   - Allow         — grant for this single request (Once)
 //!   - This session  — grant until shell restart (Session)
-//!   - Always allow  — persist; only enabled for the workspace owner
+//!   - Always allow  — persist; **offered only to the workspace owner**
 //!   - Deny          — don't grant; subsequent requests prompt again
+//!
+//! `Always allow` used to be drawn for everyone and dimmed to 40% for
+//! anyone who was not the owner, with nothing on the bar saying why. A
+//! guest in somebody else's room was therefore handed a consent decision
+//! with a dead control in the middle of it — the one arrangement that
+//! reads as the machine being broken rather than as the answer being
+//! unavailable. It is now simply absent for a non-owner, and the three
+//! buttons that *are* live fill the row. The hit-test rect goes empty
+//! with it, so a click where it used to sit still cannot mint a grant.
 //!
 //! The widget is render-only relative to the CRDT — its content is fed
 //! by a parent (the portal request flow lands in Phase 4 Task 4.3).
@@ -81,7 +90,22 @@ pub enum PromptChoice {
 pub struct PermissionPrompt {
     rect: Rect,
     /// Wayland app-id of the requesting client (e.g. `org.gnome.gedit`).
+    ///
+    /// The **key**, not the label: the host matches this against the head
+    /// of its pending-grant queue before applying an answer. What the
+    /// person reads is [`Self::app_label`].
     pub app_id: String,
+    /// What to call the requesting app on screen.
+    ///
+    /// A consent decision is about a program the person knows by name,
+    /// and a reverse-DNS id is not that name. The bar used to draw
+    /// `app_id` directly, so the one question in the system that most
+    /// needs to be understood asked it about `dev.qos.file-explorer` —
+    /// while the tab of the very window it was covering read `Files`,
+    /// because tab labels have gone through the installed-app manifest
+    /// for a long time. The host fills this in from the same lookup;
+    /// it falls back to the id when there is genuinely no name to give.
+    pub app_label: String,
     /// Human-readable description of the requested capability, shown
     /// in the middle slot of the bar (e.g. `"Camera access"`).
     pub capability_label: String,
@@ -115,6 +139,7 @@ impl PermissionPrompt {
     pub fn new(app_id: String, capability_label: String, is_owner: bool) -> Self {
         Self {
             rect: Rect::ZERO,
+            app_label: app_id.clone(),
             app_id,
             capability_label,
             is_owner,
@@ -133,6 +158,29 @@ impl PermissionPrompt {
     /// enabled.
     pub fn for_owner(app_id: impl Into<String>, capability_label: impl Into<String>) -> Self {
         Self::new(app_id.into(), capability_label.into(), true)
+    }
+
+    /// Name the requesting app the way the rest of the desktop names it.
+    ///
+    /// Separate from the constructor because the name and the id come
+    /// from different places: the id is the queue's key and is always
+    /// known, the name is a lookup the *shell* can do and this crate
+    /// cannot. A blank name is ignored rather than drawn, so a failed
+    /// lookup leaves the id showing instead of an empty line.
+    #[must_use]
+    pub fn with_app_label(mut self, label: impl Into<String>) -> Self {
+        let label = label.into();
+        if !label.trim().is_empty() {
+            self.app_label = label;
+        }
+        self
+    }
+
+    /// Whether the person answering may escalate to a permanent grant.
+    /// When false the `Always allow` button is not offered at all —
+    /// see the module docs.
+    pub fn offers_always(&self) -> bool {
+        self.is_owner
     }
 
     /// Override the bar's screen-space rect outside a taffy pass.
@@ -156,28 +204,41 @@ impl PermissionPrompt {
         // left-to-right [Allow, Session, Always, Deny] — first the
         // positive variants, then the negative. Compute from the
         // right edge so a narrower bar still keeps the buttons inside.
+        //
+        // A non-owner is not offered `Always allow`, so its slot is not
+        // reserved either: the row closes up to three buttons and the
+        // rect goes empty. Empty rather than merely undrawn, because
+        // `handle_event` hit-tests these rects — a rect left in place
+        // for a button nobody can see is a live click target for a
+        // control that is not there.
         let right_edge = self.rect.x1 - PADDING_X;
         let deny_x1 = right_edge;
         let deny_x0 = deny_x1 - BUTTON_WIDTH;
-        let always_x1 = deny_x0 - BUTTON_GAP;
-        let always_x0 = always_x1 - BUTTON_WIDTH;
-        let session_x1 = always_x0 - BUTTON_GAP;
+        self.deny_rect = Rect::new(deny_x0, by, deny_x1, by1);
+        let session_x1 = if self.is_owner {
+            let always_x1 = deny_x0 - BUTTON_GAP;
+            let always_x0 = always_x1 - BUTTON_WIDTH;
+            self.always_rect = Rect::new(always_x0, by, always_x1, by1);
+            always_x0 - BUTTON_GAP
+        } else {
+            self.always_rect = Rect::ZERO;
+            deny_x0 - BUTTON_GAP
+        };
         let session_x0 = session_x1 - BUTTON_WIDTH;
         let allow_x1 = session_x0 - BUTTON_GAP;
         let allow_x0 = allow_x1 - BUTTON_WIDTH;
         self.allow_rect = Rect::new(allow_x0, by, allow_x1, by1);
         self.session_rect = Rect::new(session_x0, by, session_x1, by1);
-        self.always_rect = Rect::new(always_x0, by, always_x1, by1);
-        self.deny_rect = Rect::new(deny_x0, by, deny_x1, by1);
     }
 
     /// Test/host accessor for the `Allow` button rect.
     pub fn allow_rect(&self) -> Rect { self.allow_rect }
     /// Test/host accessor for the `Session` button rect.
     pub fn session_rect(&self) -> Rect { self.session_rect }
-    /// Test/host accessor for the `Always` button rect. Even when the
-    /// button is disabled this rect is non-zero — hosts use it to
-    /// hit-test for tooltip-style "owner-only" affordances.
+    /// Test/host accessor for the `Always` button rect. [`Rect::ZERO`]
+    /// when the button is not offered, which is the case for anyone but
+    /// the workspace owner — nothing is drawn there and nothing can be
+    /// clicked there.
     pub fn always_rect(&self) -> Rect { self.always_rect }
     /// Test/host accessor for the `Deny` button rect.
     pub fn deny_rect(&self) -> Rect { self.deny_rect }
@@ -200,42 +261,33 @@ fn draw_button(
     rect: Rect,
     label: &str,
     is_hover: bool,
-    is_disabled: bool,
     is_primary: bool,
 ) {
     let radius = theme.tokens.radii.md as f64;
     let shape = RoundedRect::from_rect(rect, radius);
 
     // Background colour: primary action (`Allow`) gets the accent
-    // tint; the rest pull from the raised surface token. Disabled
-    // buttons fade to 40% alpha (overridden by the caller via the
-    // `is_disabled` flag rather than rendered by the parent — keeps
-    // hit-test/draw symmetric).
-    let mut bg = if is_primary {
+    // tint; the rest pull from the raised surface token. Every button
+    // this bar draws is live — an unavailable one is not drawn at all —
+    // so there is no dimmed variant to account for.
+    let bg = if is_primary {
         theme.tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX]
     } else if is_hover {
         theme.bg_hover
     } else {
         theme.tokens.colors.surfaces.raised
     };
-    if is_disabled {
-        // 40% alpha — the brief explicitly calls out that the disabled
-        // `Always` button must render at 40% alpha for non-owners.
-        bg = bg.with_alpha_factor(0.4);
-    }
     scene.fill(Fill::NonZero, transform, bg, None, &shape);
 
-    let border = if is_disabled {
-        theme.tokens.colors.border_standard.with_alpha_factor(0.4)
-    } else {
-        theme.tokens.colors.border_standard
-    };
-    scene.stroke(&Stroke::new(1.0), transform, border, None, &shape);
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        theme.tokens.colors.border_standard,
+        None,
+        &shape,
+    );
 
-    // Label colour mirrors the disabled/enabled split.
-    let text_color = if is_disabled {
-        theme.tokens.colors.text_primary.with_alpha_factor(0.4)
-    } else if is_primary {
+    let text_color = if is_primary {
         // White on the accent is the intent, and where the accent is dark
         // enough to carry it that is what comes back. Where it is not, the
         // label steps out of white rather than shipping at a ratio that
@@ -367,7 +419,9 @@ impl Widget for PermissionPrompt {
             crate::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
 
-        // App-id label (left cluster, beneath the icon's right edge).
+        // App name (left cluster, beneath the icon's right edge), with
+        // the capability under it. The name, not the id — see
+        // `app_label`.
         let label_x = icon_x + ICON_SIZE + theme.tokens.spacing.s2 as f64;
         let app_id_size = theme.tokens.typography.scale.sm;
         let cap_size = theme.tokens.typography.scale.base;
@@ -375,7 +429,7 @@ impl Widget for PermissionPrompt {
             + (PROMPT_HEIGHT - (app_id_size as f64 + cap_size as f64 + 4.0)) / 2.0;
         text_renderer.draw_text(
             scene,
-            &self.app_id,
+            &self.app_label,
             app_id_size,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((label_x, label_y)),
@@ -404,8 +458,14 @@ impl Widget for PermissionPrompt {
             (self.deny_rect, PromptChoice::Deny, false),
         ];
         for (i, (rect, choice, is_primary)) in buttons.iter().enumerate() {
-            let is_disabled = matches!(choice, PromptChoice::Always) && !self.is_owner;
-            let is_hover = self.hover_idx == Some(i as u8) && !is_disabled;
+            // `Always allow` is the owner's to make. For anybody else the
+            // slot is empty and nothing is drawn there — a control the
+            // person cannot use, with no room on an 80px bar to say why,
+            // is worse than no control.
+            if matches!(choice, PromptChoice::Always) && !self.is_owner {
+                continue;
+            }
+            let is_hover = self.hover_idx == Some(i as u8);
             draw_button(
                 scene,
                 transform,
@@ -414,7 +474,6 @@ impl Widget for PermissionPrompt {
                 *rect,
                 button_label(*choice),
                 is_hover,
-                is_disabled,
                 *is_primary,
             );
         }
@@ -441,8 +500,9 @@ impl Widget for PermissionPrompt {
                 } else if self.session_rect.contains(p) {
                     Some(1)
                 } else if self.always_rect.contains(p) {
-                    // Owner-only — non-owners get no hover affordance
-                    // on the disabled button.
+                    // Owner-only. For anybody else the rect is empty and
+                    // this arm is unreachable, so the guard is belt and
+                    // braces against a host that set the rect itself.
                     if self.is_owner { Some(2) } else { None }
                 } else if self.deny_rect.contains(p) {
                     Some(3)
@@ -496,7 +556,7 @@ impl Widget for PermissionPrompt {
             AccessNode::new(Role::Dialog)
                 .with_name(format!(
                     "{} requested by {}",
-                    self.capability_label, self.app_id
+                    self.capability_label, self.app_label
                 ))
                 .with_state(AccessState {
                     modal: true,
@@ -647,6 +707,73 @@ mod tests {
         dispatch(&mut p, &cursor_at(Point::new(20.0, 40.0)));
         dispatch(&mut p, &left_press());
         assert_eq!(p.pending_choice, None);
+    }
+
+    #[test]
+    fn a_non_owner_is_not_offered_the_always_button_at_all() {
+        // Not "offered and dimmed" — absent. An empty rect is how the
+        // draw pass and the hit test agree there is no control there.
+        let p = prompt_at(false);
+        assert!(!p.offers_always());
+        assert_eq!(
+            p.always_rect(),
+            Rect::ZERO,
+            "the owner-only button must not reserve a slot for a non-owner"
+        );
+        // And the three that remain still occupy the row, in order,
+        // without the hole the fourth used to leave behind.
+        assert!(
+            p.allow_rect().x1 <= p.session_rect().x0,
+            "Allow sits left of This session"
+        );
+        assert!(
+            p.session_rect().x1 <= p.deny_rect().x0,
+            "This session sits left of Deny"
+        );
+        assert!(
+            p.deny_rect().x0 - p.session_rect().x1 <= BUTTON_GAP + 0.5,
+            "the row closed up: {} px between This session and Deny",
+            p.deny_rect().x0 - p.session_rect().x1
+        );
+    }
+
+    #[test]
+    fn the_owner_still_gets_four_buttons_in_order() {
+        let p = prompt_at(true);
+        assert!(p.offers_always());
+        assert!(p.allow_rect().x1 <= p.session_rect().x0);
+        assert!(p.session_rect().x1 <= p.always_rect().x0);
+        assert!(p.always_rect().x1 <= p.deny_rect().x0);
+    }
+
+    #[test]
+    fn the_bar_names_the_app_the_way_the_desktop_names_it() {
+        // The id is the queue's key and stays the key; what a person
+        // reads is the name the host looked up.
+        let p = PermissionPrompt::new(
+            "dev.qos.file-explorer".into(),
+            "read/write access to /var/tmp/qos/home/xaver".into(),
+            false,
+        )
+        .with_app_label("Files");
+        assert_eq!(p.app_id, "dev.qos.file-explorer", "the key is unchanged");
+        assert_eq!(p.app_label, "Files");
+        let node = Widget::accessibility(&p).expect("prompt is not presentational");
+        assert_eq!(
+            node.name.as_deref(),
+            Some("read/write access to /var/tmp/qos/home/xaver requested by Files"),
+            "a screen reader hears the name too, not the reverse-DNS id"
+        );
+    }
+
+    #[test]
+    fn a_blank_name_leaves_the_id_showing() {
+        // A lookup that came back empty must not blank the line — an
+        // unrecognised app is still better named by its id than by
+        // nothing at all.
+        let p = PermissionPrompt::new("com.example.unknown".into(), "Camera access".into(), true)
+            .with_app_label("   ");
+        assert_eq!(p.app_label, "com.example.unknown");
     }
 
     #[test]

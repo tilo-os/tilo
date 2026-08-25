@@ -151,6 +151,25 @@ pub fn default_registry_path() -> Result<PathBuf, RegistryError> {
 /// first boot already has a registry to list.
 pub const SYSTEM_DATA_DIR: &str = "/usr/share/qos-apps";
 
+/// Whether this session was handed an app store of its own.
+///
+/// True exactly when `QOS_APPS_DATA_DIR` names the store and no
+/// `QOS_APPS_SYSTEM_DIR` puts the machine's back beside it — the pair
+/// already spelled out under [`system_data_dir`], said here as one
+/// named question because it is asked about more than paths.
+///
+/// The answer means "which applications this session has is settled,
+/// and this directory is the whole of it". Anything enumerating
+/// software from *outside* the store — the machine's `.desktop` files,
+/// say — is contradicting that scope rather than adding to it, and
+/// should stand down when this is true. A production desktop sets
+/// neither variable and gets `false`: it reads both stores and whatever
+/// else its surfaces know how to find.
+pub fn store_is_scoped_to_this_session() -> bool {
+    std::env::var_os("QOS_APPS_SYSTEM_DIR").is_none()
+        && std::env::var_os("QOS_APPS_DATA_DIR").is_some()
+}
+
 /// Root of the system store, or `None` when there is no system store to
 /// read.
 ///
@@ -170,7 +189,7 @@ pub fn system_data_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("QOS_APPS_SYSTEM_DIR") {
         return Some(PathBuf::from(dir));
     }
-    if std::env::var_os("QOS_APPS_DATA_DIR").is_some() {
+    if store_is_scoped_to_this_session() {
         return None;
     }
     Some(PathBuf::from(SYSTEM_DATA_DIR))
@@ -332,6 +351,43 @@ mod tests {
             Some(PathBuf::from(SYSTEM_DATA_DIR)),
             "production reads the image's store",
         );
+    }
+
+    /// The same rule asked as a question, for the callers that want to
+    /// know whether this session's applications are settled rather than
+    /// where the system store is. Surfaces outside packaging read it —
+    /// see `shell::host_apps::available_to_this_session`.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_store_is_scoped_only_when_it_is_the_whole_answer() {
+        // SAFETY: this test is in the `process_env` serial group.
+        unsafe {
+            std::env::remove_var("QOS_APPS_DATA_DIR");
+            std::env::remove_var("QOS_APPS_SYSTEM_DIR");
+        }
+        assert!(
+            !store_is_scoped_to_this_session(),
+            "a production desktop sets neither and reads both stores",
+        );
+
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", "/tmp/qos-apps-fixture") };
+        assert!(
+            store_is_scoped_to_this_session(),
+            "QOS_APPS_DATA_DIR alone is what `the store is exactly here` \
+             is spelled as",
+        );
+
+        unsafe { std::env::set_var("QOS_APPS_SYSTEM_DIR", "/tmp/qos-apps-system") };
+        assert!(
+            !store_is_scoped_to_this_session(),
+            "naming the system store too asks for both, which is a \
+             machine-wide reading and not a scoped session",
+        );
+
+        unsafe {
+            std::env::remove_var("QOS_APPS_DATA_DIR");
+            std::env::remove_var("QOS_APPS_SYSTEM_DIR");
+        }
     }
 
     #[test]

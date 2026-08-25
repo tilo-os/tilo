@@ -1083,31 +1083,31 @@ pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
     }
 }
 
-/// Which application a tile is showing, as an app-id, for the tab pill to
-/// draw that application's own mark.
+/// The mark of the *application* a tile is showing, when the tile knows
+/// which application that is.
 ///
-/// [`tile_app_kind`] answers a coarser question — which of the toolkit's
-/// five app *sorts* this is — and every app it has no variant for takes
-/// the same fallback. That made two different programs side by side in
-/// one tab bar indistinguishable, which is the one arrangement in this
-/// window model a person has to be able to read at a glance.
+/// [`tile_app_kind`] answers a different question — what kind of thing is
+/// in the tile — out of a five-value vocabulary, and every window from a
+/// process the compositor does not host lands on its unknown-kind cog.
+/// A strip of four packaged applications therefore came up as four
+/// identical cogs, which tells a person nothing about which pill is
+/// which.
 ///
-/// Every variant here has a real answer:
+/// A window that arrived from a client announces an app id, and
+/// [`ui::icons::icon_for_app_id`] is already the one place that turns an
+/// app id into a glyph — the same table the permission prompt draws its
+/// mark from, so the shape a person is shown when an app asks for
+/// something is the shape on its tab. Unrecognised ids resolve there to
+/// a generic "an application" mark rather than to nothing, which is the
+/// right answer for a third-party or host application.
 ///
-/// * a foreign client announced one through `xdg_toplevel::set_app_id`,
-///   and a peer's window carried theirs across the room;
-/// * an app the compositor draws in-process has the canonical id
-///   [`AppKind::app_id`] mints for it, which is already the key its
-///   capability grants live under — so the pill and the permission
-///   prompt name the same program the same way.
-pub(crate) fn tile_app_id(t: &ShellTile) -> Option<String> {
+/// `None` for the tiles the shell draws itself: those have a real
+/// [`AppKind`](state::AppKind) and their glyph is not a fallback.
+pub(crate) fn tile_app_icon(t: &ShellTile) -> Option<ui::icons::Icon> {
     match t {
-        ShellTile::Foreign { app_id, .. } | ShellTile::PeerWindow { app_id, .. } => {
-            Some(app_id.clone())
-        }
-        ShellTile::Stub { kind, .. } | ShellTile::AppPlaceholder { kind, .. } => {
-            Some(kind.app_id())
-        }
+        ShellTile::Foreign { app_id, .. } => Some(ui::icons::icon_for_app_id(app_id)),
+        ShellTile::PeerWindow { app_id, .. } => Some(ui::icons::icon_for_app_id(app_id)),
+        ShellTile::Stub { .. } | ShellTile::AppPlaceholder { .. } => None,
     }
 }
 
@@ -1281,7 +1281,7 @@ pub fn to_ui_window_group_reusing(
                 id: t.id,
                 title: t.title.clone(),
                 app_kind: Some(tile_app_kind(&t.tile)),
-                app_id: tile_app_id(&t.tile),
+                app_icon: tile_app_icon(&t.tile),
             };
             let host = take_parked(parked, t)
                 .unwrap_or_else(|| ui::widget::TileHost::new(to_ui_tile(&t.tile)));

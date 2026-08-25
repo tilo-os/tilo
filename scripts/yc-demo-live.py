@@ -813,11 +813,18 @@ class Live:
     # -- the things that fire ----------------------------------------
 
     def wait_for_his_screen(self, budget: float = 12.0) -> None:
-        """Hold until the room's applications have reached xaver.
+        """Hold until the word processor has reached xaver.
 
         Asks his own session what it is showing rather than assuming the
         replication is done: a window group on his side is evidence the
         workspace crossed, and it is what the cut to him is for.
+
+        The word processor specifically, and not merely *a* window. The
+        cut this precedes is of a page, so a screen holding some other
+        application is not the screen it is waiting for — and this used
+        to return on the first tab of any kind, which on a machine where
+        the image editor replicated first meant the film went on to frame
+        a document that was not there yet.
         """
         if self.x is None:
             return
@@ -828,14 +835,17 @@ class Live:
                 groups = yc.tab_groups_here(self.x)
             except Exception:  # noqa: BLE001
                 groups = []
-            seen = sum(len(g.get("tabs", [])) for g in groups)
-            if seen:
-                self.say(f"his screen has {seen} window(s) from the room")
+            tabs = [t for g in groups for t in g.get("tabs", [])]
+            seen = len(tabs)
+            if any(t.get("app_id") == yc.WORD_PROCESSOR for t in tabs):
+                self.say(f"his screen has {seen} window(s) from the room, "
+                         f"the word processor among them")
                 return
             self.waiting = "the room's windows reaching xaver's screen"
             self.stop.wait(0.5)
-        yc.gap(f"xaver's screen still showed nothing after {budget:.0f}s, "
-               f"so the cut to it is of an empty desktop")
+        yc.gap(f"xaver's screen had no word processor on it after "
+               f"{budget:.0f}s ({seen} window(s) of any kind), so the cut "
+               f"to it is not of the page it is supposed to be of")
 
     def wait_for_his_files(self, budget: float = 25.0) -> dict | None:
         """Hold until the file manager is on xaver's screen and painted.
@@ -1331,6 +1341,45 @@ class Live:
                        f"the crossing was never read back — see "
                        f"{self.x.log_path}")
 
+        # Framed before the cut, never after it.
+        #
+        # Driving a session and filming it are separate things here -- the
+        # camera is still on quinten, or down for the crossing -- so his
+        # strip can be walked to the page without a viewer watching it
+        # happen. Done the other way round, which is how it was, the cut
+        # lands on whatever tab his group happened to be showing and the
+        # framing is filmed as a pan afterwards. On the take this was
+        # written for, that tab was an empty photo viewer: the one cut in
+        # the film opened on "No photograph open" under a caption about a
+        # sentence somebody else had typed, and the page it means arrived
+        # nine seconds later.
+        #
+        # `frame_one_window` reports a GAP of its own when it cannot get
+        # there, so the failure is named twice rather than swallowed.
+        framed = False
+        try:
+            framed = yc.frame_one_window(self.x, yc.WORD_PROCESSOR)
+        except Exception as exc:  # noqa: BLE001
+            yc.gap(f"xaver's word processor could not be framed for the "
+                   f"handover ({type(exc).__name__}: {exc}); the strip is "
+                   f"left where it is")
+        if not framed:
+            yc.gap("the film hands over to a screen that is not showing "
+                   "the page the handover is about")
+        elif proof is not None:
+            # His app holds the words -- that was established above, off
+            # his own document. This is the other half of the same claim:
+            # that it has *drawn* since. Bringing his tab up is a change
+            # the client has to answer with a buffer, so the frame this
+            # waits for is the page as it is at the cut. Without it the
+            # camera can arrive on the last frame the client committed
+            # before the words got there, which is the same picture the
+            # take this was written for cut to.
+            if not yc.drawn_since(self.x, yc.WORD_PROCESSOR, 3.0):
+                yc.gap("xaver's word processor holds quinten's words and "
+                       "has not drawn since it was brought up, so what "
+                       "the cut lands on may be older than the sentence")
+
         # Up before the cut, never after it: the frame the cut is taken on
         # is the one a viewer arrives at, and it has to be a real one.
         if crossing_dark:
@@ -1347,12 +1396,6 @@ class Live:
 
         mark("cut to xaver — quinten's words are already on his screen")
         yc.cut("xaver")
-        try:
-            yc.frame_one_window(self.x, yc.WORD_PROCESSOR)
-        except Exception as exc:  # noqa: BLE001
-            yc.gap(f"xaver's word processor could not be framed for the "
-                   f"handover ({type(exc).__name__}: {exc}); the strip is "
-                   f"left where it is")
         self.look_at_xaver("he did not open this or type this, and it is "
                            "on his page", None)
         mark("he right-clicks the photograph and says what he wants")
@@ -2488,14 +2531,26 @@ def _the_owners_half(q, shots: str, live: "Live",
     # reaches the agent once, from xaver's hand, carrying the address of
     # the thing he pointed at — see `Live.his_instruction`.
     mark("quinten types a few words")
-    typed = yc.type_into_the_document(q, wp, yc.SHARED_TEXT)
+    # His own room, off his own session when the invitation has not been
+    # read back yet: the address the page is asked on has to exist by the
+    # time the words are asked for, and the token is minted by this same
+    # thread a moment earlier.
+    room = live.room or (q.active_workspace() or {}).get("room")
+    typed = yc.type_into_the_document(q, wp, yc.SHARED_TEXT,
+                                      room=room,
+                                      proof=yc.SHARED_PROOF)
     yc.claim("the document was written into", typed, True)
     if typed:
-        # The handover waits on this. Set only when the keystrokes
-        # actually went somewhere: with no laid-out tile to aim a caret
-        # into, nothing was typed, and a cut to xaver claiming quinten's
-        # words are on his screen would be a cut to a page that has
-        # nothing on it.
+        # The handover waits on this. Set only when the words are on his
+        # page: with no laid-out tile to aim a caret into nothing was
+        # typed at all, and with a page that has not caught up with the
+        # keyboard the film cuts away from a sentence a viewer has not
+        # seen. Both have happened, and the second is the worse of the
+        # two — the take it was found on shows one letter of the
+        # sentence, for the beat's whole length, on the screen the film
+        # then leaves. `type_into_the_document` asks the app itself now,
+        # so this is set when the writing has happened rather than when
+        # the keystrokes have been posted.
         live.typed.set()
     print("\n  [ --self-test: the owner's half is done ]", flush=True)
 
