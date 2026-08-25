@@ -694,6 +694,43 @@ class Live:
         yc.gap(f"xaver's screen still showed nothing after {budget:.0f}s, "
                f"so the cut to it is of an empty desktop")
 
+    def wait_for_his_files(self, budget: float = 25.0) -> dict | None:
+        """Hold until the file manager is on xaver's screen and painted.
+
+        The one window this film's argument needs on the other machine,
+        and the last thing to be sure of before a press is aimed into it.
+        Two conditions, and they are different: the compositor answers
+        `foreign_frames` with a laid-out rect for a window it has not
+        started painting, so a beat that took the first rect it was given
+        would aim a press into a tile showing nothing yet.
+
+        Returns the tile, or `None` when the budget runs out — the caller
+        says what that costs. Bounded because a stalled take is no shot at
+        all, and generous because the alternative to waiting here is the
+        film's whole second half being empty.
+        """
+        if self.x is None:
+            return None
+        due = time.time() + budget
+        said = False
+        while True:
+            tile = yc.best_tile(self.x, yc.FILES_APP, yc.VIEWPORT)
+            if tile is not None and tile.get("presented"):
+                return tile
+            if time.time() >= due or self.stop.is_set():
+                # A window that is placed but not painted is a different
+                # fact from no window at all, and the caller's gap should
+                # not report the second when it is the first.
+                if tile is not None:
+                    self.say("his file manager is placed but the shell is "
+                             "not painting it yet")
+                return None
+            if not said:
+                self.say("waiting for the file manager to reach xaver")
+                said = True
+            self.waiting = "the file manager reaching xaver's screen"
+            self.stop.wait(0.5)
+
     def look_for_the_invitation(self) -> None:
         """Whether he has minted one yet.
 
@@ -1007,7 +1044,21 @@ class Live:
                        "run does not assert that it was")
                 return True
 
-            tile = yc.best_tile(self.x, yc.FILES_APP, yc.VIEWPORT)
+            # Wait for the file manager to reach him, rather than asking
+            # once and giving up.
+            #
+            # `wait_for_his_screen` holds until *something* from the room is
+            # on his desktop, which is what the excursion needed and is not
+            # what this needs: the windows arrive one at a time and the one
+            # this beat is about is not reliably among the first. A take that
+            # asked once found chat and the word processor there and Files
+            # still crossing, and reported that he had nothing to right-click
+            # on a machine that was about to have it.
+            #
+            # Bounded, and painted rather than merely placed — the compositor
+            # answers with a laid-out rect for a window it is not yet drawing,
+            # and a press aimed into one lands on whatever is behind it.
+            tile = self.wait_for_his_files()
             if tile is None:
                 yc.gap("xaver has no file manager window on screen, so "
                        "there is no image for him to right-click")
