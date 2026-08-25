@@ -391,3 +391,143 @@ fn the_request_the_film_turns_on_is_answered() {
         d.plan
     );
 }
+
+/// **The other half of the film's request: what is left of it after the open.**
+///
+/// The first call can only name the open — nothing else exists to name — so
+/// the rest of the sentence is carried in the request's own words and asked
+/// again against the room the open produced. What comes back has to be a
+/// *plan*, not a step: squaring the photograph and putting it in the document
+/// are two operations in two applications, and an answer that named only the
+/// first would crop a picture and report the request as finished.
+///
+/// The rectangle is the other thing being held here. The photo editor
+/// publishes the photograph's pixel size as a fact with no operation on it,
+/// and "square" is only computable from that — so a crop that is square is
+/// evidence the size was read, and one that is 0.25,0.25,0.5,0.5 is evidence
+/// the example was copied.
+#[test]
+#[ignore = "calls the live Anthropic API; needs a key and the network"]
+fn the_rest_of_the_request_is_answered_against_the_room_the_open_made() {
+    let dir = a_photograph_and_a_page();
+    let photograph = dir.path().join("harbour.png");
+    let room = film_room_with_the_editor_open(dir.path(), &photograph);
+
+    let d = chooser().choose_again("make this square and put it in the open document", &room);
+
+    let Route::Model { model, why, asked } = &d.route else {
+        panic!("the call did not reach an answer: {}", d.route.detail());
+    };
+    println!("\n  answered by: {model}\n  why: {why}\n  asked: {asked:?}");
+    for step in &d.plan.steps {
+        println!("  step: {:?}", step.instruction);
+    }
+
+    let named: Vec<&str> = d
+        .plan
+        .steps
+        .iter()
+        .filter_map(|s| match &s.instruction {
+            Instruction::Perform { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        named.iter().any(|id| id.contains("#crop")),
+        "nothing in the plan squares the photograph: {:?} ({})",
+        d.plan,
+        d.route.detail()
+    );
+    assert!(
+        named.iter().any(|id| id.contains("#place-image")),
+        "the plan crops and stops, so the picture never reaches the document \
+         — which is the half of the request that is visible on screen: {:?}",
+        d.plan
+    );
+
+    // A square crop, computed from the size the application published. The
+    // photograph is 320x200, so a square is 200 wide: the crop's width in
+    // normalised coordinates has to be 200/320 of its height, not equal to it.
+    let crop = d
+        .plan
+        .steps
+        .iter()
+        .find_map(|s| match &s.instruction {
+            Instruction::Perform { id, argument } if id.contains("#crop") => argument.clone(),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the crop was given no rectangle: {:?}", d.plan));
+    let n: Vec<f32> = crop
+        .split(',')
+        .filter_map(|p| p.trim().parse().ok())
+        .collect();
+    assert_eq!(n.len(), 4, "the crop is not four numbers: {crop:?}");
+    let (pw, ph) = (320.0f32, 200.0f32);
+    let (w, h) = (n[2] * pw, n[3] * ph);
+    assert!(
+        (w - h).abs() <= 2.0,
+        "the crop is {w}x{h} pixels of a {pw}x{ph} photograph, which is not \
+         square — the size the application publishes was not read: {crop:?}"
+    );
+}
+
+/// The same room, after the step that opens the photo editor has run: the
+/// editor is in it, holding the photograph, and exporting what it can do to it.
+fn film_room_with_the_editor_open(
+    directory: &Path,
+    photograph: &Path,
+) -> qos_agent::surface::Catalogue {
+    use qos_agent::surface;
+
+    let mut page = automerge::AutoCommit::new();
+    let c = qdoc::model::init(&mut page, &automerge::ROOT);
+    let mut ids = qdoc::model::seeded_id_gen(&page, &c);
+    {
+        let mut dm = qdoc::DocMut {
+            doc: &mut page,
+            c: &c,
+            ids: &mut ids,
+        };
+        let h = dm.insert_block(None, "heading");
+        dm.set_attr(&h, "level", 1i64);
+        dm.splice_text(&h, 0, 0, "Run of show");
+        let p = dm.insert_block(Some(&h), "list_item");
+        dm.splice_text(&p, 0, 0, "Sound");
+    }
+    page.commit();
+
+    let mut files = automerge::AutoCommit::new();
+    {
+        use automerge::transaction::Transactable;
+        files
+            .put_object(&automerge::ROOT, "files.rename_query", automerge::ObjType::Text)
+            .expect("seed the rename buffer");
+    }
+    files.commit();
+
+    let mut photos_doc = automerge::AutoCommit::new();
+    photos::doc::PhotosDoc::seed(&mut photos_doc);
+    photos::doc::PhotosDoc::set_image(
+        &mut photos_doc,
+        Some(&photos::OpenImage::from_path(
+            &photograph.to_string_lossy(),
+            320,
+            200,
+        )),
+    );
+    photos_doc.commit();
+
+    let held: Vec<(&'static surface::AppContract, &automerge::AutoCommit)> = vec![
+        (&surface::CONTRACTS[0], &page),
+        (&surface::CONTRACTS[1], &files),
+        (&surface::CONTRACTS[3], &photos_doc),
+    ];
+    surface::catalogue(
+        &held,
+        &surface::View {
+            directory: Some(directory.to_path_buf()),
+            ..Default::default()
+        },
+        &granted_across(&["word-processor", "files", "chat", "photos"], "Claude"),
+    )
+}
