@@ -62,6 +62,35 @@ made the film cut between two machines while both were mid-gesture.
 What is on screen instead is the agent saying what it is doing, in
 chat, in the room, as it does it.
 
+MEASURED, `--dry-run --self-test`, 2026-08-25, on the first take of this
+shape. 114.1s of picture for 114.4s of take -- the film runs on the wall
+clock, so these are film seconds and take seconds alike. The take was
+stopped by hand once the press failed, so the last row is a still page
+and not the agent working, and beats 12-14 are not in it.
+
+     3.0   an empty desktop            (uncharged in the take; the mark
+                                        was laid after the hold, fixed)
+    11.2   chat opens
+     7.4   Files opens
+     8.6   the word processor opens
+     9.0   inviting xaver
+     7.6   inviting Claude
+     7.9 \
+    19.4 -- the image editor, and the two of them in one tab bar
+    11.5 /
+     7.0   quinten types a few words
+     8.2   the handover: the crossing, the cut, the hold
+     8.4   he right-clicks the photograph
+    24.3   [a still page: the press never landed, so nothing was asked]
+   -----
+    86.8   through the right-click, which is beats 2-11 entire
+
+Two seconds worth somebody's attention. The tab-bar beat is 19.4s over
+two marks and is the largest thing here that is not the agent -- it is
+one script beat and it costs more than the three application launches
+put together. And the three launches are 27.2s between them, which is a
+quarter of the film spent opening things.
+
     BEAT 1  the machine boots                                   ~3.2s
         Not recorded here. `films/qos-boot-bumper.mp4`, concatenated
         in front by `scripts/demo-assemble.py`. Console, greeter,
@@ -1708,24 +1737,29 @@ class Live:
             if not self.ready_at:
                 self.ready_at = now
             self.waiting = "he writes a few words in the document"
-            late = now > self.ready_at + HANDOVER_GRACE_S
-            if not self.typed.is_set() and not late:
+            written = self.typed.is_set()
+            if not written:
                 # Driven, the owner's half says so; by hand, his own
                 # document is asked, and not on every tick -- each ask is
                 # a socket and a second, and this is the one branch that
                 # can sit here for a minute while somebody types.
                 if self.args.self_test:
+                    pass
+                elif now - self.asked_if_he_wrote >= 3.0:
+                    self.asked_if_he_wrote = now
+                    written = self.he_has_written() is not None
+            if not written:
+                if now <= self.ready_at + HANDOVER_GRACE_S:
                     return
-                if now - self.asked_if_he_wrote < 3.0:
-                    return
-                self.asked_if_he_wrote = now
-                if self.he_has_written() is None:
-                    return
-            if late and not self.typed.is_set():
+                # Handing over anyway rather than sitting here to the
+                # duration cap. A rig that stalls silently at the one
+                # place a take can stall for ever reads exactly like a
+                # rig that has hung, and the beat it is waiting for is
+                # the one nobody can perform on its behalf.
                 yc.gap(f"nothing was written in the document within "
-                       f"{HANDOVER_GRACE_S:.0f}s of everything being ready "
-                       f"for it, so the film hands over anyway and the "
-                       f"beat it hands over on did not happen")
+                       f"{HANDOVER_GRACE_S:.0f}s of everything else being "
+                       f"ready for it, so the film hands over anyway — and "
+                       f"the beat it hands over on did not happen")
             self.status(force=True)
             self.the_handover()
             return
@@ -1824,11 +1858,16 @@ def _the_owners_half(q, shots: str, live: "Live",
     really about a hand, and `yc-demo-insert.py --self-test` already
     drives and proves it end to end.
     """
+    # Marked before the hold, not after it. The beat *is* the hold -- an
+    # empty strip, so the applications have somewhere to come from -- and
+    # laying the mark on the far side of it charged those seconds to
+    # nothing: a take measured at 114.1s of picture accounted for 111.1s
+    # across its beats, and the missing three were this one.
+    mark("an empty desktop")
     stop.wait(3.0)
     if stop.is_set():
         return
     print("\n  [ --self-test: driving the owner's half ]", flush=True)
-    mark("an empty desktop")
 
     # The applications first, then the people. That is the order somebody
     # actually sets a workspace up in, and the earlier cut had it backwards:
