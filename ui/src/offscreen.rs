@@ -64,7 +64,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use pollster::FutureExt;
 use vello::peniko::Color;
-use vello::util::RenderContext;
+use crate::gpu::RenderContext;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 
 /// Process-wide shared `RenderContext` so we only ever construct ONE

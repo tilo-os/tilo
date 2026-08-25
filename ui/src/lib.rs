@@ -38,6 +38,7 @@ pub mod app;
 pub mod color_compat;
 pub mod diag;
 pub mod doc;
+pub mod gpu;
 pub mod headless;
 pub mod history_source;
 pub mod persist;
