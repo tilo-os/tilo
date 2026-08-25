@@ -219,6 +219,56 @@ fn nothing(_view: &View, _doc: &AutoCommit) -> Option<Product> {
     None
 }
 
+/// The picture in the open document, as content another application could be
+/// handed.
+///
+/// A word processor's document denotes its prose, which is not transferable —
+/// but a picture *in* it is exactly the kind of thing another application is
+/// asked to work on. "Make this square" is said in a document with a
+/// photograph in it, and until the document could hand that photograph over
+/// there was no way for the sentence to reach an application that could crop
+/// it: the photo editor would open with nothing in it and export no operation
+/// on a photograph it did not have.
+///
+/// The block already holds the content hash — `PlaceImage` and `InsertImage`
+/// both write `blob` — so nothing is derived here and nothing is re-encoded.
+/// The document's own answer about its own picture is passed along as it
+/// stands.
+///
+/// # Which picture, when there is more than one
+///
+/// The one the agent's view targets, and otherwise the document's only one.
+/// A document with several pictures and nothing said about which denotes
+/// **nothing**: a step bound to it is then refused, which is the honest
+/// outcome. Picking the first would be answering a question nobody asked, and
+/// the wrong picture cropped into somebody's document is worse than a refusal
+/// that says it could not tell which.
+fn word_processor_product(view: &View, doc: &AutoCommit) -> Option<Product> {
+    let c = qdoc::model::open(doc, &automerge::ROOT).ok()?;
+    let snap = qdoc::model::materialize(doc, &c);
+    let images: Vec<&qdoc::snapshot::BlockView> =
+        snap.blocks.iter().filter(|b| b.kind == "image").collect();
+    let blob_of = |b: &qdoc::snapshot::BlockView| match b.attrs.get("blob") {
+        Some(qdoc::AttrVal::Str(h)) if !h.is_empty() => Some(h.clone()),
+        // An image block with no blob is a picture whose bytes never arrived.
+        // Naming its hash would hand the next operation an address for
+        // content that is not there.
+        _ => None,
+    };
+    // Targeted first: the agent's selection is an address, and a request that
+    // named its subject has already said which picture it means.
+    if let Some(b) = images
+        .iter()
+        .find(|b| view.target_blocks.iter().any(|t| *t == b.id))
+    {
+        return blob_of(b).map(|hash| Product::Content { hash });
+    }
+    match images.as_slice() {
+        [only] => blob_of(only).map(|hash| Product::Content { hash }),
+        _ => None,
+    }
+}
+
 /// The photograph as its edits leave it: the file the document names, cropped
 /// and turned the way the document says, encoded as a PNG and put in this
 /// machine's blob store.
@@ -377,7 +427,7 @@ pub static CONTRACTS: &[AppContract] = &[
         recognises: |doc| qdoc::model::open(doc, &automerge::ROOT).is_ok(),
         resources: word_processor_resources,
         register: word_processor::actions::register,
-        product: nothing,
+        product: word_processor_product,
     },
     AppContract {
         app_id: "dev.qos.file-explorer",
@@ -590,7 +640,7 @@ pub fn offers(
             });
         }
     }
-    out.extend(openable(held, perms));
+    out.extend(openable(held, view, perms));
     out
 }
 
@@ -611,8 +661,25 @@ pub fn offers(
 /// operations replace the one that asked for it.
 fn openable(
     held: &[(&'static AppContract, &AutoCommit)],
+    view: &View,
     perms: &PermissionContext,
 ) -> Vec<Offer> {
+    // Whether anything in this room denotes content an application could be
+    // opened onto. Asked of the apps that are here, through the same
+    // `product` an ordinary hand-off between two steps goes through — so an
+    // open is offered content on exactly the terms every other operation is.
+    let onto = if held
+        .iter()
+        .any(|(c, doc)| (c.product)(view, doc).is_some())
+    {
+        qos_actions::InputSpec::Text {
+            prompt: "The content to open it onto".to_string(),
+            placeholder: String::new(),
+            collects: qos_actions::Collects::Content,
+        }
+    } else {
+        qos_actions::InputSpec::None
+    };
     CONTRACTS
         .iter()
         .filter(|c| !held.iter().any(|(h, _)| h.namespace == c.namespace))
@@ -637,7 +704,24 @@ fn openable(
                 // Named for where the work does land: the session hosting
                 // the room is the only place an application can start.
                 locus: qos_actions::ExecutionLocus::ServerPreferred,
-                input: qos_actions::InputSpec::None,
+                // An open collects **content** exactly when the room has
+                // content to open it onto, and nothing otherwise.
+                //
+                // That is not a special case: a resource tree is a function of
+                // what is open, and so is this. A room holding a document with
+                // a photograph in it can offer "open the photo editor onto the
+                // photograph"; a room holding no picture can only offer "open
+                // the photo editor", because there is nothing an argument
+                // could name. Declaring content unconditionally would make the
+                // plain open impossible — [`Offer::wants_content`] is what
+                // sets [`Step::carries`], and a carried step with nothing
+                // before it is refused rather than performed with something
+                // invented.
+                //
+                // Read the same way the word processor's own `place-image` is
+                // read, which is what makes the hand-off work in both
+                // directions with one rule and no second vocabulary.
+                input: onto.clone(),
             },
         })
         // The same gate every other operation passes, asked in the same place.
@@ -1019,7 +1103,7 @@ mod tests {
         let perms = granting(vec![grant(Scope::Workspace)]);
         let view = View::default();
 
-        let empty = openable(&[], &perms);
+        let empty = openable(&[], &View::default(), &perms);
         let missing: Vec<&str> = empty.iter().map(|o| o.app).collect();
         assert_eq!(
             missing,
@@ -1048,7 +1132,7 @@ mod tests {
         );
         let held: Vec<(&'static AppContract, &automerge::AutoCommit)> = vec![(photos, &doc)];
 
-        let now = openable(&held, &perms);
+        let now = openable(&held, &View::default(), &perms);
         assert!(
             !now.iter().any(|o| o.app == "photos"),
             "an app whose state is in the room must stop being offered as \
