@@ -797,6 +797,7 @@ fn tab_stub(id: u64, title: &str, kind: AppKind, label: &str) -> (TabDescriptor,
             id,
             title: title.into(),
             app_kind: Some(kind),
+            app_icon: None,
         },
         TileContent::Stub {
             kind,
@@ -814,21 +815,25 @@ fn probe_tab_centers() -> [Point; 4] {
             id: 1,
             title: "Notes".into(),
             app_kind: Some(AppKind::Editor),
+            app_icon: None,
         },
         TabDescriptor {
             id: 2,
             title: "Files".into(),
             app_kind: Some(AppKind::Files),
+            app_icon: None,
         },
         TabDescriptor {
             id: 3,
             title: "Terminal".into(),
             app_kind: Some(AppKind::Terminal),
+            app_icon: None,
         },
         TabDescriptor {
             id: 4,
             title: "Browser".into(),
             app_kind: Some(AppKind::Browser),
+            app_icon: None,
         },
     ];
     let mut bar: Box<dyn Widget> = Box::new(TabBar::new("g100", descs, 1));
@@ -883,21 +888,25 @@ fn probe_tab_centers() -> [Point; 4] {
                 id: 1,
                 title: "Notes".into(),
                 app_kind: Some(AppKind::Editor),
+                app_icon: None,
             },
             TabDescriptor {
                 id: 2,
                 title: "Files".into(),
                 app_kind: Some(AppKind::Files),
+                app_icon: None,
             },
             TabDescriptor {
                 id: 3,
                 title: "Terminal".into(),
                 app_kind: Some(AppKind::Terminal),
+                app_icon: None,
             },
             TabDescriptor {
                 id: 4,
                 title: "Browser".into(),
                 app_kind: Some(AppKind::Browser),
+                app_icon: None,
             },
         ],
         1,
@@ -1261,21 +1270,25 @@ fn probe_tab_rects() -> Vec<vello::kurbo::Rect> {
                 id: 1,
                 title: "Notes".into(),
                 app_kind: Some(AppKind::Editor),
+                app_icon: None,
             },
             TabDescriptor {
                 id: 2,
                 title: "Files".into(),
                 app_kind: Some(AppKind::Files),
+                app_icon: None,
             },
             TabDescriptor {
                 id: 3,
                 title: "Terminal".into(),
                 app_kind: Some(AppKind::Terminal),
+                app_icon: None,
             },
             TabDescriptor {
                 id: 4,
                 title: "Browser".into(),
                 app_kind: Some(AppKind::Browser),
+                app_icon: None,
             },
         ],
         1,
@@ -1661,6 +1674,7 @@ impl UndoHarness {
             id: 1,
             title: "Editor".into(),
             app_kind: Some(AppKind::Editor),
+            app_icon: None,
         };
         let tabs = vec![(tab, TileContent::App(Box::new(editor)))];
         let mut group = WindowGroup::new(300, tabs, 1, WindowWidth::Normal);

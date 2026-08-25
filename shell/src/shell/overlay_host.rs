@@ -3199,6 +3199,7 @@ impl ShellOverlayHost {
                             id: tab.id,
                             title: tab.title.clone(),
                             app_kind: Some(crate::shell::tile_app_kind(&tab.tile)),
+                            app_icon: crate::shell::tile_app_icon(&tab.tile),
                         };
                         // A tab spliced into a live group gets its own
                         // document too — an adopted toplevel or a
