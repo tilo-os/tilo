@@ -15,6 +15,17 @@ If the compositor is unreachable, or answers `{"err": ...}`, the caller gets
 that fact -- with the compositor's own error code and message -- as a tool
 error. A refusal is a result, not a failure to paper over.
 
+Who is calling: every request announces an agent name, so the compositor gates
+it as that agent -- `Workspace::actor_for_agent`, which carries the room but no
+role -- instead of as the person whose desktop it is. That is the whole of why
+the name is here. An agent holds exactly what somebody granted it by name, so
+revoking that grant is the whole of taking it back, and the room's history says
+the agent made the change rather than the person. The default is the same name
+`apps/agent` announces on its own `Hello`, so one grant covers a participant
+whichever door it comes through; `--agent` or `QOS_AGENT_NAME` override it. The
+name is an announcement, not proof -- exactly as the `Hello` handle on the
+collaboration socket is.
+
 Stdlib only. Run `--selftest` to exercise it without a model in the loop.
 """
 from __future__ import annotations
@@ -27,6 +38,12 @@ import sys
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 DEFAULT_SOCKET = "/tmp/nirios.sock"
+#: Matches `apps/agent`'s own `--name` default, so a room that granted
+#: `agent:<this>` reaches the agent through this door and through the
+#: collaboration socket alike. A mismatch here is not a smaller bug than no
+#: name at all: it goes dark rather than over-reaching, but it goes dark
+#: quietly, which is harder to notice.
+DEFAULT_AGENT = "Claude"
 SERVER_INFO = {"name": "qos-actions", "version": "0.1.0"}
 
 
@@ -43,8 +60,9 @@ class Compositor:
     """One request, one response, one connection -- the same pattern as
     scripts/headless-examples/_control.py."""
 
-    def __init__(self, socket_path: str, timeout: float = 10.0):
+    def __init__(self, socket_path: str, agent: str, timeout: float = 10.0):
         self.socket_path = socket_path
+        self.agent = agent
         self.timeout = timeout
 
     def call(self, payload: dict) -> dict:
@@ -86,10 +104,16 @@ class Compositor:
     # --- the three exposed operations ---
 
     def enumerate_actions(self, query: str = "") -> dict:
-        return self.answer({"op": "actions_enumerate", "query": query})
+        return self.answer({"op": "actions_enumerate", "query": query,
+                            "agent": self.agent})
 
     def invoke_action(self, provider: str, id_: str) -> dict:
-        return self.answer({"op": "actions_invoke", "provider": provider, "id": id_})
+        # Announced on invoke as well as enumerate. Surveying as the agent and
+        # then acting as the person would be worse than never announcing at
+        # all: the surface a caller was shown would stop being the surface it
+        # can reach.
+        return self.answer({"op": "actions_invoke", "provider": provider,
+                            "id": id_, "agent": self.agent})
 
     def state_dump(self) -> dict:
         resp = self.call({"op": "state_dump"})
@@ -233,12 +257,23 @@ def _emit(obj: dict) -> None:
 
 def selftest(comp: Compositor) -> int:
     print(f"socket: {comp.socket_path}", file=sys.stderr)
+    print(f"acting as: agent:{comp.agent}", file=sys.stderr)
     try:
         answer = comp.enumerate_actions("")
     except (CompositorError, ConnectionError, OSError) as e:
         print(f"FAIL: {e}", file=sys.stderr)
         return 1
     actions = answer.get("actions", [])
+    # An agent nobody granted anything sees nothing, and that is the gate
+    # working. Say so, or it reads as a broken socket and gets "fixed".
+    if not actions:
+        print(
+            f"OK: connected, and agent:{comp.agent} may see nothing in the active "
+            "room. That is the gate, not a failure -- somebody has to grant this "
+            "agent a capability there before it can act.",
+            file=sys.stderr,
+        )
+        return 0
     print(f"OK: {answer.get('count')} action(s) enumerated", file=sys.stderr)
     for a in actions[:20]:
         print(f"  {a.get('provider')}/{a.get('id')}  [{a.get('kind')}]  {a.get('title')}",
@@ -252,10 +287,17 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--socket", default=os.environ.get("QOS_TEST_CONTROL", DEFAULT_SOCKET),
                    help="control socket path (default: $QOS_TEST_CONTROL, else %(default)s)")
+    p.add_argument("--agent", default=os.environ.get("QOS_AGENT_NAME", DEFAULT_AGENT),
+                   help="the agent name every call announces, so the compositor "
+                        "gates it as that agent rather than as the person at the "
+                        "keyboard (default: QOS_AGENT_NAME, else %(default)s)")
     p.add_argument("--selftest", action="store_true",
                    help="connect, enumerate, print the result, exit; no model needed")
     args = p.parse_args()
-    comp = Compositor(args.socket)
+    if not args.agent.strip():
+        p.error("--agent cannot be empty: a capability names a subject, and the "
+                "compositor refuses a call that announces none")
+    comp = Compositor(args.socket, args.agent)
     return selftest(comp) if args.selftest else serve(comp)
 
 
