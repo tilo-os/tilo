@@ -182,6 +182,28 @@ def app_document(json_sock: str, room: str, tries: int = 25) -> list[bytes]:
         reader.close()
 
 
+def dial(path: str, tries: int = 100) -> socket.socket:
+    """A connected socket to the session broker, inheritable by a child.
+
+    The one thing the launcher would otherwise do for a packaged app: hand it
+    an already-connected fd. Retried, because a compositor that has just been
+    restarted binds this a moment after its control socket appears, and a
+    connect that raced it would look exactly like a broker that is not there.
+    """
+    last: Exception | None = None
+    for _ in range(tries):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            s.connect(path)
+            os.set_inheritable(s.fileno(), True)
+            return s
+        except OSError as e:
+            last = e
+            s.close()
+            time.sleep(0.1)
+    raise RuntimeError(f"the session broker at {path} never accepted: {last}")
+
+
 # -- the run ------------------------------------------------------------------
 
 def main() -> int:
@@ -217,7 +239,10 @@ def main() -> int:
         # XDG_CONFIG_HOME, and a harness that isolates itself badly writes
         # into the real session's state.
         "QOS_STATE_PATH": os.path.join(run_dir, "config", "qos", "state.json"),
-        "RUST_LOG": "shell::app_action=info,ui::actions=info,warn",
+        # `shell::shell::app_action_wire` is where the session records an
+        # application's surface arriving; step 4 reads that back, so the filter
+        # has to select it by the target it is actually logged under.
+        "RUST_LOG": "shell::shell::app_action_wire=info,warn",
     })
 
     shell_log = open(os.path.join(run_dir, "compositor.log"), "wb")
@@ -251,9 +276,7 @@ def main() -> int:
         # The one thing the launcher would otherwise do: hand the app a
         # *connected* fd to the broker. Everything downstream of this is the
         # ordinary path a packaged app takes.
-        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        conn.connect(collab_sock)
-        os.set_inheritable(conn.fileno(), True)
+        conn = dial(collab_sock)
         app_env = dict(env)
         app_env.update({
             "WAYLAND_DISPLAY": wayland,
@@ -386,9 +409,7 @@ def main() -> int:
         note(f"this session is sitting at the same desktop as `stranger`")
 
         conn.close()
-        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        conn.connect(collab_sock)
-        os.set_inheritable(conn.fileno(), True)
+        conn = dial(collab_sock)
         app_env["QOS_SVC_COLLAB_FD"] = str(conn.fileno())
         app_env["WAYLAND_DISPLAY"] = wayland
         app = subprocess.Popen([wp_bin], env=app_env, stdout=app_log,
@@ -398,15 +419,17 @@ def main() -> int:
              f"publishing to this session")
         # Give it as long as the successful run took to publish, so an
         # empty answer here is a refusal rather than a race.
-        published = False
+        answering = False
         for _ in range(80):
             time.sleep(0.25)
             j = call(stranger_control, {"op": "state_dump"})
-            if "answer" in j:
-                published = True
+            if "workspace_tree" in j or "answer" in j:
+                answering = True
                 break
-        claim(published, "the second session is answering")
-        time.sleep(6.0)
+        claim(answering, "the second session is answering")
+        # As long as the first session took to be published to, so an empty
+        # answer below is a refusal rather than a race.
+        time.sleep(8.0)
 
         resp = call(stranger_control, {"op": "actions_enumerate", "query": ""})
         rows = [a for a in (resp.get("answer") or {}).get("actions") or []
@@ -450,9 +473,7 @@ def main() -> int:
                 break
             time.sleep(0.1)
         conn.close()
-        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        conn.connect(collab_sock)
-        os.set_inheritable(conn.fileno(), True)
+        conn = dial(collab_sock)
         app_env["QOS_SVC_COLLAB_FD"] = str(conn.fileno())
         app_env["WAYLAND_DISPLAY"] = open(display_file).read().strip()
         app = subprocess.Popen([wp_bin], env=app_env, stdout=app_log,
