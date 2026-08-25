@@ -1232,6 +1232,16 @@ class Live:
 
         self.waiting = "quinten's words reaching xaver's machine"
         self.status(force=True)
+        # The crossing is a wait, not a shot. It runs on quinten's screen,
+        # which by now has nothing left to show -- the payoff is the cut
+        # that comes after it, onto a page he did not open carrying a
+        # sentence he did not type. On the first live take this beat cost
+        # 27s of a 110s film, all of it spent watching a document sync
+        # that the film never shows. So the camera comes down for it and
+        # is back up before the cut. Nothing waits any less; the sync
+        # takes exactly as long as it takes and every claim below is
+        # still asserted on the real document.
+        crossing_dark = self.take_camera_down("the words to cross")
         # The room reaching his machine at all, before anything is asked
         # of the app on it. A cut to a bare desktop argues the opposite
         # of what the cut is for, and an app that has not arrived cannot
@@ -1281,6 +1291,11 @@ class Live:
                        f"handshake within {self.CROSSING_BUDGET_S:.0f}s, so "
                        f"the crossing was never read back — see "
                        f"{self.x.log_path}")
+
+        # Up before the cut, never after it: the frame the cut is taken on
+        # is the one a viewer arrives at, and it has to be a real one.
+        if crossing_dark:
+            self.camera_back_up()
 
         mark("cut to xaver — quinten's words are already on his screen")
         yc.cut("xaver")
@@ -1563,6 +1578,31 @@ class Live:
         self.dark.append((time.time(), 0.0))
         self.say(f"nothing has changed for {FILM_THE_WAIT_S:.0f}s — the "
                  f"camera comes down until Claude says or does something")
+
+    def take_camera_down(self, why: str) -> bool:
+        """Stop watching a wait that has nothing to show. Did it come down?
+
+        `mind_the_wait` does this for the agent's wait and only for that
+        one: it returns early until the instruction has gone. A beat that
+        blocks before then -- the crossing does, for as long as a document
+        takes to reach another machine -- keeps the camera up on a screen
+        with nothing left happening on it.
+
+        Same trade the app launches make, and the same refusal: a take
+        that may not be edited at all keeps filming, because a narrated
+        take records a voice against the wall clock and a gap cut out of
+        the middle puts the two out of step for the rest of the film.
+
+        Pair with `camera_back_up` when this returns True.
+        """
+        if self.recorder.max_hold <= 0 or self.camera_down is not None:
+            return False
+        stack = contextlib.ExitStack()
+        stack.enter_context(self.recorder.hold_off())
+        self.camera_down = stack
+        self.dark.append((time.time(), 0.0))
+        self.say(f"the camera comes down for {why}")
+        return True
 
     def camera_back_up(self) -> None:
         if self.camera_down is None:
