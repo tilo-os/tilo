@@ -4480,6 +4480,43 @@ mod tests {
             sink.snapshot(),
         );
 
+        // And the instrument was watching the whole time. Without this the
+        // assertion above would pass just as well against a broker whose
+        // outbound half was never wired to this sink — which is to say
+        // against nothing at all. An open asked for *here* still reaches the
+        // room from the same broker, in the same test.
+        // SAFETY: every test in this module is
+        // `#[serial_test::serial(collab_broker)]`.
+        unsafe {
+            std::env::set_var("QOS_PRESENCE_HANDLE", "Claude");
+        }
+        let mut agent = connect_manager_as(&socket_path, "dev.qos.agent", TEST_CLUSTER);
+        wait_for_announced(&handle, 1, Duration::from_millis(500));
+        let _ = agent.poll();
+        agent.send(CollabRequest::OpenApp {
+            app_id: "dev.qos.notes".to_string(),
+            with: None,
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let published = loop {
+            let seen = sink.snapshot();
+            if !seen.is_empty() || std::time::Instant::now() > deadline {
+                break seen;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        unsafe {
+            std::env::remove_var("QOS_PRESENCE_HANDLE");
+        }
+        assert_eq!(
+            published.len(),
+            1,
+            "the sink this test asserted was empty is the one a local open \
+             reaches, so the silence above was a decision and not a \
+             disconnected wire: {published:?}",
+        );
+
+        drop(agent);
         drop(handle);
     }
 
