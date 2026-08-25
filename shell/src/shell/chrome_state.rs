@@ -804,6 +804,37 @@ impl ChromeState {
         self.revision = self.revision.wrapping_add(1);
     }
 
+    /// Put one capability request on the queue for the user to answer,
+    /// unless the same one is already waiting there.
+    ///
+    /// Returns whether it was queued, so a caller with a repaint to do can
+    /// skip it when nothing changed.
+    ///
+    /// The de-duplication is what makes this safe to call from a path that
+    /// runs more than once for the same decision — a launch the user
+    /// repeats, a peer window examined again on the next sync round. Without
+    /// it the queue would grow one entry per attempt and the user would be
+    /// asked the same question several times, having answered it once.
+    ///
+    /// Only prompts nobody is blocked on are ever folded together. A portal
+    /// request carries a reply channel and a caller sitting on it, so two of
+    /// them are two questions even when they name the same capability:
+    /// dropping one would leave its caller waiting for an answer that is
+    /// never sent.
+    pub fn queue_grant_prompt(&mut self, prompt: PendingPrompt) -> bool {
+        if prompt.reply.is_none()
+            && self.pending_grants.iter().any(|queued| {
+                queued.reply.is_none()
+                    && queued.app_id == prompt.app_id
+                    && queued.capability == prompt.capability
+            })
+        {
+            return false;
+        }
+        self.pending_grants.push_back(prompt);
+        true
+    }
+
     /// Put `tab` in front of the user: switch to its workspace, its strip
     /// and its group, and make it the active tab inside that group.
     ///
