@@ -209,6 +209,14 @@ def main() -> int:
         "XDG_DATA_HOME": os.path.join(run_dir, "data"),
         "QOS_TEST_CONTROL": control,
         "QOS_WORKSPACE_ID": ROOM,
+        # Who is sitting at this session. Named rather than inherited so the
+        # workspace has a known owner, which is what step 4 needs somebody
+        # else to not be.
+        "QOS_USER_ID": "quinten",
+        # Named explicitly: `dirs::config_dir()` ignores a relative
+        # XDG_CONFIG_HOME, and a harness that isolates itself badly writes
+        # into the real session's state.
+        "QOS_STATE_PATH": os.path.join(run_dir, "config", "qos", "state.json"),
         "RUST_LOG": "shell::app_action=info,ui::actions=info,warn",
     })
 
@@ -262,17 +270,35 @@ def main() -> int:
 
         # 2. what it offers, from outside it -------------------------------
         print("\n2. what the application says can be done to it")
+        def published_now() -> list[dict]:
+            resp = call(control, {"op": "actions_enumerate", "query": ""})
+            return [a for a in (resp.get("answer") or {}).get("actions") or []
+                    if a.get("provider") == PROVIDER]
+
         offered: list[dict] = []
         for _ in range(120):
             time.sleep(0.25)
             if app.poll() is not None:
                 return fail_out(run_dir, f"the app exited (code {app.returncode}); "
                                          f"see {run_dir}/app.log")
-            resp = call(control, {"op": "actions_enumerate", "query": ""})
-            actions = (resp.get("answer") or {}).get("actions") or []
-            offered = [a for a in actions if a.get("provider") == PROVIDER]
+            offered = published_now()
             if offered:
                 break
+        if not offered:
+            # The word processor anchors most of its operations on the caret,
+            # and a document nothing has ever been typed into may not have one
+            # yet. One keystroke gives it one. Printed, because "it published
+            # on its own" and "it published once it had a caret" are different
+            # claims and only one of them was true.
+            note("nothing published yet; giving the document a caret with one "
+                 "keystroke, which is the app's own precondition rather than "
+                 "this wire's")
+            call(control, {"op": "type", "text": "x"})
+            for _ in range(60):
+                time.sleep(0.25)
+                offered = published_now()
+                if offered:
+                    break
         claim(bool(offered),
               f"actions_enumerate returns operations from the running "
               f"application ({len(offered)} of them)")
