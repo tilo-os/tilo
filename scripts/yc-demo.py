@@ -3992,10 +3992,34 @@ def strip_order(s: Session) -> list[dict]:
                                if isinstance(tile, dict) else None)
                     if foreign and foreign.get("surface_id") is not None:
                         surfaces.append(int(foreign["surface_id"]))
+                tabs = [t.get("id") for t in group.get("tabs", [])]
                 out.append({"id": group.get("id"), "strip": sid,
                             "surfaces": surfaces,
+                            "tabs": tabs,
+                            "active_tab": group.get("active_tab"),
                             "active": group.get("id") == active})
     return out
+
+
+def window_order(order: list[dict]) -> list[tuple[int, object]]:
+    """The strip flattened into windows, left to right, as
+    `(group index, tab id)`.
+
+    The unit the jump gesture actually moves in. `step_active_window`
+    in `client_input.rs` flattens the strip's groups into their tabs and
+    steps one *tab* per notch — so a notch inside a two-tab group moves
+    a window without moving the group. A walk that counts groups reads
+    that as the strip refusing to move.
+    """
+    return [(i, tab) for i, g in enumerate(order) for tab in g["tabs"]]
+
+
+def active_window(order: list[dict]) -> tuple[int, object] | None:
+    """Where the strip's focus is, in the same unit."""
+    for i, g in enumerate(order):
+        if g["active"]:
+            return (i, g.get("active_tab"))
+    return None
 
 
 def group_index_of(s: Session, subject,
@@ -4012,19 +4036,35 @@ def group_index_of(s: Session, subject,
                  if wanted & set(g["surfaces"])), None)
 
 
-#: How many neighbours a strip walk steps past before giving up. A strip
-#: with more groups than this is not a strip this film composes.
-MAX_STRIP_STEPS = 8
+#: Slack on top of the number of windows a walk has to cross, for
+#: notches the compositor coalesces or a tab selection that lands a
+#: frame late. A bound, not a budget: the walk stops as soon as it is
+#: there, and reports if it stops moving before that.
+STRIP_STEP_SLACK = 3
 
 
 def jump_to_group(s: Session, subject) -> bool:
     """Walk the strip's focus along to the group holding `subject`.
 
-    Alt+Shift+wheel, one notch per group — the compositor's own
-    navigation gesture (`client_input.rs`, Niri's `focus-column-right`),
-    which selects the neighbouring window and lets the per-tick
-    reconciler slide the strip to it. So the pan is eased and reads as
-    navigation rather than as a cut.
+    Alt+Shift+wheel — the compositor's own navigation gesture
+    (`client_input.rs`, Niri's `focus-column-right`), which selects the
+    neighbouring window and lets the per-tick reconciler slide the strip
+    to it. So the pan is eased and reads as navigation rather than as a
+    cut.
+
+    **One notch is one window, not one group**, and counting the wrong
+    one is what broke this. `step_active_window` flattens the strip's
+    groups into their tabs and steps a tab at a time, so a notch inside a
+    two-tab group moves the focus without moving the *group* index. This
+    walk compared group indices, saw one unchanged, concluded the strip
+    would not move and stopped — on the strip this film builds, which
+    puts two applications in one tab group on purpose. Seven windows, and
+    it gave up at the group holding the third and fourth, leaving the
+    window the next beat was about 1596px off the right edge.
+
+    So progress is measured in the unit the gesture moves in: the
+    strip flattened into windows, and the walk is stuck only when the
+    *window* under focus is the same one it was before the notch.
 
     This replaces aiming a click at the target's tab pill, which cannot
     do the job on a strip longer than the screen: a pill is drawn at its
@@ -4042,8 +4082,10 @@ def jump_to_group(s: Session, subject) -> bool:
     want = group_index_of(s, subject, order)
     if want is None:
         return False
-    for _ in range(MAX_STRIP_STEPS):
-        here = next((i for i, g in enumerate(order) if g["active"]), None)
+    budget = len(window_order(order)) + STRIP_STEP_SLACK
+    for _ in range(budget):
+        was = active_window(order)
+        here = was[0] if was else None
         if here is None or here == want:
             break
         s.modifiers(alt=True, shift=True)
@@ -4051,10 +4093,12 @@ def jump_to_group(s: Session, subject) -> bool:
         s.modifiers()
         s.settle(0.45)
         order = strip_order(s)
-        moved = next((i for i, g in enumerate(order) if g["active"]), None)
-        if moved == here:
-            # The walk is not moving — the end of the strip, or a jump
-            # that did not take. Said rather than spun on.
+        now = active_window(order)
+        if now == was:
+            # Genuinely stuck: the same *window* is focused after a
+            # notch, so it is the end of the strip or a jump that did
+            # not take — not merely a step inside a group, which moves
+            # a window while leaving the group index alone.
             note(f"{s.name}: the strip did not step past group {here}, so "
                  f"{subject_name(subject)} is as close as it gets")
             break
@@ -4062,7 +4106,8 @@ def jump_to_group(s: Session, subject) -> bool:
         if want is None:
             return False
     order = strip_order(s)
-    return next((i for i, g in enumerate(order) if g["active"]), None) == want
+    landed = active_window(order)
+    return landed is not None and landed[0] == want
 
 
 def scroll_subjects_into_frame(s: Session, subjects: list) -> None:
@@ -4194,8 +4239,8 @@ def frame_windows(s: Session, subjects: list,
 
 
 def frame_one_window(s: Session, app_id: str, prefer: dict | None = None,
-                     share: int = 720) -> None:
-    """Put one window up at a readable width, with the strip around it.
+                     share: int = 720) -> bool:
+    """Put one window up at a readable width, and say whether it worked.
 
     `frame_windows` exists for a beat that has to show two windows at
     once, and it pays for that: two subjects side by side get half the
@@ -4209,6 +4254,11 @@ def frame_one_window(s: Session, app_id: str, prefer: dict | None = None,
     scrollable strip actually leaves them — visible at the edges, not
     squared off into equal thirds. Which is also the more honest picture
     of the layout model, and the one the strip is for.
+
+    Returns whether the window is wholly on screen at the end of it, and
+    records a GAP when it is not — the same standard `frame_windows`
+    holds a two-window beat to. A caller that does not check still gets
+    the fault in the transcript.
     """
     # Scrolled to, and only scrolled to.
     #
@@ -4228,13 +4278,35 @@ def frame_one_window(s: Session, app_id: str, prefer: dict | None = None,
     # Focusing a group scrolls it *into view*, which is not the same as
     # scrolling it *wholly* into view: at 720 permille the shot came out
     # with the document readable and its right edge past the screen.
-    # Said rather than silently accepted, because the next person to
-    # widen this will otherwise re-find it from the frame.
+    #
+    # A GAP, not a note, and the difference is the whole point. This
+    # said it could not do the thing and the run carried on green — so a
+    # cut that landed on a page hanging 1596px off the right edge was
+    # reported in a line nobody reads, on the shot that opens the film's
+    # entire second half. A beat whose subject is one window has not
+    # happened if that window is not in the picture, and the transcript
+    # is where a take says what it failed to film.
     if VIEWPORT:
         clipped = [w for w in windows_off_screen(s, VIEWPORT) if app_id in w]
         if clipped:
-            note(f"{s.name}: the framed window is not wholly on screen — "
-                 + "; ".join(clipped))
+            # Where the strip actually came to rest, alongside where the
+            # subject is, because the two failures need different fixes
+            # and the message used to distinguish neither. Focus that
+            # never arrived at the subject's group is a walk that gave
+            # up; focus sitting on it with the window still hanging off
+            # the edge is a layout no offset frames, and that one is not
+            # the framing's to solve.
+            order = strip_order(s)
+            landed = active_window(order)
+            wanted = group_index_of(s, app_id, order)
+            where = (f"the strip is on group {landed[0]} of {len(order)} "
+                     f"and {app_id} is in group {wanted}"
+                     if landed is not None and wanted is not None
+                     else "the strip's position could not be read")
+            gap(f"{s.name}: the shot is of {app_id} and it is not wholly on "
+                f"screen — " + "; ".join(clipped) + f" ({where})")
+            return False
+    return True
 
 
 #: How many pixels have to move before a screen counts as having
