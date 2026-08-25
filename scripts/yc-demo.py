@@ -1330,10 +1330,18 @@ class Session:
     #: about a second and a half; this is a little brisker than that,
     #: because a film has to keep moving and an approach nobody notices
     #: is one that has done its job.
-    POINTER_SPEED_PX_S = 1700.0
+    POINTER_SPEED_PX_S = 2800.0
     #: Shortest and longest an approach may take, whatever the distance.
+    #:
+    #: The cap is what bounds this in practice: `steps * step_s` puts a
+    #: floor of one camera frame under every photographed position, so a
+    #: long trip is paced by the camera rather than by the hand, and it
+    #: piles up against whatever the cap allows. At 1.9s the walk to the
+    #: Invite button read as painfully slow on film -- a viewer watching
+    #: a cursor crawl is a viewer not watching the desktop. Two thirds of
+    #: a second is still eased at both ends and still legible as travel.
     POINTER_TRAVEL_MIN_S = 0.16
-    POINTER_TRAVEL_MAX_S = 1.90
+    POINTER_TRAVEL_MAX_S = 0.65
     #: Wall-clock a step of the path is given, as a floor. The real step
     #: time is whatever the camera's frame period turns out to be — see
     #: `Recorder.frame_period` — because a step shorter than a frame is a
