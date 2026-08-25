@@ -17830,6 +17830,15 @@ mod overlay_event_absorb_tests {
         let mut h = build_harness();
         h.host.set_palette_visible(true);
         h.host.force_palette_settled();
+        // `set_palette_visible` is the test-only door; the production
+        // open (`open_palette_with_scope`) clears `last_search_query` so
+        // the empty query still fans out and the strip learns what it
+        // found. Going in through the door means no search has run, so
+        // the strip is offered its kinds directly — same as
+        // `the_last_chip_can_be_clicked_at_the_narrowest_width`. What
+        // this test is about is the click, not where the kinds came
+        // from.
+        offer_every_kind(&mut h);
 
         assert!(
             h.host.active_kind_filter.is_empty(),
