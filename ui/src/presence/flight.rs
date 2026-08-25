@@ -68,7 +68,7 @@ use crate::permissions::UserId;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
-use super::render::{color_for, contrast_ink};
+use super::render::color_for;
 use super::PresenceCtx;
 
 /// How long one crossing takes.
