@@ -54,7 +54,7 @@
 use std::rc::Rc;
 
 use crate::shell::catalogue::{self, CatalogueApp};
-use crate::shell::chrome_state::{Chrome, OpenTarget};
+use crate::shell::chrome_state::{Chrome, OpenTarget, PendingPrompt};
 use crate::shell::i18n;
 use crate::shell::launcher::{self, InstalledApp};
 use crate::shell::notification::{Notification, NotificationProgress, NotificationSeverity};
@@ -159,24 +159,15 @@ impl ApplicationsProvider {
             };
             let package_id = app.package_id.clone();
             let display_name = app.display_name.clone();
-            // The category, when the publisher declared one, is the more
-            // useful second line than the version: it tells you what kind
-            // of app the row will open.
             // Where the window will land leads the line. It is the one
             // part of a launch row that changes with context, and a user
             // who opened the palette from a specific group's "+" needs to
             // see that the pick honours that group before they commit.
-            let detail = match app.category.as_deref() {
-                Some(cat) => format!("{cat} · {}", app.package_id),
-                None => format!("{} · {}", app.package_id, app.version),
-            };
-            let subtitle = i18n::t_args(
-                "palette-app-subtitle",
-                &[
-                    i18n::arg("hint", open_target.result_hint()),
-                    i18n::arg("detail", detail.as_str()),
-                ],
-            );
+            //
+            // Then the category, when the publisher declared one, and
+            // nothing else. See `disambiguate_colliding_titles` for why
+            // the package id is not here.
+            let subtitle = launch_subtitle(open_target, app.category.as_deref());
             out.push(SearchResult::nullary_fallible(
                 kind.clone(),
                 self.id(),
@@ -241,41 +232,17 @@ impl ApplicationsProvider {
             let package_id = app.package_id.clone();
             let display_name = app.display_name.clone();
             let registry = app.registry.clone();
-            // What the second line is *for* on this row is where the app
-            // would come from — the one fact a local row cannot have.
-            // So the package id comes off it: the title one line above
-            // already names the app, and `dev.qos.word-processor`
-            // repeats that in a form addressed to the machine. What is
-            // left is what the publisher declared this app *is*, and
-            // then its provenance, which goes last because the palette
-            // elides a subtitle from the middle and provenance is the
-            // part that has to survive a narrow window.
-            let detail = match app.category.as_deref() {
-                Some(cat) => cat.to_string(),
-                None => app.version.clone(),
-            };
-            // Provenance is worth a segment only when the name reads as
-            // a place rather than as a machine address — a registry
-            // whose operator left its name as a URL says nothing to the
-            // person reading it, and printing it anyway is how a row
-            // ends up quoting a socket at a user.
-            let subtitle = match presentable_registry(&app.registry) {
-                Some(name) => i18n::t_args(
-                    "palette-app-subtitle-remote",
-                    &[
-                        i18n::arg("hint", open_target.result_hint()),
-                        i18n::arg("detail", detail.as_str()),
-                        i18n::arg("registry", name),
-                    ],
-                ),
-                None => i18n::t_args(
-                    "palette-app-subtitle",
-                    &[
-                        i18n::arg("hint", open_target.result_hint()),
-                        i18n::arg("detail", detail.as_str()),
-                    ],
-                ),
-            };
+            // The same fields an installed row shows, plus where it
+            // would come from. The registry goes at the *end* because
+            // the palette elides a subtitle from the middle: the part
+            // that says this is not a local app is the part that has to
+            // survive a narrow window.
+            let subtitle = remote_launch_subtitle(
+                open_target,
+                app.category.as_deref(),
+                app.version.as_str(),
+                app.registry.as_str(),
+            );
             out.push(SearchResult {
                 kind: ResourceKind::Application,
                 provider_id: self.id().to_string(),
@@ -366,7 +333,14 @@ impl ApplicationsProvider {
                         st.bump();
                         id
                     };
-                    catalogue::note_pending_notice(&package_id, notice);
+                    if let Some(stale) = catalogue::note_pending_notice(&package_id, notice) {
+                        // Only the newest open is tracked, so the one
+                        // this replaced can no longer be retired by its
+                        // window arriving. Take it down here or it
+                        // outlives the wait it was describing.
+                        let mut st = chrome.borrow_mut();
+                        st.dismiss_notification(stale);
+                    }
                     catalogue::install_and_launch(
                         package_id.clone(),
                         display_name.clone(),
@@ -398,7 +372,7 @@ impl ApplicationsProvider {
 /// The package id of the file manager qOS ships as a system app.
 pub(crate) const SYSTEM_FILE_MANAGER: &str = "dev.qos.file-explorer";
 
-/// Give the system file manager the user's home before it starts.
+/// Ask for the user's home on the system file manager's behalf.
 ///
 /// Every app gets one directory of its own, with `HOME` pointed inside
 /// it, and nothing else it was not granted. That is right for an app
@@ -406,115 +380,117 @@ pub(crate) const SYSTEM_FILE_MANAGER: &str = "dev.qos.file-explorer";
 /// subject is the user's files: it opens on a folder containing nothing
 /// but its own dotfiles and reports, accurately, zero items.
 ///
-/// The grant is not a hole in that model, it is the model being used.
-/// It goes through the same [`GrantStoreHandle`](crate::portal::GrantStoreHandle)
-/// the permission prompt and the file-chooser portal write to, so it is
-/// a capability on the workspace like any other: it appears in the
-/// permissions UI, it can be revoked there, and it expires with the
-/// session rather than persisting. What it changes is who decides —
-/// the OS, for the file manager it ships, instead of a dialog asking the
-/// user to approve the file manager's access to files on first sight of
-/// an empty window.
+/// So the file manager needs the home — and *needing* it is not the same
+/// as being given it. This used to call
+/// [`Workspace::grant_app`](crate::shell::state::Workspace::grant_app)
+/// outright, and the package's own manifest disagreed with the code:
+/// `apps/file-explorer/qos-app.toml` says a file manager "has none by
+/// default: what it can reach is what the user granted it". A grant
+/// minted here is one the user was never asked about, and the home is
+/// not a small thing to hand over unasked — it holds
+/// `~/.config/qos/identity/primary.json`, the user's signing seed, and
+/// `~/.local/share/qos-rooms/*/*`, which is every other app's per-room
+/// state and therefore the whole of `plan/security.md`'s "an app opened
+/// in one room cannot read what it wrote in another".
+///
+/// It now raises the same [`PendingPrompt`] every other filesystem
+/// capability goes through: the overlay host renders it, the user
+/// answers it, and the answer decides the scope. The file manager is the
+/// app most likely to get a yes — that is not a reason to skip the
+/// asking.
 ///
 /// It names one package id rather than a rule about categories or
 /// manifests deliberately. A rule that could be satisfied by a
-/// third-party package would be a way to ask for the user's home by
-/// declaring the right thing about yourself; qOS ships exactly one file
-/// manager, and naming it is the narrower statement.
+/// third-party package would be a way to *cause a prompt* for the user's
+/// home by declaring the right thing about yourself; qOS ships exactly
+/// one file manager, and naming it is the narrower statement.
 ///
 /// Write, not read: renaming, deleting and creating folders are what a
 /// file manager is for, and a read-only grant would leave its toolbar
 /// full of affordances that fail.
-fn grant_user_home_to_file_manager(chrome: &Chrome, package_id: &str) {
-    let ws_id = {
+fn ask_user_home_for_file_manager(chrome: &Chrome, package_id: &str) {
+    let request = {
         let st = chrome.borrow();
-        if st.tree().active_workspace().is_none() {
+        let tree = st.tree();
+        if tree.active_workspace().is_none() {
             return;
         }
-        st.tree().active
+        let ws_id = tree.active;
+        file_manager_home_request(&tree, ws_id, package_id)
     };
-    let granted = {
-        let mut st = chrome.borrow_mut();
-        let mut tree = st.tree_mut();
-        grant_file_manager_home(&mut tree, ws_id, package_id)
+    let Some(capability) = request else {
+        return;
     };
-    if granted {
-        chrome.borrow_mut().bump();
+    let mut st = chrome.borrow_mut();
+    if st.queue_grant_prompt(PendingPrompt::new(package_id.to_string(), capability)) {
+        st.bump();
     }
 }
 
-/// [`grant_user_home_to_file_manager`] against a tree, for the launches
-/// that do not come from the palette.
+/// The capability the system file manager needs and does not have, or
+/// `None` when there is nothing to ask for.
 ///
-/// The file manager is started by more than one path — the palette, and
+/// Read-only against the tree on purpose: this decides *what to ask*, and
+/// nothing here may write a capability. The two callers — the palette,
+/// via [`ask_user_home_for_file_manager`], and
 /// [`crate::shell::peer_windows`] when a peer's window says the room has
-/// one open. Only the first used to mint the grant, so a file manager
-/// started on the room's behalf opened on its own sandbox directory and
-/// reported, accurately, that it was empty. The grant is a precondition
-/// of the app being usable at all, so it belongs with the launch rather
-/// than with the palette that happened to be the first caller.
+/// one open — both turn the answer into a prompt on the queue rather than
+/// into a grant.
 ///
-/// Returns whether a grant was added, so a caller with a repaint to do
-/// can skip it when there was nothing to change.
+/// `None` for any app but the file manager, for a machine with no home
+/// directory, for a workspace that has gone away, and — the ordinary
+/// case after the first time — for a file manager that may already read
+/// the home. That last check asks the capability model rather than
+/// re-deriving prefix logic, exactly as the portal's own check does, so
+/// an approved grant stops the prompt coming back every launch.
 ///
 /// # Minted per machine, and why that is not yet enough
 ///
-/// Every member mints their own, because the path names *this* machine's
-/// home and is meaningless on anybody else's. A member who only received
-/// a copy of somebody else's still got no `QOS_USER_HOME`
-/// (`packaging/launcher/src/sandbox.rs`, `push_user_home`, which exports
-/// it only when the local `$HOME` is covered by a granted bind) and so
-/// still opened on their sandbox directory.
+/// Every member is asked on their own machine, because the path names
+/// *this* machine's home and is meaningless on anybody else's. A member
+/// who only received a copy of somebody else's still got no
+/// `QOS_USER_HOME` (`packaging/launcher/src/sandbox.rs`, `push_user_home`,
+/// which exports it only when the local `$HOME` is covered by a granted
+/// bind) and so still opened on their sandbox directory.
 ///
-/// This deliberately does **not** mirror the grant into the room
-/// document the way `GrantStoreHandle::insert` does. That is not
-/// sufficient to keep it off the wire, and the remaining hole is worth
-/// stating plainly rather than leaving to be rediscovered: the workspace
-/// projection writes `ws.capabilities` wholesale
-/// (`WorkspaceTree`'s doc write, `state.rs`), so the grant reaches every
-/// peer on the next persist regardless. A peer's sandbox then honours a
-/// path naming *this* machine's home directory.
-///
-/// Closing it needs a capability the projection knows not to ship — and
-/// one the doc-driven rebuild of `ws.capabilities` knows not to sweep,
-/// since that rebuild replaces the list with whatever the document holds.
-/// Both halves are a change to the capability model, not to this
-/// function, so it is recorded here rather than half-done.
-pub(crate) fn grant_file_manager_home(
-    tree: &mut crate::shell::state::WorkspaceTree,
+/// The grant an approval produces is still written by
+/// `record_app_grant`, and the workspace projection writes
+/// `ws.capabilities` wholesale (`WorkspaceTree`'s doc write, `state.rs`),
+/// so it reaches every peer on the next persist. Closing *that* needs a
+/// capability the projection knows not to ship — and one the doc-driven
+/// rebuild of `ws.capabilities` knows not to sweep, since that rebuild
+/// replaces the list with whatever the document holds. Both halves are a
+/// change to the capability model rather than to this function, so it is
+/// recorded here rather than half-done. What has changed is that the
+/// grant now exists only because the user said so.
+pub(crate) fn file_manager_home_request(
+    tree: &crate::shell::state::WorkspaceTree,
     workspace: crate::shell::state::WorkspaceId,
     package_id: &str,
-) -> bool {
-    use crate::shell::state::{Capability, FsMode, GRANT_SESSION, ResourceRef, Verb};
+) -> Option<crate::shell::state::Capability> {
+    use crate::shell::state::{Capability, FsMode, GRANT_ONCE, ResourceRef, Verb};
 
     if package_id != SYSTEM_FILE_MANAGER {
-        return false;
+        return None;
     }
-    let Some(home) = dirs::home_dir() else {
-        return false;
-    };
-    let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == workspace) else {
-        return false;
-    };
-    // Asks the capability model rather than re-deriving prefix logic,
-    // exactly as the portal's own check does.
+    let home = dirs::home_dir()?;
+    let ws = tree.workspaces.iter().find(|w| w.id == workspace)?;
     let actor = ws.actor_for_app(package_id);
     if ws.allows(
         &actor,
         &ResourceRef::FsPath(home.to_string_lossy().into_owned()),
         Verb::Read,
     ) {
-        return false;
+        return None;
     }
-    ws.grant_app(
-        package_id,
-        &Capability::Filesystem {
-            path: home,
-            mode: FsMode::ReadWrite,
-            scope: GRANT_SESSION,
-        },
-    );
-    true
+    // `GRANT_ONCE` is the placeholder every pusher uses: the prompt's own
+    // button is what escalates it to `Session` or `Always`. See
+    // `ChromeState::pending_grants`.
+    Some(Capability::Filesystem {
+        path: home,
+        mode: FsMode::ReadWrite,
+        scope: GRANT_ONCE,
+    })
 }
 
 pub(crate) fn launch_installed_app(
@@ -522,7 +498,7 @@ pub(crate) fn launch_installed_app(
     package_id: &str,
     display_name: &str,
 ) -> Result<(), ActionError> {
-    grant_user_home_to_file_manager(chrome, package_id);
+    ask_user_home_for_file_manager(chrome, package_id);
     // The room may already have this app open here. If it does, the
     // window the person is asking for is on their screen already — put
     // it in front of them rather than starting a second copy of it
@@ -566,7 +542,15 @@ pub(crate) fn launch_installed_app(
         st.bump();
         id
     };
-    catalogue::note_pending_notice(package_id, notice);
+    if let Some(stale) = catalogue::note_pending_notice(package_id, notice) {
+        // A second Enter while the first open is still in flight. Only
+        // the newest is tracked, so the notice this replaced can no
+        // longer be retired by the window arriving — it has to come
+        // down here, or it outlives the wait it was describing and
+        // sits over the app that did open.
+        let mut st = chrome.borrow_mut();
+        st.dismiss_notification(stale);
+    }
     // Scoped so the borrow is released before the error branch below
     // takes a mutable one.
     let launched = {
@@ -664,7 +648,123 @@ impl SearchProvider for ApplicationsProvider {
             &installed_ids,
             ctx.chrome.open_target,
         ));
+        // Both lists are in hand, so a name that collides *across* them
+        // is caught too — which is the collision a user could least
+        // resolve on their own.
+        disambiguate_colliding_titles(&mut out);
         out
+    }
+}
+
+/// The second line of a launch row: where the window lands, then what
+/// kind of app it is, when the publisher said.
+///
+/// Deliberately short. Everything on this line is there because the
+/// person choosing needs it *before* they press Enter, and neither the
+/// version nor the package id passes that test — see
+/// [`disambiguate_colliding_titles`].
+fn launch_subtitle(open_target: OpenTarget, category: Option<&str>) -> String {
+    match category {
+        Some(cat) => i18n::t_args(
+            "palette-app-subtitle",
+            &[
+                i18n::arg("hint", open_target.result_hint()),
+                i18n::arg("detail", cat),
+            ],
+        ),
+        None => open_target.result_hint().to_string(),
+    }
+}
+
+/// [`launch_subtitle`] for a row whose app has to come over the network,
+/// which names the registry as well.
+///
+/// A publisher who declared no category leaves nothing to sit between
+/// the landing hint and the registry, so that row takes its own string
+/// rather than rendering an empty field between two separators.
+fn remote_launch_subtitle(
+    open_target: OpenTarget,
+    category: Option<&str>,
+    version: &str,
+    registry: &str,
+) -> String {
+    // Provenance earns its segment only when the registry's name reads
+    // as a name. Nothing validates that field, and a name left as the
+    // base URL — the easiest thing to paste into it — turns a sentence
+    // about where an app comes from into a socket address quoted at the
+    // person reading the row. The badge beside it has already said the
+    // app is not local, so saying nothing costs less than saying that.
+    //
+    // With no registry worth printing the row falls back to the shape an
+    // installed row uses, and to the version when there is no category,
+    // so the line never ends on a dangling separator.
+    match (presentable_registry(registry), category) {
+        (Some(name), Some(cat)) => i18n::t_args(
+            "palette-app-subtitle-remote",
+            &[
+                i18n::arg("hint", open_target.result_hint()),
+                i18n::arg("detail", cat),
+                i18n::arg("registry", name),
+            ],
+        ),
+        (Some(name), None) => i18n::t_args(
+            "palette-app-subtitle-remote-plain",
+            &[
+                i18n::arg("hint", open_target.result_hint()),
+                i18n::arg("registry", name),
+            ],
+        ),
+        (None, detail) => i18n::t_args(
+            "palette-app-subtitle",
+            &[
+                i18n::arg("hint", open_target.result_hint()),
+                i18n::arg("detail", detail.unwrap_or(version)),
+            ],
+        ),
+    }
+}
+
+/// Append the package id to any rows whose titles are identical.
+///
+/// The id used to be on every row, unconditionally: `Open Photos` read
+/// `Opens beside · Graphics · dev.qos.photos`. That is a developer's
+/// name for the app printed under the user's name for it, and the
+/// argument for showing it — that the row should say what it will
+/// launch — only bites when two rows would otherwise be the same row.
+/// Answering it on every row spends the most-read line in the palette
+/// on a string nobody chooses an app by, and pushes the part that does
+/// distinguish one row from another towards the right edge.
+///
+/// So it is shown exactly when it decides something. Two apps called
+/// `Sheets` are told apart by their ids; one app called `Sheets` is
+/// told apart by nothing, because there is nothing to tell it apart
+/// from.
+///
+/// Runs across the installed and not-yet-installed rows together, since
+/// a collision between the two lists is precisely the case a user could
+/// not otherwise resolve.
+fn disambiguate_colliding_titles(rows: &mut [SearchResult]) {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for r in rows.iter() {
+        *seen.entry(r.title.clone()).or_insert(0) += 1;
+    }
+    let colliding: std::collections::HashSet<String> = seen
+        .into_iter()
+        .filter(|(_, n)| *n > 1)
+        .map(|(t, _)| t)
+        .collect();
+    if colliding.is_empty() {
+        return;
+    }
+    for r in rows.iter_mut() {
+        if !colliding.contains(&r.title) {
+            continue;
+        }
+        let id = r.id.clone();
+        r.subtitle = Some(match r.subtitle.take() {
+            Some(s) if !s.is_empty() => format!("{s} · {id}"),
+            _ => id,
+        });
     }
 }
 
@@ -758,6 +858,20 @@ mod tests {
         app_in(package_id, display_name, None)
     }
 
+    /// A launch row with the title / id / subtitle a collision test
+    /// needs, and an activation that does nothing.
+    fn row_titled(title: &str, id: &str, subtitle: &str) -> SearchResult {
+        SearchResult::nullary_fallible(
+            ResourceKind::Application,
+            "applications",
+            id.to_string(),
+            title.to_string(),
+            Some(subtitle.to_string()),
+            100,
+            |_doc, _root, _chrome: &Chrome| -> Result<(), ActionError> { Ok(()) },
+        )
+    }
+
     fn offered(package_id: &str, display_name: &str, category: Option<&str>) -> CatalogueApp {
         CatalogueApp {
             package_id: package_id.to_string(),
@@ -795,8 +909,10 @@ mod tests {
         assert_eq!(out[0].score, 100, "prefix match on the display name");
         assert_eq!(
             out[0].subtitle.as_deref(),
-            Some("Opens beside · dev.qos.hello · 0.1.0"),
-            "the row names the package it will launch"
+            Some("Opens beside"),
+            "with no category declared there is nothing to add: the version \
+             and the package id are developer names for the app, and this \
+             line is read by someone choosing between apps"
         );
     }
 
@@ -814,8 +930,50 @@ mod tests {
         assert_eq!(out[0].score, 20, "category ranks below name and id matches");
         assert_eq!(
             out[0].subtitle.as_deref(),
+            Some("Opens beside · Office"),
+            "a declared category is the more useful second line than the \
+             version or the package id"
+        );
+    }
+
+    /// The package id earns its place only when it decides something.
+    ///
+    /// It used to be on every row — `Open Photos` reading `Opens beside
+    /// · Graphics · dev.qos.photos` — which spends the most-read line in
+    /// the palette on a developer's name for the app printed under the
+    /// user's name for it. The argument for showing it is that the row
+    /// should say what it will launch, and that argument only bites when
+    /// two rows would otherwise read identically. So: shown then, and
+    /// not otherwise.
+    #[test]
+    fn the_package_id_appears_only_when_two_rows_would_read_the_same() {
+        let mut alone = vec![
+            row_titled("Open Sheets", "dev.qos.sheets", "Opens beside · Office"),
+            row_titled("Open Notes", "dev.qos.notes", "Opens beside · Office"),
+        ];
+        disambiguate_colliding_titles(&mut alone);
+        assert_eq!(
+            alone[0].subtitle.as_deref(),
+            Some("Opens beside · Office"),
+            "two differently-named apps are already told apart by their names"
+        );
+
+        let mut clash = vec![
+            row_titled("Open Sheets", "dev.qos.sheets", "Opens beside · Office"),
+            row_titled("Open Sheets", "com.other.sheets", "Opens beside · Office"),
+        ];
+        disambiguate_colliding_titles(&mut clash);
+        assert_eq!(
+            clash[0].subtitle.as_deref(),
             Some("Opens beside · Office · dev.qos.sheets"),
-            "a declared category is the more useful second line than the version"
+            "identical titles have to be separable, and the id is what \
+             separates them"
+        );
+        assert_eq!(
+            clash[1].subtitle.as_deref(),
+            Some("Opens beside · Office · com.other.sheets"),
+            "both sides of a collision are named, or the reader still \
+             cannot tell which is which"
         );
     }
 
@@ -1087,9 +1245,9 @@ mod tests {
         );
         let mine = installed[0].subtitle.clone().expect("installed subtitle");
         let theirs = available[0].subtitle.clone().expect("available subtitle");
-        assert_eq!(mine, "Opens beside · Office · dev.qos.sheets");
+        assert_eq!(mine, "Opens beside · Office");
         assert_eq!(
-            theirs, "Opens beside · Office · dev.qos.sheets · from qOS main",
+            theirs, "Opens beside · Office · from qOS main",
             "the fields an installed row shows, then where this one comes from"
         );
         assert!(
@@ -1105,8 +1263,10 @@ mod tests {
             "provenance must be at the tail, where elision keeps it: {theirs:?}"
         );
 
-        // And with no category declared, where the detail falls back to
-        // id + version.
+        // And with no category declared, where an installed row is the
+        // landing hint on its own and the uninstalled one is that plus
+        // its provenance — see `disambiguate_colliding_titles` for why
+        // neither carries the package id.
         let installed = p.results_for("", vec![app("dev.qos.plain", "Plain")], OpenTarget::Beside);
         let available = p.catalogue_results_for(
             "",
@@ -1399,6 +1559,128 @@ mod tests {
                 "{phase:?} must not read as an install: {body:?}"
             );
         }
+    }
+
+    /// A chrome whose tree holds one workspace, and has it active.
+    ///
+    /// [`chrome_rc`] builds a `WorkspaceTree::default()`, which has none —
+    /// fine for the scoring tests, and silently vacuous for anything about
+    /// capabilities, since every path here returns early when there is no
+    /// active workspace to grant against or ask about.
+    fn chrome_with_a_workspace() -> Chrome {
+        use crate::shell::state::{Workspace, WorkspaceId, next_id};
+        let ws = Workspace::test_default(WorkspaceId::from(next_id()), "test");
+        let ws_id = ws.id;
+        let tree = WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            ..Default::default()
+        };
+        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
+        let chrome = ChromeState::new_with_handle(handle);
+        assert!(
+            chrome.borrow().tree().active_workspace().is_some(),
+            "the fixture must have an active workspace, or every capability \
+             assertion below passes without reaching the code it is about"
+        );
+        chrome
+    }
+
+    /// Whether the file manager may read `path` in the active workspace.
+    ///
+    /// Goes through `Workspace::allows`, the same call the sandbox's own
+    /// capability resolution bottoms out in, rather than counting entries
+    /// in the capability list.
+    fn may_read(chrome: &Chrome, app: &str, path: &std::path::Path) -> bool {
+        use crate::shell::state::{ResourceRef, Verb};
+        let st = chrome.borrow();
+        let tree = st.tree();
+        let Some(ws) = tree.active_workspace() else {
+            return false;
+        };
+        ws.allows(
+            &ws.actor_for_app(app),
+            &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
+            Verb::Read,
+        )
+    }
+
+    /// The file manager's home is asked for, not taken.
+    ///
+    /// `apps/file-explorer/qos-app.toml` says a file manager "has none by
+    /// default: what it can reach is what the user granted it", and the
+    /// palette used to disagree with the package by minting the grant
+    /// before the launch. The home holds the user's signing seed and every
+    /// other app's per-room state, so "the OS decides, for the file manager
+    /// it ships" was deciding rather a lot.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_palette_asks_for_the_file_managers_home_rather_than_granting_it() {
+        let home = dirs::home_dir().expect("the test machine has a home directory");
+        let chrome = chrome_with_a_workspace();
+
+        assert!(
+            !may_read(&chrome, SYSTEM_FILE_MANAGER, &home),
+            "fixture sanity: the file manager must start with no grant on the home"
+        );
+
+        ask_user_home_for_file_manager(&chrome, SYSTEM_FILE_MANAGER);
+
+        assert!(
+            !may_read(&chrome, SYSTEM_FILE_MANAGER, &home),
+            "opening the file manager must not mint the home grant; the user was \
+             never asked"
+        );
+        let st = chrome.borrow();
+        assert!(
+            st.pending_grants.iter().any(|p| {
+                p.app_id == SYSTEM_FILE_MANAGER
+                    && matches!(
+                        &p.capability,
+                        crate::shell::state::Capability::Filesystem { path, .. } if *path == home
+                    )
+            }),
+            "the file manager still needs the home, so the request must be in \
+             front of the user: {:?}",
+            st.pending_grants
+        );
+    }
+
+    /// Opening it twice asks once. The queue is a list of questions for a
+    /// person, and the same question twice is a person clicking through a
+    /// dialog they already answered.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn asking_twice_queues_one_question() {
+        let chrome = chrome_with_a_workspace();
+
+        ask_user_home_for_file_manager(&chrome, SYSTEM_FILE_MANAGER);
+        ask_user_home_for_file_manager(&chrome, SYSTEM_FILE_MANAGER);
+
+        assert_eq!(
+            chrome.borrow().pending_grants.len(),
+            1,
+            "two launches of the file manager must leave one question on the queue"
+        );
+    }
+
+    /// No other package can cause the question to be asked. A rule a
+    /// third-party package could satisfy would be a way to put a prompt for
+    /// the user's home on their screen by declaring the right thing about
+    /// yourself.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn no_other_package_can_ask_for_the_home() {
+        let chrome = chrome_with_a_workspace();
+
+        ask_user_home_for_file_manager(&chrome, "dev.qos.notes");
+        ask_user_home_for_file_manager(&chrome, "com.example.files");
+
+        assert!(
+            chrome.borrow().pending_grants.is_empty(),
+            "only the file manager qOS ships may raise this: {:?}",
+            chrome.borrow().pending_grants
+        );
     }
 
     /// An app that is already here opens without a loading state — it

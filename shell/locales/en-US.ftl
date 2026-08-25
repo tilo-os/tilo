@@ -17,6 +17,10 @@ palette-not-on-this-machine = not on this machine
 ## same fields an installed row shows, plus which registry offers it.
 palette-app-subtitle-remote = { $hint } · { $detail } · from { $registry }
 
+## The same, for an app whose publisher declared no category: there is
+## nothing to put between the landing hint and the registry.
+palette-app-subtitle-remote-plain = { $hint } · from { $registry }
+
 ## The standing indication raised while an app is being fetched and
 ## started. Retired when its window appears, or replaced by why it
 ## could not be.

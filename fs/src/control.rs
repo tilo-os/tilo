@@ -642,7 +642,7 @@ mod tests {
             b
         };
         let (ws_a, ticket) =
-            Workspace::host(ep_a.clone(), look_a, store_a.clone(), hyd_a.clone(), ns_a.clone())
+            Workspace::host(ep_a.clone(), look_a, store_a.clone(), hyd_a.clone(), ns_a.clone(), None)
                 .await
                 .unwrap();
 
@@ -653,7 +653,7 @@ mod tests {
         let doc = fetch_remote_doc(&ep_b, ticket.node.clone()).await.unwrap();
         let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
         let ws_b =
-            Workspace::join(ep_b.clone(), look_b, store_b.clone(), hyd_b.clone(), ns_b.clone(), ticket)
+            Workspace::join(ep_b.clone(), look_b, store_b.clone(), hyd_b.clone(), ns_b.clone(), ticket, None)
                 .await
                 .unwrap();
 

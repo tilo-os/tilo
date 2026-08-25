@@ -8,6 +8,7 @@ palette-fetch-and-open-app = { $app } holen und öffnen
 palette-not-on-this-machine = nicht auf diesem Gerät
 
 palette-app-subtitle-remote = { $hint } · { $detail } · von { $registry }
+palette-app-subtitle-remote-plain = { $hint } · von { $registry }
 
 notice-opening-app = { $app } wird geöffnet
 notice-fetch-connecting = Verbindung zu { $registry }…

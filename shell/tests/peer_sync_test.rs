@@ -19,11 +19,15 @@ use shell::network::{
     Actor, NeighbourMsg, NetCmd, NetEvent, NiriosBehaviour,
     invite::{make_invite_token, validate_invite_token},
 };
-use shell::shell::state::{PeerOrigin, WorkspaceTree};
+use shell::shell::state::{PeerOrigin, RoomId, WorkspaceTree};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-const WS: u64 = 42;
+/// The room these two actors share. A gossip topic is derived from a
+/// room id now, so a test peer joins a room rather than a number.
+fn shared_room() -> RoomId {
+    RoomId::parse("6b3f9a10-0000-4000-8000-0000000000ff").expect("a valid room id")
+}
 
 /// Build a swarm using the same transport stack as the in-crate actor
 /// test — TCP + noise + yamux + the project's combined behaviour.
@@ -59,16 +63,16 @@ async fn listen_loopback(swarm: &mut Swarm<NiriosBehaviour>) -> Multiaddr {
     .expect("listen addr within 5 s")
 }
 
-/// Build, listen, and join a workspace. Returns the cmd channel, the
-/// event receiver, and the listening multiaddr.
+/// Build, listen, and join the shared room. Returns the cmd channel,
+/// the event receiver, and the listening multiaddr.
 async fn spawn_actor() -> (mpsc::Sender<NetCmd>, mpsc::Receiver<NetEvent>, Multiaddr) {
     let mut swarm = build_swarm();
     let addr = listen_loopback(&mut swarm).await;
     let (cmd_tx, _join) = Actor::spawn(swarm);
     let (ev_tx, ev_rx) = mpsc::channel::<NetEvent>(64);
     cmd_tx
-        .send(NetCmd::JoinWorkspace {
-            ws: WS,
+        .send(NetCmd::JoinRoom {
+            room: shared_room(),
             on_event: ev_tx,
         })
         .await
@@ -128,7 +132,7 @@ async fn two_actors_exchange_a_workspace_append_change() {
     // A publishes a SyncResp with the change blobs.
     cmd_a
         .send(NetCmd::Publish {
-            ws: WS,
+            room: shared_room(),
             msg: NeighbourMsg::SyncResp {
                 changes: changes.clone(),
                 room: room.to_string(),
@@ -211,7 +215,7 @@ async fn presence_moved_round_trips_between_two_actors() {
     };
     cmd_a
         .send(NetCmd::Publish {
-            ws: WS,
+            room: shared_room(),
             msg: presence.clone(),
         })
         .await
@@ -294,7 +298,7 @@ async fn surface_frame_round_trips_through_gossipsub() {
 
     cmd_a
         .send(NetCmd::Publish {
-            ws: WS,
+            room: shared_room(),
             msg: NeighbourMsg::SurfaceFrame {
                 surface: 42,
                 encoded_h264: nalus.clone(),
@@ -356,7 +360,7 @@ async fn remote_input_round_trips_through_gossipsub() {
     let event_bytes = serde_json::to_vec(&original).expect("serialize event");
     cmd_a
         .send(NetCmd::Publish {
-            ws: WS,
+            room: shared_room(),
             msg: NeighbourMsg::RemoteInput {
                 peer: 3,
                 surface: 9,

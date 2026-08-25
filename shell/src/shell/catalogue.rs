@@ -407,10 +407,28 @@ fn schedule_refresh() {
 // ---------------------------------------------------------------------
 
 /// Remember the notification raised for an in-flight open.
-pub fn note_pending_notice(package_id: &str, notification_id: u64) {
+///
+/// Returns the notice a previous open of the same package left behind,
+/// if there was one, so the caller can take it off the screen.
+///
+/// That return value is the whole point. Only one entry per package is
+/// kept — the live open's — and the older one used to be dropped from
+/// this list and nowhere else, which left its notification on screen
+/// with nothing able to retire it: the window appearing settles the
+/// notice this list *names*, and the orphan was no longer named. It
+/// then sat under the running app until its own two-minute expiry, so
+/// a second press of Enter during the seconds an app takes to open
+/// bought a "Loading…" that outlived the loading by a minute and a
+/// half.
+#[must_use = "the superseded notice is still on screen until it is dismissed"]
+pub fn note_pending_notice(package_id: &str, notification_id: u64) -> Option<u64> {
     let mut pending = PENDING_NOTICES.lock().expect("PENDING_NOTICES poisoned");
-    pending.retain(|(id, _)| id != package_id);
+    // Two statements: chaining `.position(..).map(|i| pending.remove(i))`
+    // holds the iterator's borrow of `pending` across the mutation.
+    let existing = pending.iter().position(|(id, _)| id == package_id);
+    let superseded = existing.map(|idx| pending.remove(idx).1);
     pending.push((package_id.to_string(), notification_id));
+    superseded
 }
 
 /// The package ids with an open still outstanding, and the notice each
@@ -623,8 +641,18 @@ mod tests {
 
     #[test]
     fn a_newer_open_replaces_the_notice_for_the_same_package() {
-        note_pending_notice("dev.qos.replacefixture", 1);
-        note_pending_notice("dev.qos.replacefixture", 2);
+        assert_eq!(
+            note_pending_notice("dev.qos.replacefixture", 1),
+            None,
+            "the first open of a package supersedes nothing"
+        );
+        assert_eq!(
+            note_pending_notice("dev.qos.replacefixture", 2),
+            Some(1),
+            "the notice the newer open displaced must be handed back — it \
+             is still on screen, and once it is off this list nothing else \
+             can ever retire it"
+        );
         assert_eq!(
             take_pending_notice("dev.qos.replacefixture"),
             Some(2),

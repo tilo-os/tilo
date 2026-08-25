@@ -959,6 +959,13 @@ COPY os/usr/lib/sysctl.d/60-qos-hardening.conf /usr/lib/sysctl.d/60-qos-hardenin
 # image owns the list — an app manifest can neither request nor decline it.
 COPY os/usr/lib/qos/untrusted-parsers.conf /usr/lib/qos/untrusted-parsers.conf
 
+# Which sandboxed packages may map memory writable and executable at once.
+# Read by qos-launcher when it compiles the syscall filter. Same reasoning as
+# the file above and the same format: a package that could name its own
+# profile would be lifting a protection off itself, so the image decides and
+# the manifest only asks.
+COPY os/usr/lib/qos/jit-entitled.conf /usr/lib/qos/jit-entitled.conf
+
 # hidepid on /proc + the boot self-check that ASSERTS what's actually active.
 COPY os/usr/libexec/qos-security-audit /usr/libexec/qos-security-audit
 COPY os/usr/lib/systemd/system/qos-security-audit.service /usr/lib/systemd/system/qos-security-audit.service

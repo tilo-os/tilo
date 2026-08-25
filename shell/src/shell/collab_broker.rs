@@ -2909,7 +2909,11 @@ fn spawn_inner(
                             if !ops.is_empty() {
                                 let boxed: Vec<Box<collab_types::SignedOp>> =
                                     ops.into_iter().map(Box::new).collect();
-                                drain_net.publish_scrollback_response(entry.artifact, boxed);
+                                drain_net.publish_scrollback_response(
+                                    entry.room,
+                                    entry.artifact,
+                                    boxed,
+                                );
                             }
                         }
 

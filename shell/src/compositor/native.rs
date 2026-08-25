@@ -63,16 +63,51 @@ fn params_json(
         .collect()
 }
 
+/// Who a call on this socket is gated as.
+///
+/// The rest of the socket is a real input source: it types and clicks on
+/// behalf of the person at the keyboard, so a call that announces nobody
+/// is them. The action ops are the one part of it a program drives on its
+/// own behalf, and a program that says who it is gets the authority of
+/// that name instead — [`Workspace::actor_for_agent`], which carries the
+/// room but no role, so it holds exactly what somebody granted it and
+/// revoking that grant is the whole of taking it back.
+///
+/// Announcing an *empty* name is refused rather than read as "nobody".
+/// `agent_opens::decide` refuses the same thing for the same reason: a
+/// capability names a subject, so asking the workspace about the empty
+/// string is not a question it can answer.
+///
+/// The name is unauthenticated, exactly as the `Hello` handle on the
+/// collaboration socket is. It narrows a grant to the participant it was
+/// written for without proving the caller is that participant — worth
+/// having, and not to be mistaken for identity.
+fn caller_actor(
+    workspace: &crate::shell::state::Workspace,
+    local_user: &crate::shell::state::UserId,
+    agent: Option<&str>,
+) -> Result<crate::shell::state::Actor, String> {
+    match agent {
+        None => Ok(workspace.actor_for_person(local_user)),
+        Some(name) if name.trim().is_empty() => Err("this call announced an empty agent \
+             name — a capability names a subject, so there is no grant that could \
+             cover it"
+            .to_string()),
+        Some(name) => Ok(workspace.actor_for_agent(name)),
+    }
+}
+
 fn with_action_gate<R>(
     chrome_handle: &crate::shell::chrome_state::Chrome,
-    f: impl FnOnce(&crate::shell::chrome_state::ChromeState, &dyn ActionVisibility) -> R,
+    agent: Option<&str>,
+    f: impl FnOnce(&crate::shell::chrome_state::ChromeState, &CapabilityVisibility<'_>) -> R,
 ) -> Result<R, String> {
     let chrome = chrome_handle.borrow();
     let tree = chrome.tree();
     let workspace = tree
         .active_workspace()
         .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?;
-    let actor = workspace.actor_for_person(&chrome.local_user_id);
+    let actor = caller_actor(workspace, &chrome.local_user_id, agent)?;
     let gate = CapabilityVisibility::new(workspace, actor);
     Ok(f(&chrome, &gate))
 }
@@ -649,7 +684,15 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
     /// nothing. No scene is built, no widget is touched, no synthetic
     /// input is generated — which is the entire claim: an action is not
     /// a pixel, so driving the shell does not require seeing it.
-    fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {
+    ///
+    /// `agent` is who is asking. It decides the gate the catalogue is
+    /// built through, so an agent surveying the desktop sees what *it*
+    /// may do rather than what the person whose desktop it is may do.
+    fn enumerate_actions(
+        &self,
+        query: &str,
+        agent: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
         let (doc, root) = self
             .doc
             .ok_or_else(|| "control state has no live document".to_string())?;
@@ -657,7 +700,7 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         // The borrow lives only for the closure. `ActionCatalog` owns its
         // results outright (no borrow of `doc` is retained), so the
         // catalogue outlives the guards it was built through.
-        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
+        let catalog = with_action_gate(&chrome_handle, agent, |chrome, gate| {
             self.fb.host().action_catalog(query, chrome, doc, root, gate)
         })?;
         let actions: Vec<serde_json::Value> = catalog
@@ -699,12 +742,13 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         provider: &str,
         id: &str,
         args: &serde_json::Map<String, serde_json::Value>,
+        agent: Option<&str>,
     ) -> Result<serde_json::Value, test_control::ActionRefusal> {
         let (doc, root) = self
             .doc
             .ok_or_else(|| test_control::ActionRefusal::unknown("control state has no live document"))?;
         let chrome_handle = self.fb.chrome_handle();
-        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
+        let catalog = with_action_gate(&chrome_handle, agent, |chrome, gate| {
             self.fb.host().action_catalog("", chrome, doc, root, gate)
         })
         .map_err(test_control::ActionRefusal::unknown)?;
@@ -1232,7 +1276,12 @@ fn execute_planned_action(
             });
             write_snapshot_png(fb, path, pointer, *defer);
         }
-        PlannedAction::InvokeAction { provider, id, args } => {
+        PlannedAction::InvokeAction {
+            provider,
+            id,
+            args,
+            agent,
+        } => {
             // Re-resolve rather than carrying a handle over from
             // dispatch: the document is mutable between planning and
             // execution, so the catalogue the caller was shown may no
@@ -1244,7 +1293,10 @@ fn execute_planned_action(
             // against. Re-resolving without it would make the gate
             // advisory: a caller who got past `resolve_action` once
             // could keep invoking after their capability was revoked.
-            let catalog = match with_action_gate(&chrome_handle, |chrome, gate| {
+            // Same caller, too — rebuilding it as the person would hand
+            // an agent the person's surface at exactly the moment
+            // something runs.
+            let catalog = match with_action_gate(&chrome_handle, agent.as_deref(), |chrome, gate| {
                 fb.host()
                     .action_catalog("", chrome, &ctx.doc, &ctx.root_obj, gate)
             }) {
@@ -2502,8 +2554,8 @@ pub fn run() -> ! {
             &crate::shell::network::peer_key_path(),
         ) {
             Ok(handle) => {
-                let _ = handle.join_default_workspace();
-                tracing::info!("peer-sync: actor spawned, default workspace joined");
+                let joined = handle.join_rooms();
+                tracing::info!(joined, "peer-sync: actor spawned, rooms subscribed");
                 let net = Arc::new(handle);
                 let bridge_net = Arc::clone(&net);
                 let bridge_tree = tree_handle.clone();
@@ -4131,6 +4183,212 @@ mod tests {
     //! wire without spinning up a process, so a CI run that can't open
     //! winit still gates against regressions here.
     use super::*;
+
+    /// Who the action surface's capability gate is built for.
+    ///
+    /// These drive the **production** `with_action_gate` — the one and
+    /// only gate `actions_enumerate` and `actions_invoke` pass through —
+    /// against a real `Workspace`, and read the principal back off the
+    /// gate it produced. Asserting on `CapabilityVisibility::actor` is
+    /// deliberate: a test that re-derived "who should this be" from a
+    /// helper would have passed happily for as long as the bug existed,
+    /// because the helper and the gate were never the same code. The
+    /// gate is the thing that decides, so the gate is the thing asked.
+    mod action_gate_caller {
+        use super::*;
+        use crate::shell::chrome_state::{Chrome, ChromeState};
+        use crate::shell::search::ResourceKind;
+        use crate::shell::search::action_api::{ActionVisibility, ResourceRef};
+        use crate::shell::state::{
+            CapOverride, Principal, Scope, Subject, Verb, Workspace, WorkspaceId, WorkspaceTree,
+            WorkspaceTreeHandle,
+        };
+        use parking_lot::RwLock;
+        use std::sync::Arc;
+
+        const PERSON: &str = "quinten";
+        const AGENT: &str = "Claude";
+
+        /// A chrome whose active workspace is owned by `PERSON` — so the
+        /// person holds `Owner`, the strongest role the model has, and
+        /// any difference below is the gate choosing a different
+        /// principal rather than a thin grant.
+        fn chrome_owned_by_person(prepare: impl FnOnce(&mut Workspace)) -> Chrome {
+            let mut ws = Workspace::new(WorkspaceId::new(), "gate");
+            ws.owner = Some(PERSON.to_string());
+            prepare(&mut ws);
+            let mut tree = WorkspaceTree::default();
+            tree.active = ws.id;
+            tree.workspaces = vec![ws];
+            let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
+            let chrome = ChromeState::new_with_handle(handle);
+            chrome.borrow_mut().local_user_id = PERSON.to_string();
+            chrome
+        }
+
+        /// A chrome action the visibility policy classifies as an *act*
+        /// (`Verb::Write` on the shell's namespace), so it is gated.
+        fn a_gated_act() -> (ResourceRef, ResourceKind) {
+            (
+                ResourceRef::new("actions", "window.new.terminal"),
+                ResourceKind::Action,
+            )
+        }
+
+        /// The regression this whole change exists for.
+        ///
+        /// `actions_enumerate`/`actions_invoke` used to build the gate
+        /// with `actor_for_person(local_user_id)` no matter who called,
+        /// so an agent driving the desktop held the person's role.
+        /// Revert `caller_actor` to that and this fails: the announced
+        /// agent's principal is what is asserted, not a description of
+        /// it.
+        #[test]
+        fn an_announced_agent_is_gated_as_that_agent_not_as_the_person() {
+            let chrome = chrome_owned_by_person(|_| {});
+
+            let actor = with_action_gate(&chrome, Some(AGENT), |_, gate| gate.actor().clone())
+                .expect("a chrome with an active workspace must produce a gate");
+
+            assert!(
+                actor
+                    .principals
+                    .contains(&Principal::Agent(AGENT.to_string())),
+                "an agent-announced call must be gated as that agent; the gate \
+                 was handed {:?}",
+                actor.principals
+            );
+            assert!(
+                !actor
+                    .principals
+                    .iter()
+                    .any(|p| matches!(p, Principal::Person(_))),
+                "and it must present no person at all. Carrying the person is \
+                 the bug: nothing the agent did could then be revoked without \
+                 revoking them, and the room's history would attribute its \
+                 edits to them. Got {:?}",
+                actor.principals
+            );
+            assert_eq!(
+                actor.role, None,
+                "an agent holds no role — its whole authority is what somebody \
+                 granted it by name, which is what makes revoking that grant \
+                 the whole of taking it back"
+            );
+        }
+
+        /// The other half, so the fix cannot be "always an agent": a call
+        /// that announces nobody is still the person at the keyboard,
+        /// because the rest of this socket types and clicks as them.
+        #[test]
+        fn a_call_that_announces_nobody_is_still_the_person() {
+            let chrome = chrome_owned_by_person(|_| {});
+
+            let actor = with_action_gate(&chrome, None, |_, gate| gate.actor().clone())
+                .expect("a chrome with an active workspace must produce a gate");
+
+            assert!(
+                actor
+                    .principals
+                    .contains(&Principal::Person(PERSON.to_string())),
+                "an unannounced call is the person driving their own machine; \
+                 the gate was handed {:?}",
+                actor.principals
+            );
+            assert_eq!(
+                actor.role,
+                Some(crate::shell::state::CapRole::Owner),
+                "and they keep the role the room gives them — this fix must not \
+                 have quietly demoted the person at the keyboard"
+            );
+        }
+
+        /// What the principal is *worth*, asked of the real
+        /// `CapabilityVisibility` rather than inferred from the actor.
+        ///
+        /// Same workspace, same gate type, same resource: the owner may
+        /// spawn a terminal and an agent holding nothing may not — and
+        /// the ungated half stays visible to both, because showing is
+        /// free and this must not have quietly become a blanket denial.
+        #[test]
+        fn the_agent_sees_only_what_it_was_granted() {
+            let chrome = chrome_owned_by_person(|_| {});
+            let (act, kind) = a_gated_act();
+            let showing = (
+                ResourceRef::new("actions", "settings.open"),
+                ResourceKind::Action,
+            );
+
+            let person_may =
+                with_action_gate(&chrome, None, |_, gate| gate.can_see(&act, &kind)).expect("gate");
+            let agent_may =
+                with_action_gate(&chrome, Some(AGENT), |_, gate| gate.can_see(&act, &kind))
+                    .expect("gate");
+            let agent_sees_showing = with_action_gate(&chrome, Some(AGENT), |_, gate| {
+                gate.can_see(&showing.0, &showing.1)
+            })
+            .expect("gate");
+
+            assert!(person_may, "the owner of the room may spawn a terminal in it");
+            assert!(
+                !agent_may,
+                "an agent nobody granted anything must not inherit the owner's \
+                 reach just by calling the same op"
+            );
+            assert!(
+                agent_sees_showing,
+                "opening an overlay reveals a panel and changes nothing, so it \
+                 is not gated for anyone — an agent going dark entirely would \
+                 be a blanket denial wearing this fix's clothes"
+            );
+        }
+
+        /// And the grant is a real boundary rather than a label: name the
+        /// agent in the room's capabilities and the same call succeeds.
+        /// Without this the test above could pass on a gate that denied
+        /// every agent unconditionally.
+        #[test]
+        fn a_grant_to_the_agent_by_name_opens_exactly_that_act() {
+            let (act, kind) = a_gated_act();
+            let chrome = chrome_owned_by_person(|ws| {
+                ws.grant_capability(CapOverride::grant(
+                    Subject::agent(AGENT),
+                    Scope::Workspace,
+                    Verb::Write,
+                ));
+            });
+
+            let granted =
+                with_action_gate(&chrome, Some(AGENT), |_, gate| gate.can_see(&act, &kind))
+                    .expect("gate");
+            let someone_else =
+                with_action_gate(&chrome, Some("Mallory"), |_, gate| gate.can_see(&act, &kind))
+                    .expect("gate");
+
+            assert!(granted, "an agent the room granted Write may act in it");
+            assert!(
+                !someone_else,
+                "the grant names one agent; announcing a different name must \
+                 not reach it"
+            );
+        }
+
+        /// Announcing an empty name is refused rather than read as
+        /// "nobody" — otherwise the way past the agent gate would be to
+        /// send an empty `agent` and be handed the person's surface.
+        #[test]
+        fn an_empty_agent_name_is_refused_not_read_as_the_person() {
+            let chrome = chrome_owned_by_person(|_| {});
+
+            let why = with_action_gate(&chrome, Some("   "), |_, gate| gate.actor().clone())
+                .expect_err("an empty announced name must be refused");
+
+            assert!(
+                why.contains("empty agent"),
+                "the refusal must name what was wrong with the call: {why}"
+            );
+        }
+    }
 
     /// The compositor binds the socket the launcher dials.
     ///

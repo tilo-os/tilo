@@ -581,10 +581,19 @@ impl App {
                 // nothing announced one — which is what two windows of
                 // one unnamed app share. Anything not on this list is
                 // somebody else and gets painted.
+                //
+                // `local_app_id` is named here rather than left to fall
+                // out of `local_user_id`, which used to return the same
+                // string and no longer does. The app id is the broker's
+                // fallback attribution and has to stay on the list in
+                // its own right; the person is a separate entry beside
+                // it, so a frame stamped either way is still recognised
+                // as this process's own.
                 let mut ctx = PresenceCtx::empty();
                 ctx.set_own_identity(
                     crate::collaboration::presence_handle_env()
                         .into_iter()
+                        .chain(std::iter::once(crate::collaboration::local_app_id()))
                         .chain(std::iter::once(crate::collaboration::local_user_id().0)),
                 );
                 ctx
@@ -1970,6 +1979,16 @@ impl App {
                     // the app that owns a document stays the only writer of
                     // it, which is exactly the property that made it safe to
                     // let another app ask in the first place.
+                    //
+                    // The heads are read *first*, and they are the whole point
+                    // of the two lines around this call. Somebody else's change
+                    // is about to land in a document whose undo baseline has no
+                    // idea, and a baseline left behind it is not merely a
+                    // missing entry: the next thing the person types brackets
+                    // `[stale_baseline, after]`, a range that contains this
+                    // change, and their next Ctrl+Z reverts it along with their
+                    // own keystroke.
+                    let before = self.state.doc.get_heads();
                     let applied = self.root_widget.apply_room_action(
                         &mut self.state.doc,
                         &type_id,
@@ -1980,6 +1999,16 @@ impl App {
                             target: "ui::remark",
                             %type_id, from = %from_user_id,
                             "applied an action published into the room"
+                        );
+                        // One boundary, named after whoever published it. The
+                        // local user's Ctrl+Z now walks past it instead of
+                        // through it, and it stays revertible under the name
+                        // that made it rather than belonging to nobody.
+                        self.state.record_committed_action_authored(
+                            before,
+                            None,
+                            None,
+                            Some(crate::permissions::UserId(from_user_id.clone())),
                         );
                         self.needs_sync = true;
                         self.structure_dirty = true;
@@ -2002,6 +2031,12 @@ impl App {
                     // published. The document may have moved since, and an
                     // address that no longer names anything must fail loudly
                     // instead of running whatever now sits at that id.
+                    //
+                    // Read before the door opens, for the reason the room-wide
+                    // arrival above gives: `door::invoke` commits its own
+                    // change under the caller's pinned actor, so the document
+                    // advances without the undo baseline hearing about it.
+                    let before = self.state.doc.get_heads();
                     let address = qos_actions::door::ActionAddress::new(&resource, &action);
                     let resources = self.root_widget.resources(&self.state.doc);
                     let outcome = qos_actions::door::invoke(
@@ -2015,6 +2050,16 @@ impl App {
                     );
                     let (code, message) = match &outcome {
                         Ok(_) => {
+                            // One undo boundary around what the caller just
+                            // did, named after them. Same recording an action
+                            // arriving from the room gets, and needed here for
+                            // the same reason.
+                            self.state.record_committed_action_authored(
+                                before,
+                                None,
+                                None,
+                                Some(crate::permissions::UserId(actor.clone())),
+                            );
                             // The document changed, so the next frame must
                             // rebuild from it and the delta must go out. Same
                             // two flags an action arriving from the room sets.
@@ -2028,6 +2073,12 @@ impl App {
                             (String::new(), String::new())
                         }
                         Err(e) => {
+                            // A refused operation leaves the document as it
+                            // found it, so there is no entry to push — but the
+                            // baseline still moves up, which is what this call
+                            // does when the brackets turn out to be equal.
+                            self.state
+                                .record_committed_action_authored(before, None, None, None);
                             // Reported, never swallowed. Somebody who cannot
                             // see this window asked for something; a refusal
                             // that arrived as silence would be read as a hang.
@@ -2283,6 +2334,16 @@ impl App {
     #[doc(hidden)]
     pub fn state_mut_for_test(&mut self) -> &mut crate::state::State {
         &mut self.state
+    }
+
+    /// Who this process acts as — the author every local action is stamped
+    /// with, and the one Ctrl+Z undoes as.
+    ///
+    /// Resolved once at construction so it cannot drift mid-document: an
+    /// author that changed between two actions would strand the first on the
+    /// undo stack, unreachable by the person who performed it.
+    pub fn local_author(&self) -> &crate::permissions::UserId {
+        &self.local_author
     }
 
     fn update_focusable_order(&mut self) {
@@ -5141,7 +5202,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // An affordance may have dispatched a `qos_actions` action out-of-band
         // during the last event (the button-driven twin of the Ctrl+K palette).
         // Record one undo boundary bracketing it, so Ctrl+Z reverts it — the same
-        // `record_committed_action` path the palette dispatch takes.
+        // `record_committed_action` path the palette dispatch takes. The entry is
+        // unattributed (a widget reports heads, not identity) and Ctrl+Z undoes
+        // as `local_author`; `UndoLog::claimable_by` is what joins the two.
         // A remark composed during the last event: address it against the room's
         // roster and put it on the wire. Level-triggered here, beside the other
         // per-frame drains, rather than at the send affordance — the widget that

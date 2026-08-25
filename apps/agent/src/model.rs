@@ -315,15 +315,34 @@ pub fn request_body(rest: &str, blocks: &[Block], offers: &[Offer]) -> serde_jso
                         // single answer was, so a sequence reaches nothing a
                         // single answer could not — it only reaches more than
                         // one of it, in an order.
+                        // No `minItems`/`maxItems`: structured outputs reject
+                        // both on an array, and the whole request 400s rather
+                        // than the keywords being ignored --
+                        // `output_config.format.schema: For 'array' type,
+                        // property 'maxItems' is not supported`. That is a
+                        // failure with no partial mode: every call returned
+                        // 400, the agent fell back to its keyword vocabulary
+                        // on every instruction, and its log went on saying
+                        // `a model chooses` because that line is printed once
+                        // at startup from whether a key was found. A run of
+                        // the cross-application proof was read as the model
+                        // declining to open the photo editor when the model
+                        // had never been asked.
+                        //
+                        // The bound is not dropped with the keyword. It is
+                        // stated here, where the model reads it, and enforced
+                        // in `parse_answer`, where it is not a request the
+                        // model can talk its way past.
                         "actions": {
                             "type": "array",
                             "items": { "type": "string", "enum": ids },
-                            "minItems": 1,
-                            "maxItems": MAX_STEPS,
-                            "description": "The operations to perform, in the order they \
-                                are asked for. One entry for a request that asks for one \
-                                thing — which is most of them. Add an entry only for \
-                                something the request actually asks for as well."
+                            "description": format!(
+                                "The operations to perform, in the order they are asked \
+                                 for. One entry for a request that asks for one thing — \
+                                 which is most of them. Add an entry only for something \
+                                 the request actually asks for as well. At least one and \
+                                 at most {MAX_STEPS}."
+                            )
                         },
                         "why": { "type": "string" },
                         // Required, and nullable rather than optional.
@@ -547,6 +566,18 @@ pub fn parse_answer(body: &str) -> Result<Answer, String> {
     if actions.is_empty() {
         return Err("answer named nothing to do".to_string());
     }
+    // The cap, enforced rather than asked for. It used to live in the schema
+    // as `maxItems`, which the API refuses outright, so it is checked here —
+    // and refused rather than truncated: half of a misread sequence is still a
+    // run of edits to somebody's document that nobody asked for, and the
+    // caller's fallback says so instead of performing the first two steps of
+    // four.
+    if actions.len() > MAX_STEPS {
+        return Err(format!(
+            "answer named {} operations, more than the {MAX_STEPS} one              instruction may be read as asking for",
+            actions.len()
+        ));
+    }
     let why = answer
         .get("why")
         .and_then(|w| w.as_str())
@@ -749,6 +780,88 @@ mod tests {
         assert!(turn.contains("list_item: a - 1"), "{turn}");
         assert!(turn.contains("files.entry:/w/plan.md#rename"), "{turn}");
         assert!(turn.contains("Rename"), "{turn}");
+    }
+
+    /// The schema carries no keyword structured outputs refuses.
+    ///
+    /// This is not a style rule. `minItems`/`maxItems` on an array are
+    /// rejected by `output_config.format.schema`, and rejected as a 400 on the
+    /// whole request rather than ignored — so one unsupported keyword does not
+    /// degrade the answer, it removes the model from the run entirely. The
+    /// agent then decides by its keyword vocabulary while its startup log
+    /// still reads `a model chooses`, which is the combination that made the
+    /// failure survive: nothing on the surface distinguished it from a model
+    /// that had answered and chosen badly.
+    ///
+    /// Walked over the whole schema rather than asserted at the one place the
+    /// keyword used to be, because the next one will be somewhere else.
+    #[test]
+    fn the_answer_schema_uses_no_keyword_the_api_refuses() {
+        fn walk(v: &serde_json::Value, path: &str, found: &mut Vec<String>) {
+            match v {
+                serde_json::Value::Object(map) => {
+                    let is_array = map.get("type").and_then(|t| t.as_str()) == Some("array");
+                    for key in ["minItems", "maxItems", "uniqueItems"] {
+                        if is_array && map.contains_key(key) {
+                            found.push(format!("{path}.{key}"));
+                        }
+                    }
+                    for (k, child) in map {
+                        walk(child, &format!("{path}.{k}"), found);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for (i, child) in items.iter().enumerate() {
+                        walk(child, &format!("{path}[{i}]"), found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = request_body("do something", &[], &[]);
+        let mut found = Vec::new();
+        walk(&body["output_config"]["format"]["schema"], "schema", &mut found);
+        assert!(
+            found.is_empty(),
+            "structured outputs refuses these on an array, and the whole \
+             request 400s: {found:?}",
+        );
+    }
+
+    /// More operations than one instruction may be read as asking for is
+    /// refused, and refused whole.
+    ///
+    /// The cap used to be `maxItems` in the schema, where the API enforced it.
+    /// It cannot live there, so it lives here — and it must refuse rather than
+    /// truncate: performing the first `MAX_STEPS` of a longer answer is still
+    /// a run of edits nobody asked for, and it hides that the answer was
+    /// misshapen at all.
+    #[test]
+    fn an_answer_naming_more_steps_than_allowed_is_refused() {
+        let ids: Vec<String> = (0..MAX_STEPS + 1)
+            .map(|i| format!("\"word-processor.document#a{i}\""))
+            .collect();
+        let body = format!(
+            r#"{{"content":[{{"type":"text","text":"{{\"actions\":[{}],\"why\":\"\",\"table\":null}}"}}]}}"#,
+            ids.join(",").replace('"', "\\\"")
+        );
+        let err = parse_answer(&body).expect_err("an over-long answer is refused");
+        assert!(
+            err.contains(&MAX_STEPS.to_string()),
+            "the refusal names the cap it broke: {err}",
+        );
+
+        // And exactly the cap still passes, so this is a bound and not an
+        // off-by-one that quietly forbids the longest legitimate sequence.
+        let ok: Vec<String> = (0..MAX_STEPS)
+            .map(|i| format!("\"word-processor.document#a{i}\""))
+            .collect();
+        let body = format!(
+            r#"{{"content":[{{"type":"text","text":"{{\"actions\":[{}],\"why\":\"\",\"table\":null}}"}}]}}"#,
+            ok.join(",").replace('"', "\\\"")
+        );
+        let answer = parse_answer(&body).expect("an answer of exactly the cap is read");
+        assert_eq!(answer.actions.len(), MAX_STEPS);
     }
 
     /// A room with nothing open offers nothing, and says so rather than
