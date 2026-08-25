@@ -1159,8 +1159,13 @@ class Live:
         self.agent_done_at = time.time()
         self.report_the_wait()
         if code == 0:
-            yc.claim("the agent answered an instruction written to it "
-                     "in the document", self.agent_applied, True)
+            # Named for where the instruction actually came from. It is
+            # not a line in the document any more — it is a remark
+            # somebody made about a file, on another machine — and a claim
+            # that says otherwise would pass while describing a route this
+            # film no longer takes.
+            yc.claim("the agent answered the remark somebody made about "
+                     "the photograph", self.agent_applied, True)
             self.read_back_what_it_wrote()
         else:
             tail = ""
