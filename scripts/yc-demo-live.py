@@ -1235,12 +1235,13 @@ class Live:
         # The crossing is a wait, not a shot. It runs on quinten's screen,
         # which by now has nothing left to show -- the payoff is the cut
         # that comes after it, onto a page he did not open carrying a
-        # sentence he did not type. On the first live take this beat cost
-        # 27s of a 110s film, all of it spent watching a document sync
-        # that the film never shows. So the camera comes down for it and
-        # is back up before the cut. Nothing waits any less; the sync
-        # takes exactly as long as it takes and every claim below is
+        # sentence he did not type. So the camera comes down and is back up
+        # before the cut. Nothing waits any less, and every claim below is
         # still asserted on the real document.
+        #
+        # The document itself crosses in 0.14-0.23s, measured between two
+        # real sessions. What this covers is `wait_for_his_screen` below,
+        # which is allowed 12s for his windows to arrive at all.
         crossing_dark = self.take_camera_down("the words to cross")
         # The room reaching his machine at all, before anything is asked
         # of the app on it. A cut to a bare desktop argues the opposite
