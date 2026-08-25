@@ -832,7 +832,7 @@ impl ChatApp {
         // agent's reply: what a person needs to see is that the sentence they
         // just typed was picked up, and they are looking at their own sentence
         // in the timeline, not at a thread they have not opened.
-        let work_h = match self.agent_record(&m.id) {
+        let work_h = match self.timeline_record(m) {
             Some(reply) => self.work_strip_height(tr, reply, text_w, true),
             None => 0.0,
         };
@@ -936,7 +936,7 @@ impl ChatApp {
         }
 
         if rm.work_h > 0.0 {
-            if let Some(reply) = self.agent_record(&m.id) {
+            if let Some(reply) = self.timeline_record(m) {
                 self.draw_work_strip(scene, tf, tr, theme, reply, text_x, *y, text_w, true, hits);
                 *y += rm.work_h;
             }

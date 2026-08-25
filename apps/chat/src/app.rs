@@ -2009,6 +2009,26 @@ impl ChatApp {
     /// are software to keep in step with this one. The newest wins, so a room
     /// with two agents in it shows the one that most recently took the
     /// message rather than an arbitrary one.
+    /// The record to draw under `m` in the timeline, if it has one.
+    ///
+    /// Ordinarily the agent's reply to it. What a person needs to see is that
+    /// the sentence *they* typed was picked up, and they are looking at their
+    /// own sentence in the channel, not at a thread they have not opened.
+    ///
+    /// A record that carries no parent is its own anchor. An instruction
+    /// written into a document was never a message here, so there is no
+    /// sentence in this channel for its record to sit under — and a strip
+    /// that can only be drawn beneath a message that does not exist is a
+    /// record nobody can read. Replies are not drawn in the timeline at all
+    /// (`model::group_messages` keeps to top-level messages), so this cannot
+    /// draw the same record twice.
+    pub(crate) fn timeline_record(&self, m: &Message) -> Option<&Message> {
+        if m.work.is_some() && m.is_top_level() {
+            return Some(m);
+        }
+        self.agent_record(&m.id)
+    }
+
     pub(crate) fn agent_record(&self, msg: &str) -> Option<&Message> {
         self.messages
             .iter()
