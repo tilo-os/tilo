@@ -1201,7 +1201,27 @@ impl Session {
         // part of the surface the agent can be asked to act on, so it is
         // kept rather than dropped.
         if let Some(contract) = crate::apply::attribute(data) {
-            if !crate::apply::looks_like_a_document(data) {
+            // Whether this is the page the agent is working on, or another
+            // application's state that it can be asked to act on.
+            //
+            // Shape used to decide this — anything that parsed as a rich-text
+            // document was taken to be the page — and that was wrong about
+            // every app the toolkit builds. The toolkit seeds a rich-text
+            // document in each of them, so the photo editor's state has that
+            // shape too: it was merged into the page instead of being held as
+            // the photo editor's, `holds("photos")` stayed false, and an
+            // editor that had started and loaded a photograph was reported as
+            // one that never came back.
+            //
+            // So the question is who authored it, which `attribute` already
+            // answers. The page is the document this agent's own editor
+            // holds; the first one to arrive is the page when nothing more
+            // specific claims it. Everything else is a peer, whatever shape
+            // it has.
+            let ours = self.editor.as_ref().map(|e| e.contract().namespace);
+            let is_our_page = ours == Some(contract.namespace)
+                || (ours.is_none() && contract.fallback);
+            if !is_our_page {
                 match self.peers.get_mut(contract.namespace) {
                     Some(ed) => {
                         let took = ed.merge_full_any(data)?;
