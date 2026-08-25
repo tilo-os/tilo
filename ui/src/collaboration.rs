@@ -244,15 +244,19 @@ pub enum CollabRequest {
     /// by an accident of what somebody happened to open, not by what it was
     /// permitted to do.
     ///
-    /// **Never fanned out.** It is addressed to the session hosting this
-    /// connection, not to the room. Relaying it would open a copy of the app
-    /// on every peer's desktop — windows appearing on other people's screens
-    /// because somebody else's agent needed something, which nobody asked for
-    /// and no peer is in a position to refuse.
+    /// **Never fanned out to applications** — no other app on this socket is
+    /// an audience for it. It is addressed to the *workspace*: the session
+    /// hosting this connection opens the application, and tells the room, so
+    /// the collaborators who share that workspace get the window too. A
+    /// workspace carries its own collaborators and its own permissions, and
+    /// an application opened in a shared one belongs to the workspace rather
+    /// than to whichever machine the asker's socket happened to reach.
     ///
-    /// Asking is not being obeyed. The session decides, against its own
-    /// workspace's capabilities, and answers a refusal with
-    /// [`CollabEvent::AppOpenRefused`].
+    /// Asking is not being obeyed, and that holds on every machine that hears
+    /// it. Each session decides for itself, against its own workspace's
+    /// capabilities and the participant that asked; the one that was asked
+    /// answers a refusal with [`CollabEvent::AppOpenRefused`], and the others
+    /// have nobody waiting on an answer and write theirs down instead.
     OpenApp {
         /// The application's package id, as its manifest declares it —
         /// `dev.qos.photos`. The same id the launcher resolves and the same
@@ -329,10 +333,12 @@ pub enum CollabRequest {
     /// half it is not entitled to — the same split
     /// [`CollabRequest::OpenApp`] makes.
     ///
-    /// **Never fanned out**, for the same reason `OpenApp` is not: it is
-    /// addressed to the session that draws these windows. Another peer's
-    /// desktop has its own answer about where these applications are, and
-    /// most of the time the answer is that they are not there.
+    /// **Never fanned out, and never relayed to the room** — unlike
+    /// `OpenApp`, which the session does tell the room about. It is addressed
+    /// to the session that draws these windows, and a crossing between two
+    /// applications is a fact about where they are: another peer's desktop
+    /// has its own answer about that, and most of the time the answer is that
+    /// they are not there.
     CarriedContent {
         /// blake3 hex of the content that travelled — the object's identity,
         /// and what the bytes are looked up by so the thing itself can be
@@ -353,10 +359,11 @@ pub enum CollabRequest {
     /// app that draws the panel itself has it sliced off mid-word. The session
     /// draws above every window and has no such edge, so it draws this.
     ///
-    /// **Never fanned out.** Addressed to the session hosting this connection,
-    /// exactly as [`CollabRequest::OpenApp`] is. Relaying it would open a
-    /// compose box on every peer's desktop because somebody else right-clicked
-    /// something, which nobody asked for.
+    /// **Never fanned out, and never relayed to the room.** Addressed to the
+    /// session hosting this connection. Where an open changes what the shared
+    /// workspace *contains*, this is one person's half-written sentence:
+    /// putting a compose box on every peer's desktop because somebody
+    /// right-clicked something is not sharing, it is interrupting.
     ///
     /// What the app supplies is an address and a rectangle, and nothing else.
     /// Who may receive the remark, how the panel looks and where on the desktop
@@ -2906,9 +2913,9 @@ pub mod broker {
                 // decides such things, which it does not.
                 CollabRequest::OpenApp { .. } => continue,
                 // Addressed to the session that draws the windows, and this
-                // loopback draws none. Not fanned out for the same reason an
-                // open is not: the other peer's desktop has its own answer
-                // about where these applications are.
+                // loopback draws none. Not relayed either: where these
+                // applications are is a fact about one desktop, and the other
+                // peer's has its own answer about it.
                 CollabRequest::CarriedContent { .. } => continue,
                 // Addressed to a session, and this loopback is two documents
                 // in one process rather than a desktop. Nothing here draws.

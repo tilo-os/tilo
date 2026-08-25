@@ -2068,7 +2068,14 @@ fn reader_loop(
                     let who = peer
                         .announced_handle()
                         .unwrap_or_else(|| src_user_id.clone());
-                    if !publisher.app_opened(&room, Transport::Json, app_id, with.clone(), &who) {
+                    // Reported only where there was a room to miss. A session
+                    // with no peer network at all has already said so once,
+                    // and a machine collaborating with nobody is not owed a
+                    // line per window about the collaborators it does not
+                    // have.
+                    if !publisher.app_opened(&room, Transport::Json, app_id, with.clone(), &who)
+                        && publisher.is_wired()
+                    {
                         tracing::warn!(
                             %app_id, %room, %who,
                             "collab_broker: the open stayed on this machine — the \
