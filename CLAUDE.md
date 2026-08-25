@@ -62,9 +62,26 @@ export CARGO_TARGET_DIR=/…/quickdesktop/.claude/worktrees/<wt>/.claude/build/<
 What keeps that affordable is sccache, and what keeps sccache working is `incremental =
 false` in `[profile.dev]` (see the note in the root `Cargo.toml`). sccache refuses any
 compilation carrying `-C incremental=`, so with incremental on, 79% of this workspace's
-compilations were uncacheable and nothing was shared between directories. With it off they
-are content-addressed: the first builder compiles a crate, the rest get it as a hit. Delete
-a slot when its agent is done — artifacts are per-directory even though compilation is not.
+compilations were uncacheable and nothing was shared between directories.
+
+That is necessary and not sufficient. sccache also folds every `CARGO_*` environment
+variable into its Rust cache key — all of them except `CARGO_MAKEFLAGS`,
+`CARGO_REGISTRIES_*`, `CARGO_BUILD_JOBS` and `CARGO_ENCODED_RUSTFLAGS` — and
+`CARGO_TARGET_DIR` is one of them. Exported per builder, as above, it hands every builder a
+private cache namespace and nothing is ever shared. Measured on this tree: the same crate
+built into a second target directory took **0 hits, 12 misses**; with that one variable kept
+out of the rustc invocation and nothing else changed, **10 hits, 2 misses**.
+
+Cargo does not hand rustc that variable — it is there only because you exported it, and
+rustc never reads it. It does have to reach cargo and the test binaries (`shell/tests/*` and
+several `scripts/*` locate built binaries through it), so the place to drop it is the
+`RUSTC_WRAPPER` the shim installs (`exec env -u CARGO_TARGET_DIR sccache "$@"`), not this
+repo — `build.rustc-wrapper` in `.cargo/config.toml` loses to the shim's environment
+variable. If `sccache --show-stats` reports a Rust hit rate near zero while C/C++ sits at
+100%, that wrapper is missing.
+
+Delete a slot when its agent is done — artifacts are per-directory even though compilation
+is not.
 
 The host has none of the native dev libraries and cannot get them (`/usr` is read-only); the
 container pins the build environment. A missing one shows up as `pkg-config exited with
