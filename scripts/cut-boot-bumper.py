@@ -55,7 +55,27 @@ OUT_W, OUT_H, FPS = 1920, 1080, 30
 CONSOLE_FRAMES = 27      # 0.900 s, real speed
 IDLE_FRAMES = 21         # 0.700 s, real speed
 CREDENTIAL_SLOWDOWN = 2  # setpts factor over the credential burst
-HOLD_FRAMES = 9          # 0.300 s of the filled form, cloned from one frame
+HOLD_FRAMES = 5          # 0.167 s of the filled form, cloned from one frame
+#: Frames of the *submitted* greeter — the button greyed, `Signing you in…` on
+#: it — taken at real speed from the recording.
+#:
+#: The cut used to stop one frame before this and hold the filled form instead,
+#: for two reasons the file it implements gives. One was that the old greeter's
+#: submitted state carried the defects: a doubled status line and an internal
+#: session name. That is gone as of the rebuilt greeter, which puts a single
+#: greyed line on the button and nothing else. The other was that the demo's
+#: desktop should be the first desktop anyone sees — and that still holds, so
+#: this stops at the press and never reaches a desktop.
+#:
+#: What it buys is the press itself. Ending on a filled form meant the one
+#: action in the bumper was the one thing it did not show: the button was never
+#: seen going down, so the join read as a cut away from a login rather than as a
+#: login that worked. These are real recorded frames, not a staged transition.
+#:
+#: Paid for out of the hold rather than out of the budget: the hold is cloned
+#: frames, which is the least valuable footage in the cut, and the total stays
+#: at 97.
+PRESS_FRAMES = 4
 
 #: Analysis is done on a downscale: it is looking for black gaps, a static
 #: picture and scroll bursts, none of which need pixels.
@@ -214,6 +234,7 @@ def find_landmarks(means: list[float], diffs: list[float]) -> dict:
     return {
         "console": (console_start, console_end),
         "greeter_start": greeter_start,
+        "greeter_end": greeter_end,
         "burst_start": burst_start,
         "ending": ending,
         "submit": submit,
@@ -319,6 +340,14 @@ def main() -> int:
             f"long before typing starts; the cut needs {IDLE_FRAMES}")
 
     burst_len = lm["ending"] - lm["burst_start"] + 1
+    # The press has to be *in* the recording. A greeter that goes black the
+    # frame after submit has none of it, and cloning the submitted frame to
+    # make up the difference would be staging the one moment this shows.
+    submitted = lm["greeter_end"] - lm["submit"]
+    if submitted < PRESS_FRAMES:
+        die(f"the submitted greeter lasts {submitted} frame(s) in this "
+            f"recording; the cut shows {PRESS_FRAMES} of it and will not clone "
+            f"a press it did not photograph")
     crop_h, crop_top = greeter_crop(rec, lm["greeter_start"], src)
 
     print(f"recording      {rec.name}  {src['width']}x{src['height']} @ {src['fps']:.0f}fps, "
@@ -333,8 +362,12 @@ def main() -> int:
           f"  ({burst_len} source frames → {burst_len * CREDENTIAL_SLOWDOWN} at "
           f"{CREDENTIAL_SLOWDOWN}×, {burst_len * CREDENTIAL_SLOWDOWN / FPS:.3f}s)")
     print(f"filled form    {lm['ending']} held  ({HOLD_FRAMES} frames, "
-          f"{HOLD_FRAMES / FPS:.3f}s)   [submit is {lm['submit']}]")
-    total = CONSOLE_FRAMES + IDLE_FRAMES + burst_len * CREDENTIAL_SLOWDOWN + HOLD_FRAMES
+          f"{HOLD_FRAMES / FPS:.3f}s)")
+    print(f"the press      {lm['submit']}..{lm['submit'] + PRESS_FRAMES - 1}"
+          f"  ({PRESS_FRAMES} frames, {PRESS_FRAMES / FPS:.3f}s)"
+          f"  [{submitted} available]")
+    total = (CONSOLE_FRAMES + IDLE_FRAMES + burst_len * CREDENTIAL_SLOWDOWN
+             + HOLD_FRAMES + PRESS_FRAMES)
     print(f"crop           {src['width']}x{crop_h}+0+{crop_top} → {OUT_W}x{OUT_H}, full-bleed")
     print(f"total          {total} frames, {total / FPS:.4f}s")
 
@@ -347,7 +380,8 @@ def main() -> int:
             "2-idle-first": idle_start,
             "3-credentials-first": lm["burst_start"],
             "4-filled-form": lm["ending"],
-            "x-submitted-excluded": lm["submit"],
+            "5-press-first": lm["submit"],
+            "5-press-last": lm["submit"] + PRESS_FRAMES - 1,
         }
         for name, n in picks.items():
             run(["ffmpeg", "-v", "error", "-i", str(rec),
@@ -402,6 +436,13 @@ def main() -> int:
         seg("3-hold",
             f"select=eq(n\\,{lm['ending']}),"
             f"loop=loop={HOLD_FRAMES - 1}:size=1:start=0,setpts=N/FRAME_RATE/TB",
+            real)
+        # The press, at real speed and unaltered. It is the only *action* in
+        # the bumper, so it is the one span that must not be stretched, cloned
+        # or eased: what makes it read as a press is that it happens as fast as
+        # it really happened.
+        seg("4-press",
+            f"select=between(n\\,{lm['submit']}\\,{lm['submit'] + PRESS_FRAMES - 1})",
             real)
 
         listing = tmp / "parts.txt"
