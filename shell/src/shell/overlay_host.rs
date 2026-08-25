@@ -6292,8 +6292,11 @@ impl ShellOverlayHost {
     /// Every laid-out window group, for a capture harness that needs to aim at
     /// one. Same list the drop-target hit-test walks, so a harness and a drop
     /// agree about where the windows are.
-    #[cfg(any(test, debug_assertions))]
-    pub fn group_hit_candidates_for_tests(&self) -> Vec<(StripId, GroupId, Rect)> {
+    ///
+    /// Not gated on `debug_assertions`: `shots` is a shipped binary and calls
+    /// this, so gating it made `--release` fail to build the very tool the
+    /// project judges perf and appearance with.
+    pub fn group_hit_candidates_for_capture(&self) -> Vec<(StripId, GroupId, Rect)> {
         self.group_hit_candidates()
     }
 
