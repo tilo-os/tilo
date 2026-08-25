@@ -5,6 +5,8 @@ below is what a viewer sees, in order; anything not here is not in the film.
 `scripts/yc-demo-live.py` drives it, and its module docstring carries these
 same beats with their reasons attached; `docs/demo-shape.md` is the earlier
 seven-beat shape, kept as a record and not to be shot from.
+`docs/demo-at-the-keyboard.md` is the other half of this one: what the person
+filming actually types, in the order the rig asks for it.
 
 Total: **1:40 maximum.** The boot bumper is 3.2s of it, cut and concatenated
 in front rather than recorded with the rest; the driven take is ~75s. A beat
