@@ -527,7 +527,21 @@ impl ChatApp {
             // fact about this screen, and a document write here would put my
             // reading on everybody else's.
             Hit::AgentReasoning(id) => {
-                if !self.open_reasoning.remove(&id) {
+                // Asked of the record rather than of one set, because the
+                // default depends on whether the record is still moving: a
+                // click has to mean "the other way from what I am looking at"
+                // whichever way that is.
+                let showing = self
+                    .messages
+                    .iter()
+                    .find(|m| m.id == id)
+                    .map(|m| self.reasoning_open(&id, self.record_in_flight(m)))
+                    .unwrap_or(false);
+                if showing {
+                    self.open_reasoning.remove(&id);
+                    self.closed_reasoning.insert(id);
+                } else {
+                    self.closed_reasoning.remove(&id);
                     self.open_reasoning.insert(id);
                 }
                 self.request_relayout();

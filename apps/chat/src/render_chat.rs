@@ -1171,10 +1171,9 @@ impl ChatApp {
             WORK_SECTION_GAP + rows.len() as f64 * WORK_ROW_H
         };
 
-        // Collapsed by default: the question "how did it decide" is one a
-        // reader asks about a particular turn, and a transcript that answered
-        // it for every turn at once would be unreadable.
-        let open = self.reasoning_open(&reply.id);
+        // Open while the record is still moving, folded once it has stopped.
+        // See `ChatApp::reasoning_open` for why the default is not constant.
+        let open = self.reasoning_open(&reply.id, self.record_in_flight(reply));
         let reason = work.reasoning.clone();
         let (reason_head_h, reason_body_h) = match &reason {
             None => (0.0, 0.0),
@@ -2224,6 +2223,18 @@ pub(crate) struct TraceRow {
 pub(crate) fn trace_row(step: &model::AgentStep, said: &str) -> TraceRow {
     use model::AgentStepOutcome as O;
     match &step.outcome {
+        // Handed over, and nothing back yet. Worded in the past tense of the
+        // asking, because the asking is the whole of what is known — this row
+        // must never read as an operation that finished, and it is the one
+        // row on screen while the slowest thing the agent does is happening.
+        O::Asked => TraceRow {
+            label: crate::i18n::t_args(
+                "chat-agent-step-asked",
+                &[("did", step.label.as_str().into())],
+            ),
+            icon: Icon::ArrowRight,
+            tone: WorkTone::Live,
+        },
         O::Applied => TraceRow {
             label: step.label.clone(),
             icon: Icon::Check,
@@ -2859,6 +2870,66 @@ mod tests {
         );
     }
 
+    /// How the agent decided is on screen while it is working, and folded
+    /// once it has stopped.
+    ///
+    /// The stretch this is for is the one where a person is waiting: the
+    /// state line says the agent is busy and the rows say which operations
+    /// went out, and neither says *why this*. An explanation nobody can reach
+    /// without knowing there is a chevron to press is, for that stretch, an
+    /// explanation that was not given — and that stretch is most of the time
+    /// anyone spends looking at this strip.
+    ///
+    /// Once it is over, the outcome is the thing to read and the explanation
+    /// folds back, which is what keeps a channel of finished turns readable.
+    #[test]
+    fn how_it_decided_is_shown_while_it_works_and_folded_once_it_has_stopped() {
+        use crate::model::AgentWorkState as S;
+        let mut app = ChatApp::new_ephemeral();
+        let working = reply_with(
+            "m_working",
+            "u_claude",
+            work(S::Doing { did: "crop".into(), about: String::new() }),
+        );
+        let over = reply_with("m_over", "u_claude", work(S::Done { did: "crop".into() }));
+        app.messages = vec![working.clone(), over.clone()];
+        app.room_names.insert("u_claude".into(), "Claude".into());
+
+        assert!(
+            app.reasoning_open(&working.id, app.record_in_flight(&working)),
+            "an agent that is working has to be able to say why, unasked"
+        );
+        assert!(
+            !app.reasoning_open(&over.id, app.record_in_flight(&over)),
+            "a finished turn folds its explanation back away"
+        );
+
+        // A record left behind by an agent that has gone is not moving
+        // either. It is where the agent stopped, and it belongs with the
+        // finished ones however its state reads.
+        app.room_names.remove("u_claude");
+        assert!(
+            !app.reasoning_open(&working.id, app.record_in_flight(&working)),
+            "nobody is behind this record, so nothing is about to explain itself"
+        );
+        app.room_names.insert("u_claude".into(), "Claude".into());
+
+        // And a reader's own click wins in both directions — the whole reason
+        // there are two sets. One that only recorded "opened" would leave the
+        // in-flight explanation impossible to fold, which is the one moment
+        // it is on screen to be folded.
+        app.closed_reasoning.insert(working.id.clone());
+        assert!(
+            !app.reasoning_open(&working.id, app.record_in_flight(&working)),
+            "a reader folded it away while it was working, and it stayed away"
+        );
+        app.open_reasoning.insert(over.id.clone());
+        assert!(
+            app.reasoning_open(&over.id, app.record_in_flight(&over)),
+            "a reader opened a finished turn's explanation, and it stayed open"
+        );
+    }
+
     fn reply_with(id: &str, author: &str, w: crate::model::AgentWork) -> Message {
         Message {
             id: id.into(),
@@ -2902,13 +2973,14 @@ mod agent_trace_tests {
     /// to a reader who cannot separate them by hue.
     #[test]
     fn an_outcome_is_answerable_from_the_shape_and_not_only_the_colour() {
+        let asked = trace_row(&step("Open Photos", AgentStepOutcome::Asked), "");
         let applied = trace_row(&step("Crop", AgentStepOutcome::Applied), "");
         let nothing = trace_row(&step("Crop", AgentStepOutcome::NoChange), "");
         let refused = trace_row(
             &step("Delete", AgentStepOutcome::Refused { why: "not allowed".into() }),
             "",
         );
-        let marks = [applied.icon, nothing.icon, refused.icon];
+        let marks = [asked.icon, applied.icon, nothing.icon, refused.icon];
         assert_eq!(
             marks.len(),
             marks.iter().collect::<std::collections::HashSet<_>>().len(),
@@ -2929,6 +3001,41 @@ mod agent_trace_tests {
             nothing.label
         );
         assert_eq!(refused.tone, WorkTone::Stopped);
+    }
+
+    /// A row for an operation that has not answered says it was **asked** for
+    /// and never that it happened.
+    ///
+    /// This row is on screen for the longest stretch of any of them — an
+    /// application opening is tens of seconds — so it is the one a viewer
+    /// actually reads, and it is the one that would do the most damage if it
+    /// read like a result. It carries the operation's own words, in a live
+    /// tone, and none of the vocabulary the finished rows use.
+    #[test]
+    fn a_row_that_has_not_answered_reads_as_asked_and_never_as_done() {
+        let asked = trace_row(&step("Open Photos", AgentStepOutcome::Asked), "");
+        assert_eq!(
+            asked.tone,
+            WorkTone::Live,
+            "an operation in flight is not an outcome of any kind"
+        );
+        assert_ne!(asked.icon, Icon::Check, "a tick would claim it went through");
+        assert_ne!(asked.icon, Icon::Ban, "a bar would claim it was refused");
+        assert!(
+            asked.label.contains("Open Photos"),
+            "the row has to name what was asked for: {:?}",
+            asked.label
+        );
+        assert!(
+            asked.label.to_lowercase().contains("asked"),
+            "the row has to say that asking is all that has happened: {:?}",
+            asked.label
+        );
+        assert!(
+            !asked.label.contains("chat-agent-"),
+            "unresolved catalogue key on a line a person reads: {:?}",
+            asked.label
+        );
     }
 
     /// A refusal carries its reason, unless the sentence above it already

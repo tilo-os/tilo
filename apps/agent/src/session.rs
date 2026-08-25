@@ -1917,12 +1917,98 @@ impl Session {
             .unwrap_or_else(|| id.to_string());
         let label = surface::label_of(&self.offers(view), id)
             .unwrap_or_else(|| id.to_string());
-        let outcome = self.dispatch(id, argument, view, caret, carried_from)?;
-        self.record_step(&resource, &label, outcome.clone());
+        let outcome = self.asking(&resource, &label, |me| {
+            me.dispatch(id, argument, view, caret, carried_from)
+        })?;
         Ok(match outcome {
             AgentStepOutcome::Refused { why } => Err(why),
             AgentStepOutcome::Applied | AgentStepOutcome::NoChange => Ok(()),
+            // Unreachable: `asking` writes this row and then overwrites it
+            // with whatever the dispatch returned, and a dispatch never
+            // returns it. Answered as "not done" rather than with a panic,
+            // because the honest reading of a row still saying "asked" is
+            // that the operation did not happen.
+            AgentStepOutcome::Asked => Err(
+                "I asked for that and never heard back".to_string()
+            ),
         })
+    }
+
+    /// Say in the room that an operation has been asked for, run it, and say
+    /// what came back.
+    ///
+    /// The row and the dispatch are one expression, and that is the whole of
+    /// the guarantee this surface rests on. There is no way to reach the code
+    /// that creates a row except by handing this the work that produces the
+    /// outcome, and no way to reach the outcome except through that same
+    /// call — so a row cannot exist for an operation that was never invoked,
+    /// however this file grows. The row was already impossible to invent from
+    /// a plan or a sentence; what is new is that it is now written *before*
+    /// the answer is known, and this is what keeps that from loosening it.
+    ///
+    /// A dispatch that returns an error leaves the row saying "asked", which
+    /// is exactly what is known: the operation went out and nothing came
+    /// back. Nothing here turns that into a refusal — a refusal is an answer,
+    /// and there was none.
+    fn asking(
+        &mut self,
+        resource: &str,
+        label: &str,
+        dispatch: impl FnOnce(&mut Self) -> Result<AgentStepOutcome>,
+    ) -> Result<AgentStepOutcome> {
+        let row = self.open_row(resource, label);
+        let outcome = dispatch(self)?;
+        self.settle_row(row, outcome.clone());
+        Ok(outcome)
+    }
+
+    /// Put a row in the room saying this operation has been handed over, and
+    /// answer with where it sits in the trace.
+    ///
+    /// The only place a row is created, and the only state it can create one
+    /// in is the one that is true of every dispatch that has not answered.
+    /// Private to [`Self::asking`], which cannot reach it without dispatching.
+    ///
+    /// Publishing here is what makes the trace arrive operation by operation
+    /// rather than all at once when the turn ends. Opening an application
+    /// takes tens of seconds; a run of edits a person can watch go out and
+    /// land is the difference between a progress report and a receipt.
+    fn open_row(&mut self, resource: &str, label: &str) -> usize {
+        let at = self.open_steps.len();
+        self.open_steps.push(AgentStep {
+            resource: resource.to_string(),
+            label: label.to_string(),
+            outcome: AgentStepOutcome::Asked,
+        });
+        self.publish_rows();
+        at
+    }
+
+    /// Rewrite the row at `at` with what the dispatch returned.
+    ///
+    /// Takes an outcome rather than producing one, so a caller cannot record
+    /// a success it did not get. Rewrites in place rather than appending, so
+    /// one dispatch is one row from the moment it goes out to the moment it
+    /// answers — a second row here would be the same operation claimed twice.
+    fn settle_row(&mut self, at: usize, outcome: AgentStepOutcome) {
+        let Some(row) = self.open_steps.get_mut(at) else {
+            return;
+        };
+        row.outcome = outcome;
+        self.publish_rows();
+    }
+
+    /// Put the rows in the room, leaving the state the record already carries
+    /// alone: appending or settling a row is not the agent moving to some
+    /// other state, and writing one here would claim it had.
+    fn publish_rows(&mut self) {
+        let Some((channel, record)) = self.open_record.clone() else {
+            return;
+        };
+        let state = self.current_state(&record);
+        if let Err(e) = self.note_work(&channel, &record, state, None) {
+            tracing::warn!(%record, "could not put the dispatched operation in the room: {e}");
+        }
     }
 
     /// Attempt one operation and say what came of it. See [`Self::perform`],
@@ -2146,6 +2232,26 @@ impl Session {
             app = %contract.app_id, onto = ?with,
             "asked this session to open an application, and waiting for it"
         );
+        // Said in the room before the wait and taken back after it, whichever
+        // way the wait ends — including the error path, which is why the
+        // outcome is held rather than returned through `?`.
+        let waiting = self.say_waiting(contract.title)?;
+        let outcome = self.await_open(contract, namespace, what);
+        self.stop_waiting(waiting)?;
+        outcome
+    }
+
+    /// Wait for an application this session was asked to open to turn up.
+    ///
+    /// Split out of [`Self::open_app`] so the state the room is shown during
+    /// the wait is written once, around every way this can end, rather than
+    /// at each of the three returns below.
+    fn await_open(
+        &mut self,
+        contract: &'static surface::AppContract,
+        namespace: &str,
+        what: Option<&str>,
+    ) -> Result<Result<(), String>> {
         let started = Instant::now();
         let mut asked = Instant::now() - ASK_WHILE_OPENING;
         while started.elapsed() < OPENING {
@@ -2641,28 +2747,52 @@ impl Session {
         self.open_reasoning = None;
     }
 
-    /// Append one dispatched operation to the open record and put the updated
-    /// record in the room.
+    /// Say in the room that the agent is waiting for `app`, and answer with
+    /// what it was doing so [`Self::stop_waiting`] can put it back.
     ///
-    /// The only way a row is ever created. It takes an outcome rather than
-    /// producing one, so a caller cannot record a success it did not get.
-    fn record_step(&mut self, resource: &str, label: &str, outcome: AgentStepOutcome) {
-        self.open_steps.push(AgentStep {
-            resource: resource.to_string(),
-            label: label.to_string(),
-            outcome,
-        });
-        // Publishing here is what makes the trace arrive operation by
-        // operation instead of all at once when the turn ends. A run of four
-        // edits that a person can watch land is the difference between a
-        // progress report and a receipt.
+    /// Opening an application is the longest thing this agent does and used
+    /// to be the quietest: the record went on saying it was working while a
+    /// process started, a window was placed and a document crossed the wire,
+    /// and none of that is visible from a channel. Thirty of forty working
+    /// seconds were spent here with the room hearing nothing.
+    ///
+    /// `Waiting` is not a state invented for this. It already means "an app
+    /// this needs is not here yet", which is precisely true between the
+    /// request going out and the state arriving.
+    fn say_waiting(&mut self, app: &str) -> Result<Option<(String, String, AgentWorkState)>> {
         let Some((channel, record)) = self.open_record.clone() else {
-            return;
+            return Ok(None);
         };
-        let state = self.current_state(&record);
-        if let Err(e) = self.note_work(&channel, &record, state, None) {
-            tracing::warn!(%record, "could not put the dispatched operation in the room: {e}");
+        let before = self.current_state(&record);
+        self.note_work(
+            &channel,
+            &record,
+            AgentWorkState::Waiting {
+                app: app.to_string(),
+            },
+            None,
+        )?;
+        Ok(Some((channel, record, before)))
+    }
+
+    /// Put back what the agent was doing before the wait.
+    ///
+    /// Needed rather than tidy: everything published after this reads the
+    /// record's current state and leaves it alone, so a `Waiting` left
+    /// standing would have the room saying the agent was waiting for an
+    /// application that is now open, for the whole of the work that followed.
+    ///
+    /// Restored only if nothing has moved it meanwhile. A wait ending is not
+    /// a licence to overwrite the room's answer — if some other path has
+    /// written an outcome, that outcome is the truth and this is stale.
+    fn stop_waiting(&mut self, was: Option<(String, String, AgentWorkState)>) -> Result<()> {
+        let Some((channel, record, before)) = was else {
+            return Ok(());
+        };
+        if !matches!(self.current_state(&record), AgentWorkState::Waiting { .. }) {
+            return Ok(());
         }
+        self.note_work(&channel, &record, before, None)
     }
 
     /// The state the open record already carries, so appending a row does not
