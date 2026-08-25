@@ -7979,13 +7979,42 @@ def beat_strip(quinten: Session, extras: dict[str, dict],
     # announce themselves to wayland as `app` and an id that names two
     # different programs names neither.
     far = [extras[a] for a in STRIP_EXTRAS if a in extras]
+    # Neighbours, or not at all.
+    #
+    # Only adjacent groups are ever in frame together, so a pair with
+    # something between them cannot be filmed side by side however the
+    # strip is scrolled or however narrow the groups are made. Asking
+    # anyway is not free: `frame_windows` walks the strip to the right
+    # subject, then to the left, measures, and refuses -- and the next
+    # step walks straight back. Every take of this film has paid a few
+    # seconds for that pan and shown nothing at the end of it, because
+    # the two apps `STRIP_EXTRAS` names open first and last with two
+    # more between them.
+    #
+    # The arithmetic is already here for the pair below; it was just
+    # never asked about this one. Said out loud rather than skipped
+    # silently, because a beat that does not film what it claims should
+    # say so in the transcript.
     if len(far) >= 2:
-        step("two of the four are in frame; the other two are past the edges")
-        if frame_windows(quinten, far, VIEWPORT):
-            off = [a.rsplit(".", 1)[-1] for a in (FILES_APP, WORD_PROCESSOR)]
-            note(f"{', '.join(off)} are on the same strip, scrolled off it")
-            quinten.snapshot(os.path.join(shots, "10-strip-right.png"))
-            read_hold(0.4)
+        order_now = strip_order(quinten)
+        at = [group_index_of(quinten, sub, order_now) for sub in far]
+        if None in at:
+            note("one of the two windows at the far end is not on the "
+                 "strip, so there is no pair there to film")
+        elif max(at) - min(at) != len(at) - 1:
+            note(f"the far pair are groups {at} with {max(at) - min(at) - 1} "
+                 f"window(s) between them, so they cannot share a frame; "
+                 f"the strip stays where the launch left it")
+        else:
+            step("two of the four are in frame; the other two are past "
+                 "the edges")
+            if frame_windows(quinten, far, VIEWPORT):
+                off = [a.rsplit(".", 1)[-1]
+                       for a in (FILES_APP, WORD_PROCESSOR)]
+                note(f"{', '.join(off)} are on the same strip, scrolled "
+                     f"off it")
+                quinten.snapshot(os.path.join(shots, "10-strip-right.png"))
+                read_hold(0.4)
     elif far:
         note("only one of the extra applications opened, so the strip "
              "cannot show a pair at its far end")
