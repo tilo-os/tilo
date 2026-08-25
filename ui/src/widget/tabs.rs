@@ -385,6 +385,31 @@ pub struct TabBar {
     /// indirection. v1 stores ephemerally; CRDT persistence will
     /// arrive when the rest of `WorkspaceTree` learns about pinning.
     pub(crate) pinned_ids: HashSet<u64>,
+    /// Per-tab accent for the leading marker, keyed by tab id. Same
+    /// sidecar reasoning as [`Self::pinned_ids`]: a `TabDescriptor`
+    /// field would ripple into every tab constructor in the tree.
+    ///
+    /// A host that classifies its tabs by something the shell cannot
+    /// know — a buffer's language, a chat's account — hands the colour
+    /// in. The widget never picks one: the caller reads it off the
+    /// `Theme` it was drawn with, so the mark re-tints with the OS
+    /// theme like everything else in the pill.
+    pub(crate) accent_ids: HashMap<u64, vello::peniko::Color>,
+    /// Tab ids whose content has unsaved changes. A modified tab holds
+    /// its trailing zone open at rest (see [`Self::resting_reveal`]) and
+    /// paints a dot there in place of the `x`; the `x` returns under the
+    /// pointer, so the tab stays closable and the state is never
+    /// ambiguous. Sidecar for the same reason as the two above.
+    pub(crate) modified_ids: HashSet<u64>,
+    /// Whether the hover-reveal maximize chip is offered at all.
+    ///
+    /// A host whose tabs are *windows* wants it. A host whose tabs are
+    /// documents inside one window has nothing for it to do, and a chip
+    /// that appears under the pointer and then does nothing is worse
+    /// than no chip. Off means a hovered pill reveals to
+    /// [`Reveal::Close`] rather than [`Reveal::Full`], so the width is
+    /// never reserved and the chip is never placed.
+    show_maximize: bool,
     /// Per-tab reveal animation, keyed by tab id. Seeded settled at a
     /// tab's first layout so a freshly-rendered bar has no motion in it
     /// (screenshots stay deterministic); re-latched by `apply_layout`
@@ -439,6 +464,9 @@ impl TabBar {
             hover_max_idx: None,
             hover_new_tab: false,
             pinned_ids: HashSet::new(),
+            accent_ids: HashMap::new(),
+            modified_ids: HashSet::new(),
+            show_maximize: true,
             press_origin: None,
             drag_offset: None,
             last_cursor: Point::ZERO,
@@ -566,6 +594,7 @@ impl TabBar {
             // centred so the compact 28-px slot reads as a recognisable
             // shortcut. Pills with no `app_kind` paint as an empty
             // bubble — still distinct from unpinned via width.
+            let accent = self.accent_ids.get(&t.id).copied();
             if let Some(kind) = t.app_kind {
                 let icon_rect = Rect::new(
                     r.center().x - 7.0,
@@ -573,19 +602,37 @@ impl TabBar {
                     r.center().x + 7.0,
                     r.center().y + 7.0,
                 );
-                draw_app_icon(scene, transform, icon_rect, kind, text_color);
+                draw_app_icon(scene, transform, icon_rect, kind, accent.unwrap_or(text_color));
+            } else if let Some(dot) = accent {
+                // No app glyph to tint, so the accent is the whole
+                // marker. Centred like the glyph would have been, so a
+                // pinned strip mixing the two reads as one row.
+                let c = vello::kurbo::Circle::new(r.center(), ACCENT_DOT_R);
+                scene.fill(vello::peniko::Fill::NonZero, transform, dot, None, &c);
             }
         } else {
+            let accent = self.accent_ids.get(&t.id).copied();
+            let icon_x0 = r.x0 + 10.0;
+            // The leading slot holds an app glyph or an accent dot, and
+            // reserves the same width for either — `leading_zone` is the
+            // layout side of this same choice and the two must agree, or
+            // the title lands on top of the marker.
             let leading_shift = if let Some(kind) = t.app_kind {
-                let icon_x0 = r.x0 + 10.0;
                 let icon_rect = Rect::new(
                     icon_x0,
                     r.center().y - 7.0,
-                    icon_x0 + 14.0,
+                    icon_x0 + ICON_W,
                     r.center().y + 7.0,
                 );
-                draw_app_icon(scene, transform, icon_rect, kind, text_color);
-                14.0 + 6.0
+                draw_app_icon(scene, transform, icon_rect, kind, accent.unwrap_or(text_color));
+                ICON_W + ICON_GAP
+            } else if let Some(dot) = accent {
+                let c = vello::kurbo::Circle::new(
+                    Point::new(icon_x0 + ICON_W / 2.0, r.center().y),
+                    ACCENT_DOT_R,
+                );
+                scene.fill(vello::peniko::Fill::NonZero, transform, dot, None, &c);
+                ICON_W + ICON_GAP
             } else {
                 0.0
             };
@@ -674,33 +721,49 @@ impl TabBar {
             let alpha = chip_alpha(CLOSE_INSET + CLOSE_W);
             let close_r = self.close_rects[i] + vello::kurbo::Vec2::new(dx, dy);
             let close_hover = !suppress_hover && Some(i) == self.hover_close_idx;
-            if let Some(disc) = close_chip_disc(theme, is_active, is_hover, close_hover) {
-                let chip = RoundedRect::from_rect(close_r, close_r.height() / 2.0);
+            if self.modified_ids.contains(&t.id) && !is_hover && !close_hover {
+                // Unsaved changes, pointer elsewhere: the slot reads as a
+                // dot rather than an `x`. Hovering the pill swaps it back
+                // (the `else` arm below), so the tab is always closable
+                // and the two meanings never share a frame.
+                let c = vello::kurbo::Circle::new(close_r.center(), MODIFIED_DOT_R);
+                let dot = if is_active { text_primary } else { text_dim };
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    disc.with_alpha_factor(alpha),
+                    dot.with_alpha_factor(alpha),
                     None,
-                    &chip,
+                    &c,
+                );
+            } else {
+                if let Some(disc) = close_chip_disc(theme, is_active, is_hover, close_hover) {
+                    let chip = RoundedRect::from_rect(close_r, close_r.height() / 2.0);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        disc.with_alpha_factor(alpha),
+                        None,
+                        &chip,
+                    );
+                }
+                let glyph_color = if close_hover {
+                    // Concept's `hover:text-white` — full white on close-hover
+                    // so the × reads crisp against the red-500/80 fill.
+                    vello::peniko::Color::from_rgba8(255, 255, 255, 255)
+                } else if is_active {
+                    text_primary
+                } else {
+                    text_dim
+                };
+                icons::draw_icon(
+                    scene,
+                    transform,
+                    close_r,
+                    icons::Icon::X,
+                    glyph_color.with_alpha_factor(alpha),
+                    1.5,
                 );
             }
-            let glyph_color = if close_hover {
-                // Concept's `hover:text-white` — full white on close-hover
-                // so the × reads crisp against the red-500/80 fill.
-                vello::peniko::Color::from_rgba8(255, 255, 255, 255)
-            } else if is_active {
-                text_primary
-            } else {
-                text_dim
-            };
-            icons::draw_icon(
-                scene,
-                transform,
-                close_r,
-                icons::Icon::X,
-                glyph_color.with_alpha_factor(alpha),
-                1.5,
-            );
         }
 
         // Reveal-gated maximize chip. Painted exactly when `apply_layout`
@@ -709,7 +772,7 @@ impl TabBar {
         // drawn in width the pill was not holding. Suppressed on the
         // drag-ghost so the ghost stays visually simple, and on pinned
         // tabs (icon-only).
-        if !suppress_hover && !is_pinned {
+        if !suppress_hover && !is_pinned && self.show_maximize {
             let chip_tint = vello::peniko::Color::from_rgba8(255, 255, 255, 64);
             let icon_idle = text_dim;
             let icon_active = text_primary;
@@ -878,7 +941,10 @@ impl TabBar {
             // they have nothing to reveal and never grow.
             return Reveal::None;
         }
-        if t.id == self.active_id {
+        if t.id == self.active_id || self.modified_ids.contains(&t.id) {
+            // A modified tab has something to say at rest, and the dot
+            // that says it lives in the close slot — so it holds that
+            // slot open even when it is neither active nor hovered.
             Reveal::Close
         } else {
             Reveal::None
@@ -897,7 +963,10 @@ impl TabBar {
         }
         let pressed = self.press_origin.is_some_and(|(j, _)| j == i);
         if Some(i) == self.hover_idx || pressed {
-            Reveal::Full
+            // With the maximize chip withheld there is nothing above
+            // `Close` to open into, and reserving `Full`'s width for a
+            // chip that will never be placed would just push the title.
+            if self.show_maximize { Reveal::Full } else { Reveal::Close }
         } else {
             self.resting_reveal(i)
         }
@@ -1034,10 +1103,20 @@ impl TabBar {
     }
 
 
-    /// Width the leading app glyph and its gap take, or zero for a tab
-    /// with no typed icon.
+    /// Width the leading marker and its gap take, or zero for a tab
+    /// that has neither a typed icon nor an accent.
+    ///
+    /// One slot, two possible occupants: the app glyph, or — for a host
+    /// whose tabs are classified by something the shell cannot name — an
+    /// accent dot. They are the same width so a strip mixing both keeps
+    /// its titles on one x.
     fn leading_zone(&self, i: usize) -> f64 {
-        if self.tabs[i].app_kind.is_some() { ICON_W + ICON_GAP } else { 0.0 }
+        let t = &self.tabs[i];
+        if t.app_kind.is_some() || self.accent_ids.contains_key(&t.id) {
+            ICON_W + ICON_GAP
+        } else {
+            0.0
+        }
     }
 
     /// Horizontal span a pill's title may occupy, given the pill's rect.
@@ -1097,6 +1176,28 @@ impl TabBar {
     pub fn tabs_mut(&mut self) -> &mut Vec<TabDescriptor> { &mut self.tabs }
     pub fn active_id(&self) -> u64 { self.active_id }
     pub fn set_active(&mut self, id: u64) { if self.tabs.iter().any(|t| t.id == id) { self.active_id = id; } }
+    /// Tint `id`'s leading marker. A tab with an accent and no
+    /// [`TabDescriptor::app_kind`] paints a filled dot in the leading
+    /// slot; one with both tints its app glyph instead. Pass a colour
+    /// read off the `Theme` — see [`Self::accent_ids`].
+    pub fn set_accent(&mut self, id: u64, color: vello::peniko::Color) {
+        self.accent_ids.insert(id, color);
+    }
+    /// Drop `id`'s leading accent, giving the pill its leading zone back.
+    pub fn clear_accent(&mut self, id: u64) { self.accent_ids.remove(&id); }
+    /// The accent set for `id`, if any.
+    pub fn accent(&self, id: u64) -> Option<vello::peniko::Color> {
+        self.accent_ids.get(&id).copied()
+    }
+    /// Mark `id` as holding unsaved changes, or clear the mark.
+    pub fn set_modified(&mut self, id: u64, modified: bool) {
+        if modified { self.modified_ids.insert(id); } else { self.modified_ids.remove(&id); }
+    }
+    /// True if `id` is marked as holding unsaved changes.
+    pub fn is_modified(&self, id: u64) -> bool { self.modified_ids.contains(&id) }
+    /// Offer, or withhold, the hover-reveal maximize chip. Defaults to
+    /// offered — see [`Self::show_maximize`] for when to turn it off.
+    pub fn set_show_maximize(&mut self, show: bool) { self.show_maximize = show; }
     /// True if `id` is currently pinned. Pinned tabs render compact +
     /// icon-only to the left of unpinned tabs and have their close
     /// glyph suppressed (visual layer landing in a follow-up).
@@ -1376,7 +1477,18 @@ impl TabBar {
         // matching the concept's per-pill motion init.
         self.snapshot_layout_for_spring();
         self.tabs.insert(clamped, desc);
-        self.inserted_at.insert(id, Instant::now());
+        // ...but only for a tab that is *arriving* at a strip already on
+        // screen. A host that fills its strip before the first layout is
+        // describing the state the bar opens in, not an arrival, and
+        // fading that in makes a bar's first painted frame a function of
+        // how long the renderer took to boot — the same reason
+        // `advance_reveal` seeds a tab's reveal settled rather than
+        // animating it in from nothing. A single offscreen capture froze
+        // the whole pill part-way through: dim title, dim chips, a body
+        // that never arrived.
+        if !self.tab_rects.is_empty() {
+            self.inserted_at.insert(id, Instant::now());
+        }
         self.active_id = id;
     }
 
@@ -1579,6 +1691,14 @@ const ACTION_GAP: f64 = 6.0;
 /// Leading app-glyph width and its gap to the title.
 const ICON_W: f64 = 14.0;
 const ICON_GAP: f64 = 6.0;
+/// Radius of the leading accent dot, when a tab is classified by colour
+/// rather than by an app glyph. Sized to sit inside [`ICON_W`] with the
+/// same optical weight as a glyph rather than filling the slot.
+const ACCENT_DOT_R: f64 = 4.0;
+/// Radius of the dot that stands in for the close `x` on a tab holding
+/// unsaved changes. Slightly smaller than the accent dot so the two
+/// marks on one pill do not read as a matched pair.
+const MODIFIED_DOT_R: f64 = 3.5;
 /// Compact width for a pinned, icon-only pill.
 const PINNED_W: f64 = 28.0;
 /// Natural-width floor for an unpinned pill. Sized so the narrowest
@@ -2654,13 +2774,23 @@ impl Widget for TabBar {
             .iter()
             .enumerate()
             .map(|(i, t)| {
-                AccessNode::new(Role::Tab)
+                let node = AccessNode::new(Role::Tab)
                     .with_name(t.title.clone())
                     .with_state(AccessState {
                         selected: t.id == self.active_id,
                         ..Default::default()
                     })
-                    .with_position(i + 1, count)
+                    .with_position(i + 1, count);
+                // The unsaved-changes dot is the one thing on a pill that
+                // is colour-and-shape only, so a reader that cannot see it
+                // gets it as a description. `AccessState` has no flag for
+                // this and inventing one would ripple through every
+                // widget; the description is the honest place for it.
+                if self.modified_ids.contains(&t.id) {
+                    node.with_description(crate::i18n!("tab-modified"))
+                } else {
+                    node
+                }
             })
             .collect();
         node = node.with_children(tab_children);
@@ -3376,6 +3506,35 @@ mod tests {
         // rendered tab to look it up against.
         assert!(b.prev_tab_rects_by_id.contains_key(&1));
         assert!(b.prev_tab_rects_by_id.contains_key(&3));
+    }
+
+    #[test]
+    fn a_strip_filled_before_its_first_layout_opens_settled() {
+        // A host that fills its strip before anything has been laid out is
+        // describing the state the bar opens in, not an arrival. Fading
+        // that in makes the first painted frame depend on how long the
+        // renderer took to boot, which a single offscreen capture renders
+        // as a half-drawn pill.
+        let mut b = TabBar::new("g1", Vec::new(), 0);
+        b.insert_tab(0, TabDescriptor::new(1, "A"));
+        b.insert_tab(1, TabDescriptor::new(2, "B"));
+        // No entry is the whole property: `draw` reads `inserted_at` per
+        // tab and takes its full-strength arm when there is nothing there.
+        assert!(
+            b.inserted_at.is_empty(),
+            "tabs seeded before the first layout must not latch a fade"
+        );
+
+        // Once the strip is on screen, an arrival is an arrival again.
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(86.0, 6.0, 166.0, 34.0),
+        ];
+        b.insert_tab(1, TabDescriptor::new(3, "C"));
+        assert!(
+            b.inserted_at.contains_key(&3),
+            "a tab arriving at a laid-out strip still fades in"
+        );
     }
 
     #[test]
@@ -4848,6 +5007,76 @@ mod tests {
     fn tab_bar_test_id_returns_tabs() {
         let bar = TabBar::new("grp", vec![TabDescriptor::new(1, "a")], 1);
         assert_eq!(Widget::test_id(&bar), Some("tabs"));
+    }
+
+    #[test]
+    fn a_modified_tab_holds_its_close_slot_open_at_rest() {
+        // The unsaved-changes dot lives in the close slot, so a modified
+        // tab has to hold that slot open even when it is neither active
+        // nor hovered - otherwise the mark has nowhere to paint and a
+        // resting dirty tab looks identical to a clean one.
+        let mut b = bar();
+        // "B" is neither active (that is "A") nor hovered.
+        assert_eq!(b.resting_reveal(1), Reveal::None);
+        b.set_modified(2, true);
+        assert_eq!(b.resting_reveal(1), Reveal::Close);
+        assert!(b.is_modified(2));
+        b.set_modified(2, false);
+        assert_eq!(b.resting_reveal(1), Reveal::None, "clearing gives the width back");
+        assert!(!b.is_modified(2));
+    }
+
+    #[test]
+    fn an_accent_opens_the_leading_slot_like_an_app_glyph() {
+        // One slot, two occupants, one width: a strip mixing accented and
+        // icon-bearing pills must keep its titles on a single x, so the
+        // accent has to reserve exactly what the glyph does.
+        let mut b = bar();
+        assert_eq!(b.leading_zone(0), 0.0, "a bare tab reserves nothing");
+        b.set_accent(1, vello::peniko::Color::from_rgba8(200, 100, 0, 255));
+        assert_eq!(b.leading_zone(0), ICON_W + ICON_GAP);
+        b.tabs_mut()[1].app_kind = Some(AppKind::Terminal);
+        assert_eq!(
+            b.leading_zone(1),
+            b.leading_zone(0),
+            "an app glyph and an accent dot take the same room"
+        );
+        b.clear_accent(1);
+        assert_eq!(b.leading_zone(0), 0.0);
+    }
+
+    #[test]
+    fn withholding_maximize_stops_a_hover_reserving_the_cluster() {
+        // With no maximize chip on offer there is nothing above `Close` to
+        // open into, and reserving `Full`'s width for a chip that will
+        // never be placed would push the title for nothing.
+        let mut b = bar();
+        b.hover_idx = Some(1);
+        assert_eq!(b.target_reveal(1), Reveal::Full);
+        b.set_show_maximize(false);
+        assert_eq!(b.target_reveal(1), Reveal::Close);
+        assert!(
+            Reveal::Close.reserve() < CHIP_CLUSTER_W,
+            "the capped reserve must stay under the width apply_layout requires before it places a maximize chip, or the chip is placed after all"
+        );
+    }
+
+    #[test]
+    fn accessibility_describes_a_tab_with_unsaved_changes() {
+        use crate::a11y::Role;
+        // The dot is colour-and-shape only. A reader that cannot see it
+        // gets the state as a description, and only on the tab that has it.
+        let mut b = bar();
+        b.set_modified(2, true);
+        let node = Widget::accessibility(&b).expect("tab bar is not presentational");
+        let tabs: Vec<_> = node.children.iter().filter(|c| c.role == Role::Tab).collect();
+        assert_eq!(tabs.len(), 3);
+        assert!(tabs[0].description.is_none(), "a clean tab says nothing extra");
+        assert!(
+            tabs[1].description.is_some(),
+            "the modified tab carries its state as a description"
+        );
+        assert!(tabs[2].description.is_none());
     }
 
     #[test]

@@ -34,6 +34,7 @@ const SCENARIOS: &[&str] = &[
     "goto",
     "close-prompt",
     "status",
+    "tabs",
 ];
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -188,6 +189,13 @@ fn render_scenario_to_png(
         } else if app.project_root().is_some() {
             app.shots_open_first_file();
         }
+    }
+
+    // Staged before the first layout pass, not after it: the tab strip
+    // seeds a tab's reveal settled the first time it lays it out, so a
+    // strip rearranged afterwards captures mid-fade.
+    if scenario == Some("tabs") {
+        app.shots_tabs(&mut state.doc, &state.root);
     }
 
     app.sync(&mut state.doc, &state.root);
