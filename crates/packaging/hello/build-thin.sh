@@ -34,7 +34,6 @@
 set -euo pipefail
 
 WT=$(cd "$(dirname "$0")/../../.." && pwd)
-SCCACHE_DIR=${SCCACHE_DIR:-/var/home/quinten/Development/quickdesktop/.claude/qos-sccache}
 RUNTIME_VERSION=${RUNTIME_VERSION:-thin-1}
 BUNDLE_ROOT="$WT/target/thin-bundle"
 BUNDLE_DIR="$BUNDLE_ROOT/qos-runtime/$RUNTIME_VERSION"
@@ -43,7 +42,7 @@ IDENTITY_JSON="$BUNDLE_ROOT/identity.json"
 run() { distrobox enter my-distrobox -- bash -c "cd '$WT' && $*"; }
 hr() { printf '\n─── %s ───\n' "$*"; }
 size() { stat -c%s "$1"; }
-env_prefix="CARGO_TARGET_DIR='$WT/target' SCCACHE_DIR='$SCCACHE_DIR' RUSTC_WRAPPER=sccache"
+env_prefix="CARGO_TARGET_DIR='$WT/target'"
 
 hr "1. baseline: static release (whole SDK baked into each app)"
 run "$env_prefix cargo build --release -p hello -p notes-cli >/dev/null 2>&1"

@@ -28,7 +28,7 @@ hr() { printf '\n─── %s ───\n' "$*"; }
 
 hr "1. build store example + hello + pkg-cli + install (debug)"
 distrobox enter my-distrobox -- bash -c "cd '$INTEG' && \
-  CARGO_TARGET_DIR='$INTEG/target' SCCACHE_DIR=/var/home/quinten/Development/quickdesktop/.claude/qos-sccache RUSTC_WRAPPER=sccache \
+  CARGO_TARGET_DIR='$INTEG/target' \
   cargo build -p store --example drive_open -p hello -p pkg-cli -p install 2>&1 | tail -3"
 
 cp "$INTEG/target/debug/qos-hello" "$WORK/payload/bin/qos-hello"
