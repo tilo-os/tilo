@@ -88,6 +88,23 @@
 //! the local instance is invisible to the room, and the two machines do
 //! not take turns opening windows at each other.
 //!
+//! # The other way an open arrives
+//!
+//! A tab is not the only thing that brings an open here. A participant that
+//! holds a room but no screen asks over the collaboration socket, and the room
+//! carries that ask to every member as `NeighbourMsg::AppOpened` — which,
+//! unlike a tab, names the *content* the open was bound to
+//! ([`crate::shell::agent_opens`]). Both paths end in a window of the same app
+//! in the same room, and for a while both ran: one request produced a window
+//! apiece, and each of those was projected back into the room, where it
+//! produced another one on every other machine.
+//!
+//! So [`open_for`] asks first whether this room's window of the app is already
+//! here, and starts nothing when it is — [`crate::shell::open_identity`],
+//! which is also where a launch started here is recorded, so that the other
+//! path recognises it. Nothing else about this module changes: a projected tab
+//! whose open nobody here has answered still opens for every member.
+//!
 //! # Deciding once
 //!
 //! `PeerWindow::note` is both the sentence on the card and the record that
@@ -99,12 +116,24 @@
 use crate::compositor::tab_binding::Placement;
 use crate::shell::chrome_state::PendingPrompt;
 use crate::shell::launcher;
+use crate::shell::open_identity::{self, OpenIdentity};
 use crate::shell::state::{
-    GroupId, ResourceRef, StripId, TabId, TileContent, Verb, Workspace, WorkspaceTree,
+    GroupId, ResourceRef, RoomId, StripId, TabId, TileContent, Verb, Workspace, WorkspaceTree,
 };
 
 /// Shown while the local instance is starting.
-const OPENING: &str = "Opening here…";
+///
+/// `pub(crate)` because [`crate::shell::agent_opens`] writes the same sentence
+/// on the tab it puts down for an open that reached this session over the
+/// collaboration socket. It is the same state — this machine has answered for
+/// a window in this room and is waiting for it — and two spellings of it would
+/// leave [`examine`] examining a tab somebody had already answered for.
+pub(crate) const OPENING: &str = "Opening here…";
+
+/// Shown on a peer's tab whose window this machine already has, because the
+/// same open reached it by the other route. See
+/// [`crate::shell::open_identity`].
+pub(crate) const ALREADY_HERE: &str = "Already open here";
 
 /// One unexamined peer window, lifted out of the tree so the decision can
 /// be made without holding a borrow on it.
@@ -209,7 +238,18 @@ fn open_for(
         return Err("That workspace is gone".to_string());
     };
     let ws_id = ws.id;
+    let ws_room = ws.room;
     admits(ws, &item.app_id)?;
+    // This room's window of this app may already be here: an open that reached
+    // this session over the collaboration socket opened one, in a tab of its
+    // own, and the tab in hand is that same window seen from the room's side.
+    // The room document names no content, so "the room has this app open and I
+    // have a window for it" is as fine a match as a tab is able to make —
+    // which is exactly the match to make, because a second instance for it is
+    // the duplicate the two paths used to produce between them.
+    if open_identity::realised_in_room(&item.app_id, ws_room).is_some() {
+        return Err(ALREADY_HERE.to_string());
+    }
     // Whatever a launch from the palette does *around* the launch has to
     // happen here too, or an app started on the room's behalf is not the
     // same app the person would have opened from the palette. The file
@@ -265,7 +305,10 @@ fn open_for(
     // from the palette does — so this instance runs with the room's
     // grants and no others.
     match launcher::launch_in_workspace(&item.app_id, ws) {
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            note_window_for_the_room(&item.app_id, ws_room, item.tab);
+            Ok(())
+        }
         Err(err) => {
             launcher::clear_pending_placement(&item.app_id);
             Err(match err {
@@ -279,6 +322,19 @@ fn open_for(
             })
         }
     }
+}
+
+/// Record that this machine now has a window of `app_id` for `room`, in
+/// `tab`.
+///
+/// So that the other way an open arrives recognises it: an `AppOpened` naming
+/// the same app in the same room is the same request coming by its other
+/// route, and it must not start a second instance beside this one. Named with
+/// no content, because a projected tab carries none — see
+/// [`crate::shell::open_identity`] for why that is the right granularity here
+/// and the wrong one there.
+pub(crate) fn note_window_for_the_room(app_id: &str, room: RoomId, tab: TabId) {
+    let _ = open_identity::claim(OpenIdentity::in_room(app_id, room, None), tab);
 }
 
 /// Whether `ws`'s room authorises starting `app_id` here.
@@ -589,6 +645,90 @@ mod tests {
             asks.is_empty(),
             "a refused launch must raise no prompt: {asks:?}"
         );
+    }
+
+    /// An app id nothing on this machine can resolve, so a test that lets
+    /// `examine` reach the launcher starts no process.
+    const ABSENT: &str = "dev.qos.one-window-fixture";
+
+    /// The sentence on `tab`'s card.
+    fn note_on(tree: &WorkspaceTree, tab: TabId) -> String {
+        tree.workspaces
+            .iter()
+            .flat_map(|w| w.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .flat_map(|g| g.tabs.iter())
+            .find(|t| t.id == tab)
+            .map(|t| match &t.tile {
+                TileContent::PeerWindow { note, .. } => note.clone(),
+                other => panic!("expected a peer window, got {other:?}"),
+            })
+            .expect("the tab is still there")
+    }
+
+    /// A request that reached this session over the collaboration socket has
+    /// already opened the window. The tab the room then projects for it is the
+    /// same open arriving by its other route, and starting a second instance
+    /// for it is the defect: one person asking for the photo editor once left
+    /// three tabs called "Photos" on somebody else's screen.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn an_open_already_answered_here_starts_no_second_instance() {
+        crate::shell::launcher::clear_pending_placements();
+        open_identity::clear_for_test();
+        let ws = room_owned_by("quinten");
+        let room = ws.room;
+        let (mut tree, tab) = tree_with_peer_window_for(ws, ABSENT);
+        // What `agent_opens` records when it opens the window for an
+        // `AppOpened` — onto a picture, which a projected tab cannot see.
+        assert!(open_identity::claim(
+            OpenIdentity::in_room(ABSENT, room, Some("623fdbf0")),
+            4242,
+        ));
+
+        assert!(examine(&mut tree, &mut Vec::new()), "the tab is decided");
+
+        assert_eq!(
+            note_on(&tree, tab),
+            ALREADY_HERE,
+            "the window this tab describes is on this screen already; a \
+             second instance of the app is the defect, not the answer"
+        );
+        assert!(
+            crate::shell::launcher::placement_for_toplevel(ABSENT, 1).is_none(),
+            "and no launch was staged for it, so nothing was started"
+        );
+        open_identity::clear_for_test();
+    }
+
+    /// The pre-existing behaviour, unchanged: a projected tab whose open
+    /// nobody here has answered still opens for this member. A window of the
+    /// same app in *another* room is not this room's window.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_tab_nobody_here_has_answered_for_still_opens() {
+        crate::shell::launcher::clear_pending_placements();
+        open_identity::clear_for_test();
+        let (mut tree, tab) = tree_with_peer_window_for(room_owned_by("quinten"), ABSENT);
+        // A window of the same app, in a different room.
+        assert!(open_identity::claim(
+            OpenIdentity::in_room(ABSENT, RoomId::new(), None),
+            99,
+        ));
+
+        assert!(examine(&mut tree, &mut Vec::new()), "the tab is decided");
+
+        let note = note_on(&tree, tab);
+        assert_ne!(
+            note, ALREADY_HERE,
+            "a window in another workspace is not this room's window, and \
+             this member is still owed one"
+        );
+        assert!(
+            !note.is_empty(),
+            "the tab was examined, and whatever came of it was said"
+        );
+        open_identity::clear_for_test();
     }
 
     /// The window a peer's tab is already hosting here is found, so a
