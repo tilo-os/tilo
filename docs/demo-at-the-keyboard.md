@@ -90,7 +90,7 @@ take early and still writes the clip; a second abandons it.
 | stuck on `Claude waits for a line addressed to it` | Beat 5 was never performed, or what you typed does not begin `Claude:`. |
 | `the agent answered … was that it could not do what was asked` | It refused on the page. The take is finished and unusable. |
 | `frames are resampled to 1920x1048 and letterboxed` | The window manager granted a size the video is not; the film is a rescale, not 1:1. |
-| `WARNING: processes survived the scope` | Report it. Do not reap and move on. |
+| `WARNING: processes survived the scope` | Only trust this on an idle machine. The check is machine-wide, so anybody else's qOS run — or your own `--keep` session — trips it. |
 
 ## Known faults, measured on 2026-08-25
 
@@ -106,3 +106,6 @@ take early and still writes the clip; a second abandons it.
   grants as accepted, so the crop cannot happen and beat 5 lands as a refusal.
 - `qos-lv-*.sock` files accumulate in `$XDG_RUNTIME_DIR` from every run that
   did not exit cleanly. Harmless; do not mistake a stale one for a live one.
+- Composing a long take is slow and silent: a 522 s film spent nine minutes in
+  `ffmpeg` and then several more in the `ffprobe -count_frames` readback, with
+  nothing printed. The take is already on disk by then; wait it out.
