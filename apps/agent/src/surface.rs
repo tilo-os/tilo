@@ -452,6 +452,14 @@ fn chat_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
                     is_agent: u.is_agent,
                 })
                 .collect(),
+            // The agent is not in a call and cannot be. This view is built
+            // from the room's document, which carries who is in a call but
+            // not this peer's own audio — and there is no peer here, only a
+            // participant reading. `None` is the honest answer rather than a
+            // placeholder: it is what keeps mute and hang-up out of the
+            // catalogue, so the agent is never offered an operation on
+            // something that is not happening to it.
+            call: None,
         },
         doc,
     )
