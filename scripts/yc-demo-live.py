@@ -1433,6 +1433,34 @@ class Live:
             self.finished = ("the instruction was never sent, so there is "
                              "nothing left for the camera to film")
 
+    def hand_him_the_gesture(self) -> None:
+        """Say whose hands the next gesture belongs to, and stop driving.
+
+        Handed over rather than driven. His window is already in front --
+        the cut raised it, and the beat above framed it -- so the only
+        thing missing is knowing what to do with it, and that is a line
+        of text rather than a mechanism.
+        """
+        self.say("")
+        self.say("  " + "-" * 58)
+        self.say("  XAVER IS YOURS. His window is in front.")
+        self.say("")
+        self.say("    right-click the image in Files, then write:")
+        self.say(f"      {self.args.instruction}")
+        self.say("")
+        self.say("    the rig picks it up from here and watches "
+                 "for the answer")
+        self.say("  " + "-" * 58)
+        self.say("")
+        self.instruction_sent = True
+        # Not claimed. Nothing here observed him write anything, and a
+        # claim that reports a person's gesture it never saw is worth
+        # less than no claim at all. What *is* claimed above it is the
+        # state his screen was in when it was handed over, which nothing
+        # about a person's hand makes unobservable.
+        yc.gap("the instruction is being written by hand, so this run "
+               "does not assert that it was")
+
     def his_instruction(self) -> bool:
         """Xaver picks the image and says what he wants done with it.
 
@@ -1466,39 +1494,6 @@ class Live:
         # whose hands the next gesture belongs to.
         yc.cut("xaver")
         try:
-            # Aimed at a pixel, and the pixel is asked for rather than
-            # guessed. A client application's widgets are not in the
-            # compositor's target registry -- that registry walks the
-            # shell's own tree -- so `named_rect("file_row:harbour.png")`
-            # could never once have resolved, and sweeping the window for
-            # a row instead is what lost a take. The app answers now:
-            # `Widget::resource_rects` says where it drew the row for that
-            # file's own address, and `press_the_photo_row` converts it
-            # with the window's placement.
-            if not self.args.instruct:
-                # Handed over rather than driven. His window is already
-                # in front -- the cut raised it -- so the only thing
-                # missing is knowing what to do with it, and that is a
-                # line of text rather than a mechanism.
-                self.say("")
-                self.say("  " + "-" * 58)
-                self.say("  XAVER IS YOURS. His window is in front.")
-                self.say("")
-                self.say("    right-click the image in Files, then write:")
-                self.say(f"      {self.args.instruction}")
-                self.say("")
-                self.say("    the rig picks it up from here and watches "
-                         "for the answer")
-                self.say("  " + "-" * 58)
-                self.say("")
-                self.instruction_sent = True
-                # Not claimed. Nothing here observed him write anything,
-                # and a claim that reports a person's gesture it never saw
-                # is worth less than no claim at all.
-                yc.gap("the instruction is being written by hand, so this "
-                       "run does not assert that it was")
-                return True
-
             # Wait for the file manager to reach him, rather than asking
             # once and giving up.
             #
@@ -1513,11 +1508,27 @@ class Live:
             # Bounded, and painted rather than merely placed — the compositor
             # answers with a laid-out rect for a window it is not yet drawing,
             # and a press aimed into one lands on whatever is behind it.
+            #
+            # Waited for on both paths, and everything below it asked on
+            # both paths. Only the gesture at the end is a hand. This
+            # used to branch first and hand over here, which meant the
+            # run that a person drives never asked the one question the
+            # beat rests on — *is the photograph on his screen, out of
+            # the room's workspace* — and could not have told him it was
+            # not. It was not: he was handed an empty home with no
+            # workspace in its sidebar, on a run whose every printed
+            # claim had passed.
             tile = self.wait_for_his_files()
             if tile is None:
                 yc.gap("xaver has no file manager window on screen, so "
                        "there is no image for him to right-click")
-                return False
+                if self.args.instruct:
+                    return False
+                # Handed over anyway. A person can open Files himself,
+                # and ending the take over a window that has not crossed
+                # yet takes the beat away from him for no reason.
+                self.hand_him_the_gesture()
+                return True
             # How many of them there are, before one of them is picked.
             # A session can be showing two windows that are both the file
             # manager — its own, and a peer's replicated in — and they are
@@ -1593,6 +1604,11 @@ class Live:
                        f"none of them is {yc.PHOTO_NAME}; if it published "
                        f"none at all it was granted nothing and is showing "
                        f"its own sandbox directory. See {self.x.log_path}")
+
+            if not self.args.instruct:
+                self.hand_him_the_gesture()
+                return True
+
             if self.args.instruction_via == "room":
                 # The room's half alone, because the gesture that reaches
                 # it is unavailable. Everything above still ran — his file
@@ -1631,6 +1647,15 @@ class Live:
                          "reached the room, from his machine", said, True)
                 return said
 
+            # Aimed at a pixel, and the pixel is asked for rather than
+            # guessed. A client application's widgets are not in the
+            # compositor's target registry -- that registry walks the
+            # shell's own tree -- so `named_rect("file_row:harbour.png")`
+            # could never once have resolved, and sweeping the window for
+            # a row instead is what lost a take. The app answers now:
+            # `Widget::resource_rects` says where it drew the row for that
+            # file's own address, and `press_the_photo_row` converts it
+            # with the window's placement.
             said = yc.say_something_about(
                 self.x, log, tuple(tile["rect"]), yc.PHOTO_NAME,
                 # The room's workspace, not his home. That is the whole
