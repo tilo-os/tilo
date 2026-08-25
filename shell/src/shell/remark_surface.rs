@@ -174,6 +174,37 @@ pub fn deliver(chrome: &Chrome, broker: &BrokerHandle, remarks: Vec<Remark>) {
             .unwrap_or_default();
         match remark.to_chat_action(id.as_str(), author.as_str(), ts) {
             Ok(action) => {
+                // Whoever sends, says so.
+                //
+                // This line used to come from the application, off
+                // `RemarkHost::just_sent`, and it is the one account of the
+                // gesture completing that anything outside the process can
+                // read. But an application only reaches that code when it drew
+                // the panel itself; a window whose chrome this session draws
+                // never composes, never sends, and so could never write it. The
+                // send worked and the only evidence of it disappeared with the
+                // panel — which looks exactly like a send that gave up.
+                //
+                // So it is written here instead, by the end that actually puts
+                // the message on the wire, and it stays true whichever end drew
+                // the panel.
+                //
+                // `to` is the destination's **id**, not the label the selector
+                // shows. The label is localised prose — "the room", "der Raum" —
+                // and anything reading these fields by splitting on whitespace
+                // would take `the` for the whole destination and then fail to
+                // find the field after it.
+                let to = match remark.destination.target() {
+                    qos_reference::Target::Channel(id) => format!("channel:{id}"),
+                    qos_reference::Target::Participant(id) => format!("participant:{id}"),
+                };
+                tracing::info!(
+                    target: "shell::remark",
+                    %to,
+                    about = %remark.reference.resource_id().as_str(),
+                    text = %remark.text,
+                    "remark sent"
+                );
                 let delivery = remark.delivery();
                 tracing::info!(
                     target: "shell::remark",
