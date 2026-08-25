@@ -886,6 +886,180 @@ fn switching_workspace_swaps_the_rendered_strips() {
     assert!(host.group_row_mut_for_tests(strip_b).is_none());
 }
 
+/// Heap address and last laid-out rect of the app widget a tab is
+/// hosting. The address tells one widget instance from another; the rect
+/// is state only an instance that lived through a layout pass can have,
+/// so a fresh one cannot fake it by landing at a recycled address.
+fn hosted_app_identity(
+    host: &mut ShellOverlayHost,
+    strip: StripId,
+    group: GroupId,
+    tab: u64,
+) -> Option<(*const (), vello::kurbo::Rect)> {
+    let row = host.group_row_mut_for_tests(strip)?;
+    let g = row.groups.iter_mut().find(|g| g.id == group)?;
+    let h = g.host_for_tab_mut(tab)?;
+    match h.content_mut() {
+        ui::widget::TileContent::App(app) => Some((
+            &**app as *const dyn ui::widget::AppWidget as *const (),
+            app.get_rect(),
+        )),
+        _ => None,
+    }
+}
+
+#[test]
+fn switching_workspaces_keeps_the_hosted_apps_alive() {
+    // A workspace's in-process apps are running programs, not pictures
+    // of them. The rebuild that swaps the rendered workspace (see the
+    // test above) used to build every tab of the incoming workspace from
+    // scratch — so a terminal forked a new shell on every switch, and
+    // whatever was running in the old one was killed with it (2026-08-25:
+    // "when switching workspaces the terminal always reloads"). What a
+    // tab holds has to ride across the switch as the same widget.
+    let (mut tree, strip_a, _) = single_strip_tree(&[100]);
+    let home = tree.workspaces[0].id;
+    tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::AppPlaceholder {
+        kind: AppKind::Terminal,
+        label: "Terminal".into(),
+    };
+    let ws_b_id = WorkspaceId::new();
+    let strip_b = StripId::new();
+    let ws_b = Workspace {
+        strips: vec![Strip {
+            id: strip_b,
+            name: "Main".into(),
+            window_groups: vec![WindowGroup {
+                id: 300,
+                tabs: vec![Tab {
+                    id: 3001,
+                    title: "B".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("B".into()),
+                        label: "B".into(),
+                    },
+                }],
+                active_tab: 3001,
+                width: WindowWidth::Normal,
+                maximized: false,
+            }],
+        }],
+        ..Workspace::test_default(ws_b_id, "Second")
+    };
+    tree.workspaces.push(ws_b);
+    tree.active_strip.insert(ws_b_id, strip_b);
+
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    let (before_ptr, before_rect) = hosted_app_identity(&mut host, strip_a, 100, 1001)
+        .expect("the terminal tab hosts a live app widget");
+    assert!(
+        before_rect.width() > 0.0 && before_rect.height() > 0.0,
+        "precondition: the terminal was laid out, so it carries a rect"
+    );
+
+    // Away to B and back to A, the way every switch path does it.
+    {
+        let st = chrome.borrow();
+        st.tree_mut().set_active(ws_b_id);
+    }
+    chrome.borrow_mut().bump();
+    assert!(host.tick_workspace_content_for_tests());
+    let _layout = lay_out_host(&mut host);
+    {
+        let st = chrome.borrow();
+        st.tree_mut().set_active(home);
+    }
+    chrome.borrow_mut().bump();
+    assert!(host.tick_workspace_content_for_tests());
+
+    // No layout pass since the return: a widget that lived through the
+    // switch still has its rect, a freshly built one has none.
+    let (after_ptr, after_rect) = hosted_app_identity(&mut host, strip_a, 100, 1001)
+        .expect("the terminal tab still hosts a live app widget");
+    assert_eq!(
+        after_ptr, before_ptr,
+        "the terminal must be the same widget instance it was before the switch"
+    );
+    assert_eq!(
+        after_rect, before_rect,
+        "the terminal's state must survive the switch — a rebuilt widget starts from nothing"
+    );
+}
+
+#[test]
+fn a_tab_closed_while_its_workspace_is_away_does_not_keep_its_widget() {
+    // The other half of keeping widgets across a switch: a kept widget
+    // holds a process, so one nothing can show again must not be kept.
+    let (mut tree, strip_a, _) = single_strip_tree(&[100]);
+    let home = tree.workspaces[0].id;
+    tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::AppPlaceholder {
+        kind: AppKind::FileExplorer,
+        label: "Files".into(),
+    };
+    let ws_b_id = WorkspaceId::new();
+    let strip_b = StripId::new();
+    let ws_b = Workspace {
+        strips: vec![Strip {
+            id: strip_b,
+            name: "Main".into(),
+            window_groups: vec![WindowGroup {
+                id: 300,
+                tabs: vec![Tab {
+                    id: 3001,
+                    title: "B".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("B".into()),
+                        label: "B".into(),
+                    },
+                }],
+                active_tab: 3001,
+                width: WindowWidth::Normal,
+                maximized: false,
+            }],
+        }],
+        ..Workspace::test_default(ws_b_id, "Second")
+    };
+    tree.workspaces.push(ws_b);
+    tree.active_strip.insert(ws_b_id, strip_b);
+
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    assert!(host.parked_tab_ids_for_tests().is_empty(), "nothing is off screen at boot");
+
+    {
+        let st = chrome.borrow();
+        st.tree_mut().set_active(ws_b_id);
+    }
+    chrome.borrow_mut().bump();
+    assert!(host.tick_workspace_content_for_tests());
+    assert_eq!(
+        host.parked_tab_ids_for_tests(),
+        vec![1001],
+        "A's file pane is kept while A is away"
+    );
+
+    // Close A's tab while A is away, then come back.
+    {
+        let st = chrome.borrow();
+        let mut t = st.tree_mut();
+        t.workspaces[0].strips[0].window_groups[0].tabs.clear();
+        t.set_active(home);
+    }
+    chrome.borrow_mut().bump();
+    assert!(host.tick_workspace_content_for_tests());
+    // B's tab is now the one away; A's closed tab is nowhere.
+    assert_eq!(
+        host.parked_tab_ids_for_tests(),
+        vec![3001],
+        "a closed tab's widget is dropped, not kept for a tab that no longer exists"
+    );
+    assert!(
+        hosted_app_identity(&mut host, strip_a, 100, 1001).is_none(),
+        "and nothing is rendered for it"
+    );
+}
+
 #[test]
 fn wheel_over_strip_does_not_move_it() {
     // Hard boundary (2026-08-22): a bare wheel never moves the strip —

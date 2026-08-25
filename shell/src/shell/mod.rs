@@ -1220,27 +1220,87 @@ pub fn build_nirios_overlay_host_with_options(
 /// revision bumps can reach for the same conversion when splicing
 /// freshly-added groups into a live [`GroupRow`].
 pub fn to_ui_window_group(g: &state::WindowGroup, records: &ui::record::RecordStore) -> UiGroup {
-    let tabs_with_content: Vec<(TabDescriptor, UiTile)> = g
+    to_ui_window_group_reusing(g, records, &mut ParkedTiles::new())
+}
+
+/// As [`to_ui_window_group`], but a tab whose host is in `parked` gets
+/// that host back instead of a new one.
+///
+/// This is the difference between a rebuild and a relaunch. The rows
+/// are rebuilt whenever the active workspace changes, and a hosted
+/// terminal built again is a *new shell* — the one that was running,
+/// and whatever was running in it, goes with the old rows. A tab that
+/// was on screen keeps the widget it had; only a tab this process has
+/// never shown, or whose tile changed while it was away, is built.
+pub fn to_ui_window_group_reusing(
+    g: &state::WindowGroup,
+    records: &ui::record::RecordStore,
+    parked: &mut ParkedTiles,
+) -> UiGroup {
+    let tabs_with_hosts: Vec<(TabDescriptor, ui::widget::TileHost)> = g
         .tabs
         .iter()
         .map(|t| {
-            let kind = tile_app_kind(&t.tile);
-            (
-                TabDescriptor {
-                    id: t.id,
-                    title: t.title.clone(),
-                    app_kind: Some(kind),
-                },
-                to_ui_tile(&t.tile),
-            )
+            let desc = TabDescriptor {
+                id: t.id,
+                title: t.title.clone(),
+                app_kind: Some(tile_app_kind(&t.tile)),
+            };
+            let host = take_parked(parked, t)
+                .unwrap_or_else(|| ui::widget::TileHost::new(to_ui_tile(&t.tile)));
+            (desc, host)
         })
         .collect();
-    let mut group = UiGroup::new(g.id, tabs_with_content, g.active_tab, to_ui_width(g.width))
+    let mut group = UiGroup::with_hosts(g.id, tabs_with_hosts, g.active_tab, to_ui_width(g.width))
         .with_maximized(g.maximized);
     // Every tab gets its own document before it is ever synced, so no
-    // hosted app writes a keystroke into the shell's own state.
+    // hosted app writes a keystroke into the shell's own state. A host
+    // that came back from `parked` is already on its record; the bind
+    // is a no-op for it.
     tab_documents::bind_group_records(&mut group, records);
     group
+}
+
+/// A cheap value that changes exactly when what a tab should be showing
+/// changes.
+///
+/// The serialised tile, because that is the whole of what [`to_ui_tile`]
+/// reads — so two tiles with the same serialisation build the same
+/// widget, and building one to compare against would be both expensive
+/// and, for a tile that spawns a process, destructive.
+pub fn tile_signature(tile: &state::TileContent) -> String {
+    serde_json::to_string(tile).unwrap_or_default()
+}
+
+/// A tab's live widget, kept while the tab is not on screen.
+///
+/// The rendered rows only ever cover the active workspace; when the
+/// active workspace changes they are rebuilt for the new one and the
+/// old rows are dropped. What they hosted must not go with them: a
+/// hosted terminal *is* a shell process, a file pane is a directory
+/// somebody navigated to, and neither can be built again from the tree
+/// — the tree only says "a terminal", and building that forks a new
+/// shell over the one that was running. So the hosts step out of the
+/// rows before the rows go, and step back in when their tab is next
+/// rendered, in whichever workspace or group that turns out to be.
+pub struct ParkedTile {
+    /// The [`tile_signature`] the host was built for. A tab whose tile
+    /// changed while it was away is built fresh, exactly as it would
+    /// have been had the change happened on screen.
+    pub signature: String,
+    pub host: ui::widget::TileHost,
+}
+
+/// Parked tiles keyed by tab id.
+pub type ParkedTiles = std::collections::HashMap<u64, ParkedTile>;
+
+/// The parked host for `tab`, if one was kept and it still matches the
+/// tab's tile. A parked host whose tile has since changed is dropped
+/// here: it can never be shown again, and keeping it would keep its
+/// process.
+pub fn take_parked(parked: &mut ParkedTiles, tab: &state::Tab) -> Option<ui::widget::TileHost> {
+    let p = parked.remove(&tab.id)?;
+    (p.signature == tile_signature(&tab.tile)).then_some(p.host)
 }
 
 /// Wire the hosted file explorer's document activation to
@@ -1298,6 +1358,7 @@ pub fn build_workspace_root(
     tree: &WorkspaceTree,
     records: &ui::record::RecordStore,
     chrome: &chrome_state::Chrome,
+    parked: &mut ParkedTiles,
 ) -> (
     Box<dyn Widget>,
     std::collections::HashMap<state::StripId, *mut GroupRow>,
@@ -1366,7 +1427,7 @@ pub fn build_workspace_root(
             let groups: Vec<UiGroup> = strip
                 .window_groups
                 .iter()
-                .map(|g| to_ui_window_group(g, &records))
+                .map(|g| to_ui_window_group_reusing(g, records, parked))
                 .collect();
             let mut strip_row: Box<GroupRow> = Box::new(
                 GroupRow::new(groups)
@@ -1431,7 +1492,9 @@ pub fn build_nirios_overlay_host_with_records(
     // chrome handle drives subsequent updates.
     let tree: WorkspaceTree = tree_handle.read().clone();
 
-    let (root, group_row_ptrs) = build_workspace_root(&tree, &records, &chrome);
+    // Nothing is parked at boot: no tab has been on screen yet.
+    let (root, group_row_ptrs) =
+        build_workspace_root(&tree, &records, &chrome, &mut ParkedTiles::new());
     // Wheel disc is the only sidebar — each workspace is a spoke. Dragging
     // rotates spokes; releasing snaps to the nearest workspace. Per user
     // spec 2026-04-21: "No permanent sidebar, but workspaces appear as
