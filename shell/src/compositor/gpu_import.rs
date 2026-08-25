@@ -181,7 +181,56 @@ impl GpuImporter {
     /// Returns the buffer's `(width, height)`. `out` is cleared and
     /// refilled; the caller's `Vec` is reused across commits so a
     /// steady-state client costs no reallocation.
+    ///
+    /// The GL scratch the readback allocates is released before this
+    /// returns — see [`GpuImporter::release_readback_scratch`], which
+    /// runs on the failure paths too.
     pub fn import(
+        &mut self,
+        dmabuf: &Dmabuf,
+        out: &mut Vec<u8>,
+    ) -> Result<(u32, u32), GpuImportError> {
+        let result = self.read_back(dmabuf, out);
+        self.release_readback_scratch();
+        result
+    }
+
+    /// Hand back every GL object the last readback finished with.
+    ///
+    /// `copy_texture` allocates a pixel-pack buffer the size of the
+    /// whole client image — for a full-tile window, ~2.8 MB of GTT per
+    /// call — and `GlesMapping`'s `Drop` cannot free it, because
+    /// deleting a GL object needs the context current and `Drop` has no
+    /// way to make it so. It posts the id to the renderer's destruction
+    /// queue instead, and *something* has to drain that queue.
+    ///
+    /// Smithay drains it from `Frame::finish` and from `Unbind`, on the
+    /// assumption that a renderer is a thing that draws. This one never
+    /// draws: it exists only to read client buffers back. So nothing
+    /// drained the queue, and every client commit left one whole-window
+    /// pixel-pack buffer behind for the life of the compositor —
+    /// hundreds of megabytes after a minute of an animating window, and
+    /// proportional to frames drawn rather than to windows open.
+    ///
+    /// Draining also prunes the dmabuf→texture cache of entries whose
+    /// buffer the client has since destroyed, which is the other half of
+    /// what a closed window should give back.
+    ///
+    /// A failure here is reported and swallowed: the pixels are already
+    /// copied out, and refusing the frame would trade a visible window
+    /// for a memory saving.
+    fn release_readback_scratch(&mut self) {
+        use smithay::backend::renderer::Renderer as _;
+        if let Err(e) = self.renderer.cleanup_texture_cache() {
+            tracing::warn!(
+                target: "shell::compositor::dmabuf",
+                error = %e,
+                "could not release GPU readback scratch; GTT will grow"
+            );
+        }
+    }
+
+    fn read_back(
         &mut self,
         dmabuf: &Dmabuf,
         out: &mut Vec<u8>,
@@ -297,6 +346,130 @@ pub fn is_ready() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GPU memory this process is holding, in KiB.
+    ///
+    /// `drm-memory-<region>:` is reported once per open DRM file and
+    /// once per memory region, so every line has to be summed — reading
+    /// one fd, or one region, undercounts. Regions are added together
+    /// rather than singled out because a leaked buffer is a leak
+    /// wherever the driver chose to put it.
+    ///
+    /// `None` means this kernel exposes no per-file DRM accounting at
+    /// all, which callers must treat as "cannot observe", never as
+    /// "nothing allocated".
+    fn own_gpu_memory_kib() -> Option<u64> {
+        let mut total = 0_u64;
+        let mut saw_any = false;
+        let Ok(entries) = std::fs::read_dir("/proc/self/fdinfo") else {
+            return None;
+        };
+        for entry in entries.flatten() {
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            for line in text.lines() {
+                let Some(value) = line.strip_prefix("drm-memory-") else {
+                    continue;
+                };
+                let Some((_region, amount)) = value.split_once(':') else {
+                    continue;
+                };
+                let digits: String = amount
+                    .chars()
+                    .filter(|c| c.is_ascii_digit())
+                    .collect();
+                if let Ok(kib) = digits.parse::<u64>() {
+                    total += kib;
+                    saw_any = true;
+                }
+            }
+        }
+        saw_any.then_some(total)
+    }
+
+    /// Every readback allocates a pixel-pack buffer the size of the
+    /// whole client image, and hands it back only when someone drains
+    /// the renderer's destruction queue. Nothing used to, so a window
+    /// that kept drawing kept adding whole-window buffers to GTT — at
+    /// tile size, several megabytes per commit, for as long as the
+    /// compositor lived. It ended in a frozen machine, not a slow one.
+    ///
+    /// So the invariant is about *repetition*: a hundred readbacks must
+    /// not cost more than a few. This drives the same
+    /// `copy_texture` → `map_texture` → drop → release sequence that
+    /// [`GpuImporter::read_back`] runs per client commit, from a texture
+    /// the test can make without a client.
+    #[test]
+    fn repeated_readbacks_do_not_accumulate_gpu_memory() {
+        use smithay::backend::renderer::ImportMem;
+
+        let Ok(node) = crate::compositor::render_node::probe() else {
+            eprintln!("skipping: no advertisable render node on this machine");
+            return;
+        };
+        let mut importer = match GpuImporter::new(&node.path) {
+            Ok(importer) => importer,
+            Err(e) => panic!(
+                "the compositor advertises {} as the dmabuf main device but cannot \
+                 build a GL import context on it: {e}",
+                node.path.display()
+            ),
+        };
+
+        // Big enough that a leaked buffer cannot hide inside a driver's
+        // small-allocation slab: one readback is 4 MiB.
+        const SIDE: i32 = 1024;
+        const ROUNDS: usize = 24;
+        let pixels = vec![0x40_u8; (SIDE * SIDE * 4) as usize];
+        let size = Size::from((SIDE, SIDE));
+        let texture = importer
+            .renderer
+            .import_memory(&pixels, Fourcc::Abgr8888, size, false)
+            .expect("importing a linear RGBA texture from memory");
+        let region = Rectangle::new(Point::from((0, 0)), size);
+
+        let read_back_once = |importer: &mut GpuImporter| {
+            let mapping = importer
+                .renderer
+                .copy_texture(&texture, region, Fourcc::Abgr8888)
+                .expect("GPU readback into a pixel-pack buffer");
+            let bytes = importer
+                .renderer
+                .map_texture(&mapping)
+                .expect("mapping the pixel-pack buffer");
+            assert!(!bytes.is_empty(), "a readback must return pixels");
+            drop(mapping);
+            importer.release_readback_scratch();
+        };
+
+        // One warm-up: the first readback also pays for whatever the
+        // driver allocates lazily, which is a one-off, not a leak.
+        read_back_once(&mut importer);
+
+        let Some(before) = own_gpu_memory_kib() else {
+            panic!(
+                "GL import works on {} but /proc/self/fdinfo reports no \
+                 drm-memory-* accounting, so this test cannot see whether \
+                 readback buffers are freed. An unobservable invariant is \
+                 not a passing one.",
+                node.path.display()
+            )
+        };
+        for _ in 0..ROUNDS {
+            read_back_once(&mut importer);
+        }
+        let after = own_gpu_memory_kib().expect("accounting was present a moment ago");
+
+        let grew_kib = after.saturating_sub(before);
+        let leaked_all_kib = (ROUNDS as u64) * (SIDE as u64) * (SIDE as u64) * 4 / 1024;
+        assert!(
+            grew_kib < leaked_all_kib / 4,
+            "{ROUNDS} readbacks grew this process's GPU memory by {grew_kib} KiB; \
+             holding on to every pixel-pack buffer would cost {leaked_all_kib} KiB, \
+             so the renderer's destruction queue is not being drained"
+        );
+    }
 
     #[test]
     fn opaque_fourccs_are_exactly_the_x_variants() {
