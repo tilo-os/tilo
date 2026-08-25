@@ -258,10 +258,22 @@ RUNTIME_BUNDLES = os.path.expanduser("~/.local/share/qos-runtime")
 # against it would be filming last month's app.
 LIVE_APPS = os.path.join(TARGET, "qos-apps-live")
 
+#: What the agent is called: the name it announces on its `Hello`, the
+#: prefix an instruction is addressed with, and the subject a grant names.
+#:
+#: One constant for all three because they have to agree exactly.
+#: `agent_opens::decide` builds `Actor::agent(handle)` out of the announced
+#: string and matches it literally, so a grant written `agent:claude` for an
+#: agent running as `--name Claude` names a *different principal* and every
+#: open is refused with "has not been given leave". Written as two literals
+#: this drifted, and the failure it produces is the worst kind: the grant
+#: appears to be made, and the window simply never appears.
+AGENT_NAME = "Claude"
+
 # The capability principal quinten grants in beat 3. An agent is not a
 # peer: it is a subject in the permission model, and the grant is scoped
 # to one app rather than to the workspace.
-AGENT_SUBJECT = "agent:claude"
+AGENT_SUBJECT = f"agent:{AGENT_NAME}"
 AGENT_SCOPE = f"app:{WORD_PROCESSOR}"
 
 #: Every app the agent is given leave to work in, as separate grants.
@@ -4910,7 +4922,7 @@ def run_the_agent(agent: Session, room: str, shots: str,
         # packaged app *on* a path, which the applications action does
         # not expose today.
         proc = subprocess.Popen(
-            [binary, "--workspace", str(room), "--name", "Claude",
+            [binary, "--workspace", str(room), "--name", AGENT_NAME,
              # Room-wide, with the grants named rather than inherited.
              #
              # `--app` does two things at once: it scopes the CRDT
