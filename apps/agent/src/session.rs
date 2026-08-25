@@ -1,6 +1,6 @@
 //! One agent session: join the room, hold the replica, act on instructions.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -303,6 +303,22 @@ pub struct Session {
     /// on somebody else's screen with nothing left in this process that will
     /// ever change it.
     open_record: Option<(String, String)>,
+    /// Applications this agent has asked this session to open, by namespace.
+    ///
+    /// The gate in [`Self::open_app`] is [`surface::surveyable`] — open *and*
+    /// holding something — and that is the right question whenever the answer
+    /// is yes. When it is no it cannot tell an application nobody has opened
+    /// from one this agent opened a moment ago that came up empty, and
+    /// answering the second by opening another is how a room ends up with
+    /// three photo editors side by side, all of them saying no photograph is
+    /// open.
+    ///
+    /// So the ask is remembered, not the outcome. Once for a piece of work,
+    /// whether that work went on to succeed, refuse or be asked again — and a
+    /// second ask says what happened to the first instead of repeating it.
+    /// Deliberately not cleared per summons: what a person sees on the screen
+    /// is windows, and windows outlive the request that opened them.
+    opened: BTreeSet<String>,
     /// The operations dispatched so far under [`Self::open_record`].
     ///
     /// Appended by [`Self::perform`] and by nothing else, which is the whole
@@ -739,6 +755,7 @@ impl Session {
             acted: false,
             answers_sent: 0,
             open_record: None,
+            opened: BTreeSet::new(),
             open_steps: Vec::new(),
             open_reasoning: None,
             asked_at: Instant::now(),
@@ -1658,13 +1675,39 @@ impl Session {
         let Some((channel, record)) = self.open_record.clone() else {
             return Ok(());
         };
+        // What it actually did, read off the record's own trace rather than
+        // assumed. Every row there exists because an operation was dispatched
+        // ([`Self::open_steps`]), so this is the one account of the turn that
+        // cannot be wrong about whether anything happened.
+        //
+        // Without it this branch said "I stopped without doing anything" over
+        // a run that had opened an application and cropped a photograph, and
+        // recorded it as a refusal — the agent contradicting, in the room,
+        // what the room could see on the screen. A backstop that lies is worse
+        // than no backstop.
+        let did: Vec<String> = self
+            .open_steps
+            .iter()
+            .filter(|s| s.outcome.succeeded())
+            .map(|s| s.label.to_lowercase())
+            .collect();
+        let said = if did.is_empty() {
+            format!(
+                "{}: I stopped without doing anything, and I can't tell you why.",
+                self.cfg.name
+            )
+        } else {
+            format!(
+                "{}: I {}, and then stopped without finishing — and I can't \
+                 tell you why.",
+                self.cfg.name,
+                in_sentence(&did)
+            )
+        };
         tracing::warn!(
             %record,
+            done = did.len(),
             "the work ended without saying so; recording that it stopped"
-        );
-        let said = format!(
-            "{}: I stopped without doing anything, and I can't tell you why.",
-            self.cfg.name
         );
         self.note_work(&channel, &record, AgentWorkState::Refused, Some(&said))
     }
@@ -2232,6 +2275,22 @@ impl Session {
             tracing::info!(app = %contract.app_id, "already open in this room");
             return Ok(Ok(()));
         }
+        // Here, and not surveyable: this agent opened it and it has nothing in
+        // it. Opening a second one would put a second empty window next to the
+        // first and leave the step in exactly the same position, so this says
+        // what happened instead. The refusal is carried up and answered in the
+        // room, which is the whole difference between a stall and an account
+        // of one.
+        if self.opened.contains(namespace) {
+            tracing::warn!(
+                app = %contract.app_id,
+                "already asked this session to open it, so not asking again"
+            );
+            return Ok(Err(format!(
+                "I already opened {} for this and it has nothing in it",
+                contract.title
+            )));
+        }
         // A refusal to an earlier ask must never answer this one.
         self.refused_open = None;
         // The bytes, before the request that names them.
@@ -2270,6 +2329,11 @@ impl Session {
                 ),
             }
         }
+        // Recorded at the ask rather than at the outcome, because the
+        // outcome is exactly what a second ask must not depend on: an open
+        // that was refused, timed out, or produced an empty window is still an
+        // open somebody may be looking at.
+        self.opened.insert(namespace.to_string());
         self.link.send(&CollabRequest::OpenApp {
             app_id: contract.app_id.to_string(),
             with: with.map(str::to_string),
@@ -2506,7 +2570,7 @@ impl Session {
                 return Ok(Ran::Said);
             }
         }
-        let sequence = plan.is_sequence();
+        let mut sequence = plan.is_sequence();
         // What the last step left behind, *and which application left it*.
         // The app was already known here and thrown away, and it is the half
         // that cannot be recovered afterwards: a content hash names bytes and
@@ -2524,8 +2588,21 @@ impl Session {
         }
         let mut done: Vec<String> = Vec::new();
 
-        let total = plan.steps.len();
-        for (n, step) in plan.steps.into_iter().enumerate() {
+        // A worklist rather than a fixed run. A clause asked again comes back
+        // as a *plan* — "open the photo editor, crop it, place it" is three
+        // steps answering one clause — and taking only its first step ran the
+        // open, ended the plan it was the beginning of, and reported a request
+        // that had barely started as one that was over.
+        let mut queue: VecDeque<crate::plan::Step> = plan.steps.into();
+        let mut total = queue.len();
+        // Whether the run is still the one the caller decided about. It is not
+        // once a clause has been asked again: the caller worked out whether it
+        // would have anything to say afterwards from a plan of one step, and
+        // by then the plan is however many steps the re-ask answered with.
+        let mut reasked = false;
+        let mut n = 0;
+        while let Some(step) = queue.pop_front() {
+            n += 1;
             // Said out loud, per step, because a sequence is the one thing the
             // agent does that a person cannot see the whole of in one place:
             // the work crosses applications, and what ties two windows
@@ -2534,7 +2611,7 @@ impl Session {
             // travelling from one window to the other — needs to know where
             // one step ended and the next began, and guessing it from the
             // document deltas would be reconstructing what is known here.
-            tracing::info!(step = n + 1, of = total, ?step, "step begins");
+            tracing::info!(step = n, of = total, ?step, "step begins");
             // Retaken per step: the step before this one changed a document,
             // and every app builds its resource tree out of what its document
             // says. An address resolved against the survey the plan was made
@@ -2628,14 +2705,18 @@ impl Session {
                         // Nothing decided this; the floor filled in.
                         Route::Keywords(_) => Some(route.detail()),
                     };
-                    let again = decision
-                        .plan
-                        .steps
-                        .into_iter()
-                        .next()
-                        .unwrap_or_else(|| {
-                            crate::plan::Step::reconsider(&what, &offers)
-                        });
+                    // Every step it answered with, not merely the first.
+                    // The clause was left unresolved because it needed an
+                    // application that was not running, and what answers it
+                    // once that application is running is a sequence: open,
+                    // crop, place. Keeping the head and dropping the tail
+                    // performed the open and called the request done.
+                    let mut rest = decision.plan.steps;
+                    let again = if rest.is_empty() {
+                        crate::plan::Step::reconsider(&what, &offers)
+                    } else {
+                        rest.remove(0)
+                    };
                     match again.instruction {
                         Instruction::Unknown(_) => {
                             match &failed {
@@ -2656,8 +2737,27 @@ impl Session {
                             (Instruction::Unknown(what), step.carries)
                         }
                         resolved => {
+                            // The rest of what it asked for goes in front of
+                            // whatever this plan already had left, because it
+                            // answers this clause and belongs before the next
+                            // one.
+                            for (i, extra) in rest.into_iter().enumerate() {
+                                queue.insert(i, extra);
+                            }
+                            total = n + queue.len();
+                            reasked = true;
+                            sequence = sequence || total > 1;
+                            // And the room is told who decided *this*. The
+                            // explanation on the record was written when the
+                            // turn began, and when the first decision fell to
+                            // the keyword vocabulary it says so — which stops
+                            // being true the moment a clause is answered by a
+                            // model instead. A record that goes on naming the
+                            // failure is describing a decision that was
+                            // superseded.
+                            self.open_reasoning = Some(reasoning_of(&route));
                             tracing::info!(
-                                step = n + 1,
+                                step = n,
                                 of = total,
                                 clause = %what,
                                 decided_by = route.label(),
@@ -2730,7 +2830,7 @@ impl Session {
                                     .map(|p| (ns, p))
                             });
                             tracing::info!(
-                                step = n + 1,
+                                step = n,
                                 of = total,
                                 app = ?namespace,
                                 produced = carried.is_some(),
@@ -2813,7 +2913,14 @@ impl Session {
         // line that asked would be noise. Several changes across several
         // applications are nowhere visible together, so there is nothing to
         // read unless it is said.
-        if sequence {
+        //
+        // `reasked` is the other half, and it is the one that was missing. The
+        // caller only speaks for a plan it recognises: one step, one operation,
+        // decided before this ran. A clause asked again is neither by the time
+        // it finishes, so nobody spoke for it — the work succeeded, nothing
+        // said so, and the backstop wrote "refused" over a run that had done
+        // what it was asked. Anything that did something says so here.
+        if !done.is_empty() && (sequence || reasked) {
             let reply = format!("{name}: done — {}.", in_sentence(&done));
             let did = in_sentence(&done).to_lowercase();
             self.reply(to, &reply, Outcome::Done { did })?;
