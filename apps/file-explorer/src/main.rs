@@ -38,21 +38,70 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 /// on one machine never reaching another. It is why a picture an agent placed
 /// into a shared document never arrived on the page.
 ///
-/// `QOS_USER_ID` is the session's own identity and is distinct by
-/// construction, which also makes the actor readable in a history. The
-/// pid-and-nanos tail is only for a bare process with no session around it,
-/// where two starting in the same nanosecond is not a thing that happens.
-fn distinct_actor(prefix: &str) -> String {
-    if let Ok(user) = std::env::var("QOS_USER_ID") {
-        if !user.is_empty() {
-            return format!("{prefix}-{user}");
+/// `have` is the actor `ui::persist::open` has already put on the document:
+/// `app_state::DocStore` mints one at random per state directory, persists it
+/// in an `actor` sidecar and takes a lock so a second instance cannot claim
+/// it. That is precisely the guarantee this needs, and the app used to throw
+/// it away. Prefixing keeps the readable half without inventing the unique
+/// half, and it is *stable across restarts*, which a clock reading is not.
+///
+/// Deliberately reads no environment: the whole failure was an id that was a
+/// function of things two replicas share, and a function of its arguments is
+/// the only shape that can be tested for it.
+fn distinct_actor(prefix: &str, have: &automerge::ActorId) -> String {
+    let hex = have.to_hex_string();
+    format!("{prefix}-{}", &hex[..hex.len().min(12)])
+}
+
+/// The name this replica is given, if anything has named it.
+///
+/// `QUICK_APP_ID` is how a dev run points two instances at one shell and gets
+/// a history it can read. `QOS_USER_ID` is the session's own identity and
+/// would be the best of both — it does not reach a sandboxed app, because the
+/// launcher builds an app's environment from an allowlist and it is not on
+/// it, so in the product neither of these answers and the actor comes from
+/// [`distinct_actor`].
+fn named_actor(prefix: &str) -> Option<String> {
+    if let Ok(id) = std::env::var("QUICK_APP_ID") {
+        if !id.is_empty() {
+            return Some(id);
         }
     }
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or_default();
-    format!("{prefix}-{}-{nanos}", std::process::id())
+    match std::env::var("QOS_USER_ID") {
+        Ok(user) if !user.is_empty() => Some(format!("{prefix}-{user}")),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod actor_tests {
+    use super::distinct_actor;
+
+    /// The regression, stated as the property it broke.
+    ///
+    /// Both ids below are minted inside one process, so anything derived from
+    /// the process — a pid, which is 2 in every sandbox on this system —
+    /// produces the same string twice. Automerge then refuses the second
+    /// replica's frames with `duplicate seq 1 found for actor`, and a change
+    /// made on one machine never reaches the other.
+    #[test]
+    fn two_replicas_in_one_process_do_not_share_an_actor() {
+        let a = automerge::AutoCommit::new();
+        let b = automerge::AutoCommit::new();
+        assert_ne!(
+            distinct_actor("files", a.get_actor()),
+            distinct_actor("files", b.get_actor()),
+            "two replicas were given the same actor id, which is the failure \
+             that silently drops one of them's changes",
+        );
+    }
+
+    /// And it still says what it is, so a history can be read.
+    #[test]
+    fn the_actor_still_names_the_application() {
+        let doc = automerge::AutoCommit::new();
+        assert!(distinct_actor("files", doc.get_actor()).starts_with("files-"));
+    }
 }
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -145,8 +194,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `actions.rs`), so concurrent edits have to be attributable to tell
     // them apart. A missing `QUICK_APP_ID` falls back to a per-process id
     // so two un-configured instances still get distinct actors.
-    let app_id =
-        std::env::var("QUICK_APP_ID").unwrap_or_else(|_| distinct_actor("files"));
+    let app_id = named_actor("files")
+        .unwrap_or_else(|| distinct_actor("files", state.doc.get_actor()));
+    // Said once, at startup. Two replicas sharing an actor is a failure with
+    // no other symptom — the frames are simply refused and the change never
+    // crosses — so the one thing that makes it diagnosable is each replica
+    // having said out loud who it thinks it is.
+    // `diag!` and not `tracing`: whether an `info!` is printed depends on a
+    // filter this app does not control, and evidence that is only there when
+    // the environment agrees is not evidence.
+    ui::diag!("file-explorer: automerge actor {app_id}");
     state
         .doc
         .set_actor(automerge::ActorId::from(app_id.as_bytes()));
