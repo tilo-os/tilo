@@ -470,6 +470,9 @@ def main() -> int:
                          "windows on screen at once")
     ap.add_argument("--steps", type=int, default=14,
                     help="pointer samples taken while crossing (--cross-cursor)")
+    ap.add_argument("--cross-budget", type=float, default=45.0,
+                    help="how long to wait for the edit to reach the "
+                         "other process before calling it a failure")
     ap.add_argument("--size", default="1280x800")
     ap.add_argument("--shell-bin", default=os.path.join(REPO, "target/debug/shell"))
     args = ap.parse_args()
@@ -608,13 +611,48 @@ def main() -> int:
         reader, reader_id = targets[-1]
         writer.click_at(600, 377)
         marker = "the-edit-crossed"
+
+        # Count what the reader has already applied before a word is
+        # typed. Both apps answer each other's late-join handshake when
+        # they attach, so the reader's log already carries inbound CRDT
+        # frames by now -- a plain substring check over the whole log
+        # passes on that handshake and would report a crossing that never
+        # happened. Only a frame that arrives *after* the keystroke is
+        # evidence of one.
+        def applied(session, pid_name) -> int:
+            log = session.app_log(pid_name)
+            return (log.count("recv CRDTIncremental")
+                    + log.count("recv CRDTUpdate")
+                    + log.count("recv SignedCRDTIncremental"))
+
+        before = applied(reader, reader_id)
+        note(f"{reader_id} had applied {before} remote frame(s) before the edit")
+
         writer.type_text(f" {marker}")
-        time.sleep(8)
+        # The clock starts at the last keystroke, which is what a person
+        # would time from. Everything after this is the toolkit's commit
+        # debounce plus the crossing itself.
+        typed_at = time.time()
 
         step("5", "read it back from the other process")
-        reader_log = reader.app_log(reader_id)
-        got = "recv CRDTIncremental" in reader_log or "recv CRDTUpdate" in reader_log
+        # Poll finely rather than sleeping a fixed span: a fixed sleep can
+        # only say "within 8s", which is not a measurement and cannot show
+        # an improvement or a regression.
+        crossed_s = None
+        deadline = typed_at + args.cross_budget
+        while time.time() < deadline:
+            if applied(reader, reader_id) > before:
+                crossed_s = time.time() - typed_at
+                break
+            time.sleep(0.02)
+        got = crossed_s is not None
         claim(f"{reader_id}'s process applied a remote change", got, True)
+        if got:
+            note(f"the edit crossed in {crossed_s:.2f}s "
+                 f"(keystroke to applied on the other process)")
+        else:
+            note(f"nothing new reached {reader_id} within "
+                 f"{args.cross_budget:.0f}s of the keystroke")
         for _, pidname, path in [(a, b, c) for s in sessions for (a, b, c) in s.apps]:
             pass
         for s in sessions:
