@@ -12910,6 +12910,19 @@ impl ShellOverlayHost {
 
         peers
             .iter()
+            .filter(|(user, _)| {
+                // Nobody is a peer of themselves — the rule
+                // `scripts/headless-examples/no-pill-for-yourself-proof.py`
+                // states, asked here as well as at the doors the store
+                // fills by. Those guards depend on the ingesting side
+                // having been told what to call itself, and this session
+                // is spelled several ways: a person id locally, a
+                // `peer@…` address off the wire. An entry that arrived
+                // under a spelling nobody seeded walked past them both
+                // and got painted — somebody's own name over their own
+                // window, pointing at nothing.
+                !presence.is_own_identity(&user.0)
+            })
             .filter(|(_, pos)| {
                 // Tested where it will be drawn, not where it arrived.
                 let pos = (pos.0 as f64 - scroll_x, pos.1 as f64);
