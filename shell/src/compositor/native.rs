@@ -2502,8 +2502,8 @@ pub fn run() -> ! {
             &crate::shell::network::peer_key_path(),
         ) {
             Ok(handle) => {
-                let _ = handle.join_default_workspace();
-                tracing::info!("peer-sync: actor spawned, default workspace joined");
+                let joined = handle.join_rooms();
+                tracing::info!(joined, "peer-sync: actor spawned, rooms subscribed");
                 let net = Arc::new(handle);
                 let bridge_net = Arc::clone(&net);
                 let bridge_tree = tree_handle.clone();

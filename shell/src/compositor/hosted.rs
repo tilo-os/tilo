@@ -202,11 +202,13 @@ pub fn run_with_full_options(opts: HostedOptions) {
             &peer_key_path(),
         ) {
             Ok(handle) => {
-                // Subscribe to the default workspace topic so the
-                // actor's gossipsub mesh has somewhere to deliver
+                // Subscribe to this session's rooms so the actor's
+                // gossipsub mesh has somewhere to deliver a room's
                 // `NeighbourMsg::SyncReq`s as soon as a peer dials in.
-                let _ = handle.join_default_workspace();
-                tracing::info!("peer-sync: actor spawned, default workspace joined");
+                // Only those rooms: a topic this session is not in is a
+                // topic whose traffic it is never sent.
+                let joined = handle.join_rooms();
+                tracing::info!(joined, "peer-sync: actor spawned, rooms subscribed");
                 Some(Arc::new(handle))
             }
             Err(e) => {

@@ -1,33 +1,51 @@
-//! Network actor — Phase 2 Task 2.2.
+//! Network actor.
 //!
 //! Owns a [`Swarm<NiriosBehaviour>`](libp2p::Swarm) and runs it as a tokio
 //! task. The shell drives the actor over an `mpsc::Sender<NetCmd>`; per-
-//! workspace event subscribers receive `NetEvent`s back over their own
-//! `mpsc::Sender<NetEvent>` (registered via [`NetCmd::JoinWorkspace`]).
+//! room event subscribers receive `NetEvent`s back over their own
+//! `mpsc::Sender<NetEvent>` (registered via [`NetCmd::JoinRoom`]).
 //!
 //! The actor is transport-agnostic at the type level: it only speaks
-//! [`NeighbourMsg`] in/out. Workspace subscriptions are namespaced as
-//! gossipsub topics `nirios/ws/{ws}`. mDNS-discovered peers are auto-
-//! added to the gossipsub mesh.
+//! [`NeighbourMsg`] in/out.
+//!
+//! # One topic per room, and admission before discovery
+//!
+//! A gossipsub topic is a broadcast channel: every peer subscribed to it
+//! receives every message published on it, and the recipient's own
+//! filtering happens after delivery — on the wrong side of the wire.
+//! `main.md` states the model that makes this decisive:
+//!
+//! > read access is enforced by not sending the data. You cannot un-send
+//! > what a peer already holds.
+//!
+//! So the topic is the room: [`room_topic`] derives it from the room's
+//! own 122-bit uuid, and a shell subscribes only to the rooms it is
+//! actually in. A machine that was never invited to a room does not know
+//! its id, cannot name its topic, and is therefore never sent its
+//! traffic — rather than being sent it and asked not to look.
+//!
+//! Discovery is not admission either. mDNS says a qOS machine exists on
+//! this network; it says nothing about whether the two are collaborating.
+//! A discovered peer's address is remembered so an invite can be acted on
+//! later, but only a peer this session was told to admit — by redeeming
+//! an invite that names it — is added to the gossip mesh.
 
 use crate::network::behaviour::{NiriosBehaviour, NiriosBehaviourEvent};
 use crate::network::protocol::NeighbourMsg;
+use crate::shell::state::RoomId;
 use libp2p::futures::StreamExt;
 use libp2p::{Multiaddr, Swarm, gossipsub, mdns, swarm::SwarmEvent};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-/// Interval between heartbeat publishes per joined workspace.
+/// Interval between heartbeat publishes per joined room.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// Silence threshold after which a peer is considered gone.
 const PEER_TIMEOUT: Duration = Duration::from_secs(15);
 /// How often the actor scans `peers_seen` for stale peers.
 const EVICTION_INTERVAL: Duration = Duration::from_secs(1);
-
-/// Numeric workspace identifier — mirrors the shell-side workspace ID.
-pub type WorkspaceId = u64;
 
 /// Re-export of libp2p's `PeerId` for callers that build commands.
 pub type PeerId = libp2p::PeerId;
@@ -35,34 +53,45 @@ pub type PeerId = libp2p::PeerId;
 /// Commands accepted by the [`Actor`] over its `mpsc::Sender<NetCmd>`.
 #[derive(Debug)]
 pub enum NetCmd {
-    /// Subscribe to the workspace's gossipsub topic and register a
-    /// per-workspace event sink. Multiple `JoinWorkspace` calls for
-    /// the same `ws` replace the prior sink.
-    JoinWorkspace {
-        ws: WorkspaceId,
+    /// Subscribe to the room's gossipsub topic and register a per-room
+    /// event sink. Multiple `JoinRoom` calls for the same `room` replace
+    /// the prior sink.
+    JoinRoom {
+        room: RoomId,
         on_event: mpsc::Sender<NetEvent>,
     },
-    /// Drop the workspace subscription and event sink.
-    LeaveWorkspace { ws: WorkspaceId },
-    /// Publish `msg` to the workspace's gossipsub topic. Failures
-    /// (no peers, oversized payload, etc.) are silently dropped — the
-    /// actor logs but does not propagate the error.
-    Publish { ws: WorkspaceId, msg: NeighbourMsg },
-    /// Dial a multiaddr. Used by the loopback test and by future
-    /// out-of-band bootstrap mechanisms; mDNS handles LAN discovery.
+    /// Drop the room subscription and event sink.
+    ///
+    /// This is what makes leaving a room *mean* something at the
+    /// transport: an unsubscribed topic stops being delivered, so a
+    /// former member is no longer sent the room's traffic.
+    LeaveRoom { room: RoomId },
+    /// Publish `msg` to `room`'s gossipsub topic. Failures (no peers,
+    /// oversized payload, etc.) are silently dropped — the actor logs
+    /// but does not propagate the error.
+    Publish { room: RoomId, msg: NeighbourMsg },
+    /// Admit `peer` to the gossip mesh.
+    ///
+    /// Sent when this session redeems an invite that names the peer. It
+    /// is the only route into [`Actor::admitted`]: discovery does not
+    /// admit, so a machine that merely shares a LAN is never meshed
+    /// with.
+    AdmitPeer { peer: PeerId },
+    /// Dial a multiaddr. An invite carries one, so redeeming it does not
+    /// have to wait on discovery.
     Connect { addr: Multiaddr },
 }
 
-/// Events emitted by the [`Actor`] back to per-workspace subscribers.
+/// Events emitted by the [`Actor`] back to per-room subscribers.
 #[derive(Debug, Clone)]
 pub enum NetEvent {
-    /// Peer was added to the workspace's gossipsub mesh.
-    PeerJoined { ws: WorkspaceId, peer: PeerId },
-    /// Peer left the workspace's gossipsub mesh.
-    PeerLeft { ws: WorkspaceId, peer: PeerId },
-    /// A `NeighbourMsg` arrived on the workspace topic from `peer`.
+    /// Peer was added to the room's gossipsub mesh.
+    PeerJoined { room: RoomId, peer: PeerId },
+    /// Peer left the room's gossipsub mesh.
+    PeerLeft { room: RoomId, peer: PeerId },
+    /// A `NeighbourMsg` arrived on the room's topic from `peer`.
     Msg {
-        ws: WorkspaceId,
+        room: RoomId,
         peer: PeerId,
         msg: NeighbourMsg,
     },
@@ -72,20 +101,42 @@ pub enum NetEvent {
 pub struct Actor {
     swarm: Swarm<NiriosBehaviour>,
     cmd_rx: mpsc::Receiver<NetCmd>,
-    /// Per-workspace event subscribers, keyed by `WorkspaceId`.
-    subscribers: HashMap<WorkspaceId, mpsc::Sender<NetEvent>>,
+    /// Per-room event subscribers, keyed by the room this session is in.
+    subscribers: HashMap<RoomId, mpsc::Sender<NetEvent>>,
     /// Last time we observed any gossipsub message from each peer; used
     /// to evict peers that have gone silent for `PEER_TIMEOUT`.
     peers_seen: HashMap<libp2p::PeerId, Instant>,
+    /// Peers this session has been told to mesh with, by
+    /// [`NetCmd::AdmitPeer`].
+    ///
+    /// Empty until an invite is redeemed. Being reachable is not being
+    /// admitted, so this never fills itself from discovery.
+    admitted: HashSet<libp2p::PeerId>,
+    /// Addresses mDNS has reported, for peers that may be admitted later.
+    ///
+    /// Kept because discovery and admission arrive in either order: a
+    /// peer can be on the LAN before the invite naming it is redeemed,
+    /// and dialing it then must not have to wait for the next mDNS
+    /// sweep.
+    discovered: HashMap<libp2p::PeerId, Vec<Multiaddr>>,
     /// Every address the swarm has reported listening on, newest last.
     /// Shared with the shell so [`crate::shell::network::ShellNetwork`]
     /// can put a dialable address inside an invite token.
     listen_addrs: Arc<Mutex<Vec<Multiaddr>>>,
 }
 
-/// Build the workspace's gossipsub topic identifier.
-fn ws_topic(ws: WorkspaceId) -> gossipsub::IdentTopic {
-    gossipsub::IdentTopic::new(format!("nirios/ws/{ws}"))
+/// The gossipsub topic a room's traffic rides.
+///
+/// Derived from the room's own id, which is a random 122-bit uuid minted
+/// once per workspace and handed on only through an invite. That is what
+/// scopes delivery: naming this topic requires already holding the room
+/// id, so subscribing to a room you were not invited to is not a check
+/// you can fail — it is a string you cannot produce.
+///
+/// The `/v1` suffix is the wire version, so a future change to what rides
+/// the topic lands on a different one rather than being mixed into this.
+pub fn room_topic(room: RoomId) -> gossipsub::IdentTopic {
+    gossipsub::IdentTopic::new(format!("/nirios/ws/{room}/v1"))
 }
 
 /// Say what just failed to go out, at a level that matches what it costs.
@@ -107,7 +158,7 @@ fn ws_topic(ws: WorkspaceId) -> gossipsub::IdentTopic {
 /// the document for good. That is an `error`, and it names the size, because
 /// size is nearly always why.
 fn report_publish_failure(
-    ws: WorkspaceId,
+    room: RoomId,
     kind: &'static str,
     loss_is_permanent: bool,
     bytes: usize,
@@ -118,11 +169,11 @@ fn report_publish_failure(
         // Nobody to send to yet. Expected while a room is still assembling,
         // and the sync kick re-offers state once a peer appears.
         P::NoPeersSubscribedToTopic | P::Duplicate => {
-            tracing::trace!(ws, kind, bytes, error = %err, "peer-sync: publish skipped");
+            tracing::trace!(room = %room, kind, bytes, error = %err, "peer-sync: publish skipped");
         }
         P::MessageTooLarge if loss_is_permanent => {
             tracing::error!(
-                ws, kind, bytes,
+                room = %room, kind, bytes,
                 limit = gossipsub::Config::default_max_transmit_size(),
                 "peer-sync: a document frame exceeded the gossip limit and was dropped. \
                  This document will NOT converge for peers that lack this change: every \
@@ -132,20 +183,20 @@ fn report_publish_failure(
         }
         P::MessageTooLarge => {
             tracing::warn!(
-                ws, kind, bytes,
+                room = %room, kind, bytes,
                 limit = gossipsub::Config::default_max_transmit_size(),
                 "peer-sync: message exceeded the gossip limit and was dropped",
             );
         }
         _ if loss_is_permanent => {
             tracing::error!(
-                ws, kind, bytes, error = %err,
+                room = %room, kind, bytes, error = %err,
                 "peer-sync: a document frame could not be published and is lost; this \
                  document will not converge for peers that lack this change",
             );
         }
         _ => {
-            tracing::warn!(ws, kind, bytes, error = %err, "peer-sync: publish failed");
+            tracing::warn!(room = %room, kind, bytes, error = %err, "peer-sync: publish failed");
         }
     }
 }
@@ -165,17 +216,20 @@ fn evict_stale(
         .collect()
 }
 
-/// Reverse-lookup: find the `WorkspaceId` whose topic-hash matches
-/// the gossipsub message. Linear scan over `subscribers`; the count
-/// is small (one per active workspace) so this is fine.
-fn ws_for_topic(
-    subscribers: &HashMap<WorkspaceId, mpsc::Sender<NetEvent>>,
+/// Reverse-lookup: find the room whose topic-hash matches the gossipsub
+/// message. Linear scan over `subscribers`; the count is small (one per
+/// room this session is in) so this is fine.
+///
+/// A hash that matches nothing is a topic we are not in, and its message
+/// is dropped rather than fanned to some other room's subscriber.
+fn room_for_topic(
+    subscribers: &HashMap<RoomId, mpsc::Sender<NetEvent>>,
     hash: &gossipsub::TopicHash,
-) -> Option<WorkspaceId> {
+) -> Option<RoomId> {
     subscribers
         .keys()
         .copied()
-        .find(|ws| &ws_topic(*ws).hash() == hash)
+        .find(|room| &room_topic(*room).hash() == hash)
 }
 
 impl Actor {
@@ -205,6 +259,8 @@ impl Actor {
             cmd_rx,
             subscribers: HashMap::new(),
             peers_seen: HashMap::new(),
+            admitted: HashSet::new(),
+            discovered: HashMap::new(),
             listen_addrs,
         };
         let handle = tokio::spawn(async move { actor.run().await });
@@ -235,9 +291,13 @@ impl Actor {
         }
     }
 
-    /// Publish a `NeighbourMsg::Heartbeat` to every joined workspace's
+    /// Publish a `NeighbourMsg::Heartbeat` to every joined room's
     /// gossipsub topic. Failures (no peers, oversized payload, etc.) are
     /// silently dropped — heartbeat loss is itself the signal to evict.
+    ///
+    /// Per room, not once globally: a beacon on a room's topic reaches
+    /// that room's members and nobody else, which is the same rule the
+    /// payload traffic follows.
     fn publish_heartbeat(&mut self) {
         let peer = crate::network::behaviour::peer_liveness_handle(self.swarm.local_peer_id());
         let ts = std::time::SystemTime::now()
@@ -249,9 +309,9 @@ impl Actor {
             Ok(b) => b,
             Err(_) => return,
         };
-        let workspaces: Vec<WorkspaceId> = self.subscribers.keys().copied().collect();
-        for ws in workspaces {
-            let topic = ws_topic(ws);
+        let rooms: Vec<RoomId> = self.subscribers.keys().copied().collect();
+        for room in rooms {
+            let topic = room_topic(room);
             let _ = self
                 .swarm
                 .behaviour_mut()
@@ -272,12 +332,12 @@ impl Actor {
             self.peers_seen.remove(peer);
         }
         for peer in stale {
-            // Fan out PeerLeft on every workspace; the receiver decides
-            // what to do with peers it has not been tracking.
-            let workspaces: Vec<WorkspaceId> = self.subscribers.keys().copied().collect();
-            for ws in workspaces {
-                if let Some(tx) = self.subscribers.get(&ws) {
-                    let _ = tx.send(NetEvent::PeerLeft { ws, peer }).await;
+            // Fan out PeerLeft on every room; the receiver decides what
+            // to do with peers it has not been tracking.
+            let rooms: Vec<RoomId> = self.subscribers.keys().copied().collect();
+            for room in rooms {
+                if let Some(tx) = self.subscribers.get(&room) {
+                    let _ = tx.send(NetEvent::PeerLeft { room, peer }).await;
                 }
             }
         }
@@ -285,25 +345,25 @@ impl Actor {
 
     async fn handle_cmd(&mut self, cmd: NetCmd) {
         match cmd {
-            NetCmd::JoinWorkspace { ws, on_event } => {
-                let topic = ws_topic(ws);
+            NetCmd::JoinRoom { room, on_event } => {
+                let topic = room_topic(room);
                 let _ = self.swarm.behaviour_mut().gossipsub.subscribe(&topic);
-                self.subscribers.insert(ws, on_event);
+                self.subscribers.insert(room, on_event);
             }
-            NetCmd::LeaveWorkspace { ws } => {
-                let topic = ws_topic(ws);
+            NetCmd::LeaveRoom { room } => {
+                let topic = room_topic(room);
                 let _ = self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic);
-                self.subscribers.remove(&ws);
+                self.subscribers.remove(&room);
             }
-            NetCmd::Publish { ws, msg } => {
-                let topic = ws_topic(ws);
+            NetCmd::Publish { room, msg } => {
+                let topic = room_topic(room);
                 let kind = msg.kind();
                 let permanent = msg.loss_is_permanent();
                 let bytes = match serde_json::to_vec(&msg) {
                     Ok(b) => b,
                     Err(e) => {
                         tracing::error!(
-                            ws, kind, error = %e,
+                            room = %room, kind, error = %e,
                             "peer-sync: a message could not be encoded and is lost",
                         );
                         return;
@@ -311,11 +371,44 @@ impl Actor {
                 };
                 let len = bytes.len();
                 if let Err(e) = self.swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
-                    report_publish_failure(ws, kind, permanent, len, &e);
+                    report_publish_failure(room, kind, permanent, len, &e);
                 }
+            }
+            NetCmd::AdmitPeer { peer } => {
+                self.admit(peer);
             }
             NetCmd::Connect { addr } => {
                 let _ = self.swarm.dial(addr);
+            }
+        }
+    }
+
+    /// Record that an invite named `peer`, and mesh with it.
+    ///
+    /// Idempotent: redeeming a second invite from the same host, or
+    /// discovering it again afterwards, changes nothing.
+    fn admit(&mut self, peer: libp2p::PeerId) {
+        if !self.admitted.insert(peer) {
+            return;
+        }
+        self.mesh_with(peer);
+    }
+
+    /// Put an already-admitted peer into the gossip mesh, dialing any
+    /// address discovery has for it.
+    ///
+    /// `add_explicit_peer` alone will dial a peer the swarm has an
+    /// address for; the explicit dial covers the case where mDNS knows
+    /// one and the swarm's own address book does not yet.
+    fn mesh_with(&mut self, peer: libp2p::PeerId) {
+        self.swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer);
+        if let Some(addrs) = self.discovered.get(&peer).cloned() {
+            for addr in addrs {
+                let _ = self.swarm.dial(
+                    libp2p::swarm::dial_opts::DialOpts::peer_id(peer)
+                        .addresses(vec![addr])
+                        .build(),
+                );
             }
         }
     }
@@ -341,7 +434,7 @@ impl Actor {
                 // originally signed the message.
                 self.peers_seen.insert(propagation_source, Instant::now());
 
-                let Some(ws) = ws_for_topic(&self.subscribers, &message.topic) else {
+                let Some(room) = room_for_topic(&self.subscribers, &message.topic) else {
                     return;
                 };
                 let Ok(decoded) = serde_json::from_slice::<NeighbourMsg>(&message.data) else {
@@ -353,10 +446,10 @@ impl Actor {
                     return;
                 }
                 let peer = message.source.unwrap_or(propagation_source);
-                if let Some(tx) = self.subscribers.get(&ws) {
+                if let Some(tx) = self.subscribers.get(&room) {
                     let _ = tx
                         .send(NetEvent::Msg {
-                            ws,
+                            room,
                             peer,
                             msg: decoded,
                         })
@@ -366,61 +459,59 @@ impl Actor {
             SwarmEvent::Behaviour(NiriosBehaviourEvent::Gossipsub(
                 gossipsub::Event::Subscribed { peer_id, topic },
             )) => {
-                if let Some(ws) = ws_for_topic(&self.subscribers, &topic) {
-                    if let Some(tx) = self.subscribers.get(&ws) {
-                        let _ = tx.send(NetEvent::PeerJoined { ws, peer: peer_id }).await;
-                    }
+                if let Some(room) = room_for_topic(&self.subscribers, &topic)
+                    && let Some(tx) = self.subscribers.get(&room)
+                {
+                    let _ = tx
+                        .send(NetEvent::PeerJoined {
+                            room,
+                            peer: peer_id,
+                        })
+                        .await;
                 }
             }
             SwarmEvent::Behaviour(NiriosBehaviourEvent::Gossipsub(
                 gossipsub::Event::Unsubscribed { peer_id, topic },
             )) => {
-                if let Some(ws) = ws_for_topic(&self.subscribers, &topic) {
-                    if let Some(tx) = self.subscribers.get(&ws) {
-                        let _ = tx.send(NetEvent::PeerLeft { ws, peer: peer_id }).await;
-                    }
+                if let Some(room) = room_for_topic(&self.subscribers, &topic)
+                    && let Some(tx) = self.subscribers.get(&room)
+                {
+                    let _ = tx
+                        .send(NetEvent::PeerLeft {
+                            room,
+                            peer: peer_id,
+                        })
+                        .await;
                 }
             }
+            // Discovery is an address book, not a guest list.
+            //
+            // This used to `add_explicit_peer` every machine mDNS turned
+            // up, which both dials it and makes gossipsub forward it
+            // everything on every topic we are subscribed to. Sharing a
+            // network is not being in a room together, so the address is
+            // remembered and nothing else happens until an invite names
+            // the peer.
             SwarmEvent::Behaviour(NiriosBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
-                let any_discovered = !list.is_empty();
-                for (peer_id, _addr) in list {
-                    self.swarm
-                        .behaviour_mut()
-                        .gossipsub
-                        .add_explicit_peer(&peer_id);
-                }
-                // Kick a roomless SyncReq out on every joined workspace
-                // so a returning peer starts a sync round without waiting
-                // for the next local edit.
-                //
-                // Roomless because the transport does not hold the tree
-                // and so cannot know which rooms anyone is in. It is not
-                // a request for everything: a replica answers a roomless
-                // request by naming its own rooms, never by exporting a
-                // document. See `WorkspaceTreeReplica::handle`.
-                if any_discovered {
-                    let msg = NeighbourMsg::SyncReq {
-                        since: vec![],
-                        room: String::new(),
-                        invite: None,
-                    };
-                    let bytes = match serde_json::to_vec(&msg) {
-                        Ok(b) => b,
-                        Err(_) => return,
-                    };
-                    let workspaces: Vec<WorkspaceId> = self.subscribers.keys().copied().collect();
-                    for ws in workspaces {
-                        let topic = ws_topic(ws);
-                        let _ = self
-                            .swarm
-                            .behaviour_mut()
-                            .gossipsub
-                            .publish(topic, bytes.clone());
+                for (peer_id, addr) in list {
+                    let known = self.discovered.entry(peer_id).or_default();
+                    if !known.contains(&addr) {
+                        known.push(addr);
+                    }
+                    if self.admitted.contains(&peer_id) {
+                        // Already invited, only now reachable.
+                        self.mesh_with(peer_id);
                     }
                 }
             }
             SwarmEvent::Behaviour(NiriosBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
-                for (peer_id, _addr) in list {
+                for (peer_id, addr) in list {
+                    if let Some(known) = self.discovered.get_mut(&peer_id) {
+                        known.retain(|a| a != &addr);
+                        if known.is_empty() {
+                            self.discovered.remove(&peer_id);
+                        }
+                    }
                     self.swarm
                         .behaviour_mut()
                         .gossipsub
@@ -480,13 +571,26 @@ mod tests {
             .build()
     }
 
+    /// A room every test in this module can name.
+    fn room(n: u128) -> RoomId {
+        RoomId::from(uuid::Uuid::from_u128(0x6b3f_9a10_0000_4000_8000_000000000000 | n))
+    }
+
+    #[test]
+    fn a_rooms_topic_is_derived_from_its_id() {
+        let r = room(0xa);
+        assert_eq!(room_topic(r).to_string(), format!("/nirios/ws/{r}/v1"));
+        // Two rooms are two channels; nothing collapses them onto one.
+        assert_ne!(room_topic(room(0xa)).hash(), room_topic(room(0xb)).hash());
+    }
+
     /// Two actors in the same process, connected over TCP loopback, exchange
     /// a `NeighbourMsg::SyncReq` via gossipsub. The 10 s `tokio::time::timeout`
     /// budget for both PeerJoined and Msg keeps the test bounded; mesh
     /// formation typically completes well under 1 s on loopback.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_actors_exchange_publish_via_loopback() {
-        const WS: WorkspaceId = 42;
+        let ws = room(0x42);
 
         // 1. Build two swarms.
         let mut swarm_a = build_swarm();
@@ -525,15 +629,15 @@ mod tests {
         let (ev_tx_b, mut ev_rx_b) = mpsc::channel::<NetEvent>(32);
 
         cmd_a
-            .send(NetCmd::JoinWorkspace {
-                ws: WS,
+            .send(NetCmd::JoinRoom {
+                room: ws,
                 on_event: ev_tx_a,
             })
             .await
             .unwrap();
         cmd_b
-            .send(NetCmd::JoinWorkspace {
-                ws: WS,
+            .send(NetCmd::JoinRoom {
+                room: ws,
                 on_event: ev_tx_b,
             })
             .await
@@ -568,7 +672,7 @@ mod tests {
         };
         cmd_a
             .send(NetCmd::Publish {
-                ws: WS,
+                room: ws,
                 msg: payload.clone(),
             })
             .await
@@ -581,9 +685,9 @@ mod tests {
         let received = timeout(Duration::from_secs(10), async {
             loop {
                 match ev_rx_b.recv().await {
-                    Some(NetEvent::Msg { ws, msg, .. }) => {
+                    Some(NetEvent::Msg { room, msg, .. }) => {
                         if msg == payload {
-                            return Some((ws, msg));
+                            return Some((room, msg));
                         }
                         // Skip transport-layer SyncReqs from the
                         // reconnect-sync path; keep waiting for the
@@ -599,11 +703,114 @@ mod tests {
         .expect("message arrived within 10 s")
         .expect("channel still open");
 
-        assert_eq!(received.0, WS);
+        assert_eq!(received.0, ws);
         assert_eq!(received.1, payload);
 
         // Drain any final A-side events so the actor's task can shut down
         // without warnings during runtime drop.
         let _ = ev_rx_a.try_recv();
+    }
+
+    /// **The negative.** Two connected, meshed actors that are in
+    /// *different* rooms: everything one publishes for its room must
+    /// never arrive at the other.
+    ///
+    /// This is the shape the old single topic could not have: both were
+    /// on `nirios/ws/0`, so every room's `AppCrdtIncremental`,
+    /// `AppCrdtSnapshot`, `AppPresence` and `SyncResp` was delivered to
+    /// every qOS machine on the network and only then filtered, in the
+    /// recipient's own process.
+    ///
+    /// The assertion is on B's event stream — what actually crossed the
+    /// wire — not on a filter having run. B is deliberately meshed with
+    /// A and subscribed to a room of its own, so a message reaching it
+    /// would be a routing fact rather than a discovery accident.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_room_you_are_not_in_never_reaches_you() {
+        let theirs = room(0x1);
+        let mine = room(0x2);
+
+        let mut swarm_a = build_swarm();
+        let mut swarm_b = build_swarm();
+        swarm_a
+            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .unwrap();
+        swarm_b
+            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .unwrap();
+
+        async fn first_listen_addr(swarm: &mut Swarm<NiriosBehaviour>) -> Multiaddr {
+            loop {
+                if let SwarmEvent::NewListenAddr { address, .. } = swarm.select_next_some().await {
+                    return address;
+                }
+            }
+        }
+        let addr_b = timeout(Duration::from_secs(5), first_listen_addr(&mut swarm_b))
+            .await
+            .expect("peer B listen addr");
+        let _ = timeout(Duration::from_secs(5), first_listen_addr(&mut swarm_a))
+            .await
+            .expect("peer A listen addr");
+
+        let (cmd_a, _h_a) = Actor::spawn(swarm_a);
+        let (cmd_b, _h_b) = Actor::spawn(swarm_b);
+
+        let (ev_tx_a, _ev_rx_a) = mpsc::channel::<NetEvent>(32);
+        let (ev_tx_b, mut ev_rx_b) = mpsc::channel::<NetEvent>(32);
+
+        // A is in the room it will publish to. B is in a different one —
+        // it is a real, live, subscribed qOS session, just not a member.
+        cmd_a
+            .send(NetCmd::JoinRoom {
+                room: theirs,
+                on_event: ev_tx_a,
+            })
+            .await
+            .unwrap();
+        cmd_b
+            .send(NetCmd::JoinRoom {
+                room: mine,
+                on_event: ev_tx_b,
+            })
+            .await
+            .unwrap();
+
+        cmd_a.send(NetCmd::Connect { addr: addr_b }).await.unwrap();
+        // Let the connection and gossipsub handshake settle. Longer than
+        // the mesh needs, so "nothing arrived" is not "nothing had time
+        // to arrive": the positive test above sees its message inside
+        // this window.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let secret = NeighbourMsg::AppCrdtSnapshot {
+            peer: 7,
+            app_id: "notes".to_string(),
+            cluster_id: theirs.to_string(),
+            record_id: "private.md".to_string(),
+            data: b"the contents of a room B was never invited to".to_vec(),
+        };
+        for _ in 0..5 {
+            cmd_a
+                .send(NetCmd::Publish {
+                    room: theirs,
+                    msg: secret.clone(),
+                })
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let mut delivered = Vec::new();
+        while let Ok(ev) = ev_rx_b.try_recv() {
+            if let NetEvent::Msg { room, msg, .. } = ev {
+                delivered.push((room, msg));
+            }
+        }
+        assert!(
+            delivered.is_empty(),
+            "a session that is not in the room must receive none of its traffic, got {delivered:?}"
+        );
     }
 }
