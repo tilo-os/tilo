@@ -22,12 +22,72 @@ object per line, request and response.
 ```
 
 The providers on a stock build are `actions` (the shell's own chrome),
-`applications`, `host-applications`, `notes`, `files`, `records` and `editor`.
+`applications`, `host-applications`, `notes`, `files`, `records`, `editor` —
+and `app`, which is the applications themselves.
 
 An empty `query` lists every provider's default set rather than guessing a
 needle. The descriptors come from the same provider registry that backs the
 Ctrl+K command palette — the palette renders these as rows, enumeration renders
 nothing.
+
+## The `app` provider: reaching inside a running application
+
+Everything above is the shell's own surface. `app` is not: its rows come from
+the applications running on the desktop, each of which publishes what it has
+open and what may be done to it over the socket the session handed it
+(`publishActions`, in `crates/runtime/runtime-collab/schema/collab.capnp`).
+
+```json
+{"op":"actions_enumerate","query":"table"}
+```
+
+```json
+{"answer":{"query":"table","count":1,"actions":[
+  {"provider":"app","id":"word-processor.document#insert-table","kind":"App action",
+   "title":"Insert table","subtitle":"Document — word_processor.document","score":0}
+]}}
+```
+
+An address is `<resource id>#<action id>`, both minted by the app. A resource id
+is app-namespaced by convention (`word-processor.document`,
+`files.entry:/var/workspace/plan.md`), which is what lets the capability gate
+name the app being acted on without the shell keeping a second table of who owns
+what. Nothing in it is positional, so the same address keeps naming the same
+operation across layouts, themes and resolutions.
+
+### The app is what performs it
+
+Invoking one of these does not run anything in the compositor. The address goes
+back down the same socket to the one connection that published it, and the
+application performs its own operation on its own document; the change then
+reaches everyone else the way every other change does. It has to be that way
+round — the live resource tree, the app's action decoders and the app's document
+are all things only the app holds, and an `ActionSpec` for a prompted action
+holds a closure that cannot cross a process boundary at all.
+
+So `actions_invoke` waits for the application to say what became of it, bounded
+at two seconds. Three outcomes, and they are deliberately three: it ran, it was
+refused (with the app's own code and words), or nobody answered. A caller that
+cannot see the screen has no other way to tell them apart.
+
+### An app may only publish its own operations
+
+The resource id is what the gate reads the app off, and it arrives *from* the
+app — so on its own it would be a claim. The session drops any published
+operation whose namespace is not the connection's own application, taken from
+the route it joined on rather than from anything in the call. Without that, a
+sandboxed app could publish `files.entry:/…#delete` and be gated as though it
+were Files.
+
+### An app that goes takes its operations with it
+
+The publish is level-triggered: each one replaces that connection's whole
+surface, so a resource that has closed stops being addressable rather than
+lingering as an address that resolves to something gone. And when the RPC
+session ends — however it ends — everything the connection published is
+forgotten, and `ActionRegistry::forget_app` withdraws the declarations behind
+it. An address that outlived the process behind it is worse than one that never
+existed: it resolves, it is invoked, and nothing performs it.
 
 ## `actions_invoke`
 
@@ -149,6 +209,11 @@ compositor's own code and message intact.
 | Live enumerate / resolve | `shell/src/compositor/native.rs` |
 | Catalogue + visibility seam | `shell/src/shell/search/action_api.rs` |
 | Capability gate + policy | `shell/src/shell/search/visibility.rs` |
+| App wire (schema) | `crates/runtime/runtime-collab/schema/collab.capnp` |
+| App wire (session side) | `shell/src/shell/app_action_wire.rs` |
+| App wire (app side) | `ui::App::publish_action_surface`, `ui/src/app.rs` |
+| App provider | `shell/src/shell/search/providers/app_resources.rs` |
 | Live end-to-end proof | `scripts/headless-examples/action-api-demo.py` |
+| Live proof across a process boundary | `scripts/headless-examples/app-action-wire.py` |
 | MCP shim | `scripts/qos-mcp-server.py` |
 | Socket framing, other ops | `docs/headless-testing.md` |
