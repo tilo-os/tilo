@@ -584,14 +584,14 @@ impl ChatApp {
     /// is blocked from join/speak/camera/screen-share; leaving is always
     /// allowed so a downgraded peer can drop out.
     pub(crate) fn call_allows(&self, action: crate::call::CallAction) -> bool {
-        self.perms.allows(&self.active_ws, action)
+        self.perms.allows(action)
     }
 
     /// Whether the local peer may post / react / start a call in the active
     /// workspace (an Edit grant). The permissive default allows; a restricted
     /// context gates writes while still letting the peer read.
     pub(crate) fn can_participate(&self) -> bool {
-        self.perms.can_participate(&self.active_ws)
+        self.perms.can_participate()
     }
 
     /// Whether the local peer may hydrate + render the bytes behind an
@@ -654,6 +654,22 @@ impl ChatApp {
                 pinned: m.pinned,
             })
             .collect();
+        // Only while there is a call to describe. A catalogue that offered
+        // "Mute" with nothing to mute would be advertising an address that
+        // resolves to nothing happening.
+        let call = self.call.active.then(|| actions::CallResource {
+            channel: self.call.channel.clone(),
+            channel_name: self
+                .channels
+                .iter()
+                .find(|c| c.id == self.call.channel)
+                .map(|c| c.name.clone())
+                .unwrap_or_default(),
+            muted: self.call.muted,
+            deafened: self.call.deafened,
+            audio_only: self.call.audio_only,
+            sharing: self.call.sharing,
+        });
         actions::ChatResourceCtx {
             me: self.me.id.clone(),
             workspace_id: self.active_ws.clone(),
@@ -662,6 +678,7 @@ impl ChatApp {
             active_channel: self.active_channel.clone(),
             messages,
             participants: self.participants(),
+            call,
         }
     }
 
