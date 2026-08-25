@@ -174,6 +174,14 @@ fn two_peers_on_one_broker(
 /// A live app authoring as `id`. Live, not ephemeral: the ephemeral instance
 /// seeds the demo workspace, and a conversation held in fixture content proves
 /// nothing about a conversation.
+///
+/// Most tests below then hand the app a roster keyed by the **same** string.
+/// That is a fixture, not a claim about production: in a running desktop the
+/// two are different spaces and only meet because the room says which
+/// participant a machine is — see
+/// [`a_remote_persons_message_is_shown_under_their_name`], which is the one
+/// that pins it, and which uses deliberately disjoint strings because this
+/// coincidence is what let the fault ship.
 fn peer(id: &str, initials: &str, color: usize) -> ChatApp {
     ChatApp::new_as(LocalIdentity {
         id: id.to_string(),
@@ -191,6 +199,21 @@ fn peer(id: &str, initials: &str, color: usize) -> ChatApp {
 fn room_says(app: &mut ChatApp, entries: &[(&str, &str)]) {
     let mut ctx = PresenceCtx::empty();
     for (id, name) in entries {
+        ctx.set_display_name(UserId(id.to_string()), *name);
+    }
+    app.adopt_room(&ctx);
+}
+
+/// The same, plus the row that tells `app` which participant it *is*.
+///
+/// A real `CollabEvent::Context` always carries it — `LocalIdentity::self_row`
+/// mints it on every machine with a room-wide address — and it is the only
+/// place an application can learn the id other machines address it by. A
+/// roster delivered without it is a roster from a session with no network.
+fn room_says_to(app: &mut ChatApp, me: (&str, &str), others: &[(&str, &str)]) {
+    let mut ctx = PresenceCtx::empty();
+    ctx.set_self_participant(UserId(me.0.to_string()), me.1);
+    for (id, name) in others {
         ctx.set_display_name(UserId(id.to_string()), *name);
     }
     app.adopt_room(&ctx);
@@ -593,4 +616,158 @@ fn a_participant_who_leaves_stops_being_offered() {
         &[Participant { id: "u_guest".into(), name: "Grace".into(), is_agent: false }],
     );
     assert_eq!(msg[0].user, "u_guest");
+}
+
+/// The room's address for Alice's machine. A `peer@<liveness handle>` string,
+/// which is what `remote_participant_id` mints for every participant a
+/// machine hears from — and what the roster every app resolves against is
+/// keyed by.
+const ALICE_IN_ROOM: &str = "peer@9007495404254172154";
+/// The same, for Bob's machine.
+const BOB_IN_ROOM: &str = "peer@1552348810923117051";
+
+/// A remote person's message is shown under **their name**, permanently.
+///
+/// This is the test the file was missing. The one above it builds peers with
+/// `peer("u_alice", …)` and then feeds a roster keyed `"u_alice"` — the same
+/// string in both spaces, which is the one coincidence production cannot
+/// produce. So it passed over a chat in which every remote message read
+/// `Someone (4f56)` forever.
+///
+/// The two spaces here are deliberately disjoint, as they are in a running
+/// desktop:
+///
+/// - what an app works out for itself is `u_<hex8>`, off the signing key
+///   (`LocalIdentity::from_runtime_identity`);
+/// - what the room calls that same participant is `peer@<liveness handle>`,
+///   minted by the broker from the publishing machine's libp2p handle
+///   (`remote_participant_id`), and that is what `PresenceCtx.names` is keyed
+///   by.
+///
+/// They meet because the room says which participant each machine is, and the
+/// app authors under that. If they ever drift apart again this fails with the
+/// `Someone (…)` it was written to catch.
+#[test]
+fn a_remote_persons_message_is_shown_under_their_name() {
+    let (cmds, reports, worker, _broker) = two_peers_on_one_broker("chat-two-id-spaces");
+
+    let mut doc_a = automerge::AutoCommit::new();
+    let mut doc_b = automerge::AutoCommit::new();
+    // Ids off the signing key. Nothing in the room will ever use these.
+    let mut a = peer("u_4f56a1c208b39e77", "AL", 0);
+    let mut b = peer("u_c1d2e3f405162738", "BO", 3);
+    assert_ne!(
+        a.me_id(),
+        ALICE_IN_ROOM,
+        "the fixture has to start with the two id spaces disagreeing, or it \
+         proves nothing"
+    );
+
+    sync(&mut a, &mut doc_a);
+    cross(&cmds, &reports, "A", &mut doc_a, &mut doc_b);
+    sync(&mut b, &mut doc_b);
+    cross(&cmds, &reports, "B", &mut doc_b, &mut doc_a);
+    sync(&mut a, &mut doc_a);
+
+    // The room speaks. Each machine hears who is here *and* which of them it
+    // is — the row an application cannot mint for itself.
+    room_says_to(
+        &mut a,
+        (ALICE_IN_ROOM, "Ada Lovelace"),
+        &[(BOB_IN_ROOM, "Bob Kahn")],
+    );
+    room_says_to(
+        &mut b,
+        (BOB_IN_ROOM, "Bob Kahn"),
+        &[(ALICE_IN_ROOM, "Ada Lovelace")],
+    );
+
+    assert_eq!(
+        a.me_id(),
+        ALICE_IN_ROOM,
+        "Alice's app is still authoring under an id the room has never heard \
+         of; every message she sends will read \"Someone (…)\" on every other \
+         screen"
+    );
+
+    type_text(&mut a, &mut doc_a, "the parser is done");
+    send_key(&mut a, &mut doc_a, Key::Named(NamedKey::Enter));
+    cross(&cmds, &reports, "A", &mut doc_a, &mut doc_b);
+    sync(&mut b, &mut doc_b);
+
+    let channel = a.active_channel_id().to_string();
+    let seen = chat::doc::ChatDoc::list_messages(&doc_b, &channel);
+    let msg = seen
+        .iter()
+        .find(|m| m.text.contains("the parser is done"))
+        .expect("Alice's message reached Bob");
+
+    assert_eq!(
+        msg.author, ALICE_IN_ROOM,
+        "the message is signed with an id the room cannot resolve"
+    );
+    assert_eq!(
+        b.display_name(&msg.author),
+        "Ada Lovelace",
+        "Bob's screen shows {:?} beside Alice's message",
+        b.display_name(&msg.author)
+    );
+
+    // And it stays that way: the miss was never a startup window. Another
+    // roster round changes nothing.
+    room_says_to(
+        &mut b,
+        (BOB_IN_ROOM, "Bob Kahn"),
+        &[(ALICE_IN_ROOM, "Ada Lovelace")],
+    );
+    assert_eq!(b.display_name(&msg.author), "Ada Lovelace");
+
+    let _ = cmds.send(Cmd::Stop);
+    let _ = worker.join();
+}
+
+/// A guest is called what the host called them — on their own screen too.
+///
+/// The host writes a guest's name from the invite that admitted them, into
+/// the room document on the host's machine. It travels back to the guest on
+/// the one roster row that is about them, and nowhere else: nothing in a
+/// guest's own session can work out what somebody else decided to call them.
+/// So until that row was read, everybody in the room used the host's name
+/// while the guest's own window used their account name.
+#[test]
+fn a_guest_is_shown_the_name_the_host_gave_them() {
+    let mut g = peer("u_c1d2e3f405162738", "GU", 2);
+    let account_name = g.display_name(&g.me_id().to_string());
+    assert_ne!(
+        account_name, "Xaver",
+        "the fixture has to start with the guest not knowing the name, or it \
+         proves nothing"
+    );
+
+    room_says_to(&mut g, ("peer@42", "Xaver"), &[]);
+
+    assert_eq!(
+        g.display_name("peer@42"),
+        "Xaver",
+        "the guest's own screen still calls them {:?}",
+        g.display_name("peer@42")
+    );
+}
+
+/// A machine with no room-wide address keeps the id it worked out for itself.
+///
+/// The room is where a participant address comes from, so a session with no
+/// room has none — and an app that blanked its own id waiting for one would
+/// author every offline message as nobody.
+#[test]
+fn without_a_room_an_app_keeps_the_id_it_resolved_for_itself() {
+    let mut a = peer("u_4f56a1c208b39e77", "AL", 0);
+    let before = a.me_id().to_string();
+    // A roster with no `is_self` row — what a session with no network sees.
+    room_says(&mut a, &[("peer@1", "Somebody")]);
+    assert_eq!(
+        a.me_id(),
+        before,
+        "an app dropped its own identity because the room did not name one"
+    );
 }

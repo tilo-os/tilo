@@ -168,7 +168,12 @@ impl OnboardingView {
                         .with_message("Read this before continuing — it cannot be undone later."),
                 ))
                 .push(Box::new(Card::new(Box::new(list))))
-                .push(Box::new(Card::new(Box::new(name_block))))
+                // Not in a card of its own. The consequence above already
+                // sits in one, and a second box beside it would be a box
+                // inside a box holding one field — the screen is tall
+                // enough without it, and space plus the label is enough
+                // hierarchy to read the field as its own thing.
+                .push(Box::new(name_block))
                 .push(Box::new(
                     Row::new()
                         .push(Box::new(

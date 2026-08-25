@@ -917,7 +917,7 @@ impl ChatApp {
             // Right-click your own message (header + body) opens the edit menu.
             // Recorded now, before the reaction / thread hits so those still
             // win in their own sub-regions.
-            if m.author == self.me.id {
+            if self.is_me(&m.author) {
                 ChatApp::push_hit(hits, Rect::new(area.x0, content_top, area.x1, *y), Hit::MessageMenu { msg: m.id.clone() });
             }
         }
@@ -1773,7 +1773,7 @@ impl ChatApp {
             let avc = Point::new(panel.x0 + 16.0 + 16.0, y + row_h / 2.0);
             draw_avatar(scene, tf, tr, theme, avc, 16.0, &u.initials, u.color_idx, Some(u.status));
             let nx = avc.x + 16.0 + 12.0;
-            let display = if u.id == self.me.id {
+            let display = if self.is_me(&u.id) {
                 format!("{} (you)", u.name)
             } else {
                 u.name.clone()

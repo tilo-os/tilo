@@ -1772,6 +1772,14 @@ impl App {
         self.root_widget.set_remark_destinations(destinations);
     }
 
+    /// Who a remark written here may be addressed to, by participant id.
+    ///
+    /// The room's roster minus this session's own participant: the person
+    /// writing a remark is not a destination for it.
+    pub fn remark_destination_ids(&self) -> Vec<String> {
+        self.remark_roster.keys().cloned().collect()
+    }
+
     /// The room as this process knows it, for resolving an `@name`.
     fn remark_room(&self) -> Vec<qos_reference::RoomMember> {
         self.remark_roster
@@ -2119,6 +2127,26 @@ impl App {
                     // list of who is in it; the list of people a remark
                     // can be sent to is a different question, and the
                     // person writing one is not a destination for it.
+
+                    // The one row addressed to this machine about itself,
+                    // taken before either filter below drops it. It goes
+                    // somewhere no roster, picker, caret or cursor reads
+                    // from, so the row still does not exist as a
+                    // participant here — but the two facts only the room
+                    // knows now arrive: the address other machines use for
+                    // this participant, and the name the host wrote for it.
+                    //
+                    // Without the first, an app authoring under an id it
+                    // derived locally can never be recognised in a roster
+                    // keyed by the room's; without the second, a guest is
+                    // called one thing by everybody else and another by
+                    // their own screen.
+                    if let Some(me) = collaborators.iter().find(|c| c.is_self) {
+                        self.presence_ctx.set_self_participant(
+                            crate::permissions::UserId(me.id.clone()),
+                            me.name.clone(),
+                        );
+                    }
                     let mut changed = false;
                     for c in collaborators.iter().filter(|c| !c.is_self) {
                         let entry = (c.name.clone(), c.is_agent);
