@@ -216,6 +216,27 @@ impl ResourceProvider for PhotosResources {
             format!("{w} x {h} pixels"),
         ));
 
+        // Where the picture actually is, so a crop can be chosen for the
+        // photograph rather than computed from its rectangle.
+        //
+        // Without this the only facts about an image are its dimensions, and
+        // the one square you can derive from a width and a height is the
+        // middle one — correct arithmetic, and the same answer whatever the
+        // photograph happens to show. This says which part carries the
+        // detail, in the same normalized coordinates the crop argument takes,
+        // so the choice is about the subject.
+        //
+        // Stated as a fact rather than an operation because it is not
+        // something anyone can *do* — it is something true about the file,
+        // which is exactly what a child resource exporting no actions is for.
+        if let Some(subject) = subject_of(&image.path) {
+            resource = resource.with_child(Resource::new(
+                format!("{}#subject", resource_id(&image.path)),
+                "photos.subject",
+                subject,
+            ));
+        }
+
         vec![resource]
     }
 }
@@ -225,6 +246,79 @@ impl ResourceProvider for PhotosResources {
 /// The path is the identity: two windows onto the same file publish the same
 /// id, and a caller that knows the path can address it without having
 /// enumerated first.
+/// Where the detail in a photograph sits, in the crop argument's own
+/// coordinates.
+///
+/// Returns a sentence, because it is read by something that reads sentences,
+/// and the numbers are in it so a caller can act on them exactly.
+///
+/// The measure is deliberately crude: local contrast, summed over a coarse
+/// grid. Sky, water and studio backgrounds are flat and score near zero;
+/// edges — a mast, a face, a horizon full of boats — score high. It is not
+/// object recognition and does not pretend to be. What it has to beat is the
+/// alternative, which is knowing only the width and the height, from which
+/// the one derivable square is the middle one, whatever the picture shows.
+///
+/// Reads the file rather than the decoded surface: this runs where the
+/// resource tree is built, which has the path and not the pixels, and a
+/// photograph is read once per publish rather than per frame.
+fn subject_of(path: &str) -> Option<String> {
+    const GRID: u32 = 24;
+    let img = image::open(path).ok()?.to_luma8();
+    let (w, h) = img.dimensions();
+    if w < GRID || h < GRID {
+        return None;
+    }
+    let (cw, ch) = (w / GRID, h / GRID);
+    let mut best = 0.0f64;
+    let mut total = 0.0f64;
+    // Centre of mass of contrast, and the busiest cell, in one pass.
+    let (mut mx, mut my) = (0.0f64, 0.0f64);
+    for gy in 0..GRID {
+        for gx in 0..GRID {
+            let (x0, y0) = (gx * cw, gy * ch);
+            let mut lo = 255u8;
+            let mut hi = 0u8;
+            // Corners and centre: five reads a cell, not cw*ch of them.
+            for (dx, dy) in [(0, 0), (cw - 1, 0), (0, ch - 1), (cw - 1, ch - 1), (cw / 2, ch / 2)] {
+                let v = img.get_pixel(x0 + dx, y0 + dy).0[0];
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+            let contrast = f64::from(hi - lo);
+            total += contrast;
+            mx += contrast * f64::from(gx);
+            my += contrast * f64::from(gy);
+            best = best.max(contrast);
+        }
+    }
+    if total <= 0.0 {
+        // A flat image has no subject to point at, and saying nothing is
+        // better than pointing at the middle and calling it a finding.
+        return None;
+    }
+    let cx = (mx / total + 0.5) / f64::from(GRID);
+    let cy = (my / total + 0.5) / f64::from(GRID);
+    let where_across = if cx < 0.42 {
+        "left of centre"
+    } else if cx > 0.58 {
+        "right of centre"
+    } else {
+        "centred"
+    };
+    let where_down = if cy < 0.42 {
+        "high"
+    } else if cy > 0.58 {
+        "low"
+    } else {
+        "level"
+    };
+    Some(format!(
+        "most of the detail is {where_across} and sits {where_down}, around \
+         x={cx:.2} y={cy:.2} of the frame"
+    ))
+}
+
 pub fn resource_id(path: &str) -> String {
     format!("{IMAGE_KIND}:{path}")
 }
@@ -234,6 +328,62 @@ mod tests {
     use super::*;
     use crate::model::OpenImage;
     use qos_actions::flatten;
+
+    /// A 240x160 image, flat grey, with a patch of hard checkerboard — all the
+    /// contrast there is — centred on `(fx, fy)` of the frame.
+    fn image_with_detail_at(dir: &std::path::Path, name: &str, fx: f64, fy: f64) -> String {
+        let (w, h) = (240u32, 160u32);
+        let mut img = image::GrayImage::from_pixel(w, h, image::Luma([128u8]));
+        let (cx, cy) = ((fx * f64::from(w)) as u32, (fy * f64::from(h)) as u32);
+        for y in cy.saturating_sub(24)..(cy + 24).min(h) {
+            for x in cx.saturating_sub(24)..(cx + 24).min(w) {
+                let v = if (x / 2 + y / 2) % 2 == 0 { 0u8 } else { 255u8 };
+                img.put_pixel(x, y, image::Luma([v]));
+            }
+        }
+        let path = dir.join(name);
+        img.save(&path).expect("the test writes a readable png");
+        path.to_string_lossy().into_owned()
+    }
+
+    /// The fact has to follow the photograph, not its rectangle.
+    ///
+    /// Three pictures of identical size whose detail sits in different places.
+    /// If the sentence is the same for all three, the measure is reading the
+    /// frame rather than the image, and the agent choosing a crop from it
+    /// would put the square in the same place whatever it was given — which
+    /// is exactly the behaviour this fact exists to replace.
+    #[test]
+    fn where_the_detail_is_follows_the_picture() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let left = image_with_detail_at(dir.path(), "left.png", 0.20, 0.5);
+        let right = image_with_detail_at(dir.path(), "right.png", 0.80, 0.5);
+        let high = image_with_detail_at(dir.path(), "high.png", 0.5, 0.18);
+
+        let l = subject_of(&left).expect("a picture with detail has a subject");
+        let r = subject_of(&right).expect("a picture with detail has a subject");
+        let t = subject_of(&high).expect("a picture with detail has a subject");
+
+        assert!(l.contains("left of centre"), "left-weighted picture said: {l}");
+        assert!(r.contains("right of centre"), "right-weighted picture said: {r}");
+        assert!(t.contains("high"), "top-weighted picture said: {t}");
+        assert_ne!(l, r, "two different pictures must not produce one fact");
+    }
+
+    /// Nothing to point at is said by saying nothing.
+    ///
+    /// A flat image has no subject, and naming the middle of it would be a
+    /// finding invented to fill a field — the failure this whole fact is meant
+    /// to avoid.
+    #[test]
+    fn a_flat_picture_has_no_subject() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("flat.png");
+        image::GrayImage::from_pixel(240, 160, image::Luma([128u8]))
+            .save(&path)
+            .expect("the test writes a readable png");
+        assert_eq!(subject_of(&path.to_string_lossy()), None);
+    }
 
     fn doc_with_image() -> AutoCommit {
         let mut doc = AutoCommit::new();
