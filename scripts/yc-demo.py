@@ -1232,16 +1232,24 @@ class Session:
         own action, and it goes out over the broker into the room's
         conversation.
 
-        `address` is `kind:id` — the same string the app publishes each
-        resource under, so the thing named here and the thing a person
-        would have right-clicked are one object rather than two that
-        agree.
+        `address` is the whole string the app publishes the resource
+        under — `files.entry:/var/tmp/qos/workspace/harbour.png` — so the
+        thing named here and the thing a person would have right-clicked
+        are one object rather than two that agree.
+
+        The address is the **id**, in full, and the kind is its first
+        segment repeated: `entry_reference` mints
+        `ResourceRef::whole(kind, format!("{kind}:{path}"), label)`, so an
+        id with the prefix stripped off addresses nothing. That is the
+        one thing here worth getting wrong slowly rather than quickly —
+        the agent resolves the address against what the room exports, and
+        a near-miss reads as an agent declining to act.
         """
-        kind, _, ident = address.partition(":")
-        if not ident:
+        kind, _, rest = address.partition(":")
+        if not rest:
             raise ValueError(f"a resource address is kind:id, got {address!r}")
         return call(self.sock, {"op": "remark", "text": text,
-                                "kind": kind, "id": ident})
+                                "kind": kind, "id": address})
 
     # -- synthetic input, continued (all counted) --------------------
 
