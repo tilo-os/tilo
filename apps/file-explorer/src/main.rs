@@ -24,6 +24,37 @@ use vello::peniko::Color;
 /// Default offscreen viewport for `--shots`.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 
+/// An Automerge actor id that is actually distinct from every other replica's.
+///
+/// `format!("{prefix}-{pid}")` was not. Every application here runs in its own
+/// PID namespace, so every instance sees itself as pid 2 and every session
+/// wrote under the *same* actor — and Automerge refuses a frame whose actor
+/// already used that sequence number:
+///
+///     blob_relay: a document frame did not parse; it is lost for this replica
+///     error=duplicate seq 1 found for actor 66696c65732d32     ("files-2")
+///
+/// Frames dropped, silently, in the one direction that matters: a change made
+/// on one machine never reaching another. It is why a picture an agent placed
+/// into a shared document never arrived on the page.
+///
+/// `QOS_USER_ID` is the session's own identity and is distinct by
+/// construction, which also makes the actor readable in a history. The
+/// pid-and-nanos tail is only for a bare process with no session around it,
+/// where two starting in the same nanosecond is not a thing that happens.
+fn distinct_actor(prefix: &str) -> String {
+    if let Ok(user) = std::env::var("QOS_USER_ID") {
+        if !user.is_empty() {
+            return format!("{prefix}-{user}");
+        }
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or_default();
+    format!("{prefix}-{}-{nanos}", std::process::id())
+}
+
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -114,8 +145,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `actions.rs`), so concurrent edits have to be attributable to tell
     // them apart. A missing `QUICK_APP_ID` falls back to a per-process id
     // so two un-configured instances still get distinct actors.
-    let app_id = std::env::var("QUICK_APP_ID")
-        .unwrap_or_else(|_| format!("files-{}", std::process::id()));
+    let app_id =
+        std::env::var("QUICK_APP_ID").unwrap_or_else(|_| distinct_actor("files"));
     state
         .doc
         .set_actor(automerge::ActorId::from(app_id.as_bytes()));
