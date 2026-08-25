@@ -679,6 +679,34 @@ pub struct PresenceCtx {
     /// [`Self::set_own_identity`]; empty means "unknown", which
     /// suppresses nobody.
     own: std::collections::HashSet<UserId>,
+    /// Which participant in the room this session *is*, and what the room
+    /// calls it — the `is_self` row of `CollabEvent::Context`.
+    ///
+    /// Deliberately not in [`Self::names`], [`Self::here`] or any of the
+    /// pointer/caret stores. Those describe *other* people, and a row for
+    /// yourself in them is a pill bearing your own name over your own
+    /// document, a second caret at your own cursor, and yourself offered
+    /// in your own `@` picker. The App filters `is_self` out of them for
+    /// exactly that reason and must keep doing so.
+    ///
+    /// What was lost with the row was the two facts only the room knows,
+    /// and this is where they land instead:
+    ///
+    /// - **The name.** The host writes a guest's name from the invite, and
+    ///   it reaches the guest only here. Without it everybody else calls
+    ///   them Xaver while their own screen says Quinten.
+    /// - **The id.** `Collaborator::id` is the address *other* machines
+    ///   use, minted from this machine's liveness handle; an application
+    ///   cannot derive it, and the id it works out for itself is a
+    ///   different string for the same person. Anything comparing "am I
+    ///   the one addressed here" against a locally-derived id compared two
+    ///   strings that were never going to match — which is why every
+    ///   remote message in chat read "Someone (…)".
+    ///
+    /// `None` until the room has said, which includes every session with
+    /// no network: there are no other participants to be told apart from,
+    /// and no room-wide address to be given.
+    self_participant: Option<(UserId, String)>,
     /// The surface this process draws — the app id it announces,
     /// spelled as [`crate::local_surface_id`] spells it.
     ///
@@ -818,10 +846,58 @@ impl PresenceCtx {
         }
     }
 
+    /// Take the room's answer to "which of these participants am I".
+    ///
+    /// Fed from the `is_self` row of `CollabEvent::Context` and nowhere
+    /// else — a machine cannot mint this for itself, which is the whole
+    /// reason the row exists. See the `self_participant` field.
+    ///
+    /// A blank id is dropped: an unset field forwarded literally would
+    /// make the empty-string participant "me", and every unnamed peer
+    /// with it.
+    pub fn set_self_participant(&mut self, id: UserId, name: impl Into<String>) {
+        if id.0.trim().is_empty() {
+            return;
+        }
+        self.self_participant = Some((id, name.into()));
+    }
+
+    /// Which participant in the room this session is, if the room has
+    /// said.
+    pub fn self_id(&self) -> Option<&UserId> {
+        self.self_participant.as_ref().map(|(id, _)| id)
+    }
+
+    /// What the room calls this session's own participant, if it has
+    /// been named. `None` for a participant the room knows only as an
+    /// address — an uninvited peer, or one nobody labelled.
+    pub fn self_name(&self) -> Option<&str> {
+        self.self_participant
+            .as_ref()
+            .map(|(_, n)| n.trim())
+            .filter(|n| !n.is_empty())
+    }
+
     /// Whether `user_id` is this session's own participant — i.e. a
     /// frame it published, handed back to it by the broker's fan-out.
+    ///
+    /// The room's own address for this machine counts, and is checked
+    /// before the declared list rather than folded into it: the list is
+    /// *replaced* wholesale by [`Self::set_own_identity`], so a room
+    /// address merged into it would be dropped the next time a caller
+    /// restated what this process publishes as.
     pub fn is_own_identity(&self, user_id: &str) -> bool {
-        if self.own.is_empty() || user_id.trim().is_empty() {
+        if user_id.trim().is_empty() {
+            return false;
+        }
+        if self
+            .self_participant
+            .as_ref()
+            .is_some_and(|(id, _)| id.0 == user_id)
+        {
+            return true;
+        }
+        if self.own.is_empty() {
             return false;
         }
         self.own.contains(&UserId(user_id.to_string()))
@@ -2413,6 +2489,79 @@ mod own_identity_tests {
             ctx.peers_on(&room()).is_empty(),
             "answering a sibling must not also list it as somebody else",
         );
+    }
+
+    /// The room's answer to "which participant am I" arrives without
+    /// making this session a participant of its own presence store.
+    ///
+    /// Both halves matter. The facts have to land — an app that cannot
+    /// find itself in the roster authors under an id nobody else can
+    /// resolve — and the row must not become one: a name in `names` is
+    /// what every caret chip, mention colour and `@` picker reads from,
+    /// so a self entry there paints a pill bearing your own name over
+    /// your own document.
+    #[test]
+    fn knowing_which_participant_you_are_does_not_make_you_a_peer() {
+        let mut ctx = PresenceCtx::empty();
+        let me = UserId("peer@9007495404254172154".into());
+        ctx.set_self_participant(me.clone(), "Xaver");
+
+        assert_eq!(ctx.self_id(), Some(&me));
+        assert_eq!(ctx.self_name(), Some("Xaver"));
+        assert!(
+            !ctx.names.contains_key(&me),
+            "the row became a display name, which is what the roster, the \
+             caret chips and the mention colours all read"
+        );
+
+        // And a frame stamped with that address is this session's own, so
+        // the pill and the cursor stay suppressed.
+        assert!(ctx.is_own_identity(&me.0));
+        assert_eq!(
+            ctx.apply_remote_presence(me.0.clone(), room(), PresencePayload::Caret { pos: 4 }),
+            RemotePresenceEffect::None,
+        );
+        assert!(
+            ctx.peers_on(&room()).is_empty(),
+            "this session was listed as somebody else in its own room"
+        );
+    }
+
+    /// A participant the room has admitted but not named has an address
+    /// and no name. Handing the address back as a name is how a routing
+    /// hash ends up rendered where a name belongs.
+    #[test]
+    fn an_unnamed_own_participant_reports_no_name() {
+        let mut ctx = PresenceCtx::empty();
+        let me = UserId("peer@42".into());
+        ctx.set_self_participant(me.clone(), "   ");
+        assert_eq!(ctx.self_id(), Some(&me));
+        assert_eq!(ctx.self_name(), None);
+    }
+
+    /// A blank id is what a launcher forwards when the variable it meant
+    /// to pass was itself unset. Taken literally it would make the
+    /// empty-string participant "me".
+    #[test]
+    fn a_blank_own_participant_is_refused() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.set_self_participant(UserId("  ".into()), "Xaver");
+        assert_eq!(ctx.self_id(), None);
+        assert!(!ctx.is_own_identity(""));
+        assert!(!ctx.is_own_identity("  "));
+    }
+
+    /// Restating what this process publishes as must not drop the room's
+    /// address for it: `set_own_identity` replaces its list wholesale, and
+    /// an address merged into that list would go with it.
+    #[test]
+    fn restating_the_published_identities_keeps_the_room_address() {
+        let mut ctx = PresenceCtx::empty();
+        let me = UserId("peer@42".into());
+        ctx.set_self_participant(me.clone(), "Xaver");
+        ctx.set_own_identity(["dev.qos.chat"]);
+        assert!(ctx.is_own_identity(&me.0));
+        assert!(ctx.is_own_identity("dev.qos.chat"));
     }
 
     /// A session that does not know what it is called suppresses

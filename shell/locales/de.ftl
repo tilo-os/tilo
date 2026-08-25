@@ -20,6 +20,10 @@ notice-open-failed = { $app } konnte nicht geöffnet werden
 
 roster-kind-agent = Agent
 
+onboarding-name-label = Anzeigename
+onboarding-name-placeholder = Dein Name…
+onboarding-name-hint = Das sehen Mitarbeitende neben deinen Änderungen. Du kannst es später ändern.
+
 invite-composer-title = Jemanden einladen
 invite-composer-label = Wen lädst du ein?
 invite-composer-placeholder = Name dieser Person im Raum
