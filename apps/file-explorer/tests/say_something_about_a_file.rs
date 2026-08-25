@@ -496,3 +496,70 @@ fn a_delegated_app_needs_no_roster_of_its_own() {
          could never reach the compositor that has one"
     );
 }
+
+/// The app can say **where** the file it is showing is, under the same address
+/// it publishes the file as.
+///
+/// The gesture above starts with a person's press on a row. Nothing outside
+/// this process can find that row: it is drawn by a client, so it is in no
+/// widget registry the compositor can walk, and an address deliberately carries
+/// no coordinates. So a harness — or an indicator, or a reveal — had to hunt
+/// for it, and a hunt that misses looks exactly like a desktop where nothing
+/// happened.
+///
+/// `Widget::resource_rects` is the app answering instead. What makes the answer
+/// worth having is that it is checked here against a press rather than against
+/// the arithmetic that produced it: `row_center` finds the row by *clicking*,
+/// probing until a click selects that row and no other, and the published rect
+/// has to contain the point that did it. Metrics, fonts and chrome heights can
+/// all change and this stays true, because neither side of the comparison is a
+/// constant.
+#[test]
+fn the_app_says_where_an_addressed_file_is_drawn() {
+    use ui::widget::Widget;
+
+    let dir = staged();
+    // Index 2 of a sorted listing is `harbour.png` — the same row the gesture
+    // above is performed on.
+    let pressed = row_center(dir.path(), 2);
+    let harbour = address_of(&dir.path().join("harbour.png"));
+
+    let mut h = Harness::new(dir.path());
+    let rects = ui::widget::collect_resource_rects(&h.w as &dyn Widget);
+
+    let rect = rects
+        .get(&harbour)
+        .copied()
+        .unwrap_or_else(|| panic!("the app publishes no rect for {harbour}; it has {rects:?}"));
+    assert!(
+        rect.contains(pressed),
+        "the published rect {rect:?} must hold the point a press actually \
+         selects that row at ({pressed:?}) — an answer that does not is worse \
+         than none, because it aims a press somewhere harmless",
+    );
+
+    // Every file in the directory is addressable, and no two of them share a
+    // rect: an answer that collapsed onto one row would pass the check above
+    // and still point at the wrong thing.
+    for name in ["alpha.txt", "beta.txt", "harbour.png", "zulu.txt"] {
+        let id = address_of(&dir.path().join(name));
+        assert!(rects.contains_key(&id), "{name} is drawn but not placed");
+    }
+    let mut ys: Vec<i64> = rects.values().map(|r| r.y0 as i64).collect();
+    ys.sort_unstable();
+    ys.dedup();
+    assert_eq!(ys.len(), 4, "four rows, four distinct positions: {rects:?}");
+
+    // And the answer follows the app. Pressing the row selects it, which
+    // repaints it — the rect must still be the row, not a remembered one.
+    h.move_cursor(pressed);
+    h.press();
+    h.release();
+    h.layout();
+    let after = ui::widget::collect_resource_rects(&h.w as &dyn Widget);
+    assert_eq!(
+        after.get(&harbour).copied(),
+        Some(rect),
+        "a row that did not move must not be reported as having moved",
+    );
+}

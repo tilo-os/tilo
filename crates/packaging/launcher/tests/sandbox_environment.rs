@@ -332,3 +332,28 @@ fn path_is_the_sandboxes_own() {
         "a sandboxed app must not inherit the session's PATH"
     );
 }
+
+/// What the session asked its applications to say out loud crosses too.
+///
+/// An app's widgets are in no registry the compositor can walk, so the lines
+/// an app writes about itself are the only account anything outside its
+/// window has of what happened inside it — which row a press landed on,
+/// where a panel was laid out, whether what was typed was sent. Without
+/// `RUST_LOG` a sandboxed app falls back to errors only and every one of
+/// those is dropped before it reaches the pipe the session reads, so a press
+/// that hit and a press that missed come back identically silent.
+#[test]
+#[serial_test::serial(process_env)]
+fn the_sessions_logging_preference_reaches_the_app() {
+    let payload = tempfile::tempdir().unwrap();
+    build_fixture(payload.path());
+
+    let _env = ParentEnv::with(&[("RUST_LOG", "info,file_explorer::drag=debug")]);
+
+    let seen = run(payload.path(), &["env", "RUST_LOG"]);
+    assert_eq!(
+        seen, "ENV RUST_LOG=info,file_explorer::drag=debug",
+        "the session's log filter must reach the app; without it every app \
+         inside the sandbox is silent below error level"
+    );
+}

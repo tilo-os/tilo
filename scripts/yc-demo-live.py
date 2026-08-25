@@ -776,6 +776,43 @@ class Live:
         yc.gap(f"xaver's screen still showed nothing after {budget:.0f}s, "
                f"so the cut to it is of an empty desktop")
 
+    def wait_for_his_files(self, budget: float = 25.0) -> dict | None:
+        """Hold until the file manager is on xaver's screen and painted.
+
+        The one window this film's argument needs on the other machine,
+        and the last thing to be sure of before a press is aimed into it.
+        Two conditions, and they are different: the compositor answers
+        `foreign_frames` with a laid-out rect for a window it has not
+        started painting, so a beat that took the first rect it was given
+        would aim a press into a tile showing nothing yet.
+
+        Returns the tile, or `None` when the budget runs out — the caller
+        says what that costs. Bounded because a stalled take is no shot at
+        all, and generous because the alternative to waiting here is the
+        film's whole second half being empty.
+        """
+        if self.x is None:
+            return None
+        due = time.time() + budget
+        said = False
+        while True:
+            tile = yc.best_tile(self.x, yc.FILES_APP, yc.VIEWPORT)
+            if tile is not None and tile.get("presented"):
+                return tile
+            if time.time() >= due or self.stop.is_set():
+                # A window that is placed but not painted is a different
+                # fact from no window at all, and the caller's gap should
+                # not report the second when it is the first.
+                if tile is not None:
+                    self.say("his file manager is placed but the shell is "
+                             "not painting it yet")
+                return None
+            if not said:
+                self.say("waiting for the file manager to reach xaver")
+                said = True
+            self.waiting = "the file manager reaching xaver's screen"
+            self.stop.wait(0.5)
+
     def look_for_the_invitation(self) -> None:
         """Whether he has minted one yet.
 
@@ -1230,12 +1267,15 @@ class Live:
         # whose hands the next gesture belongs to.
         yc.cut("xaver")
         try:
-            # Aimed at a pixel, not at a name. A client application's
-            # widgets are not in the compositor's target registry -- that
-            # registry walks the shell's own tree -- so the earlier call
-            # here asked for `file_row:harbour.png` and could never once
-            # have resolved. It had never run, because the compose surface
-            # had never opened far enough for anyone to find out.
+            # Aimed at a pixel, and the pixel is asked for rather than
+            # guessed. A client application's widgets are not in the
+            # compositor's target registry -- that registry walks the
+            # shell's own tree -- so `named_rect("file_row:harbour.png")`
+            # could never once have resolved, and sweeping the window for
+            # a row instead is what lost a take. The app answers now:
+            # `Widget::resource_rects` says where it drew the row for that
+            # file's own address, and `press_the_photo_row` converts it
+            # with the window's placement.
             if not self.args.instruct:
                 # Handed over rather than driven. His window is already
                 # in front -- the cut raised it -- so the only thing
@@ -1260,11 +1300,36 @@ class Live:
                        "run does not assert that it was")
                 return True
 
-            tile = yc.best_tile(self.x, yc.FILES_APP, yc.VIEWPORT)
+            # Wait for the file manager to reach him, rather than asking
+            # once and giving up.
+            #
+            # `wait_for_his_screen` holds until *something* from the room is
+            # on his desktop, which is what the excursion needed and is not
+            # what this needs: the windows arrive one at a time and the one
+            # this beat is about is not reliably among the first. A take that
+            # asked once found chat and the word processor there and Files
+            # still crossing, and reported that he had nothing to right-click
+            # on a machine that was about to have it.
+            #
+            # Bounded, and painted rather than merely placed — the compositor
+            # answers with a laid-out rect for a window it is not yet drawing,
+            # and a press aimed into one lands on whatever is behind it.
+            tile = self.wait_for_his_files()
             if tile is None:
                 yc.gap("xaver has no file manager window on screen, so "
                        "there is no image for him to right-click")
                 return False
+            # How many of them there are, before one of them is picked.
+            # A session can be showing two windows that are both the file
+            # manager — its own, and a peer's replicated in — and they are
+            # different processes writing to different logs, so a beat that
+            # aims at one and reads the other's account finds nothing and
+            # cannot say why.
+            here = yc.tiles_for(self.x, yc.FILES_APP)
+            self.say(f"xaver's screen has {len(here)} file-manager "
+                     f"window(s): " + ", ".join(
+                         f"surface {t['surface_id']} at "
+                         f"{[round(v) for v in t['rect']]}" for t in here))
             yc.frame_one_window(self.x, yc.FILES_APP)
             # Re-read after framing: it moves and resizes the group, so a
             # rect taken before is the placement of a window that is no
@@ -2019,12 +2084,28 @@ def _the_owners_half(q, shots: str, live: "Live",
     # What it has to show is that the document is *shared*: he writes,
     # and it is on somebody else's screen. Three lines of prose, a run of
     # bullets and a paragraph addressed to the agent by name showed that
-    # no better and took thirteen seconds to type, and they were there
-    # for a reason that has gone -- the agent used to read its
-    # instruction out of the page. It does not. What it answers is a
-    # remark xaver makes on the photograph, so nothing typed here is
-    # addressed to anybody, and addressing an agent through a document
-    # was the weakest thing in the cut besides.
+    # no better and took thirteen seconds to type.
+    #
+    # The instruction used to be typed here too, and that was the film
+    # arguing against itself: an agent answering a line in the document it
+    # is already watching is what every word processor now ships, and it
+    # made the gesture the film is actually about — somebody pointing at
+    # an object and saying something about *that* — into a second route to
+    # the same place. With two of them the agent answered whichever
+    # arrived first, and on a `--once` run that was usually this one, so
+    # the beat the camera was on did nothing.
+    #
+    # It also cost the film the only thing there was to watch during the
+    # agent's half-minute of thinking. A summons carried by a remark goes
+    # through `carry_out`, which opens an `AgentWork` record and posts
+    # Taken/Waiting/Doing/Done into chat as each thing happens; a line in
+    # the document goes down a path that publishes none of it. Every take
+    # so far filmed a still page while the agent worked, because of this
+    # call.
+    #
+    # So nothing typed here is addressed to anybody. The instruction
+    # reaches the agent once, from xaver's hand, carrying the address of
+    # the thing he pointed at — see `Live.his_instruction`.
     mark("quinten types a few words")
     typed = yc.type_into_the_document(q, wp, yc.SHARED_TEXT)
     yc.claim("the document was written into", typed, True)

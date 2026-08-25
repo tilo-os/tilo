@@ -240,6 +240,25 @@ pub const INHERITED_ENV: &[&str] = &[
     // is inherited-when-set rather than given a default.
     "TERM",
     "COLORTERM",
+    // What the session asked its applications to say out loud.
+    //
+    // The same category as the two above — a diagnostic preference the
+    // person running the session set, naming no socket, no path and no
+    // capability. Without it a sandboxed app runs with no `RUST_LOG` at
+    // all, `EnvFilter::from_default_env()` falls back to errors only, and
+    // every `info!` and `debug!` an app writes about itself is dropped
+    // before it reaches the pipe the session is reading.
+    //
+    // That is not a missing convenience. An app's widgets are in no
+    // registry the compositor can walk, so what the app says about itself
+    // is the *only* account of what happened inside its window — which row
+    // a press landed on, where it laid a panel out, whether it sent what
+    // was typed. Every harness that drives a client app was written
+    // against those lines, and none of them had ever been emitted: a
+    // press that hit a row and a press that hit nothing both came back
+    // silent, so a beat could tell them apart only by never believing
+    // either.
+    "RUST_LOG",
 ];
 
 /// Empty the environment, then put back what the app is entitled to.
