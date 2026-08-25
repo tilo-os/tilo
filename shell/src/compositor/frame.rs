@@ -374,14 +374,31 @@ impl FrameBuilder {
             let tree = chrome.tree();
             crate::shell::peer_windows::any_pending(&tree)
         };
+        // Capability requests those launches raise. They travel out of
+        // `examine` rather than being applied inside it, because a peer's
+        // window opening must not mint a grant here — the local user is
+        // asked, on the same queue every other permission prompt uses. The
+        // borrow ends with the block so the queue can be written next.
+        let mut asks = Vec::new();
         let decided = if owed {
             let chrome = self.chrome.borrow();
             let mut tree = chrome.tree_mut();
-            crate::shell::peer_windows::examine(&mut tree)
+            crate::shell::peer_windows::examine(&mut tree, &mut asks)
         } else {
             false
         };
-        if epoch == self.last_room_epoch && !decided {
+        let mut queued = false;
+        if !asks.is_empty() {
+            let mut chrome = self.chrome.borrow_mut();
+            for ask in asks {
+                queued |= chrome.queue_grant_prompt(ask);
+            }
+        }
+        // A queued question forces the repaint on its own. The prompt is
+        // only drawn from a frame that runs, and a permission dialog that
+        // waits for the next unrelated repaint is one the user is not being
+        // shown.
+        if epoch == self.last_room_epoch && !decided && !queued {
             return false;
         }
         self.last_room_epoch = epoch;
