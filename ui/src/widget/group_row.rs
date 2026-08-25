@@ -34,11 +34,18 @@ use crate::widget::{
 /// while the user is actively wheeling we don't snap; once they stop,
 /// the strip eases to the nearest group's left edge.
 const SNAP_IDLE_MS: u64 = 200;
-/// Duration of the snap animation itself (cubic-out ease). Matches the
-/// 200 ms feel the spawn animation in `window_group.rs` uses for
-/// secondary motions — long enough to read as eased, short enough to
-/// stay out of the user's way if they want to wheel again.
-const SNAP_ANIM_MS: u64 = 200;
+/// Duration of the strip's travel onto a window edge.
+///
+/// Where the strip comes to rest is not negotiable — a window's edge,
+/// so nothing is left as a sliver (see [`GroupRow::nearest_clean_rest`])
+/// — but how hard it arrives there is. A cubic-out over 200 ms leaves at
+/// the instant the gate clears, at three times the average speed of the
+/// whole journey, which across a window's width reads as the view being
+/// yanked onto the edge rather than settling onto it. Eased in as well
+/// as out and given half again as long, the same travel starts from
+/// standstill and peaks at a third of that: the strip glides onto the
+/// edge, and the destination is unchanged.
+const SNAP_ANIM_MS: u64 = 300;
 /// How near an in-flight pan's destination a fresh request has to be
 /// before it counts as the same destination and the journey is left
 /// running. A window's own edges land on whole pixels, so anything
@@ -777,7 +784,7 @@ impl GroupRow {
     /// Freeze the viewport's travel `elapsed` into its curve, so a still
     /// can be taken of a strip mid-pan.
     ///
-    /// A pan is 200 ms and a capture costs more than that, so every
+    /// A pan is `SNAP_ANIM_MS` and a capture costs more than that, so every
     /// screenshot of a moving strip lands after it stopped: the whole
     /// question of whether the view travelled or cut is invisible to the
     /// tool built to answer it. Holding the curve at a chosen point
@@ -1456,10 +1463,10 @@ impl GroupRow {
             } else {
                 let raw = (elapsed.as_secs_f64() / (SNAP_ANIM_MS as f64 / 1000.0))
                     .clamp(0.0, 1.0);
-                // Cubic-out ease — same shape the spawn animation in
-                // `window_group.rs` uses for its slide-in. Punchy at the
-                // start, gentle settle at the end.
-                let eased = crate::ease_out(raw);
+                // Smoothstep, so the strip accelerates off its rest
+                // position instead of leaving at full speed. See
+                // [`SNAP_ANIM_MS`].
+                let eased = crate::Curve::EaseInOut.apply(raw as f32) as f64;
                 self.scroll_x = anim.from + (anim.to - anim.from) * eased;
             }
         }
@@ -5723,7 +5730,7 @@ mod tests {
     fn scroll_snaps_to_nearest_group_after_wheel_idle() {
         // After the user wheel-pans the strip past a group boundary
         // and stops, the strip must ease `scroll_x` to the nearest
-        // group's left edge with a cubic-out curve over ~200 ms.
+        // group's left edge over `SNAP_ANIM_MS`.
         // Mirrors the concept's `snap-x snap-proximity` behaviour in
         // `DesktopView.tsx:396`.
         //
@@ -5744,10 +5751,10 @@ mod tests {
         let base = Instant::now();
         row.set_last_wheel_at_for_test(base - Duration::from_millis(250));
 
-        // First tick after idle: snap kicks off and advances ~25 % of
-        // the way (50 ms into a 200 ms cubic-out curve, so eased
-        // ≈ 1 - (1 - 0.25)^3 ≈ 0.578). scroll_x must have moved
-        // toward 608 but not yet arrived.
+        // First tick after idle: the snap kicks off and takes its
+        // first eased step. scroll_x must have moved toward 608 but
+        // not yet arrived — this is the assertion that tells a
+        // journey apart from a cut, and it holds for any curve.
         row.tick_snap_at(base + Duration::from_millis(50));
         assert!(
             row.scroll_x() > 400.0,
@@ -5756,16 +5763,16 @@ mod tests {
         );
         assert!(
             row.scroll_x() < 608.0,
-            "snap must NOT have arrived after only 50 ms; got {}",
+            "snap must NOT have arrived after its first step; got {}",
             row.scroll_x()
         );
 
-        // After the full 200 ms, scroll_x must have settled at the
+        // Once the curve has run, scroll_x must have settled at the
         // target group's left edge.
         row.tick_snap_at(base + Duration::from_millis(250));
         assert!(
             (row.scroll_x() - 608.0).abs() < 1.0,
-            "snap must settle at 608.0 after 200 ms; got {}",
+            "snap must settle at 608.0 once the curve has run; got {}",
             row.scroll_x()
         );
     }
