@@ -1620,13 +1620,92 @@ fn auto_hello_env() -> (String, Uuid) {
     auto_hello_env_uncached()
 }
 
-/// The identity this process collaborates as — the same `user_id` the broker
-/// attributes its ops and presence to.
+/// The person sitting at this machine.
 ///
 /// Actions are stamped with this so undo can tell one collaborator's work from
-/// another's: see [`crate::state::State::undo_as`].
+/// another's: see [`crate::state::State::undo_as`]. That is the whole
+/// requirement, and it is a demanding one — the id must be **stable** across
+/// the life of a document (an id that changed between two actions would strand
+/// the first, unreachable by the person who performed it) and **distinct**
+/// between two people (an id two people share makes `undo_for_author` match on
+/// something that cannot tell them apart, so one person's Ctrl+Z reverts the
+/// other's work).
+///
+/// It used to return [`local_app_id`] — `QOS_PACKAGE_ID`, the byte-identical
+/// string the next function down returns. Stable, and shared by everyone: every
+/// person on every machine running Word Processor was one author.
+///
+/// The ladder below is [`crate::shell`-side `local_user_id`]'s, rung for rung,
+/// with the one rung a *sandboxed* app needs inserted. Deliberately the same
+/// ladder rendered the same way: a capability the compositor granted to a
+/// person and an undo entry an app stamped with them have to name one subject,
+/// and two independent derivations are how they come to disagree with nothing
+/// reporting it.
+///
+/// 1. `QOS_USER_ID` — an explicit answer, from an operator or the capture
+///    driver. The shell reads it first too, so setting it makes the two agree
+///    by construction.
+/// 2. The runtime identity the launcher binds in at `/run/qos/identity.json`
+///    and names with `QOS_USER_IDENTITY`. This is the rung a packaged app
+///    actually lands on: `/var/lib/qos` is not in its sandbox, so the shell's
+///    own next rung is unreachable from inside one.
+/// 3. The same identity from `$XDG_CONFIG_HOME/qos/identity/primary.json`, for
+///    the shell's in-process apps — not sandboxed, so nothing sets the env var
+///    for them. Same ladder [`crate::history_source`] already walks to put a
+///    name on a revision.
+/// 4. `/var/lib/qos/user-identity/pubkey.bin`, the shell's own second rung.
+/// 5. The OS account name, then a constant. Per-account rather than
+///    per-person, which is the honest limit of a machine that has never been
+///    enrolled — and still distinguishes two people far better than naming
+///    them after the application did.
+///
+/// Not memoised, for the reason [`auto_hello_env_uncached`] gives: a process
+/// hosting more than one identity must not be frozen into the first one.
 pub fn local_user_id() -> crate::permissions::UserId {
-    crate::permissions::UserId(auto_hello_env().0)
+    crate::permissions::UserId(resolve_local_user_id())
+}
+
+fn resolve_local_user_id() -> String {
+    if let Some(v) = non_empty_env("QOS_USER_ID") {
+        return v;
+    }
+    if let Some(id) = runtime_identity::load()
+        .ok()
+        .or_else(|| config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok()))
+    {
+        return person_id_from_key(id.group_public_key());
+    }
+    if let Ok(bytes) = std::fs::read("/var/lib/qos/user-identity/pubkey.bin")
+        && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
+    {
+        return person_id_from_key(key);
+    }
+    non_empty_env("USER").unwrap_or_else(|| "local".to_string())
+}
+
+/// `$XDG_CONFIG_HOME/qos/identity/primary.json`, else
+/// `$HOME/.config/qos/identity/primary.json` — where first boot writes the
+/// identity an unsandboxed process has to find for itself.
+fn config_identity_path() -> Option<std::path::PathBuf> {
+    let base = match non_empty_env("XDG_CONFIG_HOME") {
+        Some(v) => std::path::PathBuf::from(v),
+        None => std::path::PathBuf::from(non_empty_env("HOME")?).join(".config"),
+    };
+    let p = base.join("qos").join("identity").join("primary.json");
+    p.is_file().then_some(p)
+}
+
+/// A public key rendered as a person, in the one canonical form — so this
+/// string and the compositor's string for the same key are the same string.
+fn person_id_from_key(key: [u8; 32]) -> String {
+    match crate::permissions::Principal::person_from_key(
+        collab_types::crypto::Ed25519PublicKey::from_bytes(key),
+    ) {
+        crate::permissions::Principal::Person(id) => id,
+        // `person_from_key` constructs `Person` unconditionally; this arm
+        // exists only because the return type is the whole enum.
+        _ => unreachable!("person_from_key returns a person"),
+    }
 }
 
 /// The application this process is, as the launcher named it

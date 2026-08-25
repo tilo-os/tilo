@@ -581,10 +581,19 @@ impl App {
                 // nothing announced one — which is what two windows of
                 // one unnamed app share. Anything not on this list is
                 // somebody else and gets painted.
+                //
+                // `local_app_id` is named here rather than left to fall
+                // out of `local_user_id`, which used to return the same
+                // string and no longer does. The app id is the broker's
+                // fallback attribution and has to stay on the list in
+                // its own right; the person is a separate entry beside
+                // it, so a frame stamped either way is still recognised
+                // as this process's own.
                 let mut ctx = PresenceCtx::empty();
                 ctx.set_own_identity(
                     crate::collaboration::presence_handle_env()
                         .into_iter()
+                        .chain(std::iter::once(crate::collaboration::local_app_id()))
                         .chain(std::iter::once(crate::collaboration::local_user_id().0)),
                 );
                 ctx
