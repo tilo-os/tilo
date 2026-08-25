@@ -565,6 +565,47 @@ const FADE_IN_STOP: f32 = 0.13;
 /// can sit outside the rim and still be faded with everything else.
 const RIM_SHADOW_REACH: f64 = 26.0;
 
+/// Fraction of the wheel's own width that must still be on screen for it
+/// to paint at full strength, and the fraction below which it does not
+/// paint at all.
+///
+/// The wheel rides the strip's canvas, so panning right carries it off
+/// the left edge of the screen. What was left there was a hard vertical
+/// cut through a saturated body at full alpha, with the rim's crisp
+/// hairline running down the very edge of the frame: sixteen pixels of
+/// blue and a white line, with nothing on screen to say what they were
+/// part of. On a recording that is indistinguishable from a tear.
+///
+/// This module already refuses that shape once — the band's top and
+/// bottom are dissolved rather than clipped, precisely so "any hard clip
+/// … in open wallpaper, which instantly reads as a bug" never happens.
+/// The viewport's edge is the third side of the same problem and gets
+/// the same answer: by the time the frame cuts the wheel, there is
+/// nothing left to cut.
+const PAN_OFF_FADE_FROM: f64 = 0.45;
+const PAN_OFF_FADE_TO: f64 = 0.12;
+
+/// How strongly the wheel should paint, given how much of its footprint
+/// the viewport still holds.
+///
+/// `1.0` while most of it is there — the common case, where this must
+/// change nothing — ramping to `0.0` once it is a rind. Smoothstepped so
+/// the dissolve has no visible start or end.
+pub fn pan_off_opacity(visible_w: f64, full_w: f64) -> f32 {
+    if full_w <= 0.0 {
+        return 1.0;
+    }
+    let f = (visible_w / full_w).clamp(0.0, 1.0);
+    if f >= PAN_OFF_FADE_FROM {
+        return 1.0;
+    }
+    if f <= PAN_OFF_FADE_TO {
+        return 0.0;
+    }
+    let t = (f - PAN_OFF_FADE_TO) / (PAN_OFF_FADE_FROM - PAN_OFF_FADE_TO);
+    (t * t * (3.0 - 2.0 * t)) as f32
+}
+
 /// Clear space between the footprint's left edge and the band's inner
 /// arc at its closest approach. Keeps the arc off the edge so the band
 /// visibly ends on its own curve rather than on the clip.

@@ -157,6 +157,15 @@ pub enum Icon {
     /// "this member is not a person", so every surface that lists
     /// members can say so the same way.
     Bot,
+    /// The web — lucide `globe`: a circle with an equator and the
+    /// ellipse that reads as a meridian. The tab bar hand-traced this
+    /// shape before it existed here, same as [`Icon::Terminal`] did.
+    Globe,
+    /// A speech bubble — lucide `message-square`. What a conversation
+    /// looks like. [`Icon::Reply`] is an *action* taken inside one, and
+    /// an app whose whole subject is the conversation should not wear
+    /// the button for one of the things you do in it.
+    MessageSquare,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -745,6 +754,21 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M15 13v2"),
             path_from_d("M9 13v2"),
         ],
+        // Globe: the sphere, the meridian as a squeezed ellipse, and
+        // the equator. Lucide's own three subpaths — the latitude lines
+        // a hand-drawn version would omit are what stop it reading as a
+        // clock face.
+        Icon::Globe => vec![
+            circle_path(12.0, 12.0, 10.0),
+            path_from_d("M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"),
+            path_from_d("M2 12h20"),
+        ],
+        // MessageSquare: the bubble body with its tail folded into the
+        // bottom-left corner, exactly as lucide draws it — one closed
+        // path, so the tail cannot drift away from the box at 14 px.
+        Icon::MessageSquare => vec![path_from_d(
+            "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
+        )],
     }
 }
 
@@ -769,9 +793,28 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
 /// pair here does, and inventing one per app would put 45 hand-drawn
 /// shapes in a table nobody can keep consistent.
 pub fn icon_for_app_id(app_id: &str) -> Icon {
-    let name = app_id.rsplit('.').next().unwrap_or(app_id);
-    match name {
-        "file-explorer" => Icon::Folder,
+    known_icon_for_app_id(app_id).unwrap_or(Icon::LayoutGrid)
+}
+
+/// [`icon_for_app_id`] without the fallback: `None` when nothing in the
+/// table names this app.
+///
+/// The fallback is right for a surface that must show *something* —
+/// a permission prompt has to draw a mark next to the name of whoever is
+/// asking. It is wrong for a surface that already has a better answer to
+/// fall back to, and a tab pill does: a tab whose app-id is unknown may
+/// still know what *sort* of app it is hosting, and the sort is more
+/// than "an application".
+///
+/// Matching is on the id's trailing segment, case-insensitively, so the
+/// compositor's own reverse-DNS ids for the apps it draws in-process
+/// (`org.nirios.Files`) resolve to the same glyph as the packaged ones
+/// (`dev.qos.file-explorer`). Two ids for one program must not be two
+/// pictures of it.
+pub fn known_icon_for_app_id(app_id: &str) -> Option<Icon> {
+    let name = app_id.rsplit('.').next().unwrap_or(app_id).to_ascii_lowercase();
+    let icon = match name.as_str() {
+        "file-explorer" | "files" => Icon::Folder,
         "terminal" => Icon::Terminal,
         "code-editor" | "hex-editor" => Icon::Code,
         "snippets" => Icon::FileCode,
@@ -782,7 +825,7 @@ pub fn icon_for_app_id(app_id: &str) -> Icon {
         "containers" | "git-client" => Icon::Layers,
         "diffmerge" => Icon::Copy,
         "mail" => Icon::Mail,
-        "chat" => Icon::Reply,
+        "chat" => Icon::MessageSquare,
         "api-tester" => Icon::Send,
         "feeds" => Icon::Bell,
         "contacts" | "calendar" => Icon::Calendar,
@@ -797,13 +840,17 @@ pub fn icon_for_app_id(app_id: &str) -> Icon {
         "backups" => Icon::Archive,
         "firewall" | "vpn" | "totp" => Icon::Shield,
         "store" | "software-store" => Icon::CloudDownload,
-        "browser" => Icon::ExternalLink,
+        "browser" => Icon::Globe,
         "remote" => Icon::Monitor,
         "osk" => Icon::ArrowBigUp,
         "search" => Icon::Search,
         "agent" => Icon::Bot,
-        _ => Icon::LayoutGrid,
-    }
+        // The compositor draws these in-process and names them under its
+        // own prefix; they are the same programs the table already knows.
+        "editor" | "word" | "document" => Icon::FileText,
+        _ => return None,
+    };
+    Some(icon)
 }
 
 /// Map a filesystem entry to the most appropriate [`Icon`].

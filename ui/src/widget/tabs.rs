@@ -217,15 +217,73 @@ pub struct TabDescriptor {
     /// text-only pill — used for tests and for any callers that don't
     /// know the tile type at construction time.
     pub app_kind: Option<AppKind>,
+    /// The app-id of whatever this tab is showing, where the shell knows
+    /// it: a packaged app's package id (`dev.qos.photos`), a built-in's
+    /// compositor id (`org.nirios.Files`), or a foreign client's own
+    /// `xdg_toplevel::set_app_id` string.
+    ///
+    /// This is what makes a row of tabs read as a row of *programs*.
+    /// [`Self::app_kind`] can only say which of five sorts of app a tab
+    /// is, and everything it has no name for takes the same fallback —
+    /// so a word processor and a photo editor sharing one tab bar, the
+    /// arrangement this window model exists to make possible, came out
+    /// as two identical glyphs and two words. That is what a browser
+    /// looks like. An id resolves through
+    /// [`crate::icons::known_icon_for_app_id`] to that app's own mark.
+    ///
+    /// `None`, or an id the icon table does not know, falls back to
+    /// `app_kind`.
+    pub app_id: Option<String>,
 }
 
 impl TabDescriptor {
     /// Construct a descriptor without a typed icon — convenience for the
     /// many test call sites that only care about id + title. Production
-    /// callers (the shell) populate `app_kind` via the struct literal
-    /// so the pill paints the correct leading glyph.
+    /// callers (the shell) populate `app_kind` / `app_id` via the struct
+    /// literal so the pill paints the correct leading glyph.
     pub fn new(id: u64, title: impl Into<String>) -> Self {
-        Self { id, title: title.into(), app_kind: None }
+        Self { id, title: title.into(), app_kind: None, app_id: None }
+    }
+
+    /// Which mark this tab's pill paints in its leading slot, if any.
+    ///
+    /// The app's own glyph wins over its category's: an id names one
+    /// program, a kind names a shelf of them.
+    pub(crate) fn leading_glyph(&self) -> Option<PillGlyph> {
+        if let Some(icon) = self
+            .app_id
+            .as_deref()
+            .and_then(crate::icons::known_icon_for_app_id)
+        {
+            return Some(PillGlyph::App(icon));
+        }
+        self.app_kind.map(PillGlyph::Kind)
+    }
+}
+
+/// The two things a pill's leading slot can hold, in the order it
+/// prefers them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PillGlyph {
+    /// This app's own mark, from the shared icon table.
+    App(crate::icons::Icon),
+    /// All the tab knew was which sort of app it is.
+    Kind(AppKind),
+}
+
+impl PillGlyph {
+    /// Paint the mark centred in `rect`, stroked in `color`.
+    fn draw(self, scene: &mut Scene, transform: Affine, rect: Rect, color: vello::peniko::Color) {
+        match self {
+            // Stroked a hair under the shared 1.5 px default: at 14 px a
+            // pill glyph sits beside a semibold title and has to read as
+            // chrome next to it, which is the same call the hand-traced
+            // kind glyphs below already made at 1.1.
+            PillGlyph::App(icon) => {
+                crate::icons::draw_icon(scene, transform, rect, icon, color, 1.25)
+            }
+            PillGlyph::Kind(kind) => draw_app_icon(scene, transform, rect, kind, color),
+        }
     }
 }
 
@@ -595,14 +653,14 @@ impl TabBar {
             // shortcut. Pills with no `app_kind` paint as an empty
             // bubble — still distinct from unpinned via width.
             let accent = self.accent_ids.get(&t.id).copied();
-            if let Some(kind) = t.app_kind {
+            if let Some(glyph) = t.leading_glyph() {
                 let icon_rect = Rect::new(
                     r.center().x - 7.0,
                     r.center().y - 7.0,
                     r.center().x + 7.0,
                     r.center().y + 7.0,
                 );
-                draw_app_icon(scene, transform, icon_rect, kind, accent.unwrap_or(text_color));
+                glyph.draw(scene, transform, icon_rect, accent.unwrap_or(text_color));
             } else if let Some(dot) = accent {
                 // No app glyph to tint, so the accent is the whole
                 // marker. Centred like the glyph would have been, so a
@@ -617,14 +675,14 @@ impl TabBar {
             // reserves the same width for either — `leading_zone` is the
             // layout side of this same choice and the two must agree, or
             // the title lands on top of the marker.
-            let leading_shift = if let Some(kind) = t.app_kind {
+            let leading_shift = if let Some(glyph) = t.leading_glyph() {
                 let icon_rect = Rect::new(
                     icon_x0,
                     r.center().y - 7.0,
                     icon_x0 + ICON_W,
                     r.center().y + 7.0,
                 );
-                draw_app_icon(scene, transform, icon_rect, kind, accent.unwrap_or(text_color));
+                glyph.draw(scene, transform, icon_rect, accent.unwrap_or(text_color));
                 ICON_W + ICON_GAP
             } else if let Some(dot) = accent {
                 let c = vello::kurbo::Circle::new(
@@ -845,16 +903,16 @@ impl TabBar {
         let text_size = theme.tokens.typography.scale.sm;
         let title_weight = TextWeight::Semibold;
         let (_tw, th) = tr.measure_weighted(&c.desc.title, text_size, None, title_weight);
-        let leading_shift = if let Some(kind) = c.desc.app_kind {
+        let leading_shift = if let Some(glyph) = c.desc.leading_glyph() {
             let icon_x0 = r.x0 + 10.0;
             let icon_rect = Rect::new(
                 icon_x0,
                 r.center().y - 7.0,
-                icon_x0 + 14.0,
+                icon_x0 + ICON_W,
                 r.center().y + 7.0,
             );
-            draw_app_icon(scene, transform, icon_rect, kind, text_dim);
-            14.0 + 6.0
+            glyph.draw(scene, transform, icon_rect, text_dim);
+            ICON_W + ICON_GAP
         } else {
             0.0
         };
@@ -1112,7 +1170,7 @@ impl TabBar {
     /// its titles on one x.
     fn leading_zone(&self, i: usize) -> f64 {
         let t = &self.tabs[i];
-        if t.app_kind.is_some() || self.accent_ids.contains_key(&t.id) {
+        if t.leading_glyph().is_some() || self.accent_ids.contains_key(&t.id) {
             ICON_W + ICON_GAP
         } else {
             0.0
