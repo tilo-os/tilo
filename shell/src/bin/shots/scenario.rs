@@ -1814,6 +1814,11 @@ fn agent_touches_the_photograph() -> Scenario {
     let path = demo_photograph_path();
     let address: &'static str =
         Box::leak(format!("photos.image:{path}#crop").into_boxed_str());
+    // The same photograph, and the operation that would undo the crop. Aimed
+    // at a participant this room has never heard of, so the catalogue's
+    // capability gate leaves the row out and the address resolves to nothing.
+    let undo: &'static str =
+        Box::leak(format!("photos.image:{path}#reset").into_boxed_str());
     Scenario {
         name: "agent-touches-the-photograph",
         description: "an operation an agent performed, marked on the resource \
@@ -1857,6 +1862,24 @@ fn agent_touches_the_photograph() -> Scenario {
             Action::Wait(12),
             Action::Relayout,
             Action::Snapshot("03-after"),
+            // And the case that decides whether any of this is evidence.
+            //
+            // A stranger asks for the crop to be undone. The gate refuses,
+            // because it refuses everybody this room has not admitted — so
+            // nothing is invoked, and the frame after it has to show *both*
+            // that no mark was drawn and that the photograph is still
+            // cropped. An overlay that played whenever something was asked
+            // for would fail the first half; one drawn from a script rather
+            // than from the door would fail both, and would be a lie told on
+            // camera rather than a mistake.
+            Action::InvokeAppAction {
+                id: undo,
+                argument: None,
+                agent: Some("stranger"),
+            },
+            Action::Wait(6),
+            Action::Relayout,
+            Action::Snapshot("04-a-refusal-marks-nothing"),
         ],
     }
 }

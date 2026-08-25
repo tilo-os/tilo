@@ -4228,18 +4228,29 @@ impl ShellOverlayHost {
         };
         let st = chrome.borrow();
         let tree = st.tree();
-        let roster: &[crate::shell::state::Collaborator] = match tree.active_workspace() {
-            Some(ws) => &ws.collaborators,
-            None => &[],
-        };
+        let ws = tree.active_workspace();
+        let roster: &[crate::shell::state::Collaborator] =
+            ws.map(|w| w.collaborators.as_slice()).unwrap_or(&[]);
+        // Who this room admitted as an agent rather than as a person, read
+        // off the room's own capability list — which is where that fact is
+        // recorded, and where the bar's avatars already read it. A
+        // participant can be acting here without ever having been written
+        // into the roster: an agent is a subject in the permission model
+        // first, and a row in a list second.
+        let agents: Vec<String> = ws
+            .map(|w| w.agent_members().into_iter().map(|(a, _)| a).collect())
+            .unwrap_or_default();
         crate::shell::action_touch::promote(|id| {
-            match roster.iter().find(|c| c.id == id) {
-                Some(c) => (c.name.clone(), c.is_agent),
-                // Not in the roster: still a participant, still drawn, under
-                // the id the door reported and as a person. See
-                // `action_touch::promote`.
-                None => (id.to_string(), false),
+            if let Some(c) = roster.iter().find(|c| c.id == id) {
+                return (c.name.clone(), c.is_agent);
             }
+            // Not in the roster. Still a participant, still drawn, under the
+            // id the door reported — and marked as an agent only if the room
+            // says one was admitted under that name. Nothing is inferred from
+            // the name itself: claiming somebody is a bot is a worse error
+            // than not saying.
+            let is_agent = agents.iter().any(|a| a.eq_ignore_ascii_case(id));
+            (id.to_string(), is_agent)
         });
     }
 
