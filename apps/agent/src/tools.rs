@@ -854,12 +854,38 @@ mod tests {
     }
 
     /// An address that is not on offer and one that does not exist are
-    /// answered identically, so probing maps nothing.
+    /// answered the same way, so probing maps nothing.
+    ///
+    /// Not byte-identical — each reply names the id it was *asked* about, and
+    /// echoing a caller's own input back tells it nothing it did not already
+    /// know. What must not differ is everything else: same sentence, no
+    /// mention of permission, and nothing that would let a caller tell "no
+    /// such operation" from "not for you". That is the property the door
+    /// states (`DoorError::Unknown` covers both deliberately), and it is the
+    /// one asserted here.
     #[test]
     fn an_operation_that_is_not_offered_is_answered_as_though_it_did_not_exist() {
-        let hidden = describe(&json!({"operation": "photos.image:/x#crop"}), &room());
-        let absent = describe(&json!({"operation": "nothing.at#all"}), &room());
-        assert_eq!(hidden, absent);
+        let hidden_id = "photos.image:/x#crop";
+        let absent_id = "nothing.at#all";
+        let hidden = describe(&json!({"operation": hidden_id}), &room());
+        let absent = describe(&json!({"operation": absent_id}), &room());
+
+        // The same sentence, differing only where each quotes its own input.
+        assert_eq!(hidden, nothing_found(&format!("the operation {hidden_id}")));
+        assert_eq!(absent, nothing_found(&format!("the operation {absent_id}")));
+        assert_eq!(
+            hidden.replace(hidden_id, "<id>"),
+            absent.replace(absent_id, "<id>"),
+            "the two must be indistinguishable once each stops quoting the \
+             caller's own words back at it"
+        );
+        // And neither hints that a gate was involved.
+        for reply in [&hidden, &absent] {
+            let lower = reply.to_lowercase();
+            for leak in ["permission", "denied", "allowed", "not for you", "capabilit"] {
+                assert!(!lower.contains(leak), "{reply} leaks {leak:?}");
+            }
+        }
     }
 
     /// A listing that is cut short says how to reach the rest, because the cap

@@ -1366,12 +1366,21 @@ mod tests {
     }
 
     /// The set of applications offered as openable is exactly the ones this
-    /// room does not have — so it empties itself as the room fills, and an app
-    /// that is here is never offered as something to open.
+    /// room has nothing open in — so it empties itself as the room fills, and
+    /// an app that is here *with something in it* is never offered as
+    /// something to open.
     ///
-    /// The second half is what stops a second window landing on top of the
+    /// That second half is what stops a second window landing on top of the
     /// first: an agent that still offered to open what is already open would
     /// answer the next request about that app by opening a copy of it.
+    ///
+    /// "Here" is not the same as "has something to work on", and this used to
+    /// treat them as one. The rule the code states is the one asserted below
+    /// (see [`openable`]): an application present but exporting nothing is
+    /// still openable, because the open is what gives it something, and an
+    /// application publishing resources of its own is not. Asserted in both
+    /// directions, because getting either wrong makes an app invisible — one
+    /// way it can never be reached, the other way it is opened twice.
     #[test]
     fn only_the_apps_this_room_is_missing_are_offered_as_openable() {
         let perms = granting(vec![grant(Scope::Workspace)]);
@@ -1406,11 +1415,48 @@ mod tests {
         );
         let held: Vec<(&'static AppContract, &automerge::AutoCommit)> = vec![(photos, &doc)];
 
-        let now = openable(&held, &View::default(), &perms);
+        // Here, and holding nothing. It exports no operations — there is no
+        // photograph for a crop to be an operation *on* — so opening it onto
+        // something is the only thing that can move any request forward, and
+        // it stays offered.
+        assert!(
+            tree(photos, &view, &doc).is_empty(),
+            "this half of the test is about an application with nothing open \
+             in it; the fixture exports {:?}",
+            tree(photos, &view, &doc).len()
+        );
+        let empty_app = openable(&held, &view, &perms);
+        assert!(
+            empty_app.iter().any(|o| o.app == "photos"),
+            "an application that is here but has nothing open exports no \
+             operations, so the open is the only way in and must stay on \
+             offer: {:?}",
+            empty_app.iter().map(Offer::id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            empty_app.len(),
+            empty.len(),
+            "and nothing else may change: {:?}",
+            empty_app.iter().map(Offer::id).collect::<Vec<_>>()
+        );
+
+        // Now give it a photograph. It publishes its own operations, so the
+        // request has somewhere to go and offering to open it again would put
+        // a second window over the first.
+        let img = ::photos::model::OpenImage::from_path("/var/tmp/qos/harbour.png", 512, 320);
+        ::photos::doc::PhotosDoc::set_image(&mut doc, Some(&img));
+        doc.commit();
+        let held: Vec<(&'static AppContract, &automerge::AutoCommit)> = vec![(photos, &doc)];
+        assert!(
+            !tree(photos, &view, &doc).is_empty(),
+            "the fixture has to publish something, or this proves nothing"
+        );
+
+        let now = openable(&held, &view, &perms);
         assert!(
             !now.iter().any(|o| o.app == "photos"),
-            "an app whose state is in the room must stop being offered as \
-             something to open"
+            "an app that is here *and* has something open must stop being \
+             offered as something to open"
         );
         assert_eq!(
             now.len(),
