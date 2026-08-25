@@ -1398,6 +1398,46 @@ class Live:
             tile = yc.best_tile(self.x, yc.FILES_APP, yc.VIEWPORT) or tile
             log = yc.LogTail(self.x.log_path)
             log.catch_up()
+            # That his file manager is showing the photograph at all,
+            # before anything is aimed at it.
+            #
+            # Asked of the app, not of the disk. `os.path.exists` would
+            # answer for the machine the rig is running on and say
+            # nothing about what is on his screen — and it is his screen
+            # the beat is about. `Widget::resource_rects` is the app
+            # telling the session which addresses it is currently drawing
+            # and where, so a row in here is a row a person could point
+            # at.
+            #
+            # The address is checked, not just the name. A row called
+            # `harbour.png` proves nothing on its own: that is exactly
+            # what a copy in his own home would have been called, and for
+            # a while that is what the rig staged. What makes this the
+            # beat is *which* `harbour.png` — the one the room carries,
+            # reachable because a capability recorded on the room
+            # replicated to him, rather than one that happens to sit in a
+            # directory of his own.
+            drawn = log.resource_rects(yc.FILES_APP)
+            rows = [a for a in drawn
+                    if os.path.basename(a.split(":", 1)[-1]).lower()
+                    == yc.PHOTO_NAME.lower()]
+            from_the_room = [a for a in rows
+                             if a.split(":", 1)[-1].startswith(yc.WORKSPACE_ROOT)]
+            yc.claim(
+                f"his file manager is drawing {yc.PHOTO_NAME}, out of the "
+                f"room's workspace and not out of a home",
+                bool(from_the_room), True,
+            )
+            if rows and not from_the_room:
+                yc.gap(f"the row on his screen is {rows[0]!r}, which is not "
+                       f"under {yc.WORKSPACE_ROOT} — he is holding a "
+                       f"different file that shares a name, and the beat "
+                       f"would pass for the wrong reason")
+            elif not rows:
+                yc.gap(f"his file manager published {len(drawn)} row(s) and "
+                       f"none of them is {yc.PHOTO_NAME}; if it published "
+                       f"none at all it was granted nothing and is showing "
+                       f"its own sandbox directory. See {self.x.log_path}")
             said = yc.say_something_about(
                 self.x, log, tuple(tile["rect"]), yc.PHOTO_NAME,
                 # The room's workspace, not his home. That is the whole
