@@ -536,6 +536,36 @@ pub trait Widget {
         Vec::new()
     }
 
+    /// Where on screen the resources this widget publishes actually are —
+    /// `(resource id, rect)`, in the same logical space as
+    /// [`Widget::get_rect`].
+    ///
+    /// The other half of [`resources`](Self::resources), and deliberately a
+    /// separate call. A resource id carries no position and must not: that is
+    /// what lets a caller with no display enumerate and invoke, and what keeps
+    /// one address naming one operation across layouts, themes and
+    /// resolutions. So the *view* answers where, per frame, and the surface
+    /// stays positional-free.
+    ///
+    /// What it buys is the thing an address alone cannot do: when a
+    /// participant invokes `photos.image:/…/harbour.png#crop`, something has to
+    /// resolve that address to the pixels the photograph occupies, or an agent's
+    /// work is provable only by reading the document afterwards. See
+    /// [`ui::presence::ActionTouch`](crate::presence::ActionTouch), which is
+    /// what consumes this.
+    ///
+    /// Same shape as [`test_rects`](Self::test_rects) and for the same reason:
+    /// a widget that paints several things into one rect — or that lays its
+    /// children out itself rather than through taffy, as the shell's `GroupRow`
+    /// does — is otherwise a single addressable box, and a rect only it can
+    /// compute has to be republished by it or nothing outside can aim at it.
+    ///
+    /// Zero-area entries are dropped by [`collect_resource_rects`], so a
+    /// resource scrolled out of its window this frame is simply not resolvable
+    /// — which is the honest answer, and is what stops a mark being drawn on a
+    /// thing nobody can see. Default is empty: a widget opts in.
+    fn resource_rects(&self) -> Vec<(String, vello::kurbo::Rect)> { Vec::new() }
+
     /// Searchable-content sources this widget folds into the unified Ctrl+K
     /// palette, alongside its exported [`resources`](Self::resources) actions.
     /// An app declares what it can *find* (its contacts, its files, …) by
@@ -770,6 +800,34 @@ pub trait Widget {
 }
 
 pub type Element = Box<dyn Widget>;
+
+/// Every resource on screen under `root`, keyed by resource id.
+///
+/// The frame's answer to "where is `photos.image:/…/harbour.png`", built by
+/// walking the tree and asking each widget for its
+/// [`resource_rects`](Widget::resource_rects). Rebuilt per frame rather than
+/// cached: a rect moves whenever anything scrolls, resizes or relayouts, and a
+/// stale one would put a mark beside the thing it is about instead of on it.
+///
+/// Zero-area rects are dropped, so a key present in the map means "on screen
+/// now" rather than "exists somewhere". First writer wins, so a widget nearer
+/// the root — a container republishing a hosted app's rects, say — cannot be
+/// shadowed by the deeper widget it republished from.
+pub fn collect_resource_rects(root: &dyn Widget) -> HashMap<String, vello::kurbo::Rect> {
+    fn walk(w: &dyn Widget, out: &mut HashMap<String, vello::kurbo::Rect>) {
+        for (id, rect) in w.resource_rects() {
+            if rect.area() > 0.0 {
+                out.entry(id).or_insert(rect);
+            }
+        }
+        for child in w.children() {
+            walk(child, out);
+        }
+    }
+    let mut out = HashMap::new();
+    walk(root, &mut out);
+    out
+}
 
 mod button;      pub use button::{Button, ButtonStyle, ButtonInteract, ButtonFace, face_colors};
 mod checkbox;    pub use checkbox::Checkbox;
