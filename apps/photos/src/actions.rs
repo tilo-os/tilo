@@ -180,7 +180,7 @@ impl ResourceProvider for PhotosResources {
                 spec(
                     "crop-square",
                     "Crop to a square",
-                    edits.cropped_from_view(square_of(w, h, measure_subject(&image.path))),
+                    edits.cropped_from_view(square_of(w, h, subject_at(&image.path))),
                 )
                 .with_description(
                     "Keep the largest square of what is currently shown, placed \
@@ -273,7 +273,7 @@ impl ResourceProvider for PhotosResources {
 /// Reads the file rather than the decoded surface: this runs where the
 /// resource tree is built, which has the path and not the pixels, and a
 /// photograph is read once per publish rather than per frame.
-fn subject_of(path: &str) -> Option<String> {
+fn subject_at(path: &str) -> Option<(f64, f64)> {
     // Once per file, not once per publish.
     //
     // `resources()` is rebuilt whenever the document changes -- it is a
@@ -289,16 +289,16 @@ fn subject_of(path: &str) -> Option<String> {
     // readable by being decoded again every frame.
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
-    static SEEN: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+    static SEEN: OnceLock<Mutex<HashMap<String, Option<(f64, f64)>>>> = OnceLock::new();
     let cache = SEEN.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(seen) = cache.lock() {
         if let Some(hit) = seen.get(path) {
-            return hit.clone();
+            return *hit;
         }
     }
-    let answer = measure_subject(path).map(|(cx, cy)| subject_sentence(cx, cy));
+    let answer = measure_subject(path);
     if let Ok(mut seen) = cache.lock() {
-        seen.insert(path.to_string(), answer.clone());
+        seen.insert(path.to_string(), answer);
     }
     answer
 }
@@ -343,6 +343,12 @@ fn measure_subject(path: &str) -> Option<(f64, f64)> {
     let cx = (mx / total + 0.5) / f64::from(GRID);
     let cy = (my / total + 0.5) / f64::from(GRID);
     Some((cx, cy))
+}
+
+/// The measurement, in words: what the child resource carries and what the
+/// tests below pin. One decode behind it, remembered by path.
+fn subject_of(path: &str) -> Option<String> {
+    subject_at(path).map(|(cx, cy)| subject_sentence(cx, cy))
 }
 
 /// The measurement, said in words, for the child resource that carries it.
