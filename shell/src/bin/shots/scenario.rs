@@ -1915,6 +1915,7 @@ fn catalogue_rest() -> Vec<Scenario> {
         tab_pill_reveal(),
         tab_pill_reveal_narrow(),
         tab_pill_states(),
+        two_applications_in_one_tab_bar(),
         new_tab_from_the_plus_chip(),
         status_tray_states(),
         media_key_osd(),
@@ -2461,6 +2462,44 @@ const REVEAL_SAMPLES: &[u64] = &[0, 20, 40, 60, 90, 130, 180];
 /// its own idle neighbours has still failed. The boot group hands us four
 /// tabs, so activating the third and parking the pointer over the fourth
 /// puts idle, active and hover in the same row with no synthetic state.
+/// Two different applications sharing one tab bar.
+///
+/// The arrangement this window model exists for, and the one a viewer is
+/// most likely to mistake for a browser — so what the picture has to
+/// show is that the two pills are two *programs*, not two pages. Each
+/// pill carries its own application's mark: a document and a picture,
+/// which are different shapes at 14 px and stay different in every
+/// theme.
+///
+/// They used to be the same shape. A pill drew from a five-variant app
+/// kind, and both of these fell to its catch-all, so the pair came out as
+/// two identical cogs distinguished by nothing but their titles.
+fn two_applications_in_one_tab_bar() -> Scenario {
+    Scenario {
+        name: "two_applications_in_one_tab_bar",
+        description: "A word processor and a photo editor in one window \
+                      group, each pill wearing its own application's icon.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::Relayout,
+            Action::AddHostedTab { app: "Word", title: "Word Processor" },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::Relayout,
+            Action::AddHostedTab { app: "Photos", title: "Photos" },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::Relayout,
+            // Pointer well off the bar: no hover state to blur which
+            // difference the picture is about.
+            Action::MoveCursor(Point::new(900.0, 620.0)),
+            Action::Wait(24),
+            Action::Relayout,
+            Action::Snapshot("01-two-apps-one-bar"),
+        ],
+    }
+}
+
 fn tab_pill_states() -> Scenario {
     Scenario {
         name: "tab_pill_states",
