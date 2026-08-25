@@ -712,6 +712,18 @@ fn tree_tiles(chrome: &shell::shell::chrome_state::Chrome, tab_id: u64) -> Vec<T
 /// identity are not in a descriptor, so both were lost, and the next
 /// resync noticed the tree's tile no longer matched what was on screen
 /// and "corrected" the screen: a live window became a stub card.
+///
+/// The tab is torn out to the **left** of the group it came from, and
+/// that is load-bearing. The group harvest writes the new group into
+/// the tree at the widget's index, and until the placement harvest runs
+/// the tree lists the tab twice — once intact where it started, once
+/// rebuilt in the group it was torn into. `WorkspaceTree::place_tab`
+/// then keeps whichever copy it meets first in tree order. Tearing to
+/// the right leaves the intact copy first, so the rebuild is discarded
+/// and this test would pass with the fix removed; tearing to the left
+/// puts the rebuilt copy first, which is the arrangement that actually
+/// exercises what this commit repairs. See the ordering note on
+/// `ShellOverlayHost::take_structure_dirty`.
 #[test]
 fn a_tab_dragged_into_its_own_group_keeps_what_was_inside_it() {
     let (tree, strip_id, _group, foreign_tab, hosted_tab, surface) =
@@ -735,13 +747,14 @@ fn a_tab_dragged_into_its_own_group_keeps_what_was_inside_it() {
     );
 
     // Drag the client's tab out into its own window, the way a drop in
-    // the gap between two groups does.
+    // the gap between two groups does. Gap 0 — to the left of the group
+    // it came from; see the note above for why that side matters.
     {
         let row = host
             .group_row_mut_for_tests(strip_id)
             .expect("the strip's live row");
         assert!(
-            row.split_tab_into_new_group(0, foreign_tab, 1),
+            row.split_tab_into_new_group(0, foreign_tab, 0),
             "the detach itself must succeed"
         );
     }
@@ -773,14 +786,38 @@ fn a_tab_dragged_into_its_own_group_keeps_what_was_inside_it() {
     chrome.borrow_mut().bump();
     let _ = host.take_structure_dirty();
 
-    let detached_group_tiles = host
-        .group_at_for_tests(strip_id, 1)
-        .expect("the detached tab's new group")
-        .tile_kind_labels_for_tests();
+    // Nothing was rebuilt. The tile the tree carries is the one the
+    // widget is already showing, so the resync has no swap to make, and
+    // a swap here *is* the defect — it is the step that throws the live
+    // client away and puts a card in its place.
     assert_eq!(
-        detached_group_tiles,
-        vec!["App".to_string()],
-        "the detached window must still be the live client, not a stub card"
+        host.last_resync_content_swaps(),
+        0,
+        "the bump must not rebuild the detached window's contents"
+    );
+
+    // And what the tab hosts is still a live app widget rather than a
+    // card standing in for one.
+    //
+    // Asserted by shape, never by name. `TileHost::kind_string` reports
+    // a hosted app's own title, and this client's title is the same word
+    // as its tab's — so the live window and a stub rebuilt from that
+    // tab's descriptor can print the same string, and a name-based
+    // assertion cannot tell the fix from the failure. This assertion
+    // used to read `["App"]`, back when a hosted app reported that
+    // constant instead of its name.
+    let group = host
+        .group_at_for_tests(strip_id, 0)
+        .expect("the detached tab's new group");
+    let hosts_live_app = group
+        .host_for_tab_mut(foreign_tab)
+        .map(|h| matches!(h.content(), ui::widget::TileContent::App(_)))
+        .unwrap_or(false);
+    assert!(
+        hosts_live_app,
+        "the detached window must still be the live client, not a stub card; \
+         the tile reports {:?}",
+        group.tile_kind_labels_for_tests()
     );
 }
 
