@@ -468,7 +468,7 @@ pub(crate) fn file_manager_home_request(
     workspace: crate::shell::state::WorkspaceId,
     package_id: &str,
 ) -> Option<crate::shell::state::Capability> {
-    use crate::shell::state::{Capability, FsMode, GRANT_ONCE, ResourceRef, Verb};
+    use crate::shell::state::{Capability, FsMode, GRANT_ONCE, ResourceRef, Scope, Verb};
 
     if package_id != SYSTEM_FILE_MANAGER {
         return None;
@@ -481,6 +481,35 @@ pub(crate) fn file_manager_home_request(
         &ResourceRef::FsPath(home.to_string_lossy().into_owned()),
         Verb::Read,
     ) {
+        return None;
+    }
+    // Nor when the room has already given it somewhere to open.
+    //
+    // The whole justification for this request is in the paragraph that
+    // calls it: without the home the window opens on its own sandbox
+    // directory, finds nothing but dotfiles, and says the folder is
+    // empty. A workspace the room granted is not that — it is a real
+    // directory with the room's files in it, and `model::initial_path`
+    // opens on it in preference to any home. So the window a guest gets
+    // is already the right one and there is nothing to ask about.
+    //
+    // This matters more than a saved click. A pending grant makes the
+    // shell swallow client input entirely
+    // (`client_input.rs`: `!chrome.pending_grants.is_empty()`), so a
+    // question nobody is going to answer does not sit politely in a
+    // corner — it takes every press and keystroke aimed at the window
+    // underneath it. One take spent three and a half unbroken minutes
+    // framed on exactly that, over a file manager that was working.
+    //
+    // Strictly narrowing: it grants nothing and widens nothing. The app
+    // still has no home, and still cannot read one. The only thing that
+    // changes is whether the user is interrupted to be asked for a
+    // directory the window does not need.
+    if ws
+        .app_capabilities(package_id)
+        .iter()
+        .any(|c| matches!(c.scope, Scope::FsPath(_)))
+    {
         return None;
     }
     // `GRANT_ONCE` is the placeholder every pusher uses: the prompt's own
@@ -1663,6 +1692,56 @@ mod tests {
             "the file manager still needs the home, so the request must be in \
              front of the user: {:?}",
             st.pending_grants
+        );
+    }
+
+    /// A room that already gave it a directory raises no question.
+    ///
+    /// The request exists to stop the window opening on its own sandbox
+    /// directory and reporting an empty folder. A workspace the room
+    /// granted is a real directory with the room's files in it, and
+    /// `model::initial_path` opens on it ahead of any home — so the
+    /// window is already the right one and there is nothing to ask.
+    ///
+    /// This is not a saved click. A pending grant makes the shell swallow
+    /// client input entirely, so an unanswered question takes every press
+    /// aimed at the window underneath it — which is what a guest's screen
+    /// did while his file manager sat behind it, working.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_room_that_gave_it_a_workspace_is_not_asked_for_the_home() {
+        use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
+        let home = dirs::home_dir().expect("the test machine has a home directory");
+        let chrome = chrome_with_a_workspace();
+        let shared = std::path::PathBuf::from("/var/workspace");
+
+        {
+            let mut st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            let ws = tree.active_workspace_mut().expect("the fixture's workspace");
+            ws.grant_app(
+                SYSTEM_FILE_MANAGER,
+                &Capability::Filesystem {
+                    path: shared.clone(),
+                    mode: FsMode::Read,
+                    scope: GRANT_SESSION,
+                },
+            );
+        }
+
+        ask_user_home_for_file_manager(&chrome, SYSTEM_FILE_MANAGER);
+
+        assert!(
+            chrome.borrow().pending_grants.is_empty(),
+            "the room already gave it somewhere to open, so nothing should be \
+             in front of the user: {:?}",
+            chrome.borrow().pending_grants
+        );
+        // And the narrowing is the only thing that changed: it still has
+        // no home, and still cannot read one.
+        assert!(
+            !may_read(&chrome, SYSTEM_FILE_MANAGER, &home),
+            "not asking for the home must never be the same as granting it"
         );
     }
 
