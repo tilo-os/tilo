@@ -29,6 +29,8 @@ import os
 import pathlib
 import shutil
 import subprocess
+
+from reaper import die_with_parent
 import sys
 import tempfile
 import time
