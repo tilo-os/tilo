@@ -1693,12 +1693,24 @@ class Live:
          "the photo editor is open and answering"),
     )
 
-    #: The agent, having changed the document: `applied splice text
-    #: (+76 -29)`. On a word boundary, because the same log carries
-    #: prose about a change being held *unapplied* while history it was
-    #: built on is missing — and a plain substring match reported that
-    #: sentence as the agent acting, in a run where it had not.
-    APPLIED = re.compile(r"\bapplied .*")
+    #: The agent, having done something to the room.
+    #:
+    #: Two spellings, because there are two paths and the rig only knew
+    #: one. `applied splice text (+76 -29)` is the agent editing a
+    #: document directly; `performed an operation the room exports
+    #: id=…#crop` is it invoking an action an application published,
+    #: which is the path the film's second half actually takes. Knowing
+    #: only the first, the rig watched an agent open the photo editor,
+    #: crop the photograph and place it in the document, and reported
+    #: that it had never acted — and, worse, never brought the camera to
+    #: the document, so the take did not film the thing landing.
+    #:
+    #: `applied` stays on a word boundary: the same log carries prose
+    #: about a change being held *unapplied* while history it was built
+    #: on is missing, and a plain substring match once read that
+    #: sentence as the agent acting in a run where it had not.
+    APPLIED = re.compile(
+        r"\bapplied .*|\bperformed an operation the room exports.*")
 
     #: The agent, having taken the summons (`session.rs`, "spoken to in
     #: the room"). Between this and the first `applied` is the model
