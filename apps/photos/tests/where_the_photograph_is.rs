@@ -131,7 +131,7 @@ fn the_place_is_keyed_by_the_address_a_caller_invokes() {
 
     let published = Widget::resources(&app, &state.doc);
     assert!(
-        published.iter().any(|r| r.id == id),
+        published.iter().any(|r| r.id.0 == id),
         "the resource tree publishes no {id}, so the address that resolves to \
          a place is not one anybody can invoke"
     );
