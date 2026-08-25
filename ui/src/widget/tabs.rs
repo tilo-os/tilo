@@ -4970,6 +4970,76 @@ mod tests {
     }
 
     #[test]
+    fn a_modified_tab_holds_its_close_slot_open_at_rest() {
+        // The unsaved-changes dot lives in the close slot, so a modified
+        // tab has to hold that slot open even when it is neither active
+        // nor hovered - otherwise the mark has nowhere to paint and a
+        // resting dirty tab looks identical to a clean one.
+        let mut b = bar();
+        // "B" is neither active (that is "A") nor hovered.
+        assert_eq!(b.resting_reveal(1), Reveal::None);
+        b.set_modified(2, true);
+        assert_eq!(b.resting_reveal(1), Reveal::Close);
+        assert!(b.is_modified(2));
+        b.set_modified(2, false);
+        assert_eq!(b.resting_reveal(1), Reveal::None, "clearing gives the width back");
+        assert!(!b.is_modified(2));
+    }
+
+    #[test]
+    fn an_accent_opens_the_leading_slot_like_an_app_glyph() {
+        // One slot, two occupants, one width: a strip mixing accented and
+        // icon-bearing pills must keep its titles on a single x, so the
+        // accent has to reserve exactly what the glyph does.
+        let mut b = bar();
+        assert_eq!(b.leading_zone(0), 0.0, "a bare tab reserves nothing");
+        b.set_accent(1, vello::peniko::Color::from_rgba8(200, 100, 0, 255));
+        assert_eq!(b.leading_zone(0), ICON_W + ICON_GAP);
+        b.tabs_mut()[1].app_kind = Some(AppKind::Terminal);
+        assert_eq!(
+            b.leading_zone(1),
+            b.leading_zone(0),
+            "an app glyph and an accent dot take the same room"
+        );
+        b.clear_accent(1);
+        assert_eq!(b.leading_zone(0), 0.0);
+    }
+
+    #[test]
+    fn withholding_maximize_stops_a_hover_reserving_the_cluster() {
+        // With no maximize chip on offer there is nothing above `Close` to
+        // open into, and reserving `Full`'s width for a chip that will
+        // never be placed would push the title for nothing.
+        let mut b = bar();
+        b.hover_idx = Some(1);
+        assert_eq!(b.target_reveal(1), Reveal::Full);
+        b.set_show_maximize(false);
+        assert_eq!(b.target_reveal(1), Reveal::Close);
+        assert!(
+            Reveal::Close.reserve() < CHIP_CLUSTER_W,
+            "the capped reserve must stay under the width apply_layout requires before it places a maximize chip, or the chip is placed after all"
+        );
+    }
+
+    #[test]
+    fn accessibility_describes_a_tab_with_unsaved_changes() {
+        use crate::a11y::Role;
+        // The dot is colour-and-shape only. A reader that cannot see it
+        // gets the state as a description, and only on the tab that has it.
+        let mut b = bar();
+        b.set_modified(2, true);
+        let node = Widget::accessibility(&b).expect("tab bar is not presentational");
+        let tabs: Vec<_> = node.children.iter().filter(|c| c.role == Role::Tab).collect();
+        assert_eq!(tabs.len(), 3);
+        assert!(tabs[0].description.is_none(), "a clean tab says nothing extra");
+        assert!(
+            tabs[1].description.is_some(),
+            "the modified tab carries its state as a description"
+        );
+        assert!(tabs[2].description.is_none());
+    }
+
+    #[test]
     fn accessibility_reports_tabbar_role_and_active_title() {
         use crate::a11y::Role;
         // `bar()` builds tabs A/B/C with active_id = 1 ("A").
