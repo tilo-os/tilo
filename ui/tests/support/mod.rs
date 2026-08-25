@@ -238,7 +238,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             // for something it does not implement, and `pump` runs on the test
             // thread, so saying so fails that test by name — where a frame left
             // to vanish would let a later assertion pass for the wrong reason.
-            CollabRequest::OpenApp { app_id } => panic!(
+            CollabRequest::OpenApp { app_id, .. } => panic!(
                 "MemoryRelay::pump got OpenApp({app_id:?}) from {from}: this \
                  relay fans document and presence traffic between in-process \
                  peers and hosts no desktop, so it cannot open an application. \

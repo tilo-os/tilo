@@ -155,7 +155,7 @@ fn real_socket_fans_out_incremental_and_presence() {
                 // here would let a later test watch for the right absence and
                 // pass without the behaviour ever existing. The panic surfaces
                 // on the `broker.join()` below.
-                CollabRequest::OpenApp { app_id } => panic!(
+                CollabRequest::OpenApp { app_id, .. } => panic!(
                     "broker received OpenApp({app_id:?}) from peer-{src_idx}: \
                      this harness fans document and presence traffic between \
                      two peers and hosts no desktop, so it cannot open an \

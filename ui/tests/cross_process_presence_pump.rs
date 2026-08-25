@@ -118,7 +118,7 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
                 // implement. Worth failing over: a frame quietly swallowed
                 // would let a later test watch for the right absence and pass
                 // without the behaviour ever existing.
-                CollabRequest::OpenApp { app_id } => panic!(
+                CollabRequest::OpenApp { app_id, .. } => panic!(
                     "broker received OpenApp({app_id:?}) from peer-{src_idx}: \
                      this harness hosts no desktop, so it cannot open an \
                      application."

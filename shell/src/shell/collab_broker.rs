@@ -711,6 +711,18 @@ pub struct OpenAppRequest {
     /// session resolves it, and an id that names nothing installed is a
     /// refusal the caller is told about.
     pub app_id: String,
+    /// The content the caller asked the application to be opened onto, as a
+    /// blake3 hex — or `None` for an open that named no object.
+    ///
+    /// Unvalidated here, exactly like `app_id`: the broker knows sockets and
+    /// names and has no store to resolve a hash against. The session resolves
+    /// it, and a hash whose bytes are nowhere on this machine is a refusal the
+    /// caller is told about rather than an application opened empty. See
+    /// [`CollabRequest::OpenApp::with`](ui::collaboration::CollabRequest).
+    ///
+    /// Naming content grants nothing. What the launched app may read is the
+    /// session's own decision, taken where every other capability is.
+    pub with: Option<String>,
     /// The room the asking connection announced on its `Hello`. Empty when it
     /// never announced one, which the session treats as a refusal — there is
     /// no workspace whose capabilities could answer.
@@ -1374,7 +1386,7 @@ fn translate(
         // to this session rather than to an audience. Named here anyway so the
         // day something reaches translate with one it is a dropped frame with
         // a reason beside it, not a wildcard swallowing it.
-        CollabRequest::OpenApp { ref app_id } => {
+        CollabRequest::OpenApp { ref app_id, .. } => {
             tracing::warn!(
                 src_id, %app_id,
                 "collab_broker: an OpenApp reached the fan-out; it has no \
@@ -1859,7 +1871,7 @@ fn reader_loop(
         // relaying it would put a window on every peer's desktop because
         // somebody else's participant needed one, which nobody asked for and
         // no peer could refuse. So it leaves the fan-out here.
-        if let CollabRequest::OpenApp { app_id } = &req {
+        if let CollabRequest::OpenApp { app_id, with } = &req {
             let room = src_route
                 .as_ref()
                 .map(|r| r.cluster_id.clone())
@@ -1874,6 +1886,7 @@ fn reader_loop(
                     );
                     open(OpenAppRequest {
                         app_id: app_id.clone(),
+                        with: with.clone(),
                         room,
                         who: src_user_id.clone(),
                         handle: peer.announced_handle(),
