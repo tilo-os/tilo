@@ -317,6 +317,25 @@ def png_has_content(path: str) -> bool | None:
     return len(set(flat[::997])) > 2
 
 
+def blob_bytes(hash_hex: str, roots: list[str]) -> bytes | None:
+    """The content a document names, out of whichever blob store holds it.
+
+    A document carries a hash and a descriptor; the bytes live in a store
+    addressed by content (`crates/doc/qdoc/src/blobstore.rs`), one per HOME.
+    The agent, the applications and this script do not share a HOME here, so
+    the hash is looked for in each of them rather than in one guessed root.
+    """
+    if not hash_hex or not all(c in "0123456789abcdef" for c in hash_hex):
+        return None
+    for root in roots:
+        path = os.path.join(root, "qos", "blobs", hash_hex[:2], hash_hex)
+        try:
+            return open(path, "rb").read()
+        except OSError:
+            continue
+    return None
+
+
 # -- starting things ----------------------------------------------------------
 
 def dial(path: str, tries: int = 120) -> socket.socket:
@@ -694,6 +713,40 @@ def main() -> int:
             note(f"image reference: {s}")
         claim(bool(image),
               "the word processor's document holds an image reference")
+
+        # And whether the picture that arrived is the one that went in.
+        #
+        # "Make this square" is the whole instruction, and an image reference
+        # arriving proves only that the two applications were crossed. Whether
+        # the crossing carried out the request is a different question, and
+        # this is the form of it this rig can actually answer.
+        #
+        # The session writes the content it opens the photo editor onto into
+        # `rt/qos-opened/<hash>.png` -- named by its own content hash. The
+        # document names the hash of what was placed. Content addressing does
+        # the rest: identical hashes mean the bytes that reached the page are
+        # the bytes that went into the editor, and nothing in between changed
+        # the photograph. Different hashes mean something did.
+        #
+        # Read off the two documents and the session's own file, never off the
+        # agent's account of itself: an agent reporting "crop" in its log is
+        # the claim under test, not evidence for it.
+        placed_hash = next(
+            (s.split("\t")[-1].strip() for s in after_strings
+             if s.split("\t")[0].endswith("blob")), "")
+        opened_dir = os.path.join(runtime_dir, "qos-opened")
+        opened = [f[:-4] for f in sorted(os.listdir(opened_dir))
+                  if f.endswith(".png")] if os.path.isdir(opened_dir) else []
+        if not opened:
+            note("the session never wrote the content it opened an application "
+                 "onto, so what went in cannot be compared with what came out")
+        else:
+            note(f"the editor was opened onto {opened[0][:12]}…; the document "
+                 f"names {placed_hash[:12] or 'nothing'}")
+        claim(bool(placed_hash) and bool(opened)
+              and placed_hash not in opened,
+              "the picture in the document is not the one the editor was "
+              "opened onto -- something between them changed the photograph")
 
         shot = os.path.join(run_dir, "after.png")
         call(control, {"op": "snapshot", "path": shot})

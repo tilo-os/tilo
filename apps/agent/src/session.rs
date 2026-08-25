@@ -18,7 +18,7 @@ use crate::apply::Editor;
 use crate::listen::{self, LastAction, Summons};
 use crate::model::{Chooser, Decision, Route};
 use crate::plan::{self, Block, Instruction, Plan};
-use crate::surface::{self, AppContract, Offer, View};
+use crate::surface::{self, AppContract, Catalogue, Offer, View};
 use crate::wire::Link;
 
 /// Where an answer goes.
@@ -396,7 +396,7 @@ fn is_recipe(i: &Instruction) -> bool {
 /// only which path decided, which is still true.
 fn reasoning_of(route: &Route) -> AgentReasoning {
     match route {
-        Route::Model { why } => AgentReasoning {
+        Route::Model { why, .. } => AgentReasoning {
             route: AgentRoute::Model,
             why: why.clone(),
         },
@@ -883,6 +883,17 @@ impl Session {
     /// capability for is absent rather than marked unavailable.
     pub fn offers(&self, view: &View) -> Vec<Offer> {
         surface::offers(&self.held(), view, &self.cfg.permissions)
+    }
+
+    /// The same survey, with what the room's resources say about themselves
+    /// alongside what they export.
+    ///
+    /// What a decision is made against. Both halves come out of one walk of
+    /// the same trees at the same moment: asked separately they would be two
+    /// readings of a room that moved in between, and an operation would then
+    /// be described in terms of a resource that had already changed.
+    pub fn catalogue(&self, view: &View) -> surface::Catalogue {
+        surface::catalogue(&self.held(), view, &self.cfg.permissions)
     }
 
 
@@ -1487,14 +1498,14 @@ impl Session {
     fn carry_out(&mut self, summons: Summons) -> Result<bool> {
         self.begin_turn();
         let view = self.view(None, 0);
-        let offers = self.offers(&view);
+        let catalogue = self.catalogue(&view);
         // The subject narrows *what may be chosen*, never what the choice
         // then means. An address the message carried is the resource the
         // agent may act on, so only that resource's operations are offered —
         // which is how "crop this" reaches the right square without anyone
         // parsing "this", and how a request about one thing cannot come out
         // as an operation on another.
-        let scoped: Vec<Offer> = match summons.subject.resource() {
+        let scoped: Catalogue = match summons.subject.resource() {
             // Plus the opens, always. An open names an **application**, not a
             // resource, so it is never the "operation on another thing" this
             // narrowing exists to prevent — and dropping it made the
@@ -1513,15 +1524,8 @@ impl Session {
             // Narrowing what may be *acted on* is the claim, and it still
             // holds: an open performs nothing to any resource. It changes
             // what the next survey contains, and that survey is scoped again.
-            Some(resource) => offers
-                .iter()
-                .filter(|o| {
-                    o.address().resource == resource
-                        || surface::opens(o.address()).is_some()
-                })
-                .cloned()
-                .collect(),
-            None => offers.clone(),
+            Some(resource) => catalogue.scoped_to(&resource),
+            None => catalogue.clone(),
         };
         // The room is told it has been picked up before anything is decided.
         // Deciding is a call that takes seconds, and until now that wait was
@@ -1537,7 +1541,7 @@ impl Session {
         // outright rather than widened back to the room. Falling back to
         // every offer here would answer a request about one resource with an
         // operation on whichever other one happened to match the words.
-        if scoped.is_empty() && summons.subject.resource().is_some() {
+        if scoped.offers.is_empty() && summons.subject.resource().is_some() {
             let what = summons.subject.resource().unwrap_or_default();
             let reply = format!(
                 "{}: I can't act on {what:?} — nothing in this room exports \
@@ -1566,7 +1570,7 @@ impl Session {
                 "a recipe cannot answer a request that named its own subject; \
                  deciding again from that subject's operations"
             );
-            plan = Plan::from_operations(&summons.asked, &scoped);
+            plan = Plan::from_operations(&summons.asked, &scoped.offers);
         }
         tracing::info!(
             message = %summons.message,
@@ -1609,7 +1613,7 @@ impl Session {
         // The words are not kept here: this path already says what it did in
         // a sentence of its own below, under the same reply.
         self.say_doing(&plan, &now_offered, &about)?;
-        let ran = self.run_plan(plan, None, &to, &scoped)?;
+        let ran = self.run_plan(plan, None, &to, &scoped.offers)?;
         // A refusal answers for itself; a success has to be said out loud too.
         // Not politeness: this reply is what records the message as dealt
         // with, so an agent that worked silently would do the same work again
@@ -1802,15 +1806,16 @@ impl Session {
         // put down. This is the offer a model chooses from and the floor
         // matches against - asked afresh, never a list kept here.
         let view = self.view(Some(ins_id.clone()), blocks[at].text.chars().count());
-        let offers = self.offers(&view);
+        let catalogue = self.catalogue(&view);
         tracing::info!(
             block = %ins_id,
-            operations = offers.len(),
+            operations = catalogue.offers.len(),
+            resources = catalogue.facts.len(),
             apps = self.held().len(),
             "surveyed the room"
         );
 
-        let Decision { plan, route } = self.chooser.choose(&asked, &blocks, &offers);
+        let Decision { plan, route } = self.chooser.choose(&asked, &blocks, &catalogue);
         tracing::info!(
             block = %ins_id,
             asked = %asked,
@@ -1886,8 +1891,8 @@ impl Session {
         // The words are the apps' own labels for their own operations, never
         // the addresses they dispatch by; an address is machine vocabulary
         // and this line is read by a person.
-        let doing = self.say_doing(&plan, &offers, "")?;
-        let ran = self.run_plan(plan, Some(at), &to, &offers)?;
+        let doing = self.say_doing(&plan, &catalogue.offers, "")?;
+        let ran = self.run_plan(plan, Some(at), &to, &catalogue.offers)?;
         // A refusal has already answered for itself, on the page and in the
         // room. A run that finished has not: the change is on the page and
         // the record still says the agent is working.
@@ -2482,7 +2487,12 @@ impl Session {
             // from would be resolved against a page that no longer exists.
             let focus = to.caret().map(str::to_string);
             let view = self.view(focus.clone(), 0);
-            let offers = self.offers(&view);
+            // The whole survey, because the clause is asked again through the
+            // same tools the first decision used — and an operation the open
+            // has just made addressable is only worth naming if what the
+            // application says about it comes with it.
+            let catalogue = self.catalogue(&view);
+            let offers = catalogue.offers.clone();
 
             // A step whose operation exists *because of* an earlier step.
             //
@@ -2540,7 +2550,7 @@ impl Session {
                     );
                     let again = self
                         .chooser
-                        .choose(&what, &[], &offers)
+                        .choose(&what, &[], &catalogue)
                         .plan
                         .steps
                         .into_iter()

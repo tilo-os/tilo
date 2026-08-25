@@ -55,6 +55,10 @@ pub mod model;
 pub mod plan;
 pub mod session;
 pub mod surface;
+/// The named tools the decision is made through: what applications are
+/// here, what may be done to a thing or a kind of thing, what one
+/// operation takes, and the plan that answers.
+pub mod tools;
 pub mod wire;
 
 pub use listen::{Address, LastAction, Subject, Summons};

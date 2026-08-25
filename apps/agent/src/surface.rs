@@ -862,6 +862,149 @@ fn openable(
         .collect()
 }
 
+/// One resource as its app publishes it, with the operations taken out.
+///
+/// The half of a resource tree a flat survey throws away. [`Offer`] carries an
+/// operation and the label of whatever publishes it; a resource that exports
+/// **nothing** never becomes an offer at all, so anything an app says by
+/// publishing one is invisible to a caller working from the survey alone.
+///
+/// Apps do say things that way, and deliberately. The photo editor puts the
+/// pixel dimensions of the open photograph in the label of an action-less
+/// child resource — "so a caller that can only read ids and titles still
+/// learns the size it is working with" (`apps/photos/src/actions.rs`) — and
+/// until this existed that sentence was not true: [`qos_actions::door::survey`]
+/// walks past a resource with no actions on it, and the size reached nobody.
+/// Which is the difference between computing a square crop and guessing one.
+///
+/// Nothing here is derived. The label and the kind are the app's own strings,
+/// and a note is a child resource's own label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceFacts {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    /// The labels of the child resources that export nothing.
+    pub notes: Vec<String>,
+}
+
+/// Every resource the room's apps are publishing, whether or not it exports
+/// anything.
+///
+/// Rebuilt on every call for the same reason [`tree`] is: a resource tree is a
+/// function of the document, and a fact cached from an earlier one is a claim
+/// about a page that has moved.
+pub fn facts(held: &[(&'static AppContract, &AutoCommit)], view: &View) -> Vec<ResourceFacts> {
+    fn walk(r: &Resource, out: &mut Vec<ResourceFacts>) {
+        out.push(ResourceFacts {
+            id: r.id.as_str().to_string(),
+            kind: r.kind.clone(),
+            label: r.label.clone(),
+            notes: r
+                .children
+                .iter()
+                .filter(|c| c.actions.is_empty())
+                .map(|c| c.label.clone())
+                .collect(),
+        });
+        for c in &r.children {
+            walk(c, out);
+        }
+    }
+    let mut out = Vec::new();
+    for (contract, doc) in held {
+        for r in tree(contract, view, doc) {
+            walk(&r, &mut out);
+        }
+    }
+    out
+}
+
+/// What the room exports and what it says about itself, taken together.
+///
+/// The two halves of one survey. They are taken at the same moment against the
+/// same documents on purpose: a caller that asked for the operations and then
+/// asked separately for the facts would be reading two different rooms, and
+/// the mismatch would show up as an operation described in terms of a resource
+/// that had already changed.
+#[derive(Clone, Debug, Default)]
+pub struct Catalogue {
+    /// Everything the agent may perform. Denied is absent, as in [`offers`].
+    pub offers: Vec<Offer>,
+    /// Every resource the room's apps publish, gate or no gate.
+    ///
+    /// Not gated, and that is the rule the shell already states: showing a
+    /// resource is non-destructive and needs no permission; acting on one does
+    /// (`shell/src/shell/actions.rs`). A fact here can only be read alongside
+    /// an operation that passed the gate, because the only way to ask for one
+    /// is to name an address, and an address the caller may not perform is not
+    /// in [`Self::offers`] to be named.
+    pub facts: Vec<ResourceFacts>,
+    /// The namespaces of the apps the room is actually holding.
+    ///
+    /// Read off the held replicas rather than inferred from what is on offer,
+    /// because the two answers differ exactly where it matters. An app that is
+    /// here but has nothing open exports no operations — the photo editor with
+    /// no photograph in it publishes an empty tree — and it is *also* offered
+    /// as openable, because the open is what gives it something. Guessing
+    /// "open" from the offers would therefore report a running application as
+    /// absent, which is the one thing a caller asking what is open must not be
+    /// told wrongly.
+    pub held: Vec<&'static str>,
+}
+
+impl Catalogue {
+    /// The facts about the resource `address` is published by.
+    pub fn about(&self, resource: &str) -> Option<&ResourceFacts> {
+        self.facts.iter().find(|f| f.id == resource)
+    }
+
+    /// The same catalogue narrowed to one resource, keeping the operations
+    /// that name no resource at all.
+    ///
+    /// What a request that arrived carrying its own subject is decided
+    /// against: an address the message named is the resource the agent may act
+    /// on, and offering the rest of the room would answer a question about one
+    /// thing with an operation on another.
+    ///
+    /// The opens stay, and that is not an exception to the narrowing. An open
+    /// names an *application*, performs nothing to anything, and is the only
+    /// way an operation on the named resource can come to exist when the
+    /// application that would export it is not running — drop it and "make
+    /// this square", asked of a photograph in the file manager, can only come
+    /// back as rename or delete.
+    pub fn scoped_to(&self, resource: &str) -> Catalogue {
+        Catalogue {
+            held: self.held.clone(),
+            offers: self
+                .offers
+                .iter()
+                .filter(|o| o.address().resource == resource || opens(o.address()).is_some())
+                .cloned()
+                .collect(),
+            facts: self
+                .facts
+                .iter()
+                .filter(|f| f.id == resource)
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
+/// Everything the room exports and everything it says, in one survey.
+pub fn catalogue(
+    held: &[(&'static AppContract, &AutoCommit)],
+    view: &View,
+    perms: &PermissionContext,
+) -> Catalogue {
+    Catalogue {
+        offers: offers(held, view, perms),
+        facts: facts(held, view),
+        held: held.iter().map(|(c, _)| c.namespace).collect(),
+    }
+}
+
 /// Find the offer an id names, in a freshly taken survey.
 pub fn find<'a>(offers: &'a [Offer], id: &str) -> Option<&'a Offer> {
     let address = decode_address(id)?;
@@ -1223,12 +1366,21 @@ mod tests {
     }
 
     /// The set of applications offered as openable is exactly the ones this
-    /// room does not have — so it empties itself as the room fills, and an app
-    /// that is here is never offered as something to open.
+    /// room has nothing open in — so it empties itself as the room fills, and
+    /// an app that is here *with something in it* is never offered as
+    /// something to open.
     ///
-    /// The second half is what stops a second window landing on top of the
+    /// That second half is what stops a second window landing on top of the
     /// first: an agent that still offered to open what is already open would
     /// answer the next request about that app by opening a copy of it.
+    ///
+    /// "Here" is not the same as "has something to work on", and this used to
+    /// treat them as one. The rule the code states is the one asserted below
+    /// (see [`openable`]): an application present but exporting nothing is
+    /// still openable, because the open is what gives it something, and an
+    /// application publishing resources of its own is not. Asserted in both
+    /// directions, because getting either wrong makes an app invisible — one
+    /// way it can never be reached, the other way it is opened twice.
     #[test]
     fn only_the_apps_this_room_is_missing_are_offered_as_openable() {
         let perms = granting(vec![grant(Scope::Workspace)]);
@@ -1263,11 +1415,48 @@ mod tests {
         );
         let held: Vec<(&'static AppContract, &automerge::AutoCommit)> = vec![(photos, &doc)];
 
-        let now = openable(&held, &View::default(), &perms);
+        // Here, and holding nothing. It exports no operations — there is no
+        // photograph for a crop to be an operation *on* — so opening it onto
+        // something is the only thing that can move any request forward, and
+        // it stays offered.
+        assert!(
+            tree(photos, &view, &doc).is_empty(),
+            "this half of the test is about an application with nothing open \
+             in it; the fixture exports {:?}",
+            tree(photos, &view, &doc).len()
+        );
+        let empty_app = openable(&held, &view, &perms);
+        assert!(
+            empty_app.iter().any(|o| o.app == "photos"),
+            "an application that is here but has nothing open exports no \
+             operations, so the open is the only way in and must stay on \
+             offer: {:?}",
+            empty_app.iter().map(Offer::id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            empty_app.len(),
+            empty.len(),
+            "and nothing else may change: {:?}",
+            empty_app.iter().map(Offer::id).collect::<Vec<_>>()
+        );
+
+        // Now give it a photograph. It publishes its own operations, so the
+        // request has somewhere to go and offering to open it again would put
+        // a second window over the first.
+        let img = ::photos::model::OpenImage::from_path("/var/tmp/qos/harbour.png", 512, 320);
+        ::photos::doc::PhotosDoc::set_image(&mut doc, Some(&img));
+        doc.commit();
+        let held: Vec<(&'static AppContract, &automerge::AutoCommit)> = vec![(photos, &doc)];
+        assert!(
+            !tree(photos, &view, &doc).is_empty(),
+            "the fixture has to publish something, or this proves nothing"
+        );
+
+        let now = openable(&held, &view, &perms);
         assert!(
             !now.iter().any(|o| o.app == "photos"),
-            "an app whose state is in the room must stop being offered as \
-             something to open"
+            "an app that is here *and* has something open must stop being \
+             offered as something to open"
         );
         assert_eq!(
             now.len(),
