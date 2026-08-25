@@ -681,7 +681,15 @@ impl TopBarChrome {
     }
 
     /// Base (unscaled) radius used for the center-band three-dot stack.
-    pub const DOT_BASE_SIZE: f64 = 3.0;
+    ///
+    /// Three discs at the old 3.0 needed 21.6 px of ink inside a 28 px
+    /// pill, which left 6.4 px for two gaps *and* two margins. The column
+    /// then ran the full height of a shape whose ends are round, so its
+    /// top and bottom discs sat against the left cap's arc with about a
+    /// pixel of daylight — and a mark that touches a curved rim is read as
+    /// having burst through it. At 2.0 the same three discs take 14.4 px
+    /// and the column clears the pill by 4 px at each end.
+    pub const DOT_BASE_SIZE: f64 = 2.0;
     /// Rendered radius of the *active* center-band dot. Sized 1.6× the
     /// base so the saturated indigo fill reads as the focused indicator;
     /// see gap #8 in `docs/nirios/visual-gaps.md`.
@@ -702,8 +710,10 @@ impl TopBarChrome {
         Self::DOT_INACTIVE_RADIUS
     }
 
-    /// Clear space kept between the centre band's rim and the dot column.
-    const DOT_COLUMN_MARGIN: f64 = 1.0;
+    /// Clear space kept between the centre band's rim and the dot column,
+    /// at each end. Wide enough to read as deliberate space rather than as
+    /// a disc that did not quite fit.
+    const DOT_COLUMN_MARGIN: f64 = 4.0;
 
     /// Lay the centre-band dot column out inside `band`.
     ///
@@ -762,9 +772,21 @@ impl TopBarChrome {
         })
     }
 
-    /// Horizontal centre of the dot column, inset from the band's left rim.
+    /// Horizontal centre of the dot column.
+    ///
+    /// Sits at the centre of the pill's left cap, which is the first `x`
+    /// where the capsule is its full height — everything to the left of it
+    /// is arc, and a column placed there is bounded by a curve that pulls
+    /// away from the discs at the top and bottom of the stack. The old
+    /// fixed `+ 12.0` was two pixels inside a cap of radius 14, so the
+    /// column straddled the rim: the middle disc was well inside the pill
+    /// and the outer two were against its edge, which on screen is a mark
+    /// overflowing its container rather than an indicator inside one.
+    ///
+    /// Deriving it from the band's own height keeps that true if the bar
+    /// is ever made taller.
     fn dot_column_x(band: Rect) -> f64 {
-        band.x0 + 12.0
+        band.x0 + band.height() / 2.0
     }
 
     /// Half-width of a dot's click slot. The band's own content starts at
@@ -2352,6 +2374,32 @@ mod tests {
                 band.y0,
                 band.y1,
             );
+
+            // …and inside the shape the band actually *is*. The band is a
+            // capsule, so its rect is not its silhouette: the column used
+            // to clear the two assertions above while its outer discs lay
+            // against the left cap's arc, because the arc is inside the
+            // rect. A disc is inside a cap of radius `R` centred at the
+            // cap's own centre when its centre is within `R - r` of it.
+            //
+            // This is the check that was missing, and the shape of that
+            // miss is worth keeping: an invariant tested against a
+            // bounding box passes for everything the box contains,
+            // including the corners the drawn shape gave up.
+            let cap_r = band.height() / 2.0;
+            let cap_c = Point::new(band.x0 + cap_r, band.center().y);
+            for (i, dot) in dots.iter().enumerate() {
+                let d = (dot.center - cap_c).hypot();
+                assert!(
+                    d <= cap_r - dot.radius,
+                    "active={active} dot {i}: centre {:?} is {d:.2} from the cap centre \
+                     {cap_c:?}; a disc of radius {} needs to be within {:.2} to stay \
+                     inside the pill",
+                    dot.center,
+                    dot.radius,
+                    cap_r - dot.radius,
+                );
+            }
             assert!(
                 ((top + bottom) / 2.0 - band.center().y).abs() < 1e-9,
                 "active={active}: column centre {} should be the band's {}",

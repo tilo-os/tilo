@@ -71,6 +71,10 @@ pub struct BreadcrumbBar {
     rect: Rect,
     /// Laid-out slots as of the last `draw`; drives the click hit-test.
     laid: Vec<LaidSlot>,
+    /// The workspace mounts, so the root slot can wear the same emblem the
+    /// places sidebar gives the same location. Empty until the owner says
+    /// otherwise, which keeps every non-workspace trail as it was.
+    workspace_roots: Vec<PathBuf>,
     /// Index into `laid` the cursor currently hovers (clickable only).
     hover: Option<usize>,
     last_cursor: Point,
@@ -88,6 +92,7 @@ impl BreadcrumbBar {
             sink,
             rect: Rect::ZERO,
             laid: Vec::new(),
+            workspace_roots: Vec::new(),
             hover: None,
             last_cursor: Point::ZERO,
             edit_requested: false,
@@ -98,6 +103,12 @@ impl BreadcrumbBar {
     /// current directory's components so a persistent bar tracks navigation).
     pub fn set_segments(&mut self, segments: Vec<(String, PathBuf)>) {
         self.segments = segments;
+    }
+
+    /// Tell the bar which mounts are workspaces, so a trail rooted at one
+    /// is marked as such rather than as a folder in somebody's home.
+    pub fn set_workspace_roots(&mut self, roots: Vec<PathBuf>) {
+        self.workspace_roots = roots;
     }
 
     /// Place the bar at `rect` without a taffy pass — for an owner compositing
@@ -112,9 +123,16 @@ impl BreadcrumbBar {
         std::mem::take(&mut self.edit_requested)
     }
 
-    /// Root glyph: a house for `$HOME`, a hard-drive for the filesystem root.
+    /// Root glyph: the cloud for a workspace, a house for `$HOME`, a
+    /// hard-drive for the filesystem root.
+    ///
+    /// The workspace emblem is the one the places sidebar already puts on
+    /// the same location. A place that is reachable from two surfaces has
+    /// to look like one place from both of them, or the trail is not
+    /// telling the reader where the sidebar just took them.
     fn root_icon(&self) -> Icon {
         match self.segments.first() {
+            Some((_, p)) if self.workspace_roots.iter().any(|r| r == p) => Icon::CloudDownload,
             Some((_, p)) if p == Path::new("/") => Icon::HardDrive,
             _ => Icon::Home,
         }

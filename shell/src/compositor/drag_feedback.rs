@@ -38,7 +38,23 @@ const CHIP_DY: f64 = 16.0;
 /// Cursor arrow, in units of its own height.
 const CURSOR_H: f64 = 20.0;
 /// Radius of the ring drawn around the hotspot while the button is down.
-const PRESS_RING_R: f64 = 13.0;
+///
+/// The arrow's hotspot is its tip and its body runs down-and-right from
+/// there, so a ring centred on the hotspot puts three of its four
+/// quadrants in empty space beside the pointer. At 13 px — wider across
+/// than the 20 px arrow is tall — that empty part was the larger shape,
+/// and with a filled disc inside it what a viewer saw was a blue ring
+/// sitting next to the cursor rather than around its tip: an unlabelled
+/// circle in the middle of a pane, which is what a stuck progress
+/// indicator looks like. Two takes of the film were read that way.
+///
+/// Sized so the arrow is the bigger of the two shapes and covers a good
+/// part of the ring, which is what makes the pair read as one object.
+const PRESS_RING_R: f64 = 8.0;
+/// Alpha of the press ring's fill. A wash, not a body: the fill is there
+/// to keep the ring visible over light content, and anything heavier
+/// competes with the arrow drawn on top of it.
+const PRESS_RING_FILL_A: f32 = 0.22;
 
 /// Draw the pointer and, when one is in flight, what it is carrying.
 ///
@@ -125,12 +141,12 @@ fn draw_cursor(scene: &mut Scene, at: Point, pressed: bool, theme: &Theme) {
         scene.fill(
             Fill::NonZero,
             Affine::IDENTITY,
-            theme.accent_primary.multiply_alpha(0.30),
+            theme.accent_primary.multiply_alpha(PRESS_RING_FILL_A),
             None,
             &ring,
         );
         scene.stroke(
-            &vello::kurbo::Stroke::new(2.0),
+            &vello::kurbo::Stroke::new(1.5),
             Affine::IDENTITY,
             theme.accent_primary,
             None,

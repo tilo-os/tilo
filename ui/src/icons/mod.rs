@@ -157,6 +157,15 @@ pub enum Icon {
     /// "this member is not a person", so every surface that lists
     /// members can say so the same way.
     Bot,
+    /// The web — lucide `globe`: a circle with an equator and the
+    /// ellipse that reads as a meridian. The tab bar hand-traced this
+    /// shape before it existed here, same as [`Icon::Terminal`] did.
+    Globe,
+    /// A speech bubble — lucide `message-square`. What a conversation
+    /// looks like. [`Icon::Reply`] is an *action* taken inside one, and
+    /// an app whose whole subject is the conversation should not wear
+    /// the button for one of the things you do in it.
+    MessageSquare,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -745,6 +754,21 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M15 13v2"),
             path_from_d("M9 13v2"),
         ],
+        // Globe: the sphere, the meridian as a squeezed ellipse, and
+        // the equator. Lucide's own three subpaths — the latitude lines
+        // a hand-drawn version would omit are what stop it reading as a
+        // clock face.
+        Icon::Globe => vec![
+            circle_path(12.0, 12.0, 10.0),
+            path_from_d("M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"),
+            path_from_d("M2 12h20"),
+        ],
+        // MessageSquare: the bubble body with its tail folded into the
+        // bottom-left corner, exactly as lucide draws it — one closed
+        // path, so the tail cannot drift away from the box at 14 px.
+        Icon::MessageSquare => vec![path_from_d(
+            "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
+        )],
     }
 }
 
@@ -768,10 +792,26 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
 /// that distinguishes a spreadsheet from a document better than the
 /// pair here does, and inventing one per app would put 45 hand-drawn
 /// shapes in a table nobody can keep consistent.
+/// Matching is on the id's trailing segment, case-folded and with word
+/// separators normalised, so every spelling of one program's name lands
+/// on one glyph: the packaged id (`dev.qos.word-processor`), the
+/// compositor's own id for an app it draws in-process
+/// (`org.nirios.Files`), and the id it mints from a display label when a
+/// tab is rebuilt from its title alone (`org.nirios.Word Processor`).
+/// Two ids for one program must not be two pictures of it.
 pub fn icon_for_app_id(app_id: &str) -> Icon {
-    let name = app_id.rsplit('.').next().unwrap_or(app_id);
-    match name {
-        "file-explorer" => Icon::Folder,
+    let name: String = app_id
+        .rsplit('.')
+        .next()
+        .unwrap_or(app_id)
+        .chars()
+        .map(|c| match c {
+            ' ' | '_' => '-',
+            c => c.to_ascii_lowercase(),
+        })
+        .collect();
+    match name.as_str() {
+        "file-explorer" | "files" => Icon::Folder,
         "terminal" => Icon::Terminal,
         "code-editor" | "hex-editor" => Icon::Code,
         "snippets" => Icon::FileCode,
@@ -782,7 +822,7 @@ pub fn icon_for_app_id(app_id: &str) -> Icon {
         "containers" | "git-client" => Icon::Layers,
         "diffmerge" => Icon::Copy,
         "mail" => Icon::Mail,
-        "chat" => Icon::Reply,
+        "chat" => Icon::MessageSquare,
         "api-tester" => Icon::Send,
         "feeds" => Icon::Bell,
         "contacts" | "calendar" => Icon::Calendar,
@@ -797,11 +837,14 @@ pub fn icon_for_app_id(app_id: &str) -> Icon {
         "backups" => Icon::Archive,
         "firewall" | "vpn" | "totp" => Icon::Shield,
         "store" | "software-store" => Icon::CloudDownload,
-        "browser" => Icon::ExternalLink,
+        "browser" => Icon::Globe,
         "remote" => Icon::Monitor,
         "osk" => Icon::ArrowBigUp,
         "search" => Icon::Search,
         "agent" => Icon::Bot,
+        // The compositor draws these in-process and names them under its
+        // own prefix; they are the same programs the table already knows.
+        "editor" | "word" | "document" => Icon::FileText,
         _ => Icon::LayoutGrid,
     }
 }
@@ -987,6 +1030,77 @@ pub fn draw_icon_layered(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two applications sharing one tab bar have to be two pictures.
+    ///
+    /// This is the arrangement the window model exists for and the one a
+    /// viewer is likeliest to mistake for a browser, so the pills cannot
+    /// differ only in their words. The four the demo opens must therefore
+    /// resolve to four different marks, and each has to be the mark for
+    /// that program rather than a shape that merely differs.
+    #[test]
+    fn the_applications_shown_side_by_side_get_different_marks() {
+        assert_eq!(icon_for_app_id("dev.qos.word-processor"), Icon::FileText);
+        assert_eq!(icon_for_app_id("dev.qos.photos"), Icon::Image);
+        assert_eq!(icon_for_app_id("dev.qos.file-explorer"), Icon::Folder);
+        // A conversation, not the button for one of the things you do in
+        // one: `Reply` is an action's arrow and read as chrome, not as an
+        // application's mark.
+        assert_eq!(icon_for_app_id("dev.qos.chat"), Icon::MessageSquare);
+
+        let marks = [
+            icon_for_app_id("dev.qos.word-processor"),
+            icon_for_app_id("dev.qos.photos"),
+            icon_for_app_id("dev.qos.file-explorer"),
+            icon_for_app_id("dev.qos.chat"),
+        ];
+        for i in 0..marks.len() {
+            for j in (i + 1)..marks.len() {
+                assert_ne!(marks[i], marks[j], "two of the demo's apps share one glyph");
+            }
+        }
+    }
+
+    /// One program, however its id is spelled, is one picture.
+    ///
+    /// An app announces its package id (`dev.qos.file-explorer`); the
+    /// compositor names the same program under its own prefix when it
+    /// draws it in-process (`org.nirios.Files`) and mints an id from a
+    /// display label when a tab is rebuilt from its title alone
+    /// (`org.nirios.Word Processor`). All three reach the tab pill, and a
+    /// person must not be shown three marks for one application.
+    #[test]
+    fn every_spelling_of_one_programs_id_reaches_one_mark() {
+        assert_eq!(
+            icon_for_app_id("org.nirios.Files"),
+            icon_for_app_id("dev.qos.file-explorer"),
+        );
+        assert_eq!(
+            icon_for_app_id("org.nirios.Word Processor"),
+            icon_for_app_id("dev.qos.word-processor"),
+        );
+        // A dev run with no launcher environment announces the bare
+        // binary name, which is the package id's last segment already.
+        assert_eq!(icon_for_app_id("photos"), icon_for_app_id("dev.qos.photos"));
+        assert_eq!(icon_for_app_id("word_processor"), Icon::FileText);
+    }
+
+    /// A browser is a globe. It used to be an outward arrow — the mark
+    /// for "this opens somewhere else", which is a thing a browser does
+    /// rather than a thing a browser is, and which the tab bar had
+    /// already hand-traced a globe for before this table existed.
+    #[test]
+    fn a_browser_is_a_globe() {
+        assert_eq!(icon_for_app_id("dev.qos.browser"), Icon::Globe);
+    }
+
+    /// Anything the table has never heard of still gets a mark that says
+    /// *an application*, because the surfaces that ask for one — a
+    /// permission prompt naming who is asking — must draw something.
+    #[test]
+    fn an_unknown_app_still_gets_an_application_mark() {
+        assert_eq!(icon_for_app_id("com.example.SomeThirdPartyApp"), Icon::LayoutGrid);
+    }
 
     /// Walk a path's elements; returns the count so tests can assert
     /// "non-empty" without matching against internal enum shapes.

@@ -152,6 +152,24 @@ pub enum Action {
         app_id: &'static str,
         surface_id: u64,
     },
+    /// [`Action::OpenWindow`], stopped at the moment before the client
+    /// has anything to show.
+    ///
+    /// Same adoption, same placement rule; what it leaves out is the
+    /// stand-in buffer. A toplevel that has been adopted and has not
+    /// presented is what the compositor holds a window's place for, and
+    /// past `foreign::OPENING_DELAY` the tile says so on a card. That
+    /// card is only reachable this way — every hosted app in the
+    /// catalogue is drawn in-process and is never "on its way" — so
+    /// without it the one surface a person looks at while they wait
+    /// cannot be photographed at all, which is how it shipped with its
+    /// title at about 1.05:1 against its own ground.
+    ///
+    /// Follow it with enough `Wait` to clear the delay.
+    OpenWindowStillStarting {
+        app_id: &'static str,
+        surface_id: u64,
+    },
     /// Open a second tab of a **shell-hosted** app — Notes, Editor —
     /// into the active group.
     ///
@@ -638,6 +656,33 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                     h,
                 );
             }
+        }
+        Action::OpenWindowStillStarting { app_id, surface_id } => {
+            let app_id = *app_id;
+            let surface_id = *surface_id;
+            driver.with_chrome(|st: &mut ChromeState| {
+                {
+                    let tree = st.tree();
+                    shell::shell::placement::note_placement_for_launch(
+                        app_id,
+                        &tree,
+                        st.strip_viewport(),
+                    );
+                }
+                {
+                    let mut tree = st.tree_mut();
+                    shell::compositor::tab_binding::adopt_toplevel(
+                        &mut tree,
+                        surface_id,
+                        Some(app_id.to_string()),
+                    );
+                }
+                st.bump();
+            });
+            // No stand-in buffer, deliberately: the tile has to stay in
+            // the state this scenario is about. The layout still runs, so
+            // the card has a rect to be centred in.
+            driver.relayout();
         }
         Action::AddHostedTab { app, title } => {
             let app = *app;
@@ -1915,6 +1960,9 @@ fn catalogue_rest() -> Vec<Scenario> {
         tab_pill_reveal(),
         tab_pill_reveal_narrow(),
         tab_pill_states(),
+        two_applications_in_one_tab_bar(),
+        a_window_on_its_way(),
+        files_in_a_workspace(),
         new_tab_from_the_plus_chip(),
         status_tray_states(),
         media_key_osd(),
@@ -2461,6 +2509,107 @@ const REVEAL_SAMPLES: &[u64] = &[0, 20, 40, 60, 90, 130, 180];
 /// its own idle neighbours has still failed. The boot group hands us four
 /// tabs, so activating the third and parking the pointer over the fourth
 /// puts idle, active and hover in the same row with no synthetic state.
+/// The file manager sitting in a workspace.
+///
+/// The trail is the subject. A workspace is mounted wherever the driver
+/// put it, and spelling that out — `/ > var > tmp > qos > workspace` —
+/// tells a reader they are looking at scratch space on somebody's laptop,
+/// which is the opposite of a folder that belongs to the room. Point
+/// `QOS_WORKSPACE_ROOTS` at a mount before running this, or the app opens
+/// somewhere with nothing to say.
+fn files_in_a_workspace() -> Scenario {
+    Scenario {
+        name: "files_in_a_workspace",
+        description: "The file manager open on a workspace, with the \\
+                      breadcrumb naming it.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::Relayout,
+            Action::OpenHostedWindow { app: "Files", title: "Files" },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::Relayout,
+            Action::MoveCursor(Point::new(1500.0, 900.0)),
+            Action::Wait(12),
+            Action::Relayout,
+            Action::Snapshot("01-workspace-trail"),
+        ],
+    }
+}
+
+/// The card that holds a window's place while its app starts.
+///
+/// What a person looks at for as long as a launch takes, so the one
+/// thing it must do is be readable. It took its ink from a fixed slot at
+/// the dark end of the neutral ramp and painted it on the theme's
+/// darkest surface: the name of the app you were waiting for came out at
+/// about 1.05:1 against its own ground, and every viewer of the film saw
+/// four dots in a void. The light presets had the mirror of it.
+///
+/// Both themes are shot, because a single-theme check is exactly what
+/// let this through.
+fn a_window_on_its_way() -> Scenario {
+    Scenario {
+        name: "a_window_on_its_way",
+        description: "A window's place held by the opening card while the \
+                      application behind it starts.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::Relayout,
+            Action::OpenWindowStillStarting {
+                app_id: "dev.qos.word-processor",
+                surface_id: 7701,
+            },
+            // Past `foreign::OPENING_DELAY`, so the card is up.
+            Action::Wait(24),
+            Action::Relayout,
+            Action::MoveCursor(Point::new(1400.0, 900.0)),
+            Action::Snapshot("01-opening-card"),
+        ],
+    }
+}
+
+/// Two different applications sharing one tab bar.
+///
+/// The arrangement this window model exists for, and the one a viewer is
+/// most likely to mistake for a browser — so what the picture has to
+/// show is that the two pills are two *programs*, not two pages. Each
+/// pill carries its own application's mark: a document and a picture,
+/// which are different shapes at 14 px and stay different in every
+/// theme.
+///
+/// They used to be the same shape. A pill drew from a five-variant app
+/// kind, and both of these fell to its catch-all, so the pair came out as
+/// two identical cogs distinguished by nothing but their titles.
+fn two_applications_in_one_tab_bar() -> Scenario {
+    Scenario {
+        name: "two_applications_in_one_tab_bar",
+        description: "A word processor and a photo editor in one window \
+                      group, each pill wearing its own application's icon.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::Relayout,
+            Action::AddHostedTab { app: "Word", title: "Word Processor" },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::Relayout,
+            Action::AddHostedTab { app: "Photos", title: "Photos" },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::Relayout,
+            // Pointer well off the bar: no hover state to blur which
+            // difference the picture is about.
+            Action::MoveCursor(Point::new(900.0, 620.0)),
+            Action::Wait(24),
+            Action::Relayout,
+            Action::Snapshot("01-two-apps-one-bar"),
+        ],
+    }
+}
+
 fn tab_pill_states() -> Scenario {
     Scenario {
         name: "tab_pill_states",
