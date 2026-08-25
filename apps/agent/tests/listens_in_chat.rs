@@ -398,6 +398,19 @@ impl Room {
             .and_then(|m| m.work)
     }
 
+    /// The record the agent opened for an instruction that was never a
+    /// message: its own top-level message, carrying an `AgentWork`.
+    ///
+    /// Kept apart from [`Self::record_for`] on purpose. That one asks "what
+    /// did it do with this message", and a record with no parent must not
+    /// answer it — a record that could would mark a question in the channel
+    /// as dealt with by work that had nothing to do with it.
+    fn document_record(&self) -> Option<chat::model::Message> {
+        ChatDoc::list_messages(&self.chat_doc, CHANNEL)
+            .into_iter()
+            .find(|m| m.author == AGENT_ID && m.parent.is_none() && m.work.is_some())
+    }
+
     /// The resource id that reached dispatch, if an operation was performed.
     fn acted_on(&self) -> Option<String> {
         self.session.last_action().map(|l| l.resource.clone())
@@ -690,6 +703,75 @@ fn an_instruction_written_in_the_document_is_still_carried_out() {
     assert!(
         room.replies().is_empty(),
         "and answered in the document, not in a channel nobody addressed it from"
+    );
+}
+
+/// An instruction written into a document is narrated in the room too.
+///
+/// The two paths into this agent had diverged on exactly one thing, and it
+/// was never a decision anybody made: a summons carried by a message has a
+/// sentence for the record to reply under, and a line typed into a page does
+/// not. So the message path opened a record and the document path opened
+/// nothing — and every state, row and explanation built on that record was
+/// silent whenever somebody wrote the instruction where it is most natural to
+/// write it, which is next to the work.
+///
+/// What is asserted here is that the record exists, that it is about the
+/// paragraph rather than floating free, and — the part that keeps the paths
+/// honestly separate — that it is **not** a reply. A record with a parent
+/// would be read by `listen::answered` as the agent having answered whatever
+/// it hung under, which is a claim about a message nobody sent.
+#[test]
+fn an_instruction_in_the_document_is_also_narrated_in_the_room() {
+    let mut doc = draft();
+    let block;
+    {
+        let c = qdoc::model::open(&doc, &automerge::ROOT).expect("schema");
+        let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+        let last = qdoc::model::materialize(&doc, &c)
+            .blocks
+            .last()
+            .map(|b| b.id.clone())
+            .expect("a block");
+        let mut dm = qdoc::DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let p = dm.insert_block(Some(&last), "paragraph");
+        dm.splice_text(&p, 0, 0, "Claude: turn the bullets into a table");
+        block = p;
+    }
+    doc.commit();
+
+    let mut chat = conversation();
+    say(&mut chat, "m_idle", ADA, "morning all", now());
+
+    let room = Room::open(chat, Some(doc));
+    let record = room
+        .document_record()
+        .expect("a line addressed to the agent has to reach the room, not only the page");
+    assert!(
+        record.parent.is_none(),
+        "the record replied to a message nobody sent: {:?}",
+        record.parent
+    );
+    let work = record.work.as_ref().expect("the message carries the record");
+    assert!(
+        work.finished(),
+        "the turn is over, so the record must not still read as in flight: {work:?}"
+    );
+    let about = record
+        .reference
+        .as_ref()
+        .expect("a record floating free of the line it is about is unreadable");
+    assert!(
+        about.resource_id().as_str().contains(&block),
+        "the record names {:?} rather than the paragraph it read: {:?}",
+        about.resource_id().as_str(),
+        block
+    );
+    // And it is still not an answer to anything in this channel: the page is
+    // where a document instruction is answered, and that has not moved.
+    assert!(
+        room.replies().is_empty(),
+        "the record must not double as a reply in a channel nobody spoke in"
     );
 }
 
