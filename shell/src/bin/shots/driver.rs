@@ -659,6 +659,32 @@ impl ShellDriver {
         self.with_chrome(|_| {});
     }
 
+    /// Put a real filesystem request on the chrome's grant queue and let
+    /// the production pump latch the bar for it.
+    ///
+    /// The request is the one the file manager makes about a home, which
+    /// is the one that was on screen unanswered for six minutes of a
+    /// take: `dev.qos.file-explorer` asking for read/write on a home
+    /// directory. `is_owner` decides whether the fourth button is among
+    /// the answers offered at all.
+    fn seed_permission_prompt(&mut self, is_owner: bool) {
+        use shell::shell::chrome_state::PendingPrompt;
+        use shell::shell::state::{Capability, FsMode, GRANT_ONCE};
+        self.with_chrome(|st| {
+            st.test_only_owner_override = Some(is_owner);
+            st.queue_grant_prompt(PendingPrompt::new(
+                "dev.qos.file-explorer".to_string(),
+                Capability::Filesystem {
+                    path: std::path::PathBuf::from("/var/tmp/qos/home/xaver"),
+                    mode: FsMode::ReadWrite,
+                    scope: GRANT_ONCE,
+                },
+            ));
+            st.bump();
+        });
+        self.fb.host_mut().pump_permission_prompt();
+    }
+
     fn seed_workspace_permissions(&mut self) {
         use shell::shell::state::{CapOverride, Expiry, Scope, Subject, Verb};
         let handle = self.chrome_handle();
@@ -806,6 +832,25 @@ impl ShellDriver {
                     .host_mut()
                     .refresh_search_results_for_shots(&mut self.state, &root);
             }
+            // The bar an app's request for a capability puts across the
+            // top of the strip, as the person who owns the room sees it:
+            // four answers, all of them theirs to give.
+            //
+            // Queued on the production queue and latched by the
+            // production pump, not constructed directly — the name on
+            // the bar and whether the fourth button is offered are both
+            // decided in `pump_permission_prompt`, and a fixture that
+            // built the widget itself would photograph neither.
+            "permission_prompt_owner" => {
+                self.seed_permission_prompt(true);
+            }
+            // The same request reaching somebody who is a guest in the
+            // room. `Always allow` is the owner's to give, so it is not
+            // among the answers offered — where it used to be drawn
+            // greyed out with nothing saying why.
+            "permission_prompt_guest" => {
+                self.seed_permission_prompt(false);
+            }
             // The seconds after Enter on such a row: the palette is
             // gone and the notice is the only thing accounting for the
             // wait, so it has to say where the fetch has got to and
@@ -829,6 +874,37 @@ impl ShellDriver {
                             .with_created_at(settled_at),
                     );
                 });
+            }
+            // An open that started and then produced nothing: the
+            // launcher forked, no window ever arrived, and no failure
+            // was ever reported. Nothing announces this ending, so for
+            // two minutes the desktop went on saying "Loading…" about
+            // it — which is what a *working* open looks like, and what a
+            // failed one looks like, indistinguishably.
+            //
+            // The notice is raised the way an open raises it and then
+            // dated back past the deadline, so the frame pump meets it
+            // in exactly the state a stalled open leaves it in. What is
+            // photographed is whatever the pump then does about it.
+            "open_gave_up" => {
+                use shell::shell::notification::Notification;
+                const PACKAGE: &str = "dev.qos.chat";
+                let stalled_at = Instant::now() - Duration::from_secs(45);
+                let notice = {
+                    let handle = self.chrome_handle();
+                    let mut st = handle.borrow_mut();
+                    let id = st.push_notification_full(
+                        Notification::new("Opening Chat", "Loading…")
+                            .with_app_name("Applications")
+                            .with_dismiss_after(Duration::from_secs(120))
+                            .with_created_at(stalled_at),
+                    );
+                    st.bump();
+                    id
+                };
+                let _ = shell::shell::catalogue::note_pending_notice(PACKAGE, notice);
+                let root = self.root_obj.clone();
+                self.fb.pump_apps(&mut self.state, &root);
             }
             // A fetch that did not happen. The end of an open is always
             // legible — the reason replaces the indication rather than
@@ -1359,6 +1435,9 @@ impl ShellDriver {
         "palette_offer_not_installed",
         "open_progress",
         "open_failed",
+        "open_gave_up",
+        "permission_prompt_owner",
+        "permission_prompt_guest",
         "quick-settings",
         "qs-wifi-drillin",
         "qs-bt-drillin",
