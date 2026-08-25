@@ -3882,6 +3882,51 @@ mod tests {
     }
 
     #[test]
+    fn a_strip_of_seven_windows_can_frame_its_last_one() {
+        // The shape the demo film builds: seven windows along one strip,
+        // two of them sharing a tab group. The cut that opens the film's
+        // second half frames the window at the far end of it and came back
+        // 1596px off the right edge, so the question this answers is
+        // whether any offset frames it at all — which is what decides
+        // whether that fix belongs in the pan or above it.
+        //
+        // It does, so it belongs above: the walk driving this counted
+        // groups while the gesture steps tabs, stopped at the shared
+        // group, and never asked the pan for an offset the pan can reach.
+        let (mut row, _taffy, _root) =
+            make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4, 5], &[6], &[7]]);
+        // A viewport narrower than the content, so the strip really has
+        // somewhere to pan to.
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
+        row.set_content_w_for_test(row.content_width());
+        assert!(
+            row.max_scroll_x() > 0.0,
+            "the fixture must overflow its viewport or there is nothing to prove"
+        );
+
+        let last = *row.group_ids().last().expect("six groups");
+        row.scroll_group_into_view(last);
+
+        // Measured in the row's own coordinates: the group's laid-out
+        // span less the offset the pan came to rest at. Not the group's
+        // screen rect, which is only refreshed by a layout pass.
+        let &(_, x0, x1) = row
+            .laid_spans
+            .iter()
+            .find(|(id, _, _)| *id == last)
+            .expect("the last group is laid out");
+        let left = x0 - row.scroll_x();
+        let right = x1 - row.scroll_x();
+        let width = row.rect.width();
+        assert!(
+            left >= -0.5 && right <= width + 0.5,
+            "the last of seven windows must be wholly on screen; it sits at \
+             {left}..{right} of a {width} wide row at scroll_x {}",
+            row.scroll_x(),
+        );
+    }
+
+    #[test]
     fn scroll_group_into_view_animated_eases_to_the_same_target() {
         // Two identical rows: one panned by the teleporting variant (the
         // reference target), one by the animated variant. The animated row
