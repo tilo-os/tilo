@@ -939,8 +939,26 @@ class Live:
                     "SpliceText").get("answer") or {}
                 return bool(answer.get("permitted"))
 
+            # The one the payoff actually turns on, asked of the session
+            # that will answer it.
+            #
+            # `may_write` above asks quinten's machine about splicing
+            # text in the word processor. Both halves of that are the
+            # wrong question for what happens next: the agent's first act
+            # is to *open the photo editor*, which is a different app and
+            # a different verb, and it is decided on the agent's own
+            # session against capabilities that had to replicate there
+            # first. Asking the grantor about a different app is a claim
+            # that cannot fail -- it passed, seconds before the agent was
+            # refused, and turned a hard failure into a green line
+            # followed by silence.
+            def may_open_editor() -> bool:
+                return yc.agent_may_open(self.a, yc.IMAGE_EDITOR)
+
             yc.claim("the agent may not write to the word processor yet",
                      may_write(), False)
+            yc.claim("nor open the photo editor — its own session says so",
+                     may_open_editor(), False)
             # One grant per application it is given leave to work in. The
             # film needs two -- it is told to square a photograph and put it
             # in the open document -- and naming them separately is the
@@ -956,6 +974,27 @@ class Live:
             yc.claim("and now it may — the same question, the same gate",
                      bool(yc.wait_for(may_write, timeout=yc.SYNC_TIMEOUT_S)),
                      True)
+            # And the one that decides whether there is a film. Waited
+            # for rather than read once: this is the first claim in the
+            # beat whose answer has to cross a network, and a grant that
+            # arrives a second later is a grant that arrived.
+            opens = bool(yc.wait_for(may_open_editor,
+                                     timeout=yc.SYNC_TIMEOUT_S))
+            yc.claim("and its own session would let it open the photo editor",
+                     opens, True)
+            if not opens:
+                # Separate the two ways this can be false, because they
+                # send whoever reads it to opposite ends of the system.
+                reachable = yc.anyone_may_open(self.a, yc.IMAGE_EDITOR)
+                yc.gap(
+                    f"the agent will be refused when it asks to open "
+                    f"{yc.IMAGE_EDITOR}, so the crop cannot happen — "
+                    + ("the row is reachable on that session, so what is "
+                       "missing is the grant reaching it"
+                       if reachable else
+                       "the row is not reachable there at all, so the "
+                       "editor is absent or unindexed rather than "
+                       "ungranted"))
             admitted = self.q.grant(f"person:{self.a.user}", "workspace",
                                     "write")
             yc.claim("the agent's session is admitted to the room as an editor",

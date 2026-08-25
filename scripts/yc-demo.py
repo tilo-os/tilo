@@ -1601,9 +1601,24 @@ class Session:
 
     # -- the action API (semantic; no input, no pixels) --------------
 
-    def enumerate_actions(self, query: str = "") -> dict:
-        """The exported action surface. Read-only by construction."""
-        return ok(call(self.sock, {"op": "actions_enumerate", "query": query}))["answer"]
+    def enumerate_actions(self, query: str = "",
+                          agent: str | None = None) -> dict:
+        """The exported action surface. Read-only by construction.
+
+        `agent` decides *whose* surface this is. Omitted, the catalogue
+        is built through the gate of the person sitting at this session;
+        named, it is built through `Workspace::actor_for_agent(name)` --
+        the same actor `agent_opens::decide` constructs out of the name a
+        connection announced. So a row that is here for `agent="Claude"`
+        is a row `Claude` may actually reach on this machine, and one
+        that is missing is missing because the room did not grant it,
+        not because the caller filtered it out.
+        """
+        payload: dict[str, object] = {"op": "actions_enumerate",
+                                      "query": query}
+        if agent is not None:
+            payload["agent"] = agent
+        return ok(call(self.sock, payload))["answer"]
 
     def invoke_action(self, provider: str, action_id: str,
                       args: dict | None = None) -> dict:
@@ -4912,6 +4927,69 @@ def join_room(guest: Session, token: str, via: str,
     read_hold()
     dismiss_peer_sync_card(guest, "connect")
     return bool(joined)
+
+
+def agent_may_open(session: Session, app_id: str,
+                   agent: str = AGENT_NAME) -> bool:
+    """Would `session` let `agent` open `app_id` here?
+
+    The question the *next beat* asks, asked of the session that will
+    answer it and about the app and the verb it will be asked about.
+
+    Three things have to line up for that to be true, and each of them
+    has been wrong at least once:
+
+      the session   `agent_opens::pump` decides an `OpenApp` against the
+                    active workspace of the session holding the agent's
+                    connection -- the agent's own, not the owner's. A
+                    grant is made on the owner's machine and has to
+                    *replicate* before it means anything here, so asking
+                    the grantor is asking the one participant guaranteed
+                    to say yes.
+      the actor     `Workspace::actor_for_agent(name)`, matched
+                    literally: `agent:claude` is not `agent:Claude`.
+                    Reached here through `actions_enumerate`'s `agent`
+                    field, which builds the same actor.
+      the resource  a launch resolves to `App(<id>)` + `Write`
+                    (`search::visibility::required_capability`), which is
+                    what `agent_opens::decide` asks. Not
+                    `Action{app, action}`: a grant of
+                    `action:<app>/<action>` answers that one and refuses
+                    this one, so a check written against an action says
+                    nothing about whether the app can be opened at all.
+
+    So this reads the applications provider's own row through the
+    production visibility gate. Present means the open will be allowed;
+    absent means it will be refused with "has not been given leave".
+
+    Queried by name rather than off the empty catalogue: an empty query
+    does not build a row for every installed app (see `Session.launch`),
+    so `("applications", <id>)` would be missing from it even for a
+    caller that may launch it -- a false red, and the loudest possible
+    way to lie about a permission.
+    """
+    query = STRIP_SEARCH.get(app_id, app_id.rsplit(".", 1)[-1])
+    surface = session.enumerate_actions(query, agent=agent)
+    return any(a.get("provider") == APPLICATIONS and a.get("id") == app_id
+               for a in surface.get("actions", []))
+
+
+def anyone_may_open(session: Session, app_id: str) -> bool:
+    """Whether `session` can offer `app_id` to *anybody* at all.
+
+    The control for [`agent_may_open`]. An application that is not
+    installed, or a query that does not reach it, produces exactly the
+    same empty answer as a permission that was never granted -- and a
+    check that cannot tell those apart reports a missing app as a
+    refused grant, or worse, reports a refused grant as a missing app
+    and shrugs. Asked as the person whose session it is, who holds the
+    room, so a `False` here means the row is unreachable rather than
+    ungranted.
+    """
+    query = STRIP_SEARCH.get(app_id, app_id.rsplit(".", 1)[-1])
+    surface = session.enumerate_actions(query)
+    return any(a.get("provider") == APPLICATIONS and a.get("id") == app_id
+               for a in surface.get("actions", []))
 
 
 # --------------------------------------------------------------------
