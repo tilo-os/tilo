@@ -557,11 +557,17 @@ fn render_shot_to_png(
         _ => {}
     }
 
-    // Thumbnail scenarios: requests are enqueued during draw, so a throwaway
-    // warm-up draw kicks off generation for the visible cells, then we wait for
-    // the pool to settle before the frame we keep — so the shot captures real
-    // previews, never the loading placeholders.
-    if matches!(scenario, Some("thumbnails") | Some("thumbnails-fs")) {
+    // Previews are requested during draw, so a throwaway warm-up draw kicks off
+    // generation for the visible cells and we wait for the pool to settle before
+    // the frame we keep — the shot then shows the real previews rather than the
+    // placeholders that stand in for them for a frame.
+    //
+    // Done for every shot, not only the preview scenarios: a live window paints
+    // again when the pool settles, so a single-frame shot that skipped this
+    // showed a type glyph for a file the app does preview — a listing that
+    // looked broken in a still and was not, and would have looked exactly the
+    // same if it really were.
+    {
         let mut warm = Scene::new();
         widget.draw_with_presence(
             &mut warm,

@@ -167,6 +167,22 @@ impl Entry {
     pub fn is_conflict(&self) -> bool {
         is_conflict_name(&self.name)
     }
+
+    /// Whether this entry's **content** is already on this machine, so
+    /// reading it costs a read and nothing else.
+    ///
+    /// [`SyncState::Projected`] and [`SyncState::Downloading`] say the bytes
+    /// are not here: opening such a file hydrates it from a peer, which is
+    /// work nobody asked for. Everything else is local — a file the driver
+    /// reports as [`SyncState::Local`], and equally a file carrying no sync
+    /// attribute at all, which is what an ordinary path (or a workspace root
+    /// that is a plain directory rather than a live FUSE mount) looks like.
+    pub fn content_is_local(&self) -> bool {
+        !matches!(
+            self.sync_state,
+            Some(SyncState::Projected) | Some(SyncState::Downloading)
+        )
+    }
 }
 
 /// Human-readable byte size (e.g. `4.0 kB`). Directories show "—".
