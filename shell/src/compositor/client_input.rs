@@ -1903,6 +1903,26 @@ pub fn route_input(
             // this spot on this session's screen, and it stays there
             // whether or not anything happens next.
             state.client_input.pointer_evidence = Some(PointerEvidence::Resting);
+            // And the chrome is told the same thing, before anything decides
+            // who the motion belongs to.
+            //
+            // A motion over an application window is that application's and is
+            // withheld from the chrome dispatch below, which is right — but it
+            // used to mean the chrome's own record of the pointer stopped at
+            // whatever spot it last crossed the desktop at. Every later press
+            // was then hit-tested against a position from minutes ago, because
+            // a `MouseInput` carries none of its own.
+            //
+            // That is invisible for chrome the pointer has to travel over to
+            // reach, and it is not invisible for chrome that appears where the
+            // pointer already is: the compose surface opens above the windows
+            // on a right-click made inside one, and the next press decides
+            // whether it stays. Measured against a stale position that press
+            // read as aimed away from the panel every time, so the panel shut
+            // in the tenth of a second between opening and the hand reaching
+            // it.
+            fb.host_mut()
+                .note_pointer(vello::kurbo::Point::new(position.x, position.y));
             let hit = current_pointer_target(state, fb, captured);
             deliver_pointer(state, hit);
             // During a chrome drag the file manager keeps drawing the ghost
@@ -3297,6 +3317,65 @@ mod tests {
 
         publish_remote_input_view(&mut state, &fb, true);
         assert!(state.remote_input_firewall.view().session_locked());
+    }
+
+    /// Routing a motion tells the chrome where the pointer went, whether or
+    /// not the chrome is the one that gets to read the event.
+    ///
+    /// The chrome hit-tests a press against the last position it was given,
+    /// because a `MouseInput` carries none of its own. Motion over an
+    /// application window is that application's and is withheld from the
+    /// chrome dispatch — so without this the chrome's position froze at
+    /// whatever spot the pointer last crossed the desktop at, and every press
+    /// made inside a window was measured against it.
+    ///
+    /// Asserted through `route_input` because that is the one function every
+    /// source of motion in this compositor goes through, and asserted on
+    /// `pointer_position` — what the chrome actually reads — rather than on
+    /// the routing copy beside it, which was always right.
+    #[test]
+    fn routing_a_motion_keeps_the_chrome_pointer_current() {
+        let mut state = state_sharing(9_000_103);
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mods = Modifiers::default();
+
+        assert!(
+            fb.host().pointer_position().is_none(),
+            "nothing has moved a pointer through this session yet",
+        );
+
+        route_input(
+            &mut state,
+            &mut fb,
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(523.0, 339.0),
+            },
+            &mods,
+        );
+
+        assert_eq!(
+            fb.host().pointer_position(),
+            Some(vello::kurbo::Point::new(523.0, 339.0)),
+            "the chrome has to know where the pointer is to hit-test the \
+             press that follows it",
+        );
+
+        // And it follows the pointer, rather than only recording the first
+        // place it was seen.
+        route_input(
+            &mut state,
+            &mut fb,
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(880.0, 300.0),
+            },
+            &mods,
+        );
+        assert_eq!(
+            fb.host().pointer_position(),
+            Some(vello::kurbo::Point::new(880.0, 300.0)),
+        );
     }
 
     /// A `State` with a live seat, one peer holding write access to

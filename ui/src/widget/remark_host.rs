@@ -432,10 +432,17 @@ impl RemarkHost {
     /// menu, and a press anywhere else puts the compose away the way clicking
     /// off any composer does.
     ///
-    /// `pointer` is the app's current pointer position, in the same logical
-    /// space as [`rect`](Self::rect). `neighbour` is the rect of the chrome the
-    /// panel was opened beside, so a click on it is not read as a click away;
-    /// pass `None` when there is none.
+    /// `pointer` is where the pointer is standing, in the same logical space as
+    /// [`rect`](Self::rect), or `None` when whoever is pumping does not know.
+    /// `neighbour` is the rect of the chrome the panel was opened beside, so a
+    /// click on it is not read as a click away; pass `None` when there is none.
+    ///
+    /// A pointer position is `Option` because there is a real difference
+    /// between "the press landed somewhere else" and "nobody knows where the
+    /// press landed", and only the first of them is a dismissal. A host that
+    /// substituted a plausible-looking point for the second — the origin, say —
+    /// would be manufacturing the evidence this panel is closed on, and a
+    /// press at the top-left corner is outside every panel there has ever been.
     #[allow(clippy::too_many_arguments)]
     pub fn pump(
         &mut self,
@@ -445,7 +452,7 @@ impl RemarkHost {
         doc: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
-        pointer: Point,
+        pointer: Option<Point>,
         neighbour: Option<Rect>,
     ) -> bool {
         if !self.compose.is_open() {
@@ -473,16 +480,37 @@ impl RemarkHost {
                 // The expanded destination list paints its rows outside the
                 // panel's own rect, so while it is down every press is the
                 // panel's — including the one that dismisses it.
-                let mine = self.compose.get_rect().contains(pointer)
+                let mine = pointer.is_some_and(|p| self.compose.get_rect().contains(p))
                     || self.compose.destination_list_is_open();
                 if mine {
                     self.forward(event, scale, mods, doc, path, handled);
                     *handled = true;
                     return true;
                 }
+                // No position, no dismissal. A press whose whereabouts nobody
+                // can vouch for is not evidence that somebody aimed away from
+                // this panel, and closing on it throws away a surface the
+                // person did ask for on the strength of a guess.
                 if *press == ElementState::Pressed
-                    && !neighbour.is_some_and(|n| n.contains(pointer))
+                    && let Some(p) = pointer
+                    && !neighbour.is_some_and(|n| n.contains(p))
                 {
+                    // The numbers that decided it, beside the decision. The
+                    // one time this fired wrongly it fired because the
+                    // position was stale, and a line saying only *that* it
+                    // closed cannot tell that apart from somebody clicking
+                    // away.
+                    tracing::info!(
+                        target: "ui::remark",
+                        at = ?(p.x, p.y),
+                        panel = ?{
+                            let r = self.compose.get_rect();
+                            (r.x0, r.y0, r.width(), r.height())
+                        },
+                        beside = ?neighbour.map(|n| (n.x0, n.y0, n.width(), n.height())),
+                        "a press landed outside the compose surface and outside \
+                         the chrome it opened beside",
+                    );
                     // Click-away dismisses an empty panel, and only an empty
                     // one. The rule across every way this surface can go is
                     // the same: it closes on an act aimed *at* it — Escape, or
@@ -497,7 +525,9 @@ impl RemarkHost {
             }
             // A wheel over the panel is the panel's, or the app scrolls out
             // from under a composer somebody is typing into.
-            WindowEvent::MouseWheel { .. } if self.compose.get_rect().contains(pointer) => {
+            WindowEvent::MouseWheel { .. }
+                if pointer.is_some_and(|p| self.compose.get_rect().contains(p)) =>
+            {
                 *handled = true;
                 true
             }
