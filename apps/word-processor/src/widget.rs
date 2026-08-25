@@ -1615,8 +1615,13 @@ fn draw_squiggle(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64)
 
 /// Run the spell-checker over a block's text, returning the misspelled byte spans
 /// `(start, end)`. Skips the U+FFFC field/note placeholders (they are not words).
+///
+/// Spans only. This is called while drawing the paragraph the caret is in, which
+/// means on every keystroke, and a correction nobody has asked for is not worth
+/// searching the dictionary for. The right-click menu asks for one when it has
+/// a word to ask about — see `suggestions_for_word`.
 fn spell_spans(dict: &spellcheck::Dictionary, text: &str) -> Vec<(usize, usize)> {
-    spellcheck::check(dict, text).into_iter().map(|m| (m.start, m.end)).collect()
+    spellcheck::spans(dict, text)
 }
 
 /// Hash everything that feeds into `RichTextLayout::shape` into a single `u64`.
@@ -2106,30 +2111,56 @@ fn draw_stats_enabled() -> bool {
     *ON.get_or_init(|| std::env::var_os("QOS_WP_DRAW_STATS").is_some())
 }
 
+/// One frame's draw, cut at the boundaries between the things it does.
+///
+/// The `to_*` fields are elapsed times from the start of `draw`, so each
+/// section is the difference between consecutive ones.
+#[derive(Clone, Copy, Default)]
+struct DrawSpans {
+    total_us: u64,
+    toolbar_us: u64,
+    /// Through laying out and shaping every block (pass 1).
+    to_layout_us: u64,
+    /// …and drawing the page sheets, headers and footers.
+    to_pages_us: u64,
+    /// …and drawing the body text over them (pass 2).
+    to_text_us: u64,
+    blocks: usize,
+}
+
 /// Report what `draw` spent, every 120 frames, while `QOS_WP_DRAW_STATS` is set.
 ///
 /// The editor lays out and paginates the whole document inside `draw` — there is
 /// no measuring pass to put it in — so `draw` is most of what a keystroke costs
 /// and `ui`'s per-pass profiler cannot see inside it. Without this the only
 /// honest thing to say about that cost is its total.
-fn note_draw_stats(total_us: u64, toolbar_us: u64, blocks: usize) {
+fn note_draw_stats(s: DrawSpans) {
     use std::sync::Mutex;
-    static ACC: Mutex<(u32, u64, u64)> = Mutex::new((0, 0, 0));
+    static ACC: Mutex<(u32, DrawSpans)> = Mutex::new((0, DrawSpans { total_us: 0, toolbar_us: 0, to_layout_us: 0, to_pages_us: 0, to_text_us: 0, blocks: 0 }));
     let Ok(mut a) = ACC.lock() else { return };
     a.0 += 1;
-    a.1 += total_us;
-    a.2 += toolbar_us;
+    a.1.total_us += s.total_us;
+    a.1.toolbar_us += s.toolbar_us;
+    a.1.to_layout_us += s.to_layout_us;
+    a.1.to_pages_us += s.to_pages_us;
+    a.1.to_text_us += s.to_text_us;
     if a.0 == 120 {
-        let (n, total, toolbar) = (a.0 as f64, a.1 as f64, a.2 as f64);
+        let n = a.0 as f64;
+        let ms = |us: u64| us as f64 / n / 1000.0;
         eprintln!(
-            "word-processor draw over {} frames ({blocks} blocks): total {:.2} ms, \
-             of which toolbar {:.2} ms, everything else {:.2} ms",
+            "word-processor draw, {} frames, {} blocks (ms): total {:.2} = \
+             toolbar {:.2} + block layout {:.2} + page sheets {:.2} + body text {:.2} \
+             + panels and the rest {:.2}",
             a.0,
-            total / n / 1000.0,
-            toolbar / n / 1000.0,
-            (total - toolbar) / n / 1000.0,
+            s.blocks,
+            ms(a.1.total_us),
+            ms(a.1.toolbar_us),
+            ms(a.1.to_layout_us.saturating_sub(a.1.toolbar_us)),
+            ms(a.1.to_pages_us.saturating_sub(a.1.to_layout_us)),
+            ms(a.1.to_text_us.saturating_sub(a.1.to_pages_us)),
+            ms(a.1.total_us.saturating_sub(a.1.to_text_us)),
         );
-        *a = (0, 0, 0);
+        *a = (0, DrawSpans::default());
     }
 }
 
@@ -5454,6 +5485,7 @@ impl Widget for WordProcessorWidget {
         }
         // Total document extent below `page_top`: the stacked page sheets + gaps,
         // widened if an over-tall block overflowed its page's text band.
+        let t_after_layout = t_draw.map(|_| std::time::Instant::now());
         let num_pages = cur_page + 1;
         let pages_extent = num_pages as f64 * letter_h + cur_page as f64 * PAGE_GAP;
         let extent = pages_extent.max(y - page_top);
@@ -5535,6 +5567,7 @@ impl Widget for WordProcessorWidget {
                 text_renderer.draw_text(scene, &label, 11.0, self.chrome.text_dim, ctf * Affine::translate((lx, ly)), None);
             }
         }
+        let t_after_pages = t_draw.map(|_| std::time::Instant::now());
         self.header = header;
         self.footer = footer;
         // The first page is the reference rect for the margin-guide overlay
@@ -6188,6 +6221,7 @@ impl Widget for WordProcessorWidget {
             scene.fill(Fill::NonZero, transform, self.chrome.scrollbar, None, &vello::kurbo::RoundedRect::from_rect(thumb, 2.0));
         }
 
+        let t_after_text = t_draw.map(|_| std::time::Instant::now());
         self.laid = laid;
         // Adopt this frame's cache (dropping `old_cache`, i.e. pruning entries
         // for blocks that no longer exist) so the next frame can reuse it.
@@ -6299,7 +6333,17 @@ impl Widget for WordProcessorWidget {
         self.draw_status_bubble(scene, transform, text_renderer, theme);
 
         if let (Some(t), Some(toolbar_us)) = (t_draw, toolbar_us) {
-            note_draw_stats(t.elapsed().as_micros() as u64, toolbar_us, self.blocks.len());
+            let at = |m: Option<std::time::Instant>| {
+                m.map(|i| i.duration_since(t).as_micros() as u64).unwrap_or(0)
+            };
+            note_draw_stats(DrawSpans {
+                total_us: t.elapsed().as_micros() as u64,
+                toolbar_us,
+                to_layout_us: at(t_after_layout),
+                to_pages_us: at(t_after_pages),
+                to_text_us: at(t_after_text),
+                blocks: self.blocks.len(),
+            });
         }
     }
 
