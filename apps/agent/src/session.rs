@@ -1249,7 +1249,27 @@ impl Session {
         // part of the surface the agent can be asked to act on, so it is
         // kept rather than dropped.
         if let Some(contract) = crate::apply::attribute(data) {
-            if !crate::apply::looks_like_a_document(data) {
+            // Whether this is the page the agent is working on, or another
+            // application's state that it can be asked to act on.
+            //
+            // Shape used to decide this — anything that parsed as a rich-text
+            // document was taken to be the page — and that was wrong about
+            // every app the toolkit builds. The toolkit seeds a rich-text
+            // document in each of them, so the photo editor's state has that
+            // shape too: it was merged into the page instead of being held as
+            // the photo editor's, `holds("photos")` stayed false, and an
+            // editor that had started and loaded a photograph was reported as
+            // one that never came back.
+            //
+            // So the question is who authored it, which `attribute` already
+            // answers. The page is the document this agent's own editor
+            // holds; the first one to arrive is the page when nothing more
+            // specific claims it. Everything else is a peer, whatever shape
+            // it has.
+            let ours = self.editor.as_ref().map(|e| e.contract().namespace);
+            let is_our_page = ours == Some(contract.namespace)
+                || (ours.is_none() && contract.fallback);
+            if !is_our_page {
                 match self.peers.get_mut(contract.namespace) {
                     Some(ed) => {
                         let took = ed.merge_full_any(data)?;
@@ -1915,7 +1935,12 @@ impl Session {
         // what differs is only where it lands.
         if let Some(app) = surface::opens(&address) {
             let app = app.to_string();
-            return Ok(match self.open_app(&app, what.as_deref())? {
+            // The content the open was bound to, which is the ordinary
+            // carried argument and reaches here by the ordinary route: the
+            // survey said this operation collects content, so the dispatcher
+            // put the previous step's product in it and nothing else could
+            // have.
+            return Ok(match self.open_app(&app, what.as_deref(), argument)? {
                 Ok(()) => AgentStepOutcome::Applied,
                 Err(why) => AgentStepOutcome::Refused { why },
             });
@@ -2016,7 +2041,12 @@ impl Session {
     ///   reason is the session's (see [`CollabEvent::AppOpenRefused`]);
     /// * [`OPENING`] passes — said as what it is, a wait that ran out, naming
     ///   the application and the length of it.
-    fn open_app(&mut self, namespace: &str, what: Option<&str>) -> Result<Result<(), String>> {
+    fn open_app(
+        &mut self,
+        namespace: &str,
+        what: Option<&str>,
+        with: Option<&str>,
+    ) -> Result<Result<(), String>> {
         let Some(contract) = surface::for_namespace(namespace) else {
             // Unreachable through an offer, which is built from the contracts.
             // Reachable from an address a model composed, which is exactly the
@@ -2038,11 +2068,48 @@ impl Session {
         }
         // A refusal to an earlier ask must never answer this one.
         self.refused_open = None;
+        // The bytes, before the request that names them.
+        //
+        // A hash is only a name, and the session resolves it against its own
+        // store — a different process from this one, with a different store.
+        // The agent produced this content (an app's `product` put it here),
+        // so the session has never seen it, and an open naming it would be
+        // refused for content that does exist, on the machine that does not
+        // have it. Offering first is the same route every picture takes out
+        // of an app's sandbox, and it is what makes the hash resolvable on
+        // the far side.
+        //
+        // Offered, not required to succeed: a session that already holds the
+        // content answers the open regardless, and one that cannot take it
+        // refuses the open in its own words a moment later.
+        if let Some(hash) = with {
+            match qdoc::blobstore::store().get(hash) {
+                Some(bytes) => {
+                    tracing::info!(
+                        %hash, bytes = bytes.len(),
+                        "handing the session the content the open names"
+                    );
+                    self.link.send(&CollabRequest::OfferBlob {
+                        hash: hash.to_string(),
+                        bytes,
+                    })?;
+                }
+                // Nothing to hand over. Said rather than passed silently: the
+                // open will be refused on the far side for content that is
+                // nowhere, and this names the half that went missing here.
+                None => tracing::warn!(
+                    %hash,
+                    "the open names content this agent does not hold, so there \
+                     is nothing to hand the session"
+                ),
+            }
+        }
         self.link.send(&CollabRequest::OpenApp {
             app_id: contract.app_id.to_string(),
+            with: with.map(str::to_string),
         })?;
         tracing::info!(
-            app = %contract.app_id,
+            app = %contract.app_id, onto = ?with,
             "asked this session to open an application, and waiting for it"
         );
         let started = Instant::now();
@@ -2107,6 +2174,44 @@ impl Session {
         (contract.product)(view, doc)
     }
 
+    /// What the room denotes before anything has been done to it.
+    ///
+    /// [`Self::product`] answers "what did the step that just ran leave
+    /// behind", and that is the whole of what a carried argument used to be
+    /// able to come from — so the *first* step of a sequence could never
+    /// collect content, because nothing had run yet. That is exactly the
+    /// shape of "make this square and put it in the open document": the thing
+    /// the request is about is already in the room, sitting in a document,
+    /// and the first step is the one that needs it.
+    ///
+    /// So a sequence starts with whatever the room already denotes. It is the
+    /// same question asked of the same `product`, one turn earlier: no new
+    /// vocabulary, and nothing an app did not say about itself.
+    ///
+    /// **One, or none.** A room where two applications each denote something
+    /// answers `None`, and a step bound to it is refused rather than handed
+    /// whichever came first. "This" is only unambiguous when there is one
+    /// thing it could mean, and cropping the wrong picture into somebody's
+    /// document is worse than saying it could not tell which was meant.
+    fn already_denoted(&self) -> Option<(String, surface::Product)> {
+        let view = self.view(None, 0);
+        let mut found: Option<(String, surface::Product)> = None;
+        for (contract, doc) in self.held() {
+            let Some(product) = (contract.product)(&view, doc) else {
+                continue;
+            };
+            if found.is_some() {
+                tracing::debug!(
+                    "more than one application here denotes something; a first \
+                     step that collects content is refused rather than aimed"
+                );
+                return None;
+            }
+            found = Some((contract.namespace.to_string(), product));
+        }
+        found
+    }
+
     /// Carry out an instruction's steps, in order, and stop where it cannot.
     ///
     /// Three rules, and each is there because its opposite is a way of
@@ -2159,7 +2264,14 @@ impl Session {
         // back to the step that produced it. Keeping the pair is what lets
         // the crossing between the two applications be reported rather than
         // guessed from two documents changing near each other.
-        let mut carried: Option<(String, surface::Product)> = None;
+        let mut carried: Option<(String, surface::Product)> = self.already_denoted();
+        if let Some((app, _)) = carried.as_ref() {
+            tracing::info!(
+                app = %app,
+                "the room already denotes something, so a first step that \
+                 collects content has it to work with"
+            );
+        }
         let mut done: Vec<String> = Vec::new();
 
         let total = plan.steps.len();

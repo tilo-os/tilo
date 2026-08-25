@@ -44,10 +44,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = photos::PhotosApp::new();
     photos::strings::install();
 
-    // `--open PATH` is the same entry the file chooser uses, so a path from
-    // the command line and one from the portal reach the document identically.
+    // The photograph this was started on, however it was named. Same entry as
+    // the file chooser's, so a path from a command line, from the portal, and
+    // from a sandboxed launch all reach the document identically.
     let mut state = state;
-    if let Some(path) = flag_value(&args, "--open") {
+    if let Some(path) = document_argument(&args) {
         app.open_path(&mut state.doc, &path);
     }
 
@@ -62,6 +63,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     app.run();
     Ok(())
+}
+
+/// The document this was asked to open, in either spelling it arrives in.
+///
+/// `--open PATH` is what a person types and what the portal hands over. A
+/// **bare first argument** is what a sandboxed launch delivers: `qos-launcher`
+/// forwards the document as the app's `argv[1..]`, because after the
+/// entrypoint token everything is opaque bytes to bwrap and there is nowhere
+/// for a flag name to survive.
+///
+/// Reading only the flag was a silent failure with no error anywhere in it.
+/// The session staged the picture, granted the app read on it, launched the
+/// app with it and logged all three; the app started, ignored its own
+/// argument, and came up empty — so a request to crop that photograph reached
+/// a window that did not have it, which from outside looks exactly like an
+/// agent that did nothing.
+fn document_argument(args: &[String]) -> Option<String> {
+    if let Some(path) = flag_value(args, "--open") {
+        return Some(path);
+    }
+    // The first token that is not a flag and not a flag's value. A GUI launch
+    // carries exactly one argument and nothing else, so this is that argument
+    // — the walk is what keeps `--size 1280x800` from being mistaken for a
+    // filename on the paths that do carry flags.
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if let Some(name) = arg.strip_prefix("--") {
+            if !name.contains('=') {
+                // `--flag value`: step over the value too.
+                iter.next();
+            }
+            continue;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        return Some(arg.clone());
+    }
+    None
 }
 
 /// Value of `--flag VALUE` or `--flag=VALUE`.

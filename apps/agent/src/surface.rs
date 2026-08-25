@@ -175,6 +175,24 @@ pub struct AppContract {
     /// The app's own decoders, so the door can prove what it would run before
     /// running it.
     pub register: fn(&mut ActionRegistry),
+    /// Whether [`Self::recognises`] is a claim on **any** document rather
+    /// than on this app's own.
+    ///
+    /// The word processor's test is "this parses as a rich-text document",
+    /// and every application built on the toolkit has one of those — the
+    /// toolkit seeds it. So that test is true of the photo editor's document
+    /// too, and since [`recognise`] takes the first contract that claims a
+    /// document, the word processor claimed all of them and no other app was
+    /// ever recognised. The photo editor could be launched, could load a
+    /// photograph and could publish it, and the agent still reported that
+    /// nothing came back: its state arrived, was attributed to the word
+    /// processor, and merged into the page.
+    ///
+    /// A contract marked here is tried **last**, so it wins a document only
+    /// when nothing with a test of its own claims it. That is what the word
+    /// processor's claim actually means: "a document, and nobody else's".
+    pub fallback: bool,
+
     /// What this app's document currently *denotes*, as something another
     /// app's operation could be handed — or `None` for an app whose subject is
     /// not transferable.
@@ -217,6 +235,95 @@ impl Product {
 /// Nothing an app's document denotes can be handed to another operation.
 fn nothing(_view: &View, _doc: &AutoCommit) -> Option<Product> {
     None
+}
+
+/// The picture in the directory the agent is browsing, as content another
+/// application could be handed.
+///
+/// A file manager's subject is the filesystem, and a photograph sitting in it
+/// is the commonest thing a request is about: "make this square" is said in a
+/// room where the picture is a file, not yet anything's document. Until the
+/// explorer could hand one over there was no way for that sentence to reach
+/// an application that could crop it — the photo editor would be opened with
+/// nothing in it and export no operation on a photograph it did not have.
+///
+/// The bytes are read through the explorer's own directory listing and put in
+/// the blob store, because a hash is what an operation in another application
+/// collects. Copying them is the point rather than a cost: what the next step
+/// works on is a value, fixed at the moment it was taken, and not a file that
+/// may be moved or rewritten between two steps of one sentence.
+///
+/// # Which picture, when there is more than one
+///
+/// The directory's only one. Several, and it denotes **nothing**: a step
+/// bound to it is refused, which is the honest outcome when "this" could mean
+/// any of them. Hidden files are skipped exactly as the explorer skips them,
+/// so what can be denoted is what a person looking at the window can see.
+fn file_explorer_product(view: &View, _doc: &AutoCommit) -> Option<Product> {
+    let dir = view.directory.as_ref()?;
+    let mut entries = file_explorer::model::read_dir_sync(dir).ok()?;
+    entries.retain(|e| {
+        !e.is_dir && !e.name.starts_with('.') && e.mime.starts_with("image/")
+    });
+    let [only] = entries.as_slice() else {
+        return None;
+    };
+    let bytes = std::fs::read(&only.path)
+        .map_err(|e| tracing::warn!(path = %only.path.display(), "cannot read the picture: {e}"))
+        .ok()?;
+    Some(Product::Content {
+        hash: qdoc::blobstore::put(&bytes),
+    })
+}
+
+/// The picture in the open document, as content another application could be
+/// handed.
+///
+/// A word processor's document denotes its prose, which is not transferable —
+/// but a picture *in* it is exactly the kind of thing another application is
+/// asked to work on. "Make this square" is said in a document with a
+/// photograph in it, and until the document could hand that photograph over
+/// there was no way for the sentence to reach an application that could crop
+/// it: the photo editor would open with nothing in it and export no operation
+/// on a photograph it did not have.
+///
+/// The block already holds the content hash — `PlaceImage` and `InsertImage`
+/// both write `blob` — so nothing is derived here and nothing is re-encoded.
+/// The document's own answer about its own picture is passed along as it
+/// stands.
+///
+/// # Which picture, when there is more than one
+///
+/// The one the agent's view targets, and otherwise the document's only one.
+/// A document with several pictures and nothing said about which denotes
+/// **nothing**: a step bound to it is then refused, which is the honest
+/// outcome. Picking the first would be answering a question nobody asked, and
+/// the wrong picture cropped into somebody's document is worse than a refusal
+/// that says it could not tell which.
+fn word_processor_product(view: &View, doc: &AutoCommit) -> Option<Product> {
+    let c = qdoc::model::open(doc, &automerge::ROOT).ok()?;
+    let snap = qdoc::model::materialize(doc, &c);
+    let images: Vec<&qdoc::snapshot::BlockView> =
+        snap.blocks.iter().filter(|b| b.kind == "image").collect();
+    let blob_of = |b: &qdoc::snapshot::BlockView| match b.attrs.get("blob") {
+        Some(qdoc::AttrVal::Str(h)) if !h.is_empty() => Some(h.clone()),
+        // An image block with no blob is a picture whose bytes never arrived.
+        // Naming its hash would hand the next operation an address for
+        // content that is not there.
+        _ => None,
+    };
+    // Targeted first: the agent's selection is an address, and a request that
+    // named its subject has already said which picture it means.
+    if let Some(b) = images
+        .iter()
+        .find(|b| view.target_blocks.iter().any(|t| *t == b.id))
+    {
+        return blob_of(b).map(|hash| Product::Content { hash });
+    }
+    match images.as_slice() {
+        [only] => blob_of(only).map(|hash| Product::Content { hash }),
+        _ => None,
+    }
 }
 
 /// The photograph as its edits leave it: the file the document names, cropped
@@ -377,7 +484,11 @@ pub static CONTRACTS: &[AppContract] = &[
         recognises: |doc| qdoc::model::open(doc, &automerge::ROOT).is_ok(),
         resources: word_processor_resources,
         register: word_processor::actions::register,
-        product: nothing,
+        // Its test is "this parses as a rich-text document", which every
+        // toolkit app's document does. Tried last, so it means "a document,
+        // and nobody else's".
+        fallback: true,
+        product: word_processor_product,
     },
     AppContract {
         app_id: "dev.qos.file-explorer",
@@ -386,7 +497,8 @@ pub static CONTRACTS: &[AppContract] = &[
         recognises: file_explorer::actions::is_explorer_document,
         resources: file_explorer_resources,
         register: file_explorer::actions::register,
-        product: nothing,
+        fallback: false,
+        product: file_explorer_product,
     },
     AppContract {
         app_id: "dev.qos.chat",
@@ -395,6 +507,7 @@ pub static CONTRACTS: &[AppContract] = &[
         recognises: chat::actions::is_chat_document,
         resources: chat_resources,
         register: chat::actions::register,
+        fallback: false,
         product: nothing,
     },
     AppContract {
@@ -404,6 +517,7 @@ pub static CONTRACTS: &[AppContract] = &[
         recognises: photos_document,
         resources: photos_resources,
         register: photos::actions::register,
+        fallback: false,
         product: photos_product,
     },
 ];
@@ -421,7 +535,13 @@ fn photos_document(doc: &AutoCommit) -> bool {
 /// The contract for a document, or `None` when nothing in the room's apps
 /// claims it.
 pub fn recognise(doc: &AutoCommit) -> Option<&'static AppContract> {
-    CONTRACTS.iter().find(|c| (c.recognises)(doc))
+    // Two passes, and the order is the whole of it. An app with a test of its
+    // own gets to claim its own document before an app whose test claims
+    // anything shaped like a document at all. See [`AppContract::fallback`].
+    CONTRACTS
+        .iter()
+        .find(|c| !c.fallback && (c.recognises)(doc))
+        .or_else(|| CONTRACTS.iter().find(|c| c.fallback && (c.recognises)(doc)))
 }
 
 /// The contract whose resource ids start with `namespace`.
@@ -590,7 +710,7 @@ pub fn offers(
             });
         }
     }
-    out.extend(openable(held, perms));
+    out.extend(openable(held, view, perms));
     out
 }
 
@@ -611,8 +731,25 @@ pub fn offers(
 /// operations replace the one that asked for it.
 fn openable(
     held: &[(&'static AppContract, &AutoCommit)],
+    view: &View,
     perms: &PermissionContext,
 ) -> Vec<Offer> {
+    // Whether anything in this room denotes content an application could be
+    // opened onto. Asked of the apps that are here, through the same
+    // `product` an ordinary hand-off between two steps goes through — so an
+    // open is offered content on exactly the terms every other operation is.
+    let onto = if held
+        .iter()
+        .any(|(c, doc)| (c.product)(view, doc).is_some())
+    {
+        qos_actions::InputSpec::Text {
+            prompt: "The content to open it onto".to_string(),
+            placeholder: String::new(),
+            collects: qos_actions::Collects::Content,
+        }
+    } else {
+        qos_actions::InputSpec::None
+    };
     CONTRACTS
         .iter()
         .filter(|c| !held.iter().any(|(h, _)| h.namespace == c.namespace))
@@ -637,7 +774,24 @@ fn openable(
                 // Named for where the work does land: the session hosting
                 // the room is the only place an application can start.
                 locus: qos_actions::ExecutionLocus::ServerPreferred,
-                input: qos_actions::InputSpec::None,
+                // An open collects **content** exactly when the room has
+                // content to open it onto, and nothing otherwise.
+                //
+                // That is not a special case: a resource tree is a function of
+                // what is open, and so is this. A room holding a document with
+                // a photograph in it can offer "open the photo editor onto the
+                // photograph"; a room holding no picture can only offer "open
+                // the photo editor", because there is nothing an argument
+                // could name. Declaring content unconditionally would make the
+                // plain open impossible — [`Offer::wants_content`] is what
+                // sets [`Step::carries`], and a carried step with nothing
+                // before it is refused rather than performed with something
+                // invented.
+                //
+                // Read the same way the word processor's own `place-image` is
+                // read, which is what makes the hand-off work in both
+                // directions with one rule and no second vocabulary.
+                input: onto.clone(),
             },
         })
         // The same gate every other operation passes, asked in the same place.
@@ -1019,7 +1173,7 @@ mod tests {
         let perms = granting(vec![grant(Scope::Workspace)]);
         let view = View::default();
 
-        let empty = openable(&[], &perms);
+        let empty = openable(&[], &View::default(), &perms);
         let missing: Vec<&str> = empty.iter().map(|o| o.app).collect();
         assert_eq!(
             missing,
@@ -1048,7 +1202,7 @@ mod tests {
         );
         let held: Vec<(&'static AppContract, &automerge::AutoCommit)> = vec![(photos, &doc)];
 
-        let now = openable(&held, &perms);
+        let now = openable(&held, &View::default(), &perms);
         assert!(
             !now.iter().any(|o| o.app == "photos"),
             "an app whose state is in the room must stop being offered as \

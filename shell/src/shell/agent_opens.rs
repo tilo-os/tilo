@@ -53,6 +53,7 @@
 //! worth mistaking for identity. Signing this handshake is what would make it
 //! one.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use collab_types::caps::{ResourceRef, Verb};
@@ -60,6 +61,7 @@ use collab_types::caps::{ResourceRef, Verb};
 use crate::shell::chrome_state::Chrome;
 use crate::shell::collab_broker::{BrokerHandle, OpenAppRequest};
 use crate::shell::launcher;
+use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
 
 /// Requests that have arrived and not yet been decided.
 ///
@@ -102,10 +104,29 @@ impl PendingOpens {
 /// but the handful where a participant asked for something.
 pub fn pump(chrome: &Chrome, broker: &BrokerHandle, pending: &PendingOpens) {
     for req in pending.take() {
+        // Resolve what it is being opened *onto* before deciding anything, so
+        // "I do not have that content" is answered as itself rather than as a
+        // window that opened empty. An app started without the thing the
+        // request was about is the failure this whole path exists to end: the
+        // photo editor comes up with no photograph, publishes no operation on
+        // one, and the step that wanted it cropped arrives at an empty window
+        // — which reads, from outside, exactly like an agent that did nothing.
+        let onto = match stage_content(chrome, &req) {
+            Ok(onto) => onto,
+            Err(why) => {
+                tracing::warn!(
+                    app = %req.app_id, with = ?req.with,
+                    "refused to open an application onto content: {why}",
+                );
+                broker.refuse_open(req.peer, &req.app_id, &why);
+                continue;
+            }
+        };
         match decide(chrome, &req) {
             Ok(display_name) => {
                 tracing::info!(
                     app = %req.app_id, who = ?req.handle, room = %req.room,
+                    onto = ?onto,
                     "opening an application because a participant asked",
                 );
                 // From here it is an ordinary launch: the same placement, the
@@ -113,10 +134,11 @@ pub fn pump(chrome: &Chrome, broker: &BrokerHandle, pending: &PendingOpens) {
                 // clicking the row would get. A window that opened because an
                 // agent needed it must not be a different kind of window.
                 if let Err(e) =
-                    crate::shell::search::providers::applications::launch_installed_app(
+                    crate::shell::search::providers::applications::launch_installed_app_with(
                         chrome,
                         &req.app_id,
                         &display_name,
+                        onto.as_deref(),
                     )
                 {
                     // The person watching has already been told by the
@@ -134,6 +156,113 @@ pub fn pump(chrome: &Chrome, broker: &BrokerHandle, pending: &PendingOpens) {
             }
         }
     }
+}
+
+/// Put the content an open names where the application can read it, and
+/// grant it exactly that much.
+///
+/// `Ok(None)` is an open that named no object — the ordinary case, and
+/// unchanged by any of this.
+///
+/// # Why the session resolves it and not the app
+///
+/// What crosses the socket is a content hash, because that is the only name
+/// for a picture that means the same thing in two applications that know
+/// nothing about each other (see [`CollabRequest::OpenApp`]). But an
+/// application is started with a *path*: `launch_with_document` hands it
+/// `--open <path>`, which is the same contract a person double-clicking a
+/// file gets, and the photo editor's `--open` is the same code either way. So
+/// the hash is turned into a file here, on the one side of the socket that
+/// has both a store to resolve it against and the authority to say what the
+/// app may read.
+///
+/// The bytes go to a directory of this session's own rather than into the
+/// user's documents. Content that arrived because an agent asked for a window
+/// is not a file the person created, and writing it where their own files
+/// live would leave them tidying up after their assistant.
+///
+/// # The grant is minted here, narrowly, and it is not implied by the ask
+///
+/// Naming content grants nothing — the same rule `build_launch_command`
+/// states for paths. The app being opened is granted **read** on the staging
+/// directory and nothing else, for the session; it is not given the home, and
+/// an open that was refused above never reaches this at all.
+fn stage_content(chrome: &Chrome, req: &OpenAppRequest) -> Result<Option<PathBuf>, String> {
+    let Some(hash) = req.with.as_deref().map(str::trim).filter(|h| !h.is_empty()) else {
+        return Ok(None);
+    };
+    // Asked of this machine's store, which is where content an app offered
+    // over the socket is kept (`collab_broker::keep_local_blob`). A hash
+    // nothing ever offered is not a slow arrival, it is an address for bytes
+    // that are not here, and saying so is the whole difference between a
+    // refusal and a window that opens empty.
+    let Some(bytes) = qdoc::blobstore::store().get(hash) else {
+        return Err(format!(
+            "I don't have the content that names ({}…) on this machine, so \
+             there is nothing to open it onto",
+            &hash[..hash.len().min(12)],
+        ));
+    };
+    let dir = staging_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return Err(format!(
+            "I couldn't make somewhere to put the content ({e})"
+        ));
+    }
+    // Named by the content's own hash, with the extension its bytes say it
+    // has: two opens of the same picture reuse one file, and an app that
+    // decides what to do by extension gets the right answer.
+    let meta = qdoc::blobstore::sniff(&bytes);
+    let ext = match meta.mime.as_str() {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        _ => "bin",
+    };
+    let path = dir.join(format!("{hash}.{ext}"));
+    if !path.exists() {
+        if let Err(e) = std::fs::write(&path, &bytes) {
+            return Err(format!("I couldn't put the content where it could be opened ({e})"));
+        }
+    }
+    // Read, on the directory, for this session. The app is about to be handed
+    // a path inside it and would otherwise find nothing there: the launcher
+    // binds what the manifest and the capability file allow and nothing else.
+    {
+        let mut st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        let Some(ws) = tree.active_workspace_mut() else {
+            return Err(
+                "there is no workspace open here, so there is nowhere to open it into"
+                    .to_string(),
+            );
+        };
+        ws.grant_app(
+            &req.app_id,
+            &Capability::Filesystem {
+                path: dir.clone(),
+                mode: FsMode::Read,
+                scope: GRANT_SESSION,
+            },
+        );
+    }
+    chrome.borrow_mut().bump();
+    Ok(Some(path))
+}
+
+/// Where content an open named is put for the application to read.
+///
+/// Under the runtime directory rather than the user's home: it belongs to
+/// this session, goes away with it, and is never mistaken for something the
+/// person saved.
+fn staging_dir() -> PathBuf {
+    let base = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("qos-opened")
 }
 
 /// May this request open this application here, and what is the application
@@ -182,9 +311,31 @@ fn decide(chrome: &Chrome, req: &OpenAppRequest) -> Result<String, String> {
     let actor = ws.actor_for_agent(handle);
     let resource = ResourceRef::App(req.app_id.clone());
     if !ws.allows(&actor, &resource, Verb::Write) {
+        // Said at `warn`, with the subject spelled exactly as a grant would
+        // have to spell it, because the commonest cause of this refusal is
+        // not a decision anybody made — it is a grant written for a name that
+        // differs from the announced one by its case. `agent:claude` does not
+        // cover a participant announcing itself as `Claude`: the name is
+        // matched literally (see the module header), and the two are
+        // different principals.
+        //
+        // Loudly, because from the outside this refusal is indistinguishable
+        // from an app that was slow to start. The participant is told, but
+        // the person who wrote the grant is looking at a log, and "nothing
+        // happened" is the one thing this must never look like.
+        tracing::warn!(
+            app = %req.app_id, announced = %handle,
+            needs = %format!("agent:{handle}"),
+            "no grant covers this participant: a capability naming \
+             `agent:{handle}` (matched exactly, including its case) with write \
+             on app:{} is what would let it open {}",
+            req.app_id, app.display_name,
+        );
         return Err(format!(
-            "{handle} has not been given leave to open {} in this room",
-            app.display_name
+            "{handle} has not been given leave to open {} in this room — a \
+             grant naming `agent:{handle}` exactly, with write on {}, is what \
+             would cover it",
+            app.display_name, req.app_id,
         ));
     }
     Ok(app.display_name)
@@ -273,6 +424,7 @@ mod tests {
         let chrome = chrome_rc();
         let req = OpenAppRequest {
             app_id: "dev.qos.photos".to_string(),
+            with: None,
             room: "room".to_string(),
             who: "peer-1".to_string(),
             handle: None,
