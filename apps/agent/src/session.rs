@@ -2403,11 +2403,19 @@ impl Session {
                 // name — an agent that answers "I can do these four things"
                 // while holding a hundred addresses is wrong about itself.
                 Instruction::Unknown(what) => {
-                    let reply = format!(
-                        "{name}: I can't \"{what}\" here. {}{}",
+                    // What already stands, first. A clause can now reach this
+                    // point with earlier steps applied — an open that
+                    // succeeded and a clause after it that still answers to
+                    // nothing — and a refusal that mentioned only the failure
+                    // would be describing a room it had already changed. When
+                    // nothing has been done `refusal` says exactly what it
+                    // said before.
+                    let why = format!(
+                        "I can't \"{what}\" here. {}{}",
                         describe_offers(scope),
                         self.could_have_opened(&what),
                     );
+                    let reply = refusal(&name, &done, None, why.trim_end_matches('.'));
                     self.reply(to, &reply, Outcome::Refused)?;
                     return Ok(Ran::Said);
                 }

@@ -427,6 +427,17 @@ wanted, and a step left out means half the request is carried out and reported \
 as though it were all of it. If any part of what was asked for is not in the \
 list, answer \"none\" for the whole thing rather than doing the part that is.
 
+There is one exception, and it is about applications rather than about you. An \
+application that is not running exports nothing, so the list holds an entry for \
+*opening* it and none of the operations it would export once open. When a \
+request needs something only that application can do, name the open as one step \
+and answer \"none\" for the step that needs it — \"none\" in that one \
+position, not for the whole request. Those clauses are asked again after the \
+open, against the list that application then publishes, and are carried out if \
+they resolve. Leaving such a step out entirely is the thing to avoid: that \
+opens a window, does the last part, and reports it as though the middle had \
+happened.
+
 The list has two halves and the first is easy to skim past. **Editorial changes** \
 come first: each is several of the application's operations composed into one \
 change, over parts of the document worked out by reading it. When the request \
