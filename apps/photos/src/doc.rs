@@ -26,6 +26,34 @@ use automerge::{AutoCommit, ROOT, ReadDoc, Value};
 
 use crate::model::{Edits, OpenImage};
 
+/// The bytes of the picture `open` names, from wherever this machine has them.
+///
+/// The path first: when this session is the one that opened the picture, the
+/// path is its own and reading it is a file read rather than a lookup. Then the
+/// content, which is the half that works for everybody else. The document is
+/// shared and the path in it is not — the same photograph is staged under a
+/// different absolute path in every session that receives it, so every
+/// participant except the one whose path won is holding a path into somebody
+/// else's runtime directory. Resolving the hash is what turns "a photograph a
+/// collaborator opened" into pixels here rather than into an empty canvas.
+///
+/// Missing both is not an error to report: `blobstore::get` asks the room for
+/// the content on its way through, so the honest answer now is no picture, and
+/// the moment after the bytes land there is one.
+///
+/// Public, and the only answer to this question, because the app is not the
+/// only thing that asks it. Anything acting on the open photograph — the
+/// editor drawing it, a participant with no window rendering the crop it was
+/// asked for — needs the same bytes, and a second copy of "read the path" is
+/// how one of those callers ends up reading a path that is true on another
+/// machine.
+pub fn bytes_of(open: &OpenImage) -> Option<Vec<u8>> {
+    if let Ok(bytes) = std::fs::read(&open.path) {
+        return Some(bytes);
+    }
+    ui::blobstore::get(open.content.as_deref()?)
+}
+
 pub struct PhotosDoc;
 
 impl PhotosDoc {

@@ -469,29 +469,6 @@ impl PhotosApp {
     }
 
     /// Re-derive the rendering if the path or the edits have moved.
-    /// The bytes of the picture `open` names, from wherever this machine has
-    /// them.
-    ///
-    /// The path first: when this session is the one that opened the picture,
-    /// the path is its own and reading it is a file read rather than a lookup.
-    /// Then the content, which is the half that works for everybody else. The
-    /// document is shared and the path in it is not — the same photograph is
-    /// staged under a different absolute path in every session that receives
-    /// it, so every participant except the one whose path won is holding a
-    /// path into somebody else's runtime directory. Resolving the hash is what
-    /// turns "a photograph a collaborator opened" into pixels here rather than
-    /// into an empty canvas.
-    ///
-    /// Missing both is not an error to report: `blobstore::get` asks the room
-    /// for the content on its way through, so the honest answer now is no
-    /// picture, and the frame after the bytes land draws one.
-    fn bytes_of(open: &OpenImage) -> Option<Vec<u8>> {
-        if let Ok(bytes) = std::fs::read(&open.path) {
-            return Some(bytes);
-        }
-        ui::blobstore::get(open.content.as_deref()?)
-    }
-
     fn refresh(&mut self, doc: &AutoCommit) {
         let Some(open) = PhotosDoc::image(doc) else {
             self.rendered = None;
@@ -504,7 +481,7 @@ impl PhotosApp {
         // Load the original if this is a picture we have not decoded yet. A
         // peer may have opened it, so this is not only the local Open path.
         if self.original.as_ref().map(|(p, _)| p.as_str()) != Some(open.path.as_str()) {
-            match Self::bytes_of(&open).as_deref().and_then(pixels::decode) {
+            match crate::doc::bytes_of(&open).as_deref().and_then(pixels::decode) {
                 Some(img) => self.original = Some((open.path.clone(), img)),
                 None => {
                     self.original = None;
