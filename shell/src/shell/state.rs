@@ -3091,9 +3091,20 @@ impl WorkspaceTree {
         }
         // "Mine to publish": minted by this peer, and — in a room this
         // machine joined rather than minted — minted since it joined.
+        //
+        // And not a tab whose open the room has already been told about by
+        // the frame that carried it. `NeighbourMsg::AppOpened` says a
+        // session must never republish an open it performed because of one,
+        // and writing the tab here *is* republishing it: every member reads
+        // a tab in this map as news that the room has a window open and
+        // starts one of their own for it, so the announcement came back as
+        // a window per member, per member. See
+        // [`crate::shell::open_identity`]; an ordinary launch's tab is
+        // untouched by this and projects as it always did.
         let mine = |id: u64| -> bool {
             peer_salt_of(id) == local_salt
                 && share_floor.is_none_or(|floor| counter_of(id) >= floor)
+                && !crate::shell::open_identity::announced_by_frame(id)
         };
 
         let contents_id = match doc.get(&ROOT, Self::ROOM_CONTENTS_KEY).ok().flatten() {

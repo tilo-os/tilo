@@ -460,6 +460,37 @@ pub fn close_tab_for_destroyed_surface(
     false
 }
 
+/// Remove the tab `tab_id` from wherever in the tree it is, repairing its
+/// group's selection when it was the tab in front.
+///
+/// The undo for a [`place_tab`] whose window then never came:
+/// [`crate::shell::agent_opens`] puts the tab down before it starts the
+/// launch, so that the open has an identity both mechanisms that could
+/// produce a window for it can see, and a launch that fails to start has
+/// to take that tab away again rather than leave a card describing a
+/// window nobody is opening.
+///
+/// [`close_tab_for_destroyed_surface`] is the same removal keyed on a
+/// surface. This one is keyed on the tab, because the tab in question
+/// never got a surface at all.
+pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
+    for ws in tree.workspaces.iter_mut() {
+        for strip in ws.strips.iter_mut() {
+            for group in strip.window_groups.iter_mut() {
+                let Some(pos) = group.tabs.iter().position(|t| t.id == tab_id) else {
+                    continue;
+                };
+                group.tabs.remove(pos);
+                if group.active_tab == tab_id {
+                    group.active_tab = group.tabs.last().map(|t| t.id).unwrap_or(0);
+                }
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Turn a wayland app-id into a tab-bar friendly label.
 ///
 /// The app's own name wins wherever one can be found — from this

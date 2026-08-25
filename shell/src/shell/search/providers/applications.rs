@@ -527,21 +527,31 @@ pub(crate) fn launch_installed_app(
     package_id: &str,
     display_name: &str,
 ) -> Result<(), ActionError> {
-    launch_installed_app_with(chrome, package_id, display_name, None)
+    launch_installed_app_with(chrome, package_id, display_name, None, None)
 }
 
-/// [`launch_installed_app`], additionally asking the app to open `document`.
+/// [`launch_installed_app`], additionally asking the app to open `document`
+/// and, where the caller has already put a tab down for it, binding the
+/// window into `into`.
 ///
 /// The path is an argument and not a permission — see
 /// [`launcher::build_launch_command`]. What the app may read is whatever the
 /// workspace granted it by the time this runs, which for content an open
 /// named is minted by `crate::shell::agent_opens::stage_content` just before
 /// the call.
+///
+/// `into` names a tab that is already in the tree, and is what a launch
+/// started for an open that reached this session over the collaboration
+/// socket passes: the tab *is* that open's identity, so that the other
+/// mechanism which could produce a window for it recognises the open rather
+/// than starting a second instance beside this one. See
+/// `crate::shell::open_identity`.
 pub(crate) fn launch_installed_app_with(
     chrome: &Chrome,
     package_id: &str,
     display_name: &str,
     document: Option<&std::path::Path>,
+    into: Option<crate::shell::state::TabId>,
 ) -> Result<(), ActionError> {
     ask_user_home_for_file_manager(chrome, package_id);
     // The room may already have this app open here. If it does, the
@@ -563,7 +573,13 @@ pub(crate) fn launch_installed_app_with(
     // app onto this picture": that window does not hold the picture, and
     // raising it would look, to whoever asked, exactly like the content
     // having arrived.
-    if let Some((ws_id, strip, group, tab)) = already.filter(|_| document.is_none()) {
+    //
+    // And not when the caller has already put the tab down: the window is
+    // on its way into that tab, and raising a different one instead would
+    // leave the card the caller wrote describing a window that never comes.
+    if let Some((ws_id, strip, group, tab)) =
+        already.filter(|_| document.is_none() && into.is_none())
+    {
         chrome.borrow_mut().focus_tab(ws_id, strip, group, tab);
         return Ok(());
     }
@@ -632,6 +648,17 @@ pub(crate) fn launch_installed_app_with(
             st.strip_viewport(),
             st.open_target,
         );
+        // A tab the caller has already put down beats both. The window was
+        // asked for on that tab's behalf, and a second tab beside it is
+        // exactly the duplicate this argument exists to prevent — the same
+        // reason `peer_windows` binds its launches into the tab that
+        // prompted them.
+        if let Some(tab) = into {
+            launcher::set_pending_placement(
+                package_id,
+                crate::compositor::tab_binding::Placement::IntoTab(tab),
+            );
+        }
         tree.active_workspace().map(|ws| {
             launcher::launch_document_in_workspace(package_id, ws, document)
         })

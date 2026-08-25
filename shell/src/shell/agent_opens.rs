@@ -36,6 +36,23 @@
 //! nothing and writes down why. The only thing the origin changes is where a
 //! refusal goes — see [`OpenOrigin`].
 //!
+//! ## One window, whichever way it arrived
+//!
+//! Those two are not the only ways an application can appear on this desktop
+//! because somebody else asked for it. A tab projected into the room document
+//! makes every member start a local instance of the app it names
+//! (`crate::shell::peer_windows`), and for a while that ran beside this one: a
+//! single request produced a window here, another for the projected tab, and
+//! one more on every machine that then saw *those* projected. One person
+//! asking for the photo editor once left three tabs called "Photos" on
+//! somebody else's screen.
+//!
+//! So an open is claimed before it is acted on, against an identity both
+//! mechanisms can read — `crate::shell::open_identity`. The tab is put down
+//! here, before the launch, because a tab is what the other mechanism reads;
+//! and it is kept out of the room document, because the room has already
+//! heard about this open from the frame that carried it.
+//!
 //! ## What a grant has to say
 //!
 //! Opening `dev.qos.photos` asks about `ResourceRef::App("dev.qos.photos")`
@@ -71,10 +88,12 @@ use std::sync::{Arc, Mutex};
 
 use collab_types::caps::{ResourceRef, Verb};
 
+use crate::compositor::tab_binding;
 use crate::shell::chrome_state::Chrome;
 use crate::shell::collab_broker::{BrokerHandle, OpenAppRequest, OpenOrigin};
 use crate::shell::launcher;
-use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
+use crate::shell::open_identity::{self, OpenIdentity};
+use crate::shell::state::{Capability, FsMode, GRANT_SESSION, Tab, TabId, TileContent, next_id};
 
 /// Requests that have arrived and not yet been decided.
 ///
@@ -117,6 +136,36 @@ impl PendingOpens {
 /// but the handful where a participant asked for something.
 pub fn pump(chrome: &Chrome, broker: &BrokerHandle, pending: &PendingOpens) {
     for req in pending.take() {
+        // Has this session already produced the window this asks for? One
+        // request reaches here more than once as a matter of course — on the
+        // socket a participant asked on, and again over the room — and
+        // `peer_windows` may have answered for it before either. All of those
+        // are one window; see `crate::shell::open_identity`.
+        //
+        // Asked first, so a second arrival stages no content, mints no grant
+        // and writes no refusal about a window that is already on screen.
+        if let Some(tab) = already_open_here(&req) {
+            tracing::info!(
+                app = %req.app_id, who = ?req.handle, room = %req.room, tab,
+                "this session already has the window this open asked for; \
+                 not opening a second",
+            );
+            continue;
+        }
+        // The tab that window will live in, claimed before anything is staged
+        // or started. It is this open's identity on this machine: a duplicate
+        // arrival finds the claim above, and `peer_windows` finds the tab.
+        // Claiming and checking in one call leaves no gap between them.
+        let identity = identity_of(&req);
+        let tab = next_id();
+        if !open_identity::claim(identity.clone(), tab) {
+            tracing::debug!(
+                app = %req.app_id, room = %req.room,
+                "an open of this was claimed between the check and the claim; \
+                 leaving the window that one is opening",
+            );
+            continue;
+        }
         // Resolve what it is being opened *onto* before deciding anything, so
         // "I do not have that content" is answered as itself rather than as a
         // window that opened empty. An app started without the thing the
@@ -131,6 +180,7 @@ pub fn pump(chrome: &Chrome, broker: &BrokerHandle, pending: &PendingOpens) {
                     app = %req.app_id, with = ?req.with,
                     "refused to open an application onto content: {why}",
                 );
+                open_identity::release(&identity);
                 refuse(broker, &req, &why);
                 continue;
             }
@@ -139,9 +189,36 @@ pub fn pump(chrome: &Chrome, broker: &BrokerHandle, pending: &PendingOpens) {
             Ok(display_name) => {
                 tracing::info!(
                     app = %req.app_id, who = ?req.handle, room = %req.room,
-                    onto = ?onto,
+                    onto = ?onto, tab,
                     "opening an application because a participant asked",
                 );
+                // The tab goes down before the launch, the same way
+                // `peer_windows` writes its note before starting one: the app
+                // can announce its toplevel the moment it starts, and a tab
+                // minted afterwards would be a race the window can win.
+                if !hold_a_tab(chrome, tab, &req.app_id, &display_name) {
+                    let why = "there is no workspace open here, so there is \
+                               nowhere to open it into"
+                        .to_string();
+                    tracing::warn!(app = %req.app_id, "{why}");
+                    open_identity::release(&identity);
+                    refuse(broker, &req, &why);
+                    continue;
+                }
+                // The room heard about this open from the frame that carried
+                // it, so the tab must not announce it a second time — that
+                // second announcement is what every other member read as news
+                // and opened another window for.
+                //
+                // This has to run before `project_owned_contents` can read
+                // `tab`'s exclusion, or the projection would go out unmarked.
+                // Verified rather than assumed: `Chrome` is
+                // `Rc<RefCell<ChromeState>>`, so nothing not `Send` can touch
+                // it from another thread, and `hold_a_tab` and this call are
+                // consecutive statements with nothing between them but
+                // `ChromeState::bump` (a plain counter increment) — so
+                // nothing on this thread runs between them either.
+                open_identity::announce_by_frame(tab);
                 // From here it is an ordinary launch: the same placement, the
                 // same "Opening …" notice, the same failure reporting a person
                 // clicking the row would get. A window that opened because an
@@ -152,8 +229,15 @@ pub fn pump(chrome: &Chrome, broker: &BrokerHandle, pending: &PendingOpens) {
                         &req.app_id,
                         &display_name,
                         onto.as_deref(),
+                        Some(tab),
                     )
                 {
+                    // Nothing is coming, so the tab put down for it goes away
+                    // rather than standing there as a card describing a window
+                    // nobody is opening — and the claim goes with it, so the
+                    // next ask can try again.
+                    drop_tab(chrome, tab);
+                    open_identity::release(&identity);
                     // The person watching has already been told by the
                     // launcher's own error notification. The participant that
                     // asked has not, and it is the one that is waiting.
@@ -165,9 +249,76 @@ pub fn pump(chrome: &Chrome, broker: &BrokerHandle, pending: &PendingOpens) {
                     app = %req.app_id, who = ?req.handle, room = %req.room,
                     "refused to open an application: {why}",
                 );
+                open_identity::release(&identity);
                 refuse(broker, &req, &why);
             }
         }
+    }
+}
+
+/// The open `req` names, as `crate::shell::open_identity` compares them.
+fn identity_of(req: &OpenAppRequest) -> OpenIdentity {
+    OpenIdentity::new(&req.app_id, &req.room, req.with.as_deref())
+}
+
+/// The tab this session already produced for `req`'s open, if it has one.
+///
+/// The first thing [`pump`] asks, and the reason one request arriving by both
+/// routes is one window. What makes two arrivals the same open is
+/// `crate::shell::open_identity`'s to say — including why a window
+/// `peer_windows` started for a projected tab answers this too.
+fn already_open_here(req: &OpenAppRequest) -> Option<TabId> {
+    open_identity::realised(&identity_of(req))
+}
+
+/// Put the tab this open's window will live in on screen. `false` when there
+/// is no workspace to put it in.
+///
+/// A card until the window arrives, wearing the sentence a peer's window wears
+/// while its local instance starts — because it is the same state: this
+/// machine has answered for a window in this room and is waiting for it.
+/// `peer_windows::examine` reads a tab that has been answered for and leaves
+/// it alone, which is half of how the two mechanisms stopped producing a
+/// window each.
+fn hold_a_tab(chrome: &Chrome, tab: TabId, app_id: &str, label: &str) -> bool {
+    let mut st = chrome.borrow_mut();
+    let placed = {
+        let mut tree = st.tree_mut();
+        if tree.active_workspace().is_none() {
+            false
+        } else {
+            let placement = crate::shell::placement::placement_for_new_window(&tree, None);
+            tab_binding::place_tab(
+                &mut tree,
+                Tab {
+                    id: tab,
+                    title: label.to_string(),
+                    tile: TileContent::PeerWindow {
+                        app_id: app_id.to_string(),
+                        label: label.to_string(),
+                        note: crate::shell::peer_windows::OPENING.to_string(),
+                    },
+                },
+                placement,
+            );
+            true
+        }
+    };
+    if placed {
+        st.bump();
+    }
+    placed
+}
+
+/// Take back the tab [`hold_a_tab`] put down, for a launch that never started.
+fn drop_tab(chrome: &Chrome, tab: TabId) {
+    let mut st = chrome.borrow_mut();
+    let removed = {
+        let mut tree = st.tree_mut();
+        tab_binding::remove_tab(&mut tree, tab)
+    };
+    if removed {
+        st.bump();
     }
 }
 
@@ -263,7 +414,7 @@ fn stage_content(chrome: &Chrome, req: &OpenAppRequest) -> Result<Option<PathBuf
     // a path inside it and would otherwise find nothing there: the launcher
     // binds what the manifest and the capability file allow and nothing else.
     {
-        let mut st = chrome.borrow_mut();
+        let st = chrome.borrow_mut();
         let mut tree = st.tree_mut();
         let Some(ws) = tree.active_workspace_mut() else {
             return Err(
@@ -448,6 +599,91 @@ mod tests {
              the app — an agent handed a photograph to crop must not be able \
              to spawn a process with it"
         );
+    }
+
+    const PHOTOS: &str = "dev.qos.photos";
+    const ROOM: &str = "b6385eec-3432-411f-a661-fb6f5d1b0d27";
+    const PICTURE: &str = "623fdbf0c19749dd";
+
+    fn asked_for(with: Option<&str>, origin: OpenOrigin) -> OpenAppRequest {
+        OpenAppRequest {
+            app_id: PHOTOS.to_string(),
+            with: with.map(str::to_string),
+            room: ROOM.to_string(),
+            who: "peer-1".to_string(),
+            handle: Some("Claude".to_string()),
+            origin,
+        }
+    }
+
+    /// One request reaches this session twice — once on the socket the
+    /// participant asked on, once as the room's account of the same ask — and
+    /// the second arrival must find the window the first one opened.
+    ///
+    /// Asserted through [`already_open_here`], which is what `pump` asks
+    /// before it stages anything.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_room_s_account_of_an_open_is_the_same_open() {
+        open_identity::clear_for_test();
+        let over_the_socket = asked_for(Some(PICTURE), OpenOrigin::Connection(1));
+        let over_the_room = asked_for(Some(PICTURE), OpenOrigin::Room(0xFACE));
+
+        assert_eq!(
+            already_open_here(&over_the_socket),
+            None,
+            "nothing has been opened yet"
+        );
+        assert!(open_identity::claim(identity_of(&over_the_socket), 4242));
+
+        assert_eq!(
+            already_open_here(&over_the_room),
+            Some(4242),
+            "the room's account of a request is that request; opening a second \
+             window for it is what put three photo editors on one screen"
+        );
+        open_identity::clear_for_test();
+    }
+
+    /// The other order. A window `peer_windows` started for a tab the room
+    /// projected answers an `AppOpened` naming the same app in the same room,
+    /// so whichever mechanism gets there first the other finds the window
+    /// instead of opening one beside it.
+    ///
+    /// Driven through `peer_windows`' own production record rather than a
+    /// stand-in for it.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_window_opened_for_a_projected_tab_answers_the_frame_too() {
+        open_identity::clear_for_test();
+        let room = crate::shell::state::RoomId::parse(ROOM).expect("the fixture is a uuid");
+        crate::shell::peer_windows::note_window_for_the_room(PHOTOS, room, 77);
+
+        assert_eq!(
+            already_open_here(&asked_for(None, OpenOrigin::Room(0xFACE))),
+            Some(77),
+            "the window is here; the frame's job was to make sure of that, \
+             not to make a second one"
+        );
+        open_identity::clear_for_test();
+    }
+
+    /// An open in another room is another open. The identity is the app *and*
+    /// the workspace, or one window would answer for every room at once.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_window_in_another_room_answers_nothing_here() {
+        open_identity::clear_for_test();
+        let elsewhere = crate::shell::state::RoomId::new();
+        crate::shell::peer_windows::note_window_for_the_room(PHOTOS, elsewhere, 5);
+
+        assert_eq!(
+            already_open_here(&asked_for(None, OpenOrigin::Connection(1))),
+            None,
+            "a window in a workspace this open is not about is not this \
+             open's window"
+        );
+        open_identity::clear_for_test();
     }
 
     /// A connection that named nobody is refused before anything is looked
