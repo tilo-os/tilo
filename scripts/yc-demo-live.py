@@ -2685,57 +2685,22 @@ def _the_owners_half(q, shots: str, live: "Live",
     stop.wait(0.15)
 
     mark("Files opens")
-    # Granted before it starts, not asked for after.
+    # Nothing is granted here. The homes and the room's workspace were
+    # bound during staging, before this thread existed and before
+    # anybody could have opened a window — see the grants beside
+    # `place_next_window` in `main`.
     #
-    # The file manager's sandbox is built at launch, so a capability
-    # granted to a process already running changes the list and not the
-    # mount: the prompt appears, the answer is recorded, and the window
-    # still says "No such file or directory" about a directory that is
-    # right there. Granting first means the bind exists when the process
-    # does.
+    # They used to be on this line, one statement above the launch, and
+    # that read as "granted before it starts, not asked for after" while
+    # only ever being true of the driven run. Whoever drives the demo by
+    # hand opens Files at a moment nothing here can order itself against,
+    # so the only ordering that holds for both is one that finishes
+    # before either half starts.
     #
-    # And a permission dialog is not this film's subject. The capability
-    # model gets its own beat, with a grant somebody actually watches
-    # being made; a modal in front of the file manager during a different
-    # scene is an interruption that teaches nothing.
-    # Every session, not just the one being driven. A capability is
-    # per-workspace and each person here has their own, so granting only
-    # quinten's left the guest's file manager asking — and his screen is
-    # the one the camera cuts to. A finished take spent 204 unbroken
-    # seconds, three and a half minutes, framed on an unanswered
-    # "read/write access to /var/tmp/qos/home/xaver" that nobody was ever
-    # going to click, while the beats it was hiding happened off-camera.
-    for s in yc.SESSIONS:
-        if getattr(s, "home", None) is None:
-            continue
-        yc.claim(
-            f"{s.name}'s file manager may read the home it is about to show",
-            s.grant(f"app:{yc.FILES_APP}", f"fs:{s.home}", "write")
-             .get("answer", {}).get("granted") is not None,
-            True,
-        )
-    # And the workspace the *room* carries — granted once, by the person
-    # who owns the room, on the room.
-    #
-    # This one is not a convenience like the homes above, it is the beat.
-    # A capability recorded on a room is replicated to whoever was
-    # admitted to it (`WorkspaceTreeReplica`), and a peer's window is
-    # launched with the room's own capability list
-    # (`peer_windows::open_for` → `launcher::launch_in_workspace`). So
-    # granting it here, on the host, is what puts the photograph within
-    # xaver's reach later — not a second grant made on his machine, which
-    # he could not make anyway: `Workspace::grant_as` refuses a grantor
-    # who neither owns the room nor holds admin over it, and a guest is
-    # neither. He reaches the object by being in the room.
-    #
-    # Read, not write. Nothing in the film needs to change it, and the
-    # narrower grant is the one that proves the point.
-    yc.claim(
-        "the room carries a workspace its file manager may read",
-        q.grant(f"app:{yc.FILES_APP}", f"fs:{yc.WORKSPACE_ROOT}", "read")
-         .get("answer", {}).get("granted") is not None,
-        True,
-    )
+    # A permission dialog is not this film's subject either way. The
+    # capability model gets its own beat, with a grant somebody actually
+    # watches being made; a modal in front of the file manager during a
+    # different scene is an interruption that teaches nothing.
     files = q.launch(yc.FILES_APP, search="files", via="palette",
                      look=0.25, read=0.45, watch=WATCH_IT_OPEN_S)
     yc.claim("Files opened", files is not None, True)
@@ -3590,6 +3555,67 @@ def main() -> int:
         # behind it. Staging, not driving: it changes where his next
         # window lands, never whether or when he opens one.
         quinten.place_next_window(yc.WORD_PROCESSOR)
+
+        # What the file manager is allowed to read, decided before
+        # anybody can open one.
+        #
+        # This is staging for the same reason the two lines above are: it
+        # changes what a window shows, never whether or when somebody
+        # opens it. It used to sit in the driving half instead, and that
+        # was a real defect rather than an untidiness. A capability is
+        # read when the sandbox is *built*, at launch, so granting it
+        # after the process exists changes the list and not the mount.
+        # The driving half opened Files itself, one line after granting,
+        # so the ordering held there and nowhere else: with a person at
+        # the keyboard the grants never happened at all, and the file
+        # manager he opened by hand was launched with nothing bound.
+        #
+        # What that looked like — and it was found by somebody driving
+        # the demo, not by a test: `push_user_home` and
+        # `push_workspace_roots` each export their variable only when a
+        # grant has already bound the path, so with no grants the app
+        # saw neither. It fell back to the platform's idea of home,
+        # which inside the sandbox is the app's own per-room directory,
+        # and drew it accurately: "Home", zero items, and no workspace
+        # anywhere in the places sidebar. The room's photograph was
+        # unreachable from the window the film's pivotal gesture is
+        # made in.
+        for s in sessions:
+            if getattr(s, "home", None) is None:
+                continue
+            # Every session, not just the one being driven. A capability
+            # is per-workspace and each person here has their own, so
+            # granting only quinten's leaves the guest's file manager
+            # asking — on the screen the camera cuts to.
+            yc.claim(
+                f"{s.name}'s file manager may read the home it will show",
+                s.grant(f"app:{yc.FILES_APP}", f"fs:{s.home}", "write")
+                 .get("answer", {}).get("granted") is not None,
+                True,
+            )
+        # And the workspace the *room* carries — granted once, by the
+        # person who owns the room, on the room.
+        #
+        # A capability recorded on a room is replicated to whoever was
+        # admitted to it (`WorkspaceTreeReplica`), and a peer's window is
+        # launched with the room's own capability list
+        # (`peer_windows::open_for` → `launcher::launch_in_workspace`).
+        # So granting it here, on the host, is what puts the photograph
+        # within xaver's reach later — not a second grant made on his
+        # machine, which he could not make anyway: `Workspace::grant_as`
+        # refuses a grantor who neither owns the room nor holds admin
+        # over it, and a guest is neither. He reaches the object by being
+        # in the room.
+        #
+        # Read, not write. Nothing in the film needs to change it, and
+        # the narrower grant is the one that proves the point.
+        yc.claim(
+            "the room carries a workspace its file manager may read",
+            quinten.grant(f"app:{yc.FILES_APP}", f"fs:{yc.WORKSPACE_ROOT}",
+                          "read")
+             .get("answer", {}).get("granted") is not None,
+            True,
+        )
 
         if terminal:
             ins.raise_window(terminal)
