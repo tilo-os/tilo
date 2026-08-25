@@ -370,6 +370,19 @@ const OPENING_SPINNER_PX: f64 = 36.0;
 
 /// Gap between the app's name and the indicator under it.
 const OPENING_SPINNER_GAP: f64 = 24.0;
+/// What the opening card says is happening, under the app's name.
+///
+/// Not a fluent key: the two sibling placeholders on this card
+/// ([`draw_card_text`]'s "coming soon" detail, and the foreign-surface
+/// waiting text) are plain strings too, and one translated line among
+/// three untranslated ones on the same surface is worse than three
+/// consistent ones. Whichever way that goes, it should go for all of them
+/// at once.
+const OPENING_NOTE: &str = "Opening\u{2026}";
+/// Gap between the app's name and the line under it. Matches the
+/// title/detail gap [`draw_card_text`] uses so the two cards — which a
+/// user sees in the same tile seconds apart — set type the same way.
+const OPENING_NOTE_GAP: f64 = 8.0;
 
 impl TileHost {
     pub fn new(content: TileContent) -> Self {
@@ -1099,25 +1112,56 @@ fn draw_opening_card(
         None,
         &rect,
     );
-    let on_card = theme.tokens.colors.neutral[1];
+    // Ink measured against the card, not taken from a fixed ramp slot.
+    // `neutral[1]` is the *dark* end of a dark theme's ramp, and the card
+    // it was painted on is that theme's darkest surface: the app's name
+    // came out at about 1.05:1 against its own ground — present in the
+    // scene, invisible on screen, and the only thing a person watching a
+    // window open had to read. The light presets had the mirror bug. This
+    // is the same fix the stub card and the foreign-surface placeholder
+    // already carry; this call site was missed.
+    let ink = theme.on_card();
+    let on_card = ink.ink;
+    let on_card_dim = ink.ink_dim;
     let size = theme.tokens.typography.scale.xl;
+    let sm = theme.tokens.typography.scale.sm;
     let cx = rect.center().x;
     // The name sits above centre so that the pair of it and the indicator
     // is what reads as centred, rather than the name alone with the
     // indicator hanging off below the middle.
     let y = rect.center().y - size as f64;
-    if !name.is_empty() {
-        let (tw, _) = tr.measure(name, size, None);
+    // A turning indicator with nothing next to it is not a message, it is
+    // a mark on the screen — the reader cannot tell a machine that is
+    // working from one that is stuck, and cannot tell what it would be
+    // working on. So the card always says something. Where the tab knows
+    // the app's name that is the headline and the state goes under it;
+    // where it does not — a host drawn off the active-tab path never gets
+    // a name pushed into it — the state is all there is to say, and it is
+    // said in the headline's place rather than beside nothing.
+    let has_name = !name.is_empty();
+    let headline = if has_name { name } else { OPENING_NOTE };
+    let (tw, _) = tr.measure(headline, size, None);
+    tr.draw_text(
+        scene,
+        headline,
+        size,
+        on_card,
+        transform * Affine::translate((cx - tw as f64 / 2.0, y)),
+        None,
+    );
+    if has_name {
+        let (nw, _) = tr.measure(OPENING_NOTE, sm, None);
         tr.draw_text(
             scene,
-            name,
-            size,
-            on_card,
-            transform * Affine::translate((cx - tw as f64 / 2.0, y)),
+            OPENING_NOTE,
+            sm,
+            on_card_dim,
+            transform
+                * Affine::translate((cx - nw as f64 / 2.0, y + size as f64 + OPENING_NOTE_GAP)),
             None,
         );
     }
-    let top = y + size as f64 + OPENING_SPINNER_GAP;
+    let top = y + size as f64 + OPENING_NOTE_GAP + sm as f64 + OPENING_SPINNER_GAP;
     spinner.set_rect(Rect::new(
         cx - OPENING_SPINNER_PX / 2.0,
         top,

@@ -115,6 +115,39 @@ fn path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|r| path == r || path.starts_with(r))
 }
 
+/// Which of `roots` contains `path`, if any - the longest match, so a
+/// workspace mounted inside another resolves to the inner one.
+///
+/// [`is_workspace_path`] answers whether a path is in a workspace at all,
+/// which is what a sync-state query needs. Naming the workspace needs the
+/// root itself, and that is a different question: `/var/workspace` *is*
+/// the workspace, while `/var/workspace/notes` is a folder in it. Pure
+/// over an explicit root list for the same reason [`path_under_any`] is.
+pub fn workspace_root_for<'a>(path: &Path, roots: &'a [PathBuf]) -> Option<&'a Path> {
+    roots
+        .iter()
+        .filter(|r| path == r.as_path() || path.starts_with(r))
+        .max_by_key(|r| r.as_os_str().len())
+        .map(|r| r.as_path())
+}
+
+/// What to call a workspace root on screen.
+///
+/// The mount path is an implementation detail of where the driver put it,
+/// and a misleading one: the demo mounts under `/var/tmp`, and a trail
+/// that spells it out tells a reader they are looking at scratch space on
+/// somebody's laptop - the opposite of a folder that belongs to the room.
+/// The mount's own final component is the name the workspace was given.
+///
+/// One function because the places sidebar and the breadcrumb name the
+/// same location, and somebody who clicks the one to reach the other must
+/// not find it has been renamed on the way.
+pub fn workspace_label(root: &Path) -> String {
+    root.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Workspace".to_string())
+}
+
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub name: String,

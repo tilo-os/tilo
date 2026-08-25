@@ -8194,7 +8194,29 @@ impl Widget for ShellOverlayHost {
         // the rest of the desktop receded behind it; the wheel is part
         // of the desktop, so it dims with the desktop.
         if let Some(sidebar) = self.sidebar.as_mut() {
-            sidebar.draw(scene, transform, text_renderer, theme, presence);
+            // How much of the wheel the viewport still holds. Panning the
+            // strip right carries the wheel off the left edge, and the
+            // frame is a hard cut: what survives is a sliver of saturated
+            // body with the rim's hairline down the edge of the picture,
+            // which reads as tearing rather than as an object that has
+            // gone off the side. Fade it out over the last of its travel
+            // so the frame never cuts anything solid.
+            let wheel = ui::Widget::get_rect(&**sidebar);
+            let visible_w = (wheel.x1 - self.rect.x0).max(0.0);
+            let a = crate::shell::sidebar_wheel_disc::pan_off_opacity(visible_w, wheel.width());
+            if a >= 0.999 {
+                sidebar.draw(scene, transform, text_renderer, theme, presence);
+            } else if a > 0.0 {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    a,
+                    transform,
+                    &self.rect,
+                );
+                sidebar.draw(scene, transform, text_renderer, theme, presence);
+                scene.pop_layer();
+            }
         }
 
         // Sandbox Phase 4 Task 4.2: inline permission prompt. Painted
