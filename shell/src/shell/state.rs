@@ -6247,6 +6247,159 @@ impl WorkspaceTree {
         }
     }
 
+    /// Take `tab_id` out of the tree, dropping the group that hosted it
+    /// when that leaves the group empty.
+    ///
+    /// The tree-side half of closing a window. Without it a close is a
+    /// widget-only fade: the tab is off screen but still in the tree, so
+    /// the next revision bump makes
+    /// [`crate::shell::overlay_host::ShellOverlayHost::resync_strips_from_tree`]
+    /// splice it straight back, a restart brings it back, and a peer
+    /// sharing the workspace keeps seeing a window the host closed.
+    ///
+    /// Advances `active_tab` off a tab that just went away and
+    /// `active_group` off a group that did, so nothing is left pointing
+    /// at something that no longer exists. Mirrors into the automerge
+    /// doc via [`Self::doc_remove_tab`] so the removal reaches peers and
+    /// survives a rebuild from the doc.
+    ///
+    /// Returns `true` when the tree changed. Idempotent: a second call
+    /// for the same id finds nothing and returns `false`, so a harvest
+    /// that runs twice over one close is harmless.
+    pub fn remove_tab(&mut self, tab_id: TabId) -> bool {
+        let mut hit: Option<(StripId, GroupId, bool)> = None;
+        'outer: for ws in self.workspaces.iter_mut() {
+            for strip in ws.strips.iter_mut() {
+                for group in strip.window_groups.iter_mut() {
+                    let Some(pos) = group.tabs.iter().position(|t| t.id == tab_id) else {
+                        continue;
+                    };
+                    group.tabs.remove(pos);
+                    if group.active_tab == tab_id {
+                        // Prefer whatever slid into the vacated slot,
+                        // then the one before it — the same neighbour
+                        // `TabBar::start_closing` promotes on the widget
+                        // side, so both layers front the same tab.
+                        group.active_tab = group
+                            .tabs
+                            .get(pos)
+                            .or_else(|| group.tabs.last())
+                            .map(|t| t.id)
+                            .unwrap_or(0);
+                    }
+                    let emptied = group.tabs.is_empty();
+                    hit = Some((strip.id, group.id, emptied));
+                    if emptied {
+                        let gid = group.id;
+                        strip.window_groups.retain(|g| g.id != gid);
+                    }
+                    break 'outer;
+                }
+            }
+        }
+        let Some((strip_id, group_id, emptied)) = hit else {
+            return false;
+        };
+        if emptied && self.active_group.get(&strip_id) == Some(&group_id) {
+            let fallback = self
+                .workspaces
+                .iter()
+                .flat_map(|ws| ws.strips.iter())
+                .find(|s| s.id == strip_id)
+                .and_then(|s| s.window_groups.last().map(|g| g.id));
+            match fallback {
+                Some(next) => {
+                    self.active_group.insert(strip_id, next);
+                }
+                None => {
+                    self.active_group.remove(&strip_id);
+                }
+            }
+        }
+        self.doc_remove_tab(tab_id);
+        true
+    }
+
+    /// Delete `tab_id`'s entry from the automerge doc, and the group
+    /// entry that held it when that group is left with no tabs.
+    ///
+    /// The doc twin of [`Self::remove_tab`]. Separate from it only
+    /// because everything else in this file keeps the cache write and
+    /// the doc write in separate functions. Silent no-op when the doc
+    /// isn't seeded for this tab — the cache write has already
+    /// happened, and a later [`Self::seed_doc_from_cache`] writes the
+    /// post-removal shape.
+    fn doc_remove_tab(&mut self, tab_id: TabId) -> bool {
+        use automerge::{ReadDoc, transaction::Transactable};
+        let Some((groups_id, g_idx, tabs_id, t_idx)) = self.locate_tab_anywhere(tab_id) else {
+            return false;
+        };
+        if self.doc.delete(&tabs_id, t_idx).is_err() {
+            return false;
+        }
+        if self.doc.length(&tabs_id) == 0 {
+            let _ = self.doc.delete(&groups_id, g_idx);
+        }
+        true
+    }
+
+    /// Walk the doc to `tab_id` without being told which strip it is on.
+    /// Returns the strip's `window_groups` list, the index of the group
+    /// holding the tab, that group's `tabs` list, and the tab's index in
+    /// it — enough to delete the tab and, if it was the last one, the
+    /// group around it.
+    ///
+    /// [`Self::locate_tab`] needs a [`StripId`]; a close arrives from
+    /// the widget layer knowing only the tab.
+    fn locate_tab_anywhere(
+        &self,
+        tab_id: TabId,
+    ) -> Option<(automerge::ObjId, usize, automerge::ObjId, usize)> {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+        let (_, workspaces_id) = self.doc.get(&ROOT, "workspaces").ok().flatten()?;
+        for ws_idx in 0..self.doc.length(&workspaces_id) {
+            let Some((_, ws_entry)) = self.doc.get(&workspaces_id, ws_idx).ok().flatten() else {
+                continue;
+            };
+            let Some((_, strips_id)) = self.doc.get(&ws_entry, "strips").ok().flatten() else {
+                continue;
+            };
+            for s_idx in 0..self.doc.length(&strips_id) {
+                let Some((_, strip_entry)) = self.doc.get(&strips_id, s_idx).ok().flatten() else {
+                    continue;
+                };
+                let Some((_, groups_id)) =
+                    self.doc.get(&strip_entry, "window_groups").ok().flatten()
+                else {
+                    continue;
+                };
+                for g_idx in 0..self.doc.length(&groups_id) {
+                    let Some((_, group_entry)) = self.doc.get(&groups_id, g_idx).ok().flatten()
+                    else {
+                        continue;
+                    };
+                    let Some((_, tabs_id)) = self.doc.get(&group_entry, "tabs").ok().flatten()
+                    else {
+                        continue;
+                    };
+                    for t_idx in 0..self.doc.length(&tabs_id) {
+                        let Some((_, tab_entry)) = self.doc.get(&tabs_id, t_idx).ok().flatten()
+                        else {
+                            continue;
+                        };
+                        if let Some((Value::Scalar(v), _)) =
+                            self.doc.get(&tab_entry, "id").ok().flatten()
+                            && matches!(v.as_ref(), ScalarValue::Uint(id) if *id == tab_id)
+                        {
+                            return Some((groups_id, g_idx, tabs_id, t_idx));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Mirror a cross-strip tab drag-drop into the persisted tree (#151).
     ///
     /// The widget side of the cross-strip drag (`GroupRow::accept_cross_strip_drop`)

@@ -2974,8 +2974,20 @@ impl ShellOverlayHost {
                         any_change = true;
                     }
                 }
-                // Drop any groups the tree no longer carries.
+                // Drop any groups the tree no longer carries — except
+                // one that is still fading out. A group whose last tab
+                // was just closed leaves the tree immediately and the
+                // widget over the next few frames; yanking it here on a
+                // revision bump that lands inside that window replaces
+                // the shrink the user is watching with a pop.
                 for id in live_ids.difference(&tree_ids) {
+                    let fading = row
+                        .groups
+                        .iter()
+                        .any(|g| g.id == *id && g.close_in_flight());
+                    if fading {
+                        continue;
+                    }
                     if row.remove_group_by_id(*id) {
                         any_change = true;
                     }
@@ -3471,13 +3483,17 @@ impl ShellOverlayHost {
                     Some(id) => g.request_close_tab(id),
                     None => g.request_close_active_tab(),
                 };
-                // Deliberately no `bump()`. A revision bump makes the
-                // strip resync rebuild this row from the persisted tree,
-                // and the tree still lists the tab: closing a tab is a
-                // live-widget operation with no tree-side counterpart
-                // (there is no `doc_remove_tab`), exactly as a `✕` click
-                // is. Bumping here re-spliced the tab straight back and
-                // the chord looked like a no-op.
+                if closed {
+                    // Take the tab out of the tree in the same tick the
+                    // widget started fading it. The two layers have to
+                    // agree before anything bumps the revision, or the
+                    // resync reads a tab the tree still lists and
+                    // splices it straight back — which is what made this
+                    // chord look like a no-op, and what left a closed
+                    // window in the room document for peers to keep
+                    // seeing.
+                    self.harvest_closed_tabs_into_tree();
+                }
                 return closed;
             }
         }
@@ -3559,6 +3575,65 @@ impl ShellOverlayHost {
             "the tree moved tab {tab_id} into group {dest_gid}, but no \
              laid-out strip held both; the strip will resync"
         ))
+    }
+
+    /// Take every tab the widget layer just closed out of the persisted
+    /// [`crate::shell::state::WorkspaceTree`].
+    ///
+    /// Closing was widget-only: `WindowGroup::request_close_tab` starts
+    /// a fade and nothing told the tree. The tab therefore survived in
+    /// the tree, and any of the revision bumps the shell makes for
+    /// unrelated reasons put it back on screen through
+    /// [`Self::resync_strips_from_tree`] — as did a restart, and a peer
+    /// sharing the workspace never saw the window go away at all.
+    ///
+    /// Deliberately *not* gated on the chrome revision, unlike
+    /// [`Self::harvest_widget_only_groups_into_tree`]. That guard exists
+    /// so a widget-side *inference* ("the tree doesn't have this group,
+    /// so it must be new") can't fight a tree change that landed in the
+    /// same tick. A close is not an inference — it is a one-shot the
+    /// user's gesture published — so it is correct to apply whatever
+    /// else happened to the tree, and draining it under a guard that
+    /// might bail would throw the close away.
+    ///
+    /// No `bump()`: the widget already shows the tab gone, so there is
+    /// nothing for a resync to carry back. The doc write inside
+    /// [`crate::shell::state::WorkspaceTree::remove_tab`] is what
+    /// reaches peers, and it happens either way.
+    fn harvest_closed_tabs_into_tree(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let mut closed: Vec<u64> = Vec::new();
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in row.groups.iter_mut() {
+                closed.extend(g.take_closed_tabs());
+            }
+        }
+        if closed.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        for tab_id in closed {
+            tree.remove_tab(tab_id);
+            // The memo that says "this tab's widget already shows this
+            // tile" is about a tab that no longer exists. Leaving it
+            // would make a later tab reusing the id skip its content
+            // swap.
+            self.tab_tiles.remove(&tab_id);
+        }
+    }
+
+    /// Test hook for the close harvest — mirrors the per-frame call the
+    /// update / layout paths make.
+    pub fn tick_closed_tab_harvest_for_tests(&mut self) {
+        self.harvest_closed_tabs_into_tree();
     }
 
     fn harvest_pending_width_changes(&mut self) {
@@ -5555,9 +5630,18 @@ impl ShellOverlayHost {
                 // accessor.
                 let row: &GroupRow = unsafe { &*ptr };
                 for (idx, wg) in row.groups.iter().enumerate() {
-                    if !tree_ids.contains(&wg.id) {
-                        writes.push((strip.id, idx, build_state_group_from_widget(wg)));
+                    if tree_ids.contains(&wg.id) {
+                        continue;
                     }
+                    // A group on its way out is not a group the tree is
+                    // missing. Its last tab has already been removed
+                    // from the tree; re-adding it here would put an
+                    // empty group back and, a frame later, a window the
+                    // user closed.
+                    if wg.close_in_flight() || wg.tab_count() == 0 {
+                        continue;
+                    }
+                    writes.push((strip.id, idx, build_state_group_from_widget(wg)));
                 }
             }
         }
@@ -6996,6 +7080,10 @@ impl Widget for ShellOverlayHost {
         // Workspace switch first: everything below walks
         // `group_row_ptrs`, and a switch replaces the whole row set.
         let ws_swapped = self.resync_workspace_content();
+        // A tab the user closed since the last frame has to leave the
+        // tree before the resync reads it, or the resync splices the
+        // closed window straight back in.
+        self.harvest_closed_tabs_into_tree();
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Mirror the compositor's live fullscreen state onto the strip rows
         // before the children update, so a promotion/restore is reflected in
@@ -9863,6 +9951,12 @@ impl Widget for ShellOverlayHost {
     /// would leave a stale flag pending in whichever subtree we
     /// skipped.
     fn take_structure_dirty(&mut self) -> bool {
+        // Take closed tabs out of the tree first. Both reconcilers
+        // below compare the widget against the tree, and a tab the user
+        // just closed is gone from one and not the other until this
+        // runs — which reads to the group harvest as a group that
+        // shrank and to the resync as a tab to splice back.
+        self.harvest_closed_tabs_into_tree();
         // Mirror any widget-only groups (produced by
         // `GroupRow::split_tab_into_new_group` on drag-detach) back
         // into the persisted tree before `resync_strips_from_tree`
