@@ -474,7 +474,6 @@ impl Widget for PermissionPrompt {
                 *rect,
                 button_label(*choice),
                 is_hover,
-                false,
                 *is_primary,
             );
         }
