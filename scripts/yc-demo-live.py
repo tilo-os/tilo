@@ -623,6 +623,9 @@ class Live:
         # beside a `xaver` that resolved.
         self.agent_token: str | None = None
         self.agent_token_at = 0.0
+        #: When the rig started waiting for that second invitation --
+        #: which is not when the first one appeared. See `tick`.
+        self.agent_wait_from = 0.0
         self.room: str | None = None
         self.xaver_in = False
         #: Whether xaver's gesture actually went out. Distinct from
@@ -983,18 +986,29 @@ class Live:
             yc.claim("and its own session would let it open the photo editor",
                      opens, True)
             if not opens:
-                # Separate the two ways this can be false, because they
-                # send whoever reads it to opposite ends of the system.
-                reachable = yc.anyone_may_open(self.a, yc.IMAGE_EDITOR)
-                yc.gap(
-                    f"the agent will be refused when it asks to open "
-                    f"{yc.IMAGE_EDITOR}, so the crop cannot happen — "
-                    + ("the row is reachable on that session, so what is "
-                       "missing is the grant reaching it"
-                       if reachable else
-                       "the row is not reachable there at all, so the "
-                       "editor is absent or unindexed rather than "
-                       "ungranted"))
+                # Three ways this can be false, and they have three
+                # different owners. Named apart here rather than left as
+                # one sentence, because "the agent was refused" sends
+                # whoever reads it looking for a missing grant — and the
+                # grant is usually there, on the wrong machine.
+                here = yc.scopes_granted_to(self.q, yc.AGENT_SUBJECT)
+                there = yc.scopes_granted_to(self.a, yc.AGENT_SUBJECT)
+                yc.note(f"{yc.AGENT_SUBJECT} holds {here or 'nothing'} on "
+                        f"quinten's machine, {there or 'nothing'} on its own")
+                if f"app:{yc.IMAGE_EDITOR}" not in here:
+                    why = ("the grant is gone from the machine that made "
+                           "it, so it was undone at the source rather "
+                           "than lost on the way")
+                elif yc.anyone_may_open(self.a, yc.IMAGE_EDITOR):
+                    why = ("the row is reachable on that session, so what "
+                           "is missing is the grant reaching it")
+                else:
+                    why = ("the row is not reachable there at all, so the "
+                           "editor is absent or unindexed rather than "
+                           "ungranted")
+                yc.gap(f"the agent will be refused when it asks to open "
+                       f"{yc.IMAGE_EDITOR}, so the crop cannot happen — "
+                       f"{why}")
             admitted = self.q.grant(f"person:{self.a.user}", "workspace",
                                     "write")
             yc.claim("the agent's session is admitted to the room as an editor",
@@ -1811,8 +1825,21 @@ class Live:
             # arriving nameless, which is the defect this is here to
             # remove. Bounded, because a person may simply not mint a
             # second one and the run should continue rather than stall.
+            #
+            # Timed from here rather than from the first token. Xaver's
+            # redemption sits between the two, and it is not quick --
+            # a join, then up to twelve seconds waiting for the room's
+            # windows to reach his machine, then the excursion to shoot
+            # them. Measured from the first token that ate ten to fifteen
+            # seconds of a twenty-five second window, so a person who did
+            # exactly what the page asked still missed it, and the run
+            # then blamed them for not making a gesture it had never
+            # asked for. The clock starts when the rig starts wanting the
+            # thing.
+            if self.agent_wait_from == 0.0:
+                self.agent_wait_from = now
             if (self.agent_token is None
-                    and now < self.token_at + AGENT_INVITE_GRACE_S):
+                    and now < self.agent_wait_from + AGENT_INVITE_GRACE_S):
                 self.waiting = "a second invitation, made out to Claude"
                 self.look_for_the_invitation()
                 return
@@ -2868,6 +2895,20 @@ def main() -> int:
             if args.xaver:
                 print(f"      -> xaver redeems it "
                       f"{args.xaver_delay:.0f}s later, on his own machine")
+            if args.agent:
+                # Said as its own line because the rig genuinely needs
+                # it, and used not to ask. An invitation carries the name
+                # the room will call whoever redeems it, so one token
+                # admits one named participant: reuse it and the agent
+                # arrives as `peer@<n>`, which is the one thing this beat
+                # exists to avoid. It was waited for and never requested,
+                # so the run blamed a person for skipping a gesture that
+                # appeared on no page they were given.
+                print("  - press Invite a second time and name that one "
+                      "Claude — the agent needs an invitation of its own,")
+                print(f"    and the rig waits up to "
+                      f"{AGENT_INVITE_GRACE_S:.0f}s for it once xaver is in "
+                      f"(without it the agent joins nameless)")
             print("  - open the word processor and write a few words in "
                   "it — anything; a sentence is plenty")
             print("      -> the film cuts to xaver the moment they reach "
@@ -2897,7 +2938,10 @@ def main() -> int:
                       "answer.")
             ins.countdown(max(0, args.countdown),
                           "Open Files, invite somebody from the "
-                          "collaborators panel, open the word processor "
+                          "collaborators panel"
+                          + (" and then invite Claude too"
+                             if args.agent else "")
+                          + ", open the word processor "
                           "and write a few words in it.",
                           quiet=args.self_test)
             if wid is not None:

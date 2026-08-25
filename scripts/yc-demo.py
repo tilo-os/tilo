@@ -4992,6 +4992,44 @@ def anyone_may_open(session: Session, app_id: str) -> bool:
                for a in surface.get("actions", []))
 
 
+#: How a subject's kind is spelled in the serialised capability list.
+#: `Subject::agent("Claude")` crosses the wire as
+#: `{"Principal": {"Agent": "Claude"}}`, and this harness writes the same
+#: subject as `agent:Claude` — one map, so the two spellings cannot drift.
+SUBJECT_KINDS = {"person": "Person", "app": "App", "agent": "Agent"}
+
+
+def scopes_granted_to(session: Session, subject: str) -> list[str]:
+    """Every scope `subject` still holds a grant on in this session's
+    active workspace, written the way this harness writes a scope.
+
+    Read out of the workspace rather than remembered from what was asked
+    for. A grant that was accepted and then overwritten reads exactly
+    like one that was never made — the room answered "granted", the gate
+    answers "no" — and the only thing that separates those two is what
+    the list holds *now*, on the machine being asked.
+
+    Which machine matters as much as which subject. Asked of the
+    grantor, this says whether the grant survived being made; asked of
+    the session that will decide, whether it ever arrived. They are
+    different failures with different owners, and naming the wrong one
+    sends whoever reads it to the wrong end of the system.
+    """
+    kind, _, name = subject.partition(":")
+    want = {"Principal": {SUBJECT_KINDS.get(kind, kind): name}}
+    held: list[str] = []
+    for cap in session.active_workspace().get("capabilities") or []:
+        if cap.get("subject") != want or cap.get("effect") != "Grant":
+            continue
+        scope = cap.get("scope")
+        if isinstance(scope, str):
+            held.append(scope.lower())
+        elif isinstance(scope, dict) and scope:
+            tag, value = next(iter(scope.items()))
+            held.append(f"{tag.lower()}:{value}")
+    return held
+
+
 # --------------------------------------------------------------------
 # asking a running app what it holds
 # --------------------------------------------------------------------
