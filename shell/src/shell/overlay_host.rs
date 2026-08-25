@@ -463,6 +463,18 @@ pub struct ShellOverlayHost {
     /// so the first poll always rebuilds, even when chrome boots
     /// with `revision: 0`.
     last_chrome_revision: u64,
+    /// How many tabs the most recent [`Self::resync_strips_from_tree`]
+    /// swapped the contents of.
+    ///
+    /// A content swap throws away a running app and builds another one:
+    /// a terminal's PTY is re-forked, a file pane re-reads its
+    /// directory, an editor loses what it had open. It is correct
+    /// exactly once per tab — when a card that announced a window
+    /// becomes the window — and a bug every other time, but it leaves
+    /// no trace afterwards because the rebuilt widget has the same
+    /// shape as the one it replaced. Counting the swaps is what makes
+    /// the difference observable at all.
+    last_resync_content_swaps: usize,
     /// What each live tab was last built to show, keyed by tab id.
     ///
     /// The revision counter says *something* in the tree moved; this says
@@ -1593,6 +1605,7 @@ impl ShellOverlayHost {
             remark_peer: None,
             remark_dismissals: Vec::new(),
             last_chrome_revision: u64::MAX,
+            last_resync_content_swaps: 0,
             tab_tiles: std::collections::HashMap::new(),
             deferred_tile_swaps: std::collections::HashSet::new(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
@@ -2749,6 +2762,49 @@ impl ShellOverlayHost {
         self
     }
 
+    /// Record what every tab of `tree` is already showing, so the first
+    /// resync knows the widget tree is up to date.
+    ///
+    /// `tab_tiles` memoises "the widget for this tab is already showing
+    /// this tile", and it was only ever written by the resync — so on
+    /// the first frame after boot it was empty, every restored tab
+    /// looked like a tab whose contents had changed, and the resync
+    /// rebuilt all of them. Every terminal re-forked its shell, every
+    /// file pane re-read its directory, on the render thread, in the
+    /// frame the user is waiting to see.
+    ///
+    /// The widget tree was built from this same tree, so the honest
+    /// memo is "all of it".
+    pub fn with_seeded_tab_tiles(mut self, tree: &crate::shell::state::WorkspaceTree) -> Self {
+        self.seed_tab_tiles_from(tree);
+        self
+    }
+
+    /// Fill [`Self::tab_tiles`] from the tree the content was just built
+    /// out of. Shared by the boot builder and the workspace-content
+    /// rebuild, which are the two places a row is made from a snapshot
+    /// rather than reconciled towards one.
+    fn seed_tab_tiles_from(&mut self, tree: &crate::shell::state::WorkspaceTree) {
+        self.tab_tiles.clear();
+        let Some(ws) = tree.active_workspace() else {
+            return;
+        };
+        for tab in ws
+            .strips
+            .iter()
+            .flat_map(|s| s.window_groups.iter())
+            .flat_map(|g| g.tabs.iter())
+        {
+            self.tab_tiles.insert(tab.id, tile_signature(&tab.tile));
+        }
+    }
+
+    /// How many tabs the last strip resync rebuilt the contents of. See
+    /// [`Self::last_resync_content_swaps`].
+    pub fn last_resync_content_swaps(&self) -> usize {
+        self.last_resync_content_swaps
+    }
+
     /// Swap the workspace-scoped content when the active workspace
     /// changes, or when it grows a strip the content has no row for.
     /// On either the content root and the strip pointer map are
@@ -2809,6 +2865,11 @@ impl ShellOverlayHost {
         self.content = root;
         self.group_row_ptrs = ptrs;
         self.content_built_for_ws = Some(snapshot.active.raw());
+        // The new rows were built from this snapshot, so they are
+        // already showing it. Without saying so, the resync that runs
+        // straight after this rebuilds the contents of every tab in the
+        // workspace the user just switched to.
+        self.seed_tab_tiles_from(&snapshot);
         // Per-strip memos of the old workspace die with its rows.
         self.last_scrolled_active_group.clear();
         true
@@ -2938,6 +2999,10 @@ impl ShellOverlayHost {
         // Every tab this walk reached, so a debt can be carried forward
         // only for a tab that is still somewhere this pass can settle it.
         let mut seen_tabs: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        // A swap leaves no trace afterwards — the rebuilt widget has the
+        // same shape as the one it replaced — so they are counted, which
+        // is what makes "nothing was rebuilt this frame" observable.
+        let mut swaps = 0_usize;
         let st = chrome.borrow();
         let records = st.records().clone();
         let tree = st.tree();
@@ -3042,6 +3107,7 @@ impl ShellOverlayHost {
                                     host.replace_content(crate::shell::to_ui_tile(&tab.tile));
                                     tab_tiles.insert(tab.id, signature);
                                     deferred.remove(&tab.id);
+                                    swaps += 1;
                                     any_change = true;
                                 }
                             } else {
@@ -3092,6 +3158,7 @@ impl ShellOverlayHost {
         // longer here is not something a later pass can settle.
         deferred.retain(|id| seen_tabs.contains(id));
         self.deferred_tile_swaps = deferred;
+        self.last_resync_content_swaps = swaps;
         self.last_chrome_revision = current_rev;
         any_change
     }

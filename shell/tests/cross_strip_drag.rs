@@ -966,3 +966,89 @@ fn a_tab_torn_into_its_own_group_leaves_the_group_it_came_from() {
         "the tear-out must survive a revision bump"
     );
 }
+
+/// The first frame after boot must not rebuild the app in every
+/// restored tab.
+///
+/// The resync only swaps a tab's contents when its memo disagrees with
+/// the tree, and the memo was written nowhere but the resync itself —
+/// so on the first frame there was no memo for any restored tab and
+/// every one of them was rebuilt. A rebuilt tab is not a cosmetic
+/// problem: the tile is constructed from scratch, which re-forks a
+/// terminal's shell and re-reads a file pane's directory, on the render
+/// thread, in the frame the user is waiting for.
+///
+/// It leaves no trace afterwards — the rebuilt widget has the same
+/// shape as the one it replaced — which is why the assertion is on the
+/// count of swaps the resync performed.
+#[test]
+fn the_first_frame_after_boot_rebuilds_nothing() {
+    let (tree, _s_a, _s_b, _a_tabs, _b_tabs) = two_strip_two_tab_tree();
+    let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+
+    // The first production frame — this is the one that used to rebuild
+    // all four restored tabs.
+    let _ = host.take_structure_dirty();
+
+    assert_eq!(
+        host.last_resync_content_swaps(),
+        0,
+        "the widget rows were built from this very tree; nothing in them has changed yet"
+    );
+}
+
+/// The same for the frame after a workspace switch, which rebuilds the
+/// rows from a snapshot for exactly the same reason and left the memo
+/// describing the workspace the user just left.
+#[test]
+fn switching_workspaces_rebuilds_nothing_in_the_workspace_switched_to() {
+    let (mut tree, _s_a, _s_b, _a_tabs, _b_tabs) = two_strip_two_tab_tree();
+
+    // A second workspace with its own strip and its own open tab.
+    let other_ws = WorkspaceId::new();
+    let other_strip = StripId::new();
+    let other_group: GroupId = 3001;
+    let other_tab: u64 = 51;
+    tree.workspaces.push(Workspace {
+        strips: vec![Strip {
+            id: other_strip,
+            name: "Other".into(),
+            window_groups: vec![WindowGroup {
+                id: other_group,
+                tabs: vec![Tab {
+                    id: other_tab,
+                    title: "O1".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Test".into()),
+                        label: "O1".into(),
+                    },
+                }],
+                active_tab: other_tab,
+                width: WindowWidth::Normal,
+                maximized: false,
+            }],
+        }],
+        ..Workspace::test_default(other_ws, "Other")
+    });
+    tree.active_strip.insert(other_ws, other_strip);
+    tree.active_group.insert(other_strip, other_group);
+
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    let _ = host.take_structure_dirty();
+
+    // Switch. The content root and every row is rebuilt from the tree.
+    {
+        let mut st = chrome.borrow_mut();
+        st.tree_mut().active = other_ws;
+        st.bump();
+    }
+    let _ = host.take_structure_dirty();
+
+    assert_eq!(
+        host.last_resync_content_swaps(),
+        0,
+        "the rows for the new workspace were just built from it; nothing needs rebuilding"
+    );
+}
