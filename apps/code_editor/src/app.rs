@@ -62,11 +62,11 @@ use crate::editor_view::{EditorView, LspAsk};
 use crate::file_tree::{FileTree, TreeEvent};
 use crate::find::{FindBar, FindEvent};
 use crate::lint;
-use crate::model::{NodeId as TreeId, NodeKind, Project, Session};
+use crate::model::{Language, NodeId as TreeId, NodeKind, Project, Session};
 use crate::sample_project;
 use crate::search;
 use crate::status_bar::{StatusModel, StatusState};
-use crate::tab_bar::{TabBar, TabEvent, TabItem};
+use ui::widget::tabs::{TabBar, TabDescriptor};
 
 const SIDEBAR_WIDTH: f64 = 240.0;
 const SIDEBAR_MIN: f64 = 160.0;
@@ -80,6 +80,39 @@ const SIDEBAR_BREAKPOINT: f64 = 820.0;
 /// Hamburger toggle geometry, shown in the tab bar when the sidebar is an
 /// overlay (narrow window). Square button hugging the bar's left edge.
 const HAMBURGER_W: f64 = 40.0;
+
+/// A buffer's id in the shared tab strip.
+///
+/// Project node ids are stable for as long as a buffer is open, which is
+/// exactly the lifetime a pill needs, so they carry across directly. The
+/// `+ 1` keeps clear of `0`, which the strip uses as its "no active tab"
+/// sentinel — node `0` is the project root in practice, but relying on
+/// that would make a root that ever became a buffer very confusing.
+fn tab_id(node: TreeId) -> u64 {
+    node as u64 + 1
+}
+
+/// The accent a language lends its tab's leading dot.
+///
+/// Every colour is a theme token, so the strip re-tints with the OS theme
+/// rather than carrying an editor palette of its own. Languages that share
+/// a family share a token: the dot separates Rust from Markdown at a
+/// glance, which is what it is for — it is not a legend.
+fn language_accent(language: Language, theme: &Theme) -> vello::peniko::Color {
+    let c = &theme.tokens.colors;
+    match language {
+        Language::Rust => c.semantic.warning,
+        Language::Python => c.semantic.info,
+        Language::JavaScript | Language::TypeScript => c.semantic.warning,
+        Language::Toml | Language::Yaml => c.accent[5],
+        Language::Json => c.semantic.success,
+        Language::Markdown => c.text_dim,
+        Language::Shell => c.semantic.success,
+        Language::Html | Language::Css => c.semantic.danger,
+        Language::C | Language::Cpp | Language::Go => c.semantic.info,
+        Language::PlainText => c.text_dim,
+    }
+}
 
 /// Width assumed before the window has been measured (first `build_layout`,
 /// before any `apply_layout`). Wide enough to dock — a fresh desktop window
@@ -448,7 +481,16 @@ impl CodeApp {
         CodeApp {
             session,
             sidebar,
-            tabs: TabBar::new(),
+            tabs: {
+                // The shared strip offers a hover-reveal maximize chip for
+                // hosts whose tabs are windows. These tabs are buffers
+                // inside one window, so there is nothing for it to
+                // maximize and the chip is withheld rather than left to
+                // appear under the pointer and do nothing.
+                let mut bar = TabBar::new("code-editor", Vec::new(), 0);
+                bar.set_show_maximize(false);
+                bar
+            },
             editor: EditorView::new(),
             status: StatusModel::new(),
             status_bubble: ui::StatusBubble::new(),
@@ -749,19 +791,63 @@ impl CodeApp {
         }
     }
 
-    /// Push the current tab set into the tab bar.
+    /// Reconcile the shared tab strip against the open buffers.
+    ///
+    /// The strip owns its own list and animates changes to it, so this
+    /// applies the difference rather than overwriting: a buffer that
+    /// appeared is inserted (and fades in), one that is gone is removed
+    /// (and its neighbours spring across), and the rest keep their
+    /// identity so a rename doesn't read as a close and a re-open.
+    ///
+    /// Language accents are *not* set here — they come off the `Theme`,
+    /// which only `build_layout` has in hand.
     fn refresh_tabs(&mut self) {
-        let items: Vec<TabItem> = self
+        let want: Vec<(u64, String)> = self
             .session
             .open
             .iter()
-            .map(|b| TabItem {
-                name: b.name.clone(),
-                language: b.language,
-                dirty: b.dirty,
-            })
+            .map(|b| (tab_id(b.node), b.name.clone()))
             .collect();
-        self.tabs.set_tabs(items, self.session.active);
+
+        // Drop pills whose buffer is gone. Collected first: `remove_tab`
+        // borrows the bar mutably.
+        let stale: Vec<u64> = self
+            .tabs
+            .tabs()
+            .iter()
+            .map(|t| t.id)
+            .filter(|id| !want.iter().any(|(w, _)| w == id))
+            .collect();
+        for id in stale {
+            self.tabs.remove_tab(id);
+            self.tabs.clear_accent(id);
+            self.tabs.set_modified(id, false);
+        }
+
+        // Insert, move and retitle so the strip matches `want` in order.
+        for (idx, (id, title)) in want.iter().enumerate() {
+            match self.tabs.tabs().iter().position(|t| t.id == *id) {
+                Some(cur) => {
+                    if cur != idx {
+                        self.tabs.reorder(cur, idx);
+                    }
+                    self.tabs.tabs_mut()[idx].title = title.clone();
+                }
+                None => self
+                    .tabs
+                    .insert_tab(idx, TabDescriptor::new(*id, title.clone())),
+            }
+        }
+
+        for b in &self.session.open {
+            self.tabs.set_modified(tab_id(b.node), b.dirty);
+        }
+
+        // `insert_tab` activates what it inserts, so the active tab is
+        // asserted last or opening a background buffer would steal it.
+        if let Some(b) = self.session.active_buffer() {
+            self.tabs.set_active(tab_id(b.node));
+        }
     }
 
     /// Recompute diagnostics over the active buffer and push to the panel +
@@ -1405,30 +1491,38 @@ impl CodeApp {
         }
     }
 
-    /// Apply a tab event (select / close).
-    fn apply_tab_event(&mut self, ev: TabEvent) {
-        match ev {
-            TabEvent::Select(i) => {
-                self.session.active = Some(i);
-                self.bound_node = None;
-            }
-            TabEvent::Close(i) => {
-                // A buffer with unsaved edits is not closed out from under the
-                // user — closing would silently discard their work, so ask
-                // first. A clean buffer closes immediately.
-                if let Some(buf) = self.session.open.get(i) {
-                    if buf.dirty {
-                        self.close_prompt = Some(ClosePrompt {
-                            node: buf.node,
-                            name: buf.name.clone(),
-                        });
-                        return;
-                    }
-                }
-                self.session.close_tab(i);
-                self.bound_node = None;
+    /// Make the buffer at `i` the active one.
+    fn select_tab_at(&mut self, i: usize) {
+        self.session.active = Some(i);
+        self.bound_node = None;
+        self.sidebar
+            .set_active(self.session.active_buffer().map(|b| b.node));
+        self.refresh_tabs();
+    }
+
+    /// Close the buffer at `i`, or ask first if it has unsaved edits.
+    ///
+    /// The strip removes a pill optimistically when its close glyph is
+    /// clicked, so the prompt path has to put it back: `refresh_tabs`
+    /// re-inserts it, and `finalize_close` drops the fading ghost the
+    /// optimistic removal started so the tab doesn't briefly appear twice.
+    fn close_tab_at(&mut self, i: usize) {
+        // A buffer with unsaved edits is not closed out from under the
+        // user — closing would silently discard their work, so ask
+        // first. A clean buffer closes immediately.
+        if let Some(buf) = self.session.open.get(i) {
+            if buf.dirty {
+                self.close_prompt = Some(ClosePrompt {
+                    node: buf.node,
+                    name: buf.name.clone(),
+                });
+                self.tabs.finalize_close(tab_id(buf.node));
+                self.refresh_tabs();
+                return;
             }
         }
+        self.session.close_tab(i);
+        self.bound_node = None;
         self.sidebar
             .set_active(self.session.active_buffer().map(|b| b.node));
         self.refresh_tabs();
@@ -1630,7 +1724,7 @@ impl CodeApp {
             }
             Command::CloseTab => {
                 if let Some(i) = self.session.active {
-                    self.apply_tab_event(TabEvent::Close(i));
+                    self.close_tab_at(i);
                 }
             }
             Command::ToggleBottomPanel => {
@@ -1663,10 +1757,7 @@ impl CodeApp {
         for ev in tree_events {
             self.apply_tree_event(ev);
         }
-        let tab_events = self.tabs.take_events();
-        for ev in tab_events {
-            self.apply_tab_event(ev);
-        }
+        self.drain_tab_events(doc);
         if let Some(kind) = self.palette.take_chosen() {
             match kind {
                 PaletteKind::File(id) => self.open_node(id),
@@ -1677,6 +1768,57 @@ impl CodeApp {
         if let Some(index) = self.panel.take_activated_hit() {
             self.open_search_hit(index);
         }
+    }
+
+    /// Drain what the tab strip did this frame.
+    ///
+    /// Selection is not an event: the strip moves its own `active_id` on
+    /// press and tells nobody, so it is read back and compared. The rest
+    /// — close, reorder, the trailing "+" — are one-shot and taken.
+    fn drain_tab_events(&mut self, doc: &mut AutoCommit) {
+        let bar_active = self.tabs.active_id();
+        if let Some(i) = self
+            .session
+            .open
+            .iter()
+            .position(|b| tab_id(b.node) == bar_active)
+        {
+            if self.session.active != Some(i) {
+                self.select_tab_at(i);
+            }
+        }
+        if let Some(id) = self.tabs.take_close() {
+            if let Some(i) = self
+                .session
+                .open
+                .iter()
+                .position(|b| tab_id(b.node) == id)
+            {
+                self.close_tab_at(i);
+            }
+        }
+        if let Some((from, to)) = self.tabs.take_reorder() {
+            // Dragging a pill reorders the open buffers behind it, so the
+            // strip and the session agree on what "the tab after this
+            // one" means. `refresh_tabs` then re-reads the new order.
+            if from < self.session.open.len() && to < self.session.open.len() {
+                let buf = self.session.open.remove(from);
+                self.session.open.insert(to, buf);
+                let active = self.session.active_buffer().map(|b| b.node);
+                self.session.active = active
+                    .and_then(|n| self.session.open.iter().position(|b| b.node == n));
+                self.refresh_tabs();
+            }
+        }
+        if self.tabs.take_new_tab().is_some() {
+            self.apply_command(Command::NewFile, doc);
+        }
+        // Dragging a pill out of the strip means "move this to another
+        // window", which is the compositor's business and not a thing one
+        // buffer inside one window can do. Drained so the strip doesn't
+        // hold a stale gesture into the next frame.
+        let _ = self.tabs.take_detach();
+        let _ = self.tabs.take_drag();
     }
 
     // ---- in-buffer find / replace -----------------------------------------
@@ -2291,6 +2433,55 @@ impl CodeApp {
         self.palette.seed_query(query);
     }
 
+    /// Stage a multi-buffer tab strip, one buffer edited but not saved.
+    ///
+    /// The strip is the app's most-looked-at chrome and, until this existed,
+    /// the only frame that could be captured of it held a single clean tab —
+    /// which is why a hand-rolled bar went a long time without anyone being
+    /// able to see what it did. This opens one buffer per language the tree
+    /// offers, edits one of them through the real edit path so the unsaved
+    /// mark is earned rather than set, and leaves a *different* tab active,
+    /// so the frame has to show all three things the strip says at once.
+    ///
+    /// Must run *before* the first layout pass. The strip seeds each tab's
+    /// reveal settled the first time it lays it out, so a tab that is active
+    /// then and inactive after carries its close mark into the capture for
+    /// the length of a fade the still frame never advances.
+    pub fn shots_tabs(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+        let mut seen: Vec<crate::model::Language> = Vec::new();
+        let mut pick: Vec<TreeId> = Vec::new();
+        for id in self.session.project.visible_rows() {
+            let Some(node) = self.session.project.get(id) else {
+                continue;
+            };
+            let NodeKind::File { language, .. } = node.kind else {
+                continue;
+            };
+            if seen.contains(&language) {
+                continue;
+            }
+            seen.push(language);
+            pick.push(id);
+            if pick.len() == 4 {
+                break;
+            }
+        }
+        for id in pick.iter().copied() {
+            self.open_node(id);
+        }
+        // Bind the editor to the last-opened buffer before editing it.
+        self.sync(doc, root);
+        self.editor.duplicate_lines(doc, true);
+        // Hand focus back to the first tab, so the strip is saying
+        // "unsaved" about a tab the user is not currently looking at.
+        if let Some(first) = pick.first().copied() {
+            self.open_node(first);
+        }
+        // Dirty is recomputed against the bytes on disk during sync, so the
+        // mark only appears if the edit really changed the buffer.
+        self.sync(doc, root);
+    }
+
     /// Stage the "save changes before closing?" prompt for the active buffer.
     pub fn shots_close_prompt(&mut self) {
         if let Some(buf) = self.session.active_buffer() {
@@ -2568,6 +2759,39 @@ impl Widget for CodeApp {
 
         // --- Editor column: tab bar + editor + (optional) bottom panel ---
         let tabs_node = self.tabs.build_layout(taffy, theme, node_map);
+        // Language accents are read off the theme, so they are refreshed
+        // here — the one pass that has one — rather than in `refresh_tabs`.
+        // Doing it before layout matters: `leading_zone` reserves the
+        // marker's slot, and a tab that gains its accent only at draw time
+        // would paint the dot over the first frame's title.
+        for b in &self.session.open {
+            self.tabs
+                .set_accent(tab_id(b.node), language_accent(b.language, theme));
+        }
+        // Overlay mode parks the hamburger over the strip's left corner.
+        // The shared strip takes its rect straight from taffy, so the room
+        // for it is a margin on the node rather than a post-hoc inset.
+        if let Ok(existing) = taffy.style(tabs_node).cloned() {
+            let inset = if self.sidebar_layout() == SplitLayout::Overlay {
+                HAMBURGER_W as f32
+            } else {
+                0.0
+            };
+            let _ = taffy.set_style(
+                tabs_node,
+                Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: existing.size.height,
+                    },
+                    margin: taffy::Rect {
+                        left: taffy::LengthPercentageAuto::length(inset),
+                        ..existing.margin
+                    },
+                    ..existing
+                },
+            );
+        }
         self.tabs_node = Some(tabs_node);
 
         let editor_node = self.editor.build_layout(taffy, theme, node_map);
@@ -2699,11 +2923,6 @@ impl Widget for CodeApp {
                 );
                 if let Some(n) = self.tabs_node {
                     self.tabs.apply_layout(taffy, n, col_origin);
-                    // Reserve the bar's left edge for the overlay hamburger so
-                    // the first tab isn't drawn beneath it.
-                    if self.sidebar_layout() == SplitLayout::Overlay {
-                        self.tabs.inset_left(HAMBURGER_W);
-                    }
                 }
                 if let Some(n) = self.find_node {
                     self.find.apply_layout(taffy, n, col_origin);
@@ -3714,6 +3933,198 @@ mod tests {
         (app, doc)
     }
 
+    #[test]
+    fn the_strip_marks_the_open_buffer_active() {
+        // One open buffer is the state the app starts in, and the strip has
+        // to agree with the session about it: an active tab that the strip
+        // thinks is inactive paints its name dim and drops its close mark.
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let node = app.session.active_buffer().expect("the sample opens a file").node;
+        assert_eq!(app.tabs.tabs().len(), 1, "the sample opens exactly one buffer");
+        assert_eq!(
+            app.tabs.active_id(),
+            tab_id(node),
+            "the strip's active tab must be the session's active buffer"
+        );
+    }
+
+    /// Lay the whole app out at a fixed viewport, so a test can press the
+    /// rect the strip really placed rather than a guessed coordinate.
+    fn laid_out(app: &mut CodeApp, doc: &mut AutoCommit) -> (TaffyTree<()>, NodeId) {
+        app.set_width_hint(1280.0);
+        app.sync(doc, &automerge::ROOT);
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let theme = Theme::dark();
+        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1280.0),
+                        height: Dimension::length(800.0),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        taffy
+            .compute_layout(
+                root,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, child, Point::ORIGIN);
+        (taffy, child)
+    }
+
+    #[test]
+    fn pressing_a_pill_switches_the_buffer_behind_it() {
+        // The seam the shared strip introduced: it moves its own active
+        // tab on press and emits nothing, so the app has to read it back.
+        // Drive a real press on the rect the strip actually laid out.
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        let others: Vec<TreeId> = app
+            .session
+            .project
+            .visible_rows()
+            .into_iter()
+            .filter(|id| {
+                matches!(
+                    app.session.project.get(*id).map(|n| &n.kind),
+                    Some(NodeKind::File { .. })
+                )
+            })
+            .take(2)
+            .collect();
+        for id in others {
+            app.open_node(id);
+        }
+        let (taffy, child) = laid_out(&mut app, &mut doc);
+        assert!(app.session.open.len() >= 2, "need more than one tab to switch");
+
+        // Any tab but the one already in front, so the press has to do work.
+        let target_idx = (0..app.session.open.len())
+            .find(|i| Some(*i) != app.session.active)
+            .expect("more than one tab means one of them is not active");
+        let want = app.session.open[target_idx].node;
+        let rect = app.tabs.tab_rects()[target_idx];
+        let at = rect.center();
+
+        let mods = winit::event::Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        for event in [
+            WindowEvent::CursorMoved {
+                device_id: unsafe { winit::event::DeviceId::dummy() },
+                position: winit::dpi::PhysicalPosition::new(at.x, at.y),
+            },
+            WindowEvent::MouseInput {
+                device_id: unsafe { winit::event::DeviceId::dummy() },
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+        ] {
+            app.handle_event(
+                &event, 1.0, &mods, &mut doc, &automerge::ROOT, &mut handled, &mut focus, child,
+                &taffy,
+            );
+        }
+
+        assert_eq!(
+            app.session.active_buffer().map(|b| b.node),
+            Some(want),
+            "pressing a pill must make its buffer the active one"
+        );
+    }
+
+    /// Send one press at `at` through the app's real event path.
+    fn press_at(
+        app: &mut CodeApp,
+        doc: &mut AutoCommit,
+        taffy: &TaffyTree<()>,
+        child: NodeId,
+        at: Point,
+    ) {
+        let mods = winit::event::Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        for event in [
+            WindowEvent::CursorMoved {
+                device_id: unsafe { winit::event::DeviceId::dummy() },
+                position: winit::dpi::PhysicalPosition::new(at.x, at.y),
+            },
+            WindowEvent::MouseInput {
+                device_id: unsafe { winit::event::DeviceId::dummy() },
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+        ] {
+            app.handle_event(
+                &event, 1.0, &mods, doc, &automerge::ROOT, &mut handled, &mut focus, child, taffy,
+            );
+        }
+    }
+
+    #[test]
+    fn a_closed_pill_closes_the_buffer_behind_it() {
+        // The strip reports a close as an id, and the app has to find the
+        // buffer that id stands for. `start_closing` is what the strip's
+        // own press handler calls once it has decided the close mark was
+        // hit — the hit-test itself is the widget's to prove, this is the
+        // mapping back onto the session, which is what the migration
+        // introduced.
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        let extra: Vec<TreeId> = app
+            .session
+            .project
+            .visible_rows()
+            .into_iter()
+            .filter(|id| {
+                matches!(
+                    app.session.project.get(*id).map(|n| &n.kind),
+                    Some(NodeKind::File { .. })
+                )
+            })
+            .take(3)
+            .collect();
+        for id in extra {
+            app.open_node(id);
+        }
+        let (taffy, child) = laid_out(&mut app, &mut doc);
+        let before = app.session.open.len();
+        assert!(before >= 2, "need more than one tab to close one");
+
+        let active = app.session.active.expect("a tab is active");
+        let doomed = app.session.open[active].node;
+        assert!(
+            !app.session.open[active].dirty,
+            "precondition: a clean buffer, so closing needs no prompt"
+        );
+        assert!(
+            app.tabs.start_closing(tab_id(doomed)),
+            "the strip must know the tab it is being asked to close"
+        );
+
+        // Any event drains what the children produced; press somewhere inert.
+        press_at(&mut app, &mut doc, &taffy, child, Point::new(1.0, 799.0));
+
+        assert_eq!(app.session.open.len(), before - 1, "the buffer closed");
+        assert!(
+            !app.session.open.iter().any(|b| b.node == doomed),
+            "the closed buffer is gone, not merely deactivated"
+        );
+        assert!(app.close_prompt.is_none(), "a clean buffer closes without a prompt");
+    }
+
     fn buffer_lines(doc: &AutoCommit, node: TreeId) -> Vec<String> {
         EditorDoc::read_buffer(doc, node)
             .unwrap()
@@ -3911,7 +4322,7 @@ mod tests {
 
         let before = app.session.open.len();
         let active = app.session.active.unwrap();
-        app.apply_tab_event(TabEvent::Close(active));
+        app.close_tab_at(active);
         assert_eq!(
             app.session.open.len(),
             before,
@@ -3930,7 +4341,7 @@ mod tests {
         let (mut app, _doc) = synced_sample();
         let before = app.session.open.len();
         let active = app.session.active.unwrap();
-        app.apply_tab_event(TabEvent::Close(active));
+        app.close_tab_at(active);
         assert!(
             app.close_prompt.is_none(),
             "a saved tab closes without a prompt"

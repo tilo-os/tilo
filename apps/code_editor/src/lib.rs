@@ -29,7 +29,6 @@ pub mod search_provider;
 mod sample_project;
 mod search;
 mod status_bar;
-mod tab_bar;
 
 use std::path::{Path, PathBuf};
 
