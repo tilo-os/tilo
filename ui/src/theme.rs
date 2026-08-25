@@ -489,6 +489,52 @@ impl Theme {
     ///
     /// Selected when [`A11ySettings::high_contrast`](crate::a11y::A11ySettings)
     /// is set; the shell owns theming and broadcasts the swap.
+    /// The theme this machine is configured to use.
+    ///
+    /// Read once, at startup, from `$XDG_CONFIG_HOME/qos/settings.json`
+    /// (falling back to `~/.config/qos/settings.json`) — the same file
+    /// `apps/themes` writes when somebody picks a theme.
+    ///
+    /// Until this existed nothing read that file. `App::new` hard-coded
+    /// `Theme::dark()` and `set_theme` had no production caller, so the
+    /// themes app could report "Applied X as the system theme" and be
+    /// describing a write that no reader would ever see. The cost was not
+    /// only cosmetic: [`Self::high_contrast`] was reachable only from the
+    /// screenshot harness, which makes the accessibility theme a picture
+    /// of a feature rather than one.
+    ///
+    /// Unreadable, absent or unrecognised all mean the same thing here —
+    /// the dark default. A machine with no preference and a machine whose
+    /// settings file is corrupt both want a desktop that starts.
+    pub fn configured() -> Self {
+        match Self::configured_id().as_deref() {
+            Some("light") => Self::light(),
+            Some("high-contrast") | Some("high_contrast") => Self::high_contrast(),
+            _ => Self::dark(),
+        }
+    }
+
+    /// The active theme's id as the settings file spells it, if any.
+    ///
+    /// Deliberately a plain string lookup rather than a parse of the whole
+    /// appearance section: `ui` cannot depend on the themes app, and the
+    /// one field needed here is a scalar. A richer read belongs with the
+    /// type that owns the schema.
+    fn configured_id() -> Option<String> {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(".config"))
+            })?;
+        let text = std::fs::read_to_string(base.join("qos").join("settings.json")).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        v.get("appearance")?
+            .get("theme")?
+            .as_str()
+            .map(str::to_string)
+    }
+
     pub fn high_contrast() -> Self {
         let mut t = Tokens::dark();
         let c = &mut t.colors;
@@ -1182,5 +1228,65 @@ mod tests {
             (hc.border_focus.r(), hc.border_focus.g(), hc.border_focus.b()),
             (hc.border_standard.r(), hc.border_standard.g(), hc.border_standard.b()),
         );
+    }
+}
+
+#[cfg(test)]
+mod configured_theme {
+    use super::*;
+
+    /// The accessibility theme is reachable from a real settings file.
+    ///
+    /// Before this, `Theme::high_contrast` existed and nothing outside the
+    /// screenshot harness could select it: `App::new` hard-coded
+    /// `Theme::dark()` and `set_theme` had no production caller. The
+    /// themes app wrote `appearance.theme` and reported success, and no
+    /// reader existed. A high-contrast mode that cannot be turned on is a
+    /// picture of an accessibility feature.
+    ///
+    /// `XDG_CONFIG_HOME` is set for this process only and pointed at a
+    /// temp directory, so the check runs against a real file without
+    /// touching the operator's.
+    #[test]
+    fn a_high_contrast_preference_on_disk_is_the_theme_that_starts() {
+        let dir = std::env::temp_dir().join(format!("qos-theme-{}", std::process::id()));
+        let qos = dir.join("qos");
+        std::fs::create_dir_all(&qos).expect("temp config dir");
+        std::fs::write(
+            qos.join("settings.json"),
+            r#"{"version":1,"appearance":{"theme":"high-contrast"}}"#,
+        )
+        .expect("write settings");
+
+        // SAFETY: single-threaded within this test, and the value is put
+        // back before it returns.
+        let prev = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        let picked = Theme::configured();
+        match prev {
+            Some(p) => unsafe { std::env::set_var("XDG_CONFIG_HOME", p) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            picked.name,
+            Theme::high_contrast().name,
+            "a settings file asking for high contrast must produce it",
+        );
+    }
+
+    /// No preference is not an error, and must not stop a desktop starting.
+    #[test]
+    fn an_absent_settings_file_still_yields_a_usable_theme() {
+        let dir = std::env::temp_dir().join(format!("qos-theme-none-{}", std::process::id()));
+        let prev = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        let picked = Theme::configured();
+        match prev {
+            Some(p) => unsafe { std::env::set_var("XDG_CONFIG_HOME", p) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        assert_eq!(picked.name, Theme::dark().name);
     }
 }

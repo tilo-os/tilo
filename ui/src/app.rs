@@ -544,7 +544,7 @@ impl App {
             // fields they depend on (base_theme, a11y, text_scale) exist.
             last_frame_size: None,
             last_layout_px: None,
-            theme: Theme::dark(),
+            theme: Theme::configured(),
             debug_mode: cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
             focused_node: None,
             focusable_order: Vec::new(),
@@ -597,7 +597,7 @@ impl App {
             live_region_last: std::collections::HashMap::new(),
             focus_trap_active: false,
             focus_before_trap: None,
-            base_theme: Theme::dark(),
+            base_theme: Theme::configured(),
             a11y: crate::a11y::A11ySettings::default(),
             text_scale: 1.0,
             ui_scale: 1.0,
