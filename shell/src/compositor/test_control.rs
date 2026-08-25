@@ -1019,10 +1019,12 @@ pub fn dispatch_command<S: ControlState>(
             for c in text.chars() {
                 let tag = KeyTag::Char(c);
                 let shift = KeyTag::Named(NamedKeyTag::Shift);
-                // ASCII uppercase only: the shifted punctuation marks have
-                // no entry in the keycode table at all, so they are not
-                // delivered to a client with or without this bracket.
-                let shifted = c.is_ascii_uppercase();
+                // Letters *and* the shifted punctuation marks. Both reach a
+                // client as a position on the keyboard rather than as a
+                // character, so both need the same bracket — see
+                // `client_input::unshifted`, which is the one place that
+                // knows which key a character sits on.
+                let (_, shifted) = crate::compositor::client_input::unshifted(c);
                 if shifted {
                     actions.push(PlannedAction::KeyboardKey {
                         key: shift,
@@ -1787,6 +1789,59 @@ mod tests {
             "a capital is typed with Shift held across it, and a lowercase \
              letter is not — a bare keycode would reach the client as its \
              lowercase letter either way",
+        );
+    }
+
+    /// A colon is a key with Shift on it, and it has to arrive.
+    ///
+    /// This is the one that was silently wrong. The shifted punctuation marks
+    /// had no entry in `evdev_from_char` at all, so a `:` resolved to no
+    /// keycode and was never delivered — the letters either side of it
+    /// arrived and it did not. Nothing said so: the chrome's own widgets read
+    /// the event's `text` field and showed the colon, while the focused
+    /// client, which is where a document lives, received the characters
+    /// around a hole.
+    ///
+    /// What it cost is worth naming, because it is the reason this test is
+    /// here rather than a nicety. An agent takes its instructions from a
+    /// paragraph beginning with its name and a colon
+    /// (`plan::Instruction::addressed` matches the literal prefix). A
+    /// scripted `Claude: make this square` reached the document as
+    /// `Claude make this square`, so no instruction was ever addressed to the
+    /// agent, and the agent's report — that it saw the whole document and
+    /// nothing in it was for it — was correct about a document nobody had
+    /// managed to write.
+    #[test]
+    fn typing_a_colon_holds_shift_and_names_the_key_it_sits_on() {
+        let state = StaticState::new(&[]);
+        let (resp, actions) = dispatch_command(
+            &Command::Type {
+                text: ":".to_string(),
+            },
+            &state,
+        );
+        assert!(matches!(resp, Response::Ok { .. }));
+        assert_eq!(
+            actions,
+            vec![
+                PlannedAction::KeyboardKey {
+                    key: KeyTag::Named(NamedKeyTag::Shift),
+                    pressed: true,
+                },
+                PlannedAction::KeyboardKey {
+                    key: KeyTag::Char(':'),
+                    pressed: true,
+                },
+                PlannedAction::KeyboardKey {
+                    key: KeyTag::Char(':'),
+                    pressed: false,
+                },
+                PlannedAction::KeyboardKey {
+                    key: KeyTag::Named(NamedKeyTag::Shift),
+                    pressed: false,
+                },
+            ],
+            "a colon is Shift held across the semicolon key, the same bracket              a capital gets",
         );
     }
 
