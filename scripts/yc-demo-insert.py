@@ -931,18 +931,30 @@ def main() -> int:
         shell_bin, "1600x900",
         os.path.join(runtime, f"qins{pid}"),
         home, apps_dir, tools)
-    # Opened at the largest size the window manager will grant without
-    # shrinking it — so it is never resized, and so the frames are as
-    # close to the video's own resolution as this screen allows. Falls
-    # back to the video size where there is no work area to read (which
-    # is also the right answer on a bare X server with no panel).
+    # Opened at the video's own picture area, so a frame goes into the
+    # clip 1:1 and the caption band sits in canvas below it.
+    #
+    # It used to open at the whole work area, on the reasoning that this
+    # is the largest a window manager will grant without shrinking it.
+    # That is true and is not the size the video wants: the work area
+    # here is 1920x1048 against a picture area of 1920x1014, so every
+    # frame was thirty-four rows too tall, got scaled and letterboxed,
+    # and the band came down over the bottom of the picture. A fixed-size
+    # request is granted exactly (see `NIRIOS_WINIT_SIZE`), so the size
+    # to ask for is the one the clip is built at.
     if args.dry_run:
         session.size = f"{yc.VIDEO_W}x{yc.VIDEO_H - yc.BAND_H}"
     elif args.windowed:
         session.window_size = None
     else:
-        area = work_area() or (yc.VIDEO_W, yc.VIDEO_H)
-        session.window_size = f"{area[0]}x{area[1]}"
+        area = work_area()
+        want = (yc.VIDEO_W, yc.VIDEO_H - yc.BAND_H)
+        # A screen too small to show it gets what it has: the composer
+        # pads anything that fits inside the picture area rather than
+        # scaling it, so a smaller window is a smaller sharp picture.
+        if area:
+            want = (min(area[0], want[0]), min(area[1], want[1]))
+        session.window_size = f"{want[0]}x{want[1]}"
     # No peer gossip. This take is one person and one machine, and mdns
     # finds every other qOS session running here — another agent's
     # harness, a demo left open — and paints its cursor and name pill
