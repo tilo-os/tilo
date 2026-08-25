@@ -1325,7 +1325,22 @@ class Live:
         self.look_at_xaver("he did not open this or type this, and it is "
                            "on his page", None)
         mark("he right-clicks the photograph and says what he wants")
-        self.his_instruction()
+        if not self.his_instruction() and self.args.instruct:
+            # Nothing is coming, so stop filming it.
+            #
+            # A take ends when the agent's work lands. If the instruction
+            # never went, no work is coming -- and `mind_the_wait` will not
+            # bring the camera down either, because it waits for an
+            # instruction that has provably gone. So the take runs all the
+            # way to `--duration` recording a desktop nobody is touching:
+            # 340 seconds of it last time, which is a waste of the machine
+            # and a file somebody then has to sit through to review.
+            #
+            # Only when the rig was driving. Under `--no-instruction` a
+            # person is still reaching for the mouse and their take has to
+            # keep rolling.
+            self.finished = ("the instruction was never sent, so there is "
+                             "nothing left for the camera to film")
 
     def his_instruction(self) -> bool:
         """Xaver picks the image and says what he wants done with it.
