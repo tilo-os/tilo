@@ -73,8 +73,9 @@ built into a second target directory took **0 hits, 12 misses**; with that one v
 out of the rustc invocation and nothing else changed, **10 hits, 2 misses**.
 
 Cargo does not hand rustc that variable — it is there only because you exported it, and
-rustc never reads it. It does have to reach cargo and the test binaries (`shell/tests/*` and
-several `scripts/*` locate built binaries through it), so the place to drop it is the
+rustc never reads it. It does have to reach cargo and the test binaries — `scripts/yc-demo.py`
+and friends locate built binaries through it, `shell/tests/*` place their scratch and
+screenshot output through it — so the place to drop it is the
 `RUSTC_WRAPPER` the shim installs (`exec env -u CARGO_TARGET_DIR sccache "$@"`), not this
 repo — `build.rustc-wrapper` in `.cargo/config.toml` loses to the shim's environment
 variable. If `sccache --show-stats` reports a Rust hit rate near zero while C/C++ sits at
