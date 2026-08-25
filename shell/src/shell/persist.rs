@@ -131,9 +131,25 @@ pub fn state_json_path() -> PathBuf {
 /// Where the compositor exports the capability list the FUSE mount
 /// enforces, and where `qos-fs --acl` reads it from.
 ///
-/// One path, named in one place, so the two processes cannot end up
-/// enforcing different lists. `QOS_FS_ACL_PATH` overrides it for tests
-/// and for a session running a mount somewhere unusual.
+/// `QOS_FS_ACL_PATH` overrides it for tests and for a session running a
+/// mount somewhere unusual.
+///
+/// # This has been wrong, and quietly
+///
+/// The comment here used to say the two processes could not end up
+/// enforcing different lists. They did. The compositor wrote
+/// `~/.config/qos/fs-capabilities.json`; the shipped mount reads
+/// `--acl /var/lib/qos/fs-capabilities.json`
+/// (`os/usr/lib/systemd/system/fs.service`), and nothing in `os/` set the
+/// override that would join them. The enforced file stayed as its seed —
+/// one grant of `Write` on `/` to `person:local`, never expiring — so
+/// every grant *and every revocation* a person made was written somewhere
+/// nothing read.
+///
+/// A permission UI that reports success and changes nothing is worse than
+/// one that refuses, so [`ENFORCED_PATH`] is named here and
+/// [`warn_if_export_is_not_enforced`] says so out loud when the two
+/// disagree.
 pub fn fs_capability_export_path() -> PathBuf {
     if let Ok(v) = std::env::var("QOS_FS_ACL_PATH")
         && !v.is_empty()
@@ -144,6 +160,58 @@ pub fn fs_capability_export_path() -> PathBuf {
         .map(|c| c.join("qos").join("fs-capabilities.json"))
         .unwrap_or_else(|| PathBuf::from("fs-capabilities.json"))
 }
+
+/// Where the shipped mount is told to read its capabilities from.
+///
+/// Kept beside the writer so the two can be compared. It is a literal
+/// rather than a shared constant because the reader is a systemd unit,
+/// not Rust — `fs.service` passes it as `--acl`. If that flag changes,
+/// this must change with it, and
+/// [`warn_if_export_is_not_enforced`] is what will notice if it does not.
+pub const ENFORCED_PATH: &str = "/var/lib/qos/fs-capabilities.json";
+
+/// Whether what this session writes is a file the mount will not read.
+///
+/// Split from the warning so it can be asserted on. The condition has two
+/// halves and both matter: the paths differ, *and* something is actually
+/// enforcing the other one. A session with no mount is the ordinary case
+/// — every demo run is one — and it is not a problem, so it must not
+/// produce a warning that trains people to ignore warnings.
+fn export_is_ignored(
+    export: &std::path::Path,
+    enforced: &std::path::Path,
+    enforced_exists: bool,
+) -> bool {
+    export != enforced && enforced_exists
+}
+
+/// Say so when what this session writes is not what the mount enforces.
+///
+/// Called once at startup. The failure it guards is silent by nature:
+/// writing succeeds, the UI reports the grant, and the file that decides
+/// access is a different one. Nobody finds that out by using the system —
+/// they find out by being surprised later, or not at all.
+///
+/// A warning rather than a refusal: a session with no mount at all is
+/// perfectly ordinary — every demo run is one — and refusing to start
+/// over a file nothing is reading would be worse than saying so.
+pub fn warn_if_export_is_not_enforced(export: &std::path::Path) {
+    let enforced = std::path::Path::new(ENFORCED_PATH);
+    if !export_is_ignored(export, enforced, enforced.exists()) {
+        return;
+    }
+    tracing::warn!(
+        export = %export.display(),
+        enforced = ENFORCED_PATH,
+        "filesystem capabilities are being written somewhere the mount does \
+         not read: a mount is enforcing {ENFORCED_PATH} while this session \
+         exports to {}. Grants and revocations made here will not take \
+         effect. Set QOS_FS_ACL_PATH to the enforced path, or point the \
+         mount's --acl at this one.",
+        export.display(),
+    );
+}
+
 
 /// Write the tree to `path`, atomically.
 ///
@@ -622,5 +690,49 @@ mod tests {
             "and the loaded tree must carry the current version, so the next \
              write stamps it rather than leaving the file unversioned for ever"
         );
+    }
+}
+
+#[cfg(test)]
+mod acl_export_path {
+    use super::*;
+    use std::path::Path;
+
+    /// The case that actually happened, and said nothing.
+    ///
+    /// The compositor wrote `~/.config/qos/fs-capabilities.json` while a
+    /// mount enforced `/var/lib/qos/fs-capabilities.json`. Grants and
+    /// revocations went to a file nothing read, and the permission UI
+    /// reported success either way.
+    #[test]
+    fn writing_somewhere_a_live_mount_does_not_read_is_reported() {
+        assert!(export_is_ignored(
+            Path::new("/home/someone/.config/qos/fs-capabilities.json"),
+            Path::new(ENFORCED_PATH),
+            true,
+        ));
+    }
+
+    /// A session with no mount is not a problem and must stay quiet.
+    ///
+    /// Every demo run is one. A warning here would be noise, and noise is
+    /// how a real warning gets ignored later.
+    #[test]
+    fn a_session_with_no_mount_is_not_a_problem() {
+        assert!(!export_is_ignored(
+            Path::new("/home/someone/.config/qos/fs-capabilities.json"),
+            Path::new(ENFORCED_PATH),
+            false,
+        ));
+    }
+
+    /// And agreement is silence.
+    #[test]
+    fn exporting_to_the_enforced_path_is_silence() {
+        assert!(!export_is_ignored(
+            Path::new(ENFORCED_PATH),
+            Path::new(ENFORCED_PATH),
+            true,
+        ));
     }
 }

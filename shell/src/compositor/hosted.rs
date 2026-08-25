@@ -143,7 +143,11 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // The FUSE mount runs in another process and enforces the list it
     // reads from this path (`qos-fs --acl`). Exporting here is what
     // stops the filesystem from enforcing an empty list forever.
-    tree.fs_acl_path = Some(persist::fs_capability_export_path());
+    let acl_path = persist::fs_capability_export_path();
+    // Said once, at startup: a session exporting somewhere the
+    // mount does not read enforces nothing, and does it quietly.
+    persist::warn_if_export_is_not_enforced(&acl_path);
+    tree.fs_acl_path = Some(acl_path);
 
     // Every workspace needs a durable identity as a collaboration room
     // before anything is launched into it. State files written before
