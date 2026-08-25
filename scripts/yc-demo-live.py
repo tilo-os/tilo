@@ -731,6 +731,7 @@ class Live:
         self.chat_posts: list[tuple[float, str]] = []
         #: Whose screen chat was framed on, or None if it never was.
         self.framed_chat_on: str | None = None
+        self.watched_the_crop = False
         #: When the film last had something to show, and the camera it
         #: is holding down until it has something again. See
         #: `FILM_THE_WAIT_S`.
@@ -1737,6 +1738,20 @@ class Live:
     APPLIED = re.compile(
         r"\bapplied .*|\bperformed an operation the room exports.*")
 
+    #: The agent working *in the photo editor*, as opposed to working at
+    #: all. `APPLIED` fires on the first operation of the turn, and the
+    #: first operation is the crop — so a beat hung on `APPLIED` pointed
+    #: the camera at the document at the exact moment the photograph was
+    #: being cropped, and the editor was never once filmed in use.
+    CROP_OP = re.compile(
+        r"performed an operation the room exports id=photos\.")
+
+    #: The agent putting the result *in the document*. This is the one
+    #: the closing frame is about, and the only one worth moving the
+    #: camera off the editor for.
+    PLACE_OP = re.compile(
+        r"performed an operation the room exports id=word-processor\.")
+
     #: The agent, having taken the summons (`session.rs`, "spoken to in
     #: the room"). Between this and the first `applied` is the model
     #: deciding, which is most of the wait and all of the dead air.
@@ -1948,9 +1963,18 @@ class Live:
             self.agent_applied = True
             self.something_is_happening()
             self.say(f"Claude acted — {hit.group(0).strip()[:110]}")
-            # The change is going into the document *now*, so the
-            # document is what the camera should be on. Anything later
-            # films a page that is already holding it.
+        # Which operation, not merely that one happened. The crop is the
+        # agent's first act and it happens in the photo editor; framing
+        # the document for it filmed a still page while the only thing
+        # moving on the desktop was somewhere else.
+        if self.CROP_OP.search(fresh) and not self.watched_the_crop:
+            self.watched_the_crop = True
+            self.something_is_happening()
+            self.the_editor_works()
+        # And the change is going into the document *now*, so the
+        # document is what the camera should be on. Anything later films
+        # a page that is already holding it.
+        if self.PLACE_OP.search(fresh):
             self.the_work_lands()
         if self.agent_proc.poll() is None:
             return
@@ -2031,6 +2055,42 @@ class Live:
         except Exception as exc:  # noqa: BLE001
             yc.gap(f"the camera could not be pointed at chat for the agent's "
                    f"working period ({type(exc).__name__}: {exc})")
+
+    def the_editor_works(self) -> None:
+        """Point the camera at the photo editor while the crop happens in it.
+
+        The beat the film was missing. `watch_it_think` frames chat for
+        the agent's working period, and `the_work_lands` frames the
+        document for the result — between them the photograph is cropped,
+        which is the one moment the film shows a machine using an
+        application rather than reporting that it did. Every take before
+        this one asserted the crop in a caption over a still page.
+
+        Same standard as the other two: a screen with no editor on it is
+        said out loud rather than silently skipped, and losing this costs
+        the shot its subject and nothing else, so the take goes on.
+        """
+        if self.recorder is None:
+            return
+        on = self.recorder.on_camera()
+        if on is None:
+            return
+        try:
+            if yc.best_tile(on, yc.IMAGE_EDITOR, yc.VIEWPORT) is None:
+                yc.gap(f"no photo editor is on {on.name}'s screen, which is "
+                       f"the one being filmed, so the crop happens where "
+                       f"nobody can see it and the beat is a caption over a "
+                       f"still page")
+                return
+            yc.frame_one_window(on, yc.IMAGE_EDITOR)
+            self.say(f"framing the photo editor on {on.name}'s screen — the "
+                     f"crop happens there")
+            on.snapshot(os.path.join(
+                self.shots,
+                f"the-crop-{int(time.time() - self.started):04d}.png"))
+        except Exception as exc:  # noqa: BLE001
+            yc.gap(f"the camera could not be pointed at the photo editor for "
+                   f"the crop ({type(exc).__name__}: {exc})")
 
     def the_work_lands(self) -> None:
         """Point the camera back at the document as the crop arrives in it.
