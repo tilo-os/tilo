@@ -743,34 +743,9 @@ impl ForeignFrameStore {
     /// return.
     pub fn is_opening(&self, id: SurfaceId) -> bool {
         let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        guard.get(&id).is_some_and(|e| {
-            let waited = e.first_seen.elapsed();
-            // Bounded by the same grace [`Self::mark_presented`] uses,
-            // and for a stronger reason than symmetry.
-            //
-            // `presented` only becomes true when something calls
-            // `mark_presented`, which happens from a draw. This answers
-            // without one, and unbounded it would keep saying "still
-            // opening" for a surface nothing was asking about -- for
-            // ever, because the thing that would end it is the thing
-            // that is not running.
-            //
-            // That is not merely a card left on screen. `TileHost`'s
-            // `needs_animation_frame` is true while `opening()` is, so a
-            // card that never retires asks for a frame on every tick and
-            // the compositor repaints at full rate with nothing to show.
-            // The reported symptom was both at once: a window stuck on
-            // its spinner, and that whole session going sluggish
-            // afterwards -- search, scrolling, everything. One fault,
-            // two faces.
-            //
-            // After the grace the honest answer is "no". Whatever the
-            // client is doing, the place-holding card has stopped being
-            // a description of it, and showing the window underneath --
-            // even unfinished -- beats a spinner that owns the frame
-            // clock.
-            !e.presented && waited >= OPENING_DELAY && waited < PRESENT_GRACE
-        })
+        guard
+            .get(&id)
+            .is_some_and(|e| !e.presented && e.first_seen.elapsed() >= OPENING_DELAY)
     }
 
     /// Test-only: pretend this surface was first heard of `age` ago, so a
@@ -1825,43 +1800,6 @@ mod tests {
             "the window is on screen; nothing may still be saying it is on \
              its way",
         );
-        store().forget(id);
-    }
-
-    /// A card that nothing retires must not hold the frame clock open.
-    ///
-    /// `presented` only turns true when something calls
-    /// [`ForeignFrameStore::mark_presented`], and that happens from a
-    /// draw. `is_opening` answers without one. Unbounded, a surface
-    /// nothing was drawing stayed "opening" for ever, because the thing
-    /// that would have ended it is the thing that was not running.
-    ///
-    /// The cost is not a card left on screen. `TileHost`'s
-    /// `needs_animation_frame` is true while `opening()` is, so the card
-    /// asks for a frame every tick and the compositor repaints at full
-    /// rate for as long as it is up. That was reported as two bugs -- a
-    /// window stuck on its spinner, and the session going sluggish
-    /// afterwards -- and they are one.
-    #[test]
-    fn a_card_nothing_retires_stops_claiming_the_window_is_on_its_way() {
-        let id = sid(58);
-        store().forget(id);
-
-        store().backdate_first_seen(id, OPENING_DELAY + Duration::from_millis(50));
-        assert!(
-            store().is_opening(id),
-            "precondition: inside the delay it is still starting",
-        );
-
-        // Past the grace, with nothing ever having called
-        // `mark_presented` -- exactly the case where no draw came.
-        store().backdate_first_seen(id, PRESENT_GRACE + Duration::from_millis(50));
-        assert!(
-            !store().is_opening(id),
-            "after the grace nothing may still be saying a window is on its \
-             way; the card would keep asking for frames that paint nothing",
-        );
-
         store().forget(id);
     }
 
