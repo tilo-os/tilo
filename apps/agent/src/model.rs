@@ -63,8 +63,30 @@ use crate::tools::{self, Revealed};
 /// The model that makes the choice.
 pub const MODEL: &str = "claude-opus-5";
 
-const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
-const API_VERSION: &str = "2023-06-01";
+pub const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
+pub const API_VERSION: &str = "2023-06-01";
+
+/// The beta that turns a decline into an answer.
+///
+/// This model runs safety classifiers over the request, and a declined one
+/// comes back as an ordinary HTTP 200 carrying `stop_reason: "refusal"` — no
+/// content, nothing to read. A room survey is an unlucky shape to hand one:
+/// it is a list of applications, file paths and the operations that may be
+/// performed on them, which is also what an inventory of somebody else's
+/// machine looks like. The classifier fired on exactly that, in the middle of
+/// a request to crop a photograph.
+///
+/// What made it costly is downstream. Every failure here lands on the keyword
+/// vocabulary, and that vocabulary cannot express a request that crosses two
+/// applications — so a decline arrived in the room as an agent that opened a
+/// window and then refused to help.
+///
+/// `fallbacks: "default"` asks the API to re-run a declined request on the
+/// model its refusal category recommends, server-side, inside the same round
+/// trip. The answer that comes back is a real answer, and which model produced
+/// it is on the response and goes into the log ([`Route::Model`]) rather than
+/// being quietly presented as this one's.
+pub const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 
 /// How much of the document the model is shown. A brief is small; the caps
 /// keep a pathological document from making the call slow or expensive.
@@ -99,6 +121,14 @@ const MAX_STEPS: usize = 4;
 pub enum Route {
     /// A model chose, and its answer was in the exported catalogue.
     Model {
+        /// Which model actually answered.
+        ///
+        /// Not always [`MODEL`]. A request this one declines is re-run
+        /// server-side on the model its refusal category recommends, and the
+        /// answer then comes from that model — so a run decided on the
+        /// fallback has to be findable afterwards, for the same reason a run
+        /// decided by the keyword vocabulary has to be.
+        model: String,
         /// The model's own one-line reason. For the log, never for the screen.
         why: String,
         /// What it asked about the room before answering, in order.
@@ -150,8 +180,10 @@ impl Route {
     /// The detail behind the label, for the log line.
     pub fn detail(&self) -> String {
         match self {
-            Route::Model { why, asked } if asked.is_empty() => format!("{MODEL}: {why}"),
-            Route::Model { why, asked } => format!("{MODEL}: {why} (asked {})", asked.join(", ")),
+            Route::Model { model, why, asked } if asked.is_empty() => format!("{model}: {why}"),
+            Route::Model { model, why, asked } => {
+                format!("{model}: {why} (asked {})", asked.join(", "))
+            }
             Route::Keywords(Fallback::NoKey) => "no api key".to_string(),
             Route::Keywords(Fallback::Disabled) => "switched off".to_string(),
             Route::Keywords(Fallback::Timeout) => "the call timed out".to_string(),
@@ -253,7 +285,11 @@ impl Chooser {
             return fallback(Fallback::NoKey);
         };
         match self.ask(key, rest, blocks, catalogue, asked_again) {
-            Ok((answer, asked)) => {
+            Ok(Chose {
+                answer,
+                asked,
+                model,
+            }) => {
                 match Plan::from_answer(
                     &answer.actions,
                     &answer.arguments,
@@ -274,6 +310,7 @@ impl Chooser {
                         Decision {
                             plan,
                             route: Route::Model {
+                                model,
                                 why: answer.why,
                                 asked,
                             },
@@ -309,7 +346,7 @@ impl Chooser {
         blocks: &[Block],
         catalogue: &Catalogue,
         asked_again: bool,
-    ) -> Result<(Answer, Vec<String>), AskError> {
+    ) -> Result<Chose, AskError> {
         let began = Instant::now();
         // One deadline over the whole conversation rather than one per
         // request. A per-request deadline bounds nothing: four rounds each
@@ -345,7 +382,11 @@ impl Chooser {
 
             if let Some(call) = turn.calls.iter().find(|c| c.name == tools::PLAN) {
                 return tools::read_plan(&call.input, &revealed, MAX_STEPS)
-                    .map(|answer| (answer, asked))
+                    .map(|answer| Chose {
+                        answer,
+                        asked,
+                        model: turn.model,
+                    })
                     .map_err(AskError::Failed);
             }
             if turn.calls.is_empty() {
@@ -385,41 +426,117 @@ impl Chooser {
         key: &str,
         body: &Value,
     ) -> Result<String, AskError> {
-        let resp = client
-            .post(ENDPOINT)
-            .header("x-api-key", key)
-            .header("anthropic-version", API_VERSION)
-            .header("content-type", "application/json")
-            .json(body)
-            .send()
-            .map_err(|e| {
-                if e.is_timeout() {
-                    AskError::Timeout
-                } else {
-                    AskError::Failed(strip(&e.to_string()))
-                }
-            })?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .map_err(|e| AskError::Failed(strip(&e.to_string())))?;
-        if !status.is_success() {
-            // The body of an error names the problem (bad request, rate
-            // limit) and never contains the key.
-            return Err(AskError::Failed(format!(
-                "http {}: {}",
-                status.as_u16(),
-                first_chars(&text, 300)
-            )));
-        }
-        Ok(text)
+        send(client, key, body)
     }
 }
 
-enum AskError {
+/// Post one Messages request and hand back the body.
+///
+/// The key travels in a header and nowhere else; no error path here carries
+/// it into a message, a log, or a document, and [`trace`] writes bodies only
+/// for the same reason.
+///
+/// Free rather than a method because `qos-agent-replay` posts a traced body
+/// through it. A reproduction that went out over a different transport, with
+/// a different beta set, would be reproducing something else.
+pub fn send(
+    client: &reqwest::blocking::Client,
+    key: &str,
+    body: &Value,
+) -> Result<String, AskError> {
+    trace(
+        "request",
+        &serde_json::to_string_pretty(body).unwrap_or_default(),
+    );
+    let resp = client
+        .post(ENDPOINT)
+        .header("x-api-key", key)
+        .header("anthropic-version", API_VERSION)
+        .header("anthropic-beta", FALLBACK_BETA)
+        .header("content-type", "application/json")
+        .json(body)
+        .send()
+        .map_err(|e| {
+            if e.is_timeout() {
+                AskError::Timeout
+            } else {
+                AskError::Failed(strip(&e.to_string()))
+            }
+        })?;
+
+    let status = resp.status();
+    let text = resp
+        .text()
+        .map_err(|e| AskError::Failed(strip(&e.to_string())))?;
+    trace("response", &text);
+    if !status.is_success() {
+        // The body of an error names the problem (bad request, rate
+        // limit) and never contains the key.
+        return Err(AskError::Failed(format!(
+            "http {}: {}",
+            status.as_u16(),
+            first_chars(&text, 300)
+        )));
+    }
+    Ok(text)
+}
+
+/// What one conversation produced.
+struct Chose {
+    answer: Answer,
+    /// What it asked about the room before answering, in order.
+    asked: Vec<String>,
+    /// The model that answered — see [`Route::Model`].
+    model: String,
+}
+
+/// Why a conversation with the model produced nothing.
+pub enum AskError {
+    /// It did not answer inside the deadline.
     Timeout,
+    /// Transport, HTTP status, a decline, or an unreadable body.
     Failed(String),
+}
+
+impl AskError {
+    /// The sentence for a log line. Never carries the key: everything that
+    /// reaches here has been through [`strip`].
+    pub fn why(&self) -> String {
+        match self {
+            AskError::Timeout => "the call timed out".to_string(),
+            AskError::Failed(e) => e.clone(),
+        }
+    }
+}
+
+/// Write one request or response body down, when asked to.
+///
+/// `QOS_AGENT_TRACE_DIR` names a directory; every body is written into it,
+/// numbered in the order it crossed the wire. **Bodies only** — the key
+/// travels in a header, and no header is written here.
+///
+/// It exists because a decline is a claim about the *input*, and this input is
+/// assembled out of a room: an instruction somebody wrote, a file listing, an
+/// application's own words about its own operations. None of that is visible
+/// from a log line saying the model declined, and the only way to find which
+/// part of it was read as something else is to read it back. `qos-agent-replay`
+/// posts a traced body again, so narrowing it down needs no session, no
+/// compositor and no room.
+fn trace(kind: &str, body: &str) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static WRITTEN: AtomicUsize = AtomicUsize::new(0);
+
+    let Some(dir) = std::env::var_os("QOS_AGENT_TRACE_DIR") else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let n = WRITTEN.fetch_add(1, Ordering::Relaxed);
+    // Best effort by design: a full disk costs the run a diagnostic, never
+    // the work.
+    let _ = std::fs::write(dir.join(format!("{n:03}-{kind}.json")), body);
 }
 
 /// The model's answer, before it has been checked against the catalogue.
@@ -476,6 +593,11 @@ pub struct Answer {
 pub fn turn_body(messages: &[Value], revealed: &Revealed, force_plan: bool) -> Value {
     json!({
         "model": MODEL,
+        // A request this model's classifiers decline is re-run on the model
+        // its refusal category recommends, in the same round trip, rather
+        // than coming back as a decline nobody can act on. See
+        // [`FALLBACK_BETA`] for why a room survey trips one at all.
+        "fallbacks": "default",
         "max_tokens": 4096,
         "system": SYSTEM,
         "tools": tools::definitions(revealed, MAX_STEPS),
@@ -667,28 +789,44 @@ pub struct Call {
 /// One turn of the conversation, as it came back.
 #[derive(Debug, Clone)]
 pub struct Turn {
-    /// The assistant's content blocks, verbatim, to be echoed back as the
-    /// assistant message. Passed through untouched — a thinking block that is
-    /// rewritten on the way back is not the turn the model produced.
+    /// The assistant's content blocks, to be echoed back as the assistant
+    /// message. Verbatim except where [`echoable`] says otherwise — a
+    /// thinking block that is rewritten on the way back is not the turn the
+    /// model produced.
     pub content: Value,
     pub calls: Vec<Call>,
+    /// The model that produced it. Not always [`MODEL`]: a declined request
+    /// is re-run server-side on its category's fallback, and what comes back
+    /// is that model's turn.
+    pub model: String,
 }
 
 /// Pull one turn out of a Messages response.
 ///
-/// Checks `stop_reason` before reading content — a refusal carries no usable
+/// Checks `stop_reason` before reading content — a decline carries no usable
 /// answer — then collects whatever tool calls it made.
 pub fn read_turn(body: &str) -> Result<Turn, String> {
     let v: Value = serde_json::from_str(body).map_err(|e| format!("unreadable response: {e}"))?;
 
+    // Branched on `stop_reason` alone. `stop_details` is informational, may be
+    // absent on a decline, and is present on nothing else — but the category
+    // in it is the only thing that says *which* classifier fired, so it goes
+    // into the sentence when it is there. Without it a decline is a dead end:
+    // "the model declined" is the same log line whatever was read as what.
     if v.get("stop_reason").and_then(Value::as_str) == Some("refusal") {
-        return Err("the model declined the request".to_string());
+        let category = v
+            .get("stop_details")
+            .and_then(|d| d.get("category"))
+            .and_then(Value::as_str)
+            .unwrap_or("uncategorised");
+        return Err(format!("the model declined the request ({category})"));
     }
 
     let content = v
         .get("content")
         .and_then(|c| c.as_array())
         .ok_or_else(|| "no content in the response".to_string())?;
+    let content = echoable(content);
 
     let calls: Vec<Call> = content
         .iter()
@@ -703,9 +841,45 @@ pub fn read_turn(body: &str) -> Result<Turn, String> {
         .collect();
 
     Ok(Turn {
-        content: Value::Array(content.clone()),
+        model: v
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or(MODEL)
+            .to_string(),
+        content: Value::Array(content),
         calls,
     })
+}
+
+/// The turn as it may be handed back.
+///
+/// Ordinarily every block it came with. The exception is a turn that changed
+/// models part-way through: a `fallback` block marks where that happened, and
+/// what precedes it belongs to a model that stopped mid-answer. Its thinking
+/// is not ours to replay and its tool calls will never be answered, so both
+/// are dropped — including from [`Turn::calls`], because answering a call the
+/// echoed message no longer contains is a `tool_result` with nothing to
+/// result from.
+///
+/// A decline caught before any output — the ordinary case — puts the
+/// `fallback` block first, so nothing precedes it and this changes nothing.
+fn echoable(content: &[Value]) -> Vec<Value> {
+    let kind = |b: &Value| b.get("type").and_then(Value::as_str).unwrap_or_default().to_string();
+    let Some(boundary) = content.iter().rposition(|b| kind(b) == "fallback") else {
+        return content.to_vec();
+    };
+    content
+        .iter()
+        .enumerate()
+        .filter(|(i, b)| {
+            *i > boundary
+                || !matches!(
+                    kind(b).as_str(),
+                    "thinking" | "redacted_thinking" | "tool_use"
+                )
+        })
+        .map(|(_, b)| b.clone())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
