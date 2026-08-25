@@ -498,6 +498,22 @@ pub(crate) fn launch_installed_app(
     package_id: &str,
     display_name: &str,
 ) -> Result<(), ActionError> {
+    launch_installed_app_with(chrome, package_id, display_name, None)
+}
+
+/// [`launch_installed_app`], additionally asking the app to open `document`.
+///
+/// The path is an argument and not a permission — see
+/// [`launcher::build_launch_command`]. What the app may read is whatever the
+/// workspace granted it by the time this runs, which for content an open
+/// named is minted by `crate::shell::agent_opens::stage_content` just before
+/// the call.
+pub(crate) fn launch_installed_app_with(
+    chrome: &Chrome,
+    package_id: &str,
+    display_name: &str,
+    document: Option<&std::path::Path>,
+) -> Result<(), ActionError> {
     ask_user_home_for_file_manager(chrome, package_id);
     // The room may already have this app open here. If it does, the
     // window the person is asking for is on their screen already — put
@@ -513,7 +529,12 @@ pub(crate) fn launch_installed_app(
                 .map(|(strip, group, tab)| (ws.id, strip, group, tab))
         })
     };
-    if let Some((ws_id, strip, group, tab)) = already {
+    // Only when there is nothing to deliver. A window already on screen is
+    // the right answer to "open this app", and the wrong one to "open this
+    // app onto this picture": that window does not hold the picture, and
+    // raising it would look, to whoever asked, exactly like the content
+    // having arrived.
+    if let Some((ws_id, strip, group, tab)) = already.filter(|_| document.is_none()) {
         chrome.borrow_mut().focus_tab(ws_id, strip, group, tab);
         return Ok(());
     }
@@ -571,8 +592,7 @@ pub(crate) fn launch_installed_app(
             st.open_target,
         );
         tree.active_workspace().map(|ws| {
-            launcher::set_workspace_capabilities(ws.capabilities.clone());
-            launcher::launch_in_workspace(package_id, ws)
+            launcher::launch_document_in_workspace(package_id, ws, document)
         })
     };
     // The launch itself is non-blocking: everything past resolution

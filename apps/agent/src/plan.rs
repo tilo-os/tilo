@@ -575,9 +575,19 @@ impl Plan {
             return Err(Refused::Unusable("it named nothing to do".to_string()));
         }
         if ids.len() == 1 {
-            return Ok(Plan::of(Instruction::from_answer(
-                &ids[0], rest, table, offers,
-            )?));
+            // Bound against the survey exactly as a step of a sequence is.
+            // Whether a step carries is a fact the *operation* declares —
+            // `Offer::wants_content` — and not a property of how many things
+            // were asked for. Built without it, an answer of one id could
+            // never carry anything: "open the photo editor onto this" came
+            // out as an open with no content, and the editor arrived empty
+            // while the log said the open had been performed.
+            return Ok(Plan {
+                steps: vec![Step::bound(
+                    Instruction::from_answer(&ids[0], rest, table, offers)?,
+                    offers,
+                )],
+            });
         }
         // A recipe rewrites the run of blocks around the line that asked for
         // it, reading the page to decide which. Which blocks those are is a

@@ -711,6 +711,18 @@ pub struct OpenAppRequest {
     /// session resolves it, and an id that names nothing installed is a
     /// refusal the caller is told about.
     pub app_id: String,
+    /// The content the caller asked the application to be opened onto, as a
+    /// blake3 hex — or `None` for an open that named no object.
+    ///
+    /// Unvalidated here, exactly like `app_id`: the broker knows sockets and
+    /// names and has no store to resolve a hash against. The session resolves
+    /// it, and a hash whose bytes are nowhere on this machine is a refusal the
+    /// caller is told about rather than an application opened empty. See
+    /// [`CollabRequest::OpenApp::with`](ui::collaboration::CollabRequest).
+    ///
+    /// Naming content grants nothing. What the launched app may read is the
+    /// session's own decision, taken where every other capability is.
+    pub with: Option<String>,
     /// The room the asking connection announced on its `Hello`. Empty when it
     /// never announced one, which the session treats as a refusal — there is
     /// no workspace whose capabilities could answer.
@@ -747,6 +759,27 @@ pub struct OpenAppRequest {
 /// The sink runs on the reader thread that decoded the frame. Keep it short —
 /// hand the request to a queue and return.
 pub type AppOpener = Box<dyn Fn(OpenAppRequest) + Send + Sync>;
+
+/// Put content an app handed this session into the session's own store.
+///
+/// Content is addressed by its own hash, so keeping it needs no room, no
+/// route and no network — which is exactly why it is done separately from
+/// forwarding it. The store verifies the bytes against the name they were
+/// offered under and refuses them if they disagree, so a peer cannot poison
+/// a hash another document already references.
+///
+/// This is what an open naming content resolves against
+/// (`crate::shell::agent_opens`), and what answers a later `WantBlob` from an
+/// app that opened after the picture arrived.
+fn keep_local_blob(hash: &str, bytes: &[u8], peer: u64) {
+    if !qdoc::blobstore::store().put(hash, bytes) {
+        tracing::warn!(
+            hash = %hash, bytes = bytes.len(),
+            "collab_broker: refused content from peer-{peer} — it does not hash \
+             to the name it was offered under, so it is not that content",
+        );
+    }
+}
 
 /// An application asking this session to draw the "say something about this"
 /// surface.
@@ -1374,7 +1407,7 @@ fn translate(
         // to this session rather than to an audience. Named here anyway so the
         // day something reaches translate with one it is a dropped frame with
         // a reason beside it, not a wildcard swallowing it.
-        CollabRequest::OpenApp { ref app_id } => {
+        CollabRequest::OpenApp { ref app_id, .. } => {
             tracing::warn!(
                 src_id, %app_id,
                 "collab_broker: an OpenApp reached the fan-out; it has no \
@@ -1734,11 +1767,23 @@ fn reader_loop(
                 // This is the only path they have out of the app's sandbox,
                 // and until this landed the shell held a document naming a
                 // photograph it did not have and could send nobody.
+                //
+                // Kept before it is forwarded, and kept even when there is
+                // nobody to forward it to. Sending it on is the *room's*
+                // business and needs a network; holding it is this session's
+                // own, and it is what lets the session answer a later
+                // `WantBlob` and what lets an open name content by hash. A
+                // session with no peer sync used to drop the bytes here and
+                // log a line about other machines — so a single-machine
+                // desktop, which is most of them, could hand content to its
+                // own session and have it vanish.
+                keep_local_blob(hash, bytes, peer.id);
                 if !publisher.offer_blob(route, Transport::Json, hash, bytes) {
                     tracing::warn!(
                         hash = %hash, bytes = bytes.len(),
-                        "collab_broker: could not take content from peer-{}; a document \
-                         referencing it will show a placeholder on every other machine",
+                        "collab_broker: could not send content from peer-{} to the room; \
+                         it is held here, but a document referencing it will show a \
+                         placeholder on every other machine",
                         peer.id,
                     );
                 }
@@ -1759,14 +1804,23 @@ fn reader_loop(
                     publisher.want_blob(route, Transport::Json, hash);
                 }
             }
-            (
-                None,
-                CollabRequest::OfferBlob { .. } | CollabRequest::WantBlob { .. },
-            ) => {
+            (None, CollabRequest::OfferBlob { hash, bytes }) => {
+                // No route, so it cannot be sent anywhere — but content is
+                // addressed by its own hash and needs no route to be kept.
+                keep_local_blob(hash, bytes, peer.id);
                 tracing::warn!(
-                    "collab_broker: peer-{} offered or asked for document content \
-                     before saying Hello — it has no route, so the content cannot \
-                     reach or come from another machine",
+                    hash = %hash,
+                    "collab_broker: peer-{} offered document content before saying \
+                     Hello — it is held here, but with no route it cannot reach \
+                     another machine",
+                    peer.id,
+                );
+            }
+            (None, CollabRequest::WantBlob { .. }) => {
+                tracing::warn!(
+                    "collab_broker: peer-{} asked for document content before \
+                     saying Hello — it has no route, so the content cannot come \
+                     from another machine",
                     peer.id,
                 );
             }
@@ -1859,7 +1913,7 @@ fn reader_loop(
         // relaying it would put a window on every peer's desktop because
         // somebody else's participant needed one, which nobody asked for and
         // no peer could refuse. So it leaves the fan-out here.
-        if let CollabRequest::OpenApp { app_id } = &req {
+        if let CollabRequest::OpenApp { app_id, with } = &req {
             let room = src_route
                 .as_ref()
                 .map(|r| r.cluster_id.clone())
@@ -1874,6 +1928,7 @@ fn reader_loop(
                     );
                     open(OpenAppRequest {
                         app_id: app_id.clone(),
+                        with: with.clone(),
                         room,
                         who: src_user_id.clone(),
                         handle: peer.announced_handle(),
