@@ -3611,7 +3611,11 @@ def main() -> int:
             # Every session, not just the one being driven. A capability
             # is per-workspace and each person here has their own, so
             # granting only quinten's leaves the guest's file manager
-            # asking — on the screen the camera cuts to.
+            # asking — on the screen the camera cuts to. A finished take
+            # spent 204 unbroken seconds framed on an unanswered
+            # "read/write access to …/home/xaver" that nobody was ever
+            # going to click, while the beats it was hiding happened
+            # off-camera.
             yc.claim(
                 f"{s.name}'s file manager may read the home it will show",
                 s.grant(f"app:{yc.FILES_APP}", f"fs:{s.home}", "write")
