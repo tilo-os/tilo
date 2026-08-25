@@ -397,13 +397,20 @@ WATCH_IT_OPEN_S = 1.6
 # second stretch whose own transcript called it a still page.
 #
 # `Recorder.patience` is the answer and was written for exactly this,
-# and until now no scene in this file used it. Five seconds is long
-# enough to establish that the machine has been asked for something and
-# is thinking about it; past that a viewer has understood, and every
-# further second is a second of a screen that is not changing. The camera
-# comes back up the instant the agent says or does anything, so what it
-# leaves out is only the silence between.
-FILM_THE_WAIT_S = 5.0
+# and until now no scene in this file used it. Long enough to establish
+# that the machine has been asked for something and is thinking about
+# it; past that a viewer has understood, and every further second is a
+# second of a screen that is not changing. The camera comes back up the
+# instant the agent says or does anything, so what it leaves out is only
+# the silence between.
+#
+# Five seconds was the first guess and it is too generous. Measured on
+# the take of 2026-08-25: the agent's beat came to 43.7s of picture --
+# 38% of the whole film, and the single largest thing in it -- after 22s
+# of its waiting had already been cut. The film has a hard 110s cap and
+# came out at 113.8s. A viewer does not need five seconds of a still
+# screen to understand that something was asked; they need about two.
+FILM_THE_WAIT_S = 2.5
 # How often the watcher looks at anything. Every probe is a `state_dump`
 # and blocks the session it is asked of — including, while recording,
 # the session being filmed — so this is deliberately unhurried. Only one
