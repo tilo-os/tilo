@@ -1783,8 +1783,23 @@ impl Widget for TopBarChrome {
         // separator ring so overlapping avatars stay distinct (concept's
         // `border-2 border-black`). Routing through the toolkit keeps the
         // desktop roster pixel-identical to the app rosters that back it.
+        // How far apart two avatars in the stack sit.
+        //
+        // A chip is r=7.5 and its separator ring takes it to r=9, so the
+        // discs are 18 px across; stepping them 10 px apart overlapped
+        // them by 8, and the neighbour's outer edge landed 1 px past the
+        // centre of the avatar underneath — through the middle of its
+        // initial. The letter is the only thing in the stack that says
+        // *who*, and on a two-person roster it is the only thing on the
+        // whole screen that says which machine you are looking at. It
+        // was being clipped in half.
+        //
+        // 14 px is the overlap this code always said it had: 18 wide,
+        // stacked by 4. It leaves the neighbour's edge 5 px from centre,
+        // clear of a glyph that is about 8 px wide.
+        let avatar_step = 14.0_f64;
         for (i, initial) in self.collaborator_initials.iter().enumerate() {
-            let cx = rx - i as f64 * (14.0 - 4.0);
+            let cx = rx - i as f64 * avatar_step;
             let center = Point::new(cx - 7.0, center_y);
             // 15 px chip (r = 7.5); the ring adds 1.5 px so the outer disc is
             // r = 9, matching the previous hand-painted separator geometry.
@@ -1827,7 +1842,7 @@ impl Widget for TopBarChrome {
         // (neutral raised surface + dim label) rather than another person.
         if self.collaborator_overflow > 0 {
             let i = self.collaborator_initials.len();
-            let cx = rx - i as f64 * (14.0 - 4.0);
+            let cx = rx - i as f64 * avatar_step;
             let center = Point::new(cx - 7.0, center_y);
             let rect = Rect::new(
                 center.x - 7.5,
