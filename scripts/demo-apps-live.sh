@@ -108,14 +108,22 @@ for app in "${APPS[@]}"; do crates+=(-p "${app#*|}"); done
 # built here now: nothing built it. So it is built beside the apps and
 # checked like them, because a run whose evidence tool is absent should
 # not get as far as filming.
-say "building ${#APPS[@]} app(s), qos-pkg, qos-install, qos-doc-text (profile: $PROFILE)"
-(cd "$REPO" && cargo build $PROFILE_FLAG "${crates[@]}" -p pkg-cli -p install)
+# `qos-launcher` is not staged into a payload either, and is not an app
+# — it is what every app is *started* by, so a tree without it opens
+# nothing at all. `scripts/demo.sh` builds it, which is why the gap only
+# showed when this script was run on its own: the launch is refused
+# before a sandbox exists, and what reaches the screen is "Couldn't open
+# Photos" with the reason in a notification body nobody reads on camera.
+# Built here so a payload and the thing that runs it are never assembled
+# apart, and checked below so its absence is a stated failure.
+say "building ${#APPS[@]} app(s), qos-pkg, qos-install, qos-launcher, qos-doc-text (profile: $PROFILE)"
+(cd "$REPO" && cargo build $PROFILE_FLAG "${crates[@]}" -p pkg-cli -p install -p launcher)
 # Its own invocation, and deliberately so: `--bin` filters apply across
 # every package selected in the same command, so folding this into the
 # line above would build the decoder *instead of* the apps rather than
 # as well as them. That trap has cost two runs already.
 (cd "$REPO" && cargo build $PROFILE_FLAG -p qdoc --bin qos-doc-text)
-for b in qos-pkg qos-install qos-doc-text; do
+for b in qos-pkg qos-install qos-launcher qos-doc-text; do
     [ -x "$BIN/$b" ] || die "$BIN/$b missing after build"
 done
 
