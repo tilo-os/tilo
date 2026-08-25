@@ -373,6 +373,8 @@ pub struct ChatApp {
     /// content, reachable only from `seed_shot_scenario`; a live run never
     /// sets it and never sees any of it.
     mention_shot: Option<String>,
+    /// Which agent-record scenario a `--shots` frame is staging, if any.
+    agent_shot: Option<String>,
     /// `--shots` only: a draft to stage into the main composer so a screenshot
     /// can show the composer mid-compose (caret + wrapped text). `None` in every
     /// live/interactive path, so production is unaffected.
@@ -550,6 +552,7 @@ impl ChatApp {
             flap_animating: false,
             shot_starter: false,
             mention_shot: None,
+            agent_shot: None,
             shot_composer_draft: None,
             is_live: false,
             remote_frames: HashMap::new(),
@@ -743,6 +746,15 @@ impl ChatApp {
                 self.right_flap.snap(false);
                 self.call = CallState::default();
                 self.mention_shot = Some(scenario.to_string());
+            }
+            // What an agent in the room is doing with what it was asked.
+            // `agent` has it present, so its unfinished records read as work
+            // in flight; `agent-gone` is the same channel after it left.
+            "agent" | "agent-gone" => {
+                self.thread_open = None;
+                self.right_flap.snap(true);
+                self.call = CallState::default();
+                self.agent_shot = Some(scenario.to_string());
             }
             "context" => {
                 self.menu = Some(ContextMenu {
@@ -1423,6 +1435,125 @@ impl ChatApp {
     /// participant the window belongs to, because that is the thing worth
     /// looking at: a mention of you and a mention of somebody else are not
     /// supposed to read the same.
+    /// The four states an agent's record passes through, in one channel.
+    ///
+    /// Seeded through the actions themselves — chat's registry decodes each
+    /// one and chat's own `apply` writes it — for the reason the remark shot
+    /// is seeded that way: a strip that only a hand-built fixture could
+    /// produce would say nothing about a record that actually arrives from an
+    /// agent. `agent-gone` is the same channel with the agent no longer in the
+    /// room, which is the one thing a record cannot say about itself.
+    fn seed_agent_shot(&mut self, doc: &mut AutoCommit, which: &str) {
+        use crate::doc::NewMessage;
+        use crate::mention::Participant;
+        use crate::model::{AgentWork, AgentWorkState};
+
+        ChatDoc::ensure_member(doc, "agent_scribe", true, model::Presence::Online);
+        let room: Vec<Participant> = [
+            ("u_me", "You", false),
+            ("u_aria", "Aria Chen", false),
+            ("agent_scribe", "Scribe", true),
+        ]
+        .into_iter()
+        .map(|(id, name, is_agent)| Participant {
+            id: id.into(),
+            name: name.into(),
+            is_agent,
+        })
+        .collect();
+        for p in &room {
+            // The agent is left out of the roster in `agent-gone`: the room's
+            // answer is what decides whether anything is in flight, and a
+            // record whose author is absent must stop reading as live.
+            if which == "agent-gone" && p.is_agent {
+                continue;
+            }
+            self.room_names.insert(p.id.clone(), p.name.clone());
+        }
+
+        self.active_ws = "ws_acme".into();
+        self.active_channel = "c_frontend".into();
+        let channel = self.active_channel.clone();
+
+        let mut registry = qos_actions::ActionRegistry::new();
+        crate::actions::register(&mut registry);
+
+        // Each beat: what somebody asked, and where the agent got to.
+        let beats: [(&str, &str, AgentWorkState, &str); 4] = [
+            (
+                "u_aria",
+                "@Scribe crop the harbour shot to the boats.",
+                AgentWorkState::Done { did: "crop".into() },
+                "Scribe: done — crop.",
+            ),
+            (
+                "u_me",
+                "@Scribe turn the bullets under Logistics into a table.",
+                AgentWorkState::Doing {
+                    did: "turn the bullets into a table".into(),
+                    about: "¶3 of Run sheet".into(),
+                },
+                "",
+            ),
+            (
+                "u_aria",
+                "@Scribe rename the export in the shared folder.",
+                AgentWorkState::Waiting {
+                    app: "Files".into(),
+                },
+                "",
+            ),
+            (
+                "u_me",
+                "@Scribe delete the originals once you're done.",
+                AgentWorkState::Refused,
+                "Scribe: I'm not allowed to delete here.",
+            ),
+        ];
+
+        for (n, (author, asked, state, said)) in beats.into_iter().enumerate() {
+            let asked_id = format!("m_ask_{n}");
+            let mentions = crate::mention::resolve(asked, &room);
+            ChatDoc::push_message_with_id(
+                doc,
+                &channel,
+                &asked_id,
+                NewMessage {
+                    author: author.into(),
+                    ts: crate::doc::NOW,
+                    text: asked.into(),
+                    mentions,
+                    ..Default::default()
+                },
+            );
+            // The agent's reply goes up empty, exactly as it does live.
+            let record_id = format!("m_rec_{n}");
+            let post = crate::actions::send_message_action(
+                &channel,
+                &record_id,
+                "agent_scribe",
+                crate::doc::NOW,
+                "",
+                Some(asked_id),
+                None,
+                Vec::new(),
+            );
+            let note = crate::actions::set_agent_work_action(
+                &channel,
+                &record_id,
+                AgentWork::new(state, crate::doc::NOW),
+                if said.is_empty() { None } else { Some(said) },
+            );
+            for action in [post, note] {
+                registry
+                    .decode(&crate::actions::encode(&action))
+                    .expect("chat decodes an action minted under its own type id")
+                    .apply(doc)
+                    .expect("and applying it changes the conversation");
+            }
+        }
+    }
+
     fn seed_mention_shot(&mut self, doc: &mut AutoCommit, which: &str) {
         use crate::doc::NewMessage;
         use crate::mention::Participant;
@@ -1884,6 +2015,9 @@ impl Widget for ChatApp {
         } else {
             // Ephemeral `--shots`/test instance: the rich demo workspace.
             ChatDoc::seed_if_empty(doc);
+            if let Some(which) = self.agent_shot.clone() {
+                self.seed_agent_shot(doc, &which);
+            }
             if let Some(which) = self.mention_shot.clone() {
                 self.seed_mention_shot(doc, &which);
             }

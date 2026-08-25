@@ -2085,10 +2085,12 @@ pub(crate) fn work_line(
 mod tests {
     use super::{
         body_spans, file_chip_meta, human_size, mention_colors, reference_chip_colors,
-        reference_chip_label, MENTION_BAND_CONTRAST, MENTION_TEXT_CONTRAST,
-        REF_CHIP_EDGE_CONTRAST, REF_CHIP_TEXT_CONTRAST,
+        reference_chip_label, work_line, work_strip_colors, WorkTone, MENTION_BAND_CONTRAST,
+        MENTION_TEXT_CONTRAST, REF_CHIP_EDGE_CONTRAST, REF_CHIP_TEXT_CONTRAST,
+        WORK_EDGE_CONTRAST, WORK_TEXT_CONTRAST,
     };
     use crate::app::ChatApp;
+    use crate::model::Message;
     use ui::theme::Theme;
     use ui::ColorCompat;
 
@@ -2316,6 +2318,7 @@ mod tests {
             reference: None,
             attachment: None,
             pinned: false,
+            work: None,
         };
         assert_eq!(m.mentions.len(), 2);
         let spans = body_spans(&app, &m, &theme, theme.tokens.colors.surfaces.base);
@@ -2342,6 +2345,192 @@ mod tests {
             1,
             "the stale reference is dropped, the sound one kept"
         );
+    }
+
+    // ------------------------------------------------------ agent work strip
+
+    fn work(state: crate::model::AgentWorkState) -> crate::model::AgentWork {
+        crate::model::AgentWork::new(state, 50_400)
+    }
+
+    /// The strip must be readable in every theme, for the same reason the
+    /// reference chip's colours are measured rather than eyeballed: a tone is
+    /// a colour chosen to *mean* something, and none of the four was chosen to
+    /// be read on whatever ground the theme puts behind it.
+    #[test]
+    fn the_work_strip_is_readable_in_every_tone_and_every_theme() {
+        use ui::a11y::contrast_ratio;
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = theme.tokens.colors.surfaces.base;
+            for tone in [WorkTone::Live, WorkTone::Done, WorkTone::Stopped, WorkTone::Silent] {
+                let (fill, edge, ink) = work_strip_colors(&theme, ground, tone);
+                let text = contrast_ratio(ink, fill);
+                assert!(
+                    text >= WORK_TEXT_CONTRAST,
+                    "{} / {tone:?}: the strip's label is {text:.2}:1 on its own wash",
+                    theme.name
+                );
+                let border = contrast_ratio(edge, ground);
+                assert!(
+                    border >= WORK_EDGE_CONTRAST,
+                    "{} / {tone:?}: the strip's edge is {border:.2}:1 on the surface",
+                    theme.name
+                );
+                println!(
+                    "work strip — {} / {tone:?}: label {text:.2}:1, edge {border:.2}:1",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    /// An unfinished record whose author has left the room must not read as
+    /// work in progress.
+    ///
+    /// The failure this exists to prevent is the whole reason liveness is a
+    /// separate question: an agent that is killed mid-instruction cannot
+    /// retract what it wrote, so a strip that said "is working" would go on
+    /// saying it for as long as the channel exists — a spinner that lies,
+    /// which is worse than the silence it replaced.
+    #[test]
+    fn a_record_nobody_is_behind_never_claims_to_be_working() {
+        use crate::model::AgentWorkState as S;
+        for state in [
+            S::Taken,
+            S::Waiting { app: "Photos".into() },
+            S::Doing { did: "crop".into(), about: "the harbour".into() },
+        ] {
+            let w = work(state.clone());
+            let live = work_line(&w, "Claude", "", true);
+            let gone = work_line(&w, "Claude", "", false);
+            assert_eq!(
+                live.tone,
+                WorkTone::Live,
+                "{state:?} with the agent present should read as in flight"
+            );
+            assert_eq!(
+                gone.tone,
+                WorkTone::Silent,
+                "{state:?} with the agent gone must not read as in flight"
+            );
+            assert_ne!(
+                live.head, gone.head,
+                "{state:?} must not be worded the same whether or not anybody is behind it"
+            );
+            assert!(
+                !gone.head.contains("is working") && !gone.head.contains("is reading"),
+                "a record nobody is behind said {:?}, which is the present tense",
+                gone.head
+            );
+        }
+    }
+
+    /// A finished record says the same thing whether or not the agent that
+    /// wrote it is still here. What happened, happened.
+    #[test]
+    fn a_finished_record_does_not_depend_on_the_agent_still_being_here() {
+        use crate::model::AgentWorkState as S;
+        for state in [S::Done { did: "crop".into() }, S::Refused] {
+            let w = work(state.clone());
+            assert_eq!(
+                work_line(&w, "Claude", "why not", true).head,
+                work_line(&w, "Claude", "why not", false).head,
+                "{state:?} was reworded by the agent leaving"
+            );
+        }
+    }
+
+    /// A refusal has to carry its reason where the channel can be read without
+    /// opening the thread. A strip that only said "stopped" would replace one
+    /// silence with another.
+    #[test]
+    fn a_refusal_carries_its_reason_into_the_timeline() {
+        let w = work(crate::model::AgentWorkState::Refused);
+        let why = "Claude: I'm not allowed to crop here";
+        assert_eq!(work_line(&w, "Claude", why, true).detail, why);
+        // …and not where the reply's own body is already on screen beside it.
+        assert!(work_line(&w, "Claude", "", true).detail.is_empty());
+    }
+
+    /// Every wording the strip can show has to come out of the catalogue. A
+    /// key with no entry resolves to itself, which ships the key to a screen.
+    #[test]
+    fn every_state_the_strip_can_show_resolves_to_a_real_string() {
+        use crate::model::AgentWorkState as S;
+        let states = [
+            S::Taken,
+            S::Waiting { app: "Photos".into() },
+            S::Doing { did: "crop".into(), about: String::new() },
+            S::Doing { did: "crop".into(), about: "the harbour".into() },
+            S::Done { did: "crop".into() },
+            S::Refused,
+        ];
+        for state in states {
+            for present in [true, false] {
+                let head = work_line(&work(state.clone()), "Claude", "", present).head;
+                assert!(
+                    head.starts_with("Claude"),
+                    "{state:?}/{present}: {head:?} did not interpolate the agent's name"
+                );
+                assert!(
+                    !head.contains("chat-agent-"),
+                    "{state:?}/{present}: {head:?} is an unresolved catalogue key"
+                );
+                assert!(
+                    head.contains("14:00"),
+                    "{state:?}/{present}: {head:?} does not say when"
+                );
+            }
+        }
+    }
+
+    /// The record belongs to the agent that wrote it, and the roster's live
+    /// line only shows work that is genuinely in flight.
+    #[test]
+    fn the_roster_line_shows_only_unfinished_work_by_an_agent_that_is_here() {
+        use crate::model::AgentWorkState as S;
+        let mut app = ChatApp::new_ephemeral();
+        app.messages = vec![
+            reply_with("m_1", "u_claude", work(S::Done { did: "crop".into() })),
+            reply_with("m_2", "u_claude", work(S::Doing { did: "crop".into(), about: String::new() })),
+        ];
+        // No roster yet: nothing is known about who is here, so an in-flight
+        // record is shown rather than denied.
+        assert!(app.agent_in_flight("u_claude").is_some());
+        // The room answers, and it does not list the agent.
+        app.room_names.insert("u_someone".into(), "Someone".into());
+        assert!(
+            app.agent_in_flight("u_claude").is_none(),
+            "an agent the room does not list has nothing in flight"
+        );
+        // The room lists it again.
+        app.room_names.insert("u_claude".into(), "Claude".into());
+        assert!(app.agent_in_flight("u_claude").is_some());
+        // A finished record is not in flight.
+        app.messages[1].work = Some(work(S::Refused));
+        assert!(
+            app.agent_in_flight("u_claude").is_none(),
+            "a finished record is not work in flight"
+        );
+    }
+
+    fn reply_with(id: &str, author: &str, w: crate::model::AgentWork) -> Message {
+        Message {
+            id: id.into(),
+            channel: "c_general".into(),
+            author: author.into(),
+            ts: 50_400,
+            text: String::new(),
+            edited: false,
+            history: vec![],
+            parent: Some("m_asked".into()),
+            reactions: vec![],
+            mentions: vec![],
+            reference: None,
+            attachment: None,
+            pinned: false,
+            work: Some(w),
+        }
     }
 }
 
