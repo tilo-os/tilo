@@ -397,6 +397,16 @@ pub struct ChatApp {
     /// demo.
     pub(crate) is_live: bool,
 
+    /// The room this window is a chat window on — the collaboration cluster the
+    /// session launched it into (`QOS_WORKSPACE_ID`), read once at startup.
+    ///
+    /// Held because a direct conversation *is* a room, so the only way this app
+    /// can tell one from a workspace is to know which room it is in. Empty
+    /// outside a session (`--shots`, tests, a bare `cargo run`), which
+    /// classifies as an ordinary workspace — the honest answer when there is no
+    /// room to ask about.
+    pub(crate) room_id: String,
+
     /// Latest decoded RGBA frame per remote peer id, shown in that peer's call
     /// tile (camera or screen-share). Populated only by the live media pump; in
     /// the default build it stays empty, so a tile shows the honest placeholder
@@ -465,6 +475,14 @@ impl ChatApp {
         let mut app = Self::bare();
         app.is_live = true;
         app.me = LocalIdentity::resolve();
+        // Which room this window is on. The same value the collaboration
+        // manager announces on `Hello`, read from the same place, so the room
+        // this app *says* it is in cannot differ from the one its traffic is
+        // addressed to.
+        app.room_id = {
+            let id = ui::collaboration::local_cluster_id();
+            if id.is_nil() { String::new() } else { id.to_string() }
+        };
         // The live binary uses the real transport (a bound iroh endpoint on a
         // real session; the simulator otherwise). Tests/`--shots` keep the
         // deterministic local bus from `bare`.
@@ -567,6 +585,7 @@ impl ChatApp {
             agent_shot: None,
             shot_composer_draft: None,
             is_live: false,
+            room_id: String::new(),
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
             portal: Box::new(crate::call::SystemPortal),
@@ -751,6 +770,19 @@ impl ChatApp {
                 self.shot_starter = true;
                 self.thread_open = None;
                 self.call = CallState::default();
+            }
+            // A chat window opened into a room with two people in it — the
+            // shape a direct message actually takes. Nothing about the window
+            // is special-cased: it is this app on an ordinary room, and the
+            // room id is the real derivation over the pair, not a fixture
+            // string, so what the capture shows is what the classifier does
+            // with a value production would compute.
+            "direct" => {
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+                self.room_id = crate::direct::room_with(model::ME, "u_aria")
+                    .expect("two people name a room");
             }
             // Two windows onto one channel, so a pair of shots shows what each
             // side of a conversation sees. `mention` is the peer who was
@@ -1823,6 +1855,43 @@ impl ChatApp {
         out
     }
 
+    /// What kind of room this window is on: an ordinary workspace, or a
+    /// conversation with one person.
+    ///
+    /// Recovered from the room's own id rather than read off a stored flag —
+    /// a direct room's id *is* the derivation over its two members, so nothing
+    /// a peer writes can make a workspace claim to be a private conversation,
+    /// which is the direction that failure would matter in.
+    /// Read once per frame from the sidebar, so it walks the roster it already
+    /// holds rather than going through `participants()` — that one allocates
+    /// and sorts to build a picker, and none of that is wanted here.
+    pub fn room_kind(&self) -> crate::direct::RoomKind {
+        let ids = self
+            .users
+            .iter()
+            .map(|u| u.id.as_str())
+            .chain(self.room_names.keys().map(|k| k.as_str()));
+        crate::direct::classify(&self.room_id, &self.me.id, ids)
+    }
+
+    /// Everybody in this room a direct conversation could be held with, paired
+    /// with the room it would be held in.
+    ///
+    /// Derived from the roster and nothing else, which is why a first run shows
+    /// an empty list rather than a placeholder: with nobody else here there is
+    /// nobody to write to. Yourself is excluded — a room with one person in it
+    /// is not a direct message — and so is the room this window is already on,
+    /// so a conversation does not offer to start itself.
+    pub fn direct_conversations(&self) -> Vec<(crate::mention::Participant, String)> {
+        self.participants()
+            .into_iter()
+            .filter_map(|p| {
+                let room = crate::direct::room_with(&self.me.id, &p.id)?;
+                (room != self.room_id).then_some((p, room))
+            })
+            .collect()
+    }
+
     /// The members roster shown in the right flap when no thread is open: every
     /// user in the workspace paired with the voice channel they're currently in
     /// (if any). Sorted in-call first, then by presence, then by name. Real
@@ -2738,5 +2807,81 @@ mod identity_on_screen {
         let app = ChatApp::new_ephemeral();
         let me = app.me.id.clone();
         assert_eq!(app.user_name(&me), "You");
+    }
+
+    /// A window opened into a room with two people in it knows it is a
+    /// conversation, and knows who with.
+    ///
+    /// Staged through the real scenario, so the room id under test is the
+    /// derivation over the pair rather than a string chosen to match — the
+    /// coincidence a fixture can have and production cannot.
+    #[test]
+    fn a_window_on_a_two_member_room_is_a_conversation_with_that_person() {
+        let mut app = ChatApp::new_ephemeral();
+        app.seed_shot_scenario("direct");
+        let mut doc = automerge::AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+
+        let kind = app.room_kind();
+        assert_eq!(
+            kind.direct_peer(),
+            Some("u_aria"),
+            "the window is on Aria's room and does not know it"
+        );
+        // And it is the room those two share, computed independently here.
+        assert_eq!(
+            app.room_id,
+            crate::direct::room_with("u_aria", model::ME).unwrap(),
+            "the room the window is on is not the one the pair derives"
+        );
+    }
+
+    /// An ordinary workspace window is not a conversation with anybody. The
+    /// direction that matters: a false positive would put one person's name at
+    /// the top of a room full of people, and tell them it held two.
+    #[test]
+    fn an_ordinary_window_is_not_a_conversation_with_anybody() {
+        let app = ChatApp::new_ephemeral();
+        assert_eq!(app.room_kind().direct_peer(), None);
+        assert!(!app.room_kind().is_direct());
+    }
+
+    /// Who you could write to is the roster and nothing else — so a first run,
+    /// with nobody else here, offers nobody. Not a placeholder, not an example
+    /// person: there is genuinely no one to write to yet.
+    #[test]
+    fn a_first_run_offers_no_conversations_because_there_is_nobody_to_have_one_with() {
+        let mut app = ChatApp::new_ephemeral();
+        app.users.clear();
+        app.room_names.clear();
+        assert!(
+            app.direct_conversations().is_empty(),
+            "an empty room offered somebody to message"
+        );
+    }
+
+    /// Each person in the room is one conversation, each in its own room, and
+    /// yourself is not among them.
+    #[test]
+    fn every_other_person_in_the_room_is_one_conversation_of_their_own() {
+        let mut app = ChatApp::new_ephemeral();
+        let mut doc = automerge::AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+
+        let convos = app.direct_conversations();
+        assert!(convos.len() > 1, "the demo room has several people in it");
+        assert!(
+            !convos.iter().any(|(p, _)| p.id == app.me.id),
+            "you were offered a direct conversation with yourself"
+        );
+        let mut rooms: Vec<&str> = convos.iter().map(|(_, r)| r.as_str()).collect();
+        let before = rooms.len();
+        rooms.sort_unstable();
+        rooms.dedup();
+        assert_eq!(
+            rooms.len(),
+            before,
+            "two people in the room resolved to one conversation"
+        );
     }
 }

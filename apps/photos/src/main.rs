@@ -33,7 +33,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = flag_value(&args, "--size")
             .and_then(|s| parse_size(&s))
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        return render_shot(&scenario, viewport, std::path::Path::new(&out));
+        return render_shot(
+            &scenario,
+            viewport,
+            std::path::Path::new(&out),
+            flag_value(&args, "--product").map(std::path::PathBuf::from).as_deref(),
+        );
     }
 
     if let Some(spec) = ui::headless::spec_from_args(&args) {
@@ -127,10 +132,54 @@ fn parse_size(s: &str) -> Option<(u32, u32)> {
 
 /// Render one scenario offscreen. Mirrors `ui::App`'s frame exactly:
 /// sync → build_layout → compute_layout → apply_layout → draw.
+/// Write out what this document currently denotes: the photograph as its
+/// edits leave it, encoded as a PNG.
+///
+/// The same value `apps/agent`'s `photos_product` hands to another
+/// application's operation, produced by the same three calls on the same
+/// document — decode the file the document names, render the crop and
+/// rotation it records, encode. It is written to a file only so that a still
+/// of the *next* application can be taken over the bytes this one really
+/// produced, instead of over a second crop computed somewhere else.
+fn write_product(doc: &automerge::AutoCommit, to: &std::path::Path) {
+    use photos::doc::PhotosDoc;
+    let Some(image) = PhotosDoc::image(doc) else {
+        eprintln!("photos: nothing is open, so this document denotes nothing");
+        return;
+    };
+    let edits = PhotosDoc::edits(doc);
+    let Ok(bytes) = std::fs::read(&image.path) else {
+        eprintln!("photos: cannot read {}", image.path);
+        return;
+    };
+    let Some(decoded) = photos::pixels::decode(&bytes) else {
+        eprintln!("photos: cannot decode {}", image.path);
+        return;
+    };
+    let rendered = photos::pixels::render(&decoded, edits.crop, edits.rotate_quarters);
+    let Some(png) = photos::pixels::encode_png(&rendered) else {
+        eprintln!("photos: cannot encode the edited photograph");
+        return;
+    };
+    if let Some(dir) = to.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    match std::fs::write(to, &png) {
+        Ok(()) => eprintln!(
+            "photos: wrote what this document denotes to {} ({}x{})",
+            to.display(),
+            rendered.w,
+            rendered.h
+        ),
+        Err(e) => eprintln!("photos: could not write {}: {e}", to.display()),
+    }
+}
+
 fn render_shot(
     scenario: &str,
     viewport: (u32, u32),
     out: &std::path::Path,
+    product: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
@@ -146,6 +195,12 @@ fn render_shot(
     let mut state = ui::State::new();
     let mut app = photos::PhotosApp::new();
     photos::seed_scenario(&mut app, &mut state.doc, scenario, &staging);
+    // Taken from the posed document, before any of the paint below. What the
+    // document denotes is a property of the document, and asking after the
+    // render would invite the answer to depend on what was drawn.
+    if let Some(to) = product {
+        write_product(&state.doc, to);
+    }
 
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();

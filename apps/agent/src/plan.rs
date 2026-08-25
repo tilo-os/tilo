@@ -435,6 +435,23 @@ impl Step {
         }
     }
 
+    /// Whether performing this step starts an application.
+    ///
+    /// Asked of the address, through the same [`surface::opens`] the
+    /// dispatcher uses, so "this opens something" means here exactly what it
+    /// means there. It is the one kind of step that changes what the room
+    /// exports rather than what a document says, which is why a clause after
+    /// it may name an operation no survey has yet held.
+    pub fn opens_an_application(&self) -> bool {
+        match &self.instruction {
+            Instruction::Perform { id, .. } => surface::decode_address(id)
+                .as_ref()
+                .and_then(surface::opens)
+                .is_some(),
+            _ => false,
+        }
+    }
+
     /// Whether this step is a refusal rather than something to do.
     pub fn is_unanswered(&self) -> bool {
         matches!(self.instruction, Instruction::Unknown(_))
@@ -491,10 +508,37 @@ impl Plan {
     /// unlike a step that fails *at dispatch*, this is known before anything
     /// has happened, so there is no reason to find out the hard way.
     pub fn unanswered(&self) -> Option<&str> {
-        self.steps.iter().find_map(|s| match &s.instruction {
-            Instruction::Unknown(what) => Some(what.as_str()),
-            _ => None,
-        })
+        // A clause that resolves to nothing *and cannot start resolving*.
+        //
+        // The distinction is the whole of it, and without it this check and
+        // [`Step::reconsider`] contradicted each other. Refusing up front is
+        // right whenever the room cannot change between now and the step:
+        // nothing later will make the operation appear, so starting the
+        // sequence would edit somebody's document and then stop.
+        //
+        // Opening an application is precisely the thing that changes what the
+        // room exports. An app that is not running exports nothing, so the
+        // clause naming what only *it* can do cannot be in any survey taken
+        // before it starts — which is the case `reconsider` was written for
+        // and could never reach, because this refused the sequence first.
+        //
+        // So an unresolved clause is fatal only when no earlier step opens an
+        // application. After one, the question is asked again at dispatch
+        // against the room that step produced, and a clause that still
+        // answers to nothing refuses there — naming what already stands,
+        // which is the honest report once a window has been opened.
+        let mut an_open_comes_first = false;
+        for s in &self.steps {
+            if let Instruction::Unknown(what) = &s.instruction {
+                if !an_open_comes_first {
+                    return Some(what.as_str());
+                }
+            }
+            if s.opens_an_application() {
+                an_open_comes_first = true;
+            }
+        }
+        None
     }
 
     /// The deterministic floor over a request that may name several things.
@@ -1508,6 +1552,73 @@ mod tests {
     /// belongs to. The separator is the tell, so that is what is asserted —
     /// it catches every spelling of the mistake, not the one example somebody
     /// thought of.
+    /// A sequence whose later clause needs an app an earlier clause opens is
+    /// **started**, and one whose clause nothing could ever answer is not.
+    ///
+    /// This is the pair that makes `reconsider` reachable at all. The up-front
+    /// refusal and `reconsider` used to contradict each other: a sequence
+    /// carrying any unresolved clause was refused before the dispatch loop, so
+    /// the code written for "open the photo editor and crop this" could never
+    /// run — the plan it was meant to rescue was thrown away one function
+    /// earlier. Nothing failed visibly; the request was simply refused, which
+    /// reads as an agent that cannot do the thing rather than one that never
+    /// got to try.
+    ///
+    /// Both halves, because only the pair is the claim. Without the second, a
+    /// `unanswered` that always returned `None` would pass — and that would
+    /// start every sequence that can never finish, editing somebody's document
+    /// and stopping halfway, which is the failure the up-front check exists to
+    /// prevent.
+    #[test]
+    fn a_clause_after_an_open_is_not_refused_before_the_open_has_run() {
+        let opening = Step::bound(
+            Instruction::Perform {
+                id: "photos.app#open".to_string(),
+                argument: None,
+            },
+            &[],
+        );
+        assert!(
+            opening.opens_an_application(),
+            "the fixture must actually be an open, or the test proves nothing \
+             about what an open permits"
+        );
+        let later = Step::own(Instruction::Unknown("crop the photograph".to_string()));
+
+        let after_an_open = Plan {
+            steps: vec![opening, later.clone()],
+        };
+        assert_eq!(
+            after_an_open.unanswered(),
+            None,
+            "a clause that needs an application an earlier step opens must not \
+             refuse the sequence up front: the room it would be judged against \
+             does not exist yet, and the step before it is what creates it"
+        );
+
+        // The other half: nothing here opens anything, so the room cannot
+        // change and the clause is as unanswerable at dispatch as it is now.
+        let nothing_opens = Plan {
+            steps: vec![
+                Step::bound(
+                    Instruction::Perform {
+                        id: "word-processor.document#insert-table".to_string(),
+                        argument: None,
+                    },
+                    &[],
+                ),
+                later,
+            ],
+        };
+        assert_eq!(
+            nothing_opens.unanswered(),
+            Some("crop the photograph"),
+            "with no open in the sequence nothing can make the clause \
+             resolvable, so it must still refuse the whole thing before any \
+             document is touched"
+        );
+    }
+
     /// A clause the room could not answer, answered once the room changes.
     ///
     /// The case this exists for: "open the photo editor and crop this

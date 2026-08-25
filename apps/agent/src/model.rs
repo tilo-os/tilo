@@ -482,21 +482,22 @@ wanted, and a step left out means half the request is carried out and reported \
 as though it were all of it. If any part of what was asked for is not in the \
 list, answer \"none\" for the whole thing rather than doing the part that is.
 
-That last rule has one exception, and it is the reason `then` exists. Some \
-entries open an application, and their description says so: opening it is what \
-puts that application's own operations on this list. An operation that lives in \
-an application which is not open yet is therefore not missing — it is not \
-nameable yet, and it will be nameable the moment the open has run. For a request \
-like \"make this square and put it in the open document\", where squaring a \
-photograph is the photo editor's work and the photo editor is not open: name the \
-open in `actions`, and put the rest of the sentence in `then`, in the words it \
-was asked in. The rest is asked again once the application is open and its \
-operations are on the list.
+There is one exception, and it is about applications rather than about you. An \
+application that is not running exports nothing, so the list holds an entry for \
+*opening* it and none of the operations it would export once open. When a \
+request needs something only that application can do, name the open as one step \
+and answer \"none\" for the step that needs it — \"none\" in that one \
+position, not for the whole request. Those clauses are asked again after the \
+open, against the list that application then publishes, and are carried out if \
+they resolve. Leaving such a step out entirely is the thing to avoid: that \
+opens a window, does the last part, and reports it as though the middle had \
+happened.
 
-So answer \"none\" when nothing on the list does the job and nothing on it would \
-open an application that could. Do not answer \"none\" merely because the \
-operation you need belongs to an application that is not open — that is refusing \
-work the list offers you a way to reach.
+`then` is the same idea for what is left over rather than what sits in a \
+position: if the request still asks for something after the steps you named, \
+and it needs an application opened before it can be named, put that remainder \
+there in the words it was asked in. Null when the steps you named cover all of \
+it.
 
 The list has two halves and the first is easy to skim past. **Editorial changes** \
 come first: each is several of the application's operations composed into one \
