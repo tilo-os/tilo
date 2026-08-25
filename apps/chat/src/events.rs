@@ -28,6 +28,7 @@ fn mention_row_label(p: &crate::mention::Participant) -> String {
 use ui::Widget;
 
 use crate::actions;
+use crate::actions::ChatAction;
 use crate::app::{
     ChatApp, ContextMenu, Focus, Hit, MenuAction, MenuTarget, RowSwipe, SWIPE_COMMIT_DX,
 };
@@ -704,13 +705,36 @@ impl ChatApp {
         let me = self.me.id.clone();
         // Leaving a prior call first emits a leave cue for that channel.
         if self.call.active && self.call.channel != channel {
-            ChatDoc::voice_leave(doc, &self.call.channel.clone(), &me);
+            let prior = self.call.channel.clone();
+            self.perform_action(
+                doc,
+                ChatAction::LeaveCall {
+                    channel: prior,
+                    user: me.clone(),
+                },
+            );
         }
         self.call.join(channel.to_string());
-        ChatDoc::voice_join(doc, channel, &me);
-        // Signalling: announce how peers dial our media transport.
+        self.perform_action(
+            doc,
+            ChatAction::JoinCall {
+                channel: channel.to_string(),
+                user: me.clone(),
+            },
+        );
+        // Signalling: announce how peers dial our media transport. The ticket
+        // itself comes from the transport — external, and minted here — but
+        // writing it into the shared map is a document mutation like any other,
+        // so it goes down the one route.
         if let Some(ticket) = self.media.local_ticket() {
-            ChatDoc::voice_set_ticket(doc, channel, &me, &ticket);
+            self.perform_action(
+                doc,
+                ChatAction::SetCallTicket {
+                    channel: channel.to_string(),
+                    user: me.clone(),
+                    ticket,
+                },
+            );
         }
         self.sync_local_voice(doc);
         // Media: publish the local audio track over the (simulated or live)
@@ -729,7 +753,8 @@ impl ChatApp {
             return;
         }
         let ch = self.call.channel.clone();
-        ChatDoc::voice_leave(doc, &ch, &self.me.id);
+        let me = self.me.id.clone();
+        self.perform_action(doc, ChatAction::LeaveCall { channel: ch, user: me });
         self.media.transport_mut().unpublish(crate::media::TrackKind::Audio);
         self.call.leave();
         self.sound.leave();
@@ -765,7 +790,16 @@ impl ChatApp {
             return;
         }
         let ch = self.call.channel.clone();
-        ChatDoc::voice_set_sharing(doc, &ch, &self.me.id, self.call.sharing);
+        let sharing = self.call.sharing;
+        let me = self.me.id.clone();
+        self.perform_action(
+            doc,
+            ChatAction::SetScreenShare {
+                channel: ch,
+                user: me,
+                sharing,
+            },
+        );
     }
 
     /// Mirror this peer's local mic/deafen/audio-only state into the shared
@@ -776,14 +810,17 @@ impl ChatApp {
             return;
         }
         let ch = self.call.channel.clone();
-        ChatDoc::voice_set_state(
+        let me = self.me.id.clone();
+        self.perform_action(
             doc,
-            &ch,
-            &self.me.id,
-            !self.call.muted,
-            self.call.muted,
-            self.call.deafened,
-            self.call.audio_only,
+            ChatAction::SetCallState {
+                channel: ch,
+                user: me,
+                talking: !self.call.muted,
+                muted: self.call.muted,
+                deafened: self.call.deafened,
+                audio_only: self.call.audio_only,
+            },
         );
     }
 
