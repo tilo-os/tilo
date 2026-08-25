@@ -41,7 +41,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::plan::{self, Block, Plan, Refused, TableDraft};
+use crate::plan::{self, Block, Plan, Refused, Step, TableDraft};
 use crate::surface::Offer;
 
 /// The model that makes the choice.
@@ -187,10 +187,21 @@ impl Chooser {
         };
         match self.ask(key, rest, blocks, offers) {
             Ok(answer) => match Plan::from_answer(&answer.actions, rest, answer.table, offers) {
-                Ok(plan) => Decision {
-                    plan,
-                    route: Route::Model { why: answer.why },
-                },
+                Ok(mut plan) => {
+                    // The half the room could not name yet, kept as a step in
+                    // its own words. It is bound like any other clause when
+                    // the dispatcher reaches it, against the survey retaken
+                    // after the steps above have run — which is the only
+                    // moment an operation that needed an app opened is there
+                    // to be found.
+                    if let Some(rest_of_it) = answer.then.as_deref() {
+                        plan.steps.push(Step::unresolved(rest_of_it));
+                    }
+                    Decision {
+                        plan,
+                        route: Route::Model { why: answer.why },
+                    }
+                }
                 // Structured output pins the answer to the catalogue, so
                 // this is the belt to that braces: an id the app does not
                 // export is refused here, before anything is dispatched.
@@ -263,6 +274,22 @@ pub struct Answer {
     /// The operations to perform, in order. Usually one.
     pub actions: Vec<String>,
     pub why: String,
+    /// What the instruction still asks for that this room cannot name yet,
+    /// in the instruction's own words.
+    ///
+    /// `actions` is pinned to an enum of what the room exports *now*, which
+    /// is right for everything already open and impossible for the one case
+    /// that matters: "open the photo editor, crop this, put it in the
+    /// document" names, in its second clause, an operation no survey could
+    /// hold while the first clause had not run. The model could not name it,
+    /// so it named what it could and stopped — and a two-step answer to a
+    /// three-step sentence read as the model declining to finish.
+    ///
+    /// Words rather than an id, because an id it cannot see is one it would
+    /// have to invent. These are resolved against the survey retaken after
+    /// each step, and a clause that answers to nothing then is refused in the
+    /// sentence it would have used anyway.
+    pub then: Option<String>,
     /// Content the model drafted for entries that call for it. Present or
     /// not, it is untrusted until [`Instruction::from_answer`] has checked
     /// it, and it can never carry anything but text for cells.
@@ -345,6 +372,34 @@ pub fn request_body(rest: &str, blocks: &[Block], offers: &[Offer]) -> serde_jso
                             )
                         },
                         "why": { "type": "string" },
+                        // The half of an instruction this room cannot name
+                        // yet. `actions` is an enum of what is exported
+                        // *now*, so an operation that only exists once an
+                        // app has been opened is unnameable there — not
+                        // declined, unnameable. Without somewhere to put it
+                        // the model answered the part it could and stopped,
+                        // and a two-step answer to a three-step sentence
+                        // read as a refusal.
+                        //
+                        // Nullable rather than optional, for the reason
+                        // `table` is: asked for something optional the model
+                        // leaves the field out and the omission is invisible.
+                        // Required, it has to decide.
+                        "then": {
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "null" }
+                            ],
+                            "description":
+                                "What the request still asks for that nothing \
+                                 on the list can express yet, in the request's \
+                                 own words — the rest of the sentence, after \
+                                 the operations you named. Use it when opening \
+                                 an application is what would put the needed \
+                                 operation on the list, since that operation \
+                                 cannot be named until it is open. `null` when \
+                                 the operations you named already do all of it."
+                        },
                         // Required, and nullable rather than optional.
                         //
                         // Optional was the obvious shape and it does not
@@ -402,7 +457,7 @@ pub fn request_body(rest: &str, blocks: &[Block], offers: &[Offer]) -> serde_jso
                             ]
                         }
                     },
-                    "required": ["actions", "why", "table"],
+                    "required": ["actions", "why", "table", "then"],
                     "additionalProperties": false
                 }
             }
@@ -426,6 +481,22 @@ not: a step nobody asked for is an edit to somebody's document that nobody \
 wanted, and a step left out means half the request is carried out and reported \
 as though it were all of it. If any part of what was asked for is not in the \
 list, answer \"none\" for the whole thing rather than doing the part that is.
+
+That last rule has one exception, and it is the reason `then` exists. Some \
+entries open an application, and their description says so: opening it is what \
+puts that application's own operations on this list. An operation that lives in \
+an application which is not open yet is therefore not missing — it is not \
+nameable yet, and it will be nameable the moment the open has run. For a request \
+like \"make this square and put it in the open document\", where squaring a \
+photograph is the photo editor's work and the photo editor is not open: name the \
+open in `actions`, and put the rest of the sentence in `then`, in the words it \
+was asked in. The rest is asked again once the application is open and its \
+operations are on the list.
+
+So answer \"none\" when nothing on the list does the job and nothing on it would \
+open an application that could. Do not answer \"none\" merely because the \
+operation you need belongs to an application that is not open — that is refusing \
+work the list offers you a way to reach.
 
 The list has two halves and the first is easy to skim past. **Editorial changes** \
 come first: each is several of the application's operations composed into one \
@@ -583,10 +654,22 @@ pub fn parse_answer(body: &str) -> Result<Answer, String> {
         .and_then(|w| w.as_str())
         .unwrap_or("")
         .to_string();
+    // Blank is `null`. A model that writes `""` here has said the same
+    // thing as one that wrote nothing, and turning an empty string into a
+    // clause would put a step in the plan whose words are no words — asked
+    // of the survey later it can only refuse, in a sentence that says
+    // nothing about why.
+    let then = answer
+        .get("then")
+        .and_then(|t| t.as_str())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| first_chars(t, 300));
     Ok(Answer {
         actions,
         why: first_chars(&why, 200),
         table: answer.get("table").and_then(table_draft),
+        then,
     })
 }
 
@@ -977,6 +1060,7 @@ mod tests {
                 actions: vec!["table".to_string()],
                 why: "bullets above it".into(),
                 table: None,
+                then: None,
             }
         );
     }
