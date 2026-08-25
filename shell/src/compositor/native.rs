@@ -308,6 +308,32 @@ fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString
 struct TestControlConn {
     reader: BufReader<UnixStream>,
     closed: bool,
+    /// A reply this connection is owed and cannot yet make.
+    ///
+    /// An `actions_invoke` that reached an application in another process has
+    /// asked something this thread cannot answer for: the application replies
+    /// on its own event loop, and this thread is what serves that application's
+    /// Wayland connection. Waiting here would be waiting for something this
+    /// thread is preventing -- measured, before this existed, as an operation
+    /// that ran about two seconds late, immediately after the wait for it gave
+    /// up.
+    ///
+    /// So the answer is parked and the run loop delivers it, after a tick that
+    /// has served the clients and painted. Nothing further is read from this
+    /// connection until it is delivered: the protocol is one reply per request,
+    /// in order.
+    pending: Option<PendingReply>,
+}
+
+/// A reply held until the application it is about has had a chance to answer.
+struct PendingReply {
+    /// What the dispatcher already decided, used when every invocation the
+    /// command started came back clean.
+    resp: test_control::Response,
+    /// The invocations this command started, and which are still out.
+    waiting: Vec<u64>,
+    /// The first failure any of them reported, which replaces `resp`.
+    failed: Option<InvokeFailure>,
 }
 
 impl TestControlConn {
@@ -319,6 +345,7 @@ impl TestControlConn {
         Some(Self {
             reader: BufReader::new(stream),
             closed: false,
+            pending: None,
         })
     }
 }
@@ -1660,6 +1687,11 @@ fn pump_test_control_conn(
     // input-to-present path a physical keystroke takes.
     let mut injected_input = false;
     loop {
+        // One reply per request, in order: nothing more is read from this
+        // connection while it is owed an answer that has not arrived.
+        if conn.pending.is_some() {
+            return injected_input;
+        }
         let mut line = String::new();
         match read_bounded_line(&mut conn.reader, &mut line, TEST_CONTROL_MAX_LINE_BYTES) {
             Ok(None) => {
@@ -1743,6 +1775,22 @@ fn pump_test_control_conn(
                 }) {
                     injected_input = true;
                     frame_builder.relayout();
+                }
+                // Did this command ask an application in another process to
+                // do something? Then the honest answer is not available yet.
+                // Park it; the run loop delivers it once the application has
+                // been given the chance to reply that this thread was holding.
+                let waiting: Vec<u64> = frame_builder
+                    .host()
+                    .remote_app_actions()
+                    .pending_ids();
+                if !waiting.is_empty() {
+                    conn.pending = Some(PendingReply {
+                        resp,
+                        waiting,
+                        failed,
+                    });
+                    return injected_input;
                 }
                 let resp = match failed {
                     Some(failure) => test_control::Response::Err {
@@ -3903,6 +3951,59 @@ pub fn run() -> ! {
             }
             if !test_control_conns.is_empty() {
                 last_test_control = Some(Instant::now());
+            }
+            test_control_conns.retain(|c| !c.closed);
+        }
+        // Answers from applications that were asked to perform one of their own
+        // operations. Read here, on the loop that serves and paints them, and
+        // not on the socket thread that asked -- see `TestControlConn::pending`.
+        //
+        // Outside the `if let Some(listener)` above deliberately: an operation
+        // invoked from the palette has nobody on a socket waiting for it, and
+        // its answer still has to be collected rather than left in flight
+        // forever.
+        {
+            let settled = frame_builder.host().remote_app_actions().settle();
+            for (id, outcome) in settled {
+                if let Err(why) = &outcome {
+                    eprintln!("nirios compositor: invocation {id} did not run: {why}");
+                }
+                for conn in test_control_conns.iter_mut() {
+                    let Some(pending) = conn.pending.as_mut() else {
+                        continue;
+                    };
+                    if !pending.waiting.contains(&id) {
+                        continue;
+                    }
+                    pending.waiting.retain(|w| *w != id);
+                    if let Err(why) = &outcome {
+                        pending.failed.get_or_insert(InvokeFailure {
+                            code: why.code().to_string(),
+                            message: why.to_string(),
+                        });
+                    }
+                }
+            }
+            for conn in test_control_conns.iter_mut() {
+                if conn.pending.as_ref().is_some_and(|p| !p.waiting.is_empty()) {
+                    continue;
+                }
+                let Some(pending) = conn.pending.take() else {
+                    continue;
+                };
+                let resp = match pending.failed {
+                    Some(failure) => test_control::Response::Err {
+                        code: failure.code,
+                        message: failure.message,
+                    },
+                    None => pending.resp,
+                };
+                let mut out = serialise_response(&resp);
+                out.push('\n');
+                if let Err(e) = conn.reader.get_mut().write_all(out.as_bytes()) {
+                    eprintln!("nirios compositor: test_control write: {e}");
+                    conn.closed = true;
+                }
             }
             test_control_conns.retain(|c| !c.closed);
         }

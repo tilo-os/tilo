@@ -361,13 +361,22 @@ fn remote_row(
                 }
                 st.local_user_id.clone()
             };
-            // Blocking, bounded. The chrome borrow above is closed first: the
-            // application answering this may itself be asking this session for
-            // something, and holding the cell across the wait would be the one
-            // place these two could deadlock.
+            // Sent, not waited for. The thread running this is the one that
+            // serves the application's own connection, so waiting here for the
+            // application to answer would be waiting for something this thread
+            // is preventing. The answer is picked up by
+            // `RemoteAppActions::settle` from the loop that paints, and a
+            // caller waiting on the control socket has its reply held until
+            // then -- see `shell::app_action_wire`.
             remote
-                .invoke(&address, argument, &caller)
-                .map(|()| {
+                .dispatch(&address, argument, &caller)
+                .map(|_id| {
+                    // Noted on the ask rather than on the answer. The
+                    // crossing is what a person is shown, and the operation
+                    // that carries it is one this session already decided may
+                    // happen; withholding the animation until an out-of-process
+                    // reply lands would show it a frame or two after the
+                    // picture it is about.
                     if collects_content {
                         if let Some(hash) = argument {
                             crate::shell::action_flight::note_flight(

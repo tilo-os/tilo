@@ -43,6 +43,23 @@
 //! passed in the call. After that check the namespace *is* the app, and the
 //! existing gate needs no special case for a surface that came off a socket.
 //!
+//! ## Why an invocation is not waited for here
+//!
+//! The obvious shape -- send, block until the app answers -- deadlocks, and it
+//! deadlocks by construction rather than by bad luck. The thread that would
+//! block is the compositor's, and the compositor is what serves the
+//! application's Wayland connection: an app that is mid-frame cannot reach its
+//! own event loop until the compositor lets it, so the one thread waiting for
+//! the answer is the one thread preventing it. Measured before this was
+//! written: the operation was performed, and performed about two seconds late,
+//! immediately after the wait it was waiting on gave up.
+//!
+//! So [`RemoteAppActions::dispatch`] sends and returns, and
+//! [`RemoteAppActions::settle`] is called once per tick from the loop that
+//! paints -- where clients have just been served and are able to answer. A
+//! caller waiting on a socket has its reply held until then, which is the same
+//! answer arriving at the only moment it can be true.
+//!
 //! ## Nothing here decides authority
 //!
 //! [`RemoteAppActions::check`] asks [`crate::shell::actions`], which asks the
@@ -53,9 +70,8 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use qos_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
 use qos_actions::resource::Collects;
@@ -79,6 +95,15 @@ use crate::shell::state::{Actor, ResourceRef, Verb, Workspace};
 /// is live), so an answer normally arrives inside a frame or two. Anything
 /// approaching this is an app in trouble, not an app being slow.
 pub const INVOCATION_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// One invocation sent and not yet answered.
+struct InFlight {
+    address: ActionAddress,
+    /// When to stop believing an answer is coming.
+    deadline: Instant,
+    /// What the application said, once it has said anything.
+    answer: Option<InvokeAnswer>,
+}
 
 /// One operation an application published, kept as the same inert descriptor
 /// an in-process app's tree is surveyed into — so the provider serving both
@@ -109,7 +134,7 @@ struct Inner {
     /// consulted — the fail-closed default the registry exists for.
     decls: ActionRegistry,
     /// Invocations sent and not yet answered.
-    waiting: HashMap<u64, SyncSender<InvokeAnswer>>,
+    in_flight: HashMap<u64, InFlight>,
 }
 
 /// What an application said became of an invocation.
@@ -272,23 +297,22 @@ impl RemoteAppActions {
         check_action(workspace, &inner.decls, actor, app, action, resource)
     }
 
-    /// Ask the application that published `address` to perform it, and wait
-    /// for it to say what happened.
+    /// Ask the application that published `address` to perform it.
     ///
-    /// Blocking, bounded by [`INVOCATION_TIMEOUT`]. The caller is the
-    /// compositor thread, which is what makes a bound mandatory — and what
-    /// makes it affordable: the app on the other end is a different process
-    /// pumping its own loop, so it is not waiting on this one.
+    /// Returns as soon as the instruction is on its way. It does **not** wait
+    /// for the answer, and must not: see the module note -- the thread that
+    /// would wait is the thread the application needs in order to reply.
+    /// [`Self::settle`] delivers the answer from a loop that can let it run.
     ///
-    /// This performs **no** permission check. [`Self::check`] is a separate
-    /// call so the gate cannot be skipped by reading this signature and
+    /// This performs **no** permission check. The gate is a separate call
+    /// ([`Self::check`]) so it cannot be skipped by reading this signature and
     /// deciding it looks complete.
-    pub fn invoke(
+    pub fn dispatch(
         &self,
         address: &ActionAddress,
         argument: Option<&str>,
         actor: &str,
-    ) -> Result<(), InvokeError> {
+    ) -> Result<u64, InvokeError> {
         let (peer, app) = self.owner_of(address).ok_or(InvokeError::Unknown)?;
         let peers = self
             .peers
@@ -298,15 +322,20 @@ impl RemoteAppActions {
             .ok_or(InvokeError::Unknown)?;
 
         let id = self.next_invocation.fetch_add(1, Ordering::Relaxed);
-        // Registered *before* the send: an application quick enough to answer
-        // on the next frame can answer before this thread reaches the receive,
-        // and a slot created afterwards would miss it.
-        let rx = {
-            let (tx, rx) = sync_channel(1);
+        // Recorded *before* the send: an application quick enough to answer on
+        // its next frame can answer before this returns, and a row created
+        // afterwards would have nowhere to put the answer.
+        {
             let mut inner = self.inner.lock().map_err(|_| InvokeError::Unknown)?;
-            inner.waiting.insert(id, tx);
-            rx
-        };
+            inner.in_flight.insert(
+                id,
+                InFlight {
+                    address: address.clone(),
+                    deadline: Instant::now() + INVOCATION_TIMEOUT,
+                    answer: None,
+                },
+            );
+        }
 
         let sent = peers.dispatch_invocation(
             peer,
@@ -319,7 +348,9 @@ impl RemoteAppActions {
             },
         );
         if !sent {
-            self.forget_waiting(id);
+            if let Ok(mut inner) = self.inner.lock() {
+                inner.in_flight.remove(&id);
+            }
             tracing::warn!(
                 peer, %app, resource = %address.resource, action = %address.action,
                 "an operation was addressed to an application whose connection is not \
@@ -327,28 +358,67 @@ impl RemoteAppActions {
             );
             return Err(InvokeError::Unknown);
         }
-
-        let answer = self.wait_for(id, rx);
-        match answer {
-            Some(a) if a.code.is_empty() => Ok(()),
-            Some(a) => Err(InvokeError::Refused {
-                code: a.code,
-                message: a.message,
-            }),
-            None => Err(InvokeError::TimedOut),
-        }
+        tracing::debug!(
+            id, peer, %app, resource = %address.resource, action = %address.action,
+            "asked an application to perform one of its own operations"
+        );
+        Ok(id)
     }
 
-    fn wait_for(&self, id: u64, rx: Receiver<InvokeAnswer>) -> Option<InvokeAnswer> {
-        let answer = rx.recv_timeout(INVOCATION_TIMEOUT).ok();
-        self.forget_waiting(id);
-        answer
+    /// Whether anything is still waiting on an application.
+    pub fn in_flight(&self) -> usize {
+        self.inner.lock().map(|i| i.in_flight.len()).unwrap_or(0)
     }
 
-    fn forget_waiting(&self, id: u64) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.waiting.remove(&id);
+    /// The invocations still out, so a caller that started some can tell which
+    /// answers it is owed.
+    pub fn pending_ids(&self) -> Vec<u64> {
+        self.inner
+            .lock()
+            .map(|i| i.in_flight.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// Take every invocation that has been answered or has run out of time.
+    ///
+    /// Called once per tick from the compositor's own loop, straight after the
+    /// clients have been served -- which is the first moment an application
+    /// could have answered, and so the first moment this can tell "it ran"
+    /// from "nobody answered".
+    pub fn settle(&self) -> Vec<(u64, Result<(), InvokeError>)> {
+        let Ok(mut inner) = self.inner.lock() else {
+            return Vec::new();
+        };
+        let now = Instant::now();
+        let done: Vec<u64> = inner
+            .in_flight
+            .iter()
+            .filter(|(_, f)| f.answer.is_some() || now >= f.deadline)
+            .map(|(id, _)| *id)
+            .collect();
+        let mut out = Vec::new();
+        for id in done {
+            let Some(f) = inner.in_flight.remove(&id) else {
+                continue;
+            };
+            let result = match f.answer {
+                Some(a) if a.code.is_empty() => Ok(()),
+                Some(a) => Err(InvokeError::Refused {
+                    code: a.code,
+                    message: a.message,
+                }),
+                None => {
+                    tracing::warn!(
+                        id, resource = %f.address.resource, action = %f.address.action,
+                        "an application was asked to perform one of its operations and \
+                         did not answer; whether it ran is unknown"
+                    );
+                    Err(InvokeError::TimedOut)
+                }
+            };
+            out.push((id, result));
         }
+        out
     }
 }
 
@@ -485,22 +555,21 @@ impl AppActionListener for RemoteAppActions {
     }
 
     fn completed(&self, id: u64, code: &str, message: &str) {
-        let waiting = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.waiting.remove(&id));
-        match waiting {
-            Some(tx) => {
-                // The receiver may already have timed out and gone. That is an
-                // answer arriving too late, not an error: the caller has
-                // already been told nobody answered in time, and saying so
-                // twice would contradict it.
-                let _ = tx.try_send(InvokeAnswer {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        match inner.in_flight.get_mut(&id) {
+            // Recorded rather than delivered: whoever is waiting is on the
+            // compositor's own loop, and `settle` is where it looks.
+            Some(f) => {
+                f.answer = Some(InvokeAnswer {
                     code: code.to_string(),
                     message: message.to_string(),
-                });
+                })
             }
+            // An answer that arrived after its deadline. Not an error: the
+            // caller has already been told nobody answered in time, and
+            // contradicting that now would be worse than saying nothing.
             None => tracing::debug!(
                 id, code, "an application answered an invocation nobody is still waiting on"
             ),
@@ -635,7 +704,7 @@ mod tests {
             "an action of an app that has exited must not remain invokable"
         );
         assert!(
-            dir.invoke(
+            dir.dispatch(
                 &ActionAddress::new("word-processor.document", "insert-table"),
                 None,
                 "quinten",
@@ -746,7 +815,7 @@ mod tests {
             vec![wire("word-processor.document", "insert-table")],
         );
         let err = dir
-            .invoke(
+            .dispatch(
                 &ActionAddress::new("word-processor.document", "insert-table"),
                 None,
                 "quinten",
