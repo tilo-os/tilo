@@ -1014,12 +1014,15 @@ class Live:
         self.say("cutting to xaver — he has the image")
         yc.cut("xaver")
         try:
-            # Aimed at a pixel, not at a name. A client application's
-            # widgets are not in the compositor's target registry -- that
-            # registry walks the shell's own tree -- so the earlier call
-            # here asked for `file_row:harbour.png` and could never once
-            # have resolved. It had never run, because the compose surface
-            # had never opened far enough for anyone to find out.
+            # Aimed at a pixel, and the pixel is asked for rather than
+            # guessed. A client application's widgets are not in the
+            # compositor's target registry -- that registry walks the
+            # shell's own tree -- so `named_rect("file_row:harbour.png")`
+            # could never once have resolved, and sweeping the window for
+            # a row instead is what lost a take. The app answers now:
+            # `Widget::resource_rects` says where it drew the row for that
+            # file's own address, and `press_the_photo_row` converts it
+            # with the window's placement.
             if not self.args.instruct:
                 # Handed over rather than driven. His window is already
                 # in front -- the cut raised it -- so the only thing
@@ -1756,13 +1759,31 @@ def _the_owners_half(q, shots: str, instruction: str,
                    f"({type(exc).__name__}: {exc})")
     stop.wait(0.8)
 
-    # A run of real list items, a line of prose that disagrees with them,
-    # and then the instruction — in that order, because the agent
-    # converts the bullets immediately above the paragraph addressed to
-    # it.
-    mark("he writes the notes, and the line addressed to Claude")
+    # The notes, and nothing addressed to anybody.
+    #
+    # The instruction used to be typed here too, and that was the film
+    # arguing against itself: an agent answering a line in the document it
+    # is already watching is what every word processor now ships, and it
+    # made the gesture the film is actually about — somebody pointing at
+    # an object and saying something about *that* — into a second route to
+    # the same place. With two of them the agent answered whichever
+    # arrived first, and on a `--once` run that was usually this one, so
+    # the beat the camera was on did nothing.
+    #
+    # It also cost the film the only thing there was to watch during the
+    # agent's half-minute of thinking. A summons carried by a remark goes
+    # through `carry_out`, which opens an `AgentWork` record and posts
+    # Taken/Waiting/Doing/Done into chat as each thing happens; a line in
+    # the document goes down a path that publishes none of it. Every take
+    # so far filmed a still page while the agent worked, because of this
+    # call.
+    #
+    # So `instruction` is no longer written anywhere by this half. It
+    # reaches the agent once, from xaver's hand, carrying the address of
+    # the thing he pointed at — see `Live.his_instruction`.
+    mark("he writes the notes")
     typed = yc.type_into_the_document(
-        q, wp, yc.AGENT_PROSE + yc.AGENT_BULLETS + instruction + "\n")
+        q, wp, yc.AGENT_PROSE + yc.AGENT_BULLETS)
     yc.claim("the document was written into", typed, True)
     print("\n  [ --self-test: the owner's half is done ]", flush=True)
 
