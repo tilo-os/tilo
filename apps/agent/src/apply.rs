@@ -267,6 +267,14 @@ impl Editor {
     /// in the room: a file manager's state has no blocks in it and would be
     /// refused as "not a document" by a test that only knows one shape.
     /// Here the app itself has already said the bytes are its own.
+    ///
+    /// A refusal *after* that gate is reported, unlike the one in
+    /// [`Editor::merge_full`]. There, a snapshot that will not merge is
+    /// ordinarily just a different document — the agent announces no app and
+    /// is handed every one of them. Here the contract has already said these
+    /// bytes are this app's, so a merge that fails anyway is the room's own
+    /// state failing to reach the agent, and the agent then sits waiting to
+    /// be spoken to about something it will never see.
     pub fn merge_full_any(&mut self, bytes: &[u8]) -> Result<bool> {
         let Ok(mut incoming) = AutoCommit::load(bytes) else {
             return Ok(false);
@@ -274,7 +282,14 @@ impl Editor {
         if !(self.contract.recognises)(&incoming) {
             return Ok(false);
         }
-        if self.doc.merge(&mut incoming).is_err() {
+        if let Err(e) = self.doc.merge(&mut incoming) {
+            tracing::warn!(
+                app = self.contract.namespace,
+                bytes = bytes.len(),
+                "this app's own state would not merge into the replica held \
+                 for it, so the agent cannot see what the room is doing \
+                 there: {e}",
+            );
             return Ok(false);
         }
         self.drain();
