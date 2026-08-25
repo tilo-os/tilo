@@ -6085,6 +6085,37 @@ impl ShellOverlayHost {
             .collect()
     }
 
+    /// What each visible row *is*, beside what it says.
+    ///
+    /// A row's palette id is `result:<n>` — its position, which is the
+    /// only thing activation needs. Everything a reader might use to
+    /// recognise a row was therefore in its label and subtitle, and both
+    /// are prose: localised, and free to change for reasons that have
+    /// nothing to do with identity.
+    ///
+    /// That is not hypothetical. The subtitle used to end in the package
+    /// id, a harness recognised its target by finding that string in the
+    /// row, and taking the id off the line — correctly, because it is the
+    /// app's name written for a machine and the label above already names
+    /// it — meant every launch in the demo rig failed to find any row and
+    /// opened nothing. The desktop was right and unusable.
+    ///
+    /// So the identity travels beside the prose rather than inside it: a
+    /// reader matches on this, and what a person sees stays free to be
+    /// written for a person.
+    pub fn palette_row_identities(&self) -> Vec<Option<String>> {
+        self.palette
+            .visible_entries()
+            .into_iter()
+            .map(|e| {
+                e.id.strip_prefix("result:")
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .and_then(|idx| self.search_results.get(idx))
+                    .map(|r| r.id.clone())
+            })
+            .collect()
+    }
+
     /// Focus the palette's query field. The live open path
     /// ([`Self::open_palette_with_scope`]) does this; screenshot
     /// harnesses that force `palette_visible` need it too or they

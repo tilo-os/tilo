@@ -897,8 +897,18 @@ fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
             .host()
             .palette_rows_detailed()
             .into_iter()
-            .map(|(id, label, description, badge)| serde_json::json!({
+            .zip(fb.host().palette_row_identities())
+            .map(|((id, label, description, badge), result_id)| serde_json::json!({
                 "id": id,
+                // What this row *is*, as opposed to what it says. `id`
+                // is the row's position, which is all activation needs;
+                // `label` and `description` are prose, localised and
+                // free to be rewritten for a reader. A harness that
+                // recognises its target by matching against prose is
+                // reading a sentence as an interface — and when the
+                // package id was taken off the subtitle, every launch in
+                // the demo rig stopped finding any row at all.
+                "result_id": result_id,
                 "label": label,
                 "description": description,
                 "badge": badge,
