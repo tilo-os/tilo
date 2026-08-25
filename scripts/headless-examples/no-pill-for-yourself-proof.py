@@ -25,7 +25,7 @@ carry this session's own name.
 
     scripts/headless-examples/no-pill-for-yourself-proof.py
 
-    cargo build -p shell -p qos-launcher -p word-processor -p file-explorer
+    cargo build -p shell -p launcher -p word-processor -p file-explorer
 
 The control that keeps this fix honest is a separate script, and it is
 not optional: `peers-cross-both-ways.py` puts two real people in a room

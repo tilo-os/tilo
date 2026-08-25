@@ -930,7 +930,8 @@ def main() -> int:
     if "QOS_LAUNCHER_BIN" not in tools:
         print("no qos-launcher in target/{demo,debug}: an app launch will be "
               "refused, so there would be no word processor to click in. "
-              "Build it:\n  cargo build -p qos-launcher --bin qos-launcher",
+              "Build it:\n"
+              "  cargo build --profile demo -p launcher --bin qos-launcher",
               file=sys.stderr)
         return 2
 
