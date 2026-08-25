@@ -208,6 +208,34 @@ pub fn deliver(chrome: &Chrome, broker: &BrokerHandle, remarks: Vec<Remark>) {
                     error = %why,
                     "a remark was written and could not be sent"
                 );
+                // And say so to the person who wrote it.
+                //
+                // The refusal itself is right: chat has no private
+                // delivery, and encoding a `Delivery::Private` as a
+                // channel row would put a message somebody marked private
+                // in front of the whole room -- a disclosure committed by
+                // the code that was meant to route it. Refusing is the
+                // safe half.
+                //
+                // Refusing *silently* is not. The compose surface offers
+                // the people in the room as destinations, so choosing one
+                // is an ordinary thing to do, and until now the whole of
+                // what it produced was a log line: the box closed, the
+                // message was discarded, and nothing on screen differed
+                // from having sent it. A refusal nobody is told about is
+                // indistinguishable from a bug, and the person keeps the
+                // belief that they said something.
+                let mut chrome = chrome.borrow_mut();
+                chrome.push_notification_full(
+                    crate::shell::notification::Notification::new(
+                        crate::shell::i18n::t("remark-not-sent-title"),
+                        crate::shell::i18n::t("remark-not-sent-body"),
+                    )
+                    .with_severity(
+                        crate::shell::notification::NotificationSeverity::Warning,
+                    )
+                    .with_dismiss_after(std::time::Duration::from_secs(30)),
+                );
             }
         }
     }

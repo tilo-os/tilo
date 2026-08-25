@@ -43,3 +43,10 @@ invite-composer-placeholder = Their name in this room
 invite-composer-cancel = Cancel
 invite-composer-create = Create invite
 invite-composer-empty = Say who this invite is for
+
+# Shown when a remark cannot be delivered. Chat has no private
+# conversation, so a remark addressed to one person alone has nowhere to
+# go — and putting it in the channel would disclose what the author
+# marked private. It is refused, and this is how they are told.
+remark-not-sent-title = Not sent
+remark-not-sent-body = A message to one person needs a private conversation, and this room has only channels. Nothing was sent.

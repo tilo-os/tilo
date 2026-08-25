@@ -25,3 +25,6 @@ invite-composer-placeholder = Name dieser Person im Raum
 invite-composer-cancel = Abbrechen
 invite-composer-create = Einladung erstellen
 invite-composer-empty = Sag, für wen diese Einladung ist
+
+remark-not-sent-title = Nicht gesendet
+remark-not-sent-body = Eine Nachricht an eine einzelne Person braucht eine private Unterhaltung; dieser Raum hat nur Kanäle. Es wurde nichts gesendet.
