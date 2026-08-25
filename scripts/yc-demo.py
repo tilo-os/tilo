@@ -6862,6 +6862,10 @@ def where_the_app_draws(log: LogTail, surface: str, tile: tuple,
     `across` is a fraction of the row's width: rows run the full width of
     the content pane, and a third of the way in is the name column on any
     metrics rather than the icon at one end or the date at the other.
+
+    Returns `(screen x, screen y, the same y in the app's coordinates,
+    address)`. The third is what lets a caller that pressed and missed
+    solve for the translation instead of guessing again.
     """
     rects = log.resource_rects(surface)
     want = file_name.lower()
@@ -6876,7 +6880,8 @@ def where_the_app_draws(log: LogTail, surface: str, tile: tuple,
     address, (x0, y0, x1, y1) = hit
     tx, ty, _tw, _th = tile
     across = 0.35
-    return (tx + x0 + across * (x1 - x0), ty + (y0 + y1) / 2.0, address)
+    client_y = (y0 + y1) / 2.0
+    return (tx + x0 + across * (x1 - x0), ty + client_y, client_y, address)
 
 
 def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
@@ -6945,12 +6950,24 @@ def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
 
     # Ask the app where the row is, and press there.
     #
-    # Two attempts rather than one, and the second is not a retry of the
-    # same aim: a window that has just been reframed relayouts, and a map
-    # read a few hundred milliseconds before that settles describes the
-    # size it used to be. So a miss re-reads — by then the new map has
-    # been published — and aims again at whatever it now says.
-    for attempt in range(2):
+    # Three attempts, and none of them is a retry of the same aim.
+    #
+    #   1. the map as read. On a window that has settled this is the
+    #      answer and there is no second press.
+    #   2. a window reframed a moment ago is still relaying out, and a map
+    #      read before that settled describes the size it used to be — so
+    #      a miss re-reads, by which time the new map has been published.
+    #   3. a press that landed on *some* row measures the translation
+    #      between the two coordinate spaces exactly: the app reported the
+    #      position in its own, and the difference from where the press was
+    #      aimed is the offset. Applied to the target's published rect that
+    #      lands on it, whatever made the first aim wrong — a stale
+    #      placement, a window that moved between the two readings.
+    #
+    # Nothing here counts rows or knows a row height. The correction is a
+    # subtraction of two numbers each side reported about the same press.
+    offset = None
+    for attempt in range(3):
         aim = where_the_app_draws(log, surface, tile, photo_name)
         if aim is None:
             if attempt == 0:
@@ -6961,7 +6978,9 @@ def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
             note(f"{surface} published no layout naming {photo_name}; "
                  f"falling back to sweeping for its row")
             break
-        aim_x, aim_y, address = aim
+        aim_x, aim_y, client_y, address = aim
+        if offset is not None:
+            aim_y = client_y + offset
         hit = press_at(aim_x, aim_y)
         if hit and os.path.basename(hit[0]).lower() == want:
             note(f"the app draws {address} at y={aim_y:.0f}; pressed there "
@@ -6969,9 +6988,16 @@ def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
             return (aim_x, aim_y)
         quinten.pointer_button(False)
         quinten.settle(0.3)
-        landed = os.path.basename(hit[0]) if hit else "nothing"
-        note(f"aimed at {address} (y={aim_y:.0f}) and {landed} answered; "
-             f"re-reading the app's layout")
+        if hit:
+            # screen y = client y + offset, measured rather than assumed.
+            offset = aim_y - hit[1]
+            note(f"aimed at {address} (y={aim_y:.0f}) and "
+                 f"{os.path.basename(hit[0])} answered; the app puts that "
+                 f"press at client y={hit[1]:.0f}, so screen = client "
+                 f"+ {offset:.0f}")
+        else:
+            note(f"aimed at {address} (y={aim_y:.0f}) and nothing answered; "
+                 f"re-reading the app's layout")
 
     # Nothing published, or what it published did not answer. Sweep a
     # band: rows start below the app's toolbar and the column header, and
