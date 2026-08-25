@@ -136,6 +136,16 @@ pub struct View {
     /// The blocks a block-level operation would target — the agent's
     /// selection, or just the focus block.
     pub target_blocks: Vec<String>,
+    /// The resource the request named, when it named one.
+    ///
+    /// An address, like everything else here, and the most precise thing the
+    /// agent ever has: the gesture that produces it is somebody right-clicking
+    /// an object and saying something about *that*, so the app that owns the
+    /// object minted the id. `View::directory` says where the agent happens to
+    /// be looking; this says what it was pointed at, and the two are not the
+    /// same question — a request can name a photograph in a directory nobody
+    /// asked the agent to browse.
+    pub subject: Option<String>,
     /// The directory the agent is browsing, for an app whose subject is the
     /// filesystem.
     pub directory: Option<PathBuf>,
@@ -260,6 +270,18 @@ fn nothing(_view: &View, _doc: &AutoCommit) -> Option<Product> {
 /// any of them. Hidden files are skipped exactly as the explorer skips them,
 /// so what can be denoted is what a person looking at the window can see.
 fn file_explorer_product(view: &View, _doc: &AutoCommit) -> Option<Product> {
+    // What the request pointed at, before where the agent is looking. A
+    // subject naming one of this app's entries *is* the answer — it is an
+    // address the app minted for a file, and it needs no directory listing to
+    // resolve. Asking the browsed directory first would answer a question
+    // about the photograph somebody selected with whatever happens to be in
+    // the folder the agent was started on, and the film's own gesture carries
+    // a subject and gives the agent no directory at all.
+    if let Some(id) = view.subject.as_deref() {
+        if let Some(path) = file_explorer::actions::entry_path(id) {
+            return content_of(std::path::Path::new(&path));
+        }
+    }
     let dir = view.directory.as_ref()?;
     let mut entries = file_explorer::model::read_dir_sync(dir).ok()?;
     entries.retain(|e| {
@@ -268,8 +290,15 @@ fn file_explorer_product(view: &View, _doc: &AutoCommit) -> Option<Product> {
     let [only] = entries.as_slice() else {
         return None;
     };
-    let bytes = std::fs::read(&only.path)
-        .map_err(|e| tracing::warn!(path = %only.path.display(), "cannot read the picture: {e}"))
+    content_of(&only.path)
+}
+
+/// The bytes at `path`, in the blob store, as something another operation
+/// could be handed. `None` when they cannot be read — a product nothing can
+/// resolve is worse than no product.
+fn content_of(path: &std::path::Path) -> Option<Product> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| tracing::warn!(path = %path.display(), "cannot read the picture: {e}"))
         .ok()?;
     Some(Product::Content {
         hash: qdoc::blobstore::put(&bytes),

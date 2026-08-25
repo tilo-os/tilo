@@ -192,6 +192,20 @@ pub struct FilesResourceCtx {
 /// Build the resource tree for an open directory: the directory itself, and one
 /// child per entry addressed by its real path, each exporting the rename
 /// proposal.
+/// The path an entry's resource id names, or `None` when the id is not one.
+///
+/// The reverse of the `files.entry:{path}` the tree mints, written beside it
+/// so the two cannot drift apart. A caller holding an address a person
+/// selected can reach the file it names without listing a directory first —
+/// which is the whole point of an address.
+pub fn entry_path(id: &str) -> Option<String> {
+    let path = id.strip_prefix("files.entry:")?;
+    // Absolute only. An id is minted from a real path, so a relative one did
+    // not come from here and must not be resolved against whatever directory
+    // this process happens to be in.
+    (!path.is_empty() && path.starts_with('/')).then(|| path.to_string())
+}
+
 pub fn provide_resources(ctx: &FilesResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let dir = &ctx.directory;
     // A directory's own name, except at a root (`/`), which has none.
