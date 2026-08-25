@@ -699,6 +699,42 @@ impl CapnpBrokerState {
         peer_id: u64,
     ) -> mpsc::UnboundedReceiver<PresenceEnvelope> {
         let (tx, rx) = mpsc::unbounded_channel();
+        // A newly-opened app is a joiner: it broadcasts its own `Arrived`
+        // and the incumbents already in the room answer with a full
+        // `SyncCRDT` (`ui/src/app.rs`, on `PeerArrived`). But presence is
+        // fanned out live and never replayed (see `presence_subscriber_count`
+        // above), so an incumbent's `Arrived` sent before this stream existed
+        // is *gone*, and the mirror image — an incumbent answering *this*
+        // app's `Arrived` — is a race the app can lose. An app opened after a
+        // participant joined can therefore stay invisible to it: the exact
+        // shape of an agent that opens the photo editor onto a picture and
+        // then never comes to hold the editor's document, so its crop has
+        // nothing to work on and the open times out.
+        //
+        // Replay one `Arrived` here, at the same certain-not-yet-heard moment
+        // `subscribe_context` announces the roster. Attributed to this
+        // machine's own participant — the row context already carries, so it
+        // adds no presence pill — a non-`Tab` key makes the just-opened app
+        // reply with its whole document now; `fanout_to_route`'s snapshot then
+        // reaches the subscribers that were already in the room, the agent
+        // that asked to open it foremost. Harmless where nobody needs it: a
+        // second copy of a document a peer already holds merges to the same
+        // thing.
+        if let Some(row) = self
+            .identity
+            .self_row(Some(&CrdtRoute::cluster(channel_id.to_string())))
+        {
+            if let Ok(key_bytes) = postcard::to_stdvec(&PresenceKey::Workspace {
+                id: "word-processor".to_string(),
+            }) {
+                let _ = tx.send(PresenceEnvelope {
+                    user_id: row.id.clone(),
+                    key_bytes,
+                    payload: PresencePayload::Arrived,
+                    legacy_cursor: false,
+                });
+            }
+        }
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())
                 .or_insert_with(ChannelSubscribers::default)
