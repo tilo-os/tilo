@@ -1445,11 +1445,35 @@ pub struct ForeignTab {
 
 /// Every `TileContent::Foreign` tab in `tree`'s active workspace, in
 /// traversal order.
+///
+/// Scoped to the active workspace because its callers are asking what is on
+/// screen. Anything asking whether a surface *has* a tab must use
+/// [`foreign_tabs_anywhere`] instead — see the note there.
 pub fn foreign_tabs(tree: &WorkspaceTree) -> Vec<ForeignTab> {
     let mut out = Vec::new();
     let Some(ws) = tree.active_workspace() else {
         return out;
     };
+    collect_foreign_tabs(ws, &mut out);
+    out
+}
+
+/// Every `TileContent::Foreign` tab in `tree`, across all its workspaces.
+///
+/// A window keeps its tab when the user walks to another workspace, and a
+/// launch can place one in a workspace that was never the active one. So
+/// "does this surface already have a tab?" is a question about the whole
+/// tree, and asking it of the active workspace alone reports a window that
+/// exists as missing — which is how one launch came to produce two windows.
+pub fn foreign_tabs_anywhere(tree: &WorkspaceTree) -> Vec<ForeignTab> {
+    let mut out = Vec::new();
+    for ws in &tree.workspaces {
+        collect_foreign_tabs(ws, &mut out);
+    }
+    out
+}
+
+fn collect_foreign_tabs(ws: &crate::shell::state::Workspace, out: &mut Vec<ForeignTab>) {
     for strip in &ws.strips {
         for group in &strip.window_groups {
             for tab in &group.tabs {
@@ -1464,7 +1488,6 @@ pub fn foreign_tabs(tree: &WorkspaceTree) -> Vec<ForeignTab> {
             }
         }
     }
-    out
 }
 
 /// Which window group in the active workspace holds `tab_id`.
@@ -1519,8 +1542,14 @@ pub fn is_visible_tab(tree: &WorkspaceTree, surface_id: SurfaceId) -> bool {
 /// signal to bump the chrome revision so the strip resync splices the tab
 /// into the live widget tree.
 pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTree) -> bool {
-    let wanted = foreign_tabs(source);
-    let present = foreign_tabs(rendered);
+    // Both sides are read across every workspace. Which workspace a window
+    // is in has nothing to do with whether it exists, and the two trees
+    // move their active pointers independently — the chrome's follows the
+    // user, the protocol side's never moves at all. Comparing only the
+    // active workspaces made the mirror re-adopt a window the moment the
+    // user walked away from it.
+    let wanted = foreign_tabs_anywhere(source);
+    let present = foreign_tabs_anywhere(rendered);
     let mut changed = false;
 
     // Remove foreign tabs the protocol side no longer has.
@@ -1538,11 +1567,19 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
         }
     }
 
+    // Collapse any surface that already has more than one tab. A session
+    // saved before this mirror compared whole trees carries its duplicates
+    // on disk, so preventing new ones is not enough — the desktop the user
+    // reopens has to come back with one window per window.
+    if drop_duplicate_foreign_tabs(rendered) {
+        changed = true;
+    }
+
     // Add foreign tabs the rendered tree is missing. `adopt_toplevel` is
     // the same production splice the protocol side uses, so placement
     // rules (empty-workspace bootstrap, first strip / first group) stay in
     // exactly one place.
-    let present_ids: std::collections::HashSet<SurfaceId> = foreign_tabs(rendered)
+    let present_ids: std::collections::HashSet<SurfaceId> = foreign_tabs_anywhere(rendered)
         .iter()
         .map(|t| t.surface_id)
         .collect();
@@ -1579,6 +1616,49 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
     }
 
     changed
+}
+
+/// Keep the first tab showing each surface and remove the rest.
+///
+/// One window is one tab. A second tab onto the same surface draws the same
+/// client twice, offers it two sets of configures, and outlives it — a
+/// destroyed surface closes one tab, leaving the other pointing at nothing.
+///
+/// A session saved while the mirror was still comparing active workspaces
+/// carries its duplicates on disk, so this runs every reconcile rather than
+/// only at adoption: preventing new duplicates does not repair a desktop
+/// that already has one.
+///
+/// Returns whether anything was removed.
+fn drop_duplicate_foreign_tabs(tree: &mut WorkspaceTree) -> bool {
+    let mut seen: std::collections::HashSet<SurfaceId> = std::collections::HashSet::new();
+    let mut removed = false;
+    for ws in tree.workspaces.iter_mut() {
+        for strip in ws.strips.iter_mut() {
+            for group in strip.window_groups.iter_mut() {
+                let active = group.active_tab;
+                let mut dropped_active = false;
+                group.tabs.retain(|tab| {
+                    let ShellTile::Foreign { surface_id, .. } = &tab.tile else {
+                        return true;
+                    };
+                    if seen.insert(*surface_id) {
+                        return true;
+                    }
+                    dropped_active |= active == tab.id;
+                    removed = true;
+                    false
+                });
+                // The duplicate may have been the tab the group was showing.
+                // Fall back the way a closed tab does rather than leaving the
+                // group pointing at something that is gone.
+                if dropped_active {
+                    group.active_tab = group.tabs.last().map(|t| t.id).unwrap_or(0);
+                }
+            }
+        }
+    }
+    removed
 }
 
 // ---------------------------------------------------------------------------
@@ -2245,6 +2325,201 @@ mod tests {
         crate::compositor::tab_binding::close_tab_for_destroyed_surface(&mut source, 4242);
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
         assert!(foreign_tabs(&rendered).is_empty());
+    }
+
+    /// One window, one tab — wherever in the tree that tab happens to sit.
+    ///
+    /// The mirror used to ask "is this surface in the workspace the user is
+    /// looking at?" and treat "no" as "not adopted yet". A window in any other
+    /// workspace therefore got adopted a second time the moment the user
+    /// switched away from it, and the desktop grew a duplicate of an
+    /// application nobody had opened twice.
+    #[test]
+    fn a_window_in_another_workspace_is_not_adopted_a_second_time() {
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let mut rendered = WorkspaceTree::bootstrap_demo();
+        let surface = sid(31);
+
+        crate::compositor::tab_binding::adopt_toplevel(
+            &mut source,
+            surface,
+            Some("dev.qos.word-processor".into()),
+        );
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert_eq!(
+            tabs_for_surface(&rendered, surface),
+            1,
+            "the mirror should adopt the window exactly once",
+        );
+
+        // The user goes to another workspace. Nothing about the window
+        // changed; it is simply no longer the one on screen.
+        let elsewhere = rendered
+            .workspaces
+            .iter()
+            .map(|w| w.id)
+            .find(|id| *id != rendered.active)
+            .expect("the demo tree has more than one workspace");
+        rendered.active = elsewhere;
+
+        reconcile_foreign_tabs(&source, &mut rendered);
+        assert_eq!(
+            tabs_for_surface(&rendered, surface),
+            1,
+            "switching workspaces opened a second window onto the same surface",
+        );
+
+        // And back again, which is the sequence a person actually performs.
+        rendered.active = source.active;
+        reconcile_foreign_tabs(&source, &mut rendered);
+        assert_eq!(
+            tabs_for_surface(&rendered, surface),
+            1,
+            "returning to the window's own workspace duplicated it",
+        );
+    }
+
+    /// A window the launcher placed in a workspace other than the active one
+    /// is already adopted, and must not be adopted again.
+    ///
+    /// This is the launch path rather than the switch path: a launch records
+    /// where the user asked for the window, and the toplevel can map after
+    /// they have moved on.
+    #[test]
+    fn a_window_placed_outside_the_active_workspace_is_adopted_once() {
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let mut rendered = WorkspaceTree::bootstrap_demo();
+        let surface = sid(32);
+
+        crate::compositor::tab_binding::adopt_toplevel(
+            &mut source,
+            surface,
+            Some("dev.qos.photos".into()),
+        );
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+
+        // Move the adopted tab into a workspace that is not the active one,
+        // the way a recorded placement or a peer's room does.
+        let elsewhere = rendered
+            .workspaces
+            .iter()
+            .map(|w| w.id)
+            .find(|id| *id != rendered.active)
+            .expect("the demo tree has more than one workspace");
+        let moved = take_foreign_tab(&mut rendered, surface).expect("the adopted tab");
+        let ws = rendered
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == elsewhere)
+            .expect("the other workspace");
+        let group = ws
+            .strips
+            .first_mut()
+            .and_then(|s| s.window_groups.first_mut())
+            .expect("the other workspace has a group");
+        group.tabs.push(moved);
+
+        reconcile_foreign_tabs(&source, &mut rendered);
+        assert_eq!(
+            tabs_for_surface(&rendered, surface),
+            1,
+            "the window was adopted again because its tab was in another workspace",
+        );
+    }
+
+    /// A desktop that already has the duplicate — restored from a session
+    /// saved before the mirror compared whole trees — comes back with one
+    /// window, not two. Preventing new duplicates does not repair an old one,
+    /// and the tab bar the person is looking at is the one on disk.
+    #[test]
+    fn a_duplicate_already_in_the_tree_is_collapsed() {
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let mut rendered = WorkspaceTree::bootstrap_demo();
+        let surface = sid(33);
+
+        crate::compositor::tab_binding::adopt_toplevel(
+            &mut source,
+            surface,
+            Some("dev.qos.photos".into()),
+        );
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+
+        // Stage the state a pre-fix session left behind: a second tab onto
+        // the same surface, in the same tab bar, showing the same name.
+        let twin = {
+            let one = foreign_tabs_anywhere(&rendered)
+                .into_iter()
+                .find(|t| t.surface_id == surface)
+                .expect("the adopted tab");
+            crate::shell::state::Tab {
+                id: one.tab_id + 1_000_000,
+                title: one.title.clone(),
+                tile: ShellTile::Foreign {
+                    app_id: one.app_id.clone(),
+                    surface_id: surface,
+                },
+            }
+        };
+        let group = rendered
+            .active_workspace_mut()
+            .and_then(|w| w.strips.first_mut())
+            .and_then(|s| s.window_groups.first_mut())
+            .expect("the group the window was adopted into");
+        group.tabs.push(twin);
+        assert_eq!(tabs_for_surface(&rendered, surface), 2, "the fixture is staged");
+
+        assert!(
+            reconcile_foreign_tabs(&source, &mut rendered),
+            "collapsing the duplicate is a change the chrome has to be told about",
+        );
+        assert_eq!(
+            tabs_for_surface(&rendered, surface),
+            1,
+            "the restored desktop still shows the application twice",
+        );
+
+        // And the group is still showing something that exists.
+        let group = rendered
+            .active_workspace()
+            .and_then(|w| w.strips.first())
+            .and_then(|s| s.window_groups.first())
+            .expect("the group");
+        assert!(
+            group.tabs.iter().any(|t| t.id == group.active_tab),
+            "the group is pointing at a tab that is no longer there",
+        );
+    }
+
+    /// How many tabs anywhere in `tree` show `surface`. Walks the tree the
+    /// chrome renders from, so a duplicate is counted where it would be drawn.
+    fn tabs_for_surface(tree: &WorkspaceTree, surface: SurfaceId) -> usize {
+        tree.workspaces
+            .iter()
+            .flat_map(|w| w.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .flat_map(|g| g.tabs.iter())
+            .filter(|t| matches!(&t.tile, ShellTile::Foreign { surface_id, .. } if *surface_id == surface))
+            .count()
+    }
+
+    /// Detach the tab showing `surface` from wherever it is, so a test can put
+    /// it somewhere else.
+    fn take_foreign_tab(
+        tree: &mut WorkspaceTree,
+        surface: SurfaceId,
+    ) -> Option<crate::shell::state::Tab> {
+        for ws in tree.workspaces.iter_mut() {
+            for strip in ws.strips.iter_mut() {
+                for group in strip.window_groups.iter_mut() {
+                    if let Some(i) = group.tabs.iter().position(|t| {
+                        matches!(&t.tile, ShellTile::Foreign { surface_id, .. } if *surface_id == surface)
+                    }) {
+                        return Some(group.tabs.remove(i));
+                    }
+                }
+            }
+        }
+        None
     }
 
     #[test]
