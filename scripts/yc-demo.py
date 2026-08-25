@@ -7063,6 +7063,21 @@ def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
             break
         quinten.settle(0.5)
 
+    # Which of this app's windows to press into.
+    #
+    # There can be more than one — a guest's screen carries the window a
+    # peer's click opened *and* the one he opened himself after answering
+    # the question about his home, and only the second can see his files.
+    # The rect the app published is in a window's own coordinates and says
+    # nothing about which window, so rather than guess, each candidate is
+    # tried in turn and the app's own account of what the press hit decides.
+    # One window is the ordinary case and costs nothing extra.
+    candidates = [tuple(t["rect"]) for t in tiles_for(quinten, surface)]
+    if tile not in candidates:
+        candidates.insert(0, tile)
+    else:
+        candidates.insert(0, candidates.pop(candidates.index(tile)))
+
     # Then press, correcting once from what the app says it got.
     #
     #   1. the map as read. On a settled window this is the answer and
@@ -7077,8 +7092,20 @@ def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
     #
     # Nothing here counts rows or knows a row height. The correction is a
     # subtraction of two numbers each side reported about the same press.
+    # Each window gets two presses: the aim as published, and — if that
+    # landed on a row but not the wanted one — the same rect corrected by
+    # the offset that press measured.
+    tries = [(t, second) for t in candidates for second in (False, True)]
     offset = None
-    for attempt in range(3):
+    for attempt, (tile, corrected) in enumerate(tries):
+        if not corrected:
+            # A new window. Whatever the last one taught about the gap
+            # between the two coordinate spaces was about that one.
+            offset = None
+        elif offset is None:
+            # Nothing was learned from the first press at this window, so
+            # a second identical one would learn nothing either.
+            continue
         if attempt:
             aim = where_the_app_draws(log, surface, tile, photo_name)
         if aim is None:
@@ -7090,7 +7117,7 @@ def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
                  f"falling back to sweeping for its row")
             break
         aim_x, aim_y, client_y, address = aim
-        if offset is not None:
+        if corrected:
             aim_y = client_y + offset
         hit = press_at(aim_x, aim_y)
         if hit and os.path.basename(hit[0]).lower() == want:
@@ -7101,6 +7128,8 @@ def press_the_photo_row(quinten: Session, log: LogTail, tile: tuple,
         quinten.settle(0.3)
         if hit:
             # screen y = client y + offset, measured rather than assumed.
+            # Only from this window: an offset learned at one window says
+            # nothing about where another one is.
             offset = aim_y - hit[1]
             note(f"aimed at {address} (y={aim_y:.0f}) and "
                  f"{os.path.basename(hit[0])} answered; the app puts that "
