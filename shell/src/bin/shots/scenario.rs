@@ -1902,6 +1902,7 @@ fn catalogue_rest() -> Vec<Scenario> {
         two_notes_tabs_keep_their_own_text(),
         cycle_all_tabs(),
         word_processor_tile(),
+        word_processor_under_overlay(),
         room_activity_from_palette(),
         window_open_beside_selection(),
         window_open_into_tabbed_group(),
@@ -2786,6 +2787,38 @@ fn word_processor_tile() -> Scenario {
             Action::ClickAt(Point::new(717.0, 104.0)),
             Action::Wait(2),
             Action::Snapshot("02-document-active"),
+        ],
+    }
+}
+
+/// The word processor's light page with an overlay over it — the one
+/// scene where a scrim's behaviour is actually visible.
+///
+/// Every other overlay scenario stands on apps that paint dark, where a
+/// dim of any strength moves the pixels by a handful of code values and
+/// therefore looks like nothing at all. A `bg-white` page is where a
+/// scrim either reads as "the page is behind something" or as "the page
+/// went away", and the difference between those two is not visible on a
+/// slate ground. Captured undimmed first so the same page can be
+/// measured either side of the overlay.
+fn word_processor_under_overlay() -> Scenario {
+    Scenario {
+        name: "word_processor_under_overlay",
+        description: "The light word-processor page, then the palette and the \
+                      workspace-settings modal over it.",
+        actions: vec![
+            // The "Document" pill, in the group's opening layout.
+            Action::ClickAt(Point::new(717.0, 104.0)),
+            Action::Wait(4),
+            Action::Snapshot("01-page"),
+            Action::OpenPalette,
+            Action::Wait(20),
+            Action::Snapshot("02-page-under-palette"),
+            Action::Key(Key::Named(NamedKey::Escape)),
+            Action::Wait(20),
+            Action::SetWsSettings(WsTab::Members),
+            Action::Wait(20),
+            Action::Snapshot("03-page-under-modal"),
         ],
     }
 }
