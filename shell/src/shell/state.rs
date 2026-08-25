@@ -6630,6 +6630,22 @@ impl WorkspaceTree {
             // creates new group" interaction restoring after restart.
             return false;
         }
+        // Resolve the destination before touching the source. The
+        // source removal used to come first, and a destination that had
+        // gone away between the drag starting and this harvest tick
+        // left the removed tab with nowhere to go — the comment where
+        // the `false` is returned promised a re-attach that was never
+        // written, so the window the user dragged simply ceased to
+        // exist. There is nothing to recover from if we never take it
+        // out.
+        let dest_exists = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.strips.iter())
+            .any(|s| s.id == dest_strip_id);
+        if !dest_exists {
+            return false;
+        }
         // Phase 1: remove the tab from the source strip. We have to scan
         // every workspace's strips because the StripId is workspace-
         // agnostic by design.
@@ -6683,18 +6699,19 @@ impl WorkspaceTree {
             for strip in ws.strips.iter_mut() {
                 if strip.id == dest_strip_id {
                     strip.window_groups.push(new_group);
-                    // Unit D: mirror the cache mutation into the doc.
-                    // The widget side has already accepted the drop;
-                    // the doc-side write keeps peer-sync coherent.
+                    // Mirror the cache mutation into the doc. The widget
+                    // side has already accepted the drop; the doc-side
+                    // write keeps peer-sync coherent.
                     self.doc_move_tab_across_strips(src_strip_id, dest_strip_id, tab_id);
                     return true;
                 }
             }
         }
-        // Destination strip not found — we already mutated the source.
-        // Returning `false` here would lose the tab, so re-attach it to
-        // the source strip's first group as a recovery (rare edge case;
-        // dest strip vanished between drag start and harvest tick).
+        // Unreachable: the destination was resolved before the source
+        // was touched, and nothing between the two mutates the strip
+        // set. Kept as a refusal rather than an `unreachable!` so a
+        // future caller that reorders the phases loses a move and not a
+        // window.
         false
     }
 
