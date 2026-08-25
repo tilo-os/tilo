@@ -610,13 +610,32 @@ def pin_locale(env: dict) -> dict:
     # of the variables somebody remembered.
     for var in [k for k in env if k.startswith("LC_")]:
         env[var] = DEMO_LOCALE
-    pin_keyboard(env)
     return env
 
 
 def pin_keyboard(env: dict) -> dict:
-    """Give the nested compositor the keyboard the person is actually
-    typing on.
+    """Give a nested compositor the keyboard the person is actually
+    typing on -- and only the session a person types into.
+
+    Called per session rather than from `pin_locale`, because the two
+    kinds of session want opposite things and pinning both broke the
+    scripted one silently.
+
+    A person's session must match their hardware or every key is wrong.
+    A session the *rig* types into must not: `type` emits one evdev
+    keycode per character from a table in
+    `client_input::evdev_from_char` that is US, and the client resolves
+    that keycode through whatever keymap the seat is carrying. Under a
+    German map, keycode 39 with shift is not `:` but `Ö` -- so
+    `Claude: make this square` arrived in the document as
+    `ClaudeÖ make this square`, and the agent, which matches the literal
+    prefix `claude:`, never saw an instruction at all. Nothing reported
+    an error; the text simply said something else.
+
+    The real repair is for `type` to ask the active keymap which keycode
+    and level produce a requested character. Until then, the session a
+    person drives gets their layout and the sessions a script drives keep
+    the one the table was written against.
 
     `XkbConfig::default()` compiles from `XKB_DEFAULT_RULES/_MODEL/
     _LAYOUT/_VARIANT/_OPTIONS`, and with none of them set xkbcommon falls

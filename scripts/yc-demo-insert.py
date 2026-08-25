@@ -243,6 +243,16 @@ class WindowedSession(yc.Session):
             # a window — the only one the camera sees. Re-pinning is a
             # no-op on the pinned path and the whole guard on the other.
             yc.pin_locale(env)
+            # And the operator's keyboard, here and nowhere else.
+            #
+            # This is the session with a window, so it is the one a person
+            # types into, and their layout has to match their hardware or
+            # every key is wrong. The headless sessions must *not* have it:
+            # the rig types into those, `type` emits US evdev keycodes, and
+            # a client resolving them through a German map turns
+            # `Claude:` into `ClaudeÖ` -- which the agent, matching a
+            # literal `claude:`, never recognises. See `yc.pin_keyboard`.
+            yc.pin_keyboard(env)
             env["WINIT_UNIX_BACKEND"] = "x11"
             env.pop("WAYLAND_DISPLAY", None)
             if self.bus_address:
