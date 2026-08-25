@@ -66,6 +66,16 @@ use crate::wgpu_engine::WgpuEngine;
 /// to reach for when a scene renders with pieces missing.
 const LOG_ENV: &str = "VELLO_BUMP_LOG";
 
+/// Set to `upstream` to reserve upstream vello's constants and never
+/// measure or grow.
+///
+/// This is not a fallback for production — it is how the two are
+/// compared. Rendering the same scene both ways from one binary is what
+/// turns "the smaller reservation looks fine" into a pixel-for-pixel
+/// claim, and an overflow of these buffers drops geometry silently, so
+/// nothing weaker than that claim is worth much.
+const BUDGET_ENV: &str = "VELLO_BUMP_BUDGET";
+
 /// A readback that has been started and not yet collected.
 struct Pending {
     proxy: BufferProxy,
@@ -78,16 +88,31 @@ pub(crate) struct BudgetTracker {
     budget: BumpBudget,
     pending: Option<Pending>,
     log: bool,
+    /// Reserve upstream's constants and hold them there, for A/B.
+    pinned: bool,
+    /// Tiles in the viewport last rendered, for the log only.
+    n_tiles: u32,
     /// Frames seen, for the log only.
     frame: u64,
 }
 
+/// Tile edge in pixels, from `TILE_WIDTH`/`TILE_HEIGHT` in
+/// `vello_encoding`'s config.
+const TILE_SIZE: u32 = 16;
+
 impl BudgetTracker {
     pub(crate) fn new() -> Self {
+        let pinned = std::env::var_os(BUDGET_ENV).is_some_and(|v| v == "upstream");
         Self {
-            budget: BumpBudget::INITIAL,
+            budget: if pinned {
+                BumpBudget::UPSTREAM
+            } else {
+                BumpBudget::INITIAL
+            },
             pending: None,
             log: std::env::var_os(LOG_ENV).is_some_and(|v| !v.is_empty()),
+            pinned,
+            n_tiles: 0,
             frame: 0,
         }
     }
@@ -95,6 +120,30 @@ impl BudgetTracker {
     /// The reservation to render the next frame with.
     pub(crate) fn budget(&self) -> &BumpBudget {
         &self.budget
+    }
+
+    /// Note the viewport this renderer is drawing into, so the log can
+    /// say what was actually reserved: [`BufferSizes`] floors several of
+    /// these buffers by screen area, and a budget of zero at 1920x1080
+    /// still reserves 13 MB.
+    ///
+    /// [`BufferSizes`]: vello_encoding::BufferSizes
+    pub(crate) fn set_viewport(&mut self, width: u32, height: u32) {
+        self.n_tiles = width.max(1).div_ceil(TILE_SIZE) * height.max(1).div_ceil(TILE_SIZE);
+    }
+
+    /// What the sizes actually come out at, floors included.
+    fn effective(&self) -> BumpBudget {
+        let floor = BumpBudget::floor_for_viewport(self.n_tiles);
+        BumpBudget {
+            lines: self.budget.lines.max(floor.lines),
+            binning: self.budget.binning.max(floor.binning),
+            tiles: self.budget.tiles.max(floor.tiles),
+            seg_counts: self.budget.seg_counts.max(floor.seg_counts),
+            segments: self.budget.segments.max(floor.segments),
+            blend_spill: self.budget.blend_spill.max(floor.blend_spill),
+            ptcl: self.budget.ptcl.max(floor.ptcl),
+        }
     }
 
     /// Whether this frame should download the bump counters.
@@ -136,9 +185,10 @@ impl BudgetTracker {
                 bytemuck::pod_read_unaligned(&view)
             };
             buf.unmap();
-            changed = self.budget.observe(&used);
+            let in_effect = self.effective();
+            changed = !self.pinned && self.budget.observe(&used);
             if self.log {
-                self.report(&used, changed);
+                self.report(&used, &in_effect, changed);
             } else if used.failed != 0 {
                 log::warn!(
                     "vello: a frame overflowed its bump buffers (failed={:#x}); \
@@ -158,9 +208,10 @@ impl BudgetTracker {
     /// stages, so it has no use for the deferred machinery above.
     pub(crate) fn observe_now(&mut self, used: &BumpAllocators) -> bool {
         self.frame += 1;
-        let changed = self.budget.observe(used);
+        let in_effect = self.effective();
+        let changed = !self.pinned && self.budget.observe(used);
         if self.log {
-            self.report(used, changed);
+            self.report(used, &in_effect, changed);
         }
         changed
     }
@@ -181,8 +232,10 @@ impl BudgetTracker {
         self.pending = Some(Pending { proxy, done });
     }
 
-    fn report(&self, used: &BumpAllocators, changed: bool) {
-        let b = &self.budget;
+    /// One line per measured frame: what it used against what was
+    /// reserved for it, floors included.
+    fn report(&self, used: &BumpAllocators, in_effect: &BumpBudget, changed: bool) {
+        let b = in_effect;
         eprintln!(
             "vello frame {}: lines {}/{} binning {}/{} tiles {}/{} seg_counts {}/{} \
              segments {}/{} blend {}/{} ptcl {}/{} failed={:#x} reserved={} KB{}",
