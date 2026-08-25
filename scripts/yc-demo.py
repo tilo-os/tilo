@@ -370,7 +370,8 @@ def _typing_jitter(who: str):
 #
 # Now there is one document. He writes his notes; his colleague receives
 # them; later he asks the agent about them. The prose and the bullets
-# disagree with each other on purpose — see `AGENT_PROSE`.
+# disagree with each other on purpose — see the note above
+# `AGENT_INSTRUCTION`.
 #
 # Shorter than it reads, on purpose. Typed at a true sixty words a
 # minute this is thirteen seconds; the longer version it replaced was
@@ -395,6 +396,29 @@ TYPED_PROOF = "room seats 240"
 assert TYPED_PROOF in TYPED_TEXT, (
     f"the crossing is checked on {TYPED_PROOF!r}, which is not in the "
     f"text anyone types: {TYPED_TEXT!r}")
+
+# What the live take types, and all of it.
+#
+# That beat proves one thing -- the document is shared, so what one
+# person writes is on the other's screen a moment later -- and a few
+# words prove it exactly as well as a page does.
+#
+# It used to be `AGENT_PROSE + AGENT_BULLETS` and a line addressed to
+# the agent by name: prose, a run of bullets and an instruction, because
+# the agent read its instruction *out of the document*. It does not any
+# more -- what it answers is a remark made on the photograph itself
+# (`CROP_INSTRUCTION`) -- so the notes were left carrying nothing but
+# their own length, and their length was thirteen seconds of typing in a
+# film with a hundred and ten to spend.
+SHARED_TEXT = "Some shared text\n"
+
+#: The fragment the crossing is checked on, asked of the other machine's
+#: own app. Short, and nothing else in that document contains it.
+SHARED_PROOF = "Some shared text"
+
+assert SHARED_PROOF in SHARED_TEXT, (
+    f"the crossing is checked on {SHARED_PROOF!r}, which is not in the "
+    f"text the live take types: {SHARED_TEXT!r}")
 
 # Characters a US layout only produces with shift held, and the key that
 # carries each one. `Session.type_prose` presses a real Shift across
@@ -437,16 +461,19 @@ SHIFTED_KEYS.update({
 # produced a table with empty cells. The `: ` splits each line into two
 # columns (`plan.rs::split_cells`).
 #
-# The prose above the bullets disagrees with them, deliberately. "Doors
-# open at seven" against "Doors: 18:00" is a contradiction a person would
-# catch, and the sound check at 18:30 falling *after* doors is an
-# ordering that cannot happen. Both are there so the agent has something
-# to notice rather than something to reformat — and without a real
-# disagreement to point at, the model declines to raise one about half
-# the time, which is the correct behaviour and a poor beat.
-AGENT_PROSE = ("Doors open at seven and the room seats two hundred "
-               "and forty.\n")
-AGENT_BULLETS = "\n- Doors: 18:00\nSound check: 18:30\nSeating: 240\n\n"
+# The prose above the bullets in `TYPED_TEXT` disagrees with them,
+# deliberately. "Doors at seven" against "Doors: 18:00" is a
+# contradiction a person would catch, and the sound check at 18:30
+# falling *after* doors is an ordering that cannot happen. Both are
+# there so the agent has something to notice rather than something to
+# reformat — and without a real disagreement to point at, the model
+# declines to raise one about half the time, which is the correct
+# behaviour and a poor beat.
+#
+# A second copy of those notes lived here, for the live take to type.
+# That take no longer types notes at all — see `SHARED_TEXT` — and a
+# duplicate of a document's content that only one film uses is how the
+# two drifted apart the last time.
 # Asking for a run sheet rather than a table. A table is a shape and the
 # app has a button for it; a run sheet is a judgement about which of
 # these lines is a scheduled item, what order they belong in, and
